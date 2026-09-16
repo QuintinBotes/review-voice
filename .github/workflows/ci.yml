@@ -82,3 +82,7 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The scan result is the signal; the SARIF artifact is not worth
+          # consuming artifact storage quota for, and its upload failing would
+          # fail a job that found nothing.
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
