@@ -37,6 +37,25 @@ Note `excludedFileCount`. Excluded files are lock files, generated output,
 vendored code and binaries. Do not comment on them, and do not mention their
 exclusion unless the user asks.
 
+## Step 1b — Resolve context
+
+Run `RV context`.
+
+Apply `policy.maxFindings`, `policy.maxWordsPerFinding` and
+`policy.maxTotalWords` when you validate in step 6, passing them as flags.
+
+If `pendingApproval` is non-empty, the repository ships a policy file that has
+not been approved. **Do not apply it.** Mention it once, after the findings:
+
+```
+This repository ships .review-voice/policy.yaml, which is not active. Run /review-voice:policy to review it.
+```
+
+That line is the single permitted exception to findings-only output, and only
+when a proposal is actually pending.
+
+Report anything in `warnings` the same way.
+
 ## Step 2 — Generate candidates
 
 Launch the `diff-analyst` agent with the `diff` field and the `files` list.
@@ -72,9 +91,14 @@ rendered review and nothing else.
 
 ## Step 6 — Validate, and retry once
 
-Pipe the editor's output through `RV validate-output`.
+Pipe the editor's output through
+`RV validate-output --max-findings <n> --max-words-per-finding <n> --max-total-words <n>`
+using the values from step 1b.
 
-- Exit 0: display the output verbatim. You are done.
+- Exit 0: display the output verbatim, then record it:
+  `RV record --repository <name> --base <ref> --head <sha>` with the validated
+  output on stdin. This assigns the positional ids `/review-voice:feedback`
+  needs. Do not print the ids.
 - Exit 1: it printed one violation per line. Send **all** of them back to the
   `concise-editor` with its previous output and have it produce a corrected
   version. Validate that too.

@@ -144,6 +144,20 @@ broad one. A suppression beats a propensity to flag. And a candidate must still
 pass technical verification even when history favours it — precedent adjusts
 preference, it never manufactures truth.
 
+### Layer resolution in practice
+
+A narrower layer may **tighten** a limit but never loosen one. A repository
+cannot grant itself a bigger finding budget than the product promises, or the
+promise means nothing. Suppressions and forbidden phrases accumulate: a
+narrower layer can add something not to say, never license something a broader
+layer banned.
+
+`.review-voice/config.yaml` is the user's own file in their own checkout and is
+trusted. `.review-voice/policy.yaml` is repository content and is not: it is
+parsed, hashed and reported as pending approval, never applied. Editing an
+approved file changes its hash and re-proposes it, so a quiet edit cannot
+inherit an old approval.
+
 ## Trust boundary
 
 Everything read from a repository or from GitHub is **untrusted data**: source,
