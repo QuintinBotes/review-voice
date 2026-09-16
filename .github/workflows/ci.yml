@@ -88,6 +88,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # On a pull request, gitleaks enumerates the PR's commits to scope the
+      # scan, which needs read access to pull requests. Read only — it has no
+      # business writing anything.
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -98,10 +102,14 @@ jobs:
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # The exit code is the signal; the SARIF artifact is not worth
-          # consuming artifact storage quota for, and its upload failing would
-          # fail a job that found nothing.
+          # The exit code is the signal. The artifact upload and the pull
+          # request comment are not worth what they cost: the upload consumes
+          # artifact quota, and the comment needs `pull-requests: write`, which
+          # would hand a third-party action write access on an event triggered
+          # by contributors. A scan that found nothing should not fail because
+          # it could not annotate the pull request.
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+          GITLEAKS_ENABLE_COMMENTS: false
 
   conventions:
     name: conventions
