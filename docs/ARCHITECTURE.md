@@ -57,6 +57,24 @@ startup because it concerns a dependency choice the user never made.
 The committed bundle is a real risk: it can drift from source. CI rebuilds and
 diffs on every push, so a stale bundle cannot ship.
 
+### Diff acquisition
+
+`review-voice diff` emits the change under review as JSON: base and head, every
+changed file with its status, language and classification, and a unified diff
+restricted to the files worth reviewing.
+
+Two decisions are worth stating.
+
+**Untracked files are included.** `git diff` does not show them, but a
+brand-new file is exactly where defects hide. They are diffed against
+`/dev/null` rather than staged with `git add -N`, because Review Voice is
+read-only and that includes the user's index.
+
+**Every exclusion carries a reason.** Lock files, generated output, vendored
+code and binaries are dropped by default, and each one reports why. A silent
+omission is indistinguishable from a bug, and `--include-generated` brings them
+back for the case where the dependency change *is* the review.
+
 ### Retrieval
 
 No embedding model ships with the plugin. A downloaded model would break
