@@ -194,19 +194,81 @@ test('rollback refuses a version that was never approved', () => {
   });
 });
 
+const HINTS = [
+  { path: 'src/a.ts', line: 1, category: 'maintainability' },
+  { path: 'src/b.ts', line: 2, category: 'maintainability' },
+];
+
 test('proposals are compiled from explicit feedback only', () => {
   withDb((db) => {
     assert.deepEqual(compileProposals(db), []);
 
-    recordRun(db, { repository: 'org/a', baseRef: null, headRef: null, diff: 'x', output: OUTPUT });
+    recordRun(db, { repository: 'org/a', baseRef: null, headRef: null, diff: 'x', output: OUTPUT, candidates: HINTS });
     recordFeedback(db, { findingRef: 'rv_01', action: 'dismiss', reason: 'intentional', actor: 'owner' });
     recordFeedback(db, { findingRef: 'rv_02', action: 'dismiss', actor: 'owner' });
 
     const proposals = compileProposals(db);
     assert.equal(proposals.length, 1);
     assert.equal(proposals[0].kind, 'suppress');
+    assert.equal(proposals[0].category, 'maintainability');
     assert.equal(proposals[0].evidence.dismissals, 2);
     // Two dismissals are not yet three.
     assert.equal(proposals[0].activatable, false);
+  });
+});
+
+test('rules are grouped by category, not by file path', () => {
+  withDb((db) => {
+    // Same two files, different categories: two rules, not one about a folder.
+    recordRun(db, {
+      repository: 'org/a',
+      baseRef: null,
+      headRef: null,
+      diff: 'x',
+      output: OUTPUT,
+      candidates: [
+        { path: 'src/a.ts', line: 1, category: 'maintainability' },
+        { path: 'src/b.ts', line: 2, category: 'security' },
+      ],
+    });
+    recordFeedback(db, { findingRef: 'rv_01', action: 'dismiss', actor: 'owner' });
+    recordFeedback(db, { findingRef: 'rv_02', action: 'keep', actor: 'owner' });
+
+    const proposals = compileProposals(db);
+    const categories = proposals.map((p) => `${p.kind}:${p.category}`).sort();
+    assert.deepEqual(categories, ['prioritise:security', 'suppress:maintainability']);
+    // A rule now says something about a kind of finding rather than a folder.
+    assert.match(proposals.find((p) => p.kind === 'suppress').rule, /maintainability/);
+  });
+});
+
+test('going both ways on one category registers as contradiction', () => {
+  withDb((db) => {
+    recordRun(db, {
+      repository: 'org/a',
+      baseRef: null,
+      headRef: null,
+      diff: 'x',
+      output: OUTPUT,
+      candidates: HINTS,
+    });
+    recordFeedback(db, { findingRef: 'rv_01', action: 'dismiss', actor: 'owner' });
+    recordFeedback(db, { findingRef: 'rv_02', action: 'keep', actor: 'owner' });
+
+    const suppress = compileProposals(db).find((p) => p.kind === 'suppress');
+    // The owner disagreeing with themselves on a category is a reason to ask,
+    // not to guess.
+    assert.equal(suppress.evidence.contradictingSignals, 1);
+    assert.equal(suppress.activatable, false);
+  });
+});
+
+test('feedback with no recorded category counts for precision but forms no rule', () => {
+  withDb((db) => {
+    recordRun(db, { repository: 'org/a', baseRef: null, headRef: null, diff: 'x', output: OUTPUT });
+    recordFeedback(db, { findingRef: 'rv_01', action: 'dismiss', actor: 'owner' });
+    // Nothing to group on. Inventing a category from the wording would be
+    // manufacturing evidence.
+    assert.deepEqual(compileProposals(db), []);
   });
 });

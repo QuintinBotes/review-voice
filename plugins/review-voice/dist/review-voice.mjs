@@ -736,21 +736,27 @@ function recordAudit(db, action, subject, metadata = {}) {
 }
 
 // plugins/review-voice/src/store/runs.ts
-function assignIds(output) {
-  return splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null).map((finding, index) => ({
-    findingId: `rv_${String(index + 1).padStart(2, "0")}`,
-    severity: finding.severity,
-    path: finding.path,
-    line: finding.line ?? 0,
-    text: finding.raw
-  }));
+function assignIds(output, hints) {
+  return splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null).map((finding, index) => {
+    const hint = hints.find((c) => c.path === finding.path && c.line === finding.line);
+    return {
+      findingId: `rv_${String(index + 1).padStart(2, "0")}`,
+      severity: finding.severity,
+      path: finding.path,
+      line: finding.line ?? 0,
+      text: finding.raw,
+      // Absent when a review ran without candidates to hand. Null is honest;
+      // guessing a category from the wording would invent evidence.
+      category: hint?.category
+    };
+  });
 }
 function hashDiff(diff) {
   return createHash("sha256").update(diff).digest("hex").slice(0, 32);
 }
 function recordRun(db, input) {
   const reviewRunId = randomUUID2();
-  const findings = assignIds(input.output);
+  const findings = assignIds(input.output, input.candidates ?? []);
   db.prepare(
     `INSERT INTO review_runs (
        review_run_id, repository, base_ref, head_ref, diff_hash,
@@ -7486,14 +7492,14 @@ function isPlaceholder(value) {
 function redact(input) {
   const counts = {};
   let text = input;
-  for (const { label, pattern, group } of SECRET_PATTERNS) {
+  for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
     pattern.lastIndex = 0;
     text = text.replace(pattern, (match, ...groups) => {
       const captured = group === void 0 || group === 0 ? match : groups[group - 1];
       if (captured === void 0 || captured.length === 0) return match;
       if (isPlaceholder(captured)) return match;
-      counts[label] = (counts[label] ?? 0) + 1;
-      const replacement = `[REDACTED:${label}]`;
+      counts[label2] = (counts[label2] ?? 0) + 1;
+      const replacement = `[REDACTED:${label2}]`;
       return group === void 0 || group === 0 ? replacement : match.replace(captured, replacement);
     });
   }
@@ -7915,8 +7921,8 @@ function storeEvents(db, events) {
   }
   const redactionTotals = {};
   for (const event of events) {
-    for (const [label, count] of Object.entries(event.redactionCounts)) {
-      redactionTotals[label] = (redactionTotals[label] ?? 0) + count;
+    for (const [label2, count] of Object.entries(event.redactionCounts)) {
+      redactionTotals[label2] = (redactionTotals[label2] ?? 0) + count;
     }
   }
   recordAudit(db, "corpus_ingested", null, {
@@ -8257,6 +8263,21 @@ function confidenceFrom(evidence) {
   const contradiction = evidence.contradictingSignals / (supporting + evidence.contradictingSignals);
   return Math.max(0, corroboration * 0.5 + ownerShare * 0.5 - contradiction);
 }
+function label(row) {
+  try {
+    const parsed = JSON.parse(row.output_json);
+    const finding = parsed.findings.find((f) => f.findingId === row.finding_id);
+    if (finding === void 0) return null;
+    return {
+      row,
+      category: finding.category ?? null,
+      severity: finding.severity ?? null,
+      path: finding.path
+    };
+  } catch {
+    return null;
+  }
+}
 function compileProposals(db) {
   const rows = db.prepare(
     `SELECT f.action, f.finding_id, f.review_run_id, f.reason, f.created_at, r.output_json
@@ -8264,42 +8285,41 @@ function compileProposals(db) {
        JOIN review_runs r ON r.review_run_id = f.review_run_id
        ORDER BY f.created_at DESC`
   ).all();
-  const byCategory = /* @__PURE__ */ new Map();
+  const buckets = /* @__PURE__ */ new Map();
   for (const row of rows) {
-    let path = "unknown";
-    try {
-      const parsed = JSON.parse(row.output_json);
-      path = parsed.findings.find((finding) => finding.findingId === row.finding_id)?.path ?? "unknown";
-    } catch {
-      continue;
-    }
-    const key = row.action === "never_flag" || row.action === "dismiss" ? "suppress" : "prioritise";
-    const bucket = byCategory.get(key) ?? { rows: [], paths: /* @__PURE__ */ new Set() };
-    bucket.rows.push(row);
-    bucket.paths.add(path);
-    byCategory.set(key, bucket);
+    const labelled = label(row);
+    if (labelled === null) continue;
+    if (labelled.category === null) continue;
+    const kind = row.action === "never_flag" || row.action === "dismiss" ? "suppress" : "prioritise";
+    const key = `${kind}:${labelled.category}`;
+    buckets.set(key, [...buckets.get(key) ?? [], labelled]);
   }
   const proposals = [];
-  for (const [kind, bucket] of byCategory) {
-    const keeps = bucket.rows.filter((r) => r.action === "keep").length;
-    const dismissals = bucket.rows.filter((r) => r.action === "dismiss" || r.action === "never_flag").length;
-    const rewrites = bucket.rows.filter((r) => r.action === "rewrite").length;
+  for (const [key, group] of buckets) {
+    const [kind, category] = key.split(":");
+    const keeps = group.filter((g) => g.row.action === "keep").length;
+    const dismissals = group.filter((g) => g.row.action === "dismiss" || g.row.action === "never_flag").length;
+    const rewrites = group.filter((g) => g.row.action === "rewrite").length;
+    const opposite = kind === "suppress" ? `prioritise:${category}` : `suppress:${category}`;
+    const contradictingSignals = (buckets.get(opposite) ?? []).length;
     const evidence = {
       keeps,
       dismissals,
       rewrites,
       // Every recorded feedback action is the owner's; that is who gives it.
-      ownerSignals: bucket.rows.length,
-      contradictingSignals: kind === "suppress" ? keeps : dismissals,
-      mostRecentAt: bucket.rows[0]?.created_at ?? null,
-      eventIds: bucket.rows.map((r) => `${r.review_run_id}:${r.finding_id}`)
+      ownerSignals: group.length,
+      contradictingSignals,
+      mostRecentAt: group[0]?.row.created_at ?? null,
+      eventIds: group.map((g) => `${g.row.review_run_id}:${g.row.finding_id}`)
     };
     const gate = canActivate(evidence);
-    const reasons = bucket.rows.map((r) => r.reason).filter((r) => r !== null && r.length > 0);
+    const reasons = group.map((g) => g.row.reason).filter((r) => r !== null && r.length > 0);
+    const severities = [...new Set(group.map((g) => g.severity).filter((s) => s !== null))];
     proposals.push({
       scope: { type: "global", key: "owner" },
       kind,
-      rule: kind === "suppress" ? `Suppress findings like those dismissed in ${[...bucket.paths].slice(0, 3).join(", ")}${reasons.length > 0 ? ` (stated reason: ${reasons[0]})` : ""}.` : `Prioritise findings like those kept in ${[...bucket.paths].slice(0, 3).join(", ")}.`,
+      category,
+      rule: kind === "suppress" ? `Suppress ${category} findings${severities.length === 1 ? ` at ${severities[0]} severity` : ""} unless they name a concrete failure mode${reasons.length > 0 ? ` (stated reason: ${reasons[0]})` : ""}.` : `Treat ${category} as high priority; findings in this category are consistently kept.`,
       evidence,
       confidence: confidenceFrom(evidence),
       activatable: gate.ok,
@@ -8520,10 +8540,11 @@ diff flags:
   --include-generated    Include lock files, generated, vendored and binary files
 
 record flags:
-  --repository <name>  Repository the review belongs to
-  --base <ref>         Base ref reviewed against
-  --head <sha>         Head commit reviewed
-  --diff-file <path>   Diff the review was produced from (for the run hash)
+  --repository <name>    Repository the review belongs to
+  --base <ref>           Base ref reviewed against
+  --head <sha>           Head commit reviewed
+  --diff-file <path>     Diff the review was produced from (for the run hash)
+  --candidates <path>    Scored candidates, so findings carry their category
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -8983,6 +9004,17 @@ function recordCommand(argv) {
       return 2;
     }
   }
+  const candidatesFile = flag(argv, "--candidates");
+  let candidates = [];
+  if (candidatesFile !== null) {
+    try {
+      const parsed = JSON.parse(readFileSync3(candidatesFile, "utf8"));
+      candidates = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
+    } catch {
+      console.error(`Cannot read candidates from ${candidatesFile}.`);
+      return 2;
+    }
+  }
   const db = openDatabase();
   try {
     const { reviewRunId, findings } = recordRun(db, {
@@ -8990,7 +9022,8 @@ function recordCommand(argv) {
       baseRef: flag(argv, "--base"),
       headRef: flag(argv, "--head"),
       diff,
-      output
+      output,
+      candidates
     });
     console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
     return 0;

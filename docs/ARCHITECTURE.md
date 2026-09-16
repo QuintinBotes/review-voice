@@ -184,6 +184,16 @@ volume: three vague observations are not better evidence than one naming a line.
 A negative precedent lowers a candidate's score but cannot refute a verified
 defect. Precedent adjusts preference; it never manufactures or unmakes truth.
 
+Rules are compiled by finding **category**, not by file path. "Suppress
+maintainability findings unless they name a concrete failure mode" is a rule;
+"suppress things like the ones in src/a.ts" is an observation about wherever
+you happened to be working that week.
+
+Category cannot be recovered from the rendered output — the contract permits no
+text beyond the finding — so it arrives alongside, via `record --candidates`.
+Feedback recorded without it still counts toward precision but cannot become a
+rule. Inventing a category from the wording would be manufacturing evidence.
+
 A proposed rule is stored **inactive**. Generation and activation are separate
 operations by construction rather than by discipline. Activation requires three
 corroborating signals including at least one from the owner, with nothing from

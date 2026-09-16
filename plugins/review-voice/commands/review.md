@@ -120,10 +120,17 @@ Pipe the editor's output through
 `RV validate-output --max-findings <n> --max-words-per-finding <n> --max-total-words <n>`
 using the values from step 1b.
 
-- Exit 0: display the output verbatim, then record it:
-  `RV record --repository <name> --base <ref> --head <sha>` with the validated
-  output on stdin. This assigns the positional ids `/review-voice:feedback`
-  needs. Do not print the ids.
+- Exit 0: display the output verbatim, then record it. Write the scored
+  candidates to a temporary file and pass it:
+  `RV record --repository <name> --base <ref> --head <sha> --candidates <file>`
+  with the validated output on stdin.
+
+  The candidates carry each finding's category, which the rendered output
+  cannot — the contract permits no text beyond the finding. Without it,
+  feedback on that finding can never become a policy rule.
+
+  This also assigns the positional ids `/review-voice:feedback` needs. Do not
+  print the ids.
 - Exit 1: it printed one violation per line. Send **all** of them back to the
   `concise-editor` with its previous output and have it produce a corrected
   version. Validate that too.
