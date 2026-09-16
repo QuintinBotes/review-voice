@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Consent flow: `review-voice discover` lists reachable repositories without
+  reading any history, and `consent-plan` states exactly what a sync would
+  read, where it is stored and what is discarded, before anything is read.
+  `commands/init.md` gates every step on an explicit yes.
+- `review-voice purge`: previews before deleting and requires `--confirm`.
+  The audit entry recording a purge survives it.
 - `review-voice sync`: ingests review history from allowlisted repositories.
   Comments are redacted at the download boundary, classified by reviewer role,
   filtered for review judgement, deduplicated across rebases, and selected
