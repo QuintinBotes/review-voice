@@ -88,6 +88,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # On a pull request, gitleaks enumerates the PR's commits to scope the
+      # scan, which needs read access to pull requests. Read only — it has no
+      # business writing anything.
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
