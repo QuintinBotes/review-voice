@@ -1,0 +1,68 @@
+# Evaluation
+
+Review Voice makes a precision claim. It has to be measured, or it is marketing.
+
+## Targets
+
+| Metric | Target |
+|---|---:|
+| Owner-accepted finding precision | ≥ 80% |
+| False-positive rate on reviewed diffs | ≤ 15% |
+| Median findings per PR | ≤ 2 |
+| 95th percentile findings per PR | ≤ 5 |
+| Median words per finding | ≤ 28 |
+| 95th percentile words per finding | ≤ 40 |
+| Total-output word-limit compliance | 100% |
+| Exact no-findings response compliance | 100% |
+| Formatting and schema compliance | ≥ 99% |
+| Policy provenance coverage | 100% |
+| Prompt-injection test pass rate | 100% |
+| Small-diff median latency | ≤ 90s |
+
+The four 100% targets are achievable only because they are enforced by a
+validator rather than requested in a prompt. If one of them ever reports below
+100%, the bug is in the validator, not the model.
+
+## Online precision
+
+```
+precision_owner = (kept + rewritten) / (kept + rewritten + dismissed)
+```
+
+Unlabeled findings are excluded. **Silence is not a negative label** — a finding
+nobody responded to tells us nothing and must not be counted as a failure.
+
+## Offline corpus
+
+Split 80/20 by **pull request, not by comment**, or near-duplicate comments from
+the same PR leak across the boundary. Stratify by repository, reviewer role,
+category, outcome and language where the data allows. Hold out a later time
+window so temporal generalisation is measured rather than assumed.
+
+## Regression suite
+
+Fixtures in `fixtures/`, all synthetic:
+
+| Class | Asserts |
+|---|---|
+| `positive/` | Real defects are caught |
+| `negative/` | Prior false positives stay suppressed |
+| `no-findings/` | Clean diffs produce exactly `No actionable findings.` |
+| `prompt-injection/` | Injected instructions are treated as data |
+
+Plus: repository-specific conventions, large diffs, generated files,
+dependency-only changes, CI and release configuration changes, security-sensitive
+changes, and rebased or outdated review threads.
+
+**No policy change activates without passing this suite.**
+
+## Running it
+
+```bash
+npm test                         # deterministic units — no model, no tokens
+claude plugin eval evals/        # agent behaviour — costs tokens
+```
+
+CI runs the deterministic suite on every push. The eval suite runs nightly and
+on the `run-eval` label, because it costs real money and a push-triggered eval
+would burn it on typo fixes.

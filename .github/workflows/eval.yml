@@ -1,0 +1,48 @@
+name: Eval
+
+# Agent behaviour evals cost real tokens, so they do not run on every push.
+# Nightly, plus on demand via the `run-eval` label or a manual dispatch.
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    name: plugin eval
+    if: >
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'run-eval'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run eval suite
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: claude plugin eval plugins/review-voice --eval-dir evals --trust-plugin
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: evals/**/results*.json
+          if-no-files-found: ignore

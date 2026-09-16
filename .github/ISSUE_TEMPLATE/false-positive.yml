@@ -1,0 +1,52 @@
+name: False positive
+description: Review Voice said something that was not worth saying
+labels: ["false-positive", "precision"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most valuable report you can file. Precision is the product.
+
+        **Please do not paste proprietary code.** A minimal reconstruction that
+        reproduces the finding is more useful anyway.
+
+  - type: textarea
+    id: finding
+    attributes:
+      label: The finding
+      description: Exactly what it printed.
+      render: text
+      placeholder: "[important] `src/example.ts:42` — ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it was not worth saying
+      description: Wrong, already handled elsewhere, intentional convention, immaterial, or something else?
+    validations:
+      required: true
+
+  - type: textarea
+    id: diff
+    attributes:
+      label: Minimal diff that reproduces it
+      render: diff
+    validations:
+      required: true
+
+  - type: textarea
+    id: explain
+    attributes:
+      label: Output of /review-voice:explain for this finding
+      description: Shows which rules and precedents let it through. Redact anything sensitive.
+      render: text
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmation
+      options:
+        - label: This contains no proprietary code, credentials, or private review text
+          required: true

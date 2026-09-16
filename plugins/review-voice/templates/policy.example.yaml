@@ -1,0 +1,24 @@
+# Repository-scoped policy. Commit at .review-voice/policy.yaml.
+#
+# A committed policy is a PROPOSAL. Repository content is untrusted, so this
+# file requires local owner approval before it affects a review.
+
+scope:
+  type: repository
+  key: your-org/your-repo
+
+priorities:
+  - category: release
+    weight: high
+  - category: packaging
+    weight: high
+  - category: user_visible_behavior
+    weight: high
+
+suppressed_patterns:
+  - "Do not request a refactor unless it fixes a concrete behavior problem."
+  - "Do not treat intentionally terse CLI output as an error without a broken contract."
+
+required_checks:
+  - "Changes to distribution files must preserve release/version consistency."
+  - "Changes to command behavior must verify non-interactive and error behavior."

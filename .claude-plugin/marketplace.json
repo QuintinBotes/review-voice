@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "review-voice",
+  "description": "Review Voice — a concise, precedent-aware code reviewer for Claude Code",
+  "owner": {
+    "name": "Quintin Botes",
+    "url": "https://github.com/QuintinBotes"
+  },
+  "plugins": [
+    {
+      "name": "review-voice",
+      "description": "A concise, precedent-aware code reviewer that calibrates to your review judgment. At most five findings, 40 words each, evidence required, silence when nothing qualifies.",
+      "source": "./plugins/review-voice",
+      "version": "0.1.0",
+      "category": "development",
+      "tags": ["code-review", "git", "github", "quality", "local-first"],
+      "homepage": "https://github.com/QuintinBotes/review-voice"
+    }
+  ]
+}
