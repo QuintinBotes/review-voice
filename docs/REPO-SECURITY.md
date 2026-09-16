@@ -74,9 +74,10 @@ build if a pin regresses to a tag — pinning rots silently without a check.
 
 | Control | Runs |
 |---|---|
+| GitHub secret scanning | Continuous, with push protection blocking commits |
 | gitleaks secret scan | Every push and pull request |
-| Full OS matrix (Linux + macOS) | Pushes to main and releases; pull requests run Linux only |
-| CodeQL | Weekly, and on demand |
+| Full OS matrix (Linux + macOS) | Every push and pull request |
+| CodeQL | Every push, every pull request, weekly |
 | Dependabot alerts and automated security fixes | Continuous |
 | Dependabot version updates | Weekly, grouped |
 | Bundle-drift check | Every push and pull request |
@@ -86,21 +87,44 @@ committed and executed by users, so CI rebuilds it from source and fails on any
 difference. Malicious bytes cannot enter the artifact without also being in
 reviewable source.
 
+### Reporting
+
+Private vulnerability reporting is enabled, so the advisory link in
+`SECURITY.md` works for outside reporters. Push protection blocks a commit
+containing a recognised credential before it reaches the remote, which is the
+one control that acts *before* publication rather than after.
+
 ## Pending, and why
 
 | Item | Blocked on | Notes |
 |---|---|---|
-| GitHub secret scanning and push protection | Repository being public | Not available on a private repository without Advanced Security. gitleaks covers the gap. Enable at launch. |
-| Private vulnerability reporting | Repository being public | `SECURITY.md` already points at the advisory form; the link becomes usable to outside reporters at launch. |
-| OSSF Scorecard | Repository being public | Results need a public repository to publish. |
+| OSSF Scorecard | Nothing — not yet added | A supply-chain posture score published to the security tab. Worth adding; no blocker. |
 | Required approvals ≥ 1 | A second maintainer | See above. |
 
-## Launch checklist
+## Publication
 
-When the repository goes public at v1.0.0:
+The repository was made public on 2026-09-16, ahead of v1.0.0, because GitHub
+Actions is free and unlimited for public repositories and the private-repo
+Actions budget had been exhausted.
 
-1. Enable secret scanning and push protection.
-2. Enable private vulnerability reporting.
-3. Add the OSSF Scorecard workflow.
-4. Re-read `SECURITY.md` against what the code actually does — every claim in it
-   becomes a public promise on that day.
+A full history audit ran first and found two real leaks, both fixed by
+rewriting history before anything was served publicly:
+
+1. **The identity guard published what it hid.** It enumerated four private
+   repository names in a regex literal and allowlisted its own file, so it never
+   flagged itself. It now hardcodes nothing and reads site-specific terms from a
+   gitignored `.identity-guard.local`.
+2. **A work email survived in commit message trailers.** An earlier rewrite had
+   corrected author and committer headers but not message bodies, where GitHub
+   had written `Co-authored-by` lines during squash merges.
+
+The audit also confirmed no credentials in any commit, no absolute paths or
+usernames in the committed bundle, no private registries in the lockfile, and no
+files ever added and later deleted.
+
+Rewriting history is only a real fix *before* publication. On a public
+repository, force-pushed commits stay reachable by SHA through the API, which is
+why the remaining launch item below is prevention rather than cleanup.
+
+Still to do: re-read `SECURITY.md` against what the code actually does before
+v1.0.0 — every claim in it is now a public promise.
