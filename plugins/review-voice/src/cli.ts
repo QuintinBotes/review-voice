@@ -34,6 +34,7 @@ import { retrievePrecedents } from './retrieval/retrieve.ts';
 import { scoreCandidate, DEFAULT_THRESHOLDS, type Candidate } from './scoring/score.ts';
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
+import { computeMetrics } from './evaluate/metrics.ts';
 
 const USAGE = `review-voice <command>
 
@@ -50,6 +51,7 @@ Commands:
   score             Score candidates from stdin against retrieved precedents
   calibrate         Show proposed policy changes and their evidence
   policy            show | approve <id> | rollback <version>
+  evaluate          Report the evaluation metrics against their targets
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -383,6 +385,27 @@ async function syncCommand(argv: string[]): Promise<number> {
   }
 }
 
+function evaluateCommand(argv: string[]): number {
+  const db = openDatabase();
+  try {
+    const metrics = computeMetrics(db);
+    if (argv.includes('--json')) {
+      console.log(JSON.stringify({ metrics }, null, 2));
+    } else {
+      for (const metric of metrics) {
+        const value = metric.value === null ? 'no data' : metric.value.toFixed(2);
+        const mark = metric.meets === null ? '  -' : metric.meets ? '  ok' : 'FAIL';
+        console.log(`${mark}  ${metric.name.padEnd(32)} ${value.padStart(8)}  target ${metric.target}`);
+        console.log(`      ${metric.basis}`);
+      }
+    }
+    // A metric below target is information, not a command failure.
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 function scoreCommand(argv: string[]): number {
   let candidates: Candidate[];
   try {
@@ -690,6 +713,9 @@ async function main(argv: string[]): Promise<number> {
 
     case 'score':
       return scoreCommand(argv.slice(1));
+
+    case 'evaluate':
+      return evaluateCommand(argv.slice(1));
 
     case 'calibrate':
       return calibrateCommand();
