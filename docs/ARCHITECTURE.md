@@ -175,6 +175,34 @@ parsed, hashed and reported as pending approval, never applied. Editing an
 approved file changes its hash and re-proposes it, so a quiet edit cannot
 inherit an old approval.
 
+### The GitHub client
+
+Two constraints are enforced in the client rather than documented, because v1
+promises both and a promise a caller can bypass is not a promise: only GET
+requests are issued, and only allowlisted repositories are addressed. Both
+throw before any network call, and both are tested.
+
+The allowlist matters more than it looks. The credential comes from `gh` and
+carries whatever scopes the user already had — almost always broader than
+Review Voice needs. So the allowlist, not the token, is what actually bounds
+access.
+
+Rate limiting is retried with backoff; a 403 that is *not* rate limiting fails
+immediately, because retrying a permissions error only burns the user's quota.
+Pagination is bounded so a large repository cannot run away with the budget.
+
+### Reviewer roles
+
+Owner, team, external, bot. The owner is whoever is running the plugin,
+resolved at init and never hardcoded. Teammates are recognised from GitHub's
+author association, since OWNER, MEMBER and COLLABORATOR are the people with
+standing in a project; drive-by contributors are external and cannot establish
+global rules.
+
+A bot is a bot even when it is also a collaborator: automated output would
+teach the reviewer to sound like a linter, so it is excluded from voice
+learning regardless of permissions.
+
 ## Trust boundary
 
 Everything read from a repository or from GitHub is **untrusted data**: source,
