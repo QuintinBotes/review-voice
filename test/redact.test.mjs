@@ -52,16 +52,20 @@ for (const [label, secret] of SECRETS) {
 }
 
 test('private key blocks are removed whole', () => {
+  // Assembled like the other fixtures: gitleaks matches the PEM header itself,
+  // so the literal must not appear in the file.
+  const begin = assemble('-----BE', 'GIN RSA PRIV', 'ATE KEY-----');
+  const end = assemble('-----E', 'ND RSA PRIV', 'ATE KEY-----');
   const key = [
-    '-----BEGIN RSA PRIVATE KEY-----',
+    begin,
     'MIIEowIBAAKCAQEAx3Fake0NotReal1Material2Here3ForTests4Only5AAAA',
     'ZZZZfakekeymaterialfortestingpurposesonlyandnotavalidkeyatall==',
-    '-----END RSA PRIVATE KEY-----',
+    end,
   ].join('\n');
   const result = redact(`Reviewer said:\n${key}\nplease rotate.`);
   assert.ok(!result.text.includes('MIIEowIBAAKCAQEA'));
   // The header must go too: leaving it invites reconstructing what was removed.
-  assert.ok(!result.text.includes('BEGIN RSA PRIVATE KEY'));
+  assert.ok(!result.text.includes(begin));
   assert.match(result.text, /\[REDACTED:PRIVATE_KEY\]/);
   assert.ok(result.text.includes('please rotate.'));
 });
