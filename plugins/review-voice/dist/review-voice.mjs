@@ -7306,6 +7306,113 @@ ${result.stderr ?? ""}`;
   return { enabled: true, commands: outcomes, didNotRun };
 }
 
+// plugins/review-voice/src/redact/redact.ts
+import { createHash as createHash3 } from "node:crypto";
+
+// plugins/review-voice/src/redact/patterns.ts
+var SECRET_PATTERNS = [
+  // Key material is replaced whole: a PEM block's header is not the secret,
+  // but leaving it invites someone to reconstruct what was removed.
+  {
+    label: "PRIVATE_KEY",
+    pattern: /-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----/g
+  },
+  { label: "PEM_BLOCK", pattern: /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g },
+  { label: "GITHUB_TOKEN", pattern: /\b(gh[pousr]_[A-Za-z0-9]{16,255})\b/g, group: 1 },
+  { label: "GITHUB_TOKEN", pattern: /\b(github_pat_[A-Za-z0-9_]{20,})\b/g, group: 1 },
+  { label: "AWS_ACCESS_KEY", pattern: /\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b/g, group: 1 },
+  {
+    label: "AWS_SECRET_KEY",
+    pattern: /\b(?:aws_secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi,
+    group: 1
+  },
+  { label: "GOOGLE_API_KEY", pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g, group: 1 },
+  { label: "SLACK_TOKEN", pattern: /\b(xox[abposr]-[0-9A-Za-z-]{10,})\b/g, group: 1 },
+  { label: "STRIPE_KEY", pattern: /\b((?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,})\b/g, group: 1 },
+  { label: "NPM_TOKEN", pattern: /\b(npm_[A-Za-z0-9]{36})\b/g, group: 1 },
+  { label: "PYPI_TOKEN", pattern: /\b(pypi-[A-Za-z0-9_-]{16,})\b/g, group: 1 },
+  { label: "OPENAI_KEY", pattern: /\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b/g, group: 1 },
+  { label: "ANTHROPIC_KEY", pattern: /\b(sk-ant-[A-Za-z0-9_-]{20,})\b/g, group: 1 },
+  // JWTs: three base64url segments. The payload is often the sensitive part.
+  {
+    label: "JWT",
+    pattern: /\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g,
+    group: 1
+  },
+  // A connection string's credentials, keeping the scheme and host so the
+  // surrounding review comment still makes sense.
+  {
+    label: "DB_CREDENTIALS",
+    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi,
+    group: 3
+  },
+  {
+    label: "AUTHORIZATION_HEADER",
+    pattern: /\b(?:Authorization|Proxy-Authorization)\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12,})/gi,
+    group: 1
+  },
+  // Assignment-shaped secrets. Deliberately last: it is the broadest rule, and
+  // a more specific label above is more useful in an audit than "SECRET".
+  {
+    label: "SECRET_ASSIGNMENT",
+    pattern: /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["']([^"'\s]{8,})["']/gi,
+    group: 1
+  }
+];
+var PLACEHOLDERS = /* @__PURE__ */ new Set([
+  "xxxxxxxx",
+  "changeme",
+  "password",
+  "redacted",
+  "your_token_here",
+  "example",
+  "placeholder",
+  "dummy",
+  "notarealsecret",
+  "test",
+  "password123",
+  "<token>",
+  "secret",
+  "todo",
+  "fixme",
+  "null",
+  "undefined",
+  "none"
+]);
+
+// plugins/review-voice/src/redact/redact.ts
+var REDACTION_VERSION = "1";
+function hash(value) {
+  return createHash3("sha256").update(value).digest("hex").slice(0, 32);
+}
+function isPlaceholder(value) {
+  const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
+  if (PLACEHOLDERS.has(normalised)) return true;
+  return /^(.)\1{3,}$/.test(value);
+}
+function redact(input) {
+  const counts = {};
+  let text = input;
+  for (const { label, pattern, group } of SECRET_PATTERNS) {
+    pattern.lastIndex = 0;
+    text = text.replace(pattern, (match, ...groups) => {
+      const captured = group === void 0 || group === 0 ? match : groups[group - 1];
+      if (captured === void 0 || captured.length === 0) return match;
+      if (isPlaceholder(captured)) return match;
+      counts[label] = (counts[label] ?? 0) + 1;
+      const replacement = `[REDACTED:${label}]`;
+      return group === void 0 || group === 0 ? replacement : match.replace(captured, replacement);
+    });
+  }
+  return {
+    text,
+    counts,
+    sourceHash: hash(input),
+    redactedHash: hash(text),
+    version: REDACTION_VERSION
+  };
+}
+
 // plugins/review-voice/src/cli.ts
 var USAGE = `review-voice <command>
 
@@ -7313,6 +7420,7 @@ Commands:
   diff              Acquire the diff under review as structured JSON
   context           Resolve config and the active policy stack as JSON
   evidence          Run the configured static checks and emit structured signals
+  redact            Redact secrets from stdin (used before anything is stored)
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -7455,6 +7563,15 @@ function contextCommand() {
     throw error;
   }
 }
+function redactCommand(argv) {
+  const result = redact(readStdin());
+  if (argv.includes("--json")) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    process.stdout.write(result.text);
+  }
+  return 0;
+}
 function evidenceCommand() {
   try {
     const root = repositoryRoot(process.cwd());
@@ -7576,6 +7693,8 @@ function main(argv) {
       return diffCommand(argv.slice(1));
     case "context":
       return contextCommand();
+    case "redact":
+      return redactCommand(argv.slice(1));
     case "evidence":
       return evidenceCommand();
     case "record":

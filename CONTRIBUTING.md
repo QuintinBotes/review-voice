@@ -16,6 +16,12 @@ conversation, and we want it.
 
 ## Two hard rules
 
+**0. Never commit anything credential-shaped.** GitHub push protection scans
+this repository and will reject the push — it rejected the redaction test suite
+on its first attempt. Tests that need credential-shaped strings assemble them
+from fragments at runtime, so no literal matching a provider's token format
+exists in any file. See `test/redact.test.mjs`.
+
 **1. Never commit real review data.** Every fixture must be synthetic. Real
 pull-request comments carry other people's words, other companies' code, and
 occasionally credentials. CI runs a secret scan, but the rule holds regardless

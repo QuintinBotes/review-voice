@@ -70,11 +70,35 @@ can move it and run their code against this repository's tokens. Every action is
 pinned to a full SHA with a version comment, and `npm run check:pins` fails the
 build if a pin regresses to a tag — pinning rots silently without a check.
 
+### Scorecard findings we do not act on
+
+Three of OSSF Scorecard's high-severity checks cannot be satisfied by a
+single-maintainer repository and are dismissed rather than chased:
+
+| Finding | Why it stays open |
+|---|---|
+| `Code-Review` | Requires every change reviewed by someone other than its author. There is one maintainer. Required approvals go to 1 when there is a second. |
+| `Maintained` | Measures commit and issue activity over 90 days. Resolves itself with time. |
+| `Branch-Protection` | Scorecard cannot read the ruleset without a token carrying broader scope than this project has reason to hold. Protection is active; see the table above. |
+
+`Pinned-Dependencies` was a real finding and was fixed: the workflows pinned
+their global `@anthropic-ai/claude-code` install rather than tracking whatever
+the registry serves that day.
+
+Dismissing a structural finding is a judgement, not a default. Each dismissal
+carries a reason in the security tab.
+
+Scorecard results are therefore kept as a build artifact rather than uploaded
+to code scanning. As alerts, those three permanent findings blocked every pull
+request from merging — and a blocker nobody can clear trains people to dismiss
+alerts by reflex, which costs more than the visibility was worth. Revisit the
+upload when there is a second maintainer and `Code-Review` becomes satisfiable.
+
 ### Continuous scanning
 
 | Control | Runs |
 |---|---|
-| OSSF Scorecard | Weekly, on push to main, and when protection rules change |
+| OSSF Scorecard | Weekly, on push to main, and when protection rules change (results as a build artifact, not code-scanning alerts) |
 | GitHub secret scanning | Continuous, with push protection blocking commits |
 | gitleaks secret scan | Every push and pull request |
 | Full OS matrix (Linux + macOS) | Every push and pull request |

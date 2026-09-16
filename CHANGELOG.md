@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Redaction pipeline covering private keys, PEM blocks, GitHub, AWS, Google,
+  Slack, Stripe, npm, PyPI, OpenAI and Anthropic credentials, JWTs, database
+  connection credentials, authorization headers and assignment-shaped secrets.
+  Placeholders such as `changeme` are left alone. Content hashes are recorded
+  before and after so a redaction is auditable without retaining the secret.
 - Fixture suite covering all four classes from the specification, with a test
   asserting fixtures stay synthetic — no real addresses, hosts or credentials.
 - Prompt-injection fixtures across three vectors: a source comment,

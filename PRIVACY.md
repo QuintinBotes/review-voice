@@ -42,7 +42,7 @@ prompt. See [SECURITY.md](SECURITY.md) for the limits of that.
 
 | Data | Default |
 |---|---|
-| Raw comments and source snippets | 30 days |
+| Original, unredacted text | **Never stored.** Redaction happens on download; only the cleaned copy is written to disk. |
 | Redacted normalised text | Until you purge it |
 | Derived policy rules | Until superseded or purged |
 | Audit logs | 180 days |
