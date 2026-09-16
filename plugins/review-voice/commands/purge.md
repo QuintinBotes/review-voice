@@ -4,16 +4,27 @@ argument-hint: "<--repo <owner/repo> | --before <date> | --all>"
 allowed-tools: Bash(node:*)
 ---
 
-<!-- Status: scaffold. Implemented in M2. -->
-
 # Purge stored data
 
-Run `${CLAUDE_PLUGIN_ROOT}/dist/review-voice.mjs purge $ARGUMENTS`.
+Let `RV` be `node "${CLAUDE_PLUGIN_ROOT}/dist/review-voice.mjs"`.
 
-Deletion is irreversible. Before deleting, show exactly what will go: event
-counts, affected repositories, derived policies, and index entries.
+## Always preview first
 
-Then confirm. `--all` requires the user to confirm a second time.
+Run `RV purge $ARGUMENTS` **without** `--confirm`. It prints exactly what would
+be removed and deletes nothing.
 
-Embeddings are deleted with the events they derive from unless the user has
-chosen to retain derived-only artifacts.
+Show those counts. Then ask.
+
+## Then delete
+
+Only after an explicit yes, re-run with `--confirm` appended.
+
+For `--all`, ask a second time. It removes the corpus, every review run and all
+feedback — the calibration history as well as the data.
+
+Deletion is irreversible. There is no undo, and the data cannot be recovered
+from anywhere else, because it never left this machine.
+
+The audit entry recording the purge survives it. That is deliberate: deleting
+the evidence that a deletion happened would make the audit trail useless
+exactly when it matters most.
