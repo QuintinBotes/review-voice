@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/QuintinBotes/review-voice/schemas/feedback.schema.json",
+  "title": "Feedback record",
+  "description": "Explicit owner feedback. Absence of a record means unlabeled — never negative.",
+  "type": "object",
+  "required": ["feedback_id", "review_run_id", "finding_id", "action", "actor", "created_at"],
+  "additionalProperties": false,
+  "properties": {
+    "feedback_id": { "type": "string" },
+    "review_run_id": { "type": "string" },
+    "finding_id": { "type": "string" },
+    "action": {
+      "enum": ["keep", "dismiss", "rewrite", "raise_severity", "lower_severity", "repo_specific", "never_flag"]
+    },
+    "replacement_text": { "type": "string" },
+    "reason": { "type": "string" },
+    "actor": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

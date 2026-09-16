@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/QuintinBotes/review-voice/schemas/finding-category.schema.json",
+  "title": "FindingCategory",
+  "enum": [
+    "correctness", "security", "trust_boundary", "authorization",
+    "authentication", "data_integrity", "persistence", "concurrency",
+    "error_handling", "performance", "reliability", "observability",
+    "ci", "release", "packaging", "dependency", "migration",
+    "api_contract", "user_visible_behavior", "test_coverage",
+    "maintainability", "style"
+  ]
+}
