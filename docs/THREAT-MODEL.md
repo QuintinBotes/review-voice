@@ -95,12 +95,31 @@ change activates without passing the regression suite.
 execute directly since it is committed pre-built.
 
 **Mitigations.** CI rebuilds the bundle from source and fails on any difference,
-so the artifact cannot diverge from reviewable source. Branch protection and
-required review on `main`. Releases are tagged and signed.
+so the artifact cannot diverge from reviewable source. `main` is protected: no
+direct pushes, no force pushes, no deletion, and `ci-green` must pass before a
+merge. The release workflow refuses to publish a tag whose commit is not an
+ancestor of `main`, so a tag cannot smuggle in unreviewed code.
 
 **Residual risk.** A committed build artifact is inherently more attack-surface
 than a build step. The alternative — requiring `npm install` — was judged worse
 for users; see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+### 7. A compromised GitHub Action or npm dependency
+
+**Attack.** A third-party action or build dependency is compromised upstream and
+executes in CI, where it can read tokens and alter the committed bundle.
+
+**Mitigations.** Every action is pinned to a full commit SHA — a tag can be
+moved by whoever controls the action's repository, a SHA cannot — and
+`npm run check:pins` fails the build if a pin regresses to a tag. Workflows
+start from `permissions: {}` and opt into the minimum per job. Checkout uses
+`persist-credentials: false`, so the workflow token is not left on disk for
+later steps. Jobs holding secrets never run fork code. `npm ci` installs from a
+committed lockfile. Dependabot and CodeQL run continuously.
+
+**Residual risk.** A dependency compromised *before* a SHA was pinned, or a
+malicious release of a legitimately updated dependency, still executes. The
+bundle-drift check limits what it can change without detection.
 
 ## Explicitly out of scope
 
