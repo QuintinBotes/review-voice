@@ -25,7 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Architecture decision records closing the eight open decisions from the
   specification, all approved 2026-09-16.
 - Branch and tag protection on `main` and `review-voice--v*`, required SSH
-  commit signatures, and the repository security posture documented in
+  commit signatures, GitHub secret scanning with push protection, private
+  vulnerability reporting, and the repository security posture documented in
   `docs/REPO-SECURITY.md`.
 
 [Unreleased]: https://github.com/QuintinBotes/review-voice/commits/main
