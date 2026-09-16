@@ -13,14 +13,21 @@ import { pluginVersion } from './version.ts';
 import { runDoctor } from './doctor.ts';
 import { validateOutput } from './contract/validate.ts';
 import { DEFAULT_LIMITS, type ContractLimits } from './contract/limits.ts';
+import { acquireDiff, GitError } from './diff/acquire.ts';
 
 const USAGE = `review-voice <command>
 
 Commands:
+  diff              Acquire the diff under review as structured JSON
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
   --version         Print the plugin version
   --help            Show this message
+
+diff flags:
+  --base <ref>           Review against a base ref (e.g. origin/main)
+  --staged               Review staged changes only
+  --include-generated    Include lock files, generated, vendored and binary files
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -89,6 +96,35 @@ function validateOutputCommand(argv: string[]): number {
   return 1;
 }
 
+function diffCommand(argv: string[]): number {
+  const baseIndex = argv.indexOf('--base');
+  const base = baseIndex === -1 ? null : (argv[baseIndex + 1] ?? null);
+  if (baseIndex !== -1 && (base === null || base.startsWith('--'))) {
+    console.error('--base needs a git ref, for example: --base origin/main');
+    return 2;
+  }
+
+  try {
+    const result = acquireDiff({
+      cwd: process.cwd(),
+      staged: argv.includes('--staged'),
+      base,
+      includeGenerated: argv.includes('--include-generated'),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    // An empty diff is a valid answer, not an error: the caller should say so
+    // rather than invent something to review.
+    return 0;
+  } catch (error) {
+    if (error instanceof GitError) {
+      console.error(error.message);
+      console.error('Run this inside a git repository.');
+      return 2;
+    }
+    throw error;
+  }
+}
+
 function main(argv: string[]): number {
   const command = argv[0];
 
@@ -104,6 +140,9 @@ function main(argv: string[]): number {
     case '-v':
       console.log(pluginVersion());
       return 0;
+
+    case 'diff':
+      return diffCommand(argv.slice(1));
 
     case 'validate-output':
       return validateOutputCommand(argv.slice(1));

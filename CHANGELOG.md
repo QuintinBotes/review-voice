@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `review-voice diff`: structured diff acquisition for the working tree,
+  the index (`--staged`) or a base ref (`--base`), with file classification,
+  language detection, explained exclusions and untracked-file support.
+- `commands/review.md` now drives the real pipeline: diff acquisition, the
+  candidate and verifier agents, ranking, the concise editor, and a hard
+  validation gate with a single retry.
 - `review-voice validate-output`: the hard gate enforcing the output contract —
   at most five findings, 40 words each, 180 words total, exact no-findings
   response, required format, no hedging, no duplicate locations, no greetings
