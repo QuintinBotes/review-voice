@@ -210,10 +210,21 @@ original text never exists anywhere a caller could persist it by accident. The
 schema reinforces that: there is no column for unredacted text, and a test
 asserts there is not.
 
+Three sources are collected: inline review comments, submitted review
+summaries, and — behind a flag — pull-request conversation comments. Measured
+against a real repository, review summaries outnumbered inline comments
+roughly two to one and some pull requests had no inline comments at all, so
+collecting only inline comments captured a minority of the evidence.
+
 Eligibility asks "does this carry review judgement", not "is this a comment". A
 corpus padded with LGTMs and pull-request checklists teaches nothing while
 making every retrieval noisier. Bot output is excluded outright — it would
 teach the reviewer to sound like a linter.
+
+Template detection measures the *proportion* of structural lines rather than
+the presence of one. The earlier rule discarded fourteen review summaries with
+a median length of 2,400 characters and structure ratios between 0.18 and 0.30
+— substantive reviews that happened to contain a checklist.
 
 Identity is content plus location, not the GitHub comment id. A rebase
 resurfaces the same comment under a new id, and the same words at a different

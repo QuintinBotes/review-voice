@@ -66,9 +66,10 @@ feedback usage:
   actions: ${FEEDBACK_ACTIONS.join(', ')} (hyphens accepted)
 
 sync flags:
-  --target <n>        Eligible events to import (default 250)
-  --max-pulls <n>     Pull requests inspected per repository (default 60)
-  --dry-run           Report what would be imported without storing anything
+  --target <n>              Eligible events to import (default 250)
+  --max-pulls <n>           Pull requests inspected per repository (default 60)
+  --include-conversation    Also read pull-request conversation comments
+  --dry-run                 Report what would be imported without storing anything
 
 purge flags (one required):
   --repo <owner/repo>   Remove one repository's events
@@ -305,6 +306,7 @@ async function syncCommand(argv: string[]): Promise<number> {
   const stats: CollectionStats = {
     pullRequestsScanned: 0,
     commentsSeen: 0,
+    bySource: { inline: 0, reviewSummary: 0, conversation: 0 },
     eligible: 0,
     duplicates: 0,
     excluded: {},
@@ -320,6 +322,7 @@ async function syncCommand(argv: string[]): Promise<number> {
         maxPullRequests: maxPulls,
         maxCommentsPerPull: 200,
         includeForks: false,
+        includeConversationComments: argv.includes('--include-conversation'),
       },
       stats,
     );

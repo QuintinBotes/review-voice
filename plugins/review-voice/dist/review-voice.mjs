@@ -7591,13 +7591,21 @@ function classifyReviewer(input) {
 
 // plugins/review-voice/src/corpus/eligibility.ts
 var APPROVAL_ONLY = /^\s*(lgtm|looks good(?: to me)?|ship it|👍|🚀|\+1|nice|thanks|ty|done|ack|acknowledged|sgtm|✅)[\s.!]*$/i;
-var TEMPLATE_OR_STATUS = [
-  /^\s*#{1,3}\s*(description|checklist|type of change|how has this been tested)/im,
-  /^\s*-\s*\[[ x]\]\s/m,
+var AUTOMATION_STATUS = [
   /\bcodecov\b.*\breport\b/i,
   /\bdeploy(ed|ment) (preview|succeeded|failed)\b/i,
   /\bbuild (succeeded|failed)\b/i
 ];
+var STRUCTURE_LINE = /^\s*(?:-\s*\[[ x]\]\s|#{1,3}\s|\|.*\||-{3,}\s*$)/i;
+var TEMPLATE_HEADING = /^\s*#{1,3}\s*(description|checklist|type of change|how has this been tested)/im;
+function isTemplate(body) {
+  const lines = body.split("\n").filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return true;
+  const structural = lines.filter((line) => STRUCTURE_LINE.test(line)).length;
+  const structureRatio = structural / lines.length;
+  if (TEMPLATE_HEADING.test(body) && structureRatio >= 0.4) return true;
+  return structureRatio >= 0.6;
+}
 var GENERATED_PATH = [
   /(^|\/)(dist|build|out|coverage|node_modules|vendor|third_party)\//,
   /\.min\.(js|css)$/,
@@ -7610,7 +7618,8 @@ function ineligibleReason(input) {
   if (body.length === 0) return "too_short";
   if (APPROVAL_ONLY.test(body)) return "approval_only";
   if (body.length < 15) return "too_short";
-  if (TEMPLATE_OR_STATUS.some((pattern) => pattern.test(body))) return "template_or_status";
+  if (AUTOMATION_STATUS.some((pattern) => pattern.test(body))) return "template_or_status";
+  if (isTemplate(body)) return "template_or_status";
   const filePath = input.filePath;
   if (filePath !== void 0 && GENERATED_PATH.some((pattern) => pattern.test(filePath))) {
     return "generated_file";
@@ -7650,56 +7659,53 @@ async function collectRepository(client, options, stats) {
       `/repos/${options.repository}/pulls/${pull.number}/comments?per_page=100`,
       options.maxCommentsPerPull
     );
-    for (const comment of comments) {
+    const ingest = (raw) => {
       stats.commentsSeen += 1;
-      const login = comment.user?.login;
-      const body = comment.body ?? "";
-      if (login === void 0 || body.length === 0) continue;
+      if (raw.login === void 0 || raw.body.length === 0) return;
       const role = classifyReviewer({
-        login,
-        accountType: comment.user?.type,
+        login: raw.login,
+        accountType: raw.accountType,
         ownerLogin: options.ownerLogin,
         teamLogins: options.teamLogins,
-        authorAssociation: comment.author_association
+        authorAssociation: raw.association
       });
-      const line = comment.line ?? comment.original_line ?? void 0;
       const reason = ineligibleReason({
-        body,
+        body: raw.body,
         role,
-        filePath: comment.path,
-        hasCodeContext: (comment.diff_hunk ?? "").length > 0
+        filePath: raw.filePath,
+        hasCodeContext: (raw.diffHunk ?? "").length > 0
       });
       if (reason !== null) {
         stats.excluded[reason] = (stats.excluded[reason] ?? 0) + 1;
-        continue;
+        return;
       }
       const key = contentKey({
         repository: options.repository,
-        reviewerLogin: login,
-        body,
-        filePath: comment.path,
-        lineStart: line
+        reviewerLogin: raw.login,
+        body: raw.body,
+        filePath: raw.filePath,
+        lineStart: raw.line
       });
       if (seenKeys.has(key)) {
         stats.duplicates += 1;
-        continue;
+        return;
       }
       seenKeys.add(key);
-      const redactedBody = redact(body);
-      const redactedHunk = comment.diff_hunk === void 0 ? void 0 : redact(comment.diff_hunk);
+      const redactedBody = redact(raw.body);
+      const redactedHunk = raw.diffHunk === void 0 ? void 0 : redact(raw.diffHunk);
       events.push({
-        eventId: `gh_${comment.id}`,
+        eventId: `${raw.idPrefix}${raw.id}`,
         source: "github",
         repository: options.repository,
         pullNumber: pull.number,
         pullRequestUrl: pull.html_url,
-        commentId: String(comment.id),
-        reviewerLogin: login,
+        commentId: String(raw.id),
+        reviewerLogin: raw.login,
         role,
-        createdAt: comment.created_at ?? pull.updated_at,
+        createdAt: raw.createdAt ?? pull.updated_at,
         bodyRedacted: redactedBody.text,
-        filePath: comment.path,
-        lineStart: line,
+        filePath: raw.filePath,
+        lineStart: raw.line,
         diffHunkRedacted: redactedHunk?.text,
         contentKey: key,
         redactionVersion: REDACTION_VERSION,
@@ -7709,6 +7715,57 @@ async function collectRepository(client, options, stats) {
         }
       });
       stats.eligible += 1;
+    };
+    for (const comment of comments) {
+      stats.bySource.inline += 1;
+      ingest({
+        id: comment.id,
+        body: comment.body ?? "",
+        login: comment.user?.login,
+        accountType: comment.user?.type,
+        association: comment.author_association,
+        createdAt: comment.created_at,
+        filePath: comment.path,
+        line: comment.line ?? comment.original_line ?? void 0,
+        diffHunk: comment.diff_hunk,
+        idPrefix: "ghc_"
+      });
+    }
+    const reviews = await client.paginate(
+      `/repos/${options.repository}/pulls/${pull.number}/reviews?per_page=100`,
+      options.maxCommentsPerPull
+    );
+    for (const review of reviews) {
+      const body = review.body ?? "";
+      if (body.length === 0) continue;
+      stats.bySource.reviewSummary += 1;
+      ingest({
+        id: review.id,
+        body,
+        login: review.user?.login,
+        accountType: review.user?.type,
+        association: review.author_association,
+        createdAt: review.submitted_at,
+        idPrefix: "ghr_"
+      });
+    }
+    if (options.includeConversationComments) {
+      const conversation = await client.paginate(
+        `/repos/${options.repository}/issues/${pull.number}/comments?per_page=100`,
+        options.maxCommentsPerPull
+      );
+      for (const comment of conversation) {
+        stats.bySource.conversation += 1;
+        ingest({
+          id: comment.id,
+          body: comment.body ?? "",
+          login: comment.user?.login,
+          accountType: comment.user?.type,
+          association: comment.author_association,
+          createdAt: comment.created_at,
+          idPrefix: "ghi_"
+        });
+      }
     }
   }
   return events;
@@ -7935,9 +7992,10 @@ feedback usage:
   actions: ${FEEDBACK_ACTIONS.join(", ")} (hyphens accepted)
 
 sync flags:
-  --target <n>        Eligible events to import (default 250)
-  --max-pulls <n>     Pull requests inspected per repository (default 60)
-  --dry-run           Report what would be imported without storing anything
+  --target <n>              Eligible events to import (default 250)
+  --max-pulls <n>           Pull requests inspected per repository (default 60)
+  --include-conversation    Also read pull-request conversation comments
+  --dry-run                 Report what would be imported without storing anything
 
 purge flags (one required):
   --repo <owner/repo>   Remove one repository's events
@@ -8139,6 +8197,7 @@ async function syncCommand(argv) {
   const stats = {
     pullRequestsScanned: 0,
     commentsSeen: 0,
+    bySource: { inline: 0, reviewSummary: 0, conversation: 0 },
     eligible: 0,
     duplicates: 0,
     excluded: {}
@@ -8152,7 +8211,8 @@ async function syncCommand(argv) {
         ownerLogin: config.ownerReviewer,
         maxPullRequests: maxPulls,
         maxCommentsPerPull: 200,
-        includeForks: false
+        includeForks: false,
+        includeConversationComments: argv.includes("--include-conversation")
       },
       stats
     );
