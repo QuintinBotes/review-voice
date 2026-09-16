@@ -3,11 +3,15 @@ description: Show corpus coverage, policy versions, retention, and pending propo
 allowed-tools: Bash(node:*), Read
 ---
 
-<!-- Status: scaffold. M1 reports local state; M2 adds corpus coverage. -->
-
 # Review Voice status
 
-Run `${CLAUDE_PLUGIN_ROOT}/dist/review-voice.mjs status` and report:
+Run `node "${CLAUDE_PLUGIN_ROOT}/dist/review-voice.mjs" status` and show its
+output. It reports the data directory, review runs, audit events, feedback
+totals, owner precision, and the finding ids of the last review.
+
+<!-- Corpus coverage, policy versions and retention arrive with M2. -->
+
+Once GitHub ingestion lands this will also report:
 
 - Allowlisted repositories.
 - Corpus event counts by repository and reviewer role.
