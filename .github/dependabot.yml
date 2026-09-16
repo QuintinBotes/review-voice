@@ -10,10 +10,20 @@ updates:
     groups:
       dev-dependencies:
         patterns: ["*"]
+    ignore:
+      # @types/node must describe the OLDEST Node we support, not the newest.
+      # Typing against Node 26 while the engines floor is 22 lets code compile
+      # that does not exist at runtime on a supported version.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: monthly
+      interval: weekly
+    open-pull-requests-limit: 5
     commit-message:
       prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
