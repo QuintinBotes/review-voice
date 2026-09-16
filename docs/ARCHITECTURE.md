@@ -113,6 +113,26 @@ properties the specification asks to hold 100% of the time.
 Exit codes distinguish a failed review (1) from a bad invocation (2), so a
 caller never mistakes a broken pipeline for a non-compliant one.
 
+### Weighting
+
+Evidence weight is base × recency × specificity × context.
+
+Dismissals are negative and at least as strong as keeps: being told not to say
+something is a clearer instruction than being told a comment was fine, and
+suppression should be easier to learn than propensity.
+
+The owner multiplier applies to magnitude, so a dismissal is amplified exactly
+as much as a keep. Amplifying only the positives would make the reviewer
+progressively louder — which is the failure mode this product exists to avoid.
+
+An owner comment whose outcome is unknown still carries real weight. It is
+owner judgement; the fact that nobody recorded what happened next does not
+unmake it.
+
+Retrieval indexes redacted text only, and triggers keep the index in step with
+the corpus — an index left behind after a purge would keep surfacing evidence
+the user deleted.
+
 ### Storage layout
 
 Outside the repository, in the platform data directory:

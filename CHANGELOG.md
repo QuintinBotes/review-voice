@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `review-voice retrieve`: FTS5 lexical precedent retrieval with owner-weighted
+  scoring, 180-day recency decay, specificity and context weighting, and
+  separate caps for positive and negative precedents. The index is kept in step
+  with the corpus by triggers, so purged events stop being retrievable.
 - Consent flow: `review-voice discover` lists reachable repositories without
   reading any history, and `consent-plan` states exactly what a sync would
   read, where it is stored and what is discarded, before anything is read.
