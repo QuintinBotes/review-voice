@@ -22,6 +22,7 @@ import { loadConfig } from './policy/load.ts';
 import { resolvePolicy } from './policy/schema.ts';
 import { repositoryRoot } from './diff/acquire.ts';
 import { collectEvidence } from './evidence/run.ts';
+import { redact } from './redact/redact.ts';
 
 const USAGE = `review-voice <command>
 
@@ -29,6 +30,7 @@ Commands:
   diff              Acquire the diff under review as structured JSON
   context           Resolve config and the active policy stack as JSON
   evidence          Run the configured static checks and emit structured signals
+  redact            Redact secrets from stdin (used before anything is stored)
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -188,6 +190,16 @@ function contextCommand(): number {
   }
 }
 
+function redactCommand(argv: string[]): number {
+  const result = redact(readStdin());
+  if (argv.includes('--json')) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    process.stdout.write(result.text);
+  }
+  return 0;
+}
+
 function evidenceCommand(): number {
   try {
     const root = repositoryRoot(process.cwd());
@@ -328,6 +340,9 @@ function main(argv: string[]): number {
 
     case 'context':
       return contextCommand();
+
+    case 'redact':
+      return redactCommand(argv.slice(1));
 
     case 'evidence':
       return evidenceCommand();

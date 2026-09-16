@@ -1,0 +1,25 @@
+# gitleaks configuration for Review Voice.
+#
+# Extends the default rules; this file only adds narrowly scoped exceptions.
+[extend]
+useDefault = true
+
+[allowlist]
+description = """
+The redaction test suite must contain credential-shaped strings to be worth
+anything — a redaction function is only proven by feeding it something that
+looks like a secret. Those fixtures are synthetic and assembled from fragments
+at runtime, so no literal reaches the working tree, but branch history from
+before that change still does and gitleaks scans history.
+
+This exception is scoped to one path and one kind of material. A real
+credential in any other file, or any other kind of credential in this one, is
+still a failure. GitHub push protection and the identity guard also cover this
+file independently.
+"""
+paths = ['''^test/redact\.test\.mjs$''']
+regexes = [
+  # The fake key body used in that suite, and nothing else.
+  '''MIIEowIBAAKCAQEAx3Fake0NotReal1Material2Here3ForTests4Only5AAAA''',
+  '''ZZZZfakekeymaterialfortestingpurposesonlyandnotavalidkeyatall==''',
+]

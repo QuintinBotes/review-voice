@@ -1,11 +1,17 @@
 name: Scorecard
 
-# OSSF Scorecard grades this repository's supply-chain posture and publishes
-# the result to the security tab. Most of what it measures is already in place
-# — pinned actions, signed commits, branch protection, CodeQL, Dependabot — so
-# this mainly makes that visible to anyone deciding whether to trust the
-# plugin, which matters more than usual for a project shipping a pre-built
-# executable bundle.
+# OSSF Scorecard grades this repository's supply-chain posture.
+#
+# Results are kept as a build artifact rather than uploaded to code scanning.
+# Three of Scorecard's high-severity checks — Code-Review, Maintained and
+# Branch-Protection — cannot be satisfied by a single-maintainer repository,
+# and as code-scanning alerts they blocked every pull request from merging.
+# A permanent blocker that nobody can clear trains people to dismiss alerts by
+# reflex, which costs more than the visibility was worth. The findings that
+# CAN be acted on still appear in the job output.
+#
+# Revisit the upload when there is a second maintainer; see
+# docs/REPO-SECURITY.md.
 on:
   branch_protection_rule:
   schedule:
@@ -21,8 +27,6 @@ jobs:
     name: scorecard
     runs-on: ubuntu-latest
     permissions:
-      # Needed to upload the result to the code-scanning dashboard.
-      security-events: write
       # Needed by the action to read branch protection and workflow settings.
       id-token: write
       contents: read
@@ -40,6 +44,25 @@ jobs:
           # broader scope; the security tab is enough for this project.
           publish_results: false
 
-      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+      - name: Summarise findings
+        if: always()
+        run: |
+          echo '## OSSF Scorecard' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          with open('results.sarif') as handle:
+              sarif = json.load(handle)
+          results = sarif['runs'][0].get('results', [])
+          if not results:
+              print('No findings.')
+          for result in results:
+              print(f"- **{result.get('ruleId')}** — {result.get('message', {}).get('text', '').strip()}")
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
         with:
-          sarif_file: results.sarif
+          name: scorecard-results
+          path: results.sarif
+          if-no-files-found: warn

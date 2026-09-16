@@ -27,6 +27,11 @@ private keys, PEM blocks, password-like assignments, JWTs, cloud provider
 credentials, GitHub tokens, registry tokens, and database URLs containing
 credentials.
 
+**The original text is never written to disk.** Redaction happens at the
+download boundary and only its output survives, so there is no window in which
+unredacted review text sits in the store. Content hashes taken before and after
+make a redaction auditable without retaining what was removed.
+
 **This will not catch every secret.** Pattern-based redaction cannot recognise a
 credential that does not look like one. Treat it as a second line of defence
 behind not committing secrets in the first place — never as permission to run
