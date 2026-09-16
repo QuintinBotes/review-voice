@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `review-voice validate-output`: the hard gate enforcing the output contract —
+  at most five findings, 40 words each, 180 words total, exact no-findings
+  response, required format, no hedging, no duplicate locations, no greetings
+  or summaries. Reports all violations in one pass to drive a single retry.
 - Repository skeleton: marketplace manifest, plugin manifest, command and agent
   definitions, JSON schemas, baseline policy, configuration templates.
 - Bundled zero-dependency CLI with `doctor`, `--version` and `--help`.

@@ -71,6 +71,30 @@ The tradeoff is real: lexical retrieval misses paraphrases. An
 evaluation harness shows precedent recall is the binding constraint. See
 [adr/0001-embedding-implementation.md](adr/0001-embedding-implementation.md).
 
+### The output validator
+
+`review-voice validate-output` reads a rendered review on stdin and exits
+non-zero with a structured list of violations. It validates what the user will
+actually see, not an intermediate structure, because that is the artifact the
+contract is about.
+
+It reports **every** violation in one pass. The validator exists to drive a
+retry, and an editor that fixes one problem only to be rejected for the next
+burns a round trip per fix.
+
+Word counting measures the prose after the separator. The severity tag and the
+`path:line` location are excluded because the editor cannot shorten them, and
+counting them would give a finding in a deeply nested directory a smaller
+explanation budget than one at the repository root — punishing the finding
+rather than the writing.
+
+The no-findings case is compared exactly. Accepting near-misses would make the
+"silence is meaningful" guarantee unmeasurable, and it is one of the two
+properties the specification asks to hold 100% of the time.
+
+Exit codes distinguish a failed review (1) from a bad invocation (2), so a
+caller never mistakes a broken pipeline for a non-compliant one.
+
 ### Storage layout
 
 Outside the repository, in the platform data directory:
