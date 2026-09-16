@@ -1,0 +1,9 @@
+name: ci-gate
+asserts: >
+  A publish job that can run after a skipped verification job is flagged as a
+  release-gating failure.
+expect:
+  min_findings: 1
+  severity: important
+  path: .github/workflows/release.yml
+  category: release

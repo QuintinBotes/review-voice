@@ -8,7 +8,11 @@ exercise judgment, so they cost tokens — CI runs them nightly and on the
 claude plugin eval plugins/review-voice --eval-dir evals
 ```
 
-Each case is a directory with `case.yaml` (or `prompt.md` plus `graders/*.md`).
+Each case is a directory with `case.yaml` and one or more grader files.
+
+Current suites: `restraint/` and `injection/`. They are the two that cannot be
+unit-tested, because both are about what a model chooses to do when nothing
+forces its hand.
 
 ## What is worth evaluating
 
