@@ -23,8 +23,13 @@ const FORBIDDEN = [
     why: 'hardcoded owner_reviewer; use a placeholder such as your-github-login',
   },
   {
-    pattern: /\b[\w.+-]+@(?!users\.noreply\.github\.com|example\.(com|org)\b)[\w-]+\.[\w.]{2,}/g,
-    why: 'real email address; use a noreply or example.com address',
+    // RFC 2606 reserves example.com/net/org and the .example/.test/.invalid
+    // TLDs for documentation, including their subdomains — db.example.com is
+    // as reserved as example.com. GitHub noreply relays are addresses nobody
+    // reads, so they are fine too.
+    pattern:
+      /\b[\w.+-]+@(?![\w-]+\.)*(?!(?:[\w-]+\.)*(?:example\.(?:com|net|org)|users\.noreply\.github\.com)\b)(?:[\w-]+\.)+[a-z]{2,}\b/gi,
+    why: 'real email address; use an example.com or noreply address',
   },
 ];
 

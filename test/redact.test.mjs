@@ -67,10 +67,11 @@ test('private key blocks are removed whole', () => {
 });
 
 test('database credentials go but the surrounding context stays readable', () => {
-  const result = redact('Use postgres://appuser:hunter2hunter2@db.internal:5432/app here.');
+  // example.com hosts keep this out of the identity guard's real-address rule.
+  const result = redact('Use postgres://appuser:hunter2hunter2@db.example.com:5432/app here.');
   assert.ok(!result.text.includes('hunter2hunter2'));
   assert.ok(result.text.includes('postgres://'));
-  assert.ok(result.text.includes('db.internal'));
+  assert.ok(result.text.includes('db.example.com'));
   assert.ok(result.text.includes('appuser'));
 });
 
