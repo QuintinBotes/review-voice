@@ -101,6 +101,10 @@ Bug reports, false-positive reports and prompt-injection test cases are all
 genuinely useful — a false-positive report is the highest-value issue you can
 file. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
+`main` is protected and every change goes through a pull request with CI
+green — including the maintainer's. See
+[docs/REPO-SECURITY.md](docs/REPO-SECURITY.md).
+
 ## Licence
 
 [MIT](LICENSE).
