@@ -19,9 +19,9 @@
     "verify": "npm run typecheck && npm run test && npm run check:dist && npm run guard:identity"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "esbuild": "^0.25.0",
-    "typescript": "^5.7.0",
+    "@types/node": "^26.5.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
     "yaml": "^2.7.0"
   }
 }
