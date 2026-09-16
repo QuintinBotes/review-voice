@@ -14,11 +14,18 @@ import { runDoctor } from './doctor.ts';
 import { validateOutput } from './contract/validate.ts';
 import { DEFAULT_LIMITS, type ContractLimits } from './contract/limits.ts';
 import { acquireDiff, GitError } from './diff/acquire.ts';
+import { openDatabase } from './store/db.ts';
+import { databasePath, dataDirectory } from './store/paths.ts';
+import { recordRun, latestRun } from './store/runs.ts';
+import { recordFeedback, normaliseAction, feedbackTotals, FEEDBACK_ACTIONS } from './store/feedback.ts';
 
 const USAGE = `review-voice <command>
 
 Commands:
   diff              Acquire the diff under review as structured JSON
+  record            Store a validated review from stdin and assign finding ids
+  feedback          Record feedback on a finding
+  status            Show what is stored locally
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
   --version         Print the plugin version
@@ -28,6 +35,16 @@ diff flags:
   --base <ref>           Review against a base ref (e.g. origin/main)
   --staged               Review staged changes only
   --include-generated    Include lock files, generated, vendored and binary files
+
+record flags:
+  --repository <name>  Repository the review belongs to
+  --base <ref>         Base ref reviewed against
+  --head <sha>         Head commit reviewed
+  --diff-file <path>   Diff the review was produced from (for the run hash)
+
+feedback usage:
+  feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
+  actions: ${FEEDBACK_ACTIONS.join(', ')} (hyphens accepted)
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -125,6 +142,112 @@ function diffCommand(argv: string[]): number {
   }
 }
 
+function flag(argv: string[], name: string): string | null {
+  const index = argv.indexOf(name);
+  if (index === -1) return null;
+  const value = argv[index + 1];
+  return value === undefined || value.startsWith('--') ? null : value;
+}
+
+function recordCommand(argv: string[]): number {
+  const output = readStdin();
+  if (output.trim().length === 0) {
+    console.error('Nothing on stdin. Pipe the validated review in.');
+    return 2;
+  }
+
+  const diffFile = flag(argv, '--diff-file');
+  let diff = '';
+  if (diffFile !== null) {
+    try {
+      diff = readFileSync(diffFile, 'utf8');
+    } catch {
+      console.error(`Cannot read ${diffFile}.`);
+      return 2;
+    }
+  }
+
+  const db = openDatabase();
+  try {
+    const { reviewRunId, findings } = recordRun(db, {
+      repository: flag(argv, '--repository'),
+      baseRef: flag(argv, '--base'),
+      headRef: flag(argv, '--head'),
+      diff,
+      output,
+    });
+    console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+function feedbackCommand(argv: string[]): number {
+  const [findingRef, actionRaw] = argv;
+  if (findingRef === undefined || actionRaw === undefined) {
+    console.error('Usage: feedback <rv_NN> <action>');
+    return 2;
+  }
+
+  const action = normaliseAction(actionRaw);
+  if (action === null) {
+    console.error(`Unknown action "${actionRaw}". Expected one of: ${FEEDBACK_ACTIONS.join(', ')}.`);
+    return 2;
+  }
+
+  const db = openDatabase();
+  try {
+    const result = recordFeedback(db, {
+      findingRef,
+      action,
+      reason: flag(argv, '--reason') ?? undefined,
+      replacementText: flag(argv, '--replacement') ?? undefined,
+      actor: 'owner',
+    });
+    if (!result.ok) {
+      console.error(result.error);
+      return 1;
+    }
+    console.log(`Recorded ${action} for ${result.findingId}.`);
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+function statusCommand(): number {
+  const db = openDatabase();
+  try {
+    const runs = (db.prepare('SELECT COUNT(*) AS n FROM review_runs').get() as { n: number }).n;
+    const audits = (db.prepare('SELECT COUNT(*) AS n FROM audit_events').get() as { n: number }).n;
+    const totals = feedbackTotals(db);
+    const last = latestRun(db);
+
+    console.log(`data directory   ${dataDirectory()}`);
+    console.log(`database         ${databasePath()}`);
+    console.log(`review runs      ${runs}`);
+    console.log(`audit events     ${audits}`);
+    console.log(
+      `feedback         ${totals.kept} kept, ${totals.rewritten} rewritten, ${totals.dismissed} dismissed` +
+        (totals.other > 0 ? `, ${totals.other} other` : ''),
+    );
+    console.log(
+      `owner precision  ${
+        totals.ownerPrecision === null
+          ? 'not yet measurable (no explicit feedback)'
+          : `${(totals.ownerPrecision * 100).toFixed(0)}% of labelled findings`
+      }`,
+    );
+    if (last !== null) {
+      console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(', ') || 'none'}`);
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 function main(argv: string[]): number {
   const command = argv[0];
 
@@ -143,6 +266,15 @@ function main(argv: string[]): number {
 
     case 'diff':
       return diffCommand(argv.slice(1));
+
+    case 'record':
+      return recordCommand(argv.slice(1));
+
+    case 'feedback':
+      return feedbackCommand(argv.slice(1));
+
+    case 'status':
+      return statusCommand();
 
     case 'validate-output':
       return validateOutputCommand(argv.slice(1));
