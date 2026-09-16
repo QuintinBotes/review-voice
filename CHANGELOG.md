@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `review-voice context`: resolves `.review-voice/config.yaml`, the policy
+  layer stack and opt-in static-evidence commands. A narrower layer may tighten
+  a limit but never loosen it, and a committed `.review-voice/policy.yaml` is
+  surfaced as a proposal requiring approval rather than applied.
 - Local SQLite store under the platform data directory, with schema
   migrations, `0700`/`0600` permissions and an append-only audit trail.
 - `review-voice record`, `feedback` and `status`: review runs are stored with
