@@ -20,11 +20,23 @@ which is the point — a protection the owner can walk past protects nothing.
 | Linear history, squash only | One reviewed commit per change |
 | Force push blocked | History cannot be rewritten |
 | Deletion blocked | The branch cannot be removed |
+| Signatures required | Every commit is signed and attributable |
 
 Approvals required is **0**, because a solo maintainer cannot approve their own
 pull request and a rule nobody can satisfy is a rule that gets deleted. Every
 other gate still applies. Raise this to 1 the moment there is a second
 maintainer.
+
+### Commits are signed
+
+Every commit on `main` is SSH-signed and verified by GitHub. This matters more
+here than in most repositories: `dist/review-voice.mjs` is committed and
+executed directly by users, so being able to prove who produced each commit is
+part of the chain that makes the bundle trustworthy.
+
+Commits are authored as `10558024+QuintinBotes@users.noreply.github.com` rather
+than a real address. Attribution to the GitHub account is unaffected and no
+inbox is published in a repository that will be public and scrapeable.
 
 ### Release tags are protected
 
@@ -76,7 +88,6 @@ reviewable source.
 | GitHub secret scanning and push protection | Repository being public | Not available on a private repository without Advanced Security. gitleaks covers the gap. Enable at launch. |
 | Private vulnerability reporting | Repository being public | `SECURITY.md` already points at the advisory form; the link becomes usable to outside reporters at launch. |
 | OSSF Scorecard | Repository being public | Results need a public repository to publish. |
-| Signed commits and tags | A signing key | No signing key is configured, and requiring signatures before one exists would lock the maintainer out. Set up SSH commit signing, then add a `required_signatures` rule. |
 | Required approvals ≥ 1 | A second maintainer | See above. |
 
 ## Launch checklist
@@ -86,6 +97,5 @@ When the repository goes public at v1.0.0:
 1. Enable secret scanning and push protection.
 2. Enable private vulnerability reporting.
 3. Add the OSSF Scorecard workflow.
-4. Set up commit signing and add a `required_signatures` rule.
-5. Re-read `SECURITY.md` against what the code actually does — every claim in it
+4. Re-read `SECURITY.md` against what the code actually does — every claim in it
    becomes a public promise on that day.
