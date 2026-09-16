@@ -20,14 +20,38 @@ export type Ineligible =
 const APPROVAL_ONLY =
   /^\s*(lgtm|looks good(?: to me)?|ship it|👍|🚀|\+1|nice|thanks|ty|done|ack|acknowledged|sgtm|✅)[\s.!]*$/i;
 
-/** Checklists and automation status posts are not review judgement. */
-const TEMPLATE_OR_STATUS = [
-  /^\s*#{1,3}\s*(description|checklist|type of change|how has this been tested)/im,
-  /^\s*-\s*\[[ x]\]\s/m,
+/** Automation status posts, which carry no judgement whatever their length. */
+const AUTOMATION_STATUS = [
   /\bcodecov\b.*\breport\b/i,
   /\bdeploy(ed|ment) (preview|succeeded|failed)\b/i,
   /\bbuild (succeeded|failed)\b/i,
 ];
+
+const STRUCTURE_LINE = /^\s*(?:-\s*\[[ x]\]\s|#{1,3}\s|\|.*\||-{3,}\s*$)/i;
+const TEMPLATE_HEADING =
+  /^\s*#{1,3}\s*(description|checklist|type of change|how has this been tested)/im;
+
+/**
+ * A pull-request template is mostly structure. A review that happens to
+ * include a checklist is not.
+ *
+ * Measured against a real repository, the earlier rule — exclude anything
+ * containing a checkbox — discarded fourteen review summaries with a median
+ * length of 2,400 characters. Those are substantive reviews with a checklist
+ * in them, and throwing them away was losing most of the corpus.
+ */
+function isTemplate(body: string): boolean {
+  const lines = body.split('\n').filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return true;
+
+  const structural = lines.filter((line) => STRUCTURE_LINE.test(line)).length;
+  const structureRatio = structural / lines.length;
+
+  // A template opens with its heading and is dominated by structure. Prose
+  // that merely contains a checklist is not.
+  if (TEMPLATE_HEADING.test(body) && structureRatio >= 0.4) return true;
+  return structureRatio >= 0.6;
+}
 
 const GENERATED_PATH = [
   /(^|\/)(dist|build|out|coverage|node_modules|vendor|third_party)\//,
@@ -55,7 +79,8 @@ export function ineligibleReason(input: EligibilityInput): Ineligible | null {
   if (APPROVAL_ONLY.test(body)) return 'approval_only';
   // Below roughly a sentence there is no failure mode to extract.
   if (body.length < 15) return 'too_short';
-  if (TEMPLATE_OR_STATUS.some((pattern) => pattern.test(body))) return 'template_or_status';
+  if (AUTOMATION_STATUS.some((pattern) => pattern.test(body))) return 'template_or_status';
+  if (isTemplate(body)) return 'template_or_status';
 
   const filePath = input.filePath;
   if (filePath !== undefined && GENERATED_PATH.some((pattern) => pattern.test(filePath))) {

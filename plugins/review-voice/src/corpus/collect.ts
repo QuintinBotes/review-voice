@@ -27,6 +27,8 @@ export interface CollectedEvent {
 export interface CollectionStats {
   pullRequestsScanned: number;
   commentsSeen: number;
+  /** Broken down by source, because they are not equally informative. */
+  bySource: { inline: number; reviewSummary: number; conversation: number };
   eligible: number;
   duplicates: number;
   excluded: Record<string, number>;
@@ -61,6 +63,22 @@ export interface CollectOptions {
   maxPullRequests: number;
   maxCommentsPerPull: number;
   includeForks: boolean;
+  /**
+   * Pull-request conversation comments. Off by default: the thread is where
+   * scheduling, CI chatter and "rebased, ptal" live, and only sometimes
+   * review judgement.
+   */
+  includeConversationComments: boolean;
+}
+
+interface RawReview {
+  id: number;
+  body?: string;
+  user?: { login?: string; type?: string };
+  submitted_at?: string;
+  html_url?: string;
+  author_association?: string;
+  state?: string;
 }
 
 /**
@@ -92,65 +110,73 @@ export async function collectRepository(
       options.maxCommentsPerPull,
     );
 
-    for (const comment of comments) {
+    const ingest = (raw: {
+      id: number;
+      body: string;
+      login: string | undefined;
+      accountType: string | undefined;
+      association: string | undefined;
+      createdAt: string | undefined;
+      filePath?: string | undefined;
+      line?: number | undefined;
+      diffHunk?: string | undefined;
+      idPrefix: string;
+    }): void => {
       stats.commentsSeen += 1;
-
-      const login = comment.user?.login;
-      const body = comment.body ?? '';
-      if (login === undefined || body.length === 0) continue;
+      if (raw.login === undefined || raw.body.length === 0) return;
 
       const role = classifyReviewer({
-        login,
-        accountType: comment.user?.type,
+        login: raw.login,
+        accountType: raw.accountType,
         ownerLogin: options.ownerLogin,
         teamLogins: options.teamLogins,
-        authorAssociation: comment.author_association,
+        authorAssociation: raw.association,
       });
 
-      const line = comment.line ?? comment.original_line ?? undefined;
       const reason: Ineligible | null = ineligibleReason({
-        body,
+        body: raw.body,
         role,
-        filePath: comment.path,
-        hasCodeContext: (comment.diff_hunk ?? '').length > 0,
+        filePath: raw.filePath,
+        hasCodeContext: (raw.diffHunk ?? '').length > 0,
       });
 
       if (reason !== null) {
         stats.excluded[reason] = (stats.excluded[reason] ?? 0) + 1;
-        continue;
+        return;
       }
 
       const key = contentKey({
         repository: options.repository,
-        reviewerLogin: login,
-        body,
-        filePath: comment.path,
-        lineStart: line,
+        reviewerLogin: raw.login,
+        body: raw.body,
+        filePath: raw.filePath,
+        lineStart: raw.line,
       });
 
-      // Rebases and copied discussion resurface the same comment under a new id.
+      // Rebases and copied discussion resurface the same comment under a new
+      // id, and a review summary often repeats an inline comment verbatim.
       if (seenKeys.has(key)) {
         stats.duplicates += 1;
-        continue;
+        return;
       }
       seenKeys.add(key);
 
-      const redactedBody = redact(body);
-      const redactedHunk = comment.diff_hunk === undefined ? undefined : redact(comment.diff_hunk);
+      const redactedBody = redact(raw.body);
+      const redactedHunk = raw.diffHunk === undefined ? undefined : redact(raw.diffHunk);
 
       events.push({
-        eventId: `gh_${comment.id}`,
+        eventId: `${raw.idPrefix}${raw.id}`,
         source: 'github',
         repository: options.repository,
         pullNumber: pull.number,
         pullRequestUrl: pull.html_url,
-        commentId: String(comment.id),
-        reviewerLogin: login,
+        commentId: String(raw.id),
+        reviewerLogin: raw.login,
         role,
-        createdAt: comment.created_at ?? pull.updated_at,
+        createdAt: raw.createdAt ?? pull.updated_at,
         bodyRedacted: redactedBody.text,
-        filePath: comment.path,
-        lineStart: line,
+        filePath: raw.filePath,
+        lineStart: raw.line,
         diffHunkRedacted: redactedHunk?.text,
         contentKey: key,
         redactionVersion: REDACTION_VERSION,
@@ -160,6 +186,65 @@ export async function collectRepository(
         },
       });
       stats.eligible += 1;
+    };
+
+    for (const comment of comments) {
+      stats.bySource.inline += 1;
+      ingest({
+        id: comment.id,
+        body: comment.body ?? '',
+        login: comment.user?.login,
+        accountType: comment.user?.type,
+        association: comment.author_association,
+        createdAt: comment.created_at,
+        filePath: comment.path,
+        line: comment.line ?? comment.original_line ?? undefined,
+        diffHunk: comment.diff_hunk,
+        idPrefix: 'ghc_',
+      });
+    }
+
+    // Submitted review summaries. Measured against a real repository these
+    // outnumber inline comments roughly two to one, and some pull requests
+    // have no inline comments at all — collecting only inline comments was
+    // capturing a minority of the review evidence.
+    const reviews = await client.paginate<RawReview>(
+      `/repos/${options.repository}/pulls/${pull.number}/reviews?per_page=100`,
+      options.maxCommentsPerPull,
+    );
+
+    for (const review of reviews) {
+      const body = review.body ?? '';
+      if (body.length === 0) continue; // An approval with no words says nothing.
+      stats.bySource.reviewSummary += 1;
+      ingest({
+        id: review.id,
+        body,
+        login: review.user?.login,
+        accountType: review.user?.type,
+        association: review.author_association,
+        createdAt: review.submitted_at,
+        idPrefix: 'ghr_',
+      });
+    }
+
+    if (options.includeConversationComments) {
+      const conversation = await client.paginate<RawComment>(
+        `/repos/${options.repository}/issues/${pull.number}/comments?per_page=100`,
+        options.maxCommentsPerPull,
+      );
+      for (const comment of conversation) {
+        stats.bySource.conversation += 1;
+        ingest({
+          id: comment.id,
+          body: comment.body ?? '',
+          login: comment.user?.login,
+          accountType: comment.user?.type,
+          association: comment.author_association,
+          createdAt: comment.created_at,
+          idPrefix: 'ghi_',
+        });
+      }
     }
   }
 
