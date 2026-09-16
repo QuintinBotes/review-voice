@@ -125,6 +125,14 @@ audit/events.jsonl   append-only local audit log
 exports/             explicit exports only
 ```
 
+### Finding identifiers
+
+Ids are positional — `rv_01` is the first finding displayed — and are assigned
+when a review is recorded, not printed alongside the findings. The output
+contract permits no text beyond the findings themselves, and a visible id would
+spend characters the writing needs more. `review-voice status` lists the ids of
+the last review when someone needs them.
+
 ## Policy resolution
 
 ```

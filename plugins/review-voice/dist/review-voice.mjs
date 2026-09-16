@@ -49,8 +49,8 @@ function checkNode() {
 }
 function checkSqlite() {
   try {
-    const { DatabaseSync } = require2("node:sqlite");
-    const db = new DatabaseSync(":memory:");
+    const { DatabaseSync: DatabaseSync2 } = require2("node:sqlite");
+    const db = new DatabaseSync2(":memory:");
     db.exec("CREATE TABLE probe (id INTEGER PRIMARY KEY)");
     db.close();
     return { name: "node:sqlite", ok: true, detail: "available" };
@@ -524,11 +524,264 @@ function acquireDiff(options) {
   };
 }
 
+// plugins/review-voice/src/store/db.ts
+import { DatabaseSync } from "node:sqlite";
+import { mkdirSync, chmodSync } from "node:fs";
+import { dirname as dirname2 } from "node:path";
+
+// plugins/review-voice/src/store/paths.ts
+import { homedir } from "node:os";
+import { join as join2 } from "node:path";
+function dataDirectory(env = process.env) {
+  const override = env["REVIEW_VOICE_DATA_DIR"];
+  if (override !== void 0 && override.length > 0) return override;
+  const home = homedir();
+  switch (process.platform) {
+    case "darwin":
+      return join2(home, "Library", "Application Support", "review-voice");
+    case "win32": {
+      const appData = env["APPDATA"];
+      return appData !== void 0 && appData.length > 0 ? join2(appData, "review-voice") : join2(home, "AppData", "Roaming", "review-voice");
+    }
+    default: {
+      const xdg = env["XDG_DATA_HOME"];
+      return xdg !== void 0 && xdg.length > 0 ? join2(xdg, "review-voice") : join2(home, ".local", "share", "review-voice");
+    }
+  }
+}
+function databasePath(env) {
+  return join2(dataDirectory(env), "review-voice.db");
+}
+
+// plugins/review-voice/src/store/db.ts
+var MIGRATIONS = [
+  // v1 — review runs, explicit feedback, audit trail.
+  `
+  CREATE TABLE review_runs (
+    review_run_id TEXT PRIMARY KEY,
+    repository TEXT,
+    base_ref TEXT,
+    head_ref TEXT,
+    diff_hash TEXT NOT NULL,
+    active_policy_versions_json TEXT NOT NULL,
+    retrieved_precedents_json TEXT NOT NULL,
+    candidates_json TEXT NOT NULL,
+    output_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_review_runs_created ON review_runs (created_at DESC);
+
+  CREATE TABLE feedback (
+    feedback_id TEXT PRIMARY KEY,
+    review_run_id TEXT NOT NULL,
+    finding_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    replacement_text TEXT,
+    reason TEXT,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (review_run_id, finding_id, action)
+  );
+  CREATE INDEX idx_feedback_run ON feedback (review_run_id);
+
+  CREATE TABLE audit_events (
+    audit_id TEXT PRIMARY KEY,
+    action TEXT NOT NULL,
+    subject_type TEXT,
+    subject_id TEXT,
+    metadata_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_audit_created ON audit_events (created_at DESC);
+  `
+];
+function migrate(db) {
+  db.exec("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)");
+  const row = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
+  let current = row?.version ?? 0;
+  if (row === void 0) db.prepare("INSERT INTO schema_version (version) VALUES (0)").run();
+  while (current < MIGRATIONS.length) {
+    db.exec("BEGIN");
+    try {
+      db.exec(MIGRATIONS[current]);
+      current += 1;
+      db.prepare("UPDATE schema_version SET version = ?").run(current);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+}
+function openDatabase(path = databasePath()) {
+  const directory = dirname2(path);
+  mkdirSync(directory, { recursive: true, mode: 448 });
+  const db = new DatabaseSync(path);
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA foreign_keys = ON");
+  migrate(db);
+  try {
+    chmodSync(directory, 448);
+    chmodSync(path, 384);
+  } catch {
+  }
+  return db;
+}
+
+// plugins/review-voice/src/store/runs.ts
+import { randomUUID as randomUUID2, createHash } from "node:crypto";
+
+// plugins/review-voice/src/store/audit.ts
+import { randomUUID } from "node:crypto";
+function recordAudit(db, action, subject, metadata = {}) {
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO audit_events (audit_id, action, subject_type, subject_id, metadata_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(id, action, subject?.type ?? null, subject?.id ?? null, JSON.stringify(metadata), (/* @__PURE__ */ new Date()).toISOString());
+  return id;
+}
+
+// plugins/review-voice/src/store/runs.ts
+function assignIds(output) {
+  return splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null).map((finding, index) => ({
+    findingId: `rv_${String(index + 1).padStart(2, "0")}`,
+    severity: finding.severity,
+    path: finding.path,
+    line: finding.line ?? 0,
+    text: finding.raw
+  }));
+}
+function hashDiff(diff) {
+  return createHash("sha256").update(diff).digest("hex").slice(0, 32);
+}
+function recordRun(db, input) {
+  const reviewRunId = randomUUID2();
+  const findings = assignIds(input.output);
+  db.prepare(
+    `INSERT INTO review_runs (
+       review_run_id, repository, base_ref, head_ref, diff_hash,
+       active_policy_versions_json, retrieved_precedents_json,
+       candidates_json, output_json, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    reviewRunId,
+    input.repository,
+    input.baseRef,
+    input.headRef,
+    hashDiff(input.diff),
+    // Policy layering and precedent retrieval arrive in later milestones; the
+    // columns exist now so a run recorded today stays readable then.
+    JSON.stringify([]),
+    JSON.stringify([]),
+    JSON.stringify(input.candidates ?? []),
+    JSON.stringify({ output: input.output, findings }),
+    (/* @__PURE__ */ new Date()).toISOString()
+  );
+  recordAudit(db, "review_run_recorded", { type: "review_run", id: reviewRunId }, {
+    repository: input.repository,
+    findingCount: findings.length
+  });
+  return { reviewRunId, findings };
+}
+function latestRun(db) {
+  const row = db.prepare("SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC LIMIT 1").get();
+  if (row === void 0) return null;
+  const parsed = JSON.parse(row.output_json);
+  return { reviewRunId: row.review_run_id, findings: parsed.findings };
+}
+
+// plugins/review-voice/src/store/feedback.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+var FEEDBACK_ACTIONS = [
+  "keep",
+  "dismiss",
+  "rewrite",
+  "raise_severity",
+  "lower_severity",
+  "repo_specific",
+  "never_flag"
+];
+function normaliseAction(input) {
+  const candidate = input.trim().toLowerCase().replace(/-/g, "_");
+  return FEEDBACK_ACTIONS.includes(candidate) ? candidate : null;
+}
+function recordFeedback(db, input) {
+  const [left, right] = input.findingRef.includes(":") ? input.findingRef.split(":", 2) : [null, input.findingRef];
+  let reviewRunId;
+  let known;
+  if (left === null) {
+    const run = latestRun(db);
+    if (run === null) return { ok: false, error: "No review has been recorded yet." };
+    reviewRunId = run.reviewRunId;
+    known = run.findings.map((finding) => finding.findingId);
+  } else {
+    const row = db.prepare("SELECT review_run_id, output_json FROM review_runs WHERE review_run_id = ?").get(left);
+    if (row === void 0) return { ok: false, error: `No review run ${left}.` };
+    reviewRunId = row.review_run_id;
+    known = JSON.parse(row.output_json).findings.map(
+      (finding) => finding.findingId
+    );
+  }
+  const findingId = right.trim();
+  if (!known.includes(findingId)) {
+    return {
+      ok: false,
+      error: `No finding ${findingId} in that review. Available: ${known.join(", ") || "none"}.`
+    };
+  }
+  if (input.action === "rewrite" && (input.replacementText ?? "").trim().length === 0) {
+    return { ok: false, error: "A rewrite needs the replacement text." };
+  }
+  const feedbackId = randomUUID3();
+  db.prepare(
+    `INSERT INTO feedback (feedback_id, review_run_id, finding_id, action, replacement_text, reason, actor, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (review_run_id, finding_id, action) DO UPDATE SET
+       replacement_text = excluded.replacement_text,
+       reason = excluded.reason,
+       created_at = excluded.created_at`
+  ).run(
+    feedbackId,
+    reviewRunId,
+    findingId,
+    input.action,
+    input.replacementText ?? null,
+    input.reason ?? null,
+    input.actor,
+    (/* @__PURE__ */ new Date()).toISOString()
+  );
+  recordAudit(db, "feedback_recorded", { type: "finding", id: findingId }, {
+    reviewRunId,
+    action: input.action
+  });
+  return { ok: true, feedbackId, reviewRunId, findingId };
+}
+function feedbackTotals(db) {
+  const rows = db.prepare("SELECT action, COUNT(*) AS n FROM feedback GROUP BY action").all();
+  const by = Object.fromEntries(rows.map((row) => [row.action, row.n]));
+  const kept = by["keep"] ?? 0;
+  const rewritten = by["rewrite"] ?? 0;
+  const dismissed = by["dismiss"] ?? 0;
+  const other = rows.reduce((sum, row) => sum + row.n, 0) - kept - rewritten - dismissed;
+  const labelled = kept + rewritten + dismissed;
+  return {
+    kept,
+    rewritten,
+    dismissed,
+    other,
+    ownerPrecision: labelled === 0 ? null : (kept + rewritten) / labelled
+  };
+}
+
 // plugins/review-voice/src/cli.ts
 var USAGE = `review-voice <command>
 
 Commands:
   diff              Acquire the diff under review as structured JSON
+  record            Store a validated review from stdin and assign finding ids
+  feedback          Record feedback on a finding
+  status            Show what is stored locally
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
   --version         Print the plugin version
@@ -538,6 +791,16 @@ diff flags:
   --base <ref>           Review against a base ref (e.g. origin/main)
   --staged               Review staged changes only
   --include-generated    Include lock files, generated, vendored and binary files
+
+record flags:
+  --repository <name>  Repository the review belongs to
+  --base <ref>         Base ref reviewed against
+  --head <sha>         Head commit reviewed
+  --diff-file <path>   Diff the review was produced from (for the run hash)
+
+feedback usage:
+  feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
+  actions: ${FEEDBACK_ACTIONS.join(", ")} (hyphens accepted)
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -620,6 +883,98 @@ function diffCommand(argv) {
     throw error;
   }
 }
+function flag(argv, name) {
+  const index = argv.indexOf(name);
+  if (index === -1) return null;
+  const value = argv[index + 1];
+  return value === void 0 || value.startsWith("--") ? null : value;
+}
+function recordCommand(argv) {
+  const output = readStdin();
+  if (output.trim().length === 0) {
+    console.error("Nothing on stdin. Pipe the validated review in.");
+    return 2;
+  }
+  const diffFile = flag(argv, "--diff-file");
+  let diff = "";
+  if (diffFile !== null) {
+    try {
+      diff = readFileSync2(diffFile, "utf8");
+    } catch {
+      console.error(`Cannot read ${diffFile}.`);
+      return 2;
+    }
+  }
+  const db = openDatabase();
+  try {
+    const { reviewRunId, findings } = recordRun(db, {
+      repository: flag(argv, "--repository"),
+      baseRef: flag(argv, "--base"),
+      headRef: flag(argv, "--head"),
+      diff,
+      output
+    });
+    console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+function feedbackCommand(argv) {
+  const [findingRef, actionRaw] = argv;
+  if (findingRef === void 0 || actionRaw === void 0) {
+    console.error("Usage: feedback <rv_NN> <action>");
+    return 2;
+  }
+  const action = normaliseAction(actionRaw);
+  if (action === null) {
+    console.error(`Unknown action "${actionRaw}". Expected one of: ${FEEDBACK_ACTIONS.join(", ")}.`);
+    return 2;
+  }
+  const db = openDatabase();
+  try {
+    const result = recordFeedback(db, {
+      findingRef,
+      action,
+      reason: flag(argv, "--reason") ?? void 0,
+      replacementText: flag(argv, "--replacement") ?? void 0,
+      actor: "owner"
+    });
+    if (!result.ok) {
+      console.error(result.error);
+      return 1;
+    }
+    console.log(`Recorded ${action} for ${result.findingId}.`);
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+function statusCommand() {
+  const db = openDatabase();
+  try {
+    const runs = db.prepare("SELECT COUNT(*) AS n FROM review_runs").get().n;
+    const audits = db.prepare("SELECT COUNT(*) AS n FROM audit_events").get().n;
+    const totals = feedbackTotals(db);
+    const last = latestRun(db);
+    console.log(`data directory   ${dataDirectory()}`);
+    console.log(`database         ${databasePath()}`);
+    console.log(`review runs      ${runs}`);
+    console.log(`audit events     ${audits}`);
+    console.log(
+      `feedback         ${totals.kept} kept, ${totals.rewritten} rewritten, ${totals.dismissed} dismissed` + (totals.other > 0 ? `, ${totals.other} other` : "")
+    );
+    console.log(
+      `owner precision  ${totals.ownerPrecision === null ? "not yet measurable (no explicit feedback)" : `${(totals.ownerPrecision * 100).toFixed(0)}% of labelled findings`}`
+    );
+    if (last !== null) {
+      console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(", ") || "none"}`);
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
 function main(argv) {
   const command = argv[0];
   switch (command) {
@@ -635,6 +990,12 @@ function main(argv) {
       return 0;
     case "diff":
       return diffCommand(argv.slice(1));
+    case "record":
+      return recordCommand(argv.slice(1));
+    case "feedback":
+      return feedbackCommand(argv.slice(1));
+    case "status":
+      return statusCommand();
     case "validate-output":
       return validateOutputCommand(argv.slice(1));
     case "doctor": {

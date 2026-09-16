@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Local SQLite store under the platform data directory, with schema
+  migrations, `0700`/`0600` permissions and an append-only audit trail.
+- `review-voice record`, `feedback` and `status`: review runs are stored with
+  positional finding ids (`rv_01`), feedback is captured as explicit evidence,
+  and owner precision is computed excluding unlabelled findings.
 - `review-voice diff`: structured diff acquisition for the working tree,
   the index (`--staged`) or a base ref (`--base`), with file classification,
   language detection, explained exclusions and untracked-file support.
