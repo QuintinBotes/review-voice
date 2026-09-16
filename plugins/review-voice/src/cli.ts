@@ -28,6 +28,8 @@ import { AuthError } from './github/auth.ts';
 import { collectRepository, type CollectionStats } from './corpus/collect.ts';
 import { selectEvents } from './corpus/select.ts';
 import { storeEvents, corpusCoverage } from './corpus/store.ts';
+import { buildConsentPlan, discoverRepositories } from './consent/plan.ts';
+import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
 
 const USAGE = `review-voice <command>
 
@@ -37,6 +39,9 @@ Commands:
   evidence          Run the configured static checks and emit structured signals
   redact            Redact secrets from stdin (used before anything is stored)
   sync              Ingest review history from allowlisted repositories
+  discover          List repositories the credential can see (reads no history)
+  consent-plan      Show exactly what a sync would read, before it reads it
+  purge             Delete stored data by repository, age, or entirely
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -64,6 +69,12 @@ sync flags:
   --target <n>        Eligible events to import (default 250)
   --max-pulls <n>     Pull requests inspected per repository (default 60)
   --dry-run           Report what would be imported without storing anything
+
+purge flags (one required):
+  --repo <owner/repo>   Remove one repository's events
+  --before <ISO date>   Remove events older than a date
+  --all                 Remove everything, including runs and feedback
+  --confirm             Actually delete; without it, only a preview is printed
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -198,6 +209,78 @@ function contextCommand(): number {
       return 2;
     }
     throw error;
+  }
+}
+
+async function discoverCommand(): Promise<number> {
+  // Listing is not selecting. Nothing is read from any of these repositories
+  // until one is explicitly allowlisted.
+  const client = new GitHubClient({ allowlist: [] });
+  const repositories = await discoverRepositories(client);
+  console.log(JSON.stringify({ repositories }, null, 2));
+  return 0;
+}
+
+function consentPlanCommand(argv: string[]): number {
+  const root = repositoryRoot(process.cwd());
+  const config = loadConfig(root);
+  const owner = flag(argv, '--owner') ?? config.ownerReviewer;
+
+  if (owner === null) {
+    console.error('No owner reviewer yet. Pass --owner <login>.');
+    return 2;
+  }
+
+  const repositories = argv.includes('--repo')
+    ? argv.filter((_, index) => argv[index - 1] === '--repo')
+    : config.allowlist;
+
+  if (repositories.length === 0) {
+    console.error('No repositories selected. Pass --repo <owner/repo>, or allowlist some first.');
+    return 2;
+  }
+
+  console.log(
+    JSON.stringify(
+      buildConsentPlan({
+        ownerLogin: owner,
+        repositories,
+        targetEvents: numericFlag(argv, '--target', 250) ?? 250,
+        storageLocation: dataDirectory(),
+      }),
+      null,
+      2,
+    ),
+  );
+  return 0;
+}
+
+function purgeCommand(argv: string[]): number {
+  const scope: PurgeScope = {
+    repository: flag(argv, '--repo') ?? undefined,
+    before: flag(argv, '--before') ?? undefined,
+    all: argv.includes('--all') || undefined,
+  };
+
+  if (scope.repository === undefined && scope.before === undefined && scope.all !== true) {
+    console.error('Purge needs a scope: --repo <owner/repo>, --before <date>, or --all.');
+    return 2;
+  }
+
+  const db = openDatabase();
+  try {
+    // Deletion is irreversible, so the damage is shown before it is agreed to,
+    // not after.
+    const preview = previewPurge(db, scope);
+    if (!argv.includes('--confirm')) {
+      console.log(JSON.stringify({ wouldRemove: preview, confirmed: false }, null, 2));
+      return 0;
+    }
+    const removed = executePurge(db, scope);
+    console.log(JSON.stringify({ removed, confirmed: true }, null, 2));
+    return 0;
+  } finally {
+    db.close();
   }
 }
 
@@ -437,6 +520,15 @@ async function main(argv: string[]): Promise<number> {
 
     case 'sync':
       return await syncCommand(argv.slice(1));
+
+    case 'discover':
+      return await discoverCommand();
+
+    case 'consent-plan':
+      return consentPlanCommand(argv.slice(1));
+
+    case 'purge':
+      return purgeCommand(argv.slice(1));
 
     case 'evidence':
       return evidenceCommand();

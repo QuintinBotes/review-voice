@@ -7825,6 +7825,80 @@ function corpusCoverage(db) {
   return { total, byRepository, byRole, oldest: range.oldest, newest: range.newest };
 }
 
+// plugins/review-voice/src/consent/plan.ts
+function buildConsentPlan(input) {
+  return {
+    ownerLogin: input.ownerLogin,
+    repositories: [...input.repositories],
+    targetEvents: input.targetEvents,
+    dataCategories: [
+      "Inline pull-request review comments you or your teammates wrote",
+      "The diff hunk each comment was attached to",
+      "File path and line number for each comment",
+      "Pull request number, title and URL",
+      "Comment author login and their association with the repository"
+    ],
+    storageLocation: input.storageLocation,
+    retention: [
+      "Secrets are removed before anything is written; the original text is never stored",
+      "Redacted text is kept until you purge it",
+      "Comments from bots and from outside contributors are not stored at all",
+      "Nothing is uploaded anywhere; the store never leaves this machine"
+    ],
+    writeOperations: "none"
+  };
+}
+async function discoverRepositories(client, limit = 100) {
+  const repos = await client.paginate(
+    "/user/repos?affiliation=owner,collaborator&sort=pushed&per_page=100",
+    limit
+  );
+  return repos.map((repo) => ({
+    fullName: repo.full_name,
+    private: repo.private,
+    archived: repo.archived,
+    pushedAt: repo.pushed_at
+  }));
+}
+
+// plugins/review-voice/src/consent/purge.ts
+function scopeClause(scope) {
+  if (scope.all === true) return { where: "1=1", params: [] };
+  if (scope.repository !== void 0) return { where: "repository = ?", params: [scope.repository] };
+  if (scope.before !== void 0) return { where: "created_at < ?", params: [scope.before] };
+  return { where: "1=0", params: [] };
+}
+function previewPurge(db, scope) {
+  const { where, params } = scopeClause(scope);
+  const events = db.prepare(`SELECT COUNT(*) AS n FROM review_events WHERE ${where}`).get(...params).n;
+  const byRepository = Object.fromEntries(
+    db.prepare(`SELECT repository, COUNT(*) AS n FROM review_events WHERE ${where} GROUP BY repository`).all(...params).map((row) => [row.repository, row.n])
+  );
+  const all = scope.all === true;
+  const reviewRuns = all ? db.prepare("SELECT COUNT(*) AS n FROM review_runs").get().n : 0;
+  const feedback = all ? db.prepare("SELECT COUNT(*) AS n FROM feedback").get().n : 0;
+  const auditEvents = all ? db.prepare("SELECT COUNT(*) AS n FROM audit_events").get().n : 0;
+  return { events, reviewRuns, feedback, auditEvents, byRepository };
+}
+function executePurge(db, scope) {
+  const preview = previewPurge(db, scope);
+  const { where, params } = scopeClause(scope);
+  db.exec("BEGIN");
+  try {
+    db.prepare(`DELETE FROM review_events WHERE ${where}`).run(...params);
+    if (scope.all === true) {
+      db.prepare("DELETE FROM review_runs").run();
+      db.prepare("DELETE FROM feedback").run();
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  recordAudit(db, "purge", null, { scope, removed: preview });
+  return preview;
+}
+
 // plugins/review-voice/src/cli.ts
 var USAGE = `review-voice <command>
 
@@ -7834,6 +7908,9 @@ Commands:
   evidence          Run the configured static checks and emit structured signals
   redact            Redact secrets from stdin (used before anything is stored)
   sync              Ingest review history from allowlisted repositories
+  discover          List repositories the credential can see (reads no history)
+  consent-plan      Show exactly what a sync would read, before it reads it
+  purge             Delete stored data by repository, age, or entirely
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -7861,6 +7938,12 @@ sync flags:
   --target <n>        Eligible events to import (default 250)
   --max-pulls <n>     Pull requests inspected per repository (default 60)
   --dry-run           Report what would be imported without storing anything
+
+purge flags (one required):
+  --repo <owner/repo>   Remove one repository's events
+  --before <ISO date>   Remove events older than a date
+  --all                 Remove everything, including runs and feedback
+  --confirm             Actually delete; without it, only a preview is printed
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -7979,6 +8062,63 @@ function contextCommand() {
       return 2;
     }
     throw error;
+  }
+}
+async function discoverCommand() {
+  const client = new GitHubClient({ allowlist: [] });
+  const repositories = await discoverRepositories(client);
+  console.log(JSON.stringify({ repositories }, null, 2));
+  return 0;
+}
+function consentPlanCommand(argv) {
+  const root = repositoryRoot(process.cwd());
+  const config = loadConfig(root);
+  const owner = flag(argv, "--owner") ?? config.ownerReviewer;
+  if (owner === null) {
+    console.error("No owner reviewer yet. Pass --owner <login>.");
+    return 2;
+  }
+  const repositories = argv.includes("--repo") ? argv.filter((_, index) => argv[index - 1] === "--repo") : config.allowlist;
+  if (repositories.length === 0) {
+    console.error("No repositories selected. Pass --repo <owner/repo>, or allowlist some first.");
+    return 2;
+  }
+  console.log(
+    JSON.stringify(
+      buildConsentPlan({
+        ownerLogin: owner,
+        repositories,
+        targetEvents: numericFlag(argv, "--target", 250) ?? 250,
+        storageLocation: dataDirectory()
+      }),
+      null,
+      2
+    )
+  );
+  return 0;
+}
+function purgeCommand(argv) {
+  const scope = {
+    repository: flag(argv, "--repo") ?? void 0,
+    before: flag(argv, "--before") ?? void 0,
+    all: argv.includes("--all") || void 0
+  };
+  if (scope.repository === void 0 && scope.before === void 0 && scope.all !== true) {
+    console.error("Purge needs a scope: --repo <owner/repo>, --before <date>, or --all.");
+    return 2;
+  }
+  const db = openDatabase();
+  try {
+    const preview = previewPurge(db, scope);
+    if (!argv.includes("--confirm")) {
+      console.log(JSON.stringify({ wouldRemove: preview, confirmed: false }, null, 2));
+      return 0;
+    }
+    const removed = executePurge(db, scope);
+    console.log(JSON.stringify({ removed, confirmed: true }, null, 2));
+    return 0;
+  } finally {
+    db.close();
   }
 }
 async function syncCommand(argv) {
@@ -8187,6 +8327,12 @@ async function main(argv) {
       return redactCommand(argv.slice(1));
     case "sync":
       return await syncCommand(argv.slice(1));
+    case "discover":
+      return await discoverCommand();
+    case "consent-plan":
+      return consentPlanCommand(argv.slice(1));
+    case "purge":
+      return purgeCommand(argv.slice(1));
     case "evidence":
       return evidenceCommand();
     case "record":

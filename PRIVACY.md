@@ -50,6 +50,16 @@ prompt. See [SECURITY.md](SECURITY.md) for the limits of that.
 
 All configurable in `.review-voice/config.yaml`.
 
+## Before anything is read
+
+`/review-voice:init` shows a consent plan naming the concrete data categories —
+not "review history" but the comments, diff hunks, file paths, line numbers and
+pull request identifiers it would read. It lists where that is stored and what
+is discarded. Nothing is read until you agree, and a dry run showing exact
+counts comes before the first real sync.
+
+Bot comments and outside contributors' comments are never stored.
+
 ## Deleting your data
 
 ```
