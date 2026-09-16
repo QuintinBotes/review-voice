@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Incremental polling sync: ETags persist between runs, so an unchanged
+  repository costs almost nothing against the rate limit. No webhook receiver,
+  per ADR 0002.
+- `review-voice draft`: renders a validated review as a GitHub draft, from the
+  same payload that would be sent. Posts nothing.
+- `review-voice post-check`: reports whether posting is permitted, reading
+  measured precision rather than configuration. No override.
 - Policy rules are compiled by finding category rather than file path, and
   `record --candidates` carries each finding's category from the candidate that
   produced it. Going both ways on one category now registers as a contradiction

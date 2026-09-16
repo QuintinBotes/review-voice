@@ -72,7 +72,23 @@ export class GitHubClient {
     }
   }
 
-  async get<T>(path: string, init: { method?: string } = {}): Promise<{ data: T; linkNext: string | null }> {
+  /**
+   * Conditional-request cache. A 304 costs nothing against the rate limit,
+   * which is what makes repeated polling viable without a webhook endpoint —
+   * and an endpoint is what docs/adr/0002 declined to make this tool require.
+   */
+  private readonly etags = new Map<string, string>();
+
+  /** Seeds the cache from a previous run, so polling survives process restarts. */
+  primeEtags(entries: Record<string, string>): void {
+    for (const [url, etag] of Object.entries(entries)) this.etags.set(url, etag);
+  }
+
+  exportEtags(): Record<string, string> {
+    return Object.fromEntries(this.etags);
+  }
+
+  async get<T>(path: string, init: { method?: string } = {}): Promise<{ data: T; linkNext: string | null; notModified?: boolean }> {
     if (init.method !== undefined && init.method.toUpperCase() !== 'GET') {
       throw new ReadOnlyViolation(
         `Review Voice is read-only; refused a ${init.method} to ${path}.`,
@@ -83,6 +99,7 @@ export class GitHubClient {
     const url = path.startsWith('http') ? path : `${this.baseUrl}${path}`;
 
     for (let attempt = 0; ; attempt += 1) {
+      const knownEtag = this.etags.get(url);
       const response = await this.doFetch(url, {
         method: 'GET',
         headers: {
@@ -90,8 +107,15 @@ export class GitHubClient {
           authorization: this.authorization(),
           'x-github-api-version': '2022-11-28',
           'user-agent': 'review-voice',
+          ...(knownEtag === undefined ? {} : { 'if-none-match': knownEtag }),
         },
       });
+
+      if (response.status === 304) {
+        // Unchanged since last time. GitHub does not charge rate limit for a
+        // 304, so polling a quiet repository is close to free.
+        return { data: [] as unknown as T, linkNext: null, notModified: true };
+      }
 
       if (response.status === 403 || response.status === 429) {
         const retryAfter = Number(response.headers.get('retry-after') ?? '0');
@@ -111,6 +135,9 @@ export class GitHubClient {
           response.status,
         );
       }
+
+      const etag = response.headers.get('etag');
+      if (etag !== null) this.etags.set(url, etag);
 
       const link = response.headers.get('link');
       const next = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;

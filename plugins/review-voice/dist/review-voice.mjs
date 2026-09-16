@@ -686,6 +686,28 @@ var MIGRATIONS = [
     UNIQUE (scope_type, scope_key, version)
   );
   CREATE INDEX idx_policies_active ON policies (scope_type, scope_key, active);
+  `,
+  // v5 — sync state for incremental polling.
+  //
+  // ETags persist across runs so a repeat sync costs almost nothing: GitHub
+  // does not charge rate limit for a 304. That is what makes polling a
+  // reasonable substitute for the webhook endpoint docs/adr/0002 declined to
+  // make this tool require.
+  `
+  CREATE TABLE sync_state (
+    url TEXT PRIMARY KEY,
+    etag TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE sync_runs (
+    sync_run_id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    repositories_json TEXT NOT NULL,
+    stats_json TEXT NOT NULL,
+    imported INTEGER NOT NULL
+  );
   `
 ];
 function migrate(db) {
@@ -7185,6 +7207,7 @@ function layerFromPolicyFile(text, source, fallbackKey) {
 function loadConfig(repositoryRoot2) {
   const result = {
     ownerReviewer: null,
+    postingEnabled: false,
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
     layers: [],
@@ -7220,6 +7243,8 @@ function loadConfig(repositoryRoot2) {
             });
           }
         }
+        const writes = asRecord(doc["writes"]);
+        result.postingEnabled = writes?.["github_posting_enabled"] === true;
         const review = asRecord(doc["review"]);
         if (review !== null) {
           result.layers.push({
@@ -7576,6 +7601,19 @@ var GitHubClient = class {
       );
     }
   }
+  /**
+   * Conditional-request cache. A 304 costs nothing against the rate limit,
+   * which is what makes repeated polling viable without a webhook endpoint —
+   * and an endpoint is what docs/adr/0002 declined to make this tool require.
+   */
+  etags = /* @__PURE__ */ new Map();
+  /** Seeds the cache from a previous run, so polling survives process restarts. */
+  primeEtags(entries) {
+    for (const [url, etag] of Object.entries(entries)) this.etags.set(url, etag);
+  }
+  exportEtags() {
+    return Object.fromEntries(this.etags);
+  }
   async get(path, init = {}) {
     if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
       throw new ReadOnlyViolation(
@@ -7585,15 +7623,20 @@ var GitHubClient = class {
     this.assertAllowed(path);
     const url = path.startsWith("http") ? path : `${this.baseUrl}${path}`;
     for (let attempt = 0; ; attempt += 1) {
+      const knownEtag = this.etags.get(url);
       const response = await this.doFetch(url, {
         method: "GET",
         headers: {
           accept: "application/vnd.github+json",
           authorization: this.authorization(),
           "x-github-api-version": "2022-11-28",
-          "user-agent": "review-voice"
+          "user-agent": "review-voice",
+          ...knownEtag === void 0 ? {} : { "if-none-match": knownEtag }
         }
       });
+      if (response.status === 304) {
+        return { data: [], linkNext: null, notModified: true };
+      }
       if (response.status === 403 || response.status === 429) {
         const retryAfter = Number(response.headers.get("retry-after") ?? "0");
         const remaining = response.headers.get("x-ratelimit-remaining");
@@ -7609,6 +7652,8 @@ var GitHubClient = class {
           response.status
         );
       }
+      const etag = response.headers.get("etag");
+      if (etag !== null) this.etags.set(url, etag);
       const link = response.headers.get("link");
       const next = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
       return { data: await response.json(), linkNext: next };
@@ -8509,6 +8554,118 @@ function computeMetrics(db) {
   ];
 }
 
+// plugins/review-voice/src/sync/state.ts
+import { randomUUID as randomUUID5 } from "node:crypto";
+function loadEtags(db) {
+  const rows = db.prepare("SELECT url, etag FROM sync_state").all();
+  return Object.fromEntries(rows.map((row) => [row.url, row.etag]));
+}
+function saveEtags(db, etags) {
+  const upsert = db.prepare(
+    `INSERT INTO sync_state (url, etag, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT (url) DO UPDATE SET etag = excluded.etag, updated_at = excluded.updated_at`
+  );
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  db.exec("BEGIN");
+  try {
+    for (const [url, etag] of Object.entries(etags)) upsert.run(url, etag, now);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+function beginSyncRun(db, repositories) {
+  const id = randomUUID5();
+  db.prepare(
+    "INSERT INTO sync_runs (sync_run_id, started_at, finished_at, repositories_json, stats_json, imported) VALUES (?, ?, NULL, ?, ?, 0)"
+  ).run(id, (/* @__PURE__ */ new Date()).toISOString(), JSON.stringify(repositories), JSON.stringify({}));
+  return id;
+}
+function finishSyncRun(db, id, stats, imported) {
+  db.prepare("UPDATE sync_runs SET finished_at = ?, stats_json = ?, imported = ? WHERE sync_run_id = ?").run(
+    (/* @__PURE__ */ new Date()).toISOString(),
+    JSON.stringify(stats),
+    imported,
+    id
+  );
+}
+function lastSync(db) {
+  const row = db.prepare("SELECT * FROM sync_runs WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1").get();
+  if (row === void 0) return null;
+  return {
+    syncRunId: row["sync_run_id"],
+    startedAt: row["started_at"],
+    finishedAt: row["finished_at"],
+    repositories: JSON.parse(row["repositories_json"]),
+    imported: row["imported"]
+  };
+}
+
+// plugins/review-voice/src/publish/gate.ts
+var MIN_LABELLED = 20;
+var MIN_PRECISION = 0.8;
+function evaluatePostingGate(db, configEnabled) {
+  const metrics = computeMetrics(db);
+  const precisionMetric = metrics.find((m) => m.name === "owner_accepted_precision");
+  const complianceMetric = metrics.find((m) => m.name === "contract_compliance");
+  const feedback = db.prepare("SELECT action, COUNT(*) AS n FROM feedback GROUP BY action").all();
+  const by = Object.fromEntries(feedback.map((row) => [row.action, row.n]));
+  const labelled = (by["keep"] ?? 0) + (by["rewrite"] ?? 0) + (by["dismiss"] ?? 0);
+  const precision = precisionMetric?.value ?? null;
+  const compliance = complianceMetric?.value ?? null;
+  const reasons = [];
+  if (!configEnabled) {
+    reasons.push("writes.github_posting_enabled is false in .review-voice/config.yaml");
+  }
+  if (labelled < MIN_LABELLED) {
+    reasons.push(
+      `only ${labelled} findings have been labelled; ${MIN_LABELLED} are needed before precision means anything`
+    );
+  }
+  if (precision === null) {
+    reasons.push("owner-accepted precision has not been measured");
+  } else if (precision < MIN_PRECISION) {
+    reasons.push(`measured precision ${precision.toFixed(2)} is below the ${MIN_PRECISION} target in docs/adr/0007`);
+  }
+  if (compliance !== null && compliance < 1) {
+    reasons.push(`contract compliance ${compliance.toFixed(2)} is below 1.00`);
+  }
+  return {
+    allowed: reasons.length === 0,
+    reasons,
+    measured: { precision, labelledFindings: labelled, contractCompliance: compliance }
+  };
+}
+
+// plugins/review-voice/src/publish/draft.ts
+function buildDraft(input) {
+  const comments = splitFindings(input.output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null).map((finding) => ({
+    path: finding.path,
+    line: finding.line ?? 1,
+    // Posted as written. Re-wording here would mean the reviewed text and
+    // the sent text were different things.
+    body: `**${finding.severity}** \u2014 ${finding.prose}`
+  }));
+  const preview = [
+    `Repository: ${input.repository}`,
+    `Pull request: #${input.pullNumber}`,
+    `Comments: ${comments.length}`,
+    "",
+    ...comments.map((comment) => `${comment.path}:${comment.line}
+  ${comment.body}`)
+  ].join("\n");
+  return {
+    repository: input.repository,
+    pullNumber: input.pullNumber,
+    // Diff hash plus content: the same review of the same diff is the same
+    // post, so a retry after a timeout cannot duplicate it.
+    idempotencyKey: `${input.repository}#${input.pullNumber}@${input.diffHash}`,
+    comments,
+    preview
+  };
+}
+
 // plugins/review-voice/src/cli.ts
 var USAGE = `review-voice <command>
 
@@ -8526,6 +8683,8 @@ Commands:
   calibrate         Show proposed policy changes and their evidence
   policy            show | approve <id> | rollback <version>
   evaluate          Report the evaluation metrics against their targets
+  draft             Render a validated review as a GitHub draft (posts nothing)
+  post-check        Report whether posting is permitted, and why not
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -8761,6 +8920,9 @@ async function syncCommand(argv) {
   const maxPulls = numericFlag(argv, "--max-pulls", 60) ?? 60;
   const dryRun = argv.includes("--dry-run");
   const client = new GitHubClient({ allowlist: config.allowlist });
+  const stateDb = openDatabase();
+  const syncRunId = beginSyncRun(stateDb, config.allowlist);
+  client.primeEtags(loadEtags(stateDb));
   const stats = {
     pullRequestsScanned: 0,
     commentsSeen: 0,
@@ -8789,13 +8951,17 @@ async function syncCommand(argv) {
     collected.map((event) => ({ ...event, role: event.role })),
     { target, maxRepositoryShare: 0.5 }
   );
+  saveEtags(stateDb, client.exportEtags());
   if (dryRun) {
+    finishSyncRun(stateDb, syncRunId, stats, 0);
+    stateDb.close();
     console.log(JSON.stringify({ dryRun: true, stats, selection: { ...selection, selected: void 0 } }, null, 2));
     return 0;
   }
-  const db = openDatabase();
+  const db = stateDb;
   try {
     const stored = storeEvents(db, selection.selected);
+    finishSyncRun(db, syncRunId, stats, stored.inserted);
     console.log(
       JSON.stringify(
         {
@@ -8809,12 +8975,41 @@ async function syncCommand(argv) {
             repositories: selection.perRepository
           },
           stored,
-          coverage: corpusCoverage(db)
+          coverage: corpusCoverage(db),
+          lastSync: lastSync(db)
         },
         null,
         2
       )
     );
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+function draftCommand(argv) {
+  const repository = flag(argv, "--repository");
+  const pullNumber = Number(flag(argv, "--pr") ?? NaN);
+  if (repository === null || !Number.isInteger(pullNumber)) {
+    console.error("draft needs --repository <owner/repo> and --pr <number>.");
+    return 2;
+  }
+  const output = readStdin();
+  const draft = buildDraft({ repository, pullNumber, output, diffHash: hashDiff(output) });
+  if (argv.includes("--json")) {
+    console.log(JSON.stringify(draft, null, 2));
+  } else {
+    console.log(draft.preview);
+  }
+  return 0;
+}
+function postCheckCommand() {
+  const root = repositoryRoot(process.cwd());
+  const config = loadConfig(root);
+  const db = openDatabase();
+  try {
+    const gate = evaluatePostingGate(db, config.postingEnabled);
+    console.log(JSON.stringify(gate, null, 2));
     return 0;
   } finally {
     db.close();
@@ -9119,6 +9314,10 @@ async function main(argv) {
       return scoreCommand(argv.slice(1));
     case "evaluate":
       return evaluateCommand(argv.slice(1));
+    case "draft":
+      return draftCommand(argv.slice(1));
+    case "post-check":
+      return postCheckCommand();
     case "calibrate":
       return calibrateCommand();
     case "policy":

@@ -146,6 +146,29 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_policies_active ON policies (scope_type, scope_key, active);
   `,
+
+  // v5 — sync state for incremental polling.
+  //
+  // ETags persist across runs so a repeat sync costs almost nothing: GitHub
+  // does not charge rate limit for a 304. That is what makes polling a
+  // reasonable substitute for the webhook endpoint docs/adr/0002 declined to
+  // make this tool require.
+  `
+  CREATE TABLE sync_state (
+    url TEXT PRIMARY KEY,
+    etag TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE sync_runs (
+    sync_run_id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    repositories_json TEXT NOT NULL,
+    stats_json TEXT NOT NULL,
+    imported INTEGER NOT NULL
+  );
+  `,
 ];
 
 function migrate(db: Database): void {
