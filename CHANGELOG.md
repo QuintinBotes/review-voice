@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `review-voice sync`: ingests review history from allowlisted repositories.
+  Comments are redacted at the download boundary, classified by reviewer role,
+  filtered for review judgement, deduplicated across rebases, and selected
+  newest-first under a per-repository share cap. Shortfalls are reported
+  exactly rather than presented as a full scan. `--dry-run` reports what would
+  be imported without storing anything.
+- Corpus schema with no column for original comment text.
 - Read-only GitHub client. Non-GET requests and repositories outside the
   allowlist are refused in code before any network call, with rate-limit
   backoff and bounded pagination. Credentials are borrowed from `gh` and never

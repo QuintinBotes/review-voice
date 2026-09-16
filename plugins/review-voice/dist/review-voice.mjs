@@ -593,6 +593,43 @@ var MIGRATIONS = [
     created_at TEXT NOT NULL
   );
   CREATE INDEX idx_audit_created ON audit_events (created_at DESC);
+  `,
+  // v2 — the historical review corpus.
+  //
+  // There is deliberately no column for the original comment text. Redaction
+  // happens at the download boundary and only its output is passed here, so
+  // the absence of a column is what makes an accidental write impossible.
+  `
+  CREATE TABLE review_events (
+    event_id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    repository TEXT NOT NULL,
+    pull_number INTEGER,
+    pull_request_url TEXT,
+    thread_id TEXT,
+    comment_id TEXT,
+    reviewer_login TEXT NOT NULL,
+    reviewer_role TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT,
+    body_redacted TEXT NOT NULL,
+    content_key TEXT NOT NULL UNIQUE,
+    file_path TEXT,
+    line_start INTEGER,
+    line_end INTEGER,
+    diff_hunk_redacted TEXT,
+    language TEXT,
+    category TEXT,
+    severity TEXT,
+    outcome_status TEXT NOT NULL,
+    outcome_certainty TEXT NOT NULL,
+    redaction_version TEXT NOT NULL,
+    redaction_counts_json TEXT NOT NULL,
+    created_db_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_events_repo ON review_events (repository);
+  CREATE INDEX idx_events_created ON review_events (created_at DESC);
+  CREATE INDEX idx_events_role ON review_events (reviewer_role);
   `
 ];
 function migrate(db) {
@@ -7413,6 +7450,381 @@ function redact(input) {
   };
 }
 
+// plugins/review-voice/src/github/auth.ts
+import { execFileSync as execFileSync3 } from "node:child_process";
+var AuthError = class extends Error {
+};
+function githubToken(env = process.env) {
+  const fromEnv = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
+  if (fromEnv !== void 0 && fromEnv.length > 0) return fromEnv;
+  try {
+    const token = execFileSync3("gh", ["auth", "token"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    if (token.length > 0) return token;
+  } catch {
+  }
+  throw new AuthError(
+    "No GitHub credential. Run `gh auth login`, or set GITHUB_TOKEN. Review Voice needs read access only."
+  );
+}
+
+// plugins/review-voice/src/github/client.ts
+var ReadOnlyViolation = class extends Error {
+};
+var NotAllowlisted = class extends Error {
+};
+var GitHubError = class extends Error {
+  // Written out rather than declared as a parameter property: Node strips
+  // types to run TypeScript directly, and parameter properties are syntax it
+  // cannot strip. Keeping the source loadable without a build step means tests
+  // can import it directly.
+  status;
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+};
+var REPO_PATH = /^\/repos\/([^/]+\/[^/]+)(\/|$)/;
+var GitHubClient = class {
+  allowlist;
+  baseUrl;
+  doFetch;
+  sleep;
+  token;
+  constructor(options) {
+    this.allowlist = new Set(options.allowlist.map((name) => name.toLowerCase()));
+    this.baseUrl = options.baseUrl ?? "https://api.github.com";
+    this.doFetch = options.fetchImpl ?? fetch;
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.token = options.token ?? null;
+  }
+  authorization() {
+    this.token ??= githubToken();
+    return `Bearer ${this.token}`;
+  }
+  assertAllowed(path) {
+    const match = REPO_PATH.exec(path);
+    if (match === null) return;
+    const repository = match[1].toLowerCase();
+    if (!this.allowlist.has(repository)) {
+      throw new NotAllowlisted(
+        `${match[1]} is not in the allowlist. Add it with /review-voice:init before reading it.`
+      );
+    }
+  }
+  async get(path, init = {}) {
+    if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
+      throw new ReadOnlyViolation(
+        `Review Voice is read-only; refused a ${init.method} to ${path}.`
+      );
+    }
+    this.assertAllowed(path);
+    const url = path.startsWith("http") ? path : `${this.baseUrl}${path}`;
+    for (let attempt = 0; ; attempt += 1) {
+      const response = await this.doFetch(url, {
+        method: "GET",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: this.authorization(),
+          "x-github-api-version": "2022-11-28",
+          "user-agent": "review-voice"
+        }
+      });
+      if (response.status === 403 || response.status === 429) {
+        const retryAfter = Number(response.headers.get("retry-after") ?? "0");
+        const remaining = response.headers.get("x-ratelimit-remaining");
+        if ((remaining === "0" || retryAfter > 0) && attempt < 4) {
+          const waitMs = retryAfter > 0 ? retryAfter * 1e3 : 2 ** attempt * 1e3;
+          await this.sleep(waitMs);
+          continue;
+        }
+      }
+      if (!response.ok) {
+        throw new GitHubError(
+          `GitHub returned ${response.status} for ${path}: ${(await response.text()).slice(0, 200)}`,
+          response.status
+        );
+      }
+      const link = response.headers.get("link");
+      const next = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
+      return { data: await response.json(), linkNext: next };
+    }
+  }
+  /** Follows pagination up to `limit` items, so a huge repository cannot run away. */
+  async paginate(path, limit) {
+    const items = [];
+    let next = path;
+    while (next !== null && items.length < limit) {
+      const page = await this.get(next);
+      if (!Array.isArray(page.data)) break;
+      items.push(...page.data);
+      next = page.linkNext;
+    }
+    return items.slice(0, limit);
+  }
+};
+
+// plugins/review-voice/src/github/roles.ts
+var BOT_HINTS = [
+  /\[bot\]$/i,
+  /^(dependabot|renovate|greenkeeper|snyk|codecov|coveralls|sonarcloud|sonarqube|github-actions|copilot|mergify|allcontributors|imgbot|semantic-release|stale|codeclimate|deepsource|reviewpad|restyled)/i,
+  /-bot$/i,
+  /^bot-/i
+];
+function isBot(login, accountType) {
+  if (accountType !== void 0 && accountType.toLowerCase() === "bot") return true;
+  return BOT_HINTS.some((pattern) => pattern.test(login));
+}
+function classifyReviewer(input) {
+  if (isBot(input.login, input.accountType)) return "bot";
+  if (input.login.toLowerCase() === input.ownerLogin.toLowerCase()) return "owner";
+  const team = (input.teamLogins ?? []).map((login) => login.toLowerCase());
+  if (team.includes(input.login.toLowerCase())) return "team";
+  const association = (input.authorAssociation ?? "").toUpperCase();
+  if (association === "OWNER" || association === "MEMBER" || association === "COLLABORATOR") {
+    return "team";
+  }
+  return "external";
+}
+
+// plugins/review-voice/src/corpus/eligibility.ts
+var APPROVAL_ONLY = /^\s*(lgtm|looks good(?: to me)?|ship it|👍|🚀|\+1|nice|thanks|ty|done|ack|acknowledged|sgtm|✅)[\s.!]*$/i;
+var TEMPLATE_OR_STATUS = [
+  /^\s*#{1,3}\s*(description|checklist|type of change|how has this been tested)/im,
+  /^\s*-\s*\[[ x]\]\s/m,
+  /\bcodecov\b.*\breport\b/i,
+  /\bdeploy(ed|ment) (preview|succeeded|failed)\b/i,
+  /\bbuild (succeeded|failed)\b/i
+];
+var GENERATED_PATH = [
+  /(^|\/)(dist|build|out|coverage|node_modules|vendor|third_party)\//,
+  /\.min\.(js|css)$/,
+  /(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|go\.sum)$/
+];
+function ineligibleReason(input) {
+  if (input.role === "bot") return "bot";
+  if (input.role === "external") return "external_reviewer";
+  const body = input.body.trim();
+  if (body.length === 0) return "too_short";
+  if (APPROVAL_ONLY.test(body)) return "approval_only";
+  if (body.length < 15) return "too_short";
+  if (TEMPLATE_OR_STATUS.some((pattern) => pattern.test(body))) return "template_or_status";
+  const filePath = input.filePath;
+  if (filePath !== void 0 && GENERATED_PATH.some((pattern) => pattern.test(filePath))) {
+    return "generated_file";
+  }
+  if (!input.hasCodeContext && filePath !== void 0) return "no_code_context";
+  return null;
+}
+
+// plugins/review-voice/src/corpus/dedup.ts
+import { createHash as createHash4 } from "node:crypto";
+function contentKey(parts) {
+  const normalised = parts.body.replace(/\s+/g, " ").trim().toLowerCase();
+  const SEPARATOR = String.fromCharCode(31);
+  return createHash4("sha256").update(
+    [
+      parts.repository.toLowerCase(),
+      parts.reviewerLogin.toLowerCase(),
+      parts.filePath ?? "",
+      String(parts.lineStart ?? ""),
+      normalised
+    ].join(SEPARATOR)
+  ).digest("hex").slice(0, 32);
+}
+
+// plugins/review-voice/src/corpus/collect.ts
+async function collectRepository(client, options, stats) {
+  const pulls = await client.paginate(
+    `/repos/${options.repository}/pulls?state=all&sort=updated&direction=desc&per_page=50`,
+    options.maxPullRequests
+  );
+  const events = [];
+  const seenKeys = /* @__PURE__ */ new Set();
+  for (const pull of pulls) {
+    if (!options.includeForks && pull.head?.repo?.fork === true) continue;
+    stats.pullRequestsScanned += 1;
+    const comments = await client.paginate(
+      `/repos/${options.repository}/pulls/${pull.number}/comments?per_page=100`,
+      options.maxCommentsPerPull
+    );
+    for (const comment of comments) {
+      stats.commentsSeen += 1;
+      const login = comment.user?.login;
+      const body = comment.body ?? "";
+      if (login === void 0 || body.length === 0) continue;
+      const role = classifyReviewer({
+        login,
+        accountType: comment.user?.type,
+        ownerLogin: options.ownerLogin,
+        teamLogins: options.teamLogins,
+        authorAssociation: comment.author_association
+      });
+      const line = comment.line ?? comment.original_line ?? void 0;
+      const reason = ineligibleReason({
+        body,
+        role,
+        filePath: comment.path,
+        hasCodeContext: (comment.diff_hunk ?? "").length > 0
+      });
+      if (reason !== null) {
+        stats.excluded[reason] = (stats.excluded[reason] ?? 0) + 1;
+        continue;
+      }
+      const key = contentKey({
+        repository: options.repository,
+        reviewerLogin: login,
+        body,
+        filePath: comment.path,
+        lineStart: line
+      });
+      if (seenKeys.has(key)) {
+        stats.duplicates += 1;
+        continue;
+      }
+      seenKeys.add(key);
+      const redactedBody = redact(body);
+      const redactedHunk = comment.diff_hunk === void 0 ? void 0 : redact(comment.diff_hunk);
+      events.push({
+        eventId: `gh_${comment.id}`,
+        source: "github",
+        repository: options.repository,
+        pullNumber: pull.number,
+        pullRequestUrl: pull.html_url,
+        commentId: String(comment.id),
+        reviewerLogin: login,
+        role,
+        createdAt: comment.created_at ?? pull.updated_at,
+        bodyRedacted: redactedBody.text,
+        filePath: comment.path,
+        lineStart: line,
+        diffHunkRedacted: redactedHunk?.text,
+        contentKey: key,
+        redactionVersion: REDACTION_VERSION,
+        redactionCounts: {
+          ...redactedBody.counts,
+          ...redactedHunk === void 0 ? {} : redactedHunk.counts
+        }
+      });
+      stats.eligible += 1;
+    }
+  }
+  return events;
+}
+
+// plugins/review-voice/src/corpus/select.ts
+function selectEvents(events, options) {
+  const discoveredEligible = events.length;
+  const cap = Math.max(1, Math.floor(options.target * options.maxRepositoryShare));
+  const sorted = [...events].sort((a, b) => {
+    const byDate = b.createdAt.localeCompare(a.createdAt);
+    if (byDate !== 0) return byDate;
+    return (a.role === "owner" ? 0 : 1) - (b.role === "owner" ? 0 : 1);
+  });
+  const perRepository = {};
+  const selected = [];
+  const deferred = [];
+  for (const event of sorted) {
+    if (selected.length >= options.target) break;
+    const count = perRepository[event.repository] ?? 0;
+    if (count >= cap) {
+      deferred.push(event);
+      continue;
+    }
+    perRepository[event.repository] = count + 1;
+    selected.push(event);
+  }
+  for (const event of deferred) {
+    if (selected.length >= options.target) break;
+    perRepository[event.repository] = (perRepository[event.repository] ?? 0) + 1;
+    selected.push(event);
+  }
+  const shortfall = Math.max(0, options.target - selected.length);
+  return {
+    selected,
+    targetEvents: options.target,
+    discoveredEligible,
+    importedEvents: selected.length,
+    shortfall,
+    // Claiming a full scan when the history ran out would misrepresent how
+    // much the policy actually rests on.
+    shortfallReason: shortfall > 0 ? "Accessible review corpus exhausted" : null,
+    perRepository
+  };
+}
+
+// plugins/review-voice/src/corpus/store.ts
+function storeEvents(db, events) {
+  const insert = db.prepare(
+    `INSERT INTO review_events (
+       event_id, source, repository, pull_number, pull_request_url, comment_id,
+       reviewer_login, reviewer_role, created_at, body_redacted, content_key,
+       file_path, line_start, diff_hunk_redacted, outcome_status,
+       outcome_certainty, redaction_version, redaction_counts_json, created_db_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (content_key) DO NOTHING`
+  );
+  let inserted = 0;
+  db.exec("BEGIN");
+  try {
+    for (const event of events) {
+      const result = insert.run(
+        event.eventId,
+        event.source,
+        event.repository,
+        event.pullNumber,
+        event.pullRequestUrl,
+        event.commentId,
+        event.reviewerLogin,
+        event.role,
+        event.createdAt,
+        event.bodyRedacted,
+        event.contentKey,
+        event.filePath ?? null,
+        event.lineStart ?? null,
+        event.diffHunkRedacted ?? null,
+        // Outcomes are inferred in a later pass; unknown is the honest default
+        // and carries a middling weight rather than zero.
+        "unknown",
+        "weak",
+        event.redactionVersion,
+        JSON.stringify(event.redactionCounts),
+        (/* @__PURE__ */ new Date()).toISOString()
+      );
+      if (result.changes > 0) inserted += 1;
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  const redactionTotals = {};
+  for (const event of events) {
+    for (const [label, count] of Object.entries(event.redactionCounts)) {
+      redactionTotals[label] = (redactionTotals[label] ?? 0) + count;
+    }
+  }
+  recordAudit(db, "corpus_ingested", null, {
+    offered: events.length,
+    inserted,
+    redactions: redactionTotals
+  });
+  return { inserted, alreadyPresent: events.length - inserted };
+}
+function corpusCoverage(db) {
+  const total = db.prepare("SELECT COUNT(*) AS n FROM review_events").get().n;
+  const byRepository = Object.fromEntries(
+    db.prepare("SELECT repository, COUNT(*) AS n FROM review_events GROUP BY repository").all().map((row) => [row.repository, row.n])
+  );
+  const byRole = Object.fromEntries(
+    db.prepare("SELECT reviewer_role, COUNT(*) AS n FROM review_events GROUP BY reviewer_role").all().map((row) => [row.reviewer_role, row.n])
+  );
+  const range = db.prepare("SELECT MIN(created_at) AS oldest, MAX(created_at) AS newest FROM review_events").get();
+  return { total, byRepository, byRole, oldest: range.oldest, newest: range.newest };
+}
+
 // plugins/review-voice/src/cli.ts
 var USAGE = `review-voice <command>
 
@@ -7421,6 +7833,7 @@ Commands:
   context           Resolve config and the active policy stack as JSON
   evidence          Run the configured static checks and emit structured signals
   redact            Redact secrets from stdin (used before anything is stored)
+  sync              Ingest review history from allowlisted repositories
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -7443,6 +7856,11 @@ record flags:
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
   actions: ${FEEDBACK_ACTIONS.join(", ")} (hyphens accepted)
+
+sync flags:
+  --target <n>        Eligible events to import (default 250)
+  --max-pulls <n>     Pull requests inspected per repository (default 60)
+  --dry-run           Report what would be imported without storing anything
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -7563,6 +7981,78 @@ function contextCommand() {
     throw error;
   }
 }
+async function syncCommand(argv) {
+  const root = repositoryRoot(process.cwd());
+  const config = loadConfig(root);
+  if (config.allowlist.length === 0) {
+    console.error("No repositories are allowlisted. Run /review-voice:init first.");
+    return 2;
+  }
+  if (config.ownerReviewer === null) {
+    console.error("No owner reviewer configured. Run /review-voice:init first.");
+    return 2;
+  }
+  const target = numericFlag(argv, "--target", 250) ?? 250;
+  const maxPulls = numericFlag(argv, "--max-pulls", 60) ?? 60;
+  const dryRun = argv.includes("--dry-run");
+  const client = new GitHubClient({ allowlist: config.allowlist });
+  const stats = {
+    pullRequestsScanned: 0,
+    commentsSeen: 0,
+    eligible: 0,
+    duplicates: 0,
+    excluded: {}
+  };
+  const collected = [];
+  for (const repository of config.allowlist) {
+    const events = await collectRepository(
+      client,
+      {
+        repository,
+        ownerLogin: config.ownerReviewer,
+        maxPullRequests: maxPulls,
+        maxCommentsPerPull: 200,
+        includeForks: false
+      },
+      stats
+    );
+    collected.push(...events);
+  }
+  const selection = selectEvents(
+    collected.map((event) => ({ ...event, role: event.role })),
+    { target, maxRepositoryShare: 0.5 }
+  );
+  if (dryRun) {
+    console.log(JSON.stringify({ dryRun: true, stats, selection: { ...selection, selected: void 0 } }, null, 2));
+    return 0;
+  }
+  const db = openDatabase();
+  try {
+    const stored = storeEvents(db, selection.selected);
+    console.log(
+      JSON.stringify(
+        {
+          stats,
+          sourceWindow: {
+            targetEvents: selection.targetEvents,
+            discoveredEligibleEvents: selection.discoveredEligible,
+            importedEvents: selection.importedEvents,
+            shortfall: selection.shortfall,
+            shortfallReason: selection.shortfallReason,
+            repositories: selection.perRepository
+          },
+          stored,
+          coverage: corpusCoverage(db)
+        },
+        null,
+        2
+      )
+    );
+    return 0;
+  } finally {
+    db.close();
+  }
+}
 function redactCommand(argv) {
   const result = redact(readStdin());
   if (argv.includes("--json")) {
@@ -7676,7 +8166,7 @@ function statusCommand() {
     db.close();
   }
 }
-function main(argv) {
+async function main(argv) {
   const command = argv[0];
   switch (command) {
     case void 0:
@@ -7695,6 +8185,8 @@ function main(argv) {
       return contextCommand();
     case "redact":
       return redactCommand(argv.slice(1));
+    case "sync":
+      return await syncCommand(argv.slice(1));
     case "evidence":
       return evidenceCommand();
     case "record":
@@ -7721,4 +8213,17 @@ ${USAGE}`);
   }
 }
 suppressSqliteExperimentalWarning();
-process.exitCode = main(process.argv.slice(2));
+try {
+  process.exitCode = await main(process.argv.slice(2));
+} catch (error) {
+  if (error instanceof AuthError || error instanceof NotAllowlisted || error instanceof ReadOnlyViolation) {
+    console.error(error.message);
+    process.exitCode = 2;
+  } else if (error instanceof GitError) {
+    console.error(error.message);
+    process.exitCode = 2;
+  } else {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}

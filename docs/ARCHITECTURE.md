@@ -203,6 +203,28 @@ A bot is a bot even when it is also a collaborator: automated output would
 teach the reviewer to sound like a linter, so it is excluded from voice
 learning regardless of permissions.
 
+### Corpus ingestion
+
+Redaction happens in the collector, before an event is returned, so the
+original text never exists anywhere a caller could persist it by accident. The
+schema reinforces that: there is no column for unredacted text, and a test
+asserts there is not.
+
+Eligibility asks "does this carry review judgement", not "is this a comment". A
+corpus padded with LGTMs and pull-request checklists teaches nothing while
+making every retrieval noisier. Bot output is excluded outright — it would
+teach the reviewer to sound like a linter.
+
+Identity is content plus location, not the GitHub comment id. A rebase
+resurfaces the same comment under a new id, and the same words at a different
+line are different evidence.
+
+Selection is newest-first under a per-repository share cap, so one busy
+repository cannot define the global policy. The cap is relaxed rather than
+under-filling the corpus: a smaller corpus is a worse outcome than a slightly
+lopsided one. Shortfalls are reported exactly — claiming a full scan when the
+history ran out would misrepresent how much the policy rests on.
+
 ## Trust boundary
 
 Everything read from a repository or from GitHub is **untrusted data**: source,

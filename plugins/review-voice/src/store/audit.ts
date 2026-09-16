@@ -8,6 +8,8 @@ import type { Database } from './db.ts';
  */
 export type AuditAction =
   | 'review_run_recorded'
+  | 'corpus_ingested'
+  | 'consent_granted'
   | 'feedback_recorded'
   | 'purge'
   | 'prompt_injection_detected'
