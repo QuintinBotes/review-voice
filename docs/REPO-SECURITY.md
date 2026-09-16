@@ -58,7 +58,8 @@ build if a pin regresses to a tag — pinning rots silently without a check.
 | Control | Runs |
 |---|---|
 | gitleaks secret scan | Every push and pull request |
-| CodeQL | Every push, every pull request, weekly |
+| Full OS matrix (Linux + macOS) | Pushes to main and releases; pull requests run Linux only |
+| CodeQL | Weekly, and on demand |
 | Dependabot alerts and automated security fixes | Continuous |
 | Dependabot version updates | Weekly, grouped |
 | Bundle-drift check | Every push and pull request |

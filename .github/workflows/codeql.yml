@@ -1,12 +1,12 @@
 name: CodeQL
 
+# Weekly and on demand only. CodeQL is the most expensive job here and this is
+# a small, slow-moving TypeScript surface; running it on every push and pull
+# request costs far more than the signal it adds between weekly scans.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   schedule:
     - cron: '0 4 * * 1'
+  workflow_dispatch:
 
 permissions: {}
 
