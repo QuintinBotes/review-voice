@@ -44,7 +44,7 @@ test('config.yaml is read for identity, allowlist and limits', () => {
     '.review-voice/config.yaml': [
       'version: 1',
       'identity:',
-      '  owner_reviewer: some-login',
+      '  owner_reviewer: your-github-login',
       'repositories:',
       '  mode: allowlist',
       '  include:',
@@ -55,7 +55,7 @@ test('config.yaml is read for identity, allowlist and limits', () => {
   });
   try {
     const result = context(dir);
-    assert.equal(result.ownerReviewer, 'some-login');
+    assert.equal(result.ownerReviewer, 'your-github-login');
     assert.deepEqual(result.allowlist, ['your-org/your-repo']);
     assert.equal(result.policy.maxFindings, 3);
   } finally {
