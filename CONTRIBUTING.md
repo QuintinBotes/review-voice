@@ -51,6 +51,24 @@ installed by git clone with no install step. **If you change anything under
 Third-party packages are fine as `devDependencies` — esbuild inlines them. They
 must never become runtime dependencies.
 
+## Workflow and supply-chain rules
+
+Every third-party GitHub Action is pinned to a full commit SHA with a version
+comment:
+
+```yaml
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+```
+
+A tag is a mutable pointer; whoever controls the action's repository can move
+it and run their code against this repository's tokens. `npm run check:pins`
+enforces this and CI runs it. Dependabot keeps the SHAs current.
+
+Workflows start from `permissions: {}` and each job opts into the minimum it
+needs. Checkout always sets `persist-credentials: false`, so the workflow token
+is not left in `.git/config` for a later step — or one of its dependencies — to
+read. Jobs that hold a secret never run code from a fork.
+
 ## Architecture rule
 
 Deterministic work belongs in the CLI; judgment belongs in agents. Concretely:

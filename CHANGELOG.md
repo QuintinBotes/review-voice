@@ -16,7 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Identity guard preventing personal logins or private repository names from
   entering source, docs or fixtures.
 - CI: typecheck, unit tests, bundle drift, plugin manifest validation, secret
-  scanning, identity guard.
+  scanning, identity guard, action-pin check, and a Conventional Commits check
+  on pull request titles, gated behind a single `ci-green` status check.
+- Supply-chain hardening: all GitHub Actions pinned to commit SHAs with an
+  enforcing check, least-privilege workflow permissions, `persist-credentials:
+  false` on checkout, fork pull requests excluded from secret-holding jobs, and
+  a release guard rejecting tags not on `main`.
 - Architecture decision records closing the eight open decisions from the
   specification.
 
