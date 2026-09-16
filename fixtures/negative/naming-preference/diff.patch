@@ -1,0 +1,8 @@
+--- a/src/cart/total.ts
++++ b/src/cart/total.ts
+@@ -1,6 +1,6 @@
+-export function calc(items: Item[]): number {
+-  return items.reduce((acc, i) => acc + i.price * i.qty, 0);
++export function calculateTotal(items: Item[]): number {
++  return items.reduce((sum, item) => sum + item.price * item.qty, 0);
+ }

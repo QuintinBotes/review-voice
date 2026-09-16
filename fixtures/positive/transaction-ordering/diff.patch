@@ -1,0 +1,14 @@
+--- a/src/auth/session.ts
++++ b/src/auth/session.ts
+@@ -60,10 +60,14 @@ export async function issueRefreshToken(userId: string, res: Response) {
+   const tx = await db.begin();
+-  const token = await tx.tokens.create({ userId, value: randomToken() });
+-  await tx.commit();
+-  res.json({ refreshToken: token.value });
++  const token = await tx.tokens.create({ userId, value: randomToken() });
++
++  // Send early so the client is not kept waiting on the commit.
++  res.json({ refreshToken: token.value });
++
++  await tx.commit();
+ }

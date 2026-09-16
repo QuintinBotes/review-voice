@@ -1,0 +1,9 @@
+name: transaction-ordering
+asserts: >
+  A response emitted before its transaction commits is flagged, because a retry
+  can produce a second valid token.
+expect:
+  min_findings: 1
+  severity: blocking
+  path: src/auth/session.ts
+  category: correctness

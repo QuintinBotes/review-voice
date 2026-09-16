@@ -1,0 +1,12 @@
+--- a/src/util/format.ts
++++ b/src/util/format.ts
+@@ -1,7 +1,9 @@
+-export function titleCase(value: string): string {
+-  return value.split(' ').map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
+-}
++export function titleCase(value: string): string {
++  return value
++    .split(' ')
++    .map((word) => word[0].toUpperCase() + word.slice(1))
++    .join(' ');
++}

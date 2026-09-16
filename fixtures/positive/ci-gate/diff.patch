@@ -1,0 +1,15 @@
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -40,12 +40,12 @@ jobs:
+   verify:
+     if: github.event_name != 'workflow_dispatch'
+     runs-on: ubuntu-latest
+     steps:
+       - run: npm test
+ 
+   publish:
+-    needs: [verify]
++    needs: [build]
+     runs-on: ubuntu-latest
+     steps:
+       - run: npm publish

@@ -1,0 +1,5 @@
+--- a/src/session/handler.ts
++++ b/src/session/handler.ts
+@@ -5,3 +5,3 @@
+-export const TTL = 3600;
++export const TTL = 86400;

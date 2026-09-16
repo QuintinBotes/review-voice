@@ -1,0 +1,6 @@
+name: formatting-only
+asserts: >
+  A pure formatting change produces exactly the no-findings response. This is
+  the hardest case for a reviewer that wants to seem useful.
+expect:
+  output: "No actionable findings."
