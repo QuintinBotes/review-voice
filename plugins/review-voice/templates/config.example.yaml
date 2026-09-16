@@ -1,0 +1,65 @@
+# Copy to .review-voice/config.yaml in the repository you want reviewed,
+# or let `/review-voice:init` write it for you.
+
+version: 1
+
+identity:
+  # Resolved from your authenticated GitHub account at init. Whoever runs the
+  # plugin is the owner reviewer; there is no default person.
+  owner_reviewer: your-github-login
+
+repositories:
+  # allowlist is the only supported mode. Review Voice never scans every
+  # repository your token can reach.
+  mode: allowlist
+  include:
+    - your-org/your-repo
+    - your-org/another-repo
+  exclude:
+    - "*/archive"
+    - "*/sandbox"
+
+bootstrap:
+  target_review_events: 250
+  max_repository_share: 0.50      # no single repo may dominate global policy
+  owner_weight_multiplier: 3.0    # your judgment outweighs other reviewers'
+  recency_half_life_days: 180
+  include_pr_conversation_comments: true
+  include_bot_comments: false
+
+review:
+  max_findings: 5
+  max_words_per_finding: 40
+  max_total_words: 180
+  confidence_threshold: 0.80
+  final_score_threshold: 0.78
+  no_findings_response: "No actionable findings."
+  suppress_hedge_phrases: true
+
+static_evidence:
+  # Commands are opt-in. Review Voice will suggest what it detects but never
+  # runs a project script you did not list. See docs/adr/0003.
+  enabled: false
+  commands: []
+  # Example:
+  #   - name: typecheck
+  #     run: npm run typecheck
+  #     timeout_seconds: 120
+
+privacy:
+  raw_retention_days: 30
+  keep_normalized_events: true
+  redact_secrets: true
+  allow_remote_embeddings: false
+  local_only_index: true
+
+sync:
+  mode: manual
+  incremental_batch_size: 50
+  enabled: true
+
+writes:
+  # Review Voice is read-only through v1. This exists so the setting is visible,
+  # not because flipping it does anything yet.
+  github_posting_enabled: false
+  require_preview_and_confirmation: true

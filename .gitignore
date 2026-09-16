@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output that is NOT the committed bundle
+*.tsbuildinfo
+plugins/review-voice/dist/*
+!plugins/review-voice/dist/review-voice.mjs
+
+# Review Voice local data — never commit a corpus, policy store, or database.
+# The real store lives outside the repo (see PRIVACY.md), but guard anyway.
+.review-voice/
+review-voice.db
+review-voice.db-*
+*.sqlite
+*.sqlite-*
+embeddings/
+audit/
+exports/
+
+# Environment and credentials
+.env
+.env.*
+*.pem
+*.key
+
+# OS and editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
