@@ -40,7 +40,10 @@ jobs:
       - run: npm run build
 
       - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+        # Pinned deliberately: an unpinned global install is a mutable
+        # dependency running in CI with this repository's tokens, which is the
+        # same problem SHA-pinning the actions solves. Bump it consciously.
+        run: npm install -g @anthropic-ai/claude-code@2.1.273
 
       - name: Run eval suite
         env:
