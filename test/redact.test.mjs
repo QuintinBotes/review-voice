@@ -71,12 +71,16 @@ test('private key blocks are removed whole', () => {
 });
 
 test('database credentials go but the surrounding context stays readable', () => {
-  // example.com hosts keep this out of the identity guard's real-address rule.
+  // Asserted exactly rather than by substring. A substring check against a URL
+  // is the incomplete-sanitization pattern CodeQL flags, and it is the weaker
+  // test regardless: only the password should change, and an exact comparison
+  // proves the scheme, user, host, port and path all survived untouched.
+  // example.com keeps this out of the identity guard's real-address rule.
   const result = redact('Use postgres://appuser:hunter2hunter2@db.example.com:5432/app here.');
-  assert.ok(!result.text.includes('hunter2hunter2'));
-  assert.ok(result.text.includes('postgres://'));
-  assert.ok(result.text.includes('db.example.com'));
-  assert.ok(result.text.includes('appuser'));
+  assert.equal(
+    result.text,
+    'Use postgres://appuser:[REDACTED:DB_CREDENTIALS]@db.example.com:5432/app here.',
+  );
 });
 
 test('assignment-shaped secrets are caught', () => {
