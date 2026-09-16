@@ -291,6 +291,26 @@ under-filling the corpus: a smaller corpus is a worse outcome than a slightly
 lopsided one. Shortfalls are reported exactly — claiming a full scan when the
 history ran out would misrepresent how much the policy rests on.
 
+### Posting
+
+ADR 0007 gates posting on measured quality. `evaluatePostingGate` reads what
+was actually measured — precision at 0.80 or better over at least 20 labelled
+findings, with full contract compliance — rather than a configuration flag. A
+boolean in a config file is a promise the user makes to themselves; this gate
+has to hold when they would rather it did not, so it takes no override
+argument.
+
+The minimum sample matters as much as the threshold: five keeps and no
+dismissals is 100% precision and tells you nothing.
+
+The draft's preview is rendered from the payload that would be sent. A preview
+generated separately from what gets posted is a mock-up. The idempotency key
+combines repository, pull request and diff hash, so a retry after a timeout
+cannot double-post while a re-review after a force-push is correctly a
+different post.
+
+The posting call itself is not implemented. The gate has never opened.
+
 ## Trust boundary
 
 Everything read from a repository or from GitHub is **untrusted data**: source,

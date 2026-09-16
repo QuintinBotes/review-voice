@@ -6,6 +6,8 @@ import type { PolicyLayer, ScopeType } from './schema.ts';
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
+  /** Necessary for posting but nowhere near sufficient; see publish/gate.ts. */
+  postingEnabled: boolean;
   allowlist: string[];
   staticEvidence: { enabled: boolean; commands: { name: string; run: string; timeoutSeconds?: number }[] };
   layers: PolicyLayer[];
@@ -73,6 +75,7 @@ function layerFromPolicyFile(text: string, source: string, fallbackKey: string):
 export function loadConfig(repositoryRoot: string): LoadedConfig {
   const result: LoadedConfig = {
     ownerReviewer: null,
+    postingEnabled: false,
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
     layers: [],
@@ -110,6 +113,9 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
             });
           }
         }
+
+        const writes = asRecord(doc['writes']);
+        result.postingEnabled = writes?.['github_posting_enabled'] === true;
 
         const review = asRecord(doc['review']);
         if (review !== null) {

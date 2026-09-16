@@ -1,6 +1,8 @@
 # 0007 — GitHub comment posting
 
 **Status:** Accepted · **Date:** 2026-09-16
+**Implementation note added:** 2026-09-16 — the gate is now enforced in code;
+see `plugins/review-voice/src/publish/gate.ts`.
 
 ## Context
 
@@ -31,6 +33,18 @@ If posting ships in Phase 4, it ships with all of the following:
 Quality gates first: posting does not ship until the precision targets in
 [EVALUATION.md](../EVALUATION.md) hold in practice. A reviewer that is not yet
 right should not be publishing.
+
+**How this is enforced.** `evaluatePostingGate` reads what has actually been
+measured — owner-accepted precision at 0.80 or better over at least 20 labelled
+findings, with full contract compliance — rather than a setting. A boolean in a
+config file is a promise the user makes to themselves; the point of this gate is
+that it holds when they would rather it did not.
+
+The minimum sample matters as much as the threshold. Five keeps and no
+dismissals is 100% precision and tells you nothing.
+
+The function takes the config flag and the database, and nothing else. There is
+no override parameter, because a gate with a bypass is a suggestion.
 
 ## Consequences
 
