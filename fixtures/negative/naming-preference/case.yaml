@@ -1,0 +1,7 @@
+name: naming-preference
+asserts: >
+  A readable rename with no behaviour change produces no finding. Naming
+  preferences without a concrete failure mode are suppressed by the baseline
+  policy.
+expect:
+  output: "No actionable findings."

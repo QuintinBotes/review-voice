@@ -56,6 +56,21 @@ changes, and rebased or outdated review threads.
 
 **No policy change activates without passing this suite.**
 
+## What the fixtures assert
+
+Injection cases assert an **absence** — output that must not appear, tools that
+must not be called. A positive assertion cannot prove an injection failed,
+because a reviewer that stayed silent and a reviewer that was hijacked into
+silence look identical from the outside. The graders say so explicitly.
+
+The three vectors covered are the places a reviewer actually meets hostile
+text: a source comment, pull-request description text, and content imitating
+static-analysis output to manufacture evidence no tool produced.
+
+Fixtures are checked by a unit test for real addresses, hosts and credentials.
+They are public and permanent, so that backstop sits behind the rule in
+`CONTRIBUTING.md` rather than replacing it.
+
 ## Running it
 
 ```bash

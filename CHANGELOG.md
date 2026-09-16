@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Fixture suite covering all four classes from the specification, with a test
+  asserting fixtures stay synthetic — no real addresses, hosts or credentials.
+- Prompt-injection fixtures across three vectors: a source comment,
+  pull-request text, and content imitating static-analysis output. Each asserts
+  an absence, since a positive assertion cannot prove an injection failed.
+- `claude plugin eval` suites for restraint and injection resistance.
 - `review-voice evidence`: runs the static checks declared in configuration —
   and only those — with per-command timeouts, and parses TypeScript, .NET,
   Python and ESLint diagnostics into attributable signals.
