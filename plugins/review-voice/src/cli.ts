@@ -18,11 +18,15 @@ import { openDatabase } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
 import { recordRun, latestRun } from './store/runs.ts';
 import { recordFeedback, normaliseAction, feedbackTotals, FEEDBACK_ACTIONS } from './store/feedback.ts';
+import { loadConfig } from './policy/load.ts';
+import { resolvePolicy } from './policy/schema.ts';
+import { repositoryRoot } from './diff/acquire.ts';
 
 const USAGE = `review-voice <command>
 
 Commands:
   diff              Acquire the diff under review as structured JSON
+  context           Resolve config and the active policy stack as JSON
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -149,6 +153,39 @@ function flag(argv: string[], name: string): string | null {
   return value === undefined || value.startsWith('--') ? null : value;
 }
 
+function contextCommand(): number {
+  try {
+    const root = repositoryRoot(process.cwd());
+    const config = loadConfig(root);
+    const policy = resolvePolicy(config.layers);
+    console.log(
+      JSON.stringify(
+        {
+          repositoryRoot: root,
+          ownerReviewer: config.ownerReviewer,
+          allowlist: config.allowlist,
+          staticEvidence: config.staticEvidence,
+          policy,
+          // Repository-supplied policy is a proposal, never an activation:
+          // see docs/adr/0006.
+          pendingApproval: config.unapproved,
+          warnings: config.warnings,
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  } catch (error) {
+    if (error instanceof GitError) {
+      console.error(error.message);
+      console.error('Run this inside a git repository.');
+      return 2;
+    }
+    throw error;
+  }
+}
+
 function recordCommand(argv: string[]): number {
   const output = readStdin();
   if (output.trim().length === 0) {
@@ -266,6 +303,9 @@ function main(argv: string[]): number {
 
     case 'diff':
       return diffCommand(argv.slice(1));
+
+    case 'context':
+      return contextCommand();
 
     case 'record':
       return recordCommand(argv.slice(1));
