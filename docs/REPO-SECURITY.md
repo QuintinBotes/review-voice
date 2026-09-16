@@ -34,12 +34,14 @@ here than in most repositories: `dist/review-voice.mjs` is committed and
 executed directly by users, so being able to prove who produced each commit is
 part of the chain that makes the bundle trustworthy.
 
-Commits are authored under a personal address kept deliberately separate from
-any employer's, so nothing about this project is attributable to an unrelated
-organisation. A git log in a public repository is permanent and is harvested by
-address scrapers; contributors who would rather not publish an inbox should use
-their GitHub `users.noreply.github.com` relay, which verifies and attributes
-identically.
+Commits are authored through a GitHub `users.noreply.github.com` relay rather
+than any real address. Attribution and signature verification are unaffected,
+nothing ties the project to an unrelated employer, and no inbox is published in
+a repository whose git log is permanent and routinely harvested by scrapers.
+
+This is also what GitHub's own "Block command line pushes that expose my email"
+setting enforces, so the relay is the path of least resistance as well as the
+safer one.
 
 ### Release tags are protected
 
