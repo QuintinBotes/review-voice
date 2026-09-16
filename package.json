@@ -1,0 +1,27 @@
+{
+  "name": "review-voice-dev",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Build and test tooling for the Review Voice Claude Code plugin. Not published; the plugin itself ships with zero runtime dependencies.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check:dist": "node scripts/build.mjs --check",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "validate:plugin": "claude plugin validate plugins/review-voice --strict",
+    "validate:marketplace": "claude plugin validate . --strict",
+    "guard:identity": "node scripts/guard-identity.mjs",
+    "verify": "npm run typecheck && npm run test && npm run check:dist && npm run guard:identity"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0",
+    "yaml": "^2.7.0"
+  }
+}

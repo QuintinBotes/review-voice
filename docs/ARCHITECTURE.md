@@ -1,0 +1,108 @@
+# Architecture
+
+## The one decision everything else follows from
+
+The specification describes a ten-stage review pipeline but does not say which
+stages are deterministic. That is the load-bearing call, because it decides what
+is testable, what costs tokens, and what can run in CI.
+
+**Deterministic work lives in the bundled CLI. Judgment lives in Claude Code
+agents. A command file orchestrates them.**
+
+| Stage | Owner | Why |
+|---|---|---|
+| Diff acquisition | CLI | git plumbing |
+| Context resolution | CLI | config and policy layering is pure logic |
+| Static evidence collection | CLI | runs configured tools, emits JSON |
+| Candidate generation | `diff-analyst` | genuine judgment |
+| Evidence verification | `evidence-verifier` | genuine judgment |
+| Precedent retrieval | CLI | an index query |
+| Preference scoring | CLI | **arithmetic — never ask a model to do this** |
+| Dedup and ranking | CLI | deterministic |
+| Concise editing | `concise-editor` | wording |
+| Schema and style validation | CLI | **this is what enforces the limits** |
+
+### Why this matters in practice
+
+The specification sets targets of 100% word-limit compliance and 100% exact
+no-findings compliance. Those are unreachable if a prompt is the only thing
+holding the line, and trivial if a validator rejects non-compliant output and
+forces a re-edit. The output contract is code.
+
+A second consequence: the plugin needs no API key. It runs inside the user's
+existing Claude Code session.
+
+## Components
+
+```
+Claude Code command  (commands/review.md — orchestration)
+  ├── CLI    (dist/review-voice.mjs — deterministic stages, storage, audit)
+  └── Agents (agents/*.md — candidate generation, verification, editing)
+```
+
+### The CLI
+
+TypeScript in `plugins/review-voice/src/`, bundled by esbuild into a single
+committed `dist/review-voice.mjs`.
+
+**Zero runtime dependencies.** Plugins install by git clone with no install
+step, so users must never run `npm install`. Third-party packages are
+devDependencies inlined at build time. JSON Schema validation uses Ajv
+standalone codegen, so schemas compile to plain functions with no runtime Ajv.
+
+Storage is Node's built-in `node:sqlite` — no native modules. It is experimental
+on Node 22 and stable on Node 24; the experimental warning is filtered at
+startup because it concerns a dependency choice the user never made.
+
+The committed bundle is a real risk: it can drift from source. CI rebuilds and
+diffs on every push, so a stale bundle cannot ship.
+
+### Retrieval
+
+No embedding model ships with the plugin. A downloaded model would break
+zero-install; a remote one would break the local-only default.
+
+Default retrieval is SQLite FTS5 lexical matching plus structural filters
+(category, repository, path glob, language), ranked by the owner-weighted
+scoring in the specification. Offline, deterministic, unit-testable.
+
+The tradeoff is real: lexical retrieval misses paraphrases. An
+`EmbeddingProvider` interface exists so a provider can be swapped in if the
+evaluation harness shows precedent recall is the binding constraint. See
+[adr/0001-embedding-implementation.md](adr/0001-embedding-implementation.md).
+
+### Storage layout
+
+Outside the repository, in the platform data directory:
+
+```
+review-voice.db      normalised redacted events, feedback, policies, runs, audit
+embeddings/          retrieval index
+policies/            versioned artifacts, plus archived/
+audit/events.jsonl   append-only local audit log
+exports/             explicit exports only
+```
+
+## Policy resolution
+
+```
+global → repository → path → language → current session
+```
+
+An explicit session instruction wins. An explicit narrow rule beats an inferred
+broad one. A suppression beats a propensity to flag. And a candidate must still
+pass technical verification even when history favours it — precedent adjusts
+preference, it never manufactures truth.
+
+## Trust boundary
+
+Everything read from a repository or from GitHub is **untrusted data**: source,
+comments, markdown, PR titles and descriptions, issue comments, historical
+review comments, fixtures. It is wrapped in delimited data blocks, never
+interpreted as instruction, and can never alter tool permissions or workflow
+order.
+
+The authoritative inputs are the owner-approved policy and the plugin's own
+prompts. Nothing else.
+
+See [THREAT-MODEL.md](THREAT-MODEL.md).
