@@ -88,6 +88,41 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_events_created ON review_events (created_at DESC);
   CREATE INDEX idx_events_role ON review_events (reviewer_role);
   `,
+
+  // v3 — lexical retrieval index.
+  //
+  // FTS5 rather than embeddings, per docs/adr/0001: no model download, works
+  // offline, and deterministic enough to unit test. Triggers keep the index in
+  // step with the table so it cannot silently drift out of date.
+  `
+  CREATE VIRTUAL TABLE review_events_fts USING fts5(
+    body_redacted,
+    file_path,
+    content = 'review_events',
+    content_rowid = 'rowid',
+    tokenize = 'porter unicode61'
+  );
+
+  INSERT INTO review_events_fts (rowid, body_redacted, file_path)
+    SELECT rowid, body_redacted, COALESCE(file_path, '') FROM review_events;
+
+  CREATE TRIGGER review_events_ai AFTER INSERT ON review_events BEGIN
+    INSERT INTO review_events_fts (rowid, body_redacted, file_path)
+    VALUES (new.rowid, new.body_redacted, COALESCE(new.file_path, ''));
+  END;
+
+  CREATE TRIGGER review_events_ad AFTER DELETE ON review_events BEGIN
+    INSERT INTO review_events_fts (review_events_fts, rowid, body_redacted, file_path)
+    VALUES ('delete', old.rowid, old.body_redacted, COALESCE(old.file_path, ''));
+  END;
+
+  CREATE TRIGGER review_events_au AFTER UPDATE ON review_events BEGIN
+    INSERT INTO review_events_fts (review_events_fts, rowid, body_redacted, file_path)
+    VALUES ('delete', old.rowid, old.body_redacted, COALESCE(old.file_path, ''));
+    INSERT INTO review_events_fts (rowid, body_redacted, file_path)
+    VALUES (new.rowid, new.body_redacted, COALESCE(new.file_path, ''));
+  END;
+  `,
 ];
 
 function migrate(db: Database): void {

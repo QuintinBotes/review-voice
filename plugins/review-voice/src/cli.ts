@@ -30,6 +30,7 @@ import { selectEvents } from './corpus/select.ts';
 import { storeEvents, corpusCoverage } from './corpus/store.ts';
 import { buildConsentPlan, discoverRepositories } from './consent/plan.ts';
 import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
+import { retrievePrecedents } from './retrieval/retrieve.ts';
 
 const USAGE = `review-voice <command>
 
@@ -42,6 +43,7 @@ Commands:
   discover          List repositories the credential can see (reads no history)
   consent-plan      Show exactly what a sync would read, before it reads it
   purge             Delete stored data by repository, age, or entirely
+  retrieve          Find weighted precedents for a candidate finding
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -76,6 +78,14 @@ purge flags (one required):
   --before <ISO date>   Remove events older than a date
   --all                 Remove everything, including runs and feedback
   --confirm             Actually delete; without it, only a preview is printed
+
+retrieve flags:
+  --text <query>        Candidate claim and failure mode (required)
+  --repository <name>   Prefer precedents from this repository
+  --path <path>         Prefer precedents on this file
+  --language <lang>     Prefer precedents in this language
+  --max-positive <n>    Default 3
+  --max-negative <n>    Default 2
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -367,6 +377,30 @@ async function syncCommand(argv: string[]): Promise<number> {
   }
 }
 
+function retrieveCommand(argv: string[]): number {
+  const text = flag(argv, '--text');
+  if (text === null) {
+    console.error('retrieve needs --text "<claim and failure mode>".');
+    return 2;
+  }
+
+  const db = openDatabase();
+  try {
+    const precedents = retrievePrecedents(db, {
+      text,
+      repository: flag(argv, '--repository') ?? undefined,
+      filePath: flag(argv, '--path') ?? undefined,
+      language: flag(argv, '--language') ?? undefined,
+      maxPositive: numericFlag(argv, '--max-positive', 3) ?? 3,
+      maxNegative: numericFlag(argv, '--max-negative', 2) ?? 2,
+    });
+    console.log(JSON.stringify({ precedents }, null, 2));
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 function redactCommand(argv: string[]): number {
   const result = redact(readStdin());
   if (argv.includes('--json')) {
@@ -532,6 +566,9 @@ async function main(argv: string[]): Promise<number> {
 
     case 'purge':
       return purgeCommand(argv.slice(1));
+
+    case 'retrieve':
+      return retrieveCommand(argv.slice(1));
 
     case 'evidence':
       return evidenceCommand();
