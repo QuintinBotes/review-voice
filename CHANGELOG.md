@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `review-voice score`: the specification's eligibility formula, computed
+  deterministically — technical confidence, owner and repository alignment from
+  weighted precedent, evidence quality and novelty against already-kept
+  findings.
+- `review-voice calibrate` and `policy show|approve|rollback`: feedback is
+  compiled into proposed rules that are stored inactive, gated on three
+  corroborating signals including an owner signal with nothing contradicting,
+  and activated only on explicit approval. Versions are retained so rollback is
+  possible, and rollback refuses a version that was never approved.
 - `review-voice retrieve`: FTS5 lexical precedent retrieval with owner-weighted
   scoring, 180-day recency decay, specificity and context weighting, and
   separate caps for positive and negative precedents. The index is kept in step

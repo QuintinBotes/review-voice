@@ -664,6 +664,28 @@ var MIGRATIONS = [
     INSERT INTO review_events_fts (rowid, body_redacted, file_path)
     VALUES (new.rowid, new.body_redacted, COALESCE(new.file_path, ''));
   END;
+  `,
+  // v4 — versioned policy artifacts.
+  //
+  // A policy row carries its own provenance, so "why does the reviewer say
+  // this" is answerable from the store rather than from memory. Old versions
+  // are kept rather than overwritten, because rollback is only possible if the
+  // thing being rolled back to still exists.
+  `
+  CREATE TABLE policies (
+    policy_id TEXT PRIMARY KEY,
+    scope_type TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content_yaml TEXT NOT NULL,
+    active INTEGER NOT NULL,
+    generated_at TEXT NOT NULL,
+    approved_at TEXT,
+    provenance_json TEXT NOT NULL,
+    evaluation_json TEXT NOT NULL,
+    UNIQUE (scope_type, scope_key, version)
+  );
+  CREATE INDEX idx_policies_active ON policies (scope_type, scope_key, active);
   `
 ];
 function migrate(db) {
@@ -8152,6 +8174,242 @@ function retrievePrecedents(db, query) {
   return [...negative, ...positive];
 }
 
+// plugins/review-voice/src/scoring/score.ts
+var DEFAULT_THRESHOLDS = {
+  technicalConfidence: 0.8,
+  finalScore: 0.78
+};
+function alignmentFrom(precedents) {
+  if (precedents.length === 0) return 0.5;
+  const total = precedents.reduce((sum, p) => sum + p.weight, 0);
+  return 1 / (1 + Math.exp(-total));
+}
+function evidenceQuality(candidate) {
+  const items = candidate.evidence.filter((item) => item.trim().length > 0);
+  if (items.length === 0) return 0;
+  const specific = items.filter((item) => /\b(line|:\d+|\bat \d+)/i.test(item) || item.length > 40).length;
+  const breadth = Math.min(1, items.length / 3);
+  const depth = specific / items.length;
+  return 0.4 * breadth + 0.6 * depth;
+}
+function novelty(candidate, kept) {
+  if (kept.length === 0) return 1;
+  const words = (text) => new Set(text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 3));
+  const mine = words(`${candidate.claim} ${candidate.failureMode}`);
+  let worst = 1;
+  for (const other of kept) {
+    if (other.path === candidate.path && other.line === candidate.line) return 0;
+    const theirs = words(`${other.claim} ${other.failureMode}`);
+    const shared = [...mine].filter((word) => theirs.has(word)).length;
+    const overlap = mine.size === 0 ? 0 : shared / mine.size;
+    worst = Math.min(worst, 1 - overlap);
+  }
+  return worst;
+}
+function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS) {
+  const ownerPrecedents = precedents.filter((p) => p.role === "owner");
+  const repositoryPrecedents = precedents.filter((p) => p.role !== "owner");
+  const ownerAlignment = alignmentFrom(ownerPrecedents);
+  const repositoryAlignment = alignmentFrom(repositoryPrecedents);
+  const quality = evidenceQuality(candidate);
+  const novel = novelty(candidate, kept);
+  const finalScore = 0.35 * candidate.technicalConfidence + 0.25 * ownerAlignment + 0.15 * repositoryAlignment + 0.15 * quality + 0.1 * novel;
+  let rejectedBecause = null;
+  if (candidate.technicalConfidence < thresholds.technicalConfidence) {
+    rejectedBecause = `technical confidence ${candidate.technicalConfidence.toFixed(2)} is below ${thresholds.technicalConfidence}`;
+  } else if (finalScore < thresholds.finalScore) {
+    rejectedBecause = `score ${finalScore.toFixed(2)} is below ${thresholds.finalScore}`;
+  }
+  return {
+    candidateId: candidate.candidateId,
+    technicalConfidence: candidate.technicalConfidence,
+    ownerAlignment,
+    repositoryAlignment,
+    evidenceQuality: quality,
+    novelty: novel,
+    finalScore,
+    eligible: rejectedBecause === null,
+    rejectedBecause,
+    precedentIds: precedents.map((p) => p.eventId)
+  };
+}
+
+// plugins/review-voice/src/policy/compile.ts
+var MIN_CORROBORATING = 3;
+function canActivate(evidence) {
+  const supporting = evidence.dismissals + evidence.keeps + evidence.rewrites;
+  if (supporting < MIN_CORROBORATING) {
+    return { ok: false, reason: `only ${supporting} corroborating signals; ${MIN_CORROBORATING} are needed` };
+  }
+  if (evidence.ownerSignals < 1) {
+    return { ok: false, reason: "no owner signal" };
+  }
+  if (evidence.contradictingSignals > 0) {
+    return { ok: false, reason: `${evidence.contradictingSignals} contradicting owner signal(s)` };
+  }
+  return { ok: true, reason: null };
+}
+function confidenceFrom(evidence) {
+  const supporting = evidence.dismissals + evidence.keeps + evidence.rewrites;
+  if (supporting === 0) return 0;
+  const corroboration = Math.min(1, supporting / 6);
+  const ownerShare = Math.min(1, evidence.ownerSignals / Math.max(1, supporting));
+  const contradiction = evidence.contradictingSignals / (supporting + evidence.contradictingSignals);
+  return Math.max(0, corroboration * 0.5 + ownerShare * 0.5 - contradiction);
+}
+function compileProposals(db) {
+  const rows = db.prepare(
+    `SELECT f.action, f.finding_id, f.review_run_id, f.reason, f.created_at, r.output_json
+       FROM feedback f
+       JOIN review_runs r ON r.review_run_id = f.review_run_id
+       ORDER BY f.created_at DESC`
+  ).all();
+  const byCategory = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    let path = "unknown";
+    try {
+      const parsed = JSON.parse(row.output_json);
+      path = parsed.findings.find((finding) => finding.findingId === row.finding_id)?.path ?? "unknown";
+    } catch {
+      continue;
+    }
+    const key = row.action === "never_flag" || row.action === "dismiss" ? "suppress" : "prioritise";
+    const bucket = byCategory.get(key) ?? { rows: [], paths: /* @__PURE__ */ new Set() };
+    bucket.rows.push(row);
+    bucket.paths.add(path);
+    byCategory.set(key, bucket);
+  }
+  const proposals = [];
+  for (const [kind, bucket] of byCategory) {
+    const keeps = bucket.rows.filter((r) => r.action === "keep").length;
+    const dismissals = bucket.rows.filter((r) => r.action === "dismiss" || r.action === "never_flag").length;
+    const rewrites = bucket.rows.filter((r) => r.action === "rewrite").length;
+    const evidence = {
+      keeps,
+      dismissals,
+      rewrites,
+      // Every recorded feedback action is the owner's; that is who gives it.
+      ownerSignals: bucket.rows.length,
+      contradictingSignals: kind === "suppress" ? keeps : dismissals,
+      mostRecentAt: bucket.rows[0]?.created_at ?? null,
+      eventIds: bucket.rows.map((r) => `${r.review_run_id}:${r.finding_id}`)
+    };
+    const gate = canActivate(evidence);
+    const reasons = bucket.rows.map((r) => r.reason).filter((r) => r !== null && r.length > 0);
+    proposals.push({
+      scope: { type: "global", key: "owner" },
+      kind,
+      rule: kind === "suppress" ? `Suppress findings like those dismissed in ${[...bucket.paths].slice(0, 3).join(", ")}${reasons.length > 0 ? ` (stated reason: ${reasons[0]})` : ""}.` : `Prioritise findings like those kept in ${[...bucket.paths].slice(0, 3).join(", ")}.`,
+      evidence,
+      confidence: confidenceFrom(evidence),
+      activatable: gate.ok,
+      blockedBecause: gate.reason
+    });
+  }
+  return proposals;
+}
+
+// plugins/review-voice/src/policy/versions.ts
+import { randomUUID as randomUUID4 } from "node:crypto";
+function nextVersion(db, scopeType, scopeKey) {
+  const row = db.prepare("SELECT MAX(version) AS v FROM policies WHERE scope_type = ? AND scope_key = ?").get(scopeType, scopeKey);
+  return (row.v ?? 0) + 1;
+}
+function toYaml(rules, version, scopeKey) {
+  const lines = [
+    `policy_version: ${version}`,
+    "scope:",
+    "  type: global",
+    `  key: ${scopeKey}`,
+    "",
+    "suppressed_patterns:"
+  ];
+  const suppress = rules.filter((rule) => rule.kind === "suppress");
+  if (suppress.length === 0) lines.push("  []");
+  for (const rule of suppress) lines.push(`  - ${JSON.stringify(rule.rule)}`);
+  return `${lines.join("\n")}
+`;
+}
+function proposePolicy(db, rules, scopeKey = "owner") {
+  const version = nextVersion(db, "global", scopeKey);
+  const policyId = randomUUID4();
+  const contentYaml = toYaml(rules, version, scopeKey);
+  const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
+  db.prepare(
+    `INSERT INTO policies (policy_id, scope_type, scope_key, version, content_yaml,
+                           active, generated_at, approved_at, provenance_json, evaluation_json)
+     VALUES (?, 'global', ?, ?, ?, 0, ?, NULL, ?, ?)`
+  ).run(policyId, scopeKey, version, contentYaml, generatedAt, JSON.stringify(rules), JSON.stringify({}));
+  recordAudit(db, "policy_proposed", { type: "policy", id: policyId }, { version, ruleCount: rules.length });
+  return {
+    policyId,
+    scopeType: "global",
+    scopeKey,
+    version,
+    contentYaml,
+    active: false,
+    generatedAt,
+    approvedAt: null,
+    provenance: rules
+  };
+}
+function approvePolicy(db, policyId) {
+  const row = db.prepare("SELECT policy_id, scope_key, version, provenance_json FROM policies WHERE policy_id = ?").get(policyId);
+  if (row === void 0) return { ok: false, error: `No policy ${policyId}.` };
+  const rules = JSON.parse(row.provenance_json);
+  const blocked = rules.filter((rule) => !rule.activatable);
+  if (blocked.length > 0) {
+    return {
+      ok: false,
+      error: `${blocked.length} rule(s) have not met the evidence bar: ${blocked.map((r) => r.blockedBecause).join("; ")}`
+    };
+  }
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run("global", row.scope_key);
+    db.prepare("UPDATE policies SET active = 1, approved_at = ? WHERE policy_id = ?").run(
+      (/* @__PURE__ */ new Date()).toISOString(),
+      policyId
+    );
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  recordAudit(db, "policy_approved", { type: "policy", id: policyId }, { version: row.version });
+  return { ok: true, policyId, version: row.version };
+}
+function rollbackTo(db, version, scopeKey = "owner") {
+  const row = db.prepare("SELECT policy_id FROM policies WHERE scope_type = ? AND scope_key = ? AND version = ? AND approved_at IS NOT NULL").get("global", scopeKey, version);
+  if (row === void 0) {
+    return { ok: false, error: `No approved policy at version ${version}.` };
+  }
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run("global", scopeKey);
+    db.prepare("UPDATE policies SET active = 1 WHERE policy_id = ?").run(row.policy_id);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  recordAudit(db, "policy_rolled_back", { type: "policy", id: row.policy_id }, { version });
+  return { ok: true, policyId: row.policy_id, version };
+}
+function listPolicies(db, scopeKey = "owner") {
+  return db.prepare("SELECT * FROM policies WHERE scope_type = ? AND scope_key = ? ORDER BY version DESC").all("global", scopeKey).map((row) => ({
+    policyId: row["policy_id"],
+    scopeType: row["scope_type"],
+    scopeKey: row["scope_key"],
+    version: row["version"],
+    contentYaml: row["content_yaml"],
+    active: row["active"] === 1,
+    generatedAt: row["generated_at"],
+    approvedAt: row["approved_at"],
+    provenance: JSON.parse(row["provenance_json"])
+  }));
+}
+
 // plugins/review-voice/src/cli.ts
 var USAGE = `review-voice <command>
 
@@ -8165,6 +8423,9 @@ Commands:
   consent-plan      Show exactly what a sync would read, before it reads it
   purge             Delete stored data by repository, age, or entirely
   retrieve          Find weighted precedents for a candidate finding
+  score             Score candidates from stdin against retrieved precedents
+  calibrate         Show proposed policy changes and their evidence
+  policy            show | approve <id> | rollback <version>
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -8458,6 +8719,106 @@ async function syncCommand(argv) {
     db.close();
   }
 }
+function scoreCommand(argv) {
+  let candidates;
+  try {
+    const parsed = JSON.parse(readStdin());
+    candidates = parsed.candidates ?? [];
+  } catch {
+    console.error('Expected {"candidates": [...]} on stdin.');
+    return 2;
+  }
+  const thresholds = {
+    technicalConfidence: Number(flag(argv, "--min-confidence") ?? DEFAULT_THRESHOLDS.technicalConfidence),
+    finalScore: Number(flag(argv, "--min-score") ?? DEFAULT_THRESHOLDS.finalScore)
+  };
+  const db = openDatabase();
+  try {
+    const kept = [];
+    const results = [];
+    for (const candidate of candidates) {
+      const precedents = retrievePrecedents(db, {
+        text: `${candidate.claim} ${candidate.failureMode}`,
+        repository: flag(argv, "--repository") ?? void 0,
+        filePath: candidate.path,
+        maxPositive: 3,
+        maxNegative: 2
+      });
+      const breakdown = scoreCandidate(candidate, precedents, kept, thresholds);
+      if (breakdown.eligible) kept.push(candidate);
+      results.push({ ...breakdown, precedents });
+    }
+    console.log(JSON.stringify({ scores: results, eligible: kept.map((c) => c.candidateId) }, null, 2));
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+function calibrateCommand() {
+  const db = openDatabase();
+  try {
+    const proposals = compileProposals(db);
+    if (proposals.length === 0) {
+      console.log(JSON.stringify({ proposals: [], note: "No feedback recorded yet." }, null, 2));
+      return 0;
+    }
+    const stored = proposePolicy(db, proposals);
+    console.log(
+      JSON.stringify(
+        { policyId: stored.policyId, version: stored.version, active: stored.active, proposals },
+        null,
+        2
+      )
+    );
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+function policyCommand(argv) {
+  const [action, argument] = argv;
+  const db = openDatabase();
+  try {
+    switch (action) {
+      case void 0:
+      case "show":
+        console.log(JSON.stringify({ policies: listPolicies(db) }, null, 2));
+        return 0;
+      case "approve": {
+        if (argument === void 0) {
+          console.error("policy approve needs a policy id.");
+          return 2;
+        }
+        const result = approvePolicy(db, argument);
+        if (!result.ok) {
+          console.error(result.error);
+          return 1;
+        }
+        console.log(`Approved policy version ${result.version}.`);
+        return 0;
+      }
+      case "rollback": {
+        const version = Number(argument);
+        if (!Number.isInteger(version)) {
+          console.error("policy rollback needs a version number.");
+          return 2;
+        }
+        const result = rollbackTo(db, version);
+        if (!result.ok) {
+          console.error(result.error);
+          return 1;
+        }
+        console.log(`Rolled back to policy version ${result.version}.`);
+        return 0;
+      }
+      default:
+        console.error(`Unknown policy action "${action}". Expected show, approve or rollback.`);
+        return 2;
+    }
+  } finally {
+    db.close();
+  }
+}
 function retrieveCommand(argv) {
   const text = flag(argv, "--text");
   if (text === null) {
@@ -8622,6 +8983,12 @@ async function main(argv) {
       return purgeCommand(argv.slice(1));
     case "retrieve":
       return retrieveCommand(argv.slice(1));
+    case "score":
+      return scoreCommand(argv.slice(1));
+    case "calibrate":
+      return calibrateCommand();
+    case "policy":
+      return policyCommand(argv.slice(1));
     case "evidence":
       return evidenceCommand();
     case "record":

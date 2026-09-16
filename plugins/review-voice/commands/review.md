@@ -90,14 +90,24 @@ because it seemed compelling.
 
 If nothing survives, output exactly `No actionable findings.` and stop.
 
-## Step 4 — Rank and trim
+## Step 4 — Score against precedent
 
-Order by severity: `blocking`, then `important`, then `minor`. Within a
-severity, prefer higher `technical_confidence`.
+Pipe the verified candidates as `{"candidates": [...]}` into
+`RV score --repository <name>`.
 
-Keep at most 5. Drop `minor` findings entirely if stronger findings already
-fill the budget — a minor note that displaces nothing is fine, one that
-displaces attention is not.
+It retrieves weighted precedents for each candidate and returns a score
+breakdown. **Do not compute or adjust these numbers yourself** — they are
+arithmetic, and a threshold you can talk your way past is not a threshold.
+
+Keep only candidates where `eligible` is true. For the rest, `rejectedBecause`
+says why.
+
+Then order by severity: `blocking`, then `important`, then `minor`. Within a
+severity, prefer the higher final score. Keep at most 5.
+
+A negative precedent means this reviewer has dismissed something like this
+before. It lowers the score; it does not refute a verified defect. If a
+candidate clears the threshold anyway, emit it.
 
 ## Step 5 — Edit
 
