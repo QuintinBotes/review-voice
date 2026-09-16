@@ -133,6 +133,23 @@ contract permits no text beyond the findings themselves, and a visible id would
 spend characters the writing needs more. `review-voice status` lists the ids of
 the last review when someone needs them.
 
+### Static evidence
+
+Commands run only when declared in `.review-voice/config.yaml` and
+`enabled: true`. Detection may suggest; configuration enables. Auto-running a
+project script would be arbitrary code execution in a repository the tool
+otherwise treats as untrusted.
+
+Adapters are parsers, not runners: they map TypeScript, .NET, Python and ESLint
+diagnostics onto signals carrying the verbatim tool output, so a claim stays
+attributable. The adapter is chosen from the user's own name for the check as
+well as the command, because real projects point a named check at a wrapper
+script. Unrecognised output produces no signals rather than guessed ones — the
+exit code is still evidence.
+
+A check that did not run is reported as such. The reviewer must never imply a
+check passed when it never executed.
+
 ## Policy resolution
 
 ```

@@ -56,6 +56,21 @@ when a proposal is actually pending.
 
 Report anything in `warnings` the same way.
 
+## Step 1c — Collect static evidence
+
+Run `RV evidence`.
+
+If `enabled` is false, skip this step entirely and say nothing about it. Static
+checks are opt-in; their absence is not a finding.
+
+Pass any `signals` to the `diff-analyst` as supporting evidence. A signal is
+evidence for a candidate, never a candidate on its own — a type error the
+compiler already reports does not need a review comment repeating it.
+
+`didNotRun` lists checks that could not execute. **Never imply a check passed
+when it did not run.** Lower your confidence in claims that depended on it, and
+mention the gap only when the missing check is itself material to the change.
+
 ## Step 2 — Generate candidates
 
 Launch the `diff-analyst` agent with the `diff` field and the `files` list.
