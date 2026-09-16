@@ -123,6 +123,29 @@ const MIGRATIONS: string[] = [
     VALUES (new.rowid, new.body_redacted, COALESCE(new.file_path, ''));
   END;
   `,
+
+  // v4 — versioned policy artifacts.
+  //
+  // A policy row carries its own provenance, so "why does the reviewer say
+  // this" is answerable from the store rather than from memory. Old versions
+  // are kept rather than overwritten, because rollback is only possible if the
+  // thing being rolled back to still exists.
+  `
+  CREATE TABLE policies (
+    policy_id TEXT PRIMARY KEY,
+    scope_type TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content_yaml TEXT NOT NULL,
+    active INTEGER NOT NULL,
+    generated_at TEXT NOT NULL,
+    approved_at TEXT,
+    provenance_json TEXT NOT NULL,
+    evaluation_json TEXT NOT NULL,
+    UNIQUE (scope_type, scope_key, version)
+  );
+  CREATE INDEX idx_policies_active ON policies (scope_type, scope_key, active);
+  `,
 ];
 
 function migrate(db: Database): void {

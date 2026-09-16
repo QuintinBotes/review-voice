@@ -31,6 +31,9 @@ import { storeEvents, corpusCoverage } from './corpus/store.ts';
 import { buildConsentPlan, discoverRepositories } from './consent/plan.ts';
 import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
 import { retrievePrecedents } from './retrieval/retrieve.ts';
+import { scoreCandidate, DEFAULT_THRESHOLDS, type Candidate } from './scoring/score.ts';
+import { compileProposals } from './policy/compile.ts';
+import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
 
 const USAGE = `review-voice <command>
 
@@ -44,6 +47,9 @@ Commands:
   consent-plan      Show exactly what a sync would read, before it reads it
   purge             Delete stored data by repository, age, or entirely
   retrieve          Find weighted precedents for a candidate finding
+  score             Score candidates from stdin against retrieved precedents
+  calibrate         Show proposed policy changes and their evidence
+  policy            show | approve <id> | rollback <version>
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -377,6 +383,118 @@ async function syncCommand(argv: string[]): Promise<number> {
   }
 }
 
+function scoreCommand(argv: string[]): number {
+  let candidates: Candidate[];
+  try {
+    const parsed = JSON.parse(readStdin()) as { candidates: Candidate[] };
+    candidates = parsed.candidates ?? [];
+  } catch {
+    console.error('Expected {"candidates": [...]} on stdin.');
+    return 2;
+  }
+
+  const thresholds = {
+    technicalConfidence: Number(flag(argv, '--min-confidence') ?? DEFAULT_THRESHOLDS.technicalConfidence),
+    finalScore: Number(flag(argv, '--min-score') ?? DEFAULT_THRESHOLDS.finalScore),
+  };
+
+  const db = openDatabase();
+  try {
+    const kept: Candidate[] = [];
+    const results = [];
+
+    // Scored in order so novelty is measured against what has already been
+    // kept, not against every candidate including worse duplicates.
+    for (const candidate of candidates) {
+      const precedents = retrievePrecedents(db, {
+        text: `${candidate.claim} ${candidate.failureMode}`,
+        repository: flag(argv, '--repository') ?? undefined,
+        filePath: candidate.path,
+        maxPositive: 3,
+        maxNegative: 2,
+      });
+      const breakdown = scoreCandidate(candidate, precedents, kept, thresholds);
+      if (breakdown.eligible) kept.push(candidate);
+      results.push({ ...breakdown, precedents });
+    }
+
+    console.log(JSON.stringify({ scores: results, eligible: kept.map((c) => c.candidateId) }, null, 2));
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+function calibrateCommand(): number {
+  const db = openDatabase();
+  try {
+    const proposals = compileProposals(db);
+    if (proposals.length === 0) {
+      console.log(JSON.stringify({ proposals: [], note: 'No feedback recorded yet.' }, null, 2));
+      return 0;
+    }
+    const stored = proposePolicy(db, proposals);
+    console.log(
+      JSON.stringify(
+        { policyId: stored.policyId, version: stored.version, active: stored.active, proposals },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+function policyCommand(argv: string[]): number {
+  const [action, argument] = argv;
+  const db = openDatabase();
+  try {
+    switch (action) {
+      case undefined:
+      case 'show':
+        console.log(JSON.stringify({ policies: listPolicies(db) }, null, 2));
+        return 0;
+
+      case 'approve': {
+        if (argument === undefined) {
+          console.error('policy approve needs a policy id.');
+          return 2;
+        }
+        const result = approvePolicy(db, argument);
+        if (!result.ok) {
+          console.error(result.error);
+          return 1;
+        }
+        console.log(`Approved policy version ${result.version}.`);
+        return 0;
+      }
+
+      case 'rollback': {
+        const version = Number(argument);
+        if (!Number.isInteger(version)) {
+          console.error('policy rollback needs a version number.');
+          return 2;
+        }
+        const result = rollbackTo(db, version);
+        if (!result.ok) {
+          console.error(result.error);
+          return 1;
+        }
+        console.log(`Rolled back to policy version ${result.version}.`);
+        return 0;
+      }
+
+      default:
+        console.error(`Unknown policy action "${action}". Expected show, approve or rollback.`);
+        return 2;
+    }
+  } finally {
+    db.close();
+  }
+}
+
 function retrieveCommand(argv: string[]): number {
   const text = flag(argv, '--text');
   if (text === null) {
@@ -569,6 +687,15 @@ async function main(argv: string[]): Promise<number> {
 
     case 'retrieve':
       return retrieveCommand(argv.slice(1));
+
+    case 'score':
+      return scoreCommand(argv.slice(1));
+
+    case 'calibrate':
+      return calibrateCommand();
+
+    case 'policy':
+      return policyCommand(argv.slice(1));
 
     case 'evidence':
       return evidenceCommand();
