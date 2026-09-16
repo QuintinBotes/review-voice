@@ -1,23 +1,39 @@
 /**
- * Review Voice is a personalisation tool built from one person's spec. This
- * guard keeps that person out of the source: the owner reviewer is resolved at
- * runtime from the user's own GitHub identity, never baked in.
+ * Review Voice models whoever runs it. This guard keeps a specific person out
+ * of the source: the owner reviewer is resolved at runtime from the user's own
+ * GitHub identity, never baked in.
  *
- * Exits non-zero if a personal login or private repository name appears
- * anywhere outside the files that are allowed to mention the author.
+ * It deliberately hardcodes no names. An earlier version listed the private
+ * repositories it was meant to keep out, which meant the guard itself
+ * published them — the exact leak it existed to prevent. Structural patterns
+ * catch the general case; anything site-specific belongs in a local, ignored
+ * wordlist that never reaches the repository.
  */
-import { readdir, readFile, stat } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { readdir, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { join, relative, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
-/** Patterns that must not appear in shipped source, docs, or fixtures. */
+/** Structural patterns: a configuration value that should never be a literal. */
 const FORBIDDEN = [
-  { pattern: /QuintinBotes\/(REDACTED)/gi, why: 'private repository name from the original spec' },
-  { pattern: /owner_reviewer:\s*(?!\$\{|<|"?your-)[A-Za-z]/g, why: 'hardcoded owner_reviewer; use a placeholder' },
+  {
+    pattern: /owner_reviewer:\s*(?!\$\{|<|"?your-)[A-Za-z]/g,
+    why: 'hardcoded owner_reviewer; use a placeholder such as your-github-login',
+  },
+  {
+    pattern: /\b[\w.+-]+@(?!users\.noreply\.github\.com|example\.(com|org)\b)[\w-]+\.[\w.]{2,}/g,
+    why: 'real email address; use a noreply or example.com address',
+  },
 ];
+
+/**
+ * Optional local wordlist, one term per line, '#' for comments. Terms specific
+ * to one contributor's employer or private repositories go here. The file is
+ * gitignored precisely so that naming a secret does not publish it.
+ */
+const LOCAL_WORDLIST = join(root, '.identity-guard.local');
 
 /** Files permitted to name the author — attribution, not configuration. */
 const ALLOWLIST = new Set([
@@ -29,14 +45,28 @@ const ALLOWLIST = new Set([
   'CONTRIBUTING.md',
   '.claude-plugin/marketplace.json',
   'plugins/review-voice/.claude-plugin/plugin.json',
+  'plugins/review-voice/LICENSE',
   'plugins/review-voice/README.md',
   '.github/CODEOWNERS',
   'docs/PLAN.md',
+  'docs/REPO-SECURITY.md',
   'scripts/guard-identity.mjs',
 ]);
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist']);
 const TEXT = /\.(ts|mjs|js|json|md|ya?ml|sh|txt)$/;
+
+async function loadLocalTerms() {
+  if (!existsSync(LOCAL_WORDLIST)) return [];
+  const lines = (await readFile(LOCAL_WORDLIST, 'utf8')).split('\n');
+  return lines
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#'))
+    .map((term) => ({
+      pattern: new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
+      why: 'term listed in .identity-guard.local',
+    }));
+}
 
 async function* walk(dir) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -49,12 +79,14 @@ async function* walk(dir) {
   }
 }
 
+const checks = [...FORBIDDEN, ...(await loadLocalTerms())];
 let failures = 0;
+
 for await (const file of walk(root)) {
   const rel = relative(root, file);
   if (ALLOWLIST.has(rel)) continue;
   const text = await readFile(file, 'utf8');
-  for (const { pattern, why } of FORBIDDEN) {
+  for (const { pattern, why } of checks) {
     pattern.lastIndex = 0;
     const match = pattern.exec(text);
     if (match) {
@@ -69,4 +101,4 @@ if (failures > 0) {
   console.error(`\n${failures} identity guard violation(s). See CONTRIBUTING.md.`);
   process.exit(1);
 }
-console.log('Identity guard passed.');
+console.log(`Identity guard passed (${checks.length} patterns).`);

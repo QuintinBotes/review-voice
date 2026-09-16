@@ -26,6 +26,11 @@ GitHub login, personal repository name, or personal preference belongs in the
 source, the docs, the policies, or the fixtures. `npm run guard:identity`
 enforces this and CI runs it.
 
+The guard hardcodes no names, because a guard that lists what it is hiding
+publishes it. It checks structural patterns, and optionally reads extra terms
+from `.identity-guard.local` — a gitignored file for anything specific to your
+employer or private repositories.
+
 ## Getting set up
 
 ```bash

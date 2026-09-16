@@ -29,3 +29,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Local identity guard wordlist (never committed). One term per line.
+.identity-guard.local
