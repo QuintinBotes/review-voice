@@ -74,6 +74,7 @@ build if a pin regresses to a tag — pinning rots silently without a check.
 
 | Control | Runs |
 |---|---|
+| OSSF Scorecard | Weekly, on push to main, and when protection rules change |
 | GitHub secret scanning | Continuous, with push protection blocking commits |
 | gitleaks secret scan | Every push and pull request |
 | Full OS matrix (Linux + macOS) | Every push and pull request |
@@ -98,7 +99,6 @@ one control that acts *before* publication rather than after.
 
 | Item | Blocked on | Notes |
 |---|---|---|
-| OSSF Scorecard | Nothing — not yet added | A supply-chain posture score published to the security tab. Worth adding; no blocker. |
 | Required approvals ≥ 1 | A second maintainer | See above. |
 
 ## Publication
