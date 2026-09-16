@@ -7,19 +7,87 @@
  * (candidate generation, verification, wording) live in the plugin's agents.
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
+import { readFileSync } from 'node:fs';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
 import { pluginVersion } from './version.ts';
 import { runDoctor } from './doctor.ts';
+import { validateOutput } from './contract/validate.ts';
+import { DEFAULT_LIMITS, type ContractLimits } from './contract/limits.ts';
 
 const USAGE = `review-voice <command>
 
 Commands:
-  doctor      Check that this machine can run Review Voice
-  --version   Print the plugin version
-  --help      Show this message
+  validate-output   Enforce the output contract on a review read from stdin
+  doctor            Check that this machine can run Review Voice
+  --version         Print the plugin version
+  --help            Show this message
+
+validate-output flags:
+  --json                     Emit the result as JSON
+  --max-findings <n>         Default ${DEFAULT_LIMITS.maxFindings}
+  --max-words-per-finding <n>  Default ${DEFAULT_LIMITS.maxWordsPerFinding}
+  --max-total-words <n>      Default ${DEFAULT_LIMITS.maxTotalWords}
+
+Exit codes: 0 compliant, 1 violations found, 2 bad invocation.
 
 Review Voice is normally driven by its Claude Code commands
 (/review-voice:review, /review-voice:init) rather than invoked directly.`;
+
+function readStdin(): string {
+  try {
+    return readFileSync(0, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function numericFlag(argv: string[], name: string, fallback: number): number | null {
+  const index = argv.indexOf(name);
+  if (index === -1) return fallback;
+  const value = Number(argv[index + 1]);
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function validateOutputCommand(argv: string[]): number {
+  const maxFindings = numericFlag(argv, '--max-findings', DEFAULT_LIMITS.maxFindings);
+  const maxWords = numericFlag(argv, '--max-words-per-finding', DEFAULT_LIMITS.maxWordsPerFinding);
+  const maxTotal = numericFlag(argv, '--max-total-words', DEFAULT_LIMITS.maxTotalWords);
+
+  if (maxFindings === null || maxWords === null || maxTotal === null) {
+    console.error('Limit flags take a non-negative integer.');
+    return 2;
+  }
+
+  const limits: ContractLimits = {
+    ...DEFAULT_LIMITS,
+    maxFindings,
+    maxWordsPerFinding: maxWords,
+    maxTotalWords: maxTotal,
+  };
+
+  const result = validateOutput(readStdin(), limits);
+
+  if (argv.includes('--json')) {
+    console.log(JSON.stringify(result, null, 2));
+    return result.valid ? 0 : 1;
+  }
+
+  if (result.valid) {
+    console.log(
+      `Contract satisfied: ${result.findingCount} finding(s), ${result.totalWords}/${limits.maxTotalWords} words.`,
+    );
+    return 0;
+  }
+
+  // Every violation is reported, not just the first: a retry is only useful if
+  // the editor can see everything it has to fix.
+  for (const violation of result.violations) {
+    const where = violation.line === undefined ? '' : `line ${violation.line}: `;
+    console.error(`[${violation.code}] ${where}${violation.message}`);
+  }
+  console.error(`\n${result.violations.length} contract violation(s).`);
+  return 1;
+}
 
 function main(argv: string[]): number {
   const command = argv[0];
@@ -36,6 +104,9 @@ function main(argv: string[]): number {
     case '-v':
       console.log(pluginVersion());
       return 0;
+
+    case 'validate-output':
+      return validateOutputCommand(argv.slice(1));
 
     case 'doctor': {
       const checks = runDoctor();
