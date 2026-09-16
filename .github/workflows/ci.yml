@@ -14,6 +14,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Pull requests run on Linux only. macOS runners bill at 10x the minute rate,
+  # and this repository is private, so a full OS matrix on every push burns the
+  # Actions budget for coverage that almost never differs. The full matrix runs
+  # on pushes to main instead — every change reaches main through a pull
+  # request, so a macOS-specific break is caught within one merge and long
+  # before any release. The release workflow runs the full verify too.
   verify:
     name: verify (node ${{ matrix.node }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -24,7 +30,7 @@ jobs:
       matrix:
         # 22 is the floor; 24 is where node:sqlite is no longer experimental.
         node: ['22', '24']
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
