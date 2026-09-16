@@ -66,10 +66,11 @@ diff flags:
   --include-generated    Include lock files, generated, vendored and binary files
 
 record flags:
-  --repository <name>  Repository the review belongs to
-  --base <ref>         Base ref reviewed against
-  --head <sha>         Head commit reviewed
-  --diff-file <path>   Diff the review was produced from (for the run hash)
+  --repository <name>    Repository the review belongs to
+  --base <ref>           Base ref reviewed against
+  --head <sha>           Head commit reviewed
+  --diff-file <path>     Diff the review was produced from (for the run hash)
+  --candidates <path>    Scored candidates, so findings carry their category
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -590,6 +591,22 @@ function recordCommand(argv: string[]): number {
     }
   }
 
+  // Categories cannot be recovered from the rendered output — the contract
+  // permits no text beyond the finding — so they arrive alongside it.
+  const candidatesFile = flag(argv, '--candidates');
+  let candidates: { path: string; line: number; category?: string }[] = [];
+  if (candidatesFile !== null) {
+    try {
+      const parsed = JSON.parse(readFileSync(candidatesFile, 'utf8')) as
+        | { candidates?: { path: string; line: number; category?: string }[] }
+        | { path: string; line: number; category?: string }[];
+      candidates = Array.isArray(parsed) ? parsed : (parsed.candidates ?? []);
+    } catch {
+      console.error(`Cannot read candidates from ${candidatesFile}.`);
+      return 2;
+    }
+  }
+
   const db = openDatabase();
   try {
     const { reviewRunId, findings } = recordRun(db, {
@@ -598,6 +615,7 @@ function recordCommand(argv: string[]): number {
       headRef: flag(argv, '--head'),
       diff,
       output,
+      candidates,
     });
     console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
     return 0;
