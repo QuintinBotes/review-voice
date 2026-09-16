@@ -88,11 +88,17 @@ the registry serves that day.
 Dismissing a structural finding is a judgement, not a default. Each dismissal
 carries a reason in the security tab.
 
+Scorecard results are therefore kept as a build artifact rather than uploaded
+to code scanning. As alerts, those three permanent findings blocked every pull
+request from merging — and a blocker nobody can clear trains people to dismiss
+alerts by reflex, which costs more than the visibility was worth. Revisit the
+upload when there is a second maintainer and `Code-Review` becomes satisfiable.
+
 ### Continuous scanning
 
 | Control | Runs |
 |---|---|
-| OSSF Scorecard | Weekly, on push to main, and when protection rules change |
+| OSSF Scorecard | Weekly, on push to main, and when protection rules change (results as a build artifact, not code-scanning alerts) |
 | GitHub secret scanning | Continuous, with push protection blocking commits |
 | gitleaks secret scan | Every push and pull request |
 | Full OS matrix (Linux + macOS) | Every push and pull request |
