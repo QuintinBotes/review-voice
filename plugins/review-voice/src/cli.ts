@@ -35,6 +35,10 @@ import { scoreCandidate, DEFAULT_THRESHOLDS, type Candidate } from './scoring/sc
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
 import { computeMetrics } from './evaluate/metrics.ts';
+import { loadEtags, saveEtags, beginSyncRun, finishSyncRun, lastSync } from './sync/state.ts';
+import { evaluatePostingGate } from './publish/gate.ts';
+import { buildDraft } from './publish/draft.ts';
+import { hashDiff } from './store/runs.ts';
 
 const USAGE = `review-voice <command>
 
@@ -52,6 +56,8 @@ Commands:
   calibrate         Show proposed policy changes and their evidence
   policy            show | approve <id> | rollback <version>
   evaluate          Report the evaluation metrics against their targets
+  draft             Render a validated review as a GitHub draft (posts nothing)
+  post-check        Report whether posting is permitted, and why not
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -322,6 +328,12 @@ async function syncCommand(argv: string[]): Promise<number> {
   const dryRun = argv.includes('--dry-run');
 
   const client = new GitHubClient({ allowlist: config.allowlist });
+
+  // Conditional requests carry over between runs, so a repeat sync on a quiet
+  // repository costs almost no rate limit and can be run often.
+  const stateDb = openDatabase();
+  const syncRunId = beginSyncRun(stateDb, config.allowlist);
+  client.primeEtags(loadEtags(stateDb));
   const stats: CollectionStats = {
     pullRequestsScanned: 0,
     commentsSeen: 0,
@@ -353,14 +365,21 @@ async function syncCommand(argv: string[]): Promise<number> {
     { target, maxRepositoryShare: 0.5 },
   );
 
+  // Saved even on a dry run: nothing was stored, but the conditional-request
+  // state is about what was fetched, and re-fetching it would be waste.
+  saveEtags(stateDb, client.exportEtags());
+
   if (dryRun) {
+    finishSyncRun(stateDb, syncRunId, stats, 0);
+    stateDb.close();
     console.log(JSON.stringify({ dryRun: true, stats, selection: { ...selection, selected: undefined } }, null, 2));
     return 0;
   }
 
-  const db = openDatabase();
+  const db = stateDb;
   try {
     const stored = storeEvents(db, selection.selected);
+    finishSyncRun(db, syncRunId, stats, stored.inserted);
     console.log(
       JSON.stringify(
         {
@@ -375,11 +394,45 @@ async function syncCommand(argv: string[]): Promise<number> {
           },
           stored,
           coverage: corpusCoverage(db),
+          lastSync: lastSync(db),
         },
         null,
         2,
       ),
     );
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+function draftCommand(argv: string[]): number {
+  const repository = flag(argv, '--repository');
+  const pullNumber = Number(flag(argv, '--pr') ?? NaN);
+  if (repository === null || !Number.isInteger(pullNumber)) {
+    console.error('draft needs --repository <owner/repo> and --pr <number>.');
+    return 2;
+  }
+
+  const output = readStdin();
+  const draft = buildDraft({ repository, pullNumber, output, diffHash: hashDiff(output) });
+
+  if (argv.includes('--json')) {
+    console.log(JSON.stringify(draft, null, 2));
+  } else {
+    console.log(draft.preview);
+  }
+  return 0;
+}
+
+function postCheckCommand(): number {
+  const root = repositoryRoot(process.cwd());
+  const config = loadConfig(root);
+  const db = openDatabase();
+  try {
+    const gate = evaluatePostingGate(db, config.postingEnabled);
+    console.log(JSON.stringify(gate, null, 2));
+    // Not permitted is an answer, not a failure of the command.
     return 0;
   } finally {
     db.close();
@@ -734,6 +787,12 @@ async function main(argv: string[]): Promise<number> {
 
     case 'evaluate':
       return evaluateCommand(argv.slice(1));
+
+    case 'draft':
+      return draftCommand(argv.slice(1));
+
+    case 'post-check':
+      return postCheckCommand();
 
     case 'calibrate':
       return calibrateCommand();
