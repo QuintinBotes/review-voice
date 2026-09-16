@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `commands/init.md` gates every step on an explicit yes.
 - `review-voice purge`: previews before deleting and requires `--confirm`.
   The audit entry recording a purge survives it.
+- Ingestion now collects submitted review summaries as well as inline
+  comments, and pull-request conversation comments behind
+  `--include-conversation`. Template detection measures the proportion of
+  structural lines rather than the presence of a checkbox.
 - `review-voice sync`: ingests review history from allowlisted repositories.
   Comments are redacted at the download boundary, classified by reviewer role,
   filtered for review judgement, deduplicated across rebases, and selected

@@ -28,16 +28,50 @@ test('approval-only comments carry no judgement', () => {
   }
 });
 
-test('checklists and automation status are not review judgement', () => {
-  assert.equal(
-    ineligibleReason({ ...base, body: '## Description\n\nRefactors the handler.' }),
-    'template_or_status',
-  );
+test('a pull-request template is mostly structure', () => {
+  const template = [
+    '## Description',
+    '',
+    'Adds the thing.',
+    '',
+    '## Checklist',
+    '- [x] Tests added',
+    '- [ ] Docs updated',
+    '- [ ] Changelog entry',
+    '## Type of change',
+    '- [x] Feature',
+  ].join('\n');
+  assert.equal(ineligibleReason({ ...base, body: template }), 'template_or_status');
   assert.equal(ineligibleReason({ ...base, body: '- [x] Tests added\n- [ ] Docs' }), 'template_or_status');
+});
+
+test('automation status carries no judgement whatever its length', () => {
   assert.equal(
     ineligibleReason({ ...base, body: 'Deployment succeeded for this pull request.' }),
     'template_or_status',
   );
+});
+
+test('a substantive review containing a checklist is kept', () => {
+  // Measured against a real repository, the earlier "contains a checkbox" rule
+  // discarded fourteen review summaries whose structure ratios were 0.18-0.30
+  // — substantive reviews with a checklist in them. Losing those was losing
+  // most of the corpus.
+  const review = [
+    'I went through the retry path and the transaction boundary.',
+    '',
+    'The response is emitted before the commit, so a retry can mint a second',
+    'token. That needs to move below the commit.',
+    '',
+    'Separately the backoff is unbounded, which will hammer the downstream',
+    'service during an outage rather than shedding load.',
+    '',
+    '- [x] I checked the migration',
+    '- [ ] I did not verify the metrics dashboard',
+    '',
+    'Otherwise the shape looks right to me.',
+  ].join('\n');
+  assert.equal(ineligibleReason({ ...base, body: review }), null);
 });
 
 test('comments on generated files are excluded', () => {
