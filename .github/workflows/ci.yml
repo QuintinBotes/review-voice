@@ -105,6 +105,8 @@ jobs:
           persist-credentials: false
 
       # Fixtures are meant to be synthetic. This is the backstop, not the rule.
+      # .gitleaks.toml carries one narrowly scoped exception; see the comment
+      # in that file for why it exists and what it does not cover.
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
