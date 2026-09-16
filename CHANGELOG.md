@@ -24,5 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a release guard rejecting tags not on `main`.
 - Architecture decision records closing the eight open decisions from the
   specification.
+- Branch and tag protection on `main` and `review-voice--v*`, with the
+  repository security posture documented in `docs/REPO-SECURITY.md`.
 
 [Unreleased]: https://github.com/QuintinBotes/review-voice/commits/main
