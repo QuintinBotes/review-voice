@@ -50,6 +50,44 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_audit_created ON audit_events (created_at DESC);
   `,
+
+  // v2 — the historical review corpus.
+  //
+  // There is deliberately no column for the original comment text. Redaction
+  // happens at the download boundary and only its output is passed here, so
+  // the absence of a column is what makes an accidental write impossible.
+  `
+  CREATE TABLE review_events (
+    event_id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    repository TEXT NOT NULL,
+    pull_number INTEGER,
+    pull_request_url TEXT,
+    thread_id TEXT,
+    comment_id TEXT,
+    reviewer_login TEXT NOT NULL,
+    reviewer_role TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT,
+    body_redacted TEXT NOT NULL,
+    content_key TEXT NOT NULL UNIQUE,
+    file_path TEXT,
+    line_start INTEGER,
+    line_end INTEGER,
+    diff_hunk_redacted TEXT,
+    language TEXT,
+    category TEXT,
+    severity TEXT,
+    outcome_status TEXT NOT NULL,
+    outcome_certainty TEXT NOT NULL,
+    redaction_version TEXT NOT NULL,
+    redaction_counts_json TEXT NOT NULL,
+    created_db_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_events_repo ON review_events (repository);
+  CREATE INDEX idx_events_created ON review_events (created_at DESC);
+  CREATE INDEX idx_events_role ON review_events (reviewer_role);
+  `,
 ];
 
 function migrate(db: Database): void {

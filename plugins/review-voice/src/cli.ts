@@ -23,6 +23,11 @@ import { resolvePolicy } from './policy/schema.ts';
 import { repositoryRoot } from './diff/acquire.ts';
 import { collectEvidence } from './evidence/run.ts';
 import { redact } from './redact/redact.ts';
+import { GitHubClient, NotAllowlisted, ReadOnlyViolation } from './github/client.ts';
+import { AuthError } from './github/auth.ts';
+import { collectRepository, type CollectionStats } from './corpus/collect.ts';
+import { selectEvents } from './corpus/select.ts';
+import { storeEvents, corpusCoverage } from './corpus/store.ts';
 
 const USAGE = `review-voice <command>
 
@@ -31,6 +36,7 @@ Commands:
   context           Resolve config and the active policy stack as JSON
   evidence          Run the configured static checks and emit structured signals
   redact            Redact secrets from stdin (used before anything is stored)
+  sync              Ingest review history from allowlisted repositories
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -53,6 +59,11 @@ record flags:
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
   actions: ${FEEDBACK_ACTIONS.join(', ')} (hyphens accepted)
+
+sync flags:
+  --target <n>        Eligible events to import (default 250)
+  --max-pulls <n>     Pull requests inspected per repository (default 60)
+  --dry-run           Report what would be imported without storing anything
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -190,6 +201,86 @@ function contextCommand(): number {
   }
 }
 
+async function syncCommand(argv: string[]): Promise<number> {
+  const root = repositoryRoot(process.cwd());
+  const config = loadConfig(root);
+
+  if (config.allowlist.length === 0) {
+    console.error('No repositories are allowlisted. Run /review-voice:init first.');
+    return 2;
+  }
+  if (config.ownerReviewer === null) {
+    console.error('No owner reviewer configured. Run /review-voice:init first.');
+    return 2;
+  }
+
+  const target = numericFlag(argv, '--target', 250) ?? 250;
+  const maxPulls = numericFlag(argv, '--max-pulls', 60) ?? 60;
+  const dryRun = argv.includes('--dry-run');
+
+  const client = new GitHubClient({ allowlist: config.allowlist });
+  const stats: CollectionStats = {
+    pullRequestsScanned: 0,
+    commentsSeen: 0,
+    eligible: 0,
+    duplicates: 0,
+    excluded: {},
+  };
+
+  const collected = [];
+  for (const repository of config.allowlist) {
+    const events = await collectRepository(
+      client,
+      {
+        repository,
+        ownerLogin: config.ownerReviewer,
+        maxPullRequests: maxPulls,
+        maxCommentsPerPull: 200,
+        includeForks: false,
+      },
+      stats,
+    );
+    collected.push(...events);
+  }
+
+  const selection = selectEvents(
+    collected.map((event) => ({ ...event, role: event.role })),
+    { target, maxRepositoryShare: 0.5 },
+  );
+
+  if (dryRun) {
+    console.log(JSON.stringify({ dryRun: true, stats, selection: { ...selection, selected: undefined } }, null, 2));
+    return 0;
+  }
+
+  const db = openDatabase();
+  try {
+    const stored = storeEvents(db, selection.selected);
+    console.log(
+      JSON.stringify(
+        {
+          stats,
+          sourceWindow: {
+            targetEvents: selection.targetEvents,
+            discoveredEligibleEvents: selection.discoveredEligible,
+            importedEvents: selection.importedEvents,
+            shortfall: selection.shortfall,
+            shortfallReason: selection.shortfallReason,
+            repositories: selection.perRepository,
+          },
+          stored,
+          coverage: corpusCoverage(db),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 function redactCommand(argv: string[]): number {
   const result = redact(readStdin());
   if (argv.includes('--json')) {
@@ -319,7 +410,7 @@ function statusCommand(): number {
   }
 }
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   const command = argv[0];
 
   switch (command) {
@@ -343,6 +434,9 @@ function main(argv: string[]): number {
 
     case 'redact':
       return redactCommand(argv.slice(1));
+
+    case 'sync':
+      return await syncCommand(argv.slice(1));
 
     case 'evidence':
       return evidenceCommand();
@@ -377,4 +471,20 @@ function main(argv: string[]): number {
 }
 
 suppressSqliteExperimentalWarning();
-process.exitCode = main(process.argv.slice(2));
+
+try {
+  process.exitCode = await main(process.argv.slice(2));
+} catch (error) {
+  // Network and credential problems are ordinary operating conditions, not
+  // crashes, and a stack trace tells the user nothing they can act on.
+  if (error instanceof AuthError || error instanceof NotAllowlisted || error instanceof ReadOnlyViolation) {
+    console.error(error.message);
+    process.exitCode = 2;
+  } else if (error instanceof GitError) {
+    console.error(error.message);
+    process.exitCode = 2;
+  } else {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}
