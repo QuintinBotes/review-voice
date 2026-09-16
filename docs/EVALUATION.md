@@ -71,6 +71,20 @@ Fixtures are checked by a unit test for real addresses, hosts and credentials.
 They are public and permanent, so that backstop sits behind the rule in
 `CONTRIBUTING.md` rather than replacing it.
 
+## Reading the numbers
+
+`review-voice evaluate` computes these from recorded runs and feedback, and
+prints the basis alongside each value so a passing metric can be checked rather
+than trusted.
+
+A metric with no data reports **no data**, not a default. A reviewer that has
+never run is not a reviewer with perfect compliance, and reporting 100% from
+zero samples is how a dashboard starts lying.
+
+Contract compliance is measured by running recorded output back through the
+validator, not asserted from the fact that validation happened. If output ever
+reaches the store by a path that skipped the gate, this is what notices.
+
 ## Running it
 
 ```bash
