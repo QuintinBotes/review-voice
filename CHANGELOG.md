@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Read-only GitHub client. Non-GET requests and repositories outside the
+  allowlist are refused in code before any network call, with rate-limit
+  backoff and bounded pagination. Credentials are borrowed from `gh` and never
+  stored.
+- Reviewer role classification: owner, team, external or bot. Bot output is
+  excluded from voice learning regardless of the bot's permissions.
 - Redaction pipeline covering private keys, PEM blocks, GitHub, AWS, Google,
   Slack, Stripe, npm, PyPI, OpenAI and Anthropic credentials, JWTs, database
   connection credentials, authorization headers and assignment-shaped secrets.
