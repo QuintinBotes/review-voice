@@ -13,6 +13,8 @@ export interface RuleEvidence {
 export interface ProposedRule {
   scope: { type: 'global' | 'repository'; key: string };
   kind: 'suppress' | 'prioritise';
+  /** The finding category the rule is about. */
+  category: string;
   rule: string;
   evidence: RuleEvidence;
   confidence: number;
@@ -65,6 +67,32 @@ interface FeedbackRow {
   output_json: string;
 }
 
+interface Labelled {
+  row: FeedbackRow;
+  category: string | null;
+  severity: string | null;
+  path: string;
+}
+
+/** Feedback on findings whose category was never recorded cannot be grouped. */
+function label(row: FeedbackRow): Labelled | null {
+  try {
+    const parsed = JSON.parse(row.output_json) as {
+      findings: { findingId: string; path: string; category?: string; severity?: string }[];
+    };
+    const finding = parsed.findings.find((f) => f.findingId === row.finding_id);
+    if (finding === undefined) return null;
+    return {
+      row,
+      category: finding.category ?? null,
+      severity: finding.severity ?? null,
+      path: finding.path,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Compiles explicit feedback into proposed policy rules.
  *
@@ -82,54 +110,61 @@ export function compileProposals(db: Database): ProposedRule[] {
     )
     .all() as unknown as FeedbackRow[];
 
-  // Group by the file the finding was about, which is the coarsest grouping
-  // that still says something actionable.
-  const byCategory = new Map<string, { rows: FeedbackRow[]; paths: Set<string> }>();
+  // Grouped by finding category, not by file path. "Suppress naming comments"
+  // is a rule; "suppress things like the ones in src/a.ts" is an observation
+  // about one directory that happens to be where you were working that week.
+  const buckets = new Map<string, Labelled[]>();
 
   for (const row of rows) {
-    let path = 'unknown';
-    try {
-      const parsed = JSON.parse(row.output_json) as { findings: { findingId: string; path: string }[] };
-      path = parsed.findings.find((finding) => finding.findingId === row.finding_id)?.path ?? 'unknown';
-    } catch {
-      continue;
-    }
+    const labelled = label(row);
+    if (labelled === null) continue;
 
-    const key = row.action === 'never_flag' || row.action === 'dismiss' ? 'suppress' : 'prioritise';
-    const bucket = byCategory.get(key) ?? { rows: [], paths: new Set<string>() };
-    bucket.rows.push(row);
-    bucket.paths.add(path);
-    byCategory.set(key, bucket);
+    // Feedback recorded before categories were captured has nothing to group
+    // on. It still counts toward precision; it just cannot become a rule.
+    if (labelled.category === null) continue;
+
+    const kind = row.action === 'never_flag' || row.action === 'dismiss' ? 'suppress' : 'prioritise';
+    const key = `${kind}:${labelled.category}`;
+    buckets.set(key, [...(buckets.get(key) ?? []), labelled]);
   }
 
   const proposals: ProposedRule[] = [];
 
-  for (const [kind, bucket] of byCategory) {
-    const keeps = bucket.rows.filter((r) => r.action === 'keep').length;
-    const dismissals = bucket.rows.filter((r) => r.action === 'dismiss' || r.action === 'never_flag').length;
-    const rewrites = bucket.rows.filter((r) => r.action === 'rewrite').length;
+  for (const [key, group] of buckets) {
+    const [kind, category] = key.split(':') as ['suppress' | 'prioritise', string];
+
+    const keeps = group.filter((g) => g.row.action === 'keep').length;
+    const dismissals = group.filter((g) => g.row.action === 'dismiss' || g.row.action === 'never_flag').length;
+    const rewrites = group.filter((g) => g.row.action === 'rewrite').length;
+
+    // A contradicting signal is the owner having gone the other way on the
+    // same category — the one case where a rule should not form quietly.
+    const opposite = kind === 'suppress' ? `prioritise:${category}` : `suppress:${category}`;
+    const contradictingSignals = (buckets.get(opposite) ?? []).length;
 
     const evidence: RuleEvidence = {
       keeps,
       dismissals,
       rewrites,
       // Every recorded feedback action is the owner's; that is who gives it.
-      ownerSignals: bucket.rows.length,
-      contradictingSignals: kind === 'suppress' ? keeps : dismissals,
-      mostRecentAt: bucket.rows[0]?.created_at ?? null,
-      eventIds: bucket.rows.map((r) => `${r.review_run_id}:${r.finding_id}`),
+      ownerSignals: group.length,
+      contradictingSignals,
+      mostRecentAt: group[0]?.row.created_at ?? null,
+      eventIds: group.map((g) => `${g.row.review_run_id}:${g.row.finding_id}`),
     };
 
     const gate = canActivate(evidence);
-    const reasons = bucket.rows.map((r) => r.reason).filter((r): r is string => r !== null && r.length > 0);
+    const reasons = group.map((g) => g.row.reason).filter((r): r is string => r !== null && r.length > 0);
+    const severities = [...new Set(group.map((g) => g.severity).filter((s): s is string => s !== null))];
 
     proposals.push({
       scope: { type: 'global', key: 'owner' },
-      kind: kind as 'suppress' | 'prioritise',
+      kind,
+      category,
       rule:
         kind === 'suppress'
-          ? `Suppress findings like those dismissed in ${[...bucket.paths].slice(0, 3).join(', ')}${reasons.length > 0 ? ` (stated reason: ${reasons[0]})` : ''}.`
-          : `Prioritise findings like those kept in ${[...bucket.paths].slice(0, 3).join(', ')}.`,
+          ? `Suppress ${category} findings${severities.length === 1 ? ` at ${severities[0]} severity` : ''} unless they name a concrete failure mode${reasons.length > 0 ? ` (stated reason: ${reasons[0]})` : ''}.`
+          : `Treat ${category} as high priority; findings in this category are consistently kept.`,
       evidence,
       confidence: confidenceFrom(evidence),
       activatable: gate.ok,

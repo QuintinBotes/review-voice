@@ -9,6 +9,19 @@ export interface StoredFinding {
   path: string;
   line: number;
   text: string;
+  /**
+   * Carried from the candidate that produced this finding. The rendered output
+   * has no category — the contract allows no text beyond the finding — so it
+   * has to arrive alongside rather than be parsed back out.
+   */
+  category?: string | undefined;
+}
+
+/** Just enough of a scored candidate to attribute a finding to its category. */
+export interface CandidateHint {
+  path: string;
+  line: number;
+  category?: string | undefined;
 }
 
 export interface RecordRunInput {
@@ -17,7 +30,7 @@ export interface RecordRunInput {
   headRef: string | null;
   diff: string;
   output: string;
-  candidates?: unknown;
+  candidates?: CandidateHint[] | undefined;
 }
 
 /**
@@ -26,17 +39,23 @@ export interface RecordRunInput {
  * findings, because the output contract permits no text beyond the findings
  * themselves and a visible id would cost characters the writing needs more.
  */
-function assignIds(output: string): StoredFinding[] {
+function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
   return splitFindings(output)
     .map((block) => parseFinding(block.raw, block.startLine))
     .filter((finding) => finding.severity !== null && finding.path !== null)
-    .map((finding, index) => ({
-      findingId: `rv_${String(index + 1).padStart(2, '0')}`,
-      severity: finding.severity!,
-      path: finding.path!,
-      line: finding.line ?? 0,
-      text: finding.raw,
-    }));
+    .map((finding, index) => {
+      const hint = hints.find((c) => c.path === finding.path && c.line === finding.line);
+      return {
+        findingId: `rv_${String(index + 1).padStart(2, '0')}`,
+        severity: finding.severity!,
+        path: finding.path!,
+        line: finding.line ?? 0,
+        text: finding.raw,
+        // Absent when a review ran without candidates to hand. Null is honest;
+        // guessing a category from the wording would invent evidence.
+        category: hint?.category,
+      };
+    });
 }
 
 export function hashDiff(diff: string): string {
@@ -45,7 +64,7 @@ export function hashDiff(diff: string): string {
 
 export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: string; findings: StoredFinding[] } {
   const reviewRunId = randomUUID();
-  const findings = assignIds(input.output);
+  const findings = assignIds(input.output, input.candidates ?? []);
 
   db.prepare(
     `INSERT INTO review_runs (

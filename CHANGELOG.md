@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Policy rules are compiled by finding category rather than file path, and
+  `record --candidates` carries each finding's category from the candidate that
+  produced it. Going both ways on one category now registers as a contradiction
+  and blocks the rule.
 - `review-voice evaluate`: reports the specification's metrics against their
   targets, each with the basis it was computed from. A metric with no data
   reports "no data" rather than a flattering default.
