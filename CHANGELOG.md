@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `review-voice evidence`: runs the static checks declared in configuration —
+  and only those — with per-command timeouts, and parses TypeScript, .NET,
+  Python and ESLint diagnostics into attributable signals.
 - `review-voice context`: resolves `.review-voice/config.yaml`, the policy
   layer stack and opt-in static-evidence commands. A narrower layer may tighten
   a limit but never loosen it, and a committed `.review-voice/policy.yaml` is

@@ -21,12 +21,14 @@ import { recordFeedback, normaliseAction, feedbackTotals, FEEDBACK_ACTIONS } fro
 import { loadConfig } from './policy/load.ts';
 import { resolvePolicy } from './policy/schema.ts';
 import { repositoryRoot } from './diff/acquire.ts';
+import { collectEvidence } from './evidence/run.ts';
 
 const USAGE = `review-voice <command>
 
 Commands:
   diff              Acquire the diff under review as structured JSON
   context           Resolve config and the active policy stack as JSON
+  evidence          Run the configured static checks and emit structured signals
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -186,6 +188,26 @@ function contextCommand(): number {
   }
 }
 
+function evidenceCommand(): number {
+  try {
+    const root = repositoryRoot(process.cwd());
+    const config = loadConfig(root);
+    const report = collectEvidence(config.staticEvidence.commands, {
+      cwd: root,
+      enabled: config.staticEvidence.enabled,
+    });
+    console.log(JSON.stringify(report, null, 2));
+    // A failing check is evidence, not an error in collecting it.
+    return 0;
+  } catch (error) {
+    if (error instanceof GitError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+}
+
 function recordCommand(argv: string[]): number {
   const output = readStdin();
   if (output.trim().length === 0) {
@@ -306,6 +328,9 @@ function main(argv: string[]): number {
 
     case 'context':
       return contextCommand();
+
+    case 'evidence':
+      return evidenceCommand();
 
     case 'record':
       return recordCommand(argv.slice(1));

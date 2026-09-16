@@ -7194,12 +7194,125 @@ function resolvePolicy(layers) {
   return resolved;
 }
 
+// plugins/review-voice/src/evidence/run.ts
+import { spawnSync } from "node:child_process";
+
+// plugins/review-voice/src/evidence/parsers.ts
+function signal(tool, kind, path, line, claim, raw) {
+  return {
+    kind,
+    path,
+    line,
+    claim,
+    evidence: [raw.trim()],
+    // A compiler or type checker reporting a concrete diagnostic is about as
+    // reliable as static evidence gets; it is still not a finding on its own.
+    confidence: 0.95,
+    tool
+  };
+}
+var TSC = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.*)$/;
+var PYTHON = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/;
+var DOTNET = /^\s*(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+([A-Z]+\d+):\s+(.*?)(?:\s+\[.*\])?$/;
+var ADAPTERS = [
+  {
+    name: "typescript",
+    matches: (command, output) => /tsc|typecheck|tsgo/i.test(command) || TSC.test(output.split("\n")[0] ?? ""),
+    parse: (output, tool) => output.split("\n").map((line) => TSC.exec(line)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
+      (match) => signal(tool, "type_error", match[1], Number(match[2]), `${match[5]}: ${match[6]}`, match[0])
+    )
+  },
+  {
+    name: "dotnet",
+    matches: (command) => /dotnet|msbuild|csc\b/i.test(command),
+    parse: (output, tool) => output.split("\n").map((line) => DOTNET.exec(line)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
+      (match) => signal(tool, "compile_error", match[1], Number(match[2]), `${match[5]}: ${match[6]}`, match[0])
+    ).filter((current, index, all) => all.findIndex((other) => other.claim === current.claim && other.path === current.path && other.line === current.line) === index)
+  },
+  {
+    name: "python",
+    matches: (command) => /mypy|ruff|flake8|pylint|pytest/i.test(command),
+    parse: (output, tool) => output.split("\n").map((line) => PYTHON.exec(line)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(
+      (match) => signal(tool, "lint_or_type_error", match[1], Number(match[2]), `${match[4]}: ${match[5]}`, match[0])
+    )
+  },
+  {
+    name: "eslint",
+    matches: (command) => /eslint|biome|oxlint/i.test(command),
+    parse: (output, tool) => {
+      const signals = [];
+      let file = null;
+      for (const line of output.split("\n")) {
+        if (/^\S.*\.(ts|tsx|js|jsx|mjs|cjs)$/.test(line.trim())) {
+          file = line.trim();
+          continue;
+        }
+        const match = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/.exec(line);
+        if (match !== null && match[3] === "error") {
+          signals.push(signal(tool, "lint_error", file, Number(match[1]), `${match[5]}: ${match[4]}`, line));
+        }
+      }
+      return signals;
+    }
+  }
+];
+function parseOutput(name, command, output) {
+  const haystack = `${name} ${command}`;
+  const adapter = ADAPTERS.find((candidate) => candidate.matches(haystack, output));
+  return adapter === void 0 ? [] : adapter.parse(output, name);
+}
+
+// plugins/review-voice/src/evidence/run.ts
+var DEFAULT_TIMEOUT_SECONDS = 120;
+function collectEvidence(commands, options) {
+  if (!options.enabled || commands.length === 0) {
+    return { enabled: false, commands: [], didNotRun: commands.map((command) => command.name) };
+  }
+  const outcomes = [];
+  const didNotRun = [];
+  for (const command of commands) {
+    const startedAt = Date.now();
+    const result = spawnSync(command.run, {
+      cwd: options.cwd,
+      shell: true,
+      encoding: "utf8",
+      timeout: (command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1e3,
+      maxBuffer: 16 * 1024 * 1024
+    });
+    const durationMs = Date.now() - startedAt;
+    if (result.error !== void 0) {
+      const reason = result.error.code === "ETIMEDOUT" ? `timed out after ${command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS}s` : result.error.message;
+      outcomes.push({
+        name: command.name,
+        command: command.run,
+        exitCode: null,
+        durationMs,
+        unavailable: reason,
+        signals: []
+      });
+      didNotRun.push(command.name);
+      continue;
+    }
+    const output = `${result.stdout ?? ""}
+${result.stderr ?? ""}`;
+    outcomes.push({
+      name: command.name,
+      command: command.run,
+      exitCode: result.status,
+      durationMs,
+      signals: parseOutput(command.name, command.run, output)
+    });
+  }
+  return { enabled: true, commands: outcomes, didNotRun };
+}
+
 // plugins/review-voice/src/cli.ts
 var USAGE = `review-voice <command>
 
 Commands:
   diff              Acquire the diff under review as structured JSON
   context           Resolve config and the active policy stack as JSON
+  evidence          Run the configured static checks and emit structured signals
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -7342,6 +7455,24 @@ function contextCommand() {
     throw error;
   }
 }
+function evidenceCommand() {
+  try {
+    const root = repositoryRoot(process.cwd());
+    const config = loadConfig(root);
+    const report = collectEvidence(config.staticEvidence.commands, {
+      cwd: root,
+      enabled: config.staticEvidence.enabled
+    });
+    console.log(JSON.stringify(report, null, 2));
+    return 0;
+  } catch (error) {
+    if (error instanceof GitError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+}
 function recordCommand(argv) {
   const output = readStdin();
   if (output.trim().length === 0) {
@@ -7445,6 +7576,8 @@ function main(argv) {
       return diffCommand(argv.slice(1));
     case "context":
       return contextCommand();
+    case "evidence":
+      return evidenceCommand();
     case "record":
       return recordCommand(argv.slice(1));
     case "feedback":
