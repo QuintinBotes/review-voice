@@ -250,14 +250,294 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
   return { valid: violations.length === 0, findingCount: findings.length, totalWords, violations };
 }
 
+// plugins/review-voice/src/diff/acquire.ts
+import { execFileSync as execFileSync2 } from "node:child_process";
+
+// plugins/review-voice/src/diff/classify.ts
+var LOCKFILES = /* @__PURE__ */ new Set([
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "bun.lockb",
+  "Cargo.lock",
+  "poetry.lock",
+  "Pipfile.lock",
+  "composer.lock",
+  "Gemfile.lock",
+  "go.sum",
+  "gradle.lockfile",
+  "packages.lock.json"
+]);
+var VENDOR_SEGMENTS = /* @__PURE__ */ new Set([
+  "node_modules",
+  "vendor",
+  "third_party",
+  "thirdparty",
+  "bower_components",
+  ".yarn"
+]);
+var BINARY_EXTENSIONS = /* @__PURE__ */ new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "ico",
+  "bmp",
+  "tiff",
+  "avif",
+  "pdf",
+  "zip",
+  "gz",
+  "tar",
+  "bz2",
+  "xz",
+  "7z",
+  "rar",
+  "woff",
+  "woff2",
+  "ttf",
+  "otf",
+  "eot",
+  "mp3",
+  "mp4",
+  "mov",
+  "avi",
+  "webm",
+  "wav",
+  "ogg",
+  "so",
+  "dylib",
+  "dll",
+  "exe",
+  "bin",
+  "class",
+  "jar",
+  "wasm",
+  "pyc",
+  "sqlite",
+  "db",
+  "parquet"
+]);
+var GENERATED_PATTERNS = [
+  /(^|\/)dist\//,
+  /(^|\/)build\//,
+  /(^|\/)out\//,
+  /(^|\/)coverage\//,
+  /(^|\/)__generated__\//,
+  /(^|\/)generated\//,
+  /\.min\.(js|css|mjs|cjs)$/,
+  /\.bundle\.(js|mjs|cjs)$/,
+  /\.(pb|pb2)\.(go|py|ts|js)$/,
+  /_pb2?\.py$/,
+  /\.g\.(dart|cs|ts)$/,
+  /\.generated\.[a-z]+$/,
+  /\.d\.ts$/,
+  /(^|\/)\.next\//,
+  /(^|\/)\.nuxt\//
+];
+var LANGUAGES = {
+  ts: "typescript",
+  tsx: "typescript",
+  mts: "typescript",
+  cts: "typescript",
+  js: "javascript",
+  jsx: "javascript",
+  mjs: "javascript",
+  cjs: "javascript",
+  py: "python",
+  rb: "ruby",
+  go: "go",
+  rs: "rust",
+  java: "java",
+  kt: "kotlin",
+  swift: "swift",
+  c: "c",
+  h: "c",
+  cc: "cpp",
+  cpp: "cpp",
+  hpp: "cpp",
+  cs: "csharp",
+  php: "php",
+  scala: "scala",
+  ex: "elixir",
+  exs: "elixir",
+  sh: "shell",
+  bash: "shell",
+  zsh: "shell",
+  ps1: "powershell",
+  sql: "sql",
+  yml: "yaml",
+  yaml: "yaml",
+  json: "json",
+  toml: "toml",
+  md: "markdown",
+  html: "html",
+  css: "css",
+  scss: "scss",
+  tf: "terraform",
+  dockerfile: "dockerfile"
+};
+function extensionOf(path) {
+  const name = path.split("/").pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  return dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
+}
+function languageOf(path) {
+  const name = (path.split("/").pop() ?? "").toLowerCase();
+  if (name === "dockerfile" || name.startsWith("dockerfile.")) return "dockerfile";
+  if (name === "makefile") return "make";
+  return LANGUAGES[extensionOf(path)] ?? null;
+}
+function classify(path) {
+  const name = path.split("/").pop() ?? "";
+  if (LOCKFILES.has(name)) return "lockfile";
+  const segments = path.split("/");
+  if (segments.slice(0, -1).some((segment) => VENDOR_SEGMENTS.has(segment))) return "vendored";
+  if (BINARY_EXTENSIONS.has(extensionOf(path))) return "binary";
+  if (GENERATED_PATTERNS.some((pattern) => pattern.test(path))) return "generated";
+  return "source";
+}
+function isReviewable(path, includeGenerated) {
+  return includeGenerated || classify(path) === "source";
+}
+
+// plugins/review-voice/src/diff/acquire.ts
+var GitError = class extends Error {
+};
+function git(args, cwd) {
+  try {
+    return execFileSync2("git", args, {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    const stderr = error.stderr ?? "";
+    throw new GitError(`git ${args[0]} failed: ${stderr.trim() || String(error)}`);
+  }
+}
+function gitAllowingDifference(args, cwd) {
+  try {
+    return execFileSync2("git", args, {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    const typed = error;
+    if (typed.status === 1 && typeof typed.stdout === "string") return typed.stdout;
+    throw new GitError(`git ${args[0]} failed: ${String(error)}`);
+  }
+}
+function untrackedFiles(root) {
+  return git(["ls-files", "--others", "--exclude-standard", "-z"], root).split("\0").filter((path) => path.length > 0);
+}
+function repositoryRoot(cwd) {
+  return git(["rev-parse", "--show-toplevel"], cwd).trim();
+}
+var STATUS = {
+  A: "added",
+  M: "modified",
+  D: "deleted",
+  R: "renamed",
+  C: "copied",
+  T: "changed"
+};
+function parseNameStatus(raw) {
+  const fields = raw.split("\0").filter((field) => field.length > 0);
+  const out = [];
+  for (let i = 0; i < fields.length; ) {
+    const code = fields[i];
+    if (code.startsWith("R") || code.startsWith("C")) {
+      out.push({ status: code[0], previousPath: fields[i + 1], path: fields[i + 2] });
+      i += 3;
+    } else {
+      out.push({ status: code[0], path: fields[i + 1] });
+      i += 2;
+    }
+  }
+  return out;
+}
+function excludedReason(cls) {
+  switch (cls) {
+    case "lockfile":
+      return "lock file; use --include-generated if the dependency change is the point";
+    case "vendored":
+      return "vendored dependency";
+    case "generated":
+      return "generated or minified";
+    case "binary":
+      return "binary";
+    default:
+      return "";
+  }
+}
+function acquireDiff(options) {
+  const root = repositoryRoot(options.cwd);
+  const range = options.base !== null ? [`${options.base}...HEAD`] : options.staged ? ["--cached"] : [];
+  const mode = options.base !== null ? "base" : options.staged ? "staged" : "worktree";
+  const entries = parseNameStatus(git(["diff", "--name-status", "-z", ...range], root));
+  if (mode === "worktree") {
+    for (const path of untrackedFiles(root)) {
+      entries.push({ status: "A", path });
+    }
+  }
+  const files = entries.map((entry) => {
+    const cls = classify(entry.path);
+    const deleted = entry.status === "D";
+    const reviewed = !deleted && isReviewable(entry.path, options.includeGenerated);
+    return {
+      path: entry.path,
+      ...entry.previousPath === void 0 ? {} : { previousPath: entry.previousPath },
+      status: STATUS[entry.status] ?? "changed",
+      class: cls,
+      language: languageOf(entry.path),
+      reviewed,
+      ...reviewed ? {} : { excludedBecause: deleted ? "file deleted" : excludedReason(cls) }
+    };
+  });
+  const reviewable = files.filter((file) => file.reviewed).map((file) => file.path);
+  const untracked = new Set(mode === "worktree" ? untrackedFiles(root) : []);
+  const trackedReviewable = reviewable.filter((path) => !untracked.has(path));
+  const untrackedReviewable = reviewable.filter((path) => untracked.has(path));
+  const parts = [];
+  if (trackedReviewable.length > 0) {
+    parts.push(git(["diff", ...range, "--", ...trackedReviewable], root));
+  }
+  for (const path of untrackedReviewable) {
+    parts.push(gitAllowingDifference(["diff", "--no-index", "--", "/dev/null", path], root));
+  }
+  const diff = parts.join("").trim().length === 0 ? "" : parts.join("");
+  return {
+    repositoryRoot: root,
+    mode,
+    base: options.base,
+    head: git(["rev-parse", "HEAD"], root).trim(),
+    files,
+    reviewedFileCount: reviewable.length,
+    excludedFileCount: files.length - reviewable.length,
+    diff
+  };
+}
+
 // plugins/review-voice/src/cli.ts
 var USAGE = `review-voice <command>
 
 Commands:
+  diff              Acquire the diff under review as structured JSON
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
   --version         Print the plugin version
   --help            Show this message
+
+diff flags:
+  --base <ref>           Review against a base ref (e.g. origin/main)
+  --staged               Review staged changes only
+  --include-generated    Include lock files, generated, vendored and binary files
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -315,6 +595,31 @@ function validateOutputCommand(argv) {
 ${result.violations.length} contract violation(s).`);
   return 1;
 }
+function diffCommand(argv) {
+  const baseIndex = argv.indexOf("--base");
+  const base = baseIndex === -1 ? null : argv[baseIndex + 1] ?? null;
+  if (baseIndex !== -1 && (base === null || base.startsWith("--"))) {
+    console.error("--base needs a git ref, for example: --base origin/main");
+    return 2;
+  }
+  try {
+    const result = acquireDiff({
+      cwd: process.cwd(),
+      staged: argv.includes("--staged"),
+      base,
+      includeGenerated: argv.includes("--include-generated")
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  } catch (error) {
+    if (error instanceof GitError) {
+      console.error(error.message);
+      console.error("Run this inside a git repository.");
+      return 2;
+    }
+    throw error;
+  }
+}
 function main(argv) {
   const command = argv[0];
   switch (command) {
@@ -328,6 +633,8 @@ function main(argv) {
     case "-v":
       console.log(pluginVersion());
       return 0;
+    case "diff":
+      return diffCommand(argv.slice(1));
     case "validate-output":
       return validateOutputCommand(argv.slice(1));
     case "doctor": {

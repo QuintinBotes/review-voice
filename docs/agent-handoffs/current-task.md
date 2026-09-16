@@ -1,62 +1,54 @@
-# Current task — M1.1 Output contract validator
+# Current task — M1.2 Thin end-to-end review slice
 
 **Milestone:** M1 (Phase 1, fixed-policy concise reviewer)
-**Risk:** medium — it defines the contract every later stage targets
-**Baseline:** `main` at the time of branching
+**Risk:** medium-high — first exercise of the CLI-versus-agent split
+**Baseline:** `main` after #17
 
 ## Goal
 
-Implement `review-voice validate-output`: the hard gate that enforces Review
-Voice's output contract. It reads a review result as JSON on stdin, validates
-it, and exits non-zero with structured, actionable errors when it fails.
+Make `/review-voice:review` actually review a real diff, end to end, with no
+GitHub access and no storage: acquire the diff, hand it to the agents, and
+gate the result through `validate-output`.
 
-This is deliberately first. It is the piece that turns the product's central
-claims — at most five findings, 40 words each, 180 words total, exactly
-`No actionable findings.` when nothing qualifies — from prompt requests into
-enforced guarantees. The specification's own targets of 100% word-limit and
-100% no-findings compliance are only reachable because this exists.
+Chosen over finishing the deterministic foundation first because the
+CLI/agent split is the architecture's central bet and nothing has tested it.
+An end-to-end slice surfaces a mistake there now rather than after four more
+pieces are built on top, and it makes the plugin dogfoodable immediately.
 
 ## Scope
 
-Allowed files:
-
-- `plugins/review-voice/src/contract/*.ts` (new)
-- `plugins/review-voice/src/cli.ts`
-- `plugins/review-voice/dist/review-voice.mjs` (rebuilt artifact)
-- `test/contract.test.mjs` (new)
-- `docs/ARCHITECTURE.md` (validator section only)
-- `CHANGELOG.md`
+- `plugins/review-voice/src/diff/*.ts` (new): diff acquisition and file
+  classification
+- `plugins/review-voice/src/cli.ts`: wire the `diff` command
+- `plugins/review-voice/commands/review.md`: real orchestration
+- `plugins/review-voice/agents/*.md`: tighten where the pipeline needs it
+- `test/diff.test.mjs` (new)
+- `docs/ARCHITECTURE.md`, `CHANGELOG.md`
 
 ## Non-goals
 
-- Diff acquisition, context resolution, storage, agents, static evidence.
-  Those are M1.2 onward and must not appear in this change.
-- Any GitHub access.
-- Any network access.
+- SQLite, audit log, feedback capture (M1.3)
+- Policy file layering and `.review-voice/config.yaml` (M1.4)
+- Static evidence adapters (M1.5)
+- Precedent retrieval, scoring, GitHub — all later milestones
 
 ## Acceptance criteria
 
-1. Rejects more than 5 findings.
-2. Rejects any finding whose prose exceeds 40 words.
-3. Rejects total prose exceeding 180 words.
-4. Rejects a finding not matching ``[severity] `path:line` — text``.
-5. Rejects an unknown severity.
-6. Rejects forbidden hedge phrases, matched on word boundaries, case-insensitively.
-7. Rejects two findings at the same `path:line`.
-8. Requires the empty case to be exactly `No actionable findings.` — no
-   trailing whitespace, no alternative wording, no markdown.
-9. Reports every violation in one pass, not just the first: the editor agent
-   needs the full list to retry usefully.
-10. Exit 0 valid, 1 invalid, 2 malformed input.
-11. Word counting is documented and total-word accounting is consistent with
-    per-finding accounting.
+1. `review-voice diff` emits structured JSON: base and head, changed files with
+   status, language and a generated/vendored/binary classification, plus the
+   unified diff.
+2. Supports the working tree (default), `--staged`, and `--base <ref>`.
+3. Excludes lock files, generated, minified, vendored and binary files by
+   default; `--include-generated` overrides.
+4. Reports honestly when there is nothing to review rather than inventing a diff.
+5. Runs from any subdirectory of a repository, and fails clearly outside one.
+6. `commands/review.md` drives: diff → diff-analyst → evidence-verifier →
+   concise-editor → validate-output, retrying the editor once on violation.
+7. Unit tests cover classification, exclusions, argument handling and the
+   empty-diff case.
 
 ## Commands
 
 ```
 npm run typecheck && npm test && npm run build && npm run check:dist
 ```
-
-## Return format
-
-Files changed, tests run and outcomes, assumptions, risks, deviations.
