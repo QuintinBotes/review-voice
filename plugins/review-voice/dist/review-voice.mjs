@@ -630,6 +630,40 @@ var MIGRATIONS = [
   CREATE INDEX idx_events_repo ON review_events (repository);
   CREATE INDEX idx_events_created ON review_events (created_at DESC);
   CREATE INDEX idx_events_role ON review_events (reviewer_role);
+  `,
+  // v3 — lexical retrieval index.
+  //
+  // FTS5 rather than embeddings, per docs/adr/0001: no model download, works
+  // offline, and deterministic enough to unit test. Triggers keep the index in
+  // step with the table so it cannot silently drift out of date.
+  `
+  CREATE VIRTUAL TABLE review_events_fts USING fts5(
+    body_redacted,
+    file_path,
+    content = 'review_events',
+    content_rowid = 'rowid',
+    tokenize = 'porter unicode61'
+  );
+
+  INSERT INTO review_events_fts (rowid, body_redacted, file_path)
+    SELECT rowid, body_redacted, COALESCE(file_path, '') FROM review_events;
+
+  CREATE TRIGGER review_events_ai AFTER INSERT ON review_events BEGIN
+    INSERT INTO review_events_fts (rowid, body_redacted, file_path)
+    VALUES (new.rowid, new.body_redacted, COALESCE(new.file_path, ''));
+  END;
+
+  CREATE TRIGGER review_events_ad AFTER DELETE ON review_events BEGIN
+    INSERT INTO review_events_fts (review_events_fts, rowid, body_redacted, file_path)
+    VALUES ('delete', old.rowid, old.body_redacted, COALESCE(old.file_path, ''));
+  END;
+
+  CREATE TRIGGER review_events_au AFTER UPDATE ON review_events BEGIN
+    INSERT INTO review_events_fts (review_events_fts, rowid, body_redacted, file_path)
+    VALUES ('delete', old.rowid, old.body_redacted, COALESCE(old.file_path, ''));
+    INSERT INTO review_events_fts (rowid, body_redacted, file_path)
+    VALUES (new.rowid, new.body_redacted, COALESCE(new.file_path, ''));
+  END;
   `
 ];
 function migrate(db) {
@@ -7956,6 +7990,168 @@ function executePurge(db, scope) {
   return preview;
 }
 
+// plugins/review-voice/src/retrieval/weights.ts
+function baseWeight(role, outcome) {
+  if (role === "bot") return 0;
+  if (role === "owner") {
+    switch (outcome) {
+      case "accepted":
+        return 1;
+      case "rewritten":
+        return 1;
+      case "dismissed":
+        return -1;
+      default:
+        return 0.45;
+    }
+  }
+  if (role === "team") {
+    switch (outcome) {
+      case "accepted":
+      case "rewritten":
+        return 0.55;
+      case "dismissed":
+        return -0.4;
+      default:
+        return 0.25;
+    }
+  }
+  return 0;
+}
+var DEFAULT_HALF_LIFE_DAYS = 180;
+function recencyWeight(createdAt, now = /* @__PURE__ */ new Date(), halfLifeDays = DEFAULT_HALF_LIFE_DAYS) {
+  const ageMs = now.getTime() - new Date(createdAt).getTime();
+  const ageDays = Math.max(0, ageMs / 864e5);
+  return 2 ** (-ageDays / halfLifeDays);
+}
+function specificityWeight(input) {
+  let weight = 0.6;
+  if (input.hasFilePath) weight += 0.15;
+  if (input.hasLine) weight += 0.15;
+  if (input.hasDiffHunk) weight += 0.1;
+  return weight;
+}
+function contextWeight(input) {
+  let weight = 0.5;
+  if (input.sameRepository) weight += 0.3;
+  if (input.samePath) weight += 0.1;
+  if (input.sameLanguage) weight += 0.1;
+  return weight;
+}
+function eventWeight(parts) {
+  const base = baseWeight(parts.role, parts.outcome);
+  const multiplied = parts.role === "owner" ? base * (parts.ownerMultiplier ?? 3) : base;
+  return multiplied * recencyWeight(parts.createdAt, parts.now) * specificityWeight(parts.specificity) * contextWeight(parts.context);
+}
+
+// plugins/review-voice/src/retrieval/retrieve.ts
+function toMatchQuery(text) {
+  const terms = text.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((term) => term.length > 2 && !STOPWORDS.has(term));
+  const unique = [...new Set(terms)].slice(0, 24);
+  return unique.map((term) => `"${term}"`).join(" OR ");
+}
+var STOPWORDS = /* @__PURE__ */ new Set([
+  "the",
+  "and",
+  "for",
+  "that",
+  "this",
+  "with",
+  "from",
+  "are",
+  "was",
+  "were",
+  "not",
+  "but",
+  "you",
+  "your",
+  "can",
+  "will",
+  "should",
+  "would",
+  "could",
+  "has",
+  "have",
+  "had",
+  "its",
+  "it",
+  "is",
+  "be",
+  "been",
+  "when",
+  "then",
+  "there",
+  "here",
+  "they",
+  "them",
+  "than",
+  "into",
+  "out",
+  "use",
+  "used"
+]);
+var EXCERPT_CHARS = 220;
+function retrievePrecedents(db, query) {
+  const match = toMatchQuery(query.text);
+  if (match.length === 0) return [];
+  let rows;
+  try {
+    rows = db.prepare(
+      `SELECT e.event_id, e.repository, e.reviewer_login, e.reviewer_role,
+                e.outcome_status, e.created_at, e.file_path, e.line_start,
+                e.body_redacted, e.diff_hunk_redacted, e.language,
+                bm25(review_events_fts) AS rank
+         FROM review_events_fts
+         JOIN review_events e ON e.rowid = review_events_fts.rowid
+         WHERE review_events_fts MATCH ?
+         ORDER BY rank
+         LIMIT 200`
+    ).all(match);
+  } catch {
+    return [];
+  }
+  const scored = rows.map((row) => {
+    const role = row.reviewer_role;
+    const outcome = row.outcome_status;
+    const weight = eventWeight({
+      role,
+      outcome,
+      createdAt: row.created_at,
+      specificity: {
+        hasFilePath: row.file_path !== null,
+        hasLine: row.line_start !== null,
+        hasDiffHunk: row.diff_hunk_redacted !== null
+      },
+      context: {
+        sameRepository: query.repository !== void 0 && row.repository === query.repository,
+        samePath: query.filePath !== void 0 && row.file_path === query.filePath,
+        sameLanguage: query.language !== void 0 && row.language === query.language
+      },
+      now: query.now,
+      ownerMultiplier: query.ownerMultiplier
+    });
+    const relevance = -row.rank;
+    return {
+      eventId: row.event_id,
+      repository: row.repository,
+      reviewerLogin: row.reviewer_login,
+      role,
+      outcome,
+      createdAt: row.created_at,
+      filePath: row.file_path,
+      lineStart: row.line_start,
+      excerpt: row.body_redacted.length > EXCERPT_CHARS ? `${row.body_redacted.slice(0, EXCERPT_CHARS)}\u2026` : row.body_redacted,
+      weight,
+      relevance,
+      polarity: weight < 0 ? "negative" : "positive"
+    };
+  });
+  const rank = (a, b) => Math.abs(b.weight) * b.relevance - Math.abs(a.weight) * a.relevance;
+  const positive = scored.filter((p) => p.weight > 0).sort(rank).slice(0, query.maxPositive);
+  const negative = scored.filter((p) => p.weight < 0).sort(rank).slice(0, query.maxNegative);
+  return [...negative, ...positive];
+}
+
 // plugins/review-voice/src/cli.ts
 var USAGE = `review-voice <command>
 
@@ -7968,6 +8164,7 @@ Commands:
   discover          List repositories the credential can see (reads no history)
   consent-plan      Show exactly what a sync would read, before it reads it
   purge             Delete stored data by repository, age, or entirely
+  retrieve          Find weighted precedents for a candidate finding
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -8002,6 +8199,14 @@ purge flags (one required):
   --before <ISO date>   Remove events older than a date
   --all                 Remove everything, including runs and feedback
   --confirm             Actually delete; without it, only a preview is printed
+
+retrieve flags:
+  --text <query>        Candidate claim and failure mode (required)
+  --repository <name>   Prefer precedents from this repository
+  --path <path>         Prefer precedents on this file
+  --language <lang>     Prefer precedents in this language
+  --max-positive <n>    Default 3
+  --max-negative <n>    Default 2
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -8253,6 +8458,28 @@ async function syncCommand(argv) {
     db.close();
   }
 }
+function retrieveCommand(argv) {
+  const text = flag(argv, "--text");
+  if (text === null) {
+    console.error('retrieve needs --text "<claim and failure mode>".');
+    return 2;
+  }
+  const db = openDatabase();
+  try {
+    const precedents = retrievePrecedents(db, {
+      text,
+      repository: flag(argv, "--repository") ?? void 0,
+      filePath: flag(argv, "--path") ?? void 0,
+      language: flag(argv, "--language") ?? void 0,
+      maxPositive: numericFlag(argv, "--max-positive", 3) ?? 3,
+      maxNegative: numericFlag(argv, "--max-negative", 2) ?? 2
+    });
+    console.log(JSON.stringify({ precedents }, null, 2));
+    return 0;
+  } finally {
+    db.close();
+  }
+}
 function redactCommand(argv) {
   const result = redact(readStdin());
   if (argv.includes("--json")) {
@@ -8393,6 +8620,8 @@ async function main(argv) {
       return consentPlanCommand(argv.slice(1));
     case "purge":
       return purgeCommand(argv.slice(1));
+    case "retrieve":
+      return retrieveCommand(argv.slice(1));
     case "evidence":
       return evidenceCommand();
     case "record":
