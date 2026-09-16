@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `review-voice evaluate`: reports the specification's metrics against their
+  targets, each with the basis it was computed from. A metric with no data
+  reports "no data" rather than a flattering default.
 - `review-voice score`: the specification's eligibility formula, computed
   deterministically — technical confidence, owner and repository alignment from
   weighted precedent, evidence quality and novelty against already-kept

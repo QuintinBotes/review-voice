@@ -11,7 +11,11 @@ totals, owner precision, and the finding ids of the last review.
 
 <!-- Corpus coverage, policy versions and retention arrive with M2. -->
 
-Once GitHub ingestion lands this will also report:
+Then run `RV evaluate` and show the metrics table. Present a metric with no
+data as "not yet measurable" rather than inventing a verdict — a reviewer that
+has never run is not a reviewer with perfect compliance.
+
+Also reported once a corpus exists:
 
 - Allowlisted repositories.
 - Corpus event counts by repository and reviewer role.
