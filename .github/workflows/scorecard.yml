@@ -1,0 +1,45 @@
+name: Scorecard
+
+# OSSF Scorecard grades this repository's supply-chain posture and publishes
+# the result to the security tab. Most of what it measures is already in place
+# — pinned actions, signed commits, branch protection, CodeQL, Dependabot — so
+# this mainly makes that visible to anyone deciding whether to trust the
+# plugin, which matters more than usual for a project shipping a pre-built
+# executable bundle.
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: '0 5 * * 1'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  analysis:
+    name: scorecard
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed to upload the result to the code-scanning dashboard.
+      security-events: write
+      # Needed by the action to read branch protection and workflow settings.
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publishing to the public dashboard would need a repo token with
+          # broader scope; the security tab is enough for this project.
+          publish_results: false
+
+      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+        with:
+          sarif_file: results.sarif
