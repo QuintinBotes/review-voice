@@ -170,6 +170,31 @@ exit code is still evidence.
 A check that did not run is reported as such. The reviewer must never imply a
 check passed when it never executed.
 
+### Scoring and activation
+
+The eligibility formula is arithmetic and lives in the CLI. Asking a model to
+compute it would make the thresholds unfalsifiable, and the point of a
+threshold is that it can be checked.
+
+Novelty is measured against findings already kept in this review, not against
+all candidates — two findings about one root cause spend two-fifths of the
+budget saying one thing. Evidence quality rewards specificity rather than
+volume: three vague observations are not better evidence than one naming a line.
+
+A negative precedent lowers a candidate's score but cannot refute a verified
+defect. Precedent adjusts preference; it never manufactures or unmakes truth.
+
+A proposed rule is stored **inactive**. Generation and activation are separate
+operations by construction rather than by discipline. Activation requires three
+corroborating signals including at least one from the owner, with nothing from
+the owner contradicting — and approval refuses any rule that has not met that
+bar, because approving anyway would make the bar decorative.
+
+Old versions are retained rather than overwritten: rollback is only possible if
+the thing being rolled back to still exists, and rollback refuses a version
+that was never approved, since activating something nobody agreed to is worse
+than refusing.
+
 ## Policy resolution
 
 ```
