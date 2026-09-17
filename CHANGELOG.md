@@ -5,6 +5,32 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-17
+
+### Fixed
+
+- The absence guard acts only on claims that are repo-wide beyond argument.
+  `git grep` answers "is this string anywhere in the repository", which refutes
+  a repo-wide claim and says nothing about a scoped one: "the hook is missing
+  from `@scope/ui-kit`" is true precisely when the hook exists somewhere else,
+  so the search confirmed the symbol and deleted the finding. Five of six
+  realistic claim shapes were scoped and all five fired. Saying where something
+  is absent is what a well-argued claim does, so the check preferentially killed
+  the best findings.
+
+### Added
+
+- `test/seams.test.mjs` pins the three seams between a prompt and the code that
+  reads its output: analyst to `score`, verifier to `score`, and every enum a
+  prompt must contain. Four defects have come from these and none was caught by
+  a test. The expectations are derived from the schemas and the prompts rather
+  than restated, so renaming a field in either fails the suite.
+- `candidate_set_agreement`, the overlap between reviews of the same diff, by
+  `path:line`, across every diff reviewed more than once. Reported and never
+  scored. Two reviews of one pull request agreed on two candidates of eight;
+  severity stability was measured and fixed across three releases while this
+  went untracked, and for a reviewer it is the more consequential variance.
+
 ## [0.7.2] - 2026-09-17
 
 ### Fixed
@@ -478,4 +504,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vulnerability reporting, and the repository security posture documented in
   `docs/REPO-SECURITY.md`.
 
-[0.7.2]: https://github.com/QuintinBotes/review-voice/commits/main
+[0.8.0]: https://github.com/QuintinBotes/review-voice/commits/main
