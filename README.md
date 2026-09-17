@@ -47,8 +47,12 @@ ordering is checked. You can stop reading anywhere and know you have seen
 everything more serious. There is no cap on how many findings you get - a real
 finding is never dropped to hit a number.
 
-The tier is derived from the kind of defect rather than asked for, so the same
-finding does not move up and down a page ordered by severity between runs.
+The tier is derived rather than asked for, so the same finding does not move up
+and down a page ordered by severity between runs. It combines the kind of
+defect with how far the affected code reaches - measured by the CLI from the
+reviewed tree, not judged by a model. A defect in code the whole repository
+depends on outranks the same kind of defect in one file, and neither answer
+changes between runs of the same diff.
 
 ## How it works
 
