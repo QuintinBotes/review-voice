@@ -5,24 +5,9 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.1] - 2026-09-17
 
 ### Fixed
-
-- The eval documentation records what the macOS sandbox actually does, probed
-  rather than inferred: `TMPDIR` must come from the operator's shell because a
-  case file may only set `EVAL_*` keys, the Xcode `git` shim then fails at
-  `xcode-select` with exit 72 because the Developer directory is outside the
-  sandbox, prepending the real binary to `PATH` does not help because the
-  sandbox resets `PATH`, and the working directory is empty so a prompt naming
-  `fixtures/...` resolves to nothing. A pass in that state measures the
-  sandbox, not the plugin.
-- The eval CI job installs `bubblewrap` and `socat`. Granting a shell makes the
-  harness require OS-level confinement and refuse to start without it, which is
-  the behaviour to keep, and the runner image ships neither dependency. The job
-  also needs an `ANTHROPIC_API_KEY` repository secret; without one every LLM
-  grader throws "not logged in" and each case scores 0.00, which reads like the
-  plugin behaving badly and is not.
 
 - The eval suite can now run at all. `--eval-dir` resolves below the plugin
   root, and the cases sat at the repository root, so every invocation exited 1
@@ -35,6 +20,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory and the `git` on PATH is the Xcode shim that needs it, so `RV diff`
   exits 2 and no agent is spawned. The bait not executing because nothing
   executed is the absence of the experiment, not evidence that a grant binds.
+- The eval CI job installs `bubblewrap` and `socat`. Granting a shell makes the
+  harness require OS-level confinement and refuse to start without it, which is
+  the behaviour to keep, and the runner image ships neither dependency. The job
+  also needs an `ANTHROPIC_API_KEY` repository secret; without one every LLM
+  grader throws "not logged in" and each case scores 0.00, which reads like the
+  plugin behaving badly and is not.
+- The eval documentation records what the macOS sandbox actually does, probed
+  rather than inferred: `TMPDIR` must come from the operator's shell because a
+  case file may only set `EVAL_*` keys, the Xcode `git` shim then fails at
+  `xcode-select` with exit 72 because the Developer directory is outside the
+  sandbox, prepending the real binary to `PATH` does not help because the
+  sandbox resets `PATH`, and the working directory is empty so a prompt naming
+  `fixtures/...` resolves to nothing. A pass in that state measures the
+  sandbox, not the plugin.
 
 ## [1.2.0] - 2026-09-17
 
@@ -784,7 +783,8 @@ no data because nothing has been labelled, and `docs/EVALUATION.md` says so.
   vulnerability reporting, and the repository security posture documented in
   `docs/REPO-SECURITY.md`.
 
-[1.2.0]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.2.1]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.2.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.2.0
 [1.1.1]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.1.1
 [1.1.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.1.0
 [1.0.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.0.0
