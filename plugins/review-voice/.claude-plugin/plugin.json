@@ -1,7 +1,7 @@
 {
   "name": "review-voice",
   "description": "A concise, precedent-aware code reviewer that calibrates to your review judgment. At most five findings, 40 words each, evidence required, silence when nothing qualifies.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": {
     "name": "Quintin Botes",
     "url": "https://github.com/QuintinBotes"
