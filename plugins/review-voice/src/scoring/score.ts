@@ -153,6 +153,9 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
 
 export class MalformedCandidate extends Error {}
 
+/** Field names from shapes agents have returned instead of the schema. */
+const FOREIGN_KEYS = ['title', 'location', 'suggested_direction', 'suggestion', 'description', 'summary'];
+
 /**
  * Normalises a candidate from either casing.
  *
@@ -170,7 +173,18 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
   const confidence = raw.technical_confidence ?? raw.technicalConfidence;
 
   if (typeof raw.path !== 'string' || raw.path.length === 0) {
-    throw new MalformedCandidate(`${candidateId}: missing path`);
+    // Named explicitly, because an agent that returns a different shape
+    // altogether fails here first and "missing path" is a misleading summary
+    // of "this is not a candidate". One run emitted title, location and
+    // suggested_direction, and the whole pull request produced nothing.
+    const foreign = FOREIGN_KEYS.filter((key) => key in raw);
+    throw new MalformedCandidate(
+      foreign.length > 0
+        ? `${candidateId}: has ${foreign.join(', ')} but no path. This is not the candidate schema. ` +
+          'Expected candidate_id, path, line, category, severity, claim, failure_mode, evidence, ' +
+          'technical_confidence, per schemas/candidate.schema.json.'
+        : `${candidateId}: missing path`,
+    );
   }
   if (!Number.isFinite(raw.line)) {
     throw new MalformedCandidate(`${candidateId}: missing or non-numeric line`);
@@ -186,7 +200,10 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     candidateId,
     path: raw.path,
     line: raw.line as number,
-    category: raw.category ?? 'correctness',
+    // Deliberately not defaulted. `correctness` used to stand in for a missing
+    // category, which gave an unlabelled finding a real tier and recorded
+    // nothing about the substitution.
+    category: raw.category ?? '',
     severity: (raw.severity ?? 'minor') as Candidate['severity'],
     claim: raw.claim ?? '',
     failureMode: raw.failure_mode ?? raw.failureMode ?? '',
@@ -440,7 +457,7 @@ export function scoreCandidate(
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
-    severity: deriveSeverity(candidate.category, candidate.severity, confidence),
+    severity: deriveSeverity(candidate.category, candidate.severity),
     analystConfidence,
     verifiedConfidence,
     confidenceSource,

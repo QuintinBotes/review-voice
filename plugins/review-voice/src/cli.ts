@@ -640,6 +640,7 @@ function scoreCommand(argv: string[]): number {
       // Refused rather than scored as zero: a candidate that cannot be scored
       // must not quietly become eligible.
       console.error(`Malformed candidate - ${error.message}`);
+      console.error('Re-run the analyst with the schema restated. Do not hand-translate its output.');
       return 2;
     }
     console.error('Expected {"candidates": [...]} on stdin.');

@@ -5,6 +5,26 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Severity no longer moves with confidence. Deriving it from the category closed
+  most of the instability, and measurement showed the rest had simply moved into
+  the confidence term: on two runs of an identical diff the category matched
+  both times and the tier differed anyway, at 0.82 against 0.90 and at 0.85
+  against 0.80. Everything that ships sits in `[0.8, 1.0]` and run to run
+  variance is around 0.08, so any boundary inside that band gets crossed. The
+  tiers are a step quieter to pay for dropping the weakening, so removing the
+  cliff does not make reviews louder.
+- A missing category is no longer defaulted to `correctness`. It gave an
+  unlabelled finding a real tier and recorded nothing about the substitution.
+  Absent and unrecognised both take the middle tier and say which applied.
+- A candidate in a foreign shape is named as such. One analyst run returned
+  `title`, `location` and `suggested_direction`, and the error read "missing
+  path", which describes a field rather than the problem, so the pull request
+  produced nothing with no indication why.
+
 ## [0.7.0] - 2026-09-17
 
 ### Fixed
