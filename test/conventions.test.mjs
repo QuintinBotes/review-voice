@@ -142,3 +142,81 @@ test('changed paths are read from a diff --out manifest', () => {
   assert.deepEqual(changedPathsFrom({}), []);
   assert.deepEqual(changedPathsFrom(null), []);
 });
+
+// Where a repository actually keeps its rules (NEW-06)
+
+test('rule and skill directories are found beside a package, not only at the root', () => {
+  // A monorepo keeps a package's rules with the package. Searching only the
+  // root found none of them, and they did not even appear in `skipped`.
+  const root = repository({
+    'packages/commander/.claude/skills/commander-fe-page/SKILL.md': 'A Divider precedes the destructive action.',
+    'packages/commander/.agents/rules/navigation-search.md': 'Build menu arrays with compactArray.',
+    '.claude/skills/unrelated/SKILL.md': 'Something else entirely.',
+  });
+  try {
+    const report = discoverConventions(root, ['packages/commander/src/Compass.tsx']);
+    const paths = report.documents.map((d) => d.path);
+    assert.ok(paths.includes(join('packages', 'commander', '.claude', 'skills', 'commander-fe-page', 'SKILL.md')));
+    assert.ok(paths.includes(join('packages', 'commander', '.agents', 'rules', 'navigation-search.md')));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('.agents/rules is collected, not just named by an index', () => {
+  const root = repository({
+    'AGENTS.md': 'Convention rules live in .agents/rules/.',
+    '.agents/rules/comments.md': 'A wrong rationale on right code is worse than no comment.',
+  });
+  try {
+    const report = discoverConventions(root, ['src/a.ts']);
+    const rule = report.documents.find((d) => d.kind === 'rule');
+    assert.ok(rule !== undefined, 'expected the rule body, not only the index that names it');
+    assert.match(rule.content, /wrong rationale/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a rule whose name matches the change outranks one that merely sorts early', () => {
+  // The budget used to fill alphabetically: add-image-asset, build-form and
+  // bump-vulnerability arrived on every pull request, and the cut landed just
+  // before the one document the change was about.
+  const root = repository({
+    '.claude/skills/add-image-asset/SKILL.md': 'Irrelevant.',
+    '.claude/skills/build-form/SKILL.md': 'Irrelevant.',
+    '.claude/skills/commander-fe-page/SKILL.md': 'Relevant.',
+  });
+  try {
+    const report = discoverConventions(root, ['packages/commander/src/Page.tsx']);
+    const commander = report.documents.find((d) => d.path.includes('commander-fe-page'));
+    const early = report.documents.find((d) => d.path.includes('add-image-asset'));
+    assert.equal(commander.reason, 'name matches the change');
+    assert.equal(early.reason, 'remaining budget');
+    assert.ok(
+      report.documents.indexOf(commander) < report.documents.indexOf(early),
+      'the matching document must be selected before the budget can run out',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('every document says why it was selected', () => {
+  const root = repository({
+    'CLAUDE.md': 'Repository rules.',
+    'src/api/AGENTS.md': 'Handlers validate first.',
+  });
+  try {
+    const report = discoverConventions(root, ['src/api/handler.ts']);
+    assert.deepEqual(
+      report.documents.map((d) => [d.path, d.reason]),
+      [
+        [join('src', 'api', 'AGENTS.md'), 'directory scope'],
+        ['CLAUDE.md', 'repository file'],
+      ],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

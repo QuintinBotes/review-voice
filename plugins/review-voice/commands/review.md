@@ -106,10 +106,14 @@ mention the gap only when the missing check is itself material to the change.
 
 Run `RV conventions --files <tmpdir>/files.json`.
 
-It returns the repository's own `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md` and
-`.claude/skills/*/SKILL.md`, with nested files scoped to the subtrees the diff
-actually touches. `documents` is empty when the repository states no
-conventions, which is not a finding.
+It returns the repository's own `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`,
+`.claude/skills/*/SKILL.md` and `.agents/rules/*.md`, searched at the root and
+in every directory the diff touches. `documents` is empty when the repository
+states no conventions, which is not a finding.
+
+Each document carries a `reason` for its selection, and `skipped` lists what
+the size budget left out. If something obviously relevant was skipped, say so
+once rather than working around it silently.
 
 Pass `documents` to the `diff-analyst` and the `evidence-verifier`.
 
@@ -173,6 +177,16 @@ visible instead of indistinguishable from a clean diff.
 
 Pipe the verified candidates as `{"candidates": [...]}` into
 `RV score --repository <name> --verification <tmpdir>/verification.json`.
+
+When reviewing a pull request, add `--exclude-pull <number>`. Comments on the
+pull request under review are the conversation, not evidence of what the owner
+values in general, and they are the route by which a review this tool produced
+comes back as precedent for the finding that produced it.
+
+If `score` exits non-zero saying the verification file contained no
+verifications, **do not re-run it without the flag.** Scoring without it falls
+back to the analyst's opinion of its own work, which is the one input with no
+evidence behind it. Fix the file.
 
 It retrieves weighted precedents for each candidate and returns a score
 breakdown. **Do not compute or adjust these numbers yourself** - they are

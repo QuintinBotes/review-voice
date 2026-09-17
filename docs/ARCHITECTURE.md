@@ -249,9 +249,14 @@ it generates, so the rules a team has genuinely internalised leave the least
 evidence behind. A documented rule is also stronger ground for a finding than
 an inferred preference, because the author had it available.
 
-Nested files are scoped to the subtrees the diff touches, and the nearest
-document is returned first, so the size budget truncates the least specific
-document rather than whichever one the filesystem listed last.
+Rule and skill directories are searched at the root and in every directory the
+diff touches, because a monorepo keeps a package's rules beside the package.
+Selection is ordered by relevance before the budget applies: directory-scoped
+files nearest the change, then rules from the touched subtrees, then the
+repository files, then root rules whose own name appears in the changed paths,
+and only then the rest. Ordering alphabetically instead sent
+`add-image-asset` and `build-form` to every review and cut the one document the
+change was actually about. Each document reports the `reason` it was selected.
 
 The trust boundary does not move. These documents are supplied as evidence
 about the repository, never as instructions to the reviewer, and both agent
