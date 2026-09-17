@@ -8381,6 +8381,46 @@ function changedPathsFrom(filesJson) {
   return files.map((file) => typeof file === "object" && file !== null ? file.path : void 0).filter((path) => typeof path === "string");
 }
 
+// plugins/review-voice/src/sync/state.ts
+import { randomUUID as randomUUID4 } from "node:crypto";
+function beginSyncRun(db, repositories) {
+  const id = randomUUID4();
+  db.prepare(
+    "INSERT INTO sync_runs (sync_run_id, started_at, finished_at, repositories_json, stats_json, imported) VALUES (?, ?, NULL, ?, ?, 0)"
+  ).run(id, (/* @__PURE__ */ new Date()).toISOString(), JSON.stringify(repositories), JSON.stringify({}));
+  return id;
+}
+function finishSyncRun(db, id, stats, imported) {
+  db.prepare("UPDATE sync_runs SET finished_at = ?, stats_json = ?, imported = ? WHERE sync_run_id = ?").run(
+    (/* @__PURE__ */ new Date()).toISOString(),
+    JSON.stringify(stats),
+    imported,
+    id
+  );
+}
+var ASSUME_STILL_RUNNING_MINUTES = 30;
+function unfinishedSyncRuns(db, now = /* @__PURE__ */ new Date()) {
+  const cutoff = new Date(now.getTime() - ASSUME_STILL_RUNNING_MINUTES * 6e4).toISOString();
+  return db.prepare("SELECT * FROM sync_runs WHERE finished_at IS NULL AND started_at < ? ORDER BY started_at DESC").all(cutoff).map((row) => ({
+    syncRunId: row["sync_run_id"],
+    startedAt: row["started_at"],
+    finishedAt: null,
+    repositories: JSON.parse(row["repositories_json"]),
+    imported: row["imported"]
+  }));
+}
+function lastSync(db) {
+  const row = db.prepare("SELECT * FROM sync_runs WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1").get();
+  if (row === void 0) return null;
+  return {
+    syncRunId: row["sync_run_id"],
+    startedAt: row["started_at"],
+    finishedAt: row["finished_at"],
+    repositories: JSON.parse(row["repositories_json"]),
+    imported: row["imported"]
+  };
+}
+
 // plugins/review-voice/src/corpus/store.ts
 function storeEvents(db, events) {
   const insert = db.prepare(
@@ -8454,6 +8494,11 @@ function corpusCoverage(db, options = {}) {
   if (ownerTotal > 0 && anchored * 2 < ownerTotal) {
     warnings.push(
       `${ownerTotal - anchored} of ${ownerTotal} owner events have no file anchor. Unanchored summaries match any candidate, so with the owner weighting applied they surface for every finding regardless of topic. Sync more repositories, or expect weak precedent.`
+    );
+  }
+  for (const run of unfinishedSyncRuns(db, options.now ?? /* @__PURE__ */ new Date())) {
+    warnings.push(
+      `A sync started ${run.startedAt} and never recorded a finish. It covered ${run.repositories.join(", ") || "no repositories"}, and anything it read was not stored. Run sync again.`
     );
   }
   for (const repository of options.allowlist ?? []) {
@@ -8966,7 +9011,7 @@ function compileProposals(db) {
 }
 
 // plugins/review-voice/src/policy/versions.ts
-import { randomUUID as randomUUID4 } from "node:crypto";
+import { randomUUID as randomUUID5 } from "node:crypto";
 function nextVersion(db, scopeType, scopeKey) {
   const row = db.prepare("SELECT MAX(version) AS v FROM policies WHERE scope_type = ? AND scope_key = ?").get(scopeType, scopeKey);
   return (row.v ?? 0) + 1;
@@ -8988,7 +9033,7 @@ function toYaml(rules, version, scopeKey) {
 }
 function proposePolicy(db, rules, scopeKey = "owner") {
   const version = nextVersion(db, "global", scopeKey);
-  const policyId = randomUUID4();
+  const policyId = randomUUID5();
   const contentYaml = toYaml(rules, version, scopeKey);
   const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
   db.prepare(
@@ -9175,35 +9220,6 @@ function computeMetrics(db) {
       `${exactNoFindings}/${noFindingsRuns} empty reviews used the exact string`
     )
   ];
-}
-
-// plugins/review-voice/src/sync/state.ts
-import { randomUUID as randomUUID5 } from "node:crypto";
-function beginSyncRun(db, repositories) {
-  const id = randomUUID5();
-  db.prepare(
-    "INSERT INTO sync_runs (sync_run_id, started_at, finished_at, repositories_json, stats_json, imported) VALUES (?, ?, NULL, ?, ?, 0)"
-  ).run(id, (/* @__PURE__ */ new Date()).toISOString(), JSON.stringify(repositories), JSON.stringify({}));
-  return id;
-}
-function finishSyncRun(db, id, stats, imported) {
-  db.prepare("UPDATE sync_runs SET finished_at = ?, stats_json = ?, imported = ? WHERE sync_run_id = ?").run(
-    (/* @__PURE__ */ new Date()).toISOString(),
-    JSON.stringify(stats),
-    imported,
-    id
-  );
-}
-function lastSync(db) {
-  const row = db.prepare("SELECT * FROM sync_runs WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1").get();
-  if (row === void 0) return null;
-  return {
-    syncRunId: row["sync_run_id"],
-    startedAt: row["started_at"],
-    finishedAt: row["finished_at"],
-    repositories: JSON.parse(row["repositories_json"]),
-    imported: row["imported"]
-  };
 }
 
 // plugins/review-voice/src/sync/watermark.ts
@@ -10210,6 +10226,10 @@ function statusCommand() {
     if (last !== null) {
       console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(", ") || "none"}`);
     }
+    const sync = lastSync(db);
+    console.log(
+      `last sync        ${sync === null ? "never completed" : `${sync.finishedAt ?? sync.startedAt}, ${sync.imported} imported from ${sync.repositories.length} repository/ies`}`
+    );
     console.log(
       `corpus           ${coverage.total} event(s)` + (coverage.total === 0 ? "" : ` - ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(", ")}`)
     );

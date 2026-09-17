@@ -1,6 +1,7 @@
 import type { Database } from '../store/db.ts';
 import { recordAudit } from '../store/audit.ts';
 import type { CollectedEvent } from './collect.ts';
+import { unfinishedSyncRuns } from '../sync/state.ts';
 
 export interface StoreResult {
   inserted: number;
@@ -89,6 +90,8 @@ export interface CoverageOptions {
   /** Repositories the user allowlisted, so absent ones can be named. */
   allowlist?: readonly string[];
   maxRepositoryShare?: number;
+  /** Fixed clock, so the unfinished-sync grace period is testable. */
+  now?: Date;
 }
 
 export function corpusCoverage(db: Database, options: CoverageOptions = {}): CorpusCoverage {
@@ -126,6 +129,17 @@ export function corpusCoverage(db: Database, options: CoverageOptions = {}): Cor
       `${ownerTotal - anchored} of ${ownerTotal} owner events have no file anchor. ` +
         'Unanchored summaries match any candidate, so with the owner weighting applied they surface ' +
         'for every finding regardless of topic. Sync more repositories, or expect weak precedent.',
+    );
+  }
+
+  // An empty corpus reads the same whether a sync has never run or one began
+  // and died. Two of the seven sync runs on the first machine to use this
+  // ended that way, and the only way to tell was to query the table by hand.
+  for (const run of unfinishedSyncRuns(db, options.now ?? new Date())) {
+    warnings.push(
+      `A sync started ${run.startedAt} and never recorded a finish. ` +
+        `It covered ${run.repositories.join(', ') || 'no repositories'}, and anything it read was not stored. ` +
+        'Run sync again.',
     );
   }
 

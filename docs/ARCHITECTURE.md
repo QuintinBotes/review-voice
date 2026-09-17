@@ -225,6 +225,18 @@ characters". Analyst evidence is always longer than 40 characters, so the term
 returned 1.000 for every candidate in that run: fifteen percent of the score
 carrying no information. Specificity now requires an actual anchor.
 
+### Reporting an empty corpus
+
+`lastSync` only ever returns finished runs, so a sync that began and died left
+the same `corpus 0 event(s)` as one that never ran, and only a hand-written
+query told them apart. They need different actions, so `status` names an
+unfinished run, which repositories it covered, and that nothing it read was
+stored.
+
+A run started within the last half hour is reported as neither dead nor
+complete. A sync in flight writes exactly the same row as one that crashed, and
+a recent start is not yet evidence of anything.
+
 ### Repository conventions
 
 `RV conventions` collects the repository's own `CLAUDE.md`, `AGENTS.md`,
