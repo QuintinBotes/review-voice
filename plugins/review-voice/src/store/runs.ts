@@ -35,6 +35,11 @@ export interface RecordRunInput {
   scores?: unknown;
   /** Precedent ids that informed the review, for the same reason. */
   precedents?: unknown;
+  /**
+   * Verification verdicts, including findings that were dropped. A suppressed
+   * finding leaves no other trace, so this is the only record that it existed.
+   */
+  verdicts?: unknown;
 }
 
 /**
@@ -85,7 +90,12 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
     JSON.stringify([]),
     JSON.stringify(input.precedents ?? []),
     JSON.stringify(input.candidates ?? []),
-    JSON.stringify({ output: input.output, findings, scores: input.scores ?? [] }),
+    JSON.stringify({
+      output: input.output,
+      findings,
+      scores: input.scores ?? [],
+      verdicts: input.verdicts ?? [],
+    }),
     new Date().toISOString(),
   );
 
@@ -105,6 +115,7 @@ export interface RunDetail {
   findings: StoredFinding[];
   scores: unknown;
   precedents: unknown;
+  verdicts: unknown;
 }
 
 /** Everything `explain` needs about a run, without re-deriving any of it. */
@@ -124,6 +135,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     output: string;
     findings: StoredFinding[];
     scores?: unknown;
+    verdicts?: unknown;
   };
 
   return {
@@ -133,6 +145,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     output: parsed.output,
     findings: parsed.findings,
     scores: parsed.scores ?? [],
+    verdicts: parsed.verdicts ?? [],
     precedents: JSON.parse(row['retrieved_precedents_json'] as string),
   };
 }

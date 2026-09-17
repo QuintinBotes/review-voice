@@ -1034,7 +1034,12 @@ function recordRun(db, input) {
     JSON.stringify([]),
     JSON.stringify(input.precedents ?? []),
     JSON.stringify(input.candidates ?? []),
-    JSON.stringify({ output: input.output, findings, scores: input.scores ?? [] }),
+    JSON.stringify({
+      output: input.output,
+      findings,
+      scores: input.scores ?? [],
+      verdicts: input.verdicts ?? []
+    }),
     (/* @__PURE__ */ new Date()).toISOString()
   );
   recordAudit(db, "review_run_recorded", { type: "review_run", id: reviewRunId }, {
@@ -1054,6 +1059,7 @@ function runDetail(db, reviewRunId) {
     output: parsed.output,
     findings: parsed.findings,
     scores: parsed.scores ?? [],
+    verdicts: parsed.verdicts ?? [],
     precedents: JSON.parse(row["retrieved_precedents_json"])
   };
 }
@@ -7462,6 +7468,7 @@ function loadConfig(repositoryRoot2) {
     postingEnabled: false,
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
+    verification: { enabled: false, command: "" },
     layers: [],
     unapproved: [],
     warnings: []
@@ -7497,6 +7504,17 @@ function loadConfig(repositoryRoot2) {
         }
         const writes = asRecord(doc["writes"]);
         result.postingEnabled = writes?.["github_posting_enabled"] === true;
+        const verification = asRecord(doc["verification"]);
+        if (verification !== null) {
+          const command = verification["command"];
+          result.verification = {
+            enabled: verification["enabled"] === true && typeof command === "string" && command.length > 0,
+            command: typeof command === "string" ? command : "",
+            name: typeof verification["name"] === "string" ? verification["name"] : void 0,
+            timeoutSeconds: positiveInt(verification["timeout_seconds"]),
+            dropThreshold: typeof verification["drop_threshold"] === "number" ? verification["drop_threshold"] : void 0
+          };
+        }
         const review = asRecord(doc["review"]);
         if (review !== null) {
           result.layers.push({
@@ -7680,6 +7698,128 @@ ${result.stderr ?? ""}`;
     });
   }
   return { enabled: true, commands: outcomes, didNotRun };
+}
+
+// plugins/review-voice/src/verify/external.ts
+import { spawnSync as spawnSync2 } from "node:child_process";
+var DEFAULT_TIMEOUT_SECONDS2 = 90;
+var DEFAULT_DROP_THRESHOLD = 0.8;
+var TIERS = ["blocking", "important", "minor", "nit", "question"];
+function downgrade(severity) {
+  const index = TIERS.indexOf(severity);
+  if (index === -1 || index >= TIERS.length - 2) return "nit";
+  return TIERS[index + 1] ?? "nit";
+}
+function jsonCandidates(text) {
+  const found = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0 && start !== -1) {
+        found.push(text.slice(start, i + 1));
+        start = -1;
+      } else if (depth < 0) {
+        depth = 0;
+      }
+    }
+  }
+  return found;
+}
+function parseVerdict(stdout) {
+  for (const candidate of jsonCandidates(stdout).reverse()) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (typeof parsed.verdict === "string") return parsed;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+function verifyFindings(findings, config, options) {
+  const name = config.name ?? "external";
+  if (!config.enabled || config.command.trim().length === 0 || findings.length === 0) {
+    return { enabled: false, verifier: null, verdicts: [], didNotRun: findings.length > 0 ? [name] : [] };
+  }
+  const dropThreshold = config.dropThreshold ?? DEFAULT_DROP_THRESHOLD;
+  const verdicts = [];
+  const didNotRun = [];
+  for (const finding of findings) {
+    const result = spawnSync2(config.command, {
+      cwd: options.cwd,
+      shell: true,
+      encoding: "utf8",
+      input: JSON.stringify(finding),
+      timeout: (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS2) * 1e3,
+      maxBuffer: 8 * 1024 * 1024
+    });
+    const unavailable = result.error !== void 0 || result.status === null;
+    const raw = unavailable ? null : parseVerdict(`${result.stdout ?? ""}
+${result.stderr ?? ""}`);
+    if (raw === null) {
+      didNotRun.push(name);
+      verdicts.push({
+        candidateId: finding.candidateId,
+        path: finding.path,
+        line: finding.line,
+        verdict: "uncertain",
+        confidence: 0,
+        reason: unavailable ? `verifier did not run: ${result.error?.message ?? "no exit status"}` : "verifier produced no parseable verdict",
+        outcome: "unverified",
+        originalSeverity: finding.severity,
+        finalSeverity: finding.severity,
+        verifier: name
+      });
+      continue;
+    }
+    const verdict = raw.verdict;
+    const confidence = typeof raw.confidence === "number" ? Math.min(1, Math.max(0, raw.confidence)) : 0.5;
+    const reason = raw.reason ?? "";
+    let outcome = "kept";
+    let finalSeverity = finding.severity;
+    if (verdict === "rejected") {
+      if (confidence >= dropThreshold) {
+        outcome = "dropped";
+      } else {
+        outcome = "downgraded";
+        finalSeverity = downgrade(finding.severity);
+      }
+    } else if (verdict === "uncertain") {
+      outcome = "downgraded";
+      finalSeverity = downgrade(finding.severity);
+    } else if (raw.suggested_severity !== void 0 && TIERS.includes(raw.suggested_severity) && TIERS.indexOf(raw.suggested_severity) > TIERS.indexOf(finding.severity)) {
+      outcome = "downgraded";
+      finalSeverity = raw.suggested_severity;
+    }
+    verdicts.push({
+      candidateId: finding.candidateId,
+      path: finding.path,
+      line: finding.line,
+      verdict,
+      confidence,
+      reason,
+      outcome,
+      originalSeverity: finding.severity,
+      finalSeverity,
+      verifier: name
+    });
+  }
+  return { enabled: true, verifier: name, verdicts, didNotRun: [...new Set(didNotRun)] };
 }
 
 // plugins/review-voice/src/redact/redact.ts
@@ -8808,6 +8948,7 @@ Commands:
   diff              Acquire the diff under review as structured JSON
   context           Resolve config and the active policy stack as JSON
   evidence          Run the configured static checks and emit structured signals
+  verify            Second-pass verification of candidates by a configured command
   redact            Redact secrets from stdin (used before anything is stored)
   sync              Ingest review history from allowlisted repositories
   discover          List repositories the credential can see (reads no history)
@@ -8843,6 +8984,7 @@ record flags:
   --diff-file <path>     Diff the review was produced from (for the run hash)
   --candidates <path>    Scored candidates, so findings carry their category
   --scores <path>        Score breakdowns, so explain can show its working
+  --verdicts <path>      Verification verdicts, including findings that were dropped
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -9345,6 +9487,29 @@ function redactCommand(argv) {
   }
   return 0;
 }
+function verifyCommand() {
+  let findings;
+  try {
+    const parsed = JSON.parse(readStdin());
+    findings = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
+  } catch {
+    console.error('Expected {"candidates": [...]} on stdin.');
+    return 2;
+  }
+  try {
+    const root = repositoryRoot(process.cwd());
+    const config = loadConfig(root);
+    const report = verifyFindings(findings, config.verification, { cwd: root });
+    console.log(JSON.stringify(report, null, 2));
+    return 0;
+  } catch (error) {
+    if (error instanceof GitError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+}
 function evidenceCommand() {
   try {
     const root = repositoryRoot(process.cwd());
@@ -9401,6 +9566,17 @@ function recordCommand(argv) {
       return 2;
     }
   }
+  const verdictsFile = flag(argv, "--verdicts");
+  let verdicts = [];
+  if (verdictsFile !== null) {
+    try {
+      const parsed = JSON.parse(readFileSync3(verdictsFile, "utf8"));
+      verdicts = Array.isArray(parsed) ? parsed : parsed.verdicts ?? [];
+    } catch {
+      console.error(`Cannot read verdicts from ${verdictsFile}.`);
+      return 2;
+    }
+  }
   const db = openDatabase();
   try {
     const { reviewRunId, findings } = recordRun(db, {
@@ -9410,7 +9586,8 @@ function recordCommand(argv) {
       diff,
       output,
       candidates,
-      scores
+      scores,
+      verdicts
     });
     console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
     return 0;
@@ -9457,6 +9634,7 @@ function explainCommand(argv) {
       return 0;
     }
     const wanted = argv.find((arg) => /^rv_\d+$/.test(arg));
+    const verdicts = Array.isArray(detail.verdicts) ? detail.verdicts : [];
     const scores = Array.isArray(detail.scores) ? detail.scores : [];
     if (argv.includes("--json")) {
       console.log(JSON.stringify(detail, null, 2));
@@ -9485,6 +9663,22 @@ function explainCommand(argv) {
       }
       if (score === void 0) {
         console.log("  scoring           not recorded for this review");
+      }
+      const verdict = verdicts.find((v) => v.path === finding.path && v.line === finding.line);
+      if (verdict !== void 0) {
+        console.log(
+          `  verified          ${verdict.verdict} (${verdict.confidence.toFixed(2)}) by ${verdict.verifier}` + (verdict.outcome === "kept" ? "" : ` \u2014 ${verdict.outcome}`)
+        );
+        if (verdict.reason.length > 0) console.log(`                    ${verdict.reason}`);
+      }
+      console.log("");
+    }
+    const dropped = verdicts.filter((v) => v.outcome === "dropped");
+    if (dropped.length > 0 && wanted === void 0) {
+      console.log(`Suppressed by verification (${dropped.length}):`);
+      for (const v of dropped) {
+        console.log(`  [${v.originalSeverity}] ${v.path}:${v.line}  ${v.verifier} @ ${v.confidence.toFixed(2)}`);
+        if (v.reason.length > 0) console.log(`      ${v.reason}`);
       }
       console.log("");
     }
@@ -9566,6 +9760,8 @@ async function main(argv) {
       return policyCommand(argv.slice(1));
     case "evidence":
       return evidenceCommand();
+    case "verify":
+      return verifyCommand();
     case "record":
       return recordCommand(argv.slice(1));
     case "feedback":

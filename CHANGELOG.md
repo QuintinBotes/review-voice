@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It does not, and knowing a relevant precedent was missed requires labelled
   retrieval data nobody has produced.
 
+### Added
+
+- `review-voice verify`: an optional second verification pass run by a command
+  you configure, intended for a **different model** from the one that generated
+  the findings. A confident rejection drops a finding, an unsure one downgrades
+  it, a verifier that could not run changes nothing, and a verifier may weaken
+  a severity but never strengthen one. Every verdict is recorded and `explain`
+  lists what was suppressed.
+
 ### Removed
 
 - Dead `loadEtags` / `saveEtags` helpers, which read a table migration v6 drops

@@ -50,6 +50,32 @@ static_evidence:
   #     run: npm run typecheck
   #     timeout_seconds: 120
 
+verification:
+  # An optional second pass over each surviving finding, run by a command you
+  # choose. Off by default.
+  #
+  # Point it at a DIFFERENT model from the one doing the review. A verifier
+  # from the same family shares the analyst's blind spots and agrees with a
+  # plausible-sounding defect more often than it should — correlated error is
+  # the thing this exists to break.
+  #
+  # The command receives one finding as JSON on stdin and must print a verdict
+  # as JSON on stdout:
+  #   {"verdict": "confirmed" | "rejected" | "uncertain",
+  #    "confidence": 0.0-1.0,
+  #    "reason": "...",
+  #    "suggested_severity": "minor"}      # optional, may only weaken
+  #
+  # Narration around the JSON is fine; the last JSON object wins.
+  enabled: false
+  name: codex
+  command: ""
+  timeout_seconds: 90
+  # A rejection at or above this confidence drops the finding. Below it, the
+  # finding is downgraded instead — an unsure verifier should not delete
+  # evidence.
+  drop_threshold: 0.8
+
 privacy:
   raw_retention_days: 30
   keep_normalized_events: true
