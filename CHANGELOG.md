@@ -5,6 +5,29 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A convention stub pointing at more than one document now resolves all of
+  them. The pointer pattern was anchored to a whole body, so it matched only a
+  stub holding exactly one `@path.md` line: a 179-byte file declaring
+  `paths: ["**/Controllers/**/*.cs"]` and listing two rule files resolved to
+  neither, and a pull request adding a controller was reviewed without the
+  controller rules. A stub now expands to one entry per target, each ranked and
+  budgeted on its own size, and a target that cannot be found is reported in
+  `skipped` rather than vanishing.
+- A truncated convention document now says so in its own text. The warning went
+  to the operator while the analyst read a document that stopped mid-word with
+  nothing marking the cut, and `bytes` still reported the original size.
+  Documents now carry `includedBytes` alongside `bytes` and are cut at a line
+  boundary.
+- The per-document budget is now counted in bytes. It used `slice`, which
+  counts UTF-16 code units, so a document with non-ASCII content could take
+  several times its share and could be cut through a surrogate pair.
+- The total convention budget is checked before a document is read rather than
+  after, so the last document admitted no longer overshoots it by its own size.
+
 ## [1.1.0] - 2026-09-17
 
 ### Changed

@@ -396,3 +396,81 @@ test('coverage never demotes a file governing the directory under change', () =>
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('both documents a stub points at are supplied, not just the first', () => {
+  const root = repository({
+    '.claude/rules/controller-patterns.md':
+      '---\npaths: ["**/Controllers/**/*.cs"]\n---\n' +
+      '@.agents/rules/controller-patterns.md\n@.agents/rules/controller-implementation.md\n',
+    '.agents/rules/controller-patterns.md': 'Controllers return ActionResult.',
+    '.agents/rules/controller-implementation.md': 'Controllers never touch the database directly.',
+  });
+  try {
+    const report = discoverConventions(root, ['src/Controllers/UserController.cs']);
+    const paths = report.documents.map((d) => d.path).sort();
+
+    assert.ok(paths.includes('.agents/rules/controller-patterns.md'));
+    assert.ok(paths.includes('.agents/rules/controller-implementation.md'));
+    // The stub declared the globs, so both inherit its relevance.
+    assert.ok(
+      report.documents
+        .filter((d) => d.path.startsWith('.agents/'))
+        .every((d) => d.reason === 'governs the changed paths'),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a pointer target that is missing is reported, never silently dropped', () => {
+  const root = repository({
+    '.claude/rules/controller-patterns.md':
+      '---\npaths: ["**/Controllers/**/*.cs"]\n---\n@.agents/rules/gone.md\n',
+  });
+  try {
+    const report = discoverConventions(root, ['src/Controllers/UserController.cs']);
+    const note = report.skipped.find((s) => s.path === '.agents/rules/gone.md');
+    assert.ok(note, 'a missing pointer target must reach skipped');
+    assert.match(note.reason, /points at it/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a truncated document says so in its own text, where the analyst reads', () => {
+  const root = repository({ 'CLAUDE.md': `${'rule line here\n'.repeat(4000)}` });
+  try {
+    const report = discoverConventions(root, []);
+    const doc = report.documents.find((d) => d.path === 'CLAUDE.md');
+
+    assert.equal(doc.truncated, true);
+    assert.match(doc.content, /Truncated by Review Voice/);
+    // bytes is the original; includedBytes is what was actually supplied.
+    assert.ok(doc.includedBytes < doc.bytes);
+    assert.ok(Buffer.byteLength(doc.content, 'utf8') <= PER_DOCUMENT_BYTES);
+    // Cut at a line boundary rather than mid-word.
+    assert.match(doc.content, /rule line here\n\n\[Truncated/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the byte budget is bytes, so multi-byte text cannot overrun its share', () => {
+  // `slice` counts UTF-16 code units. A CJK document is three bytes per
+  // character, so 15,000 units was up to 45,000 bytes - three times the share.
+  const root = repository({ 'CLAUDE.md': '\u898f\u5247\u306e\u884c\n'.repeat(4000) });
+  try {
+    const report = discoverConventions(root, []);
+    const doc = report.documents.find((d) => d.path === 'CLAUDE.md');
+
+    assert.equal(doc.truncated, true);
+    assert.ok(
+      Buffer.byteLength(doc.content, 'utf8') <= PER_DOCUMENT_BYTES,
+      `content was ${Buffer.byteLength(doc.content, 'utf8')} bytes, over the ${PER_DOCUMENT_BYTES} share`,
+    );
+    // Never a broken character at the cut.
+    assert.ok(!doc.content.includes('\uFFFD'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

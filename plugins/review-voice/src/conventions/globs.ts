@@ -138,10 +138,33 @@ export function governsAny(globs: readonly string[], changedPaths: readonly stri
  * holding frontmatter and `@.agents/rules/routing.md`. Supplying the pointer
  * spends budget to tell the reader where the rule is, instead of what it says.
  */
-export function pointerTarget(content: string): string | null {
+export function pointerTargets(content: string): string[] {
   const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---/, '').trim();
-  // `\.?\/?` ate the dot of `.agents/rules/...`. Only `./` as a unit is
-  // optional punctuation; a bare dot is part of the path.
-  const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(body);
-  return match?.[1] ?? null;
+  if (body.length === 0) return [];
+
+  // Every line must be a pointer, a blank line, or a comment. A document that
+  // also says something of its own is a document, not a stub, and following it
+  // would replace prose the repository wrote with prose it merely referenced.
+  const targets: string[] = [];
+  for (const raw of body.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.length === 0 || line.startsWith('<!--') || line.startsWith('#')) continue;
+    // `\.?\/?` ate the dot of `.agents/rules/...`. Only `./` as a unit is
+    // optional punctuation; a bare dot is part of the path.
+    const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(line);
+    if (match?.[1] === undefined) return [];
+    targets.push(match[1]);
+  }
+  return targets;
+}
+
+/**
+ * The single target of a stub, kept for callers that can only take one.
+ *
+ * A stub listing two targets returns null here rather than silently picking
+ * the first, which is what the multi-target form exists to fix.
+ */
+export function pointerTarget(content: string): string | null {
+  const targets = pointerTargets(content);
+  return targets.length === 1 ? (targets[0] ?? null) : null;
 }
