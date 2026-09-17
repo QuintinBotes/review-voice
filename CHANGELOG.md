@@ -5,6 +5,32 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Derivation may move a reach-varying tier by one step from what the analyst
+  asked, not by three. 1.3.0's module fallback and 1.3.1's diff fallback between
+  them made reach resolvable on 17 of 20 candidates and nearly always
+  `repository`, so the eight reach-varying categories collapsed to their
+  repository column and the table overrode the analyst on 9 of 20 - six upward.
+  A finding the analyst called `minor`, having read the code, shipped as
+  `blocking` at confidence 0.70 on its category label alone. Categories that
+  carry one tier at every reach are severe by nature rather than by search and
+  are not bounded.
+- A convention document's declared `paths:` glob is read whatever the file's
+  size. The head of a file costs the same to read at any total size, but the
+  gate was on total size, so a large rule's declared scope was never read and it
+  could never earn `governs the changed paths`.
+- Completeness breaks ties within a relevance tier instead of outranking
+  relevance. 1.3.1 admitted everything that fits whole before anything that
+  must be cut, which is a global partition: on one pull request it took 59,672
+  of 60,000 bytes with eleven whole documents, left 328, and never sliced
+  anything - so 1.3.0's section selection became unreachable, and
+  `integration-test.md`, governing four of ten changed files and 734 of 1,073
+  additions, lost its slot to documents admitted on the weaker `name matches
+  the change` heuristic.
+
 ## [1.3.1] - 2026-09-17
 
 ### Fixed

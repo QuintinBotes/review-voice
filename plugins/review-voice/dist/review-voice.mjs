@@ -8583,6 +8583,12 @@ ${entry.part.body}`.trim()).join("\n\n");
 [Review Voice kept the ${keep.size} of ${parts.length} sections that match the paths under review. ${dropped} other section${dropped === 1 ? "" : "s"} of this document were not read.]
 `;
 }
+function readHead(absolute, limit) {
+  const raw = readFileSync3(absolute);
+  if (raw.length <= limit) return raw.toString("utf8");
+  const decoder = new TextDecoder("utf8", { fatal: false });
+  return decoder.decode(raw.subarray(0, limit));
+}
 function readBounded(absolute, changedPaths = []) {
   const raw = readFileSync3(absolute, "utf8");
   const bytes = Buffer.byteLength(raw, "utf8");
@@ -8752,8 +8758,8 @@ function discoverConventions(root, changedPaths = []) {
     let followed = [];
     try {
       bytes = statSync(join4(root, entry.path)).size;
-      if (bytes <= CHEAP_BYTES) {
-        const head = readFileSync3(join4(root, entry.path), "utf8");
+      {
+        const head = readHead(join4(root, entry.path), CHEAP_BYTES);
         governs = frontmatterPaths(head);
         const targets = pointerTargets(head);
         for (const target of targets) {
@@ -8786,6 +8792,13 @@ function discoverConventions(root, changedPaths = []) {
       return { entry: withPath(path), bytes: targetBytes };
     });
   });
+  const fitsWhole = (entry) => {
+    try {
+      return statSync(join4(root, entry.path)).size <= PER_DOCUMENT_BYTES;
+    } catch {
+      return false;
+    }
+  };
   const tier = (reason) => [
     "directory scope",
     "governs the changed paths",
@@ -8800,22 +8813,13 @@ function discoverConventions(root, changedPaths = []) {
     if (a.entry.reason === "directory scope") return 0;
     const byCoverage = b.entry.governsPaths - a.entry.governsPaths;
     if (byCoverage !== 0) return byCoverage;
+    const whole = Number(fitsWhole(b.entry)) - Number(fitsWhole(a.entry));
+    if (whole !== 0) return whole;
     const cheap = Number(b.bytes <= CHEAP_BYTES) - Number(a.bytes <= CHEAP_BYTES);
     if (cheap !== 0) return cheap;
     return a.bytes - b.bytes;
   });
-  const fitsWhole = (entry) => {
-    try {
-      return statSync(join4(root, entry.path)).size <= PER_DOCUMENT_BYTES;
-    } catch {
-      return false;
-    }
-  };
-  const ordered2 = [
-    ...sized.filter(({ entry }) => fitsWhole(entry)),
-    ...sized.filter(({ entry }) => !fitsWhole(entry))
-  ];
-  for (const { entry } of ordered2) {
+  for (const { entry } of sized) {
     if (seen.has(entry.path)) continue;
     const absolute = join4(root, entry.path);
     if (!existsSync2(absolute)) continue;
@@ -9655,6 +9659,25 @@ var ALIASES = {
   bug: "correctness",
   logic: "correctness"
 };
+var MAX_TIER_MOVEMENT = 1;
+function boundToRequest(derived, requested, reach, reason) {
+  const asked = SEVERITIES.indexOf(requested);
+  const got = SEVERITIES.indexOf(derived);
+  if (asked === -1 || got === -1) {
+    return { severity: derived, requested, reach, reason };
+  }
+  const distance = got - asked;
+  if (Math.abs(distance) <= MAX_TIER_MOVEMENT) {
+    return { severity: derived, requested, reach, reason };
+  }
+  const bounded = SEVERITIES[asked + Math.sign(distance) * MAX_TIER_MOVEMENT];
+  return {
+    severity: bounded,
+    requested,
+    reach,
+    reason: `${reason}, bounded to ${bounded} because the analyst asked for ${requested} and derivation may move a tier by one`
+  };
+}
 function deriveSeverity(category, requested, reach = null) {
   if (requested === "question") {
     return {
@@ -9720,20 +9743,17 @@ function deriveSeverity(category, requested, reach = null) {
       reason: `${resolved} has no reach mapping, so its legacy ${legacy} tier is used`
     };
   }
-  if (requested === "question" && resolvedReach === "local") {
-    return {
-      severity: "question",
-      requested,
-      reach: reach ?? null,
-      reason: "a question at local reach remains question"
-    };
+  const varies = new Set(Object.values(tiers ?? {})).size > 1;
+  const describe = resolved === normalised ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
+  if (!varies) {
+    return { severity, requested, reach: reach ?? null, reason: describe };
   }
-  return {
+  return boundToRequest(
     severity,
     requested,
-    reach: reach ?? null,
-    reason: resolved === normalised ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`
-  };
+    reach ?? null,
+    describe
+  );
 }
 
 // plugins/review-voice/src/scoring/score.ts

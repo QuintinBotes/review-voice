@@ -555,3 +555,36 @@ test('a small complete rule is never displaced by another slice of a large one',
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a large rule that governs the change outranks small rules that merely match a name', () => {
+  // 1.3.1 admitted everything that fits whole before anything that must be cut,
+  // which is a global partition that discards relevance. Measured: pass one
+  // took 59,672 of 60,000 bytes with eleven whole documents, so nothing was
+  // ever sliced, and integration-test.md - governing four of ten changed files
+  // and 734 of 1,073 additions - lost its slot to documents admitted on the
+  // weaker "name matches the change" heuristic.
+  const big = (name) => `---\npaths: ["**/*.integration.ts"]\n---\n# ${name}\n` +
+    `${name} rule line.\n`.repeat(900);
+  const small = (name) => `# ${name}\nA short unrelated rule.\n`;
+
+  const files = { '.agents/rules/integration-test.md': big('integration') };
+  // Plenty of small documents whose names match the change but which govern nothing.
+  for (let i = 0; i < 20; i += 1) files[`.agents/rules/integration-helper-${i}.md`] = small(`helper${i}`);
+
+  const root = repository(files);
+  try {
+    const report = discoverConventions(root, ['src/thing.integration.ts']);
+    const kept = report.documents.find((d) => d.path === '.agents/rules/integration-test.md');
+
+    assert.ok(
+      kept !== undefined,
+      `the rule governing the change was dropped for budget. Kept: ${report.documents.map((d) => d.path).join(', ')}`,
+    );
+    assert.equal(kept.reason, 'governs the changed paths');
+    // It is over the per-document share, so it arrives as selected sections.
+    assert.equal(kept.truncated, true);
+    assert.equal(kept.scoped, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
