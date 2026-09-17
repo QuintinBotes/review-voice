@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `RV conventions` collects the repository's own `CLAUDE.md`, `AGENTS.md`,
+  `CONTRIBUTING.md` and skill documents, scoped to the subtrees the diff
+  touches, and both the analyst and the verifier now receive them. They are
+  supplied as evidence about what the repository requires, never as
+  instructions to the reviewer. Precedent could not reach these rules: the
+  better a convention is observed, the fewer review comments it leaves behind.
+
 ### Fixed
 
 - Novelty is measured against the corpus, not only against the other findings
