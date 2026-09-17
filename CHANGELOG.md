@@ -5,6 +5,21 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-09-17
+
+### Changed
+
+- Convention documents are ranked by how much of the change they govern before
+  how large they are. Ranking by size dropped a test rule from a diff whose two
+  largest additions were test files, while shorter rules governing one
+  incidental file were read. A file governing the directory under change is
+  still never demoted.
+- `docs/EVALUATION.md` publishes what has actually been measured, and states
+  that `owner_accepted_precision` has no data because nothing has been labelled
+  through feedback. The evidence the reviewer finds real defects is six
+  findings verified, posted to live pull requests and fixed by their authors,
+  which is real and is not that gate.
+
 ## [0.8.1] - 2026-09-17
 
 ### Fixed
@@ -538,4 +553,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vulnerability reporting, and the repository security posture documented in
   `docs/REPO-SECURITY.md`.
 
-[0.8.1]: https://github.com/QuintinBotes/review-voice/commits/main
+[0.9.0]: https://github.com/QuintinBotes/review-voice/commits/main
