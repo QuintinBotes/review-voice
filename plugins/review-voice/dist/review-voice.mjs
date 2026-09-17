@@ -8612,7 +8612,13 @@ var ASSERTS_ABSENCE = [
   /\bcannot\s+be\s+found\b/i,
   /\bnowhere\s+in\s+the\s+(?:repo|repository|codebase)\b/i
 ];
-var GENERIC_REPOSITORY = /^(?:the\s+)?(?:entire\s+|whole\s+)?(?:repo|repository|code\s?base|project|tree)\b/i;
+var DETERMINER = /^(?:the|this|that|these|those|our|your|their|its|his|her|my|a|an)\s+/i;
+function withoutDeterminer(complement) {
+  let text = complement.trim().replace(/[`'"]/g, "");
+  for (let i = 0; i < 3; i += 1) text = text.replace(DETERMINER, "");
+  return text.trim();
+}
+var GENERIC_REPOSITORY = /^(?:entire\s+|whole\s+)?(?:mono)?(?:repo|repository|code\s?base|project|tree)\b/i;
 var NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
 var NAMED_UNIT_SUFFIX = /^(?:the\s+)?\S+\s+(?:repo|repository|service|package|library)\b/i;
 var ANOTHER_UNIT = /^(?:another|a\s+different|a\s+sibling|the\s+other)\s+(?:repo|repository|package|service)\b/i;
@@ -8621,8 +8627,10 @@ var LOCATIVE = /\b(?:in|from|within|under|inside|throughout|across)\s+([^.,;]+)/
 function namesThisRepository(complement, repository) {
   if (repository === null) return false;
   const candidates = [repository, repository.split("/").pop() ?? repository].map((name) => name.trim().toLowerCase()).filter((name) => name.length > 0);
-  const said = complement.trim().toLowerCase().replace(/^the\s+/, "").replace(/[`'"]/g, "");
-  return candidates.some((name) => said === name || said === `${name} repository` || said === `${name} repo`);
+  const said = withoutDeterminer(complement).toLowerCase();
+  return candidates.some(
+    (name) => [name, `${name} repository`, `${name} repo`, `${name} monorepo`, `${name} codebase`].includes(said)
+  );
 }
 var PROPERTY_NOT_PLACE = /\b(?:ex|im)ported\b|\bnot\s+(?:public|exposed|re-?exported)\b/i;
 function absenceScope(text, repository = null) {
@@ -8634,9 +8642,10 @@ function absenceScope(text, repository = null) {
   const locative = LOCATIVE.exec(after);
   if (locative === null) return "repository";
   const complement = (locative[1] ?? "").trim();
-  if (GENERIC_REPOSITORY.test(complement)) return "repository";
+  const bare = withoutDeterminer(complement);
+  if (GENERIC_REPOSITORY.test(bare)) return "repository";
   if (namesThisRepository(complement, repository)) return "repository";
-  if (ANOTHER_UNIT.test(complement) || NAMED_UNIT.test(complement) || NAMED_UNIT_SUFFIX.test(complement)) {
+  if (ANOTHER_UNIT.test(complement) || NAMED_UNIT.test(bare) || NAMED_UNIT_SUFFIX.test(bare)) {
     return "elsewhere";
   }
   return "bounded";
@@ -9220,6 +9229,7 @@ function admitsUnverifiable(candidate) {
 }
 var DEFAULT_THRESHOLDS = {
   technicalConfidence: 0.8,
+  analystOnlyConfidence: 0.7,
   finalScore: 0.68
 };
 var MalformedCandidate = class extends Error {
@@ -9334,6 +9344,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     confidence = UNVERIFIABLE_CONFIDENCE;
     confidenceSource = "unverifiable-cap";
   }
+  const confidenceFloor = confidenceSource === "verifier" ? thresholds.technicalConfidence : thresholds.analystOnlyConfidence;
   const alreadySaid = duplicatePrecedent(candidate, precedents);
   const forAlignment = alreadySaid === null ? precedents : precedents.filter((p) => !sameLocation(candidate, p));
   const ownerPrecedents = forAlignment.filter((p) => p.role === "owner");
@@ -9348,8 +9359,10 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     rejectedBecause = "score could not be computed from this candidate";
   } else if (alreadySaid !== null) {
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
-  } else if (confidence < thresholds.technicalConfidence) {
-    rejectedBecause = confidenceSource === "unverifiable-cap" ? `the claim states it could not be verified, so confidence is capped at ${UNVERIFIABLE_CONFIDENCE}, below ${thresholds.technicalConfidence}` : `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${thresholds.technicalConfidence}`;
+  } else if (confidenceSource === "unverifiable-cap") {
+    rejectedBecause = `the claim states it could not be verified, so it cannot ship whatever it scores`;
+  } else if (confidence < confidenceFloor) {
+    rejectedBecause = `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` + (confidenceSource === "analyst" ? ". No verification was supplied, so this is the analyst's opinion of its own output." : "");
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
@@ -9910,7 +9923,12 @@ score flags:
   --exclude-pull <n>        Drop precedents from this pull request. Pass the
                             pull request under review: its own comments are
                             the conversation, not evidence of general taste.
-  --min-confidence <n>      Technical confidence gate (default 0.8)
+  --min-confidence <n>      Gate on a confidence the verifier established
+                            (default 0.8)
+  --min-analyst-confidence <n>
+                            Gate when only the analyst's self-report exists
+                            (default 0.7). A different measurement, so a
+                            different number.
   --min-score <n>           Final score gate (default 0.78)
   --repository <name>       Prefer precedents from this repository
 
@@ -10341,6 +10359,9 @@ function scoreCommand(argv) {
   }
   const thresholds = {
     technicalConfidence: Number(flag(argv, "--min-confidence") ?? DEFAULT_THRESHOLDS.technicalConfidence),
+    analystOnlyConfidence: Number(
+      flag(argv, "--min-analyst-confidence") ?? DEFAULT_THRESHOLDS.analystOnlyConfidence
+    ),
     finalScore: Number(flag(argv, "--min-score") ?? DEFAULT_THRESHOLDS.finalScore)
   };
   const verifications = /* @__PURE__ */ new Map();
@@ -10453,6 +10474,10 @@ function scoreCommand(argv) {
             // gate had already rejected, so the block overstated the yield in
             // exactly the place the operator is asked to report it.
             cleared: results.filter((r) => r.eligible).length,
+            // Named, because a run scored without verification has no
+            // precision defence beyond precedent, and that should not be
+            // something the reader has to infer from a missing flag.
+            gatedOnAnalystSelfReport: results.filter((r) => r.confidenceSource === "analyst").length,
             aboveThreshold: finals.filter((v) => v >= thresholds.finalScore).length
           },
           // Enough to carry a survivor forward without rejoining by hand.

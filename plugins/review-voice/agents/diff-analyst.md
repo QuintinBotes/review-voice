@@ -141,6 +141,20 @@ one bullet and 0.8 in the next field. Either establish the claim or file it as
 a `question`. The scorer caps such a candidate below the gate regardless, so
 the only thing an inflated number buys is a rejection you cannot read.
 
+## A comment about another repository is not evidence about it
+
+If a claim rests on the state of a sibling repository, read that repository. A
+comment in this one saying a key is "proposed in other-repo#22069" is evidence
+that someone once proposed it, not that it is still absent, and such a comment
+goes stale the moment the other side merges.
+
+Observed twice on one diff: both runs asserted two localisation keys were
+missing, citing an in-repo comment, when both had landed upstream. The comment
+being stale is itself a real finding, and a better one. File that instead.
+
+If you cannot read the other repository, the claim cannot be established here.
+Say so and lower your confidence accordingly, or file it as a `question`.
+
 ## Never assert an absence you have not searched for
 
 "X does not exist", "there is no such component", "this is never exported": say

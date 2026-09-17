@@ -5,6 +5,34 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The confidence floor is split by who established the number. A verifier
+  confidence is still gated at 0.8; an analyst self-report is gated at 0.7.
+  Measured against ground truth over eleven candidates, the self-report does not
+  separate true from false anywhere above 0.7: the two most thoroughly verified
+  findings sat at 0.70 and the only false one at 0.80. Held at 0.8 it discarded
+  a real behavioural defect, a test that did not test what it claimed, and the
+  finding that drove an actual changes-requested review, while shipping the
+  false one. `score` now reports how many candidates were gated on the
+  self-report.
+- A claim that says it could not be verified is rejected on its own terms rather
+  than by sitting beneath a numeric floor, which tied it to a number that has
+  moved twice.
+
+### Fixed
+
+- Any determiner before a repository word still names this repository. Only
+  `the` was stripped, so "in this repository" was read as a named unit with the
+  determiner captured as the name, and "in this codebase" fell through to
+  bounded.
+- The analyst is told that a comment about another repository is not evidence
+  about it. Both runs of one diff asserted two localisation keys were missing,
+  citing an in-repo comment that had gone stale when the other side merged. The
+  comment being stale is itself the better finding.
+
 ## [0.9.1] - 2026-09-17
 
 ### Fixed

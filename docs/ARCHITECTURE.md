@@ -303,6 +303,28 @@ returned `found: []`, which reads as corroboration, and at the head ref it found
 the symbol the diff itself adds and deleted the finding with a sentence that was
 false about the claim.
 
+### Two confidence floors, because they measure different things
+
+The verifier checked the claim against the repository. The analyst reported how
+it felt about its own output. Holding both to 0.8 treated those as the same
+measurement, and one of them has now been checked against ground truth.
+
+Over eleven candidates verified or refuted by hand against the code, the
+self-report did not separate true from false anywhere above 0.7: the two most
+thoroughly verified findings sat at 0.70 and the only false one at 0.80. Held at
+0.8 it discarded a real behavioural defect, a test that did not test what it
+claimed, and the finding that drove an actual changes-requested review, while
+shipping the false one. It is unstable at the boundary too: the same finding on
+an identical diff scored 0.75 and then 0.80, which decided whether it reached
+the author.
+
+A verifier-established confidence is still held at 0.8. An analyst-only one is
+held at 0.7, which is where the labelled data puts it: below that the signal
+does carry, since candidates at 0.50 and 0.65 were weak or wrong, and above it
+the number is noise. `score` reports how many candidates were gated on the
+self-report, because a run scored without verification has no precision defence
+beyond precedent and that should not have to be inferred from a missing flag.
+
 ### Whose confidence the gate reads
 
 Eligibility used to be gated on `technical_confidence`, a number the analyst
