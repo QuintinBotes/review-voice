@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `review-voice diff --pr <number>`: reviews a GitHub pull request through the
+  read-only client, inferring the repository from the origin remote. Naming a
+  pull request is the consent for reading it, so no allowlist entry is needed.
+- `review-voice explain`: reports the category, confidence, score and precedent
+  ids recorded for each finding, and says "not recorded" rather than
+  reconstructing a rationale.
 - Incremental polling sync: ETags persist between runs, so an unchanged
   repository costs almost nothing against the rate limit. No webhook receiver,
   per ADR 0002.
