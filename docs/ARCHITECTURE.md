@@ -374,6 +374,27 @@ plausible-sounding defect is real, a same-family verifier agrees more often
 than it should. Breaking that correlated error needs a different model.
 
 So there is an optional second pass, configured like static-evidence commands:
+
+```yaml
+# .review-voice/config.yaml
+verification:
+  enabled: true
+  name: codex
+  command: codex exec -s read-only
+  timeout_seconds: 90
+  # A rejection at or above this confidence drops the finding. Below it, the
+  # finding is downgraded instead: an unsure verifier should not be able to
+  # delete evidence.
+  drop_threshold: 0.8
+```
+
+The command reads one finding as JSON on stdin and writes a verdict to stdout,
+read-only. A verifier that cannot run never confirms a finding, and verification
+may only weaken a severity, never raise one.
+
+It is opt-in, and a config written before it existed has no block for it at all,
+so `RV context` reports whether yours does.
+
 a command that receives one finding as JSON and returns a verdict. Off by
 default, because requiring an external binary would break the zero-install
 promise for everyone who does not have one.
