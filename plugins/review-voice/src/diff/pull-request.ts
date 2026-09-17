@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { GitHubClient } from '../github/client.ts';
 import { classify, isReviewable, languageOf } from './classify.ts';
 import type { ChangedFile, DiffResult } from './acquire.ts';
@@ -58,6 +59,127 @@ function toUnifiedDiff(file: RawFile): string {
  */
 const GITHUB_MAX_FILES = 3000;
 
+/**
+ * Whether a commit is in the local object store, and whether we put it there.
+ *
+ * Stated rather than assumed. `diff --pr` builds the whole diff from the API
+ * and never touches local git, so nothing downstream had grounds to believe
+ * `base` or `head` could be read. On a live run the head commit was simply
+ * absent: the verifier hit `fatal: bad object` and fell back to reading
+ * head-side code from the patch alone, which is the same shape as a guard
+ * searching the wrong tree.
+ */
+export interface RefAvailability {
+  base: { sha: string; available: boolean };
+  head: { sha: string; available: boolean };
+  /** True only when this call fetched. Never inferred from an exit status. */
+  fetched: boolean;
+  note: string | null;
+}
+
+function git(args: string[], cwd: string, timeout = 60_000): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout,
+  });
+}
+
+/** Whether a commit object is present, asked of git rather than assumed. */
+function hasCommit(sha: string, cwd: string): boolean {
+  try {
+    git(['cat-file', '-e', `${sha}^{commit}`], cwd, 10_000);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The owner/repo the `origin` remote points at, or null. */
+function originRepository(cwd: string): string | null {
+  try {
+    const url = git(['remote', 'get-url', 'origin'], cwd, 10_000).trim();
+    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Makes a pull request's commits readable locally, when that is safe.
+ *
+ * Gated on `origin` actually resolving to the repository under review. Fetching
+ * `pull/<n>/head` from an unrelated clone yields plausible commits from the
+ * wrong project, which is strictly worse than their absence.
+ *
+ * Fetches into a namespaced ref so nothing of the user's moves. Review Voice is
+ * read-only with respect to working state; writing loose objects and one ref
+ * under `refs/review-voice/` is the most this may do.
+ */
+function ensureRefs(options: {
+  repository: string;
+  pullNumber: number;
+  base: string;
+  head: string;
+  cwd: string;
+}): RefAvailability {
+  const check = (): { base: boolean; head: boolean } => ({
+    base: hasCommit(options.base, options.cwd),
+    head: hasCommit(options.head, options.cwd),
+  });
+
+  let present = check();
+  const result = (fetched: boolean, note: string | null): RefAvailability => ({
+    base: { sha: options.base, available: present.base },
+    head: { sha: options.head, available: present.head },
+    fetched,
+    note,
+  });
+
+  if (present.base && present.head) return result(false, null);
+
+  const origin = originRepository(options.cwd);
+  if (origin === null) {
+    return result(false, 'No origin remote resolved, so the pull request commits were not fetched.');
+  }
+  if (origin.toLowerCase() !== options.repository.toLowerCase()) {
+    return result(
+      false,
+      `origin is ${origin} but the review is of ${options.repository}, so nothing was fetched. ` +
+        'Fetching a pull request from an unrelated clone would supply commits from the wrong project.',
+    );
+  }
+
+  try {
+    git(
+      [
+        'fetch',
+        '--no-tags',
+        '--quiet',
+        'origin',
+        `pull/${options.pullNumber}/head:refs/review-voice/pr/${options.pullNumber}/head`,
+      ],
+      options.cwd,
+    );
+  } catch {
+    // Never fatal. A pull request stays reviewable with no network; the
+    // availability below simply reports what is actually in the object store.
+  }
+
+  present = check();
+  if (present.base && present.head) {
+    return result(true, null);
+  }
+
+  const missing = [!present.base ? 'base' : null, !present.head ? 'head' : null].filter(Boolean);
+  return result(
+    true,
+    `The ${missing.join(' and ')} commit could not be made available locally. ` +
+      'Reading code at that ref will fail, so evidence from it is unavailable rather than absent.',
+  );
+}
+
 export interface PullRequestDiff extends DiffResult {
   title: string;
   /** What GitHub says the pull request contains, not what we managed to read. */
@@ -67,6 +189,8 @@ export interface PullRequestDiff extends DiffResult {
   /** True when files were not fetched. Never silent: see truncationNote. */
   truncated: boolean;
   truncationNote: string | null;
+  /** Whether the pull request's commits can actually be read locally. */
+  refs: RefAvailability;
 }
 
 export async function acquirePullRequestDiff(options: {
@@ -74,6 +198,8 @@ export async function acquirePullRequestDiff(options: {
   pullNumber: number;
   includeGenerated: boolean;
   maxFiles?: number;
+  /** Where to check for, and fetch, the pull request's commits. */
+  cwd?: string;
 }): Promise<PullRequestDiff> {
   const client = new GitHubClient({ allowlist: [options.repository] });
 
@@ -131,6 +257,9 @@ export async function acquirePullRequestDiff(options: {
     title: pull.title,
     files,
     reviewedFileCount: files.filter((file) => file.reviewed).length,
+    // A pull request file with no patch is already excluded, so every reviewed
+    // file here carries a hunk by construction.
+    hunkFileCount: files.filter((file) => file.reviewed).length,
     excludedFileCount: files.filter((file) => !file.reviewed).length,
     diff,
     totalChangedFiles: pull.changed_files,
@@ -143,5 +272,12 @@ export async function acquirePullRequestDiff(options: {
     truncationNote: truncated
       ? `Only ${rawFiles.length} of ${pull.changed_files} changed files were read. This review covers part of the change.`
       : null,
+    refs: ensureRefs({
+      repository: options.repository,
+      pullNumber: options.pullNumber,
+      base: pull.base.sha,
+      head: pull.head.sha,
+      cwd: options.cwd ?? process.cwd(),
+    }),
   };
 }

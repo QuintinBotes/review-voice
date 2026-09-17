@@ -134,6 +134,13 @@ score flags:
   --min-score <n>           Final score gate (default 0.68)
   --repository <name>       Prefer precedents from this repository
 
+verify flags:
+  --diff-file <path>        The diff under review, so the command judges the
+                            change rather than the working tree
+  --base <ref>              Base commit, only when it is readable locally
+  --head <ref>              Head commit, only when it is readable locally
+  --repository <name>       owner/repo, inferred from the git remote if absent
+
 conventions flags:
   --files <path>            files.json from diff --out, to scope nested
                             CLAUDE.md and AGENTS.md to the changed subtrees
@@ -266,6 +273,7 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
     repository,
     pullNumber,
     includeGenerated: argv.includes('--include-generated'),
+    cwd: process.cwd(),
   });
   return emitDiff(result, flag(argv, '--out'));
 }
@@ -973,7 +981,7 @@ function redactCommand(argv: string[]): number {
   return 0;
 }
 
-function verifyCommand(): number {
+function verifyCommand(argv: string[]): number {
   let findings: VerifiableFinding[];
   try {
     const parsed = JSON.parse(readStdin()) as { candidates?: VerifiableFinding[] } | VerifiableFinding[];
@@ -986,7 +994,22 @@ function verifyCommand(): number {
   try {
     const root = repositoryRoot(process.cwd());
     const config = loadConfig(root);
-    const report = verifyFindings(findings, config.verification, { cwd: root });
+    // The command is told what change it is judging. Without this it ran
+    // against whatever the working tree happened to be.
+    const base = flag(argv, '--base');
+    const head = flag(argv, '--head');
+    const report = verifyFindings(findings, config.verification, {
+      cwd: root,
+      context: {
+        repository: flag(argv, '--repository') ?? inferRepository(root),
+        diffPath: flag(argv, '--diff-file'),
+        // Only when the caller says they are readable. A ref that is not there
+        // is worse than no ref: a command told to read it fails in a way it may
+        // mistake for evidence.
+        base,
+        head,
+      },
+    });
     console.log(JSON.stringify(report, null, 2));
     // A verifier rejecting findings is a result, not a command failure.
     return 0;
@@ -1507,7 +1530,7 @@ async function main(argv: string[]): Promise<number> {
       return evidenceCommand();
 
     case 'verify':
-      return verifyCommand();
+      return verifyCommand(argv);
 
     case 'record':
       return recordCommand(argv.slice(1));

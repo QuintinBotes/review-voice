@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { acquireDiff } from '../plugins/review-voice/src/diff/acquire.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const bundle = join(root, 'plugins/review-voice/dist/review-voice.mjs');
@@ -185,5 +186,35 @@ test('--base without a ref is an invocation error', () => {
     assert.equal(error.status, 2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an empty untracked file counts as reviewable but buys no word budget', () => {
+  // reviewedFileCount asks "is there anything to look at" - a new file counts.
+  // hunkFileCount asks "how big is this change" - an empty one does not. On a
+  // live run a stray directory and another project's notes took the reviewed
+  // count from 11 to 17 and inflated the budget with nothing in them.
+  const root = mkdtempSync(join(tmpdir(), 'rv-hunks-'));
+  const git = (...args) =>
+    execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  try {
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    writeFileSync(join(root, 'a.ts'), 'export const a = 1;\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'one');
+
+    // One real change, one empty stray file.
+    writeFileSync(join(root, 'a.ts'), 'export const a = 2;\n');
+    writeFileSync(join(root, 'stray.ts'), '');
+
+    const result = acquireDiff({ cwd: root, staged: false, base: null, includeGenerated: false });
+
+    assert.equal(result.reviewedFileCount, 2, 'the stray file is still reviewable');
+    assert.equal(result.hunkFileCount, 1, 'but it contributes no hunk, so it buys no budget');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

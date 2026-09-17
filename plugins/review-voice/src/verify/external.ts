@@ -11,6 +11,28 @@ export interface VerifiableFinding {
   evidence: string[];
 }
 
+/**
+ * What change the finding is about.
+ *
+ * Without this the command was handed a finding and nothing else, and ran with
+ * the session's own `cwd`, so it judged whatever the working tree happened to
+ * be rather than the diff under review. A verifier asked "is this claim true?"
+ * with no way to see the change answers about the wrong code, confidently: a
+ * test run of it returned a false rejection at 0.99.
+ *
+ * `base` and `head` are supplied only when they are actually readable locally
+ * - `diff --pr` now reports that rather than assuming it. A ref that is not
+ * there is worse than no ref, because a command told to read it will fail in a
+ * way it may mistake for evidence.
+ */
+export interface VerificationContext {
+  repository: string | null;
+  /** Path to the unified diff under review, already on disk from step 1. */
+  diffPath: string | null;
+  base: string | null;
+  head: string | null;
+}
+
 export interface VerifierConfig {
   enabled: boolean;
   /** A command reading a finding as JSON on stdin and writing a verdict to stdout. */
@@ -135,7 +157,7 @@ const spawnRunner: Runner = (command, input, timeoutMs, cwd) => {
 export function verifyFindings(
   findings: VerifiableFinding[],
   config: VerifierConfig,
-  options: { cwd: string; runner?: Runner },
+  options: { cwd: string; runner?: Runner; context?: VerificationContext },
 ): VerificationReport {
   const name = config.name ?? 'external';
 
@@ -152,7 +174,7 @@ export function verifyFindings(
   for (const finding of findings) {
     const result = runner(
       config.command,
-      JSON.stringify(finding),
+      JSON.stringify({ ...finding, context: options.context ?? null }),
       (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
       options.cwd,
     );

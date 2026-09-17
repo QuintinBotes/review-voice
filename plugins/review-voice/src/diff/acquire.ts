@@ -22,6 +22,17 @@ export interface DiffResult {
   head: string;
   files: ChangedFile[];
   reviewedFileCount: number;
+  /**
+   * Reviewed files that actually produced diff content.
+   *
+   * Separate from `reviewedFileCount` because the two answer different
+   * questions. That one asks whether there is anything to look at, and an
+   * untracked new file legitimately counts. This asks how big the change is,
+   * and a file contributing no hunks legitimately does not. On a live run a
+   * stray `$HOME/` directory and another project's handover notes took the
+   * reviewed count from 11 to 17 and bought word budget with nothing in them.
+   */
+  hunkFileCount: number;
   excludedFileCount: number;
   /** Unified diff restricted to reviewable files. Empty when nothing qualifies. */
   diff: string;
@@ -188,6 +199,15 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
   }
   const diff = parts.join('').trim().length === 0 ? '' : parts.join('');
 
+  // Which reviewed files actually carry a hunk. Read from the assembled diff
+  // rather than from numstat, because an untracked file has no numstat entry
+  // at all and would otherwise be indistinguishable from an empty one.
+  const hunkPaths = new Set<string>();
+  for (const match of diff.matchAll(/^\+\+\+ b\/(.+)$/gm)) {
+    const path = match[1];
+    if (path !== undefined && path !== '/dev/null') hunkPaths.add(path);
+  }
+
   return {
     repositoryRoot: root,
     mode,
@@ -195,6 +215,9 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
     head: git(['rev-parse', 'HEAD'], root).trim(),
     files,
     reviewedFileCount: reviewable.length,
+    // Counted from the diff itself, not from the file list: a file can be
+    // reviewable, present and empty.
+    hunkFileCount: reviewable.filter((path) => hunkPaths.has(path)).length,
     excludedFileCount: files.length - reviewable.length,
     diff,
   };

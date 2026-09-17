@@ -45,6 +45,17 @@ history ingestion, which happens without per-item consent.
 Exit code 2 means this is not a git repository, or the pull request could not
 be identified; report that and stop.
 
+**Check `refs` on a `--pr` run.** The diff comes from the API, so the pull
+request's commits are not in the clone unless they were fetched. `refs.base`
+and `refs.head` each say whether that commit is actually readable, established
+by asking git rather than by assuming a fetch worked.
+
+If either is `available: false`, pass that fact to the analyst and the verifier
+in their prompts, and print `refs.note` after the findings the way
+`truncationNote` is printed. Reading code at a missing ref fails, and a verifier
+that quietly falls back to the patch alone is working from base-side evidence
+without saying so - the same failure as a guard searching the wrong tree.
+
 If `reviewedFileCount` is `0`, output exactly this and stop:
 
 ```
@@ -271,12 +282,19 @@ manual paste of eight findings.
 ## Step 6 - Validate, and retry once
 
 Pipe the editor's output through
-`RV validate-output --scale-to-files <reviewedFileCount>`, adding
+`RV validate-output --scale-to-files <hunkFileCount>`, adding
 `--max-words-per-finding <n>` or `--max-findings <n>` only when the resolved
 policy sets them.
 
 `--scale-to-files` makes the word budget grow with the change, so a large pull
 request is not held to a figure written for an ordinary one.
+
+Use `hunkFileCount`, not `reviewedFileCount`. The two answer different
+questions: the reviewed count asks whether there is anything to look at, and an
+untracked new file legitimately counts; the hunk count asks how big the change
+is, and a file contributing nothing legitimately does not. On a live run a
+stray directory and another project's notes took the reviewed count from 11 to
+17 and bought word budget with nothing in them.
 
 - Exit 0: display the output verbatim, then record it. Write the scored
   candidates to a temporary file and pass it:
