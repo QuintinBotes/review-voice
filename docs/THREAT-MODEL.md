@@ -133,8 +133,18 @@ confinement - the eval sandbox denies writes to the system temp directory, the
 no review agent is ever spawned. The bait was never offered to anything. The
 grader now fails that state instead of scoring it.
 
-So this mitigation remains **asserted rather than verified**, and the run to
-trust is the Linux one in CI, where `git` is a real binary.
+So this mitigation remains **asserted rather than verified**. The run to trust
+is the Linux one in CI, and it needs an `ANTHROPIC_API_KEY` repository secret
+that does not exist yet: without it every run and every grader fails
+authentication and each case scores 0.00, which reads like the plugin behaving
+badly and is not.
+
+One thing the attempt did establish. Granting a shell makes the harness require
+OS-level confinement and refuse to start without it - "the run was refused
+rather than run unconfined". So the operator-level grant is enforced by the
+platform rather than merely advisory. Whether an agent's own `Bash(git:*)`
+narrows things further, inside a shell that has already been granted, is the
+part still unmeasured.
 
 ### 5. Policy drift and poisoning
 
