@@ -38,7 +38,9 @@ export function namedSymbols(text: string): string[] {
 
   for (const match of text.matchAll(/`([^`]+)`/g)) {
     const token = (match[1] ?? '').trim();
-    if (token.length >= 4 && !/\s/.test(token)) found.add(token);
+    // A leading dash is an option to every command that might be asked this
+    // question, and this text ultimately comes from the diff.
+    if (token.length >= 4 && !/\s/.test(token) && !token.startsWith('-')) found.add(token);
   }
   for (const match of text.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
     if (match[1] !== undefined) found.add(match[1]);
@@ -50,7 +52,7 @@ export function namedSymbols(text: string): string[] {
   // A path or filename is the strongest signal, so keep the basename too.
   for (const token of [...found]) {
     const base = token.split('/').pop();
-    if (base !== undefined && base !== token && base.length >= 4) found.add(base);
+    if (base !== undefined && base !== token && base.length >= 4 && !base.startsWith('-')) found.add(base);
   }
 
   return [...found];
@@ -83,12 +85,21 @@ export type Searcher = (symbol: string, cwd: string, ref: string | null) => bool
  * idea of what is tracked, and it is fast enough to run per symbol.
  */
 export const gitGrep: Searcher = (symbol, cwd, ref) => {
-  // The ref goes after the pattern: `git grep -F --quiet -- <sym> <ref>` is
-  // rejected, because everything after `--` is a pathspec.
+  // `-e` marks the next argument as the pattern.
+  //
+  // Without it a symbol beginning with a dash is parsed as an option, and the
+  // symbol comes from review prose that originates in the diff. `git grep -O`
+  // opens a pager, so this was argument injection from untrusted text into a
+  // subprocess, not merely a malformed query. `namedSymbols` refuses such a
+  // token as well; either alone would do, and this is the one that has to
+  // hold if the extractor ever changes.
+  //
+  // The ref goes after the pattern. Everything after `--` is a pathspec, so it
+  // cannot be used to separate them.
   const args =
     ref === null
-      ? ['grep', '--fixed-strings', '--quiet', '--', symbol]
-      : ['grep', '--fixed-strings', '--quiet', symbol, ref];
+      ? ['grep', '--fixed-strings', '--quiet', '-e', symbol]
+      : ['grep', '--fixed-strings', '--quiet', '-e', symbol, ref];
   try {
     execFileSync('git', args, { cwd, stdio: 'ignore', timeout: 10_000 });
     return true;

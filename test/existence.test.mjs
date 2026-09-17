@@ -109,3 +109,20 @@ test('a finding that is not about absence is never checked', () => {
     null,
   );
 });
+
+test('a token that would be read as a command option is never searched', () => {
+  // The text these come from originates in the diff. `git grep -O` opens a
+  // pager, so a symbol beginning with a dash was argument injection into a
+  // subprocess rather than merely a malformed query.
+  const symbols = namedSymbols('The `--output=/tmp/pwned` helper does not exist');
+  assert.ok(!symbols.some((s) => s.startsWith('-')), `leaked an option-like token: ${symbols.join(', ')}`);
+});
+
+test('the pattern is passed after -e, so the extractor is not the only defence', () => {
+  const args = [];
+  checkAbsenceClaim('`SomeComponent` does not exist', '/repo', 'main', (symbol, cwd, ref) => {
+    args.push([symbol, ref]);
+    return false;
+  });
+  assert.deepEqual(args, [['SomeComponent', 'main']]);
+});
