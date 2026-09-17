@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
-import { frontmatterPaths, governsAny, governsCount, pointerTarget } from './globs.ts';
+import { frontmatterPaths, governsAny, governsCount, pointerTargets } from './globs.ts';
 
 export type ConventionKind = 'claude' | 'agents' | 'contributing' | 'skill' | 'rule';
 
@@ -25,6 +25,8 @@ export interface ConventionDocument {
   /** How many changed paths those globs cover. */
   governsPaths: number;
   bytes: number;
+  /** Bytes actually supplied, which differs from `bytes` when truncated. */
+  includedBytes: number;
   truncated: boolean;
   content: string;
 }
@@ -108,11 +110,62 @@ const ADDRESSES_THE_REVIEWER = [
   /system\s+prompt/i,
 ];
 
-function readBounded(absolute: string): { content: string; bytes: number; truncated: boolean } {
+/**
+ * The cut is written into the document, not only into a warning.
+ *
+ * The warning goes to the operator; the content goes to the analyst. On a live
+ * run a 21,441-byte rule governing 728 of 1,073 added lines was cut to 15,000
+ * and ended mid-word on "bloc", with nothing in the text saying so and `bytes`
+ * still reporting the original size. A reader cannot tell a document that ends
+ * from one that stops.
+ */
+function truncationMarker(bytes: number, included: number): string {
+  return (
+    `\n\n[Truncated by Review Voice: ${included} of ${bytes} bytes shown. ` +
+    'The rest of this document was not read.]\n'
+  );
+}
+
+function readBounded(absolute: string): {
+  content: string;
+  bytes: number;
+  includedBytes: number;
+  truncated: boolean;
+} {
   const raw = readFileSync(absolute, 'utf8');
   const bytes = Buffer.byteLength(raw, 'utf8');
-  if (bytes <= PER_DOCUMENT_BYTES) return { content: raw, bytes, truncated: false };
-  return { content: raw.slice(0, PER_DOCUMENT_BYTES), bytes, truncated: true };
+  if (bytes <= PER_DOCUMENT_BYTES) {
+    return { content: raw, bytes, includedBytes: bytes, truncated: false };
+  }
+
+  // `slice` counts UTF-16 code units, not bytes. On a document with any
+  // non-ASCII content that let one file take several times its share of the
+  // budget - the very failure PER_DOCUMENT_SHARE exists to prevent - and it
+  // can split a surrogate pair. Cutting the buffer and decoding with a fatal
+  // decoder finds the last whole character instead.
+  const marker = truncationMarker(bytes, PER_DOCUMENT_BYTES);
+  const budget = Math.max(0, PER_DOCUMENT_BYTES - Buffer.byteLength(marker, 'utf8'));
+  const buffer = Buffer.from(raw, 'utf8');
+
+  let end = Math.min(budget, buffer.length);
+  const decoder = new TextDecoder('utf8', { fatal: true });
+  let text = '';
+  for (; end > 0; end -= 1) {
+    try {
+      text = decoder.decode(buffer.subarray(0, end));
+      break;
+    } catch {
+      // A split multi-byte character; step back to the previous boundary.
+    }
+  }
+
+  // Ending mid-sentence is worse than ending a line early, and a rule file is
+  // read line by line.
+  const lastBreak = text.lastIndexOf('\n');
+  if (lastBreak > 0) text = text.slice(0, lastBreak);
+
+  const content = `${text}${truncationMarker(bytes, Buffer.byteLength(text, 'utf8'))}`;
+  return { content, bytes, includedBytes: Buffer.byteLength(content, 'utf8'), truncated: true };
 }
 
 /** Directories between a changed file and the repository root, nearest first. */
@@ -319,11 +372,10 @@ export function discoverConventions(root: string, changedPaths: readonly string[
   // Resolved before ranking, because two things only the content can answer
   // decide where a document belongs: which paths it declares it governs, and
   // whether it is a pointer to the document that actually holds the rule.
-  const resolved = new Map<string, string>();
-
-  const sized = ordered.map((entry) => {
+  const sized = ordered.flatMap((entry) => {
     let bytes = Number.POSITIVE_INFINITY;
     let governs: string[] = [];
+    let followed: string[] = [];
 
     try {
       bytes = statSync(join(root, entry.path)).size;
@@ -334,34 +386,55 @@ export function discoverConventions(root: string, changedPaths: readonly string[
         const head = readFileSync(join(root, entry.path), 'utf8');
         governs = frontmatterPaths(head);
 
-        const target = pointerTarget(head);
-        if (target !== null) {
-          const followed = resolvePointer(root, entry.path, target);
-          if (followed !== null) resolved.set(entry.path, followed);
+        // A stub may point at several documents. Following only the first was
+        // a silent loss: on a live run a 179-byte stub declaring
+        // `paths: ["**/Controllers/**/*.cs"]` listed two rule files, resolved
+        // to neither, and the pull request that added a controller was
+        // reviewed without the controller rules. Neither target appeared in
+        // `documents` or in `skipped`.
+        const targets = pointerTargets(head);
+        for (const target of targets) {
+          const resolvedPath = resolvePointer(root, entry.path, target);
+          if (resolvedPath === null) {
+            // Never silent. A stub pointing at a document that is not there is
+            // exactly as invisible as one that was never followed.
+            skipped.push({
+              path: target,
+              reason: `referenced by ${entry.path}, which points at it, but it was not found`,
+            });
+            continue;
+          }
+          followed.push(resolvedPath);
         }
       }
     } catch {
       // Unreadable sorts last and is reported when it is reached.
     }
 
+    const covers = governsCount(governs, changedPaths);
     // Following a pointer keeps the pointer's declared globs, since the stub
     // is where this repository writes them down.
-    const path = resolved.get(entry.path) ?? entry.path;
-    if (path !== entry.path) {
+    const withPath = (path: string): Entry => {
+      const base: Entry = { ...entry, path, governs, governsPaths: covers };
+      return governsAny(governs, changedPaths) && entry.reason !== 'directory scope'
+        ? { ...base, reason: 'governs the changed paths' }
+        : base;
+    };
+
+    if (followed.length === 0) return [{ entry: withPath(entry.path), bytes }];
+
+    // Expansion, not substitution. One stub becomes one entry per target, each
+    // ranked and budgeted on its own size, so a stub with two targets cannot
+    // smuggle the second in under the first one's byte count.
+    return followed.map((path) => {
+      let targetBytes = Number.POSITIVE_INFINITY;
       try {
-        bytes = statSync(join(root, path)).size;
+        targetBytes = statSync(join(root, path)).size;
       } catch {
-        bytes = Number.POSITIVE_INFINITY;
+        targetBytes = Number.POSITIVE_INFINITY;
       }
-    }
-
-    const covers = governsCount(governs, changedPaths);
-    const promoted: Entry =
-      governsAny(governs, changedPaths) && entry.reason !== 'directory scope'
-        ? { ...entry, path, governs, governsPaths: covers, reason: 'governs the changed paths' }
-        : { ...entry, path, governs, governsPaths: covers };
-
-    return { entry: promoted, bytes };
+      return { entry: withPath(path), bytes: targetBytes };
+    });
   });
 
   const tier = (reason: ConventionDocument['reason']): number =>
@@ -413,6 +486,23 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       continue;
     }
 
+    // Tested before reading, not after. The guard above only asked whether the
+    // budget was already full, so the last document admitted always overshot
+    // the total by its own size.
+    let projected = Number.POSITIVE_INFINITY;
+    try {
+      projected = totalBytes + Math.min(statSync(absolute).size, PER_DOCUMENT_BYTES);
+    } catch {
+      projected = totalBytes;
+    }
+    if (projected > TOTAL_BYTES) {
+      skipped.push({
+        path: entry.path,
+        reason: `would take the convention budget past ${TOTAL_BYTES} bytes`,
+      });
+      continue;
+    }
+
     let read;
     try {
       read = readBounded(absolute);
@@ -430,13 +520,17 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       governs: entry.governs,
       governsPaths: entry.governsPaths,
       bytes: read.bytes,
+      includedBytes: read.includedBytes,
       truncated: read.truncated,
       content: read.content,
     });
     totalBytes += Buffer.byteLength(read.content, 'utf8');
 
     if (read.truncated) {
-      warnings.push(`${entry.path} is ${read.bytes} bytes and was truncated to ${PER_DOCUMENT_BYTES}.`);
+      warnings.push(
+        `${entry.path} is ${read.bytes} bytes and was truncated to ${read.includedBytes}. ` +
+          'The document itself says so where it was cut.',
+      );
     }
     for (const pattern of ADDRESSES_THE_REVIEWER) {
       if (pattern.test(read.content)) {
