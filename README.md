@@ -51,9 +51,8 @@ ordering is checked. You can stop reading anywhere and know you have seen
 everything more serious. There is no cap on how many findings you get - a real
 finding is never dropped to hit a number.
 
-The tier is derived from the kind of defect, not asked for. Two runs of the
-same diff used to put the same finding in different tiers, which moves it up
-and down a page ordered by severity.
+The tier is derived from the kind of defect rather than asked for, so the same
+finding does not move up and down a page ordered by severity between runs.
 
 ## How it works
 
@@ -72,26 +71,20 @@ asks nicely. Word limits, hedge phrases, severity ordering and the exact
 no-findings string are all checked rather than requested.
 
 **It reads your repository's own rules.** `CLAUDE.md`, `AGENTS.md`,
-`CONTRIBUTING.md`, `.agents/rules/` and skill documents all reach the analyst
-and the verifier, searched at the root and in every directory a diff touches.
-Precedent cannot cover this ground: the better a convention is observed, the
-fewer review comments it leaves behind, so the rules a team has most thoroughly
-internalised are the ones its review history knows least about. They are supplied as evidence about
-what the repository requires, never as instructions to the reviewer, and never
-as more authoritative than the code itself.
+`CONTRIBUTING.md`, `.agents/rules/` and skill documents reach the analyst and
+the verifier, as evidence about what the repository requires and never as
+instructions to the reviewer. Precedent cannot cover this ground: the better a
+convention is observed, the fewer review comments it leaves behind.
 
-**It checks claims that something is absent.** "This helper does not exist" is
-the cheapest claim in a review to verify and the most damaging to get wrong,
-because the fix proposed on top of it tells the author to break working code.
-Every symbol such a claim names is searched in the ref under review, and the
-finding is dropped if the repository contains it.
+**Every finding is verified before it ships**, optionally a second time by a
+command you configure. A claim that something does not exist is checked with
+`git grep` against the ref under review, because that is the cheapest claim to
+verify and the most damaging to get wrong.
 
-**A single run is a sample, not the answer.** Two reviews of the same diff
-agreed on 2 findings of 8 in measurement, so the second run finding something
-the first did not is expected rather than a defect. `RV evaluate` reports this
-as `candidate_set_agreement`. It is published rather than targeted, because
-there is no defensible target yet and a made-up one would be worse than the
-number.
+**A single run is a sample, not the answer.** Two reviews of one diff agreed on
+2 findings of 8 when measured, so a second run finding something new is expected
+rather than a defect. `RV evaluate` reports it as `candidate_set_agreement`,
+published rather than targeted.
 
 It learns through **retrieval plus policy compilation**, not model fine-tuning.
 Your historical reviews are ingested, redacted, weighted, and compiled into
@@ -121,33 +114,6 @@ Then:
 **Requirements:** Node 22 or newer, `git`, and `gh` only if you enable GitHub
 history ingestion. There is no install step - the plugin ships a single
 pre-built bundle with zero runtime dependencies.
-
-### Second-pass verification
-
-A finding is checked twice: once by the built-in `evidence-verifier` agent, and
-optionally again by a command you configure. The second pass exists because the
-built-in verifier is a Claude subagent checking a Claude subagent's work, which
-is not an independent opinion.
-
-It is opt-in, and a config written by an older `init` has no block for it at
-all. `/review-voice:context` reports whether yours does.
-
-```yaml
-# .review-voice/config.yaml
-verification:
-  enabled: true
-  name: codex
-  command: codex exec -s read-only
-  timeout_seconds: 90
-  # A rejection at or above this confidence drops the finding. Below it, the
-  # finding is downgraded instead: an unsure verifier should not be able to
-  # delete evidence.
-  drop_threshold: 0.8
-```
-
-The command reads one finding as JSON on stdin and writes a verdict to stdout.
-It runs read-only. A verifier that cannot run never confirms a finding, and
-verification may only weaken a severity, never raise one.
 
 ## Privacy in one paragraph
 
