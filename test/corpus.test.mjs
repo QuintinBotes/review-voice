@@ -154,11 +154,61 @@ test('no single repository dominates the corpus', () => {
 });
 
 test('the cap is relaxed rather than under-filling the corpus', () => {
-  // A smaller corpus is a worse outcome than a slightly lopsided one.
+  // A smaller corpus is a worse outcome than a slightly lopsided one, up to
+  // the hard cap at 1.5x the configured share.
   const events = Array.from({ length: 30 }, (_, i) => event('org/only', (i % 28) + 1));
   const report = selectEvents(events, { target: 20, maxRepositoryShare: 0.5 });
-  assert.equal(report.importedEvents, 20);
-  assert.equal(report.shortfall, 0);
+  assert.equal(report.importedEvents, 15, 'soft cap 10, hard cap 15');
+  assert.deepEqual(report.overRepresented, ['org/only']);
+});
+
+test('one repository cannot take the whole corpus', () => {
+  // Measured in real use: a starved corpus let one repository reach 84%, which
+  // is not a lopsided sample of the owner's work but a sample of one repository.
+  const events = [
+    ...Array.from({ length: 400 }, (_, i) => event('org/busy', (i % 28) + 1)),
+    ...Array.from({ length: 40 }, (_, i) => event('org/quiet', (i % 28) + 1)),
+  ];
+  const report = selectEvents(events, { target: 250, maxRepositoryShare: 0.5 });
+  assert.ok(report.perRepository['org/busy'] <= 187, 'hard cap is 1.5x the configured share');
+  assert.equal(report.perRepository['org/quiet'], 40);
+});
+
+test('a diversity shortfall is not reported as an exhausted corpus', () => {
+  // Different problems with different fixes: one means sync more history, the
+  // other means the sample is lopsided.
+  const events = [
+    ...Array.from({ length: 400 }, (_, i) => event('org/busy', (i % 28) + 1)),
+    ...Array.from({ length: 40 }, (_, i) => event('org/quiet', (i % 28) + 1)),
+  ];
+  const report = selectEvents(events, { target: 250, maxRepositoryShare: 0.5 });
+  assert.ok(report.shortfall > 0);
+  assert.match(report.shortfallReason, /diversity/i);
+
+  const exhausted = selectEvents(
+    Array.from({ length: 5 }, (_, i) => event('org/a', i + 1)),
+    { target: 250, maxRepositoryShare: 0.5 },
+  );
+  assert.match(exhausted.shortfallReason, /exhausted/i);
+});
+
+test('a review this tool produced is never learned from', () => {
+  // Posted output read back in becomes owner evidence and teaches the reviewer
+  // its own voice - a closed loop that compounds every sync.
+  assert.equal(
+    ineligibleReason({
+      ...base,
+      body: '[blocking] `src/auth.ts:84` - Token returned before commit. A retry mints two. Commit first.',
+    }),
+    'self_generated',
+  );
+  assert.equal(
+    ineligibleReason({
+      ...base,
+      body: 'Two things and a nit.\n\n[minor] `src/a.ts:1` - Something here. It fails. Fix it.',
+    }),
+    'self_generated',
+  );
 });
 
 test('a shortfall is reported honestly, never as a full scan', () => {
