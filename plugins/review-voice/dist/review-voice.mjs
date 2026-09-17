@@ -1003,7 +1003,7 @@ function recordRun(db, input) {
   return { reviewRunId, findings };
 }
 function runDetail(db, reviewRunId) {
-  const row = reviewRunId === void 0 ? db.prepare("SELECT * FROM review_runs ORDER BY created_at DESC LIMIT 1").get() : db.prepare("SELECT * FROM review_runs WHERE review_run_id = ?").get(reviewRunId);
+  const row = reviewRunId === void 0 ? db.prepare("SELECT * FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get() : db.prepare("SELECT * FROM review_runs WHERE review_run_id = ?").get(reviewRunId);
   if (row === void 0) return null;
   const parsed = JSON.parse(row["output_json"]);
   return {
@@ -1017,7 +1017,7 @@ function runDetail(db, reviewRunId) {
   };
 }
 function latestRun(db) {
-  const row = db.prepare("SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC LIMIT 1").get();
+  const row = db.prepare("SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get();
   if (row === void 0) return null;
   const parsed = JSON.parse(row.output_json);
   return { reviewRunId: row.review_run_id, findings: parsed.findings };

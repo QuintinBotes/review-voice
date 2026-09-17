@@ -111,7 +111,10 @@ export interface RunDetail {
 export function runDetail(db: Database, reviewRunId?: string): RunDetail | null {
   const row = (
     reviewRunId === undefined
-      ? db.prepare('SELECT * FROM review_runs ORDER BY created_at DESC LIMIT 1').get()
+      // rowid breaks the tie: two runs recorded in the same millisecond would
+      // otherwise return in arbitrary order, and "the last review" has to mean
+      // one specific review or feedback lands on the wrong finding.
+      ? db.prepare('SELECT * FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1').get()
       : db.prepare('SELECT * FROM review_runs WHERE review_run_id = ?').get(reviewRunId)
   ) as Record<string, unknown> | undefined;
 
@@ -136,7 +139,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
 
 export function latestRun(db: Database): { reviewRunId: string; findings: StoredFinding[] } | null {
   const row = db
-    .prepare('SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC LIMIT 1')
+    .prepare('SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1')
     .get() as { review_run_id: string; output_json: string } | undefined;
   if (row === undefined) return null;
   const parsed = JSON.parse(row.output_json) as { findings: StoredFinding[] };

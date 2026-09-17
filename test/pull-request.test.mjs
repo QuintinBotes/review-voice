@@ -63,3 +63,21 @@ test('explaining with no runs at all returns null rather than throwing', () => {
     assert.equal(runDetail(db), null);
   });
 });
+
+test('two runs in the same millisecond still resolve to the newer one', () => {
+  withDb((db) => {
+    // A timestamp alone is not a total order. Without a tiebreaker, "the last
+    // review" is ambiguous and feedback can land on the wrong finding.
+    for (let i = 0; i < 12; i += 1) {
+      recordRun(db, { repository: 'org/a', baseRef: null, headRef: null, diff: `d${i}`, output: OUTPUT });
+      const last = recordRun(db, {
+        repository: 'org/a',
+        baseRef: null,
+        headRef: null,
+        diff: `e${i}`,
+        output: 'No actionable findings.',
+      });
+      assert.equal(runDetail(db).reviewRunId, last.reviewRunId, `ambiguous on iteration ${i}`);
+    }
+  });
+});
