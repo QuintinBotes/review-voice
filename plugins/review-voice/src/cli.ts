@@ -13,7 +13,7 @@ import { suppressSqliteExperimentalWarning } from './warnings.ts';
 import { pluginVersion } from './version.ts';
 import { runDoctor } from './doctor.ts';
 import { validateOutput } from './contract/validate.ts';
-import { DEFAULT_LIMITS, type ContractLimits } from './contract/limits.ts';
+import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
 import { acquireDiff, GitError } from './diff/acquire.ts';
 import { acquirePullRequestDiff } from './diff/pull-request.ts';
 import { openDatabase } from './store/db.ts';
@@ -110,7 +110,8 @@ retrieve flags:
 
 validate-output flags:
   --json                     Emit the result as JSON
-  --max-findings <n>         Default ${DEFAULT_LIMITS.maxFindings}
+  --max-findings <n>         Default: no cap
+  --scale-to-files <n>       Scale the total word budget to the change size
   --max-words-per-finding <n>  Default ${DEFAULT_LIMITS.maxWordsPerFinding}
   --max-total-words <n>      Default ${DEFAULT_LIMITS.maxTotalWords}
 
@@ -135,7 +136,7 @@ function numericFlag(argv: string[], name: string, fallback: number): number | n
 }
 
 function validateOutputCommand(argv: string[]): number {
-  const maxFindings = numericFlag(argv, '--max-findings', DEFAULT_LIMITS.maxFindings);
+  const maxFindings = numericFlag(argv, '--max-findings', DEFAULT_LIMITS.maxFindings ?? 0);
   const maxWords = numericFlag(argv, '--max-words-per-finding', DEFAULT_LIMITS.maxWordsPerFinding);
   const maxTotal = numericFlag(argv, '--max-total-words', DEFAULT_LIMITS.maxTotalWords);
 
@@ -144,11 +145,16 @@ function validateOutputCommand(argv: string[]): number {
     return 2;
   }
 
+  // The budget scales with the change: --scale-to-files keeps that arithmetic
+  // in the CLI rather than asking a prompt to compute it.
+  const scaleTo = numericFlag(argv, '--scale-to-files', 0);
+  const scaledTotal = scaleTo !== null && scaleTo > 0 ? totalWordBudget(scaleTo) : maxTotal;
+
   const limits: ContractLimits = {
     ...DEFAULT_LIMITS,
-    maxFindings,
+    maxFindings: argv.includes('--max-findings') ? maxFindings : null,
     maxWordsPerFinding: maxWords,
-    maxTotalWords: maxTotal,
+    maxTotalWords: Math.max(scaledTotal, maxTotal === DEFAULT_LIMITS.maxTotalWords ? scaledTotal : maxTotal),
   };
 
   const result = validateOutput(readStdin(), limits);

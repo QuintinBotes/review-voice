@@ -100,6 +100,23 @@ The tradeoff is real: lexical retrieval misses paraphrases. An
 evaluation harness shows precedent recall is the binding constraint. See
 [adr/0001-embedding-implementation.md](adr/0001-embedding-implementation.md).
 
+### Recall with triage, not omission
+
+The contract originally capped a review at five findings. Real use showed that
+was the wrong mechanism: a count cap and a word budget do the same job, and on
+tight findings the count discards ones the budget would have allowed — pure
+loss, for no gain.
+
+Volume is now bounded by the word budget alone, and that budget scales with the
+size of the change. What protects the reader is **ordering**: blocking,
+important, minor, nit, question. A reader who stops halfway has seen everything
+more serious than where they stopped, so nothing needs to be dropped to keep
+the top of the list useful. The validator checks the ordering.
+
+`nit` and `question` are tiers rather than banned words. Writing "Nit:" into
+prose says the same thing but cannot be sorted, counted, or suppressed by
+category — the label carries information the prose only implies.
+
 ### The output validator
 
 `review-voice validate-output` reads a rendered review on stdin and exits

@@ -1,4 +1,4 @@
-import { DEFAULT_LIMITS, type ContractLimits } from './limits.ts';
+import { DEFAULT_LIMITS, SEVERITY_ORDER, type ContractLimits, type Severity } from './limits.ts';
 import { countWords } from './words.ts';
 import { parseFinding, splitFindings, type ParsedFinding } from './parse.ts';
 
@@ -124,7 +124,7 @@ export function validateOutput(
 
   const findings = splitFindings(output).map((block) => parseFinding(block.raw, block.startLine));
 
-  if (findings.length > limits.maxFindings) {
+  if (limits.maxFindings !== null && findings.length > limits.maxFindings) {
     violations.push({
       code: 'too_many_findings',
       message: `${findings.length} findings; the limit is ${limits.maxFindings}. Keep the most material.`,
@@ -152,10 +152,32 @@ export function validateOutput(
     }
   }
 
+  // Ordering is part of the contract: a reader who stops halfway must have
+  // seen the most serious findings, so severity may not run backwards.
+  const ranks = findings
+    .filter((finding) => finding.severity !== null)
+    .map((finding) => SEVERITY_ORDER[finding.severity as Severity]);
+  for (let i = 1; i < ranks.length; i += 1) {
+    if (ranks[i]! < ranks[i - 1]!) {
+      violations.push({
+        code: 'severity_order',
+        message:
+          'Findings are not ordered by severity. Present blocking first and question last, so a reader who stops early has seen the most serious.',
+      });
+      break;
+    }
+  }
+
   if (totalWords > limits.maxTotalWords) {
     violations.push({
       code: 'output_too_long',
-      message: `${totalWords} words total; the limit is ${limits.maxTotalWords}.`,
+      // Phrased as a runaway signal rather than a trim instruction. The budget
+      // is set not to bind on a real review, so hitting it usually means
+      // something generated far more than it verified.
+      message:
+        `${totalWords} words total against a budget of ${limits.maxTotalWords}. ` +
+        'This budget is a runaway guard, not a trim target — check whether these findings were all actually verified, ' +
+        'rather than cutting good ones to fit.',
     });
   }
 

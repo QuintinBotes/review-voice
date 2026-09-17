@@ -82,12 +82,36 @@ function runDoctor() {
 }
 
 // plugins/review-voice/src/contract/limits.ts
-var SEVERITIES = ["blocking", "important", "minor"];
+var SEVERITIES = ["blocking", "important", "minor", "nit", "question"];
+var SEVERITY_ORDER = {
+  blocking: 0,
+  important: 1,
+  minor: 2,
+  nit: 3,
+  question: 4
+};
+var BUDGET_FLOOR = 600;
+var BUDGET_PER_FILE = 60;
+var BUDGET_CEILING = 3e3;
+function totalWordBudget(reviewableFiles) {
+  const scaled = BUDGET_FLOOR + BUDGET_PER_FILE * Math.max(0, reviewableFiles - 1);
+  return Math.min(BUDGET_CEILING, Math.max(BUDGET_FLOOR, scaled));
+}
 var DEFAULT_LIMITS = {
-  maxFindings: 5,
+  // No cap. A count cap and a word budget do the same job, and the count is
+  // the worse of the two: on tight findings it discards ones the budget would
+  // have allowed. Severity ordering does the triage instead.
+  maxFindings: null,
   maxWordsPerFinding: 40,
-  maxTotalWords: 180,
+  maxTotalWords: BUDGET_FLOOR,
+  // Kept as the floor rather than a separate constant: a caller that does not
+  // know the file count still gets a budget that will not silently trim.
   noFindingsResponse: "No actionable findings.",
+  // Only phrases that hide a claim or replace one. A hedge makes a finding
+  // unfalsifiable — "you might consider" states nothing to agree or disagree
+  // with. "overall" and "summary" left out deliberately: they appear in real
+  // prose ("overall latency", "the summary endpoint") and word-boundary
+  // matching cannot tell those from a summary section.
   forbiddenPhrases: [
     "consider",
     "maybe",
@@ -95,10 +119,7 @@ var DEFAULT_LIMITS = {
     "could potentially",
     "it may be worth",
     "nice work",
-    "great job",
-    "overall",
-    "summary",
-    "nit"
+    "great job"
   ]
 };
 
@@ -218,7 +239,7 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
     if (pattern.test(output)) violations.push({ code, message });
   }
   const findings = splitFindings(output).map((block) => parseFinding(block.raw, block.startLine));
-  if (findings.length > limits.maxFindings) {
+  if (limits.maxFindings !== null && findings.length > limits.maxFindings) {
     violations.push({
       code: "too_many_findings",
       message: `${findings.length} findings; the limit is ${limits.maxFindings}. Keep the most material.`
@@ -242,10 +263,23 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
       }
     }
   }
+  const ranks = findings.filter((finding) => finding.severity !== null).map((finding) => SEVERITY_ORDER[finding.severity]);
+  for (let i = 1; i < ranks.length; i += 1) {
+    if (ranks[i] < ranks[i - 1]) {
+      violations.push({
+        code: "severity_order",
+        message: "Findings are not ordered by severity. Present blocking first and question last, so a reader who stops early has seen the most serious."
+      });
+      break;
+    }
+  }
   if (totalWords > limits.maxTotalWords) {
     violations.push({
       code: "output_too_long",
-      message: `${totalWords} words total; the limit is ${limits.maxTotalWords}.`
+      // Phrased as a runaway signal rather than a trim instruction. The budget
+      // is set not to bind on a real review, so hitting it usually means
+      // something generated far more than it verified.
+      message: `${totalWords} words total against a budget of ${limits.maxTotalWords}. This budget is a runaway guard, not a trim target \u2014 check whether these findings were all actually verified, rather than cutting good ones to fit.`
     });
   }
   return { valid: violations.length === 0, findingCount: findings.length, totalWords, violations };
@@ -7513,7 +7547,7 @@ function resolvePolicy(layers) {
   };
   for (const layer of layers) {
     if (layer.maxFindings !== void 0) {
-      resolved.maxFindings = Math.min(resolved.maxFindings, layer.maxFindings);
+      resolved.maxFindings = resolved.maxFindings === null ? layer.maxFindings : Math.min(resolved.maxFindings, layer.maxFindings);
     }
     if (layer.maxWordsPerFinding !== void 0) {
       resolved.maxWordsPerFinding = Math.min(resolved.maxWordsPerFinding, layer.maxWordsPerFinding);
@@ -8823,7 +8857,8 @@ retrieve flags:
 
 validate-output flags:
   --json                     Emit the result as JSON
-  --max-findings <n>         Default ${DEFAULT_LIMITS.maxFindings}
+  --max-findings <n>         Default: no cap
+  --scale-to-files <n>       Scale the total word budget to the change size
   --max-words-per-finding <n>  Default ${DEFAULT_LIMITS.maxWordsPerFinding}
   --max-total-words <n>      Default ${DEFAULT_LIMITS.maxTotalWords}
 
@@ -8845,18 +8880,20 @@ function numericFlag(argv, name, fallback) {
   return Number.isInteger(value) && value >= 0 ? value : null;
 }
 function validateOutputCommand(argv) {
-  const maxFindings = numericFlag(argv, "--max-findings", DEFAULT_LIMITS.maxFindings);
+  const maxFindings = numericFlag(argv, "--max-findings", DEFAULT_LIMITS.maxFindings ?? 0);
   const maxWords = numericFlag(argv, "--max-words-per-finding", DEFAULT_LIMITS.maxWordsPerFinding);
   const maxTotal = numericFlag(argv, "--max-total-words", DEFAULT_LIMITS.maxTotalWords);
   if (maxFindings === null || maxWords === null || maxTotal === null) {
     console.error("Limit flags take a non-negative integer.");
     return 2;
   }
+  const scaleTo = numericFlag(argv, "--scale-to-files", 0);
+  const scaledTotal = scaleTo !== null && scaleTo > 0 ? totalWordBudget(scaleTo) : maxTotal;
   const limits = {
     ...DEFAULT_LIMITS,
-    maxFindings,
+    maxFindings: argv.includes("--max-findings") ? maxFindings : null,
     maxWordsPerFinding: maxWords,
-    maxTotalWords: maxTotal
+    maxTotalWords: Math.max(scaledTotal, maxTotal === DEFAULT_LIMITS.maxTotalWords ? scaledTotal : maxTotal)
   };
   const result = validateOutput(readStdin(), limits);
   if (argv.includes("--json")) {
