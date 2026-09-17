@@ -5,6 +5,33 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Absence claims are scoped by the claim's grammar rather than by how a place is
+  spelled. The pattern that read "in mews-js" as somewhere else, so a claim
+  about that very repository went unchecked, also left a bare path unprotected,
+  so a true claim about a subtree was deleted; the difference between them was a
+  pair of backticks. What decides now is whether the assertion carries a
+  locative complement and whether that complement names the repository under
+  review, which `--repository` supplies.
+- Absence of a property is not absence from a place. "Never exported" is true
+  precisely when the symbol exists, so searching confirms it and refutes
+  nothing.
+- A finding that asserts no absence is never given an absence record. Mentioning
+  a hyphenated package name was enough to attach an inert `inconclusive: true`,
+  and it had begun appearing on ordinary findings.
+
+### Added
+
+- `check-candidates` validates analyst output against the candidate schema.
+  The same check runs inside `score`, which is the fourth stage: a wrong shape
+  was not caught until after a full verification pass, and on a real run that
+  cost the only pass which found the most serious defect in the diff. The review
+  command now runs it at step 2, so a shape failure costs one re-run of one
+  agent.
+
 ## [0.9.0] - 2026-09-17
 
 ### Changed

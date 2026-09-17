@@ -8612,39 +8612,34 @@ var ASSERTS_ABSENCE = [
   /\bcannot\s+be\s+found\b/i,
   /\bnowhere\s+in\s+the\s+(?:repo|repository|codebase)\b/i
 ];
-var REPO_WIDE = [
-  /\b(?:anywhere|nowhere)\s+in\s+the\s+(?:repo|repository|code\s?base|project|tree)\b/i,
-  /\bdoes\s+not\s+exist\s+(?:anywhere|at\s+all)\b/i,
-  // Naming the repository is repo-wide whether or not the word "anywhere" is
-  // there. Without these, "does not exist in the repository" read as scoped,
-  // because the scoped pattern matches on "in the", and the widest claim a
-  // reviewer can make went unchecked on the strength of one missing word.
-  /\b(?:in|from|within|across)\s+(?:the\s+)?(?:entire\s+|whole\s+)?(?:repo|repository|code\s?base|project|tree)\b/i
-];
-var ELSEWHERE = [
-  /\b(?:in|from|within)\s+(?:the\s+)?[a-z0-9]+(?:-[a-z0-9]+)+\b/i,
-  /\b(?:in|from|within)\s+@[\w./-]+/,
-  // The name must be a name. `\S+` matched the article, so "in the
-  // repository" read as a named external repo and the widest possible claim
-  // went unchecked.
-  /\b(?:in|from|within)\s+(?:the\s+)?(?!the\b|a\b|an\b)[A-Za-z0-9][\w.-]*\s+(?:repo|repository|service|package|library)\b/i,
-  /\b(?:another|a\s+different|a\s+sibling|the\s+other)\s+(?:repo|repository|package|service)\b/i
-];
-function namesSomewhereElse(text) {
-  return ELSEWHERE.some((pattern) => pattern.test(text));
+var GENERIC_REPOSITORY = /^(?:the\s+)?(?:entire\s+|whole\s+)?(?:repo|repository|code\s?base|project|tree)\b/i;
+var NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
+var NAMED_UNIT_SUFFIX = /^(?:the\s+)?\S+\s+(?:repo|repository|service|package|library)\b/i;
+var ANOTHER_UNIT = /^(?:another|a\s+different|a\s+sibling|the\s+other)\s+(?:repo|repository|package|service)\b/i;
+var ABSENCE_WITH_COMPLEMENT = /\b(?:does|do)\s+not\s+exist|\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)|\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)|\bnever\s+(?:defined|declared|exported)|\bcannot\s+be\s+found/i;
+var LOCATIVE = /\b(?:in|from|within|under|inside|throughout|across)\s+([^.,;]+)/i;
+function namesThisRepository(complement, repository) {
+  if (repository === null) return false;
+  const candidates = [repository, repository.split("/").pop() ?? repository].map((name) => name.trim().toLowerCase()).filter((name) => name.length > 0);
+  const said = complement.trim().toLowerCase().replace(/^the\s+/, "").replace(/[`'"]/g, "");
+  return candidates.some((name) => said === name || said === `${name} repository` || said === `${name} repo`);
 }
-var SCOPED = [
-  /\b(?:in|from|within|under|on)\s+(?:this|that|the|its|our|either|both)\b/i,
-  /\b(?:in|from|within|under|on)\s+`[^`]+`/,
-  /\b(?:in|from|within|under|on)\s+[@A-Z][\w./@-]*/,
-  /\b(?:ex|im)ported\b/i,
-  /\bcall\s?site\b/i
-];
-function assertsAbsence(text) {
-  if (REPO_WIDE.some((pattern) => pattern.test(text))) return true;
-  if (namesSomewhereElse(text)) return false;
-  if (SCOPED.some((pattern) => pattern.test(text))) return false;
-  return ASSERTS_ABSENCE.some((pattern) => pattern.test(text));
+var PROPERTY_NOT_PLACE = /\b(?:ex|im)ported\b|\bnot\s+(?:public|exposed|re-?exported)\b/i;
+function absenceScope(text, repository = null) {
+  if (PROPERTY_NOT_PLACE.test(text)) return "bounded";
+  if (/\b(?:anywhere|nowhere)\b/i.test(text)) return "repository";
+  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text);
+  if (assertion === null) return "repository";
+  const after = text.slice(assertion.index + assertion[0].length);
+  const locative = LOCATIVE.exec(after);
+  if (locative === null) return "repository";
+  const complement = (locative[1] ?? "").trim();
+  if (GENERIC_REPOSITORY.test(complement)) return "repository";
+  if (namesThisRepository(complement, repository)) return "repository";
+  if (ANOTHER_UNIT.test(complement) || NAMED_UNIT.test(complement) || NAMED_UNIT_SUFFIX.test(complement)) {
+    return "elsewhere";
+  }
+  return "bounded";
 }
 function namedSymbols(text) {
   const found = /* @__PURE__ */ new Set();
@@ -8674,9 +8669,12 @@ var gitGrep = (symbol, cwd, ref) => {
     throw error;
   }
 };
-function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep) {
+function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository = null) {
   const searchedRefLabel = ref ?? "working tree";
-  if (!REPO_WIDE.some((pattern) => pattern.test(text)) && namesSomewhereElse(text)) {
+  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text))) return null;
+  const scope = absenceScope(text, repository);
+  if (scope === "bounded") return null;
+  if (scope === "elsewhere") {
     return {
       found: [],
       checked: [],
@@ -8687,7 +8685,6 @@ function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep) {
       searchedRef: searchedRefLabel
     };
   }
-  if (!assertsAbsence(text)) return null;
   const symbols = namedSymbols(text);
   if (symbols.length === 0) return null;
   const searchedRef = ref ?? "working tree";
@@ -9855,6 +9852,7 @@ var USAGE = `review-voice <command>
 
 Commands:
   diff              Acquire the diff under review as structured JSON
+  check-candidates  Validate analyst output against the candidate schema
   context           Resolve config and the active policy stack as JSON
   conventions       Collect the repository's own convention documents
   evidence          Run the configured static checks and emit structured signals
@@ -10417,7 +10415,13 @@ function scoreCommand(argv) {
       let absence = null;
       if (searchRoot !== null) {
         try {
-          absence = checkAbsenceClaim(candidate.claim, searchRoot, baseRef);
+          absence = checkAbsenceClaim(
+            candidate.claim,
+            searchRoot,
+            baseRef,
+            void 0,
+            flag(argv, "--repository")
+          );
         } catch {
           absence = null;
         }
@@ -10838,6 +10842,28 @@ function verdictList(parsed) {
   }
   return [];
 }
+function checkCandidatesCommand() {
+  let raw;
+  try {
+    const parsed = JSON.parse(readStdin());
+    raw = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
+  } catch {
+    console.error('Expected {"candidates": [...]} on stdin.');
+    return 2;
+  }
+  try {
+    const candidates = raw.map((candidate, index) => normaliseCandidate(candidate, index));
+    console.log(JSON.stringify({ valid: true, candidates: candidates.length }, null, 2));
+    return 0;
+  } catch (error) {
+    if (error instanceof MalformedCandidate) {
+      console.error(`Malformed candidate - ${error.message}`);
+      console.error("Re-run the analyst with the schema restated. Do not hand-translate its output.");
+      return 2;
+    }
+    throw error;
+  }
+}
 function statusCommand() {
   const db = openDatabase();
   try {
@@ -10928,6 +10954,8 @@ async function main(argv) {
       return calibrateCommand();
     case "policy":
       return policyCommand(argv.slice(1));
+    case "check-candidates":
+      return checkCandidatesCommand();
     case "conventions":
       return conventionsCommand(argv.slice(1));
     case "evidence":
