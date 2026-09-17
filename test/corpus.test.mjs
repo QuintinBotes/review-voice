@@ -55,7 +55,7 @@ test('automation status carries no judgement whatever its length', () => {
 test('a substantive review containing a checklist is kept', () => {
   // Measured against a real repository, the earlier "contains a checkbox" rule
   // discarded fourteen review summaries whose structure ratios were 0.18-0.30
-  // — substantive reviews with a checklist in them. Losing those was losing
+  // - substantive reviews with a checklist in them. Losing those was losing
   // most of the corpus.
   const review = [
     'I went through the retry path and the transaction boundary.',
@@ -90,7 +90,37 @@ test('an inline comment with no recoverable code context is excluded', () => {
 });
 
 test('very short comments have no failure mode to extract', () => {
-  assert.equal(ineligibleReason({ ...base, body: 'why?' }), 'too_short');
+  // Reported as approval_only now: once approval language and punctuation are
+  // stripped, too little is left either way. Both mean "nothing to learn".
+  assert.ok(['too_short', 'approval_only'].includes(ineligibleReason({ ...base, body: 'why?' })));
+});
+
+test('an approval that then raises something is kept', () => {
+  // The distinction that matters: approving and saying nothing teaches
+  // nothing; approving and then raising a real point is exactly the judgement
+  // being modelled.
+  assert.equal(
+    ineligibleReason({
+      ...base,
+      body: 'Approving. One thing though - the retry path can double-charge if the commit lands late.',
+    }),
+    null,
+  );
+});
+
+test('a bare approval summary is excluded however it is phrased', () => {
+  // Three unrelated "Approving." comments were the top precedents for a code
+  // finding, from three different repositories.
+  for (const body of [
+    'Approving.',
+    'Approving - nice work!',
+    'Approved. 👍',
+    'LGTM, thanks!',
+    'No comments from me. 🎉',
+    'All good, ship it.',
+  ]) {
+    assert.equal(ineligibleReason({ ...base, body }), 'approval_only', body);
+  }
 });
 
 test('the same comment resurfacing after a rebase deduplicates', () => {

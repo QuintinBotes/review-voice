@@ -49,7 +49,7 @@ export function redact(input: string): RedactionResult {
 
       counts[label] = (counts[label] ?? 0) + 1;
       const replacement = `[REDACTED:${label}]`;
-      // Replacing only the captured group keeps the surrounding context —
+      // Replacing only the captured group keeps the surrounding context -
       // "postgres://user:[REDACTED:DB_CREDENTIALS]@host" still reads as a
       // comment about a connection string.
       return group === undefined || group === 0 ? replacement : match.replace(captured, replacement);

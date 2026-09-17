@@ -5,7 +5,7 @@
  *
  * It deliberately hardcodes no names. An earlier version listed the private
  * repositories it was meant to keep out, which meant the guard itself
- * published them — the exact leak it existed to prevent. Structural patterns
+ * published them - the exact leak it existed to prevent. Structural patterns
  * catch the general case; anything site-specific belongs in a local, ignored
  * wordlist that never reaches the repository.
  */
@@ -23,8 +23,15 @@ const FORBIDDEN = [
     why: 'hardcoded owner_reviewer; use a placeholder such as your-github-login',
   },
   {
+    // Em and en dashes read as machine-written and the owner does not use
+    // them. Banned everywhere rather than only in findings, so the codebase
+    // and its output sound like the same person.
+    pattern: /[\u2013\u2014]/gu,
+    why: 'em or en dash; use a comma, a full stop, or a plain hyphen',
+  },
+  {
     // RFC 2606 reserves example.com/net/org and the .example/.test/.invalid
-    // TLDs for documentation, including their subdomains — db.example.com is
+    // TLDs for documentation, including their subdomains - db.example.com is
     // as reserved as example.com. GitHub noreply relays are addresses nobody
     // reads, so they are fine too.
     pattern:
@@ -40,7 +47,7 @@ const FORBIDDEN = [
  */
 const LOCAL_WORDLIST = join(root, '.identity-guard.local');
 
-/** Files permitted to name the author — attribution, not configuration. */
+/** Files permitted to name the author - attribution, not configuration. */
 const ALLOWLIST = new Set([
   'LICENSE',
   'README.md',
@@ -96,7 +103,7 @@ for await (const file of walk(root)) {
     const match = pattern.exec(text);
     if (match) {
       const line = text.slice(0, match.index).split('\n').length;
-      console.error(`${rel}:${line} — ${why}: ${JSON.stringify(match[0])}`);
+      console.error(`${rel}:${line} - ${why}: ${JSON.stringify(match[0])}`);
       failures++;
     }
   }

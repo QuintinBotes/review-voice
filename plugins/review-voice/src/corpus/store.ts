@@ -8,7 +8,7 @@ export interface StoreResult {
 }
 
 /**
- * Persists collected events. Only redacted text reaches this layer — there is
+ * Persists collected events. Only redacted text reaches this layer - there is
  * no column for the original, so there is no way for one to be written by
  * mistake.
  */

@@ -1,7 +1,7 @@
-# Current task — M1.2 Thin end-to-end review slice
+# Current task - M1.2 Thin end-to-end review slice
 
 **Milestone:** M1 (Phase 1, fixed-policy concise reviewer)
-**Risk:** medium-high — first exercise of the CLI-versus-agent split
+**Risk:** medium-high - first exercise of the CLI-versus-agent split
 **Baseline:** `main` after #17
 
 ## Goal
@@ -30,7 +30,7 @@ pieces are built on top, and it makes the plugin dogfoodable immediately.
 - SQLite, audit log, feedback capture (M1.3)
 - Policy file layering and `.review-voice/config.yaml` (M1.4)
 - Static evidence adapters (M1.5)
-- Precedent retrieval, scoring, GitHub — all later milestones
+- Precedent retrieval, scoring, GitHub - all later milestones
 
 ## Acceptance criteria
 

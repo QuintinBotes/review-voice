@@ -7,6 +7,8 @@ interface RawFile {
   previous_filename?: string;
   status: string;
   patch?: string;
+  additions?: number;
+  deletions?: number;
 }
 
 interface RawPull {
@@ -44,7 +46,7 @@ function toUnifiedDiff(file: RawFile): string {
  * Acquires a pull request's diff through the read-only GitHub client.
  *
  * The repository is passed as the client's allowlist for this call. Naming a
- * pull request in a command IS the consent for reading it — the allowlist
+ * pull request in a command IS the consent for reading it - the allowlist
  * exists to govern bulk history ingestion, which happens without per-item
  * consent, and applying it here would demand setup before someone can review
  * one pull request.
@@ -109,6 +111,8 @@ export async function acquirePullRequestDiff(options: {
       status: STATUS[file.status] ?? 'changed',
       class: cls,
       language: languageOf(file.filename),
+      additions: file.additions ?? 0,
+      deletions: file.deletions ?? 0,
       reviewed,
       ...(excludedBecause === undefined ? {} : { excludedBecause }),
     };

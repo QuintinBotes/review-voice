@@ -9,7 +9,7 @@ this file covers threats to the repository that ships it.
 ### `main` is protected
 
 No bypass actors. The maintainer is subject to the same rules as a contributor,
-which is the point — a protection the owner can walk past protects nothing.
+which is the point - a protection the owner can walk past protects nothing.
 
 | Rule | Effect |
 |---|---|
@@ -58,7 +58,7 @@ an ancestor of `main`, so a tag cannot smuggle unreviewed code into a release.
 - Every workflow starts from `permissions: {}`; each job opts into the minimum.
   Only the release job holds `contents: write`.
 - `actions/checkout` sets `persist-credentials: false`, so the token is not left
-  in `.git/config` for a later step — or one of its dependencies — to read.
+  in `.git/config` for a later step - or one of its dependencies - to read.
 - Jobs that hold secrets never run fork code. The eval workflow holds an
   `ANTHROPIC_API_KEY` and is restricted to branches in this repository; a label
   is not a substitute for trust.
@@ -68,7 +68,7 @@ an ancestor of `main`, so a tag cannot smuggle unreviewed code into a release.
 A tag like `@v4` is a mutable pointer. Whoever controls an action's repository
 can move it and run their code against this repository's tokens. Every action is
 pinned to a full SHA with a version comment, and `npm run check:pins` fails the
-build if a pin regresses to a tag — pinning rots silently without a check.
+build if a pin regresses to a tag - pinning rots silently without a check.
 
 ### Scorecard findings we do not act on
 
@@ -90,7 +90,7 @@ carries a reason in the security tab.
 
 Scorecard results are therefore kept as a build artifact rather than uploaded
 to code scanning. As alerts, those three permanent findings blocked every pull
-request from merging — and a blocker nobody can clear trains people to dismiss
+request from merging - and a blocker nobody can clear trains people to dismiss
 alerts by reflex, which costs more than the visibility was worth. Revisit the
 upload when there is a second maintainer and `Code-Review` becomes satisfiable.
 
@@ -151,4 +151,4 @@ repository, force-pushed commits stay reachable by SHA through the API, which is
 why the remaining launch item below is prevention rather than cleanup.
 
 Still to do: re-read `SECURITY.md` against what the code actually does before
-v1.0.0 — every claim in it is now a public promise.
+v1.0.0 - every claim in it is now a public promise.

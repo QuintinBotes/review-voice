@@ -121,7 +121,7 @@ test('purge does not delete without --confirm', () => {
   try {
     execFileSync(process.execPath, [bundle, 'record'], {
       env,
-      input: '[minor] `a.ts:1` — Something breaks here. It fails. Fix it.',
+      input: '[minor] `a.ts:1` - Something breaks here. It fails. Fix it.',
       encoding: 'utf8',
     });
     const preview = JSON.parse(

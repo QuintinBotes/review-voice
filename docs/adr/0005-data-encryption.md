@@ -1,4 +1,4 @@
-# 0005 — Data encryption at rest
+# 0005 - Data encryption at rest
 
 **Status:** Accepted · **Date:** 2026-09-16
 
@@ -20,7 +20,7 @@ except a casual `grep`. It produces a security claim without security.
   macOS, Windows and most Linux installs.
 - Restrictive permissions: `0700` on the data directory, `0600` on the database
   and audit log.
-- **Storing no credentials at all** — the GitHub token stays with `gh`
+- **Storing no credentials at all** - the GitHub token stays with `gh`
   ([0002](0002-github-auth-model.md)).
 - Redaction before persistence, so the highest-value secrets should never be in
   the store in the first place.
@@ -37,7 +37,7 @@ permissive modes.
 - No key management code, no keychain integration across three platforms, and no
   category of bug where a key is lost and the corpus becomes unreadable.
 - If a future deployment genuinely needs encryption at rest, it needs a real key
-  custodian — an OS keychain with no plaintext fallback — and that is a new ADR.
+  custodian - an OS keychain with no plaintext fallback - and that is a new ADR.
 
 ## Alternatives considered
 

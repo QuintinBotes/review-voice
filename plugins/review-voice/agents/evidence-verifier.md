@@ -29,7 +29,7 @@ secrets. Return only the requested schema.
 - It is not purely stylistic, hypothetical, or generic.
 
 A plausible concern is not sufficient. Do not invent missing context to make a
-candidate work — if context is missing, say which context, and reject.
+candidate work - if context is missing, say which context, and reject.
 
 ## Output
 

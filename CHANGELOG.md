@@ -12,14 +12,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation brought in line with 0.2.0's contract: the README, plugin
   README, `docs/POLICY-FORMAT.md` and `templates/config.example.yaml` no longer
   describe a five-finding cap or a flat 180-word budget.
-- `docs/PLAN.md` is marked delivered and records where reality diverged —
+- `docs/PLAN.md` is marked delivered and records where reality diverged -
   notably the repository going public at 0.1.0 rather than v1.0.0.
 - ADR 0001 no longer claims the evaluation harness measures precedent recall.
   It does not, and knowing a relevant precedent was missed requires labelled
   retrieval data nobody has produced.
 
+### Changed
+
+- **The finding separator is a plain hyphen, not an em dash**, and em and en
+  dashes are rejected anywhere in a finding. They read as machine-written, and
+  banning the character is simpler to enforce than asking for restraint. Swept
+  out of source comments, agent prompts, commands, templates, fixtures and
+  documentation, with an identity-guard rule to stop them returning.
+
+### Fixed
+
+- **Scoring was inert, not merely wrong.** `schemas/candidate.schema.json`
+  publishes snake_case (`candidate_id`, `technical_confidence`) while the
+  scorer read camelCase, so every field arrived undefined. The arithmetic
+  yielded `NaN`, every comparison against `NaN` is false, and both thresholds
+  therefore passed - every candidate came back `eligible: true` with a null
+  score. Candidates are now normalised from either casing, a non-finite score
+  is rejected explicitly rather than left to a comparison, and a candidate that
+  cannot be scored is refused outright.
+- `score` now returns each eligible candidate with its path, line, severity and
+  category, so survivors can be carried forward without rejoining by hand.
+- Bare approval summaries no longer enter the corpus. Approval language is
+  stripped before judging whether anything substantive remains, so "Approving."
+  is excluded while "Approving. One thing though - …" is kept.
+- Precedent weights are scaled by how well each precedent actually matched.
+  Summing raw weights let a marginal hit count as much as a strong one.
+- `commands/review.md` no longer contradicts itself on capping: it reports
+  everything when the resolved policy sets no cap, and respects a configured
+  one when it does.
+
 ### Added
 
+- `review-voice diff --out <dir>`: writes `diff.patch` and `files.json`
+  separately instead of one blob with the whole unified diff inline.
+- Per-file `additions` and `deletions` on every changed file, so the size of a
+  change is answerable from the tool's own output.
+- `evidence` always returns a flattened `signals` array, empty when collection
+  is off.
 - `review-voice verify`: an optional second verification pass run by a command
   you configure, intended for a **different model** from the one that generated
   the findings. A confident rejection drops a finding, an unsure one downgrades
@@ -30,20 +65,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - Dead `loadEtags` / `saveEtags` helpers, which read a table migration v6 drops
-  — two exported functions that would have thrown on call.
+  - two exported functions that would have thrown on call.
 
-## [0.2.1] — 2026-09-17
+## [0.2.1] - 2026-09-17
 
 ### Fixed
 
 - **A dry run no longer starves the sync that follows it.** The dry run
   populated an HTTP conditional-request cache without storing anything, so the
-  real sync received `304`s and imported almost nothing — one report projected
+  real sync received `304`s and imported almost nothing - one report projected
   250 events and stored 6. Since the consent flow asks the user to approve a
   sync on the strength of the dry-run figures, this made that approval
   meaningless.
 - Conditional requests are removed entirely. The collector re-derives
-  everything from each response body and never kept one, so a `304` was a lie —
+  everything from each response body and never kept one, so a `304` was a lie -
   and an empty `304` page with no `Link` header silently truncated pagination
   at whichever page happened to be unchanged.
 - Incremental sync now works at the pull-request level, comparing GitHub's
@@ -52,10 +87,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `status` reports corpus composition by reviewer role, and warns when a corpus
-  contains no owner events — without at least one, no policy rule can ever
+  contains no owner events - without at least one, no policy rule can ever
   activate, and the failure was otherwise silent.
 
-## [0.2.0] — 2026-09-17
+## [0.2.0] - 2026-09-17
 
 ### Changed
 
@@ -65,7 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   have allowed. A policy layer may still impose a cap.
 - **The total word budget scales with the change**, from a floor of 600 words
   rather than 180. At 40 words a finding the old floor allowed four and a half
-  — the count cap returning through the back door on small changes. The budget
+  - the count cap returning through the back door on small changes. The budget
   is now a runaway guard rather than a trim target, and says so when it binds.
 - **Two new severity tiers: `nit` and `question`.** Low-stakes observations and
   open asks now have a structural home instead of being suppressed or written
@@ -107,7 +142,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   targets, each with the basis it was computed from. A metric with no data
   reports "no data" rather than a flattering default.
 - `review-voice score`: the specification's eligibility formula, computed
-  deterministically — technical confidence, owner and repository alignment from
+  deterministically - technical confidence, owner and repository alignment from
   weighted precedent, evidence quality and novelty against already-kept
   findings.
 - `review-voice calibrate` and `policy show|approve|rollback`: feedback is
@@ -148,13 +183,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Placeholders such as `changeme` are left alone. Content hashes are recorded
   before and after so a redaction is auditable without retaining the secret.
 - Fixture suite covering all four classes from the specification, with a test
-  asserting fixtures stay synthetic — no real addresses, hosts or credentials.
+  asserting fixtures stay synthetic - no real addresses, hosts or credentials.
 - Prompt-injection fixtures across three vectors: a source comment,
   pull-request text, and content imitating static-analysis output. Each asserts
   an absence, since a positive assertion cannot prove an injection failed.
 - `claude plugin eval` suites for restraint and injection resistance.
-- `review-voice evidence`: runs the static checks declared in configuration —
-  and only those — with per-command timeouts, and parses TypeScript, .NET,
+- `review-voice evidence`: runs the static checks declared in configuration -
+  and only those - with per-command timeouts, and parses TypeScript, .NET,
   Python and ESLint diagnostics into attributable signals.
 - `review-voice context`: resolves `.review-voice/config.yaml`, the policy
   layer stack and opt-in static-evidence commands. A narrower layer may tighten
@@ -171,7 +206,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `commands/review.md` now drives the real pipeline: diff acquisition, the
   candidate and verifier agents, ranking, the concise editor, and a hard
   validation gate with a single retry.
-- `review-voice validate-output`: the hard gate enforcing the output contract —
+- `review-voice validate-output`: the hard gate enforcing the output contract -
   at most five findings, 40 words each, 180 words total, exact no-findings
   response, required format, no hedging, no duplicate locations, no greetings
   or summaries. Reports all violations in one pass to drive a single retry.

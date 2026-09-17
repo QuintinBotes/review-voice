@@ -18,7 +18,7 @@ jobs:
   # public repositories, so the cost argument for trimming this away no longer
   # applies. Review Voice runs on developer machines, most of them macOS, and
   # node:sqlite is the component most likely to behave differently per platform
-  # — so this is coverage worth having on the pull request rather than after
+  # - so this is coverage worth having on the pull request rather than after
   # the merge.
   verify:
     name: verify (node ${{ matrix.node }}, ${{ matrix.os }})
@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Do not leave the workflow token in .git/config where any later
-          # step — or any dependency it runs — could read it.
+          # step - or any dependency it runs - could read it.
           persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -98,7 +98,7 @@ jobs:
     permissions:
       contents: read
       # On a pull request, gitleaks enumerates the PR's commits to scope the
-      # scan, which needs read access to pull requests. Read only — it has no
+      # scan, which needs read access to pull requests. Read only - it has no
       # business writing anything.
       pull-requests: read
     steps:
@@ -129,8 +129,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      # CONTRIBUTING.md asks for Conventional Commits, so the PR title — which
-      # becomes the squash commit message — is checked rather than trusted.
+      # CONTRIBUTING.md asks for Conventional Commits, so the PR title - which
+      # becomes the squash commit message - is checked rather than trusted.
       # Done inline to avoid taking on another third-party action.
       - name: PR title follows Conventional Commits
         env:

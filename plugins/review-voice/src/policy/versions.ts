@@ -38,7 +38,7 @@ function toYaml(rules: ProposedRule[], version: number, scopeKey: string): strin
 }
 
 /**
- * Stores a proposal. It is never active on arrival — a global policy change
+ * Stores a proposal. It is never active on arrival - a global policy change
  * always requires owner approval, so generation and activation are separate
  * operations by construction rather than by discipline.
  */

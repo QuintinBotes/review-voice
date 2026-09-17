@@ -1,7 +1,7 @@
 # Architecture decision records
 
 Each record closes one of the eight open decisions the specification left for
-implementation. They are numbered, dated, and immutable once accepted — a
+implementation. They are numbered, dated, and immutable once accepted - a
 reversal is a new record that supersedes an old one, not an edit.
 
 All eight were reviewed and approved by the owner on 2026-09-16, which is the

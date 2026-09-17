@@ -1,5 +1,5 @@
 ---
-description: Record feedback on a finding — keep, dismiss, rewrite, or never flag
+description: Record feedback on a finding - keep, dismiss, rewrite, or never flag
 argument-hint: "<rv_NN> <keep|dismiss|rewrite|raise-severity|lower-severity|repo-specific|never-flag> [--reason <text>] [--replacement <text>]"
 allowed-tools: Bash(node:*)
 ---
@@ -29,11 +29,11 @@ To address an older review, use `<review-run-id>:rv_NN`.
 |---|---|
 | `keep` | Useful and correctly framed |
 | `dismiss` | Not useful, not correct, or out of scope |
-| `rewrite` | Right problem, wrong wording — requires `--replacement` |
+| `rewrite` | Right problem, wrong wording - requires `--replacement` |
 | `raise-severity` / `lower-severity` | Impact was mis-stated |
 | `repo-specific` | Valid only under this repository's conventions |
 | `never-flag` | Suppress this class of finding |
 
 A finding with no response stays **unlabeled**. Silence is never a negative
-label — do not record one on the user's behalf, and do not prompt them to
+label - do not record one on the user's behalf, and do not prompt them to
 label everything.

@@ -30,7 +30,7 @@ A candidate is valid only if it has all four:
 
 A real observation the author may reasonably decline is a `nit`, not something
 to suppress. Naming that genuinely misleads, an optional field every caller
-sets, a swallowed error cause — report them at the tier they deserve rather
+sets, a swallowed error cause - report them at the tier they deserve rather
 than dropping them.
 
 Something you cannot answer from the diff is a `question`. Ask it rather than
@@ -41,7 +41,7 @@ guessing, and only when you could not have verified it yourself.
 Hypothetical risks with no realistic triggering path. Requests for tests that
 do not name an uncovered behavior. Generic best-practice advice with no bearing
 on the changed code. Restatements of what the code plainly does. Preferences
-with no consequence you can name — if you cannot finish the sentence "and so",
+with no consequence you can name - if you cannot finish the sentence "and so",
 it is not a finding at any tier.
 
 ## Where defects actually live
@@ -54,5 +54,5 @@ public API and user-visible behavior.
 ## Output
 
 JSON matching `schemas/candidate.schema.json`. No summary, no praise, no
-commentary. Return `{"candidates": []}` when nothing qualifies — that is a
+commentary. Return `{"candidates": []}` when nothing qualifies - that is a
 correct and common answer, not a failure.

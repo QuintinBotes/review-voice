@@ -6,7 +6,7 @@ description: How Review Voice policies are structured, layered, and approved. Us
 # Review Voice policy authoring
 
 A policy says what this reviewer cares about, what it must never say, and how
-short it has to be. Policies are inspectable YAML, versioned and rollbackable —
+short it has to be. Policies are inspectable YAML, versioned and rollbackable -
 never opaque model state.
 
 ## Layers

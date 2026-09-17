@@ -8,6 +8,8 @@ export interface ChangedFile {
   status: 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'changed';
   class: FileClass;
   language: string | null;
+  additions: number;
+  deletions: number;
   reviewed: boolean;
   /** Why an excluded file was excluded, so the omission is visible. */
   excludedBecause?: string;
@@ -64,7 +66,7 @@ function gitAllowingDifference(args: string[], cwd: string): string {
  * Untracked files are invisible to `git diff`, but a brand-new file is exactly
  * where defects hide. They are collected separately and diffed against
  * /dev/null so they reach the reviewer, without `git add -N` mutating the
- * user's index — Review Voice is read-only, and that includes their working
+ * user's index - Review Voice is read-only, and that includes their working
  * state.
  */
 function untrackedFiles(root: string): string[] {
@@ -132,6 +134,18 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
 
   const entries = parseNameStatus(git(['diff', '--name-status', '-z', ...range], root));
 
+  // Per-file line counts, so a caller can judge the size of a change from the
+  // tool's own output rather than guessing.
+  const numstat = new Map<string, { additions: number; deletions: number }>();
+  for (const line of git(['diff', '--numstat', ...range], root).split('\n')) {
+    const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
+    if (match === null) continue;
+    numstat.set(match[3]!, {
+      additions: match[1] === '-' ? 0 : Number(match[1]),
+      deletions: match[2] === '-' ? 0 : Number(match[2]),
+    });
+  }
+
   // Only the working tree can have untracked files; --staged and --base both
   // describe content git already knows about.
   if (mode === 'worktree') {
@@ -152,6 +166,8 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
       status: STATUS[entry.status] ?? 'changed',
       class: cls,
       language: languageOf(entry.path),
+      additions: numstat.get(entry.path)?.additions ?? 0,
+      deletions: numstat.get(entry.path)?.deletions ?? 0,
       reviewed,
       ...(reviewed ? {} : { excludedBecause: deleted ? 'file deleted' : excludedReason(cls) }),
     };

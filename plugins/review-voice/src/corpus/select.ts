@@ -25,7 +25,7 @@ export interface SelectionReport<T> {
  *
  * Newest first, but not only newest: one busy repository would otherwise
  * define the global policy for every other. The share cap is relaxed rather
- * than enforced to the point of importing less than is available — a smaller
+ * than enforced to the point of importing less than is available - a smaller
  * corpus is a worse outcome than a slightly lopsided one.
  *
  * Owner evidence is preferred when the cap forces a choice, since it is the

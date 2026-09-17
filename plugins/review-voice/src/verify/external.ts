@@ -19,7 +19,7 @@ export interface VerifierConfig {
   timeoutSeconds?: number;
   /**
    * A rejection at or above this confidence drops the finding. Below it, the
-   * finding is downgraded instead — an unsure verifier should not be able to
+   * finding is downgraded instead - an unsure verifier should not be able to
    * delete evidence.
    */
   dropThreshold?: number;
@@ -103,14 +103,39 @@ function parseVerdict(stdout: string): RawVerdict | null {
  * it should. Correlated error is what this breaks.
  *
  * Every verdict is recorded, including the ones that change nothing. A verifier
- * that silently deletes findings is the count cap in a different coat — the
+ * that silently deletes findings is the count cap in a different coat - the
  * failure has to be visible, or a bad verifier is indistinguishable from a
  * clean diff.
  */
+/** What running the verifier produced. Injectable so tests need no subprocess. */
+export interface RunResult {
+  stdout: string;
+  stderr: string;
+  failed: boolean;
+}
+
+export type Runner = (command: string, input: string, timeoutMs: number, cwd: string) => RunResult;
+
+const spawnRunner: Runner = (command, input, timeoutMs, cwd) => {
+  const result = spawnSync(command, {
+    cwd,
+    shell: true,
+    encoding: 'utf8',
+    input,
+    timeout: timeoutMs,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  return {
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    failed: result.error !== undefined || result.status === null,
+  };
+};
+
 export function verifyFindings(
   findings: VerifiableFinding[],
   config: VerifierConfig,
-  options: { cwd: string },
+  options: { cwd: string; runner?: Runner },
 ): VerificationReport {
   const name = config.name ?? 'external';
 
@@ -122,18 +147,18 @@ export function verifyFindings(
   const verdicts: FindingVerdict[] = [];
   const didNotRun: string[] = [];
 
-  for (const finding of findings) {
-    const result = spawnSync(config.command, {
-      cwd: options.cwd,
-      shell: true,
-      encoding: 'utf8',
-      input: JSON.stringify(finding),
-      timeout: (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
-      maxBuffer: 8 * 1024 * 1024,
-    });
+  const runner = options.runner ?? spawnRunner;
 
-    const unavailable = result.error !== undefined || result.status === null;
-    const raw = unavailable ? null : parseVerdict(`${result.stdout ?? ''}\n${result.stderr ?? ''}`);
+  for (const finding of findings) {
+    const result = runner(
+      config.command,
+      JSON.stringify(finding),
+      (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
+      options.cwd,
+    );
+
+    const unavailable = result.failed;
+    const raw = unavailable ? null : parseVerdict(`${result.stdout}\n${result.stderr}`);
 
     if (raw === null) {
       // A verifier that could not run has not confirmed anything, and must
@@ -146,7 +171,7 @@ export function verifyFindings(
         verdict: 'uncertain',
         confidence: 0,
         reason: unavailable
-          ? `verifier did not run: ${result.error?.message ?? 'no exit status'}`
+          ? 'verifier did not run'
           : 'verifier produced no parseable verdict',
         outcome: 'unverified',
         originalSeverity: finding.severity,
@@ -179,7 +204,7 @@ export function verifyFindings(
       TIERS.includes(raw.suggested_severity) &&
       TIERS.indexOf(raw.suggested_severity) > TIERS.indexOf(finding.severity)
     ) {
-      // A confirmation may still weaken the tier, never strengthen it — a
+      // A confirmation may still weaken the tier, never strengthen it - a
       // verifier's job is to doubt, not to escalate.
       outcome = 'downgraded';
       finalSeverity = raw.suggested_severity;
