@@ -1,6 +1,27 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { verifyFindings } from '../plugins/review-voice/src/verify/external.ts';
+
+/**
+ * Verifier output comes from a file rather than an interpolated shell string.
+ * `shell: true` resolves to dash on Linux and bash on macOS, and building a
+ * command out of JSON made these fixtures depend on which — they passed
+ * locally and failed in CI for reasons that had nothing to do with the code
+ * under test.
+ */
+const scratch = mkdtempSync(join(tmpdir(), 'rv-verify-'));
+let fixtureCount = 0;
+
+function emitsRaw(text) {
+  const path = join(scratch, `verdict-${(fixtureCount += 1)}.txt`);
+  writeFileSync(path, text);
+  return { enabled: true, command: `cat ${JSON.stringify(path)}`, name: 'test' };
+}
+
+test.after(() => rmSync(scratch, { recursive: true, force: true }));
 
 const finding = (over = {}) => ({
   candidateId: 'cand_001',
@@ -14,7 +35,7 @@ const finding = (over = {}) => ({
 });
 
 /** A verifier that emits whatever JSON it is told to. */
-const emits = (json) => ({ enabled: true, command: `printf '%s' '${JSON.stringify(json)}'`, name: 'test' });
+const emits = (json) => emitsRaw(JSON.stringify(json));
 
 const run = (findings, config) => verifyFindings(findings, config, { cwd: process.cwd() });
 
@@ -26,6 +47,12 @@ test('verification is off unless configured', () => {
 
 test('a configured verifier with no command does not run', () => {
   assert.equal(run([finding()], { enabled: true, command: '   ' }).enabled, false);
+});
+
+test('a verdict is read the same way whichever shell runs the command', () => {
+  // /bin/sh is dash on Linux and bash on macOS. The module must not care.
+  const [v] = run([finding()], emitsRaw('{"verdict":"rejected","confidence":0.95,"reason":"nope"}')).verdicts;
+  assert.equal(v.outcome, 'dropped');
 });
 
 test('a confident rejection drops the finding', () => {
@@ -79,7 +106,7 @@ test('a verifier that cannot run never counts as confirmation', () => {
 });
 
 test('unparseable output is not confirmation either', () => {
-  const report = run([finding()], { enabled: true, command: 'echo "I think it is probably fine"', name: 'chatty' });
+  const report = run([finding()], { ...emitsRaw('I think it is probably fine'), name: 'chatty' });
   assert.equal(report.verdicts[0].outcome, 'unverified');
   assert.deepEqual(report.didNotRun, ['chatty']);
 });
@@ -87,10 +114,21 @@ test('unparseable output is not confirmation either', () => {
 test('a chatty verifier that still emits JSON is understood', () => {
   // Real verifiers narrate. Take the last JSON object rather than demanding
   // the command print nothing else.
-  const command = `printf 'thinking...\\nchecking anchors\\n{"verdict":"rejected","confidence":0.9,"reason":"nope"}\\n'`;
-  const [v] = run([finding()], { enabled: true, command, name: 'verbose' }).verdicts;
+  const config = emitsRaw(
+    ['thinking about this one', 'checking the anchor lines', '{"verdict":"rejected","confidence":0.9,"reason":"nope"}'].join('\n'),
+  );
+  const [v] = run([finding()], { ...config, name: 'verbose' }).verdicts;
   assert.equal(v.outcome, 'dropped');
   assert.equal(v.reason, 'nope');
+});
+
+test('a verifier that emits several JSON objects is read on the last one', () => {
+  const config = emitsRaw(
+    ['{"verdict":"confirmed","confidence":0.1}', 'on reflection:', '{"verdict":"rejected","confidence":0.95,"reason":"final"}'].join('\n'),
+  );
+  const [v] = run([finding()], config).verdicts;
+  assert.equal(v.outcome, 'dropped');
+  assert.equal(v.reason, 'final');
 });
 
 test('every finding gets a verdict, including ones nothing happened to', () => {
@@ -103,4 +141,21 @@ test('every finding gets a verdict, including ones nothing happened to', () => {
 test('a nit cannot be downgraded past the bottom of the scale', () => {
   const [v] = run([finding({ severity: 'nit' })], emits({ verdict: 'uncertain', confidence: 0.3 })).verdicts;
   assert.equal(v.finalSeverity, 'nit');
+});
+
+test('a verdict containing nested objects is parsed whole', () => {
+  // A non-greedy regex would stop at the first closing brace and lose the rest.
+  const config = emitsRaw(
+    '{"verdict":"rejected","confidence":0.9,"reason":"see below","detail":{"line":84,"note":"unreachable"}}',
+  );
+  const [v] = run([finding()], config).verdicts;
+  assert.equal(v.outcome, 'dropped');
+  assert.equal(v.reason, 'see below');
+});
+
+test('a brace inside a string does not confuse the extractor', () => {
+  const config = emitsRaw('{"verdict":"rejected","confidence":0.9,"reason":"literal { and } in text"}');
+  const [v] = run([finding()], config).verdicts;
+  assert.equal(v.outcome, 'dropped');
+  assert.match(v.reason, /literal \{ and \}/);
 });

@@ -37,12 +37,53 @@ function downgrade(severity: string): string {
   return TIERS[index + 1] ?? 'nit';
 }
 
+/**
+ * Extracts top-level `{...}` regions by matching braces, ignoring any inside
+ * strings.
+ *
+ * A regex cannot do this. Greedy matching swallows two objects into one
+ * unparseable span; non-greedy stops at the first closing brace and breaks on
+ * the nested objects a real verdict contains.
+ */
+function jsonCandidates(text: string): string[] {
+  const found: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!;
+
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+
+    if (ch === '"') inString = true;
+    else if (ch === '{') {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0 && start !== -1) {
+        found.push(text.slice(start, i + 1));
+        start = -1;
+      } else if (depth < 0) {
+        depth = 0;
+      }
+    }
+  }
+
+  return found;
+}
+
 function parseVerdict(stdout: string): RawVerdict | null {
-  // Verifiers are chatty. Take the last JSON object in the output rather than
-  // requiring the command to emit nothing else.
-  const matches = stdout.match(/\{[\s\S]*\}/g);
-  if (matches === null) return null;
-  for (const candidate of [...matches].reverse()) {
+  // Verifiers are chatty, and may revise themselves. The last well-formed
+  // verdict wins rather than requiring the command to emit nothing else.
+  for (const candidate of jsonCandidates(stdout).reverse()) {
     try {
       const parsed = JSON.parse(candidate) as RawVerdict;
       if (typeof parsed.verdict === 'string') return parsed;
