@@ -48,7 +48,20 @@ export function unfinishedSyncRuns(db: Database, now: Date = new Date()): SyncRu
   const cutoff = new Date(now.getTime() - ASSUME_STILL_RUNNING_MINUTES * 60_000).toISOString();
   return (
     db
-      .prepare('SELECT * FROM sync_runs WHERE finished_at IS NULL AND started_at < ? ORDER BY started_at DESC')
+      .prepare(
+        `SELECT * FROM sync_runs
+         WHERE finished_at IS NULL
+           AND started_at < ?
+           -- A sync that completed afterwards did the work this one abandoned,
+           -- so the dangling row is history rather than an outstanding task.
+           -- Reporting it beside "last sync 07:46, 250 imported" told the user
+           -- to run a sync they had already run four times.
+           AND NOT EXISTS (
+             SELECT 1 FROM sync_runs later
+             WHERE later.finished_at IS NOT NULL AND later.finished_at > sync_runs.started_at
+           )
+         ORDER BY started_at DESC`,
+      )
       .all(cutoff) as Record<string, unknown>[]
   ).map((row) => ({
     syncRunId: row['sync_run_id'] as string,

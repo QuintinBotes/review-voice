@@ -5,6 +5,46 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `score` checks a claim of absence against the repository. "X does not exist"
+  is the cheapest claim to verify and the most damaging to get wrong: the
+  analyst asserted four files were missing at confidence 0.90, and 0.93 on a
+  re-run of the same diff, and proposed replacing correct cross-references with
+  wrong ones. Every symbol such a claim names is now searched with `git grep`
+  and the candidate is rejected if any of them is present. A search that cannot
+  run concludes nothing.
+
+### Changed
+
+- The final-score threshold moves from 0.74 to 0.68, replacing a derivation
+  with a measurement. Across five runs every candidate the verifier judged
+  false was already rejected on confidence, and the true and false classes
+  separated between 0.6313 and 0.6884 with nothing in between, while 0.74 sat
+  inside the confirmed-true group and deleted three of five true findings.
+- Convention documents are ranked by information density rather than proximity
+  alone. Four large skill documents were taking 96% of the budget, dropping all
+  32 rule files including a 553-byte rule that changed a verdict. Short
+  documents in a tier are read first, and no document may take more than a
+  quarter of the budget. Directory-scoped files are still ranked by closeness.
+- Both agent prompts state that convention documents are fallible and that
+  source wins a factual conflict. A skill document asserted a mechanism the
+  code contradicts, and the analyst repeated it for four consecutive runs.
+- `npm run verify` checks the bundle is current before running the tests. The
+  CLI tests exercise the committed bundle, so a stale one let them pass against
+  code that was not the source.
+
+### Fixed
+
+- `--help` works for every command, handled before dispatch. `score --help`
+  printed the stdin error and then blocked on a terminal, which also hid
+  `--exclude-pull`: the flag is in the help text and the help text could not be
+  reached.
+- The unfinished-sync warning is retired by a later completed sync. It told the
+  user to run a sync two lines below reporting that four had since succeeded.
+
 ## [0.5.0] - 2026-09-17
 
 ### Fixed

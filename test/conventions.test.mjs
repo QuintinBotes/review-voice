@@ -220,3 +220,58 @@ test('every document says why it was selected', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// The budget has to buy information, not bytes (N5-02)
+
+test('short rules are read before long guides in the same tier', () => {
+  // Four large subtree skills took 96% of the budget on a real repository,
+  // dropping all 32 rule files. One of them was 553 bytes and changed a
+  // verdict; the 29 KB page guide that displaced it was about something else.
+  const root = repository({
+    '.agents/rules/test-coverage.md': 'Name the uncovered behaviour or do not ask for a test.',
+    '.agents/rules/comments.md': 'A wrong rationale on right code is worse than no comment.',
+    '.agents/rules/reuse.md': 'State a shared rationale once.',
+    '.claude/skills/page-guide/SKILL.md': 'x'.repeat(59_000),
+  });
+  try {
+    const report = discoverConventions(root, ['src/a.ts']);
+    const paths = report.documents.map((d) => d.path);
+
+    for (const rule of ['test-coverage.md', 'comments.md', 'reuse.md']) {
+      assert.ok(
+        paths.some((p) => p.endsWith(rule)),
+        `${rule} should fit: it costs a few hundred bytes. Got ${JSON.stringify(paths)}`,
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('no single document may take more than a quarter of the budget', () => {
+  const root = repository({ '.claude/skills/huge/SKILL.md': 'x'.repeat(59_000) });
+  try {
+    const report = discoverConventions(root, ['src/a.ts']);
+    assert.equal(report.documents[0].truncated, true);
+    assert.equal(report.documents[0].content.length, PER_DOCUMENT_BYTES);
+    assert.ok(PER_DOCUMENT_BYTES <= 15_000, `expected a quarter of the budget, got ${PER_DOCUMENT_BYTES}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('relevance still outranks size', () => {
+  // Cheapest-first operates within a tier, never across one. A rule governing
+  // the touched subtree beats a shorter one from an unrelated root skill.
+  const root = repository({
+    'packages/app/.agents/rules/handlers.md': 'Handlers validate before they persist, always and without exception.',
+    '.claude/skills/tiny/SKILL.md': 'Short.',
+  });
+  try {
+    const report = discoverConventions(root, ['packages/app/src/handler.ts']);
+    assert.equal(report.documents[0].path, join('packages', 'app', '.agents', 'rules', 'handlers.md'));
+    assert.equal(report.documents[0].reason, 'subtree');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -127,15 +127,25 @@ export interface Thresholds {
  * of twelve verified findings cleared it where eight of ten had before, and the
  * threshold sat above the distribution rather than through it.
  *
- * 0.74 is 0.78 less the 0.045 the evidence term stopped guaranteeing, taking a
- * mid-range 0.7 as typical. It is a derivation, not a measurement, and it is
- * meant to be replaced: `score` reports the distribution it produced so the
- * next value can come from labelled data rather than arithmetic about the last
- * change.
+ * 0.74 was arithmetic about that change. 0.68 is measured. Across five pull
+ * request runs every candidate the verifier judged false was already rejected
+ * on confidence, so nothing reaching the score gate is still in question:
+ *
+ *   verifier said false   0.4685  0.5886  0.6313
+ *   verifier said true    0.6884  0.6911  0.7389  0.7587  0.7723
+ *
+ * The classes separate cleanly between 0.6313 and 0.6884 with nothing in
+ * between, and 0.74 sat inside the confirmed-true group, deleting three of
+ * five true findings. 0.68 sits just under the lowest confirmed score.
+ *
+ * The gate is kept because its job is preference, not truth: alignment,
+ * novelty and evidence quality say whether the owner would want this said,
+ * which the confidence gate does not measure. It should not be re-litigating
+ * whether the finding is real, which the verifier decided on better evidence.
  */
 export const DEFAULT_THRESHOLDS: Thresholds = {
   technicalConfidence: 0.8,
-  finalScore: 0.74,
+  finalScore: 0.68,
 };
 
 export class MalformedCandidate extends Error {}

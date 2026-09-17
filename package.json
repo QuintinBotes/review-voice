@@ -16,7 +16,7 @@
     "validate:plugin": "claude plugin validate plugins/review-voice --strict",
     "validate:marketplace": "claude plugin validate . --strict",
     "guard:identity": "node scripts/guard-identity.mjs",
-    "verify": "npm run typecheck && npm run test && npm run check:dist && npm run guard:identity && npm run check:pins",
+    "verify": "npm run typecheck && npm run check:dist && npm run test && npm run guard:identity && npm run check:pins",
     "check:pins": "node scripts/check-action-pins.mjs"
   },
   "devDependencies": {
