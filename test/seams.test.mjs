@@ -277,3 +277,41 @@ test('check-candidates refuses a foreign shape and accepts a valid one', () => {
   assert.equal(good.status, 0, good.stderr);
   assert.equal(JSON.parse(good.stdout).candidates, 1);
 });
+
+test('the editor is told to receive candidates inline, never as a path', () => {
+  // The editor declares no tools, deliberately: its authority limit - that it
+  // cannot add a technical claim - rests on having no way to verify one. On a
+  // live run it was handed a path, could only say it cannot open files, and
+  // eight findings were pasted by hand.
+  const step = REVIEW.slice(REVIEW.indexOf('## Step 5'), REVIEW.indexOf('## Step 6'));
+  assert.match(step, /inline the candidate json/i);
+  assert.match(step, /do not pass a file path/i);
+});
+
+test('the analyst prompt carries its schema rather than only naming the file', () => {
+  const analyst = readFileSync(
+    new URL('../plugins/review-voice/agents/diff-analyst.md', import.meta.url),
+    'utf8',
+  );
+  for (const field of [
+    'candidate_id',
+    'path',
+    'line',
+    'category',
+    'severity',
+    'claim',
+    'failure_mode',
+    'evidence',
+    'technical_confidence',
+  ]) {
+    assert.ok(analyst.includes(field), `the analyst prompt never names the ${field} field`);
+  }
+  // The shapes that actually arrived instead, named so they are refused.
+  assert.match(analyst, /`title`.*`location`.*`description`/s);
+});
+
+test('the review command does not tell the operator to alias RV as a variable', () => {
+  // zsh does not word-split an unquoted parameter, so `$RV` as a command exits
+  // 127 with the whole string read as one program name.
+  assert.match(REVIEW, /do not set `RV` as a shell variable/i);
+});

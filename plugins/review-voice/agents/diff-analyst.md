@@ -181,3 +181,30 @@ public API and user-visible behavior.
 JSON matching `schemas/candidate.schema.json`. No summary, no praise, no
 commentary. Return `{"candidates": []}` when nothing qualifies - that is a
 correct and common answer, not a failure.
+
+Every candidate has exactly these nine fields, all required:
+
+```json
+{
+  "candidates": [
+    {
+      "candidate_id": "cand_001",
+      "path": "src/auth/session.ts",
+      "line": 84,
+      "category": "security",
+      "severity": "blocking",
+      "claim": "What is wrong, stated as a fact about this code.",
+      "failure_mode": "What breaks as a result, concretely.",
+      "evidence": ["A line, symbol or quoted source that establishes it."],
+      "technical_confidence": 0.85
+    }
+  ]
+}
+```
+
+**These names, not others.** `title`, `location`, `description`,
+`suggested_direction`, `summary` and `suggestion` are not fields of this
+schema, and a response using them is rejected whole rather than translated -
+on three separate runs a review produced nothing because of it. `path` and
+`line` locate the finding; `claim` and `failure_mode` are separate fields
+because the scorer reads only the claim when checking an assertion of absence.

@@ -131,7 +131,7 @@ score flags:
                             Gate when only the analyst's self-report exists
                             (default 0.7). A different measurement, so a
                             different number.
-  --min-score <n>           Final score gate (default 0.78)
+  --min-score <n>           Final score gate (default 0.68)
   --repository <name>       Prefer precedents from this repository
 
 conventions flags:
