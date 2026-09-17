@@ -60,6 +60,7 @@ const USAGE = `review-voice <command>
 
 Commands:
   diff              Acquire the diff under review as structured JSON
+  check-candidates  Validate analyst output against the candidate schema
   context           Resolve config and the active policy stack as JSON
   conventions       Collect the repository's own convention documents
   evidence          Run the configured static checks and emit structured signals
@@ -758,7 +759,13 @@ function scoreCommand(argv: string[]): number {
           // ignored depending on how its impact was worded, and a symbol named
           // in the mechanism could be reported as one the claim said was
           // absent.
-          absence = checkAbsenceClaim(candidate.claim, searchRoot, baseRef);
+          absence = checkAbsenceClaim(
+            candidate.claim,
+            searchRoot,
+            baseRef,
+            undefined,
+            flag(argv, '--repository'),
+          );
         } catch {
           absence = null;
         }
@@ -1283,6 +1290,39 @@ function verdictList(parsed: unknown): Record<string, unknown>[] {
   return [];
 }
 
+/**
+ * Checks analyst output against the candidate schema, before anything expensive
+ * reads it.
+ *
+ * The same validation runs inside `score`, but `score` is the fourth stage. A
+ * wrong-shaped output was not caught until after a full verification pass, and
+ * on a real run that cost the only pass which found the best defect of the day.
+ * Failing here costs one re-run of one agent.
+ */
+function checkCandidatesCommand(): number {
+  let raw: unknown[];
+  try {
+    const parsed = JSON.parse(readStdin()) as { candidates?: unknown[] } | unknown[];
+    raw = Array.isArray(parsed) ? parsed : (parsed.candidates ?? []);
+  } catch {
+    console.error('Expected {"candidates": [...]} on stdin.');
+    return 2;
+  }
+
+  try {
+    const candidates = raw.map((candidate, index) => normaliseCandidate(candidate as RawCandidate, index));
+    console.log(JSON.stringify({ valid: true, candidates: candidates.length }, null, 2));
+    return 0;
+  } catch (error) {
+    if (error instanceof MalformedCandidate) {
+      console.error(`Malformed candidate - ${error.message}`);
+      console.error('Re-run the analyst with the schema restated. Do not hand-translate its output.');
+      return 2;
+    }
+    throw error;
+  }
+}
+
 function statusCommand(): number {
   const db = openDatabase();
   try {
@@ -1413,6 +1453,9 @@ async function main(argv: string[]): Promise<number> {
 
     case 'policy':
       return policyCommand(argv.slice(1));
+
+    case 'check-candidates':
+      return checkCandidatesCommand();
 
     case 'conventions':
       return conventionsCommand(argv.slice(1));

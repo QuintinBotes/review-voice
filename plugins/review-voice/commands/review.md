@@ -131,12 +131,19 @@ convention `documents`.
 It returns JSON matching `schemas/candidate.schema.json`. `{"candidates": []}`
 is a correct and common answer.
 
-**If `score` rejects the output as malformed, relaunch the analyst once with
-the schema restated, and do not translate its output by hand.** One run
-returned `title`, `location` and `suggested_direction` instead of the schema
-and the pull request produced nothing at all. Rewriting that yourself would put
-a judgement into the pipeline that no stage recorded. If the second attempt is
-also malformed, say so and stop.
+**Check the shape before going further:** pipe the output into
+`RV check-candidates`.
+
+If it exits non-zero, **relaunch the analyst once with the schema restated, and
+do not translate its output by hand.** Two real runs returned `title`,
+`location` and `suggestion` instead of the schema. Rewriting that yourself
+would put a judgement into the pipeline that no stage recorded.
+
+Do this here rather than waiting for step 4. A wrong shape that reaches scoring
+has already cost a verification pass, and on one run it cost the only analyst
+pass that found the most serious defect in the diff. Failing at this step costs
+one re-run of one agent. If the second attempt is also malformed, say so and
+stop.
 
 If there are no candidates, output exactly `No actionable findings.` and stop.
 

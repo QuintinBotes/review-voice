@@ -230,3 +230,50 @@ test('the score invocation supplies what the gates depend on', () => {
     );
   }
 });
+
+test('the review command checks the analyst shape before the verifier runs', () => {
+  // A wrong shape reaching step 4 has already cost a verification pass, and on
+  // a real run it cost the only analyst pass that found the most serious
+  // defect in the diff.
+  const stepTwo = REVIEW.slice(
+    REVIEW.indexOf('## Step 2'),
+    REVIEW.indexOf('## Step 3'),
+  );
+  assert.match(stepTwo, /check-candidates/, 'step 2 no longer checks the candidate shape');
+
+  const check = invocations(REVIEW).find((call) => call.command === 'check-candidates');
+  assert.ok(check !== undefined, 'check-candidates is described but not instructed');
+});
+
+test('check-candidates refuses a foreign shape and accepts a valid one', () => {
+  const foreign = JSON.stringify({ candidates: [{ title: 'A thing', suggestion: 'fix' }] });
+  const valid = JSON.stringify({
+    candidates: [
+      {
+        candidate_id: 'cand_001',
+        path: 'a.ts',
+        line: 4,
+        category: 'correctness',
+        severity: 'minor',
+        claim: 'A claim.',
+        failure_mode: 'A failure.',
+        evidence: ['At line 4.'],
+        technical_confidence: 0.9,
+      },
+    ],
+  });
+
+  const bad = spawnSync(process.execPath, [join(plugin, 'dist/review-voice.mjs'), 'check-candidates'], {
+    encoding: 'utf8',
+    input: foreign,
+  });
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /not the candidate schema/);
+
+  const good = spawnSync(process.execPath, [join(plugin, 'dist/review-voice.mjs'), 'check-candidates'], {
+    encoding: 'utf8',
+    input: valid,
+  });
+  assert.equal(good.status, 0, good.stderr);
+  assert.equal(JSON.parse(good.stdout).candidates, 1);
+});
