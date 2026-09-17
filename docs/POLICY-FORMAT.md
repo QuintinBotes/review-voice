@@ -1,6 +1,6 @@
 # Policy format
 
-Policies are YAML. They are meant to be read, diffed and argued with — if you
+Policies are YAML. They are meant to be read, diffed and argued with - if you
 cannot tell why the reviewer said something by reading its policy, the format
 has failed.
 

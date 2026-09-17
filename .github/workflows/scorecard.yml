@@ -3,8 +3,8 @@ name: Scorecard
 # OSSF Scorecard grades this repository's supply-chain posture.
 #
 # Results are kept as a build artifact rather than uploaded to code scanning.
-# Three of Scorecard's high-severity checks — Code-Review, Maintained and
-# Branch-Protection — cannot be satisfied by a single-maintainer repository,
+# Three of Scorecard's high-severity checks - Code-Review, Maintained and
+# Branch-Protection - cannot be satisfied by a single-maintainer repository,
 # and as code-scanning alerts they blocked every pull request from merging.
 # A permanent blocker that nobody can clear trains people to dismiss alerts by
 # reflex, which costs more than the visibility was worth. The findings that
@@ -57,7 +57,7 @@ jobs:
           if not results:
               print('No findings.')
           for result in results:
-              print(f"- **{result.get('ruleId')}** — {result.get('message', {}).get('text', '').strip()}")
+              print(f"- **{result.get('ruleId')}** - {result.get('message', {}).get('text', '').strip()}")
           PY
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

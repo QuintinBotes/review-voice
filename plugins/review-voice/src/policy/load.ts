@@ -45,7 +45,7 @@ function contentHash(text: string): string {
 /**
  * A repository policy is repository content, and repository content is
  * untrusted (docs/adr/0006). It is parsed and surfaced, but marked as needing
- * approval rather than applied — `suppressed_patterns` is one line away from
+ * approval rather than applied - `suppressed_patterns` is one line away from
  * "never mention authentication", and a file that silences the reviewer must
  * not do so just by existing.
  */

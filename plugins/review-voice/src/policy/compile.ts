@@ -30,7 +30,7 @@ export interface ProposedRule {
  *
  * Weak signals cannot clear this on their own. A merge with no visible fix, a
  * thread resolved in silence, or no reply at all are all consistent with the
- * comment having been right, wrong, or unread — and a rule built on them would
+ * comment having been right, wrong, or unread - and a rule built on them would
  * be a guess wearing a confidence score.
  */
 const MIN_CORROBORATING = 3;
@@ -138,7 +138,7 @@ export function compileProposals(db: Database): ProposedRule[] {
     const rewrites = group.filter((g) => g.row.action === 'rewrite').length;
 
     // A contradicting signal is the owner having gone the other way on the
-    // same category — the one case where a rule should not form quietly.
+    // same category - the one case where a rule should not form quietly.
     const opposite = kind === 'suppress' ? `prioritise:${category}` : `suppress:${category}`;
     const contradictingSignals = (buckets.get(opposite) ?? []).length;
 

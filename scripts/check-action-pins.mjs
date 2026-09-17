@@ -2,7 +2,7 @@
  * Every third-party GitHub Action must be pinned to a full commit SHA.
  *
  * A tag like `@v4` is a mutable pointer. Whoever controls the action's
- * repository — or anyone who compromises it — can move that tag and have their
+ * repository - or anyone who compromises it - can move that tag and have their
  * code run in a workflow that holds this repository's tokens. A SHA cannot be
  * moved.
  *
@@ -37,7 +37,7 @@ for (const entry of await readdir(workflows)) {
 
     if (!PINNED.test(ref)) {
       console.error(
-        `${relative(root, path)}:${index + 1} — action is not pinned to a commit SHA: ${ref}`,
+        `${relative(root, path)}:${index + 1} - action is not pinned to a commit SHA: ${ref}`,
       );
       failures++;
       return;
@@ -46,7 +46,7 @@ for (const entry of await readdir(workflows)) {
     // The SHA is the security control; the comment is what makes it reviewable.
     if (!/#\s*v?\d/.test(line)) {
       console.error(
-        `${relative(root, path)}:${index + 1} — pinned action needs a version comment, e.g. \`# v4\`.`,
+        `${relative(root, path)}:${index + 1} - pinned action needs a version comment, e.g. \`# v4\`.`,
       );
       failures++;
     }

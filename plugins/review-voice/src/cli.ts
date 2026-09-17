@@ -1,5 +1,5 @@
 /**
- * Review Voice CLI — the deterministic half of the plugin.
+ * Review Voice CLI - the deterministic half of the plugin.
  *
  * Everything that can be decided by arithmetic or plumbing lives here: diff
  * acquisition, config and policy layering, static evidence, retrieval,
@@ -232,7 +232,7 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
 }
 
 /**
- * A whole unified diff inline in a JSON blob is awkward to hand to an agent —
+ * A whole unified diff inline in a JSON blob is awkward to hand to an agent -
  * the patch for a mid-sized pull request runs past a hundred kilobytes, and
  * the caller ends up splitting it back out. `--out` does that here instead.
  */
@@ -566,7 +566,7 @@ function scoreCommand(argv: string[]): number {
     if (error instanceof MalformedCandidate) {
       // Refused rather than scored as zero: a candidate that cannot be scored
       // must not quietly become eligible.
-      console.error(`Malformed candidate — ${error.message}`);
+      console.error(`Malformed candidate - ${error.message}`);
       return 2;
     }
     console.error('Expected {"candidates": [...]} on stdin.');
@@ -789,8 +789,8 @@ function recordCommand(argv: string[]): number {
     }
   }
 
-  // Categories cannot be recovered from the rendered output — the contract
-  // permits no text beyond the finding — so they arrive alongside it.
+  // Categories cannot be recovered from the rendered output - the contract
+  // permits no text beyond the finding - so they arrive alongside it.
   const candidatesFile = flag(argv, '--candidates');
   let candidates: { path: string; line: number; category?: string }[] = [];
   if (candidatesFile !== null) {
@@ -930,7 +930,7 @@ function explainCommand(argv: string[]): number {
     for (const finding of shown) {
       // Matched by location. An earlier version matched on a predicate that
       // never discriminated, so every finding showed the first finding's
-      // numbers — worse than showing none, in the command whose whole purpose
+      // numbers - worse than showing none, in the command whose whole purpose
       // is auditability.
       const score = scores.find((s) => s.path === finding.path && s.line === finding.line);
       console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
@@ -953,7 +953,7 @@ function explainCommand(argv: string[]): number {
       if (verdict !== undefined) {
         console.log(
           `  verified          ${verdict.verdict} (${verdict.confidence.toFixed(2)}) by ${verdict.verifier}` +
-            (verdict.outcome === 'kept' ? '' : ` — ${verdict.outcome}`),
+            (verdict.outcome === 'kept' ? '' : ` - ${verdict.outcome}`),
         );
         if (verdict.reason.length > 0) console.log(`                    ${verdict.reason}`);
       }
@@ -1010,7 +1010,7 @@ function statusCommand(): number {
       `corpus           ${coverage.total} event(s)` +
         (coverage.total === 0
           ? ''
-          : ` — ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(', ')}`),
+          : ` - ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(', ')}`),
     );
     for (const warning of coverage.warnings) console.log(`  warning        ${warning}`);
     return 0;

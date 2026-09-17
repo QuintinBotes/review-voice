@@ -34,7 +34,7 @@ make a redaction auditable without retaining what was removed.
 
 **This will not catch every secret.** Pattern-based redaction cannot recognise a
 credential that does not look like one. Treat it as a second line of defence
-behind not committing secrets in the first place — never as permission to run
+behind not committing secrets in the first place - never as permission to run
 Review Voice against a repository whose contents you could not tolerate reaching
 a model.
 
@@ -52,7 +52,7 @@ repository content are never executed.
 This is enforced through delimited data blocks, strict output schemas, an
 explicit safety preamble in every agent prompt, and a public regression suite of
 prompt-injection fixtures in [`fixtures/prompt-injection/`](fixtures/prompt-injection/).
-Contributed attack cases are welcome — an injection that defeats the suite is a
+Contributed attack cases are welcome - an injection that defeats the suite is a
 valuable bug report, not an embarrassment.
 
 Prompt injection is an open research problem. These defences reduce risk
@@ -61,7 +61,7 @@ substantially; they do not eliminate it.
 ### Read-only
 
 Through v1, Review Voice performs no GitHub write operations. This is enforced
-in code — the GitHub client rejects any non-GET request — and covered by test,
+in code - the GitHub client rejects any non-GET request - and covered by test,
 not merely documented. It cannot post comments, approve or block pull requests,
 merge, or modify repository state.
 
@@ -78,4 +78,4 @@ The corpus and policy store rely on your operating system's full-disk
 encryption and restrictive file permissions, not application-level encryption.
 The reasoning is in
 [docs/adr/0005-data-encryption.md](docs/adr/0005-data-encryption.md). Review
-Voice never stores your GitHub credentials — it borrows them from `gh`.
+Voice never stores your GitHub credentials - it borrows them from `gh`.

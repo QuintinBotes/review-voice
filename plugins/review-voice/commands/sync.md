@@ -27,4 +27,4 @@ policy, being hours out of date is irrelevant.
 ## After syncing
 
 New evidence is **queued for calibration**. It never mutates an active policy
-on its own — see `/review-voice:calibrate`.
+on its own - see `/review-voice:calibrate`.

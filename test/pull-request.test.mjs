@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
 import { recordRun, runDetail } from '../plugins/review-voice/src/store/runs.ts';
 
-const OUTPUT = '[blocking] `src/auth.ts:84` — Token returned before commit. A retry mints two. Commit first.';
+const OUTPUT = '[blocking] `src/auth.ts:84` - Token returned before commit. A retry mints two. Commit first.';
 
 function withDb(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'rv-explain-'));
@@ -86,7 +86,7 @@ test('each finding shows its own score, not the first one’s', () => {
   withDb((db) => {
     // Found by running the reviewer on its own pull request. The lookup used a
     // predicate that never discriminated between findings, so every finding
-    // displayed the first finding's numbers — worse than displaying none, in
+    // displayed the first finding's numbers - worse than displaying none, in
     // the command whose whole purpose is auditability.
     recordRun(db, {
       repository: 'org/a',
@@ -94,8 +94,8 @@ test('each finding shows its own score, not the first one’s', () => {
       headRef: null,
       diff: 'd',
       output: [
-        '[blocking] `src/a.ts:1` — First problem here. It fails. Fix it.',
-        '[minor] `src/b.ts:2` — Second problem here. It fails differently. Fix it.',
+        '[blocking] `src/a.ts:1` - First problem here. It fails. Fix it.',
+        '[minor] `src/b.ts:2` - Second problem here. It fails differently. Fix it.',
       ].join('\n\n'),
       candidates: [
         { path: 'src/a.ts', line: 1, category: 'correctness' },

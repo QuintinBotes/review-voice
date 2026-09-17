@@ -1,7 +1,7 @@
 # Review Voice
 
 **A code reviewer for Claude Code where every finding names a concrete failure
-mode — ordered worst-first, and silent when it has nothing worth saying.**
+mode - ordered worst-first, and silent when it has nothing worth saying.**
 
 > ⚠️ **Pre-release.** Review Voice is being built to its full specification
 > before its first public release. Interfaces will change. See
@@ -30,17 +30,17 @@ No actionable findings.
 ## What a review looks like
 
 ```
-[blocking] `src/auth/session.ts:84` — The response returns the refresh token
+[blocking] `src/auth/session.ts:84` - The response returns the refresh token
 before the transaction commits, so a retry can mint two valid tokens. Commit
 before sending the response.
 
-[important] `.github/workflows/release.yml:52` — The publish job can run after
+[important] `.github/workflows/release.yml:52` - The publish job can run after
 a skipped verification job. Make verification a required dependency.
 
-[nit] `src/api/types.ts:20` — Field is optional but every caller sets it. The
+[nit] `src/api/types.ts:20` - Field is optional but every caller sets it. The
 optionality is noise. Make it required.
 
-[question] `src/db/migrate.ts:44` — Is the down migration exercised anywhere? A
+[question] `src/db/migrate.ts:44` - Is the down migration exercised anywhere? A
 rollback path that never runs is a rollback path that does not work.
 ```
 
@@ -48,18 +48,18 @@ No greeting. No summary. No praise. No process commentary.
 
 Severity runs `blocking` → `important` → `minor` → `nit` → `question`, and the
 ordering is checked. You can stop reading anywhere and know you have seen
-everything more serious. There is no cap on how many findings you get — a real
+everything more serious. There is no cap on how many findings you get - a real
 finding is never dropped to hit a number.
 
 ## How it works
 
 Review Voice draws a hard line between arithmetic and judgment.
 
-**The bundled CLI does the deterministic work** — diff acquisition, config and
+**The bundled CLI does the deterministic work** - diff acquisition, config and
 policy layering, static evidence collection, precedent retrieval, preference
 scoring, deduplication, and output validation.
 
-**Claude Code agents do the judgment work** — generating candidate defects,
+**Claude Code agents do the judgment work** - generating candidate defects,
 verifying them against the diff, and wording the result.
 
 This matters for one practical reason: the contract is enforced by a validator
@@ -93,7 +93,7 @@ Then:
 ```
 
 **Requirements:** Node 22 or newer, `git`, and `gh` only if you enable GitHub
-history ingestion. There is no install step — the plugin ships a single
+history ingestion. There is no install step - the plugin ships a single
 pre-built bundle with zero runtime dependencies.
 
 ## Privacy in one paragraph
@@ -102,7 +102,7 @@ Review Voice is local-first and read-only. It reads only repositories you
 explicitly allowlist, never everything your token can reach. Everything it
 stores lives in your platform's data directory, never in your repository and
 never on a server we control. Secrets are redacted before anything is persisted,
-indexed, logged, or put in a prompt — as defence in depth, not as a guarantee.
+indexed, logged, or put in a prompt - as defence in depth, not as a guarantee.
 It cannot post comments, approve pull requests, or change repository state.
 Full detail in [PRIVACY.md](PRIVACY.md) and
 [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
@@ -110,11 +110,11 @@ Full detail in [PRIVACY.md](PRIVACY.md) and
 ## Contributing
 
 Bug reports, false-positive reports and prompt-injection test cases are all
-genuinely useful — a false-positive report is the highest-value issue you can
+genuinely useful - a false-positive report is the highest-value issue you can
 file. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 `main` is protected and every change goes through a pull request with CI
-green — including the maintainer's. See
+green - including the maintainer's. See
 [docs/REPO-SECURITY.md](docs/REPO-SECURITY.md).
 
 ## Licence

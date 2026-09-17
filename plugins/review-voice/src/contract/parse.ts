@@ -17,14 +17,14 @@ const SEVERITY_ALTERNATION = SEVERITIES.join('|');
 const OPENS_FINDING = new RegExp(`^\\[(?:${SEVERITY_ALTERNATION}|[a-z_]+)\\]`, 'i');
 
 /**
- * The contract's shape: [severity] `path:line` — prose
+ * The contract's shape: [severity] `path:line` - prose
  *
- * Only an em dash is accepted. A hyphen is the overwhelmingly common near-miss
- * and produces a clearer failure when rejected outright than when quietly
- * allowed, because the rendered output would then be inconsistent between
- * findings.
+ * A plain hyphen, not an em dash. Em and en dashes read as machine-written and
+ * the owner does not use them; banning the character outright is simpler to
+ * enforce than asking for restraint, and the separator has to match what the
+ * prose is allowed to contain.
  */
-const FINDING = new RegExp(`^\\[([a-z_]+)\\]\\s+\`([^\`]+):(\\d+)\`\\s+—\\s*([\\s\\S]*)$`, 'i');
+const FINDING = new RegExp(`^\\[([a-z_]+)\\]\\s+\`([^\`]+):(\\d+)\`\\s+-\\s*([\\s\\S]*)$`, 'i');
 
 /**
  * Findings wrap across lines, so a finding runs from its opening line until

@@ -51,8 +51,8 @@ test('a repository outside the allowlist is never contacted', async () => {
     () => client(impl).get('/repos/someone-else/private-thing/pulls'),
     NotAllowlisted,
   );
-  // The token from `gh` is broader than Review Voice needs, so the allowlist —
-  // not the token — is what bounds access. It must stop the request outright.
+  // The token from `gh` is broader than Review Voice needs, so the allowlist -
+  // not the token - is what bounds access. It must stop the request outright.
   assert.equal(impl.calls.length, 0);
 });
 

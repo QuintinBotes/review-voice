@@ -19,7 +19,7 @@ function checkNode(): Check {
     detail:
       major >= MIN_NODE_MAJOR
         ? `v${process.versions.node}`
-        : `v${process.versions.node} — Review Voice needs Node ${MIN_NODE_MAJOR} or newer`,
+        : `v${process.versions.node} - Review Voice needs Node ${MIN_NODE_MAJOR} or newer`,
   };
 }
 

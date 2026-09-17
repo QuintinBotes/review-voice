@@ -66,7 +66,7 @@ function gitAllowingDifference(args: string[], cwd: string): string {
  * Untracked files are invisible to `git diff`, but a brand-new file is exactly
  * where defects hide. They are collected separately and diffed against
  * /dev/null so they reach the reviewer, without `git add -N` mutating the
- * user's index — Review Voice is read-only, and that includes their working
+ * user's index - Review Voice is read-only, and that includes their working
  * state.
  */
 function untrackedFiles(root: string): string[] {

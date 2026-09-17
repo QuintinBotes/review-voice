@@ -109,7 +109,7 @@ test('a dry run does not starve the sync that follows it', async () => {
     const dry = await collect(transport(), dryStats, undefined);
     assert.equal(dry.events.length, 2);
 
-    // A dry run persists no state at all — not watermarks, not events.
+    // A dry run persists no state at all - not watermarks, not events.
     assert.equal(loadWatermarks(db, 'org/a').size, 0);
 
     const realStats = freshStats();

@@ -17,7 +17,7 @@ conversation, and we want it.
 ## Two hard rules
 
 **0. Never commit anything credential-shaped.** GitHub push protection scans
-this repository and will reject the push — it rejected the redaction test suite
+this repository and will reject the push - it rejected the redaction test suite
 on its first attempt. Tests that need credential-shaped strings assemble them
 from fragments at runtime, so no literal matching a provider's token format
 exists in any file. See `test/redact.test.mjs`.
@@ -34,7 +34,7 @@ enforces this and CI runs it.
 
 The guard hardcodes no names, because a guard that lists what it is hiding
 publishes it. It checks structural patterns, and optionally reads extra terms
-from `.identity-guard.local` — a gitignored file for anything specific to your
+from `.identity-guard.local` - a gitignored file for anything specific to your
 employer or private repositories.
 
 ## Getting set up
@@ -59,7 +59,7 @@ Try your working copy in Claude Code:
 installed by git clone with no install step. **If you change anything under
 `src/`, run `npm run build` and commit the result.** CI fails on a stale bundle.
 
-Third-party packages are fine as `devDependencies` — esbuild inlines them. They
+Third-party packages are fine as `devDependencies` - esbuild inlines them. They
 must never become runtime dependencies.
 
 ## Workflow and supply-chain rules
@@ -77,7 +77,7 @@ enforces this and CI runs it. Dependabot keeps the SHAs current.
 
 Workflows start from `permissions: {}` and each job opts into the minimum it
 needs. Checkout always sets `persist-credentials: false`, so the workflow token
-is not left in `.git/config` for a later step — or one of its dependencies — to
+is not left in `.git/config` for a later step - or one of its dependencies - to
 read. Jobs that hold a secret never run code from a fork.
 
 ## Architecture rule
@@ -91,8 +91,8 @@ the logic belongs in the validator instead. See
 ## Scope
 
 This is a focused tool with a small maintainer. Features that make it a general
-code review platform — dashboards, multi-provider support, IDE integrations,
-auto-fixing — are out of scope unless discussed in an issue first. The
+code review platform - dashboards, multi-provider support, IDE integrations,
+auto-fixing - are out of scope unless discussed in an issue first. The
 [non-goals](docs/PLAN.md) are deliberate.
 
 Significant design changes need an ADR in `docs/adr/`. Copy the format of an
@@ -102,7 +102,7 @@ existing one.
 
 [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`,
 `docs:`, `refactor:`, `test:`, `chore:`. Keep the diff scoped to what the PR
-claims to do — unrelated refactors and formatting churn make review harder and
+claims to do - unrelated refactors and formatting churn make review harder and
 will be asked about.
 
 Before pushing: `npm run verify`, and `npm run build` if you touched `src/`.

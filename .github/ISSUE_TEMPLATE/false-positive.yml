@@ -16,7 +16,7 @@ body:
       label: The finding
       description: Exactly what it printed.
       render: text
-      placeholder: "[important] `src/example.ts:42` — ..."
+      placeholder: "[important] `src/example.ts:42` - ..."
     validations:
       required: true
 

@@ -1,4 +1,4 @@
-# 0003 — Static analysis adapter strategy
+# 0003 - Static analysis adapter strategy
 
 **Status:** Accepted · **Date:** 2026-09-16
 
@@ -35,8 +35,8 @@ Execution constraints: no shell interpolation of repository content, a per
 command timeout, captured output only, and failures degrade the review rather
 than aborting it.
 
-Adapters are thin output parsers — `tsc`, `eslint`, `pytest`, `go vet` and
-similar — mapping tool output to evidence objects. They are not runners.
+Adapters are thin output parsers - `tsc`, `eslint`, `pytest`, `go vet` and
+similar - mapping tool output to evidence objects. They are not runners.
 
 ## Consequences
 

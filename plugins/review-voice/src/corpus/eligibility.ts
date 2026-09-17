@@ -19,13 +19,13 @@ export type Ineligible =
 /**
  * Approval language, stripped before judging whether anything substantive is
  * left. Matching the whole body missed the common shape: a review summary that
- * opens "Approving." and then says nothing — which is how three unrelated
+ * opens "Approving." and then says nothing - which is how three unrelated
  * "Approving." comments ended up as the top precedents for a code finding.
  */
 const APPROVAL_PHRASES =
   /\b(lgtm|looks good(?: to me)?|ship it|approv(?:ed|ing|al)|sgtm|ack(?:nowledged)?|thanks|thank you|ty|nice work|nice one|great|\+1|done|no comments?|nothing from me|all good|fine by me)\b/gi;
 
-const DECORATION = /[\s.!?,;:—–-]|👍|🚀|✅|🎉|💯|🙏|😄/gu;
+const DECORATION = /[\s.!?,;:\u2013\u2014-]|👍|🚀|✅|🎉|💯|🙏|😄/gu;
 
 /** Automation status posts, which carry no judgement whatever their length. */
 const AUTOMATION_STATUS = [
@@ -42,8 +42,8 @@ const TEMPLATE_HEADING =
  * A pull-request template is mostly structure. A review that happens to
  * include a checklist is not.
  *
- * Measured against a real repository, the earlier rule — exclude anything
- * containing a checkbox — discarded fourteen review summaries with a median
+ * Measured against a real repository, the earlier rule - exclude anything
+ * containing a checkbox - discarded fourteen review summaries with a median
  * length of 2,400 characters. Those are substantive reviews with a checklist
  * in them, and throwing them away was losing most of the corpus.
  */

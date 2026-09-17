@@ -11,7 +11,7 @@ export type Database = DatabaseSync;
  * code that is supposed to use them.
  */
 const MIGRATIONS: string[] = [
-  // v1 — review runs, explicit feedback, audit trail.
+  // v1 - review runs, explicit feedback, audit trail.
   `
   CREATE TABLE review_runs (
     review_run_id TEXT PRIMARY KEY,
@@ -51,7 +51,7 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_audit_created ON audit_events (created_at DESC);
   `,
 
-  // v2 — the historical review corpus.
+  // v2 - the historical review corpus.
   //
   // There is deliberately no column for the original comment text. Redaction
   // happens at the download boundary and only its output is passed here, so
@@ -89,7 +89,7 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_events_role ON review_events (reviewer_role);
   `,
 
-  // v3 — lexical retrieval index.
+  // v3 - lexical retrieval index.
   //
   // FTS5 rather than embeddings, per docs/adr/0001: no model download, works
   // offline, and deterministic enough to unit test. Triggers keep the index in
@@ -124,7 +124,7 @@ const MIGRATIONS: string[] = [
   END;
   `,
 
-  // v4 — versioned policy artifacts.
+  // v4 - versioned policy artifacts.
   //
   // A policy row carries its own provenance, so "why does the reviewer say
   // this" is answerable from the store rather than from memory. Old versions
@@ -147,7 +147,7 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_policies_active ON policies (scope_type, scope_key, active);
   `,
 
-  // v5 — sync state for incremental polling.
+  // v5 - sync state for incremental polling.
   //
   // ETags persist across runs so a repeat sync costs almost nothing: GitHub
   // does not charge rate limit for a 304. That is what makes polling a
@@ -170,7 +170,7 @@ const MIGRATIONS: string[] = [
   );
   `,
 
-  // v6 — per-pull-request watermarks, replacing HTTP conditional requests.
+  // v6 - per-pull-request watermarks, replacing HTTP conditional requests.
   //
   // The ETag cache in sync_state was actively harmful: a dry run populated it
   // without storing anything, so the real sync that followed received 304s and

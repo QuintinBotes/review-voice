@@ -2,7 +2,7 @@ import type { Precedent } from '../retrieval/retrieve.ts';
 
 /**
  * A candidate as the schema publishes it. `schemas/candidate.schema.json` is
- * the contract agents are told to emit against, and it is snake_case — so that
+ * the contract agents are told to emit against, and it is snake_case - so that
  * is what arrives, whatever the internal type is called.
  */
 export interface RawCandidate {
@@ -71,7 +71,7 @@ export class MalformedCandidate extends Error {}
  *
  * The schema and the internal type disagreed on naming, so every field read as
  * undefined. That did not produce an obvious failure: `undefined` arithmetic
- * yields NaN, and every comparison against NaN is false — so both thresholds
+ * yields NaN, and every comparison against NaN is false - so both thresholds
  * passed and every candidate was declared eligible with a null score. The gate
  * was not wrong, it was inert.
  *
@@ -90,7 +90,7 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
   }
   if (!Number.isFinite(confidence)) {
     throw new MalformedCandidate(
-      `${candidateId}: missing or non-numeric technical_confidence — a score cannot be computed, ` +
+      `${candidateId}: missing or non-numeric technical_confidence - a score cannot be computed, ` +
         'and a candidate that cannot be scored must not be treated as eligible',
     );
   }
@@ -113,7 +113,7 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
  *
  * Each weight is scaled by how well that precedent actually matched. Summing
  * raw weights let a marginal hit count as much as a strong one, which is how
- * seven unrelated candidates all landed inside a 0.77–0.85 band — a range too
+ * seven unrelated candidates all landed inside a 0.77-0.85 band - a range too
  * narrow to discriminate between anything.
  */
 function alignmentFrom(precedents: Precedent[]): number {

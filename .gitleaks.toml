@@ -7,7 +7,7 @@ useDefault = true
 [allowlist]
 description = """
 The redaction test suite must contain credential-shaped strings to be worth
-anything — a redaction function is only proven by feeding it something that
+anything - a redaction function is only proven by feeding it something that
 looks like a secret. Those fixtures are synthetic and assembled from fragments
 at runtime, so no literal reaches the working tree, but branch history from
 before that change still does and gitleaks scans history.

@@ -6,7 +6,7 @@ node_modules/
 plugins/review-voice/dist/*
 !plugins/review-voice/dist/review-voice.mjs
 
-# Review Voice local data — never commit a corpus, policy store, or database.
+# Review Voice local data - never commit a corpus, policy store, or database.
 # The real store lives outside the repo (see PRIVACY.md), but guard anyway.
 .review-voice/
 review-voice.db

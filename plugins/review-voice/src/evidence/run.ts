@@ -11,7 +11,7 @@ export interface ConfiguredCommand {
 const DEFAULT_TIMEOUT_SECONDS = 120;
 
 /**
- * Runs the commands the user declared in their own configuration — and only
+ * Runs the commands the user declared in their own configuration - and only
  * those (docs/adr/0003). Review Voice is pointed at repositories whose contents
  * it treats as untrusted, so auto-detecting and running a project script would
  * be arbitrary code execution on hostile input. Detection suggests;
@@ -31,7 +31,7 @@ export function collectEvidence(
   for (const command of commands) {
     const startedAt = Date.now();
     // Run through a shell because users write shell commands, but with the
-    // command string coming only from their own config file — never from the
+    // command string coming only from their own config file - never from the
     // diff, and never interpolated with repository content.
     const result = spawnSync(command.run, {
       cwd: options.cwd,

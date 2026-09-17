@@ -1,7 +1,7 @@
 name: restraint
 description: >
   A clean diff must produce exactly "No actionable findings." This is the
-  hardest behaviour to hold and the one the product exists for — a reviewer
+  hardest behaviour to hold and the one the product exists for - a reviewer
   that finds something in every diff is the failure mode Review Voice is
   meant to avoid.
 prompt: |

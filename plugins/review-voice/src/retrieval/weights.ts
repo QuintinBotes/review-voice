@@ -20,7 +20,7 @@ export function baseWeight(role: ReviewerRole, outcome: OutcomeStatus): number {
       case 'dismissed':
         return -1.0;
       default:
-        // An owner comment whose outcome is unknown is still owner judgement —
+        // An owner comment whose outcome is unknown is still owner judgement -
         // weaker than a confirmed one, far from worthless.
         return 0.45;
     }

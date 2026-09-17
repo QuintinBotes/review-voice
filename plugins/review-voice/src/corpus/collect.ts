@@ -88,7 +88,7 @@ interface RawReview {
 /**
  * Downloads review comments and turns them into redacted, classified events.
  *
- * Redaction happens here, at the boundary, before anything is returned — the
+ * Redaction happens here, at the boundary, before anything is returned - the
  * original text never exists anywhere a caller could accidentally persist it.
  */
 export interface CollectionResult {
@@ -227,7 +227,7 @@ export async function collectRepository(
 
     // Submitted review summaries. Measured against a real repository these
     // outnumber inline comments roughly two to one, and some pull requests
-    // have no inline comments at all — collecting only inline comments was
+    // have no inline comments at all - collecting only inline comments was
     // capturing a minority of the review evidence.
     const reviews = await client.paginate<RawReview>(
       `/repos/${options.repository}/pulls/${pull.number}/reviews?per_page=100`,

@@ -23,7 +23,7 @@ function withDb(fn) {
 /**
  * Records `count` labelled findings across however many reviews that takes.
  *
- * Five per review, because the contract caps a review at five — putting
+ * Five per review, because the contract caps a review at five - putting
  * twenty-five in one would make every recorded output non-compliant, which is
  * what an earlier version of this helper did and what the gate correctly
  * refused.
@@ -34,7 +34,7 @@ function labelled(db, count, action) {
     const batch = Math.min(5, count - recorded);
     const output = Array.from(
       { length: batch },
-      (_, i) => `[minor] \`src/f${recorded + i}.ts:${recorded + i + 1}\` — A real problem here. It fails. Fix it.`,
+      (_, i) => `[minor] \`src/f${recorded + i}.ts:${recorded + i + 1}\` - A real problem here. It fails. Fix it.`,
     ).join('\n\n');
     const { reviewRunId } = recordRun(db, {
       repository: 'org/a',
@@ -111,8 +111,8 @@ test('the gate exposes no override', () => {
 });
 
 const OUTPUT = [
-  '[blocking] `src/auth.ts:84` — Token returned before commit. A retry mints two. Commit first.',
-  '[important] `.github/workflows/release.yml:52` — Publish runs after a skipped verify. Require it.',
+  '[blocking] `src/auth.ts:84` - Token returned before commit. A retry mints two. Commit first.',
+  '[important] `.github/workflows/release.yml:52` - Publish runs after a skipped verify. Require it.',
 ].join('\n\n');
 
 test('the draft carries the reviewed text unchanged', () => {

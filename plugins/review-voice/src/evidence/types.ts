@@ -27,7 +27,7 @@ export interface EvidenceReport {
   enabled: boolean;
   /**
    * Every signal from every command, flattened. Always present, empty when
-   * collection is off — a caller told to "pass the signals" should not have to
+   * collection is off - a caller told to "pass the signals" should not have to
    * discover that the key is absent.
    */
   signals: EvidenceSignal[];
