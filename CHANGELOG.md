@@ -5,6 +5,21 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The analyst prompt lists the twenty-two valid categories and settles the
+  confusable pairs. It never mentioned them: the prompt referenced the schema
+  and the schema reached it only through a `$ref`. That was survivable while
+  category was decoration and is not now that the tier rests entirely on it. On
+  one pull request half the findings used `testing` and `documentation`,
+  plausible words outside the enum, and both took the fallback tier.
+- Unambiguous synonyms for a category resolve to it, and the substitution is
+  named in the reason string. Ambiguous words are left to the middle-tier
+  fallback, because an alias into a `blocking` tier is the riskiest kind.
+  Casing and spacing no longer decide a tier.
+
 ## [0.7.1] - 2026-09-17
 
 ### Fixed

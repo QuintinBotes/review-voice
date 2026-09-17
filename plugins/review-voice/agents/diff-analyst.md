@@ -74,12 +74,47 @@ on the changed code. Restatements of what the code plainly does. Preferences
 with no consequence you can name - if you cannot finish the sentence "and so",
 it is not a finding at any tier.
 
+## Category
+
+`category` decides the tier a finding is reported at, so pick from this list
+and nothing else. A name outside it falls back to the middle tier, which loses
+the distinction you were making.
+
+Severe by nature:
+`security` · `authorization` · `authentication` · `trust_boundary` ·
+`data_integrity`
+
+Wide reach by nature:
+`concurrency` · `persistence` · `migration` · `api_contract` · `release`
+
+Real defects whose reach depends on the situation:
+`correctness` · `error_handling` · `reliability` · `user_visible_behavior` ·
+`ci` · `packaging` · `dependency` · `performance`
+
+Low stakes:
+`observability` · `test_coverage` · `maintainability` · `style`
+
+The confusable ones, settled:
+
+- A missing or inadequate test is `test_coverage`, never `testing`.
+- A comment, name or doc that misleads a reader is `maintainability`, never
+  `documentation`. Reserve `correctness` for code that behaves wrongly, not for
+  prose that describes it wrongly.
+- Something users see behaving differently is `user_visible_behavior`. Code
+  that computes the wrong answer is `correctness`.
+- A missing privilege check is `authorization`. A privilege check that exists
+  and is wired to the wrong privilege is also `authorization`, not
+  `correctness`.
+
 ## Severity
 
-Pick the tier from consequence, not from how interesting the finding is. The
-same defect must land on the same tier on a second run of the same diff:
-ordering is severity-first, so an unstable tier moves a finding up and down the
-page between runs of an identical review.
+The tier is derived from the category, not from what you ask for, so `category`
+is the field that carries this judgement. Your `severity` is recorded for audit
+and does not decide where the finding lands.
+
+Pick the tier you would have chosen anyway, from consequence rather than from
+how interesting the finding is, and use the same reasoning to pick the
+category.
 
 - `blocking` - data loss, a security or authorization hole, a broken build or
   release, or user-visible breakage on a path that will certainly be taken.

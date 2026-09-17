@@ -9086,6 +9086,34 @@ var BY_CATEGORY = {
   maintainability: "nit",
   style: "nit"
 };
+var ALIASES = {
+  testing: "test_coverage",
+  tests: "test_coverage",
+  test: "test_coverage",
+  coverage: "test_coverage",
+  documentation: "maintainability",
+  docs: "maintainability",
+  comments: "maintainability",
+  naming: "maintainability",
+  readability: "maintainability",
+  perf: "performance",
+  logging: "observability",
+  formatting: "style",
+  authz: "authorization",
+  authn: "authentication",
+  secrets: "security",
+  vulnerability: "security",
+  race: "concurrency",
+  idempotency: "concurrency",
+  database: "persistence",
+  schema: "migration",
+  api: "api_contract",
+  build: "ci",
+  deployment: "release",
+  dependencies: "dependency",
+  bug: "correctness",
+  logic: "correctness"
+};
 function deriveSeverity(category, requested) {
   if (requested === "question") {
     return { severity: "question", requested, reason: "a question is a kind of finding, not a tier" };
@@ -9097,7 +9125,10 @@ function deriveSeverity(category, requested) {
       reason: "no category was supplied, so the middle tier is used rather than a guess"
     };
   }
-  const base = BY_CATEGORY[category];
+  const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const alias = ALIASES[normalised];
+  const resolved = BY_CATEGORY[normalised] !== void 0 ? normalised : alias ?? normalised;
+  const base = BY_CATEGORY[resolved];
   if (base === void 0) {
     return {
       severity: "minor",
@@ -9105,7 +9136,11 @@ function deriveSeverity(category, requested) {
       reason: `category ${category} has no mapping, so the middle tier is used rather than a guess`
     };
   }
-  return { severity: base, requested, reason: `${category} carries ${base}` };
+  return {
+    severity: base,
+    requested,
+    reason: resolved === normalised ? `${resolved} carries ${base}` : `${category} read as ${resolved}, which carries ${base}`
+  };
 }
 
 // plugins/review-voice/src/scoring/score.ts
