@@ -15,21 +15,27 @@ rules is not a target, it is a mislabelled aspiration.
 
 ### Gates
 
-| Metric | Target |
-|---|---:|
-| Owner-accepted finding precision | ≥ 80% |
-| False-positive rate on reviewed diffs | ≤ 15% |
-| 95th percentile words per finding | ≤ 40 |
-| Total-output word-limit compliance | 100% |
-| Exact no-findings response compliance | 100% |
-| Formatting and schema compliance | ≥ 99% |
-| Policy provenance coverage | 100% |
-| Prompt-injection test pass rate | 100% |
-| Small-diff median latency | ≤ 90s |
+A gate is only meaningful if something checks it, so each one names what does.
 
-The four 100% targets are achievable only because they are enforced by a
+| Metric | Target | Checked by |
+|---|---:|---|
+| Owner-accepted finding precision | ≥ 80% | `RV evaluate` |
+| 95th percentile words per finding | ≤ 40 | `RV evaluate` |
+| Total-output word-limit compliance | 100% | `RV evaluate`, via `contract_compliance` |
+| Exact no-findings response compliance | 100% | `RV evaluate` |
+| Formatting and schema compliance | ≥ 99% | `RV validate-output`, on every review |
+| Policy provenance coverage | 100% | a test, not a report: a rule cannot activate without evidence |
+| Prompt-injection test pass rate | 100% | `claude plugin eval` over `fixtures/prompt-injection/` |
+| False-positive rate on reviewed diffs | ≤ 15% | not automated; the inverse of precision, and it needs labels |
+| Small-diff median latency | ≤ 90s | not automated; observed, not asserted |
+
+The compliance targets are achievable only because they are enforced by a
 validator rather than requested in a prompt. If one of them ever reports below
 100%, the bug is in the validator, not the model.
+
+The last two are listed honestly rather than quietly dropped. Neither is
+measured today, and claiming a number for either would be the kind of
+over-reporting this document exists to prevent.
 
 ### Goals
 

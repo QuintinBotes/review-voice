@@ -3,7 +3,8 @@
 A concise, precedent-aware code reviewer for Claude Code.
 
 Every finding names a concrete failure mode, in forty words or fewer, ordered
-worst-first. Silence when nothing qualifies:
+worst-first, with the tier derived from the kind of defect rather than asked
+for. Silence when nothing qualifies:
 
 ```
 No actionable findings.
@@ -22,6 +23,7 @@ Full documentation, install instructions and threat model live in the
 | `/review-voice:calibrate` | Approve or reject proposed policy changes |
 | `/review-voice:policy` | Show, diff, roll back or export policies |
 | `/review-voice:explain` | Show why a finding was emitted or suppressed |
+| `/review-voice:draft-review` | Render the last review as a GitHub draft |
 | `/review-voice:status` | Corpus coverage, policy versions, retention |
 | `/review-voice:sync` | Pull new review history (read-only) |
 | `/review-voice:purge` | Delete stored data by repo, age, or entirely |

@@ -1,54 +1,44 @@
-# Current task - M1.2 Thin end-to-end review slice
+# Current task - none open
 
-**Milestone:** M1 (Phase 1, fixed-policy concise reviewer)
-**Risk:** medium-high - first exercise of the CLI-versus-agent split
-**Baseline:** `main` after #17
+**Milestone:** M5, the 1.0.0 interface freeze
+**Risk:** low. No implementation work is outstanding.
+**Baseline:** `main`
 
-## Goal
+## State
 
-Make `/review-voice:review` actually review a real diff, end to end, with no
-GitHub access and no storage: acquire the diff, hand it to the agents, and
-gate the result through `validate-output`.
+All four build milestones shipped. Seven releases of real-world testing against
+live pull requests followed, and the findings from those went back in as fixes
+rather than into a backlog. What remains before 1.0.0 is not a feature.
 
-Chosen over finishing the deterministic foundation first because the
-CLI/agent split is the architecture's central bet and nothing has tested it.
-An end-to-end slice surfaces a mistake there now rather than after four more
-pieces are built on top, and it makes the plugin dogfoodable immediately.
+## What 1.0.0 means here
 
-## Scope
+A stable interface, not a new capability. Testing moved the scoring threshold
+three times, changed how severity is assigned twice, and rewrote convention
+selection three times. Each move was justified by measurement, and each one
+changed what a review says about the same diff. 1.0.0 is the claim that they
+have settled.
 
-- `plugins/review-voice/src/diff/*.ts` (new): diff acquisition and file
-  classification
-- `plugins/review-voice/src/cli.ts`: wire the `diff` command
-- `plugins/review-voice/commands/review.md`: real orchestration
-- `plugins/review-voice/agents/*.md`: tighten where the pipeline needs it
-- `test/diff.test.mjs` (new)
-- `docs/ARCHITECTURE.md`, `CHANGELOG.md`
+*Done when:* a retest reports no change to the scoring or severity contract, the
+README carries real evaluation numbers rather than targets, and the pre-release
+notice comes off.
 
-## Non-goals
+## Still open, and deliberately
 
-- SQLite, audit log, feedback capture (M1.3)
-- Policy file layering and `.review-voice/config.yaml` (M1.4)
-- Static evidence adapters (M1.5)
-- Precedent retrieval, scoring, GitHub - all later milestones
+- **Category drift.** Severity is stable given the category, and the category is
+  a judgement that can still move. The analyst prompt now settles the confusable
+  pairs; whether that holds needs measuring. The next lever, unbuilt, is having
+  the verifier return a category that supersedes the analyst's, the way its
+  confidence already does.
+- **Self-authored precedent at ingestion.** `--exclude-pull` removes the harm
+  where it does damage. A review rewritten into prose before posting still
+  enters the corpus. The detector that would catch it correlates ingested events
+  against recorded emissions, and a wrongly dropped owner comment is invisible
+  and permanent, so if it is ever built it should mark rather than drop.
 
-## Acceptance criteria
+## How to pick work up from here
 
-1. `review-voice diff` emits structured JSON: base and head, changed files with
-   status, language and a generated/vendored/binary classification, plus the
-   unified diff.
-2. Supports the working tree (default), `--staged`, and `--base <ref>`.
-3. Excludes lock files, generated, minified, vendored and binary files by
-   default; `--include-generated` overrides.
-4. Reports honestly when there is nothing to review rather than inventing a diff.
-5. Runs from any subdirectory of a repository, and fails clearly outside one.
-6. `commands/review.md` drives: diff → diff-analyst → evidence-verifier →
-   concise-editor → validate-output, retrying the editor once on violation.
-7. Unit tests cover classification, exclusions, argument handling and the
-   empty-diff case.
-
-## Commands
-
-```
-npm run typecheck && npm test && npm run build && npm run check:dist
-```
+There is no handoff to execute. Work arrives as a retest report against a real
+repository. Read the report, verify the material findings against the code
+before acting on them, and treat a number in it as evidence rather than as an
+instruction: two of the most useful changes in this project came from disputing
+a report's diagnosis while accepting its measurement.

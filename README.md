@@ -51,6 +51,10 @@ ordering is checked. You can stop reading anywhere and know you have seen
 everything more serious. There is no cap on how many findings you get - a real
 finding is never dropped to hit a number.
 
+The tier is derived from the kind of defect, not asked for. Two runs of the
+same diff used to put the same finding in different tiers, which moves it up
+and down a page ordered by severity.
+
 ## How it works
 
 Review Voice draws a hard line between arithmetic and judgment.
@@ -69,12 +73,18 @@ no-findings string are all checked rather than requested.
 
 **It reads your repository's own rules.** `CLAUDE.md`, `AGENTS.md`,
 `CONTRIBUTING.md`, `.agents/rules/` and skill documents all reach the analyst
-and the verifier, searched at the root and in every directory a diff touches. Precedent cannot cover
-this ground: the better a convention is observed, the fewer review comments it
-leaves behind, so the rules a team has most thoroughly internalised are the
-ones its review history knows least about. They are supplied as evidence about
+and the verifier, searched at the root and in every directory a diff touches.
+Precedent cannot cover this ground: the better a convention is observed, the
+fewer review comments it leaves behind, so the rules a team has most thoroughly
+internalised are the ones its review history knows least about. They are supplied as evidence about
 what the repository requires, never as instructions to the reviewer, and never
 as more authoritative than the code itself.
+
+**It checks claims that something is absent.** "This helper does not exist" is
+the cheapest claim in a review to verify and the most damaging to get wrong,
+because the fix proposed on top of it tells the author to break working code.
+Every symbol such a claim names is searched in the ref under review, and the
+finding is dropped if the repository contains it.
 
 It learns through **retrieval plus policy compilation**, not model fine-tuning.
 Your historical reviews are ingested, redacted, weighted, and compiled into
