@@ -283,6 +283,18 @@ was scoped: the same invented claim was checked or ignored depending on how its
 impact was worded, and a symbol named in the mechanism could be reported as one
 the claim said was absent.
 
+Scope is read from the claim's grammar, not from how a place is spelled. A list
+of name shapes could not work: the pattern that read "in acme-web" as somewhere
+else, so a claim about that very repository went unchecked, also left a bare
+path unprotected, so a true claim about a subtree was deleted. The difference
+between the two was a pair of backticks. What decides now is whether the
+assertion carries a locative complement and whether that complement names the
+repository under review, which `--repository` supplies.
+
+Absence of a property is not absence from a place. "Never exported" is true
+precisely when the symbol exists, so a search confirms it and refutes nothing,
+and it names no location for grammar to read.
+
 A claim naming somewhere this repository cannot answer for returns
 `inconclusive: true`. "Absent from the localisation catalogue" is a true and
 useful finding about a sibling repository, and `git grep` here speaks only for

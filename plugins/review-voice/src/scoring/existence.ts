@@ -23,71 +23,88 @@ const ASSERTS_ABSENCE = [
 ];
 
 /**
- * A claim that is repo-wide beyond argument.
+ * Where an absence claim says the thing is absent from.
  *
- * Only these are worth a search. `git grep` answers "is this string anywhere in
- * the repository", which refutes a repo-wide claim and says nothing at all
- * about a scoped one.
+ * Decided from the claim's grammar rather than from how a place is spelled. A
+ * list of name shapes could not work: the same pattern that read "in acme-web"
+ * as somewhere else, so a claim about this very repository went unchecked, also
+ * left a bare path like `packages/commander/modules/eventing` unprotected, so a
+ * true scoped claim was deleted. Hyphenation, backticks and capitalisation say
+ * nothing about whether a claim is bounded.
+ *
+ * What matters is whether the assertion carries a locative complement, and
+ * whether that complement names the repository under review or somewhere else.
  */
-const REPO_WIDE = [
-  /\b(?:anywhere|nowhere)\s+in\s+the\s+(?:repo|repository|code\s?base|project|tree)\b/i,
-  /\bdoes\s+not\s+exist\s+(?:anywhere|at\s+all)\b/i,
-  // Naming the repository is repo-wide whether or not the word "anywhere" is
-  // there. Without these, "does not exist in the repository" read as scoped,
-  // because the scoped pattern matches on "in the", and the widest claim a
-  // reviewer can make went unchecked on the strength of one missing word.
-  /\b(?:in|from|within|across)\s+(?:the\s+)?(?:entire\s+|whole\s+)?(?:repo|repository|code\s?base|project|tree)\b/i,
-];
+export type AbsenceScope = 'repository' | 'bounded' | 'elsewhere';
+
+/** Words naming the repository under review, whatever it is called. */
+const GENERIC_REPOSITORY = /^(?:the\s+)?(?:entire\s+|whole\s+)?(?:repo|repository|code\s?base|project|tree)\b/i;
+
+/** A complement naming a distinct published unit rather than a place inside one. */
+const NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
+const NAMED_UNIT_SUFFIX = /^(?:the\s+)?\S+\s+(?:repo|repository|service|package|library)\b/i;
+const ANOTHER_UNIT = /^(?:another|a\s+different|a\s+sibling|the\s+other)\s+(?:repo|repository|package|service)\b/i;
+
+/** The phrase that asserts the absence, and whatever locative follows it. */
+const ABSENCE_WITH_COMPLEMENT =
+  /\b(?:does|do)\s+not\s+exist|\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)|\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)|\bnever\s+(?:defined|declared|exported)|\bcannot\s+be\s+found/i;
+
+const LOCATIVE = /\b(?:in|from|within|under|inside|throughout|across)\s+([^.,;]+)/i;
 
 /**
- * A claim about somewhere this repository cannot answer for.
+ * Whether a place named in a claim is the repository being reviewed.
  *
- * "Absent from the localisation catalogue" is a true and useful finding about a
- * sibling repository, and `git grep` here speaks only for this one. Answering
- * anyway produced the worst outcome available: at the base ref it returned
- * `found: []` with `inconclusive: false`, which reads as corroboration, and at
- * the head ref it found the symbol this very diff adds and deleted the finding
- * with a sentence that was false about the claim.
+ * `--repository` arrives as `owner/name`, and people write the bare name.
  */
-const ELSEWHERE = [
-  /\b(?:in|from|within)\s+(?:the\s+)?[a-z0-9]+(?:-[a-z0-9]+)+\b/i,
-  /\b(?:in|from|within)\s+@[\w./-]+/,
-  // The name must be a name. `\S+` matched the article, so "in the
-  // repository" read as a named external repo and the widest possible claim
-  // went unchecked.
-  /\b(?:in|from|within)\s+(?:the\s+)?(?!the\b|a\b|an\b)[A-Za-z0-9][\w.-]*\s+(?:repo|repository|service|package|library)\b/i,
-  /\b(?:another|a\s+different|a\s+sibling|the\s+other)\s+(?:repo|repository|package|service)\b/i,
-];
-
-export function namesSomewhereElse(text: string): boolean {
-  return ELSEWHERE.some((pattern) => pattern.test(text));
+function namesThisRepository(complement: string, repository: string | null): boolean {
+  if (repository === null) return false;
+  const candidates = [repository, repository.split('/').pop() ?? repository]
+    .map((name) => name.trim().toLowerCase())
+    .filter((name) => name.length > 0);
+  const said = complement.trim().toLowerCase().replace(/^the\s+/, '').replace(/[`'"]/g, '');
+  return candidates.some((name) => said === name || said === `${name} repository` || said === `${name} repo`);
 }
 
 /**
- * A claim confined to a place: a module, a package, an export list, a call site.
+ * Absence of a property rather than of the thing.
  *
- * These are the common shape and the guard must never touch them. "The hook is
- * missing from `@scope/ui-kit`" is true precisely when the hook exists somewhere
- * else, so searching the repository confirms the symbol and rejects the
- * finding. Worse, saying where something is absent is what a well-argued claim
- * does, so the unscoped check preferentially deleted the best findings.
+ * "Never exported" is true precisely when the symbol exists, so a repository
+ * search confirms it and refutes nothing. It carries no locative, so grammar
+ * alone would read it as a claim about everywhere.
  */
-const SCOPED = [
-  /\b(?:in|from|within|under|on)\s+(?:this|that|the|its|our|either|both)\b/i,
-  /\b(?:in|from|within|under|on)\s+`[^`]+`/,
-  /\b(?:in|from|within|under|on)\s+[@A-Z][\w./@-]*/,
-  /\b(?:ex|im)ported\b/i,
-  /\bcall\s?site\b/i,
-];
+const PROPERTY_NOT_PLACE = /\b(?:ex|im)ported\b|\bnot\s+(?:public|exposed|re-?exported)\b/i;
 
-export function assertsAbsence(text: string): boolean {
-  // Repo-wide is decided first. "in the repository" names this repository and
-  // nothing else; only a claim that names somewhere by its own name is about
-  // somewhere else.
-  if (REPO_WIDE.some((pattern) => pattern.test(text))) return true;
-  if (namesSomewhereElse(text)) return false;
-  if (SCOPED.some((pattern) => pattern.test(text))) return false;
-  return ASSERTS_ABSENCE.some((pattern) => pattern.test(text));
+export function absenceScope(text: string, repository: string | null = null): AbsenceScope {
+  if (PROPERTY_NOT_PLACE.test(text)) return 'bounded';
+  if (/\b(?:anywhere|nowhere)\b/i.test(text)) return 'repository';
+
+  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text);
+  // No assertion at all: the caller checks this first, and an unbounded claim
+  // is the repository by default.
+  if (assertion === null) return 'repository';
+
+  const after = text.slice(assertion.index + assertion[0].length);
+  const locative = LOCATIVE.exec(after);
+  // "`X` does not exist." names no place, so it is a claim about everywhere.
+  if (locative === null) return 'repository';
+
+  const complement = (locative[1] ?? '').trim();
+  if (GENERIC_REPOSITORY.test(complement)) return 'repository';
+  if (namesThisRepository(complement, repository)) return 'repository';
+  if (ANOTHER_UNIT.test(complement) || NAMED_UNIT.test(complement) || NAMED_UNIT_SUFFIX.test(complement)) {
+    return 'elsewhere';
+  }
+
+  // Any other place: a module, a directory, a call site, an export list. This
+  // repository can confirm the symbol exists and cannot speak to whether it is
+  // there, which is the whole content of the claim.
+  return 'bounded';
+}
+
+/** Whether the text asserts an absence at all, before any question of scope. */
+export function assertsAbsence(text: string, repository: string | null = null): boolean {
+  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text))) return false;
+  return absenceScope(text, repository) === 'repository';
 }
 
 /**
@@ -196,10 +213,22 @@ export function checkAbsenceClaim(
   cwd: string,
   ref: string | null = null,
   search: Searcher = gitGrep,
+  repository: string | null = null,
 ): ExistenceCheck | null {
   const searchedRefLabel = ref ?? 'working tree';
 
-  if (!REPO_WIDE.some((pattern) => pattern.test(text)) && namesSomewhereElse(text)) {
+  // Nothing is asserted to be absent, so there is nothing to check and nothing
+  // to report. Tested first: a claim mentioning a package by name used to pick
+  // up an inert `inconclusive` record for saying nothing of the kind.
+  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text))) return null;
+
+  const scope = absenceScope(text, repository);
+
+  // A place inside this repository that `git grep` cannot speak to. The symbol
+  // existing elsewhere is exactly what the claim assumes.
+  if (scope === 'bounded') return null;
+
+  if (scope === 'elsewhere') {
     return {
       found: [],
       checked: [],
@@ -210,8 +239,6 @@ export function checkAbsenceClaim(
       searchedRef: searchedRefLabel,
     };
   }
-
-  if (!assertsAbsence(text)) return null;
 
   const symbols = namedSymbols(text);
   if (symbols.length === 0) return null;

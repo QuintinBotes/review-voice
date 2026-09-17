@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  absenceScope,
   assertsAbsence,
   namedSymbols,
   checkAbsenceClaim,
@@ -179,4 +180,69 @@ test('repo-wide wording beats the scoping check, since it contains "in the"', ()
   const result = checkAbsenceClaim(claim, '/repo', 'main', () => true);
   assert.notEqual(result, null);
   assert.deepEqual(result.found, ['CompanyActionsCell']);
+});
+
+// Scope is read from the claim's grammar, not from how a place is spelled
+//
+// The previous version matched name shapes, and the same pattern that read
+// "in acme-web" as somewhere else, so a claim about this very repository went
+// unchecked, also left a bare path unprotected, so a true scoped claim was
+// deleted. Hyphenation, backticks and capitalisation say nothing about whether
+// a claim is bounded.
+
+const REPO = 'AcmeCorp/acme-web';
+
+test('naming this repository by its own name is a claim about this repository', () => {
+  assert.equal(absenceScope('`DataGridRow.tsx` does not exist in acme-web.', REPO), 'repository');
+  assert.equal(absenceScope('`DataGridRow.tsx` does not exist in AcmeCorp/acme-web.', REPO), 'repository');
+  assert.equal(absenceScope('`DataGridRow.tsx` does not exist in the repository.', REPO), 'repository');
+  assert.equal(absenceScope('`DataGridRow.tsx` is missing from the codebase.', REPO), 'repository');
+});
+
+test('an assertion with no place named is a claim about everywhere', () => {
+  assert.equal(absenceScope('`DataGridRow.tsx` does not exist.', REPO), 'repository');
+});
+
+test('a bare path is as bounded as a backticked one', () => {
+  // The difference used to be a pair of backticks, and a true claim about a
+  // subtree was deleted for being written the way paths are written.
+  const bare = '`CompanyActionsCell` is missing from packages/commander/modules/eventing.';
+  const quoted = '`CompanyActionsCell` is missing from `packages/commander/modules/eventing`.';
+  assert.equal(absenceScope(bare, REPO), 'bounded');
+  assert.equal(absenceScope(quoted, REPO), 'bounded');
+  assert.equal(checkAbsenceClaim(bare, '/repo', 'main', () => true, REPO), null);
+});
+
+test('another repository or package is elsewhere, whatever it is called', () => {
+  for (const claim of [
+    '`TravelAgencyKey` is absent from acme-i18n.',
+    '`usePrivilegeCheck` is missing from @scope/ui-kit.',
+    '`SomeKey` is missing from the globalization repository.',
+  ]) {
+    assert.equal(absenceScope(claim, REPO), 'elsewhere', claim);
+  }
+});
+
+test('absence of a property is not absence from a place', () => {
+  // "Never exported" is true precisely when the symbol exists, so searching
+  // confirms it and refutes nothing. It names no place, so grammar alone read
+  // it as a claim about everywhere.
+  assert.equal(absenceScope('`getDefaultMessage` is never exported.', REPO), 'bounded');
+  assert.equal(absenceScope('`getDefaultMessage` is not exported from the module.', REPO), 'bounded');
+});
+
+test('a finding asserting no absence is never given an absence record', () => {
+  // These picked up an inert `inconclusive: true` for containing a hyphenated
+  // word, and it began showing up on ordinary findings.
+  for (const claim of [
+    'The toolbar is rendered in acme-i18n style without a divider.',
+    'The value comes from @scope/ui-kit and is never checked.',
+  ]) {
+    assert.equal(checkAbsenceClaim(claim, '/repo', 'main', () => true, REPO), null, claim);
+  }
+});
+
+test('without a repository name the generic wording still works', () => {
+  assert.equal(absenceScope('`DataGridRow.tsx` does not exist in the repository.'), 'repository');
+  assert.equal(absenceScope('`DataGridRow.tsx` does not exist in acme-web.'), 'elsewhere');
 });
