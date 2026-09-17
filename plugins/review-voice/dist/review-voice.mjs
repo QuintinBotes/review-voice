@@ -8596,7 +8596,7 @@ function namedSymbols(text) {
   const found = /* @__PURE__ */ new Set();
   for (const match of text.matchAll(/`([^`]+)`/g)) {
     const token = (match[1] ?? "").trim();
-    if (token.length >= 4 && !/\s/.test(token)) found.add(token);
+    if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found.add(token);
   }
   for (const match of text.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
     if (match[1] !== void 0) found.add(match[1]);
@@ -8606,12 +8606,12 @@ function namedSymbols(text) {
   }
   for (const token of [...found]) {
     const base = token.split("/").pop();
-    if (base !== void 0 && base !== token && base.length >= 4) found.add(base);
+    if (base !== void 0 && base !== token && base.length >= 4 && !base.startsWith("-")) found.add(base);
   }
   return [...found];
 }
 var gitGrep = (symbol, cwd, ref) => {
-  const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "--", symbol] : ["grep", "--fixed-strings", "--quiet", symbol, ref];
+  const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "-e", symbol] : ["grep", "--fixed-strings", "--quiet", "-e", symbol, ref];
   try {
     execFileSync4("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
     return true;

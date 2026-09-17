@@ -67,6 +67,18 @@ enforced in the client by rejecting non-GET requests, covered by test. No
 credential storage - `gh` holds the token
 ([adr/0002](adr/0002-github-auth-model.md)).
 
+### 3b. Untrusted text reaching a subprocess argument
+
+The absence guard runs `git grep` for symbols named in a candidate's claim, and
+that claim originates in the diff. A symbol beginning with a dash is parsed as
+an option by every command that might be asked this question, and `git grep -O`
+opens a pager, so this is argument injection rather than a malformed query.
+
+Two defences, either sufficient: the pattern is passed after `-e`, which marks
+the next argument as the pattern whatever it looks like, and the extractor
+refuses a token beginning with a dash. The command is invoked with an argument
+array and never a shell string, so quoting is not part of the trust boundary.
+
 ### 4. Arbitrary code execution through static analysis
 
 **Attack.** Review Voice auto-detects and runs a project script; the repository
