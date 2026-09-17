@@ -126,8 +126,13 @@ arithmetic, and a threshold you can talk your way past is not a threshold.
 Keep only candidates where `eligible` is true. For the rest, `rejectedBecause`
 says why.
 
-Then order by severity: `blocking`, then `important`, then `minor`. Within a
-severity, prefer the higher final score. Keep at most 5.
+Then order by severity: `blocking`, `important`, `minor`, `nit`, `question`.
+Within a tier, prefer the higher final score.
+
+**Do not trim to a count.** There is no cap. Report everything that survived
+verification — ordering is what protects the reader, not omission. A reader who
+stops after the blocking findings has seen the most serious ones, and a nit at
+the bottom costs them nothing.
 
 A negative precedent means this reviewer has dismissed something like this
 before. It lowers the score; it does not refute a verified defect. If a
@@ -141,8 +146,12 @@ rendered review and nothing else.
 ## Step 6 — Validate, and retry once
 
 Pipe the editor's output through
-`RV validate-output --max-findings <n> --max-words-per-finding <n> --max-total-words <n>`
-using the values from step 1b.
+`RV validate-output --scale-to-files <reviewedFileCount>`, adding
+`--max-words-per-finding <n>` or `--max-findings <n>` only when the resolved
+policy sets them.
+
+`--scale-to-files` makes the word budget grow with the change, so a large pull
+request is not held to a figure written for an ordinary one.
 
 - Exit 0: display the output verbatim, then record it. Write the scored
   candidates to a temporary file and pass it:

@@ -4,35 +4,81 @@
   "title": "Review output",
   "description": "The final, user-visible review. Word limits here are enforced by review-voice validate-output, which rejects non-compliant output rather than trimming it silently.",
   "type": "object",
-  "required": ["review_run_id", "findings"],
+  "required": [
+    "review_run_id",
+    "findings"
+  ],
   "additionalProperties": false,
   "properties": {
-    "review_run_id": { "type": "string" },
+    "review_run_id": {
+      "type": "string"
+    },
     "findings": {
       "type": "array",
-      "maxItems": 5,
       "items": {
         "type": "object",
-        "required": ["finding_id", "severity", "path", "line", "text", "word_count"],
+        "required": [
+          "finding_id",
+          "severity",
+          "path",
+          "line",
+          "text",
+          "word_count"
+        ],
         "additionalProperties": false,
         "properties": {
-          "finding_id": { "type": "string", "pattern": "^rv_[0-9]{2,}$" },
-          "severity": { "enum": ["blocking", "important", "minor"] },
-          "path": { "type": "string", "minLength": 1 },
-          "line": { "type": "integer", "minimum": 1 },
-          "category": { "$ref": "finding-category.schema.json" },
+          "finding_id": {
+            "type": "string",
+            "pattern": "^rv_[0-9]{2,}$"
+          },
+          "severity": {
+            "enum": [
+              "blocking",
+              "important",
+              "minor",
+              "nit",
+              "question"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "category": {
+            "$ref": "finding-category.schema.json"
+          },
           "text": {
             "type": "string",
             "minLength": 1,
-            "description": "Rendered as: [severity] `path:line` — Problem. Consequence. Suggested fix."
+            "description": "Rendered as: [severity] `path:line` \u2014 Problem. Consequence. Suggested fix."
           },
-          "word_count": { "type": "integer", "minimum": 1, "maximum": 40 },
-          "technical_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-          "final_score": { "type": "number", "minimum": 0, "maximum": 1 }
+          "word_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 40
+          },
+          "technical_confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "final_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
         }
-      }
+      },
+      "description": "Ordered by severity, most serious first. No count cap: volume is bounded by the total word budget."
     },
-    "total_word_count": { "type": "integer", "minimum": 0, "maximum": 180 },
+    "total_word_count": {
+      "type": "integer",
+      "minimum": 0
+    },
     "no_findings_response": {
       "const": "No actionable findings.",
       "description": "Present only when findings is empty. The string is exact."

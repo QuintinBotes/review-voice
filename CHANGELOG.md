@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The finding count cap is gone.** Volume is bounded by the total word budget
+  alone. A count cap and a word budget do the same job, and the count is the
+  worse of the two: on tight findings it discarded findings the budget would
+  have allowed. A policy layer may still impose a cap.
+- **The total word budget scales with the change** rather than sitting at a
+  flat 180. A figure written for an ordinary pull request became a reason to
+  drop real findings on a large one.
+- **Two new severity tiers: `nit` and `question`.** Low-stakes observations and
+  open asks now have a structural home instead of being suppressed or written
+  into prose where they cannot be sorted or counted.
+- **Findings must be ordered by severity**, checked by the validator. Ordering
+  is what protects the reader, not omission: a reader who stops early has seen
+  the most serious findings.
+- **`nit`, `overall` and `summary` are no longer forbidden phrases.** `nit` is a
+  severity marker that adds information rather than hiding a claim; the other
+  two appear in real prose that word-boundary matching cannot distinguish from
+  a summary section. True hedges and praise remain banned.
+
 ### Added
 
 - `review-voice diff --pr <number>`: reviews a GitHub pull request through the

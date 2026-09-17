@@ -17,13 +17,29 @@ voice:
     - calm
     - technical
     - concise
-  max_findings: 5
+  # No count cap. A cap and a word budget do the same job, and the cap is the
+  # worse of the two: on tight findings it discards ones the budget allows.
+  max_findings: null
   max_words_per_finding: 40
+  # Floor. The real budget scales with the size of the change — a flat figure
+  # written for an ordinary pull request becomes a reason to drop real findings
+  # on a large one.
   max_total_words: 180
   no_findings_response: "No actionable findings."
 
+severities:
+  # Ordered by how much of the reader's attention each earns, which is also the
+  # order findings are presented in. A reader may stop anywhere and will have
+  # seen everything more serious.
+  - blocking
+  - important
+  - minor
+  - nit
+  - question
+
 output:
   format: "[severity] `path:line` — Problem. Consequence. Suggested fix."
+  ordered_by_severity: true
   no_headings: true
   no_summary: true
   no_praise: true
@@ -36,9 +52,7 @@ required_for_every_finding:
   - evidence
 
 reject_if:
-  - style_only
   - generic_best_practice
-  - naming_preference
   - refactor_without_failure_mode
   - speculative_risk
   - missing_test_comment_without_specific_uncovered_behavior
@@ -61,11 +75,13 @@ priorities:
   - user_visible_behavior
 
 suppressed_patterns:
-  - "Readable naming alternatives."
-  - "Refactors not required to fix changed behavior."
-  - "Generic maintainability advice."
+  - "Generic best-practice advice with no bearing on the changed code."
   - "Theoretical risks without a realistic triggering path."
 
+# Only phrases that hide a claim or replace one. "nit" is a severity marker,
+# not a hedge — it adds information rather than removing it, and now has its
+# own tier. "overall" and "summary" appear in real prose and word-boundary
+# matching cannot tell those uses from a summary section.
 forbidden_phrases:
   - "consider"
   - "maybe"
@@ -74,8 +90,5 @@ forbidden_phrases:
   - "it may be worth"
   - "nice work"
   - "great job"
-  - "overall"
-  - "summary"
-  - "nit"
 
 provenance: []

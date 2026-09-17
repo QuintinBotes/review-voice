@@ -55,14 +55,64 @@ test('rejects an empty review', () => {
   assert.equal(validate('   \n  ').code, 1);
 });
 
-test('rejects more than five findings', () => {
+test('there is no cap on how many findings are reported', () => {
+  // A count cap and a word budget do the same job, and the count is the worse
+  // of the two: on tight findings it discards ones the budget would allow.
+  const output = Array.from(
+    { length: 12 },
+    (_, i) => `[minor] \`src/a${i}.ts:${i + 1}\` — Something breaks here. It fails. Fix it.`,
+  ).join('\n\n');
+  const { code, result } = validate(output, ['--max-total-words', '2000']);
+  assert.equal(code, 0, JSON.stringify(result.violations));
+  assert.equal(result.findingCount, 12);
+});
+
+test('a cap applies when policy asks for one', () => {
   const output = Array.from(
     { length: 6 },
     (_, i) => `[minor] \`src/a${i}.ts:${i + 1}\` — Something breaks here. It fails. Fix it.`,
-  ).join('\n');
-  const { code, result } = validate(output);
+  ).join('\n\n');
+  const { code, result } = validate(output, ['--max-findings', '5']);
   assert.equal(code, 1);
   assert.ok(codes({ result }).includes('too_many_findings'));
+});
+
+test('nit and question are severities, not banned words', () => {
+  const output = [
+    '[blocking] `src/a.ts:1` — Token returned before commit. A retry mints two. Commit first.',
+    '[nit] `src/b.ts:2` — Name says format but it also validates. Readers expect one job. Split it.',
+    '[question] `src/c.ts:3` — Is the down migration exercised? A rollback path that never runs does not work.',
+  ].join('\n\n');
+  const { code, result } = validate(output);
+  assert.equal(code, 0, JSON.stringify(result.violations));
+  assert.equal(result.findingCount, 3);
+});
+
+test('findings must be ordered by severity', () => {
+  // A reader who stops halfway has to have seen the most serious findings.
+  const output = [
+    '[nit] `src/b.ts:2` — Name says format but it also validates. Readers expect one job. Split it.',
+    '[blocking] `src/a.ts:1` — Token returned before commit. A retry mints two. Commit first.',
+  ].join('\n\n');
+  const { code, result } = validate(output);
+  assert.equal(code, 1);
+  assert.ok(codes({ result }).includes('severity_order'));
+});
+
+test('the word budget scales with the size of the change', () => {
+  const output = Array.from(
+    { length: 20 },
+    (_, i) => `[minor] \`src/a${i}.ts:${i + 1}\` — A problem here that takes a few more words to state properly. It fails silently. Fix it.`,
+  ).join('\n\n');
+
+  // A flat budget written for an ordinary pull request becomes a reason to
+  // drop real findings on a large one.
+  const atFloor = validate(output);
+  assert.equal(atFloor.code, 1, 'should not fit the floor budget');
+  assert.ok(codes(atFloor).includes('output_too_long'));
+
+  const scaled = validate(output, ['--scale-to-files', '30']);
+  assert.equal(scaled.code, 0, JSON.stringify(scaled.result.violations));
 });
 
 test('rejects a finding over the word limit', () => {
@@ -103,11 +153,12 @@ test('rejects malformed shapes', () => {
   }
 });
 
-test('rejects hedging and low-value framing', () => {
+test('rejects hedges that hide the claim', () => {
+  // "You might consider" states nothing to agree or disagree with.
   for (const prose of [
     'Consider renaming this. It is unclear. Rename it.',
     'This might fail under load. Requests drop. Add a limit.',
-    'Nit: the spacing is off here. It reads badly. Fix spacing.',
+    'It may be worth adding a guard. State is lost. Add one.',
   ]) {
     const { code, result } = validate(`[minor] \`src/a.ts:1\` — ${prose}`);
     assert.equal(code, 1, prose);
@@ -116,11 +167,19 @@ test('rejects hedging and low-value framing', () => {
 });
 
 test('forbidden phrases match whole words only', () => {
-  // "nit" must not fire on "initialise", nor "might" on "mightily" cases.
   const { code } = validate(
     '[minor] `src/a.ts:1` — The initialiser runs twice. State is overwritten. Guard it.',
   );
   assert.equal(code, 0);
+});
+
+test('words that read as summary markers are allowed in prose', () => {
+  // "overall latency" and "the summary endpoint" are real phrases, and word
+  // boundaries cannot tell them from a summary section.
+  const { code, result } = validate(
+    '[minor] `src/a.ts:1` — Overall latency is not measured on the summary endpoint. Regressions go unseen. Add a timer.',
+  );
+  assert.equal(code, 0, JSON.stringify(result.violations));
 });
 
 test('rejects greetings, headings and summaries', () => {
