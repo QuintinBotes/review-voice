@@ -231,6 +231,23 @@ derivation saw it, which gave an unlabelled finding a real tier and recorded
 nothing about the substitution; absent and unrecognised now both take the middle
 tier and say so.
 
+Because the tier rests entirely on this field, the analyst prompt lists the
+twenty-two valid categories and settles the confusable pairs, which it did not
+before: the prompt only referenced the schema, and the schema only reached it
+through a `$ref`. On one pull request half the findings used `testing` and
+`documentation`, plausible words outside the enum, and both took the fallback.
+
+A short alias table catches the rest. It lists unambiguous synonyms only. An
+alias into a `blocking` tier is the riskiest kind, so a genuinely ambiguous word
+is left to the middle-tier fallback rather than guessed at, and any substitution
+is named in the reason string.
+
+What remains of RV-08 is category drift: the tier is stable given the category,
+and the category is a judgement that can still move. The same comment was
+`maintainability` on one run and `correctness` on the next, which is one tier
+apart. That is a narrower problem than the one this replaced, and a category is
+easier to argue about than a severity.
+
 `question` is preserved rather than derived. It says the reviewer could not
 establish the answer and the author can, which is a kind of finding rather than
 a level of consequence, and no category implies it.

@@ -635,3 +635,39 @@ test('an ordinary missing path is still an ordinary missing path', () => {
     /cand_001: missing path$/,
   );
 });
+
+// Category resolution, since severity now depends entirely on it
+
+test('plausible synonyms outside the enum resolve to the category they mean', () => {
+  // Half the findings on one pull request used `testing` and `documentation`.
+  // The fallback behaved as designed and the findings still lost the
+  // distinction they were making: a test-coverage nit landed on minor.
+  const testing = scoreCandidate(candidate({ category: 'testing' }), [], []);
+  assert.equal(testing.severity.severity, 'nit');
+  assert.match(testing.severity.reason, /testing read as test_coverage/);
+
+  const docs = scoreCandidate(candidate({ category: 'documentation' }), [], []);
+  assert.equal(docs.severity.severity, 'nit');
+  assert.match(docs.severity.reason, /documentation read as maintainability/);
+});
+
+test('casing and spacing do not decide a tier', () => {
+  const spaced = scoreCandidate(candidate({ category: 'User Visible Behavior' }), [], []);
+  assert.equal(spaced.severity.severity, 'minor');
+  assert.equal(spaced.severity.reason, 'user_visible_behavior carries minor');
+});
+
+test('an ambiguous word is left to the fallback rather than guessed into blocking', () => {
+  // Aliasing into a blocking tier is the riskiest kind, so a word that could
+  // mean two different severe categories gets the middle tier instead.
+  const result = scoreCandidate(candidate({ category: 'privacy' }), [], []);
+  assert.equal(result.severity.severity, 'minor');
+  assert.match(result.severity.reason, /no mapping/);
+});
+
+test('a real category is never rerouted by an alias', () => {
+  for (const category of ['test_coverage', 'maintainability', 'correctness', 'security']) {
+    const result = scoreCandidate(candidate({ category }), [], []);
+    assert.equal(result.severity.reason, `${category} carries ${result.severity.severity}`);
+  }
+});
