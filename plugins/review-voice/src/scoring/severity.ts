@@ -157,6 +157,62 @@ const ALIASES: Record<string, string> = {
   logic: 'correctness',
 };
 
+/**
+ * How far derivation may move a finding from what the analyst asked for.
+ *
+ * Derivation exists because asking produced a different tier each time: the
+ * same finding was `minor` at 0.90 and `important` at 0.85 on a byte-identical
+ * diff. That is still true, and the category is still the stable input.
+ *
+ * But the category is a string, and the analyst has read the code. When reach
+ * was rarely established the table deferred often and the two mostly agreed.
+ * Now that reach resolves on 17 of 20 candidates and nearly always to
+ * `repository`, the reach-varying categories have collapsed to their repository
+ * column and the table overrode the analyst on 9 of 20 - six of them upward. A
+ * finding the analyst called `minor`, having read the code, shipped as
+ * `blocking` at confidence 0.70 on the strength of its category label alone.
+ *
+ * One tier is the compromise. Derivation still normalises and still bounds the
+ * flapping, because a tier can move by one either way and no further; the
+ * analyst's reading still constrains the outcome. `question` is exempt because
+ * it is not a tier at all, and an unrecognised request cannot bound anything.
+ *
+ * It applies only to categories whose tier varies by reach. `security` and its
+ * neighbours are `blocking` at every reach because they are severe by nature,
+ * not because a search said so, and that was always the design - the complaint
+ * is specifically that reach-varying categories have collapsed to their
+ * repository column, so that is what is bounded.
+ */
+const MAX_TIER_MOVEMENT = 1;
+
+function boundToRequest(
+  derived: Severity,
+  requested: string,
+  reach: ReachCheck | null,
+  reason: string,
+): DerivedSeverity {
+  const asked = SEVERITIES.indexOf(requested as Severity);
+  const got = SEVERITIES.indexOf(derived);
+  if (asked === -1 || got === -1) {
+    return { severity: derived, requested, reach, reason };
+  }
+
+  const distance = got - asked;
+  if (Math.abs(distance) <= MAX_TIER_MOVEMENT) {
+    return { severity: derived, requested, reach, reason };
+  }
+
+  const bounded = SEVERITIES[asked + Math.sign(distance) * MAX_TIER_MOVEMENT]!;
+  return {
+    severity: bounded,
+    requested,
+    reach,
+    reason:
+      `${reason}, bounded to ${bounded} because the analyst asked for ${requested} ` +
+      'and derivation may move a tier by one',
+  };
+}
+
 export interface DerivedSeverity {
   severity: Severity;
   /** What the analyst asked for, kept so a divergence can be audited. */
@@ -277,25 +333,25 @@ export function deriveSeverity(
     };
   }
 
-  // The table has been consulted before preserving the interrogative. A
-  // question is a tier only when deterministic evidence confines it locally;
-  // a wider question earns the consequence of its category and reach.
-  if (requested === 'question' && resolvedReach === 'local') {
-    return {
-      severity: 'question',
-      requested,
-      reach: reach ?? null,
-      reason: 'a question at local reach remains question',
-    };
+  const varies = new Set(Object.values(tiers ?? {})).size > 1;
+  const describe =
+    resolved === normalised
+      ? `${resolved} at ${resolvedReach} reach carries ${severity}`
+      : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
+
+  // A category with one tier at every reach is severe by nature rather than by
+  // search, so the analyst's request does not bound it.
+  if (!varies) {
+    return { severity, requested, reach: reach ?? null, reason: describe };
   }
 
-  return {
+  // Bounded to the analyst's request. The legacy no-reach path above is left
+  // alone: it has been stable for several releases and the evidence for
+  // bounding is entirely about reach-derived escalation.
+  return boundToRequest(
     severity,
     requested,
-    reach: reach ?? null,
-    reason:
-      resolved === normalised
-        ? `${resolved} at ${resolvedReach} reach carries ${severity}`
-        : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`,
-  };
+    reach ?? null,
+    describe,
+  );
 }

@@ -765,14 +765,34 @@ test('absent reach reproduces the legacy tier for every schema category', () => 
 });
 
 test('severity combines category with computed reach', () => {
-  assert.equal(deriveSeverity('ci', 'minor', reachCheck('repository')).severity, 'blocking');
+  assert.equal(deriveSeverity('ci', 'blocking', reachCheck('repository')).severity, 'blocking');
   assert.equal(deriveSeverity('ci', 'minor', reachCheck('local')).severity, 'nit');
   assert.equal(deriveSeverity('correctness', 'minor', reachCheck('repository')).severity, 'important');
 
+  // Severe by nature rather than by search, so the analyst does not bound them.
   for (const value of ['local', 'component', 'repository']) {
     assert.equal(deriveSeverity('security', 'minor', reachCheck(value)).severity, 'blocking');
     assert.equal(deriveSeverity('style', 'minor', reachCheck(value)).severity, 'nit');
   }
+});
+
+test('derivation may move a reach-varying tier by one, not by three', () => {
+  // Reach now resolves on 17 of 20 candidates and nearly always to repository,
+  // so the reach-varying categories have collapsed to their repository column
+  // and the table overrode the analyst on 9 of 20, six upward. One finding the
+  // analyst called `minor`, having read the code, shipped as `blocking` at
+  // confidence 0.70 on the strength of its category label alone.
+  const escalated = deriveSeverity('ci', 'minor', reachCheck('repository'));
+  assert.equal(escalated.severity, 'important', 'minor to blocking is three tiers');
+  assert.match(escalated.reason, /bounded to important/);
+  assert.match(escalated.reason, /analyst asked for minor/);
+
+  // One tier of movement is still derivation doing its job.
+  assert.equal(deriveSeverity('ci', 'important', reachCheck('repository')).severity, 'blocking');
+  assert.equal(deriveSeverity('correctness', 'nit', reachCheck('repository')).severity, 'minor');
+
+  // And it bounds downward too.
+  assert.equal(deriveSeverity('ci', 'blocking', reachCheck('local')).severity, 'important');
 });
 
 test('a question stays a question at every reach, because it is not a tier', () => {
