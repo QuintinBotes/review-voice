@@ -85,7 +85,13 @@ export interface CorpusCoverage {
   warnings: string[];
 }
 
-export function corpusCoverage(db: Database): CorpusCoverage {
+export interface CoverageOptions {
+  /** Repositories the user allowlisted, so absent ones can be named. */
+  allowlist?: readonly string[];
+  maxRepositoryShare?: number;
+}
+
+export function corpusCoverage(db: Database, options: CoverageOptions = {}): CorpusCoverage {
   const total = (db.prepare('SELECT COUNT(*) AS n FROM review_events').get() as { n: number }).n;
   const byRepository = Object.fromEntries(
     (db.prepare('SELECT repository, COUNT(*) AS n FROM review_events GROUP BY repository').all() as {
@@ -104,6 +110,43 @@ export function corpusCoverage(db: Database): CorpusCoverage {
     .get() as { oldest: string | null; newest: string | null };
 
   const warnings: string[] = [];
+
+  // An unhealthy corpus is otherwise only visible by querying the database by
+  // hand, and its symptoms show up as silence: retrieval returning the same
+  // few documents, calibrate proposing nothing.
+  const anchored = (
+    db
+      .prepare("SELECT COUNT(*) AS n FROM review_events WHERE reviewer_role = 'owner' AND file_path IS NOT NULL")
+      .get() as { n: number }
+  ).n;
+  const ownerTotal = byRole['owner'] ?? 0;
+
+  if (ownerTotal > 0 && anchored * 2 < ownerTotal) {
+    warnings.push(
+      `${ownerTotal - anchored} of ${ownerTotal} owner events have no file anchor. ` +
+        'Unanchored summaries match any candidate, so with the owner weighting applied they surface ' +
+        'for every finding regardless of topic. Sync more repositories, or expect weak precedent.',
+    );
+  }
+
+  for (const repository of options.allowlist ?? []) {
+    if ((byRepository[repository] ?? 0) === 0) {
+      warnings.push(`${repository} is allowlisted but contributed no events. Check it has review history you can read.`);
+    }
+  }
+
+  const share = options.maxRepositoryShare;
+  if (share !== undefined && total > 0) {
+    for (const [repository, count] of Object.entries(byRepository)) {
+      if (count / total > share) {
+        warnings.push(
+          `${repository} is ${Math.round((count / total) * 100)}% of the corpus, above the configured ` +
+            `${Math.round(share * 100)}% share. Policy compiled from it will mostly describe that repository.`,
+        );
+      }
+    }
+  }
+
   if (total > 0 && (byRole['owner'] ?? 0) === 0) {
     // Rule activation requires at least one owner signal, so a corpus with
     // none can never produce a rule. Without this the failure is silent:

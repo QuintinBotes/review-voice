@@ -8010,6 +8010,7 @@ function isTemplate(body) {
   if (TEMPLATE_HEADING.test(body) && structureRatio >= 0.4) return true;
   return structureRatio >= 0.6;
 }
+var SELF_GENERATED = /^\s*\[(blocking|important|minor|nit|question)\]\s+`[^`]+:\d+`\s+-\s/im;
 var GENERATED_PATH = [
   /(^|\/)(dist|build|out|coverage|node_modules|vendor|third_party)\//,
   /\.min\.(js|css)$/,
@@ -8020,6 +8021,7 @@ function ineligibleReason(input) {
   if (input.role === "external") return "external_reviewer";
   const body = input.body.trim();
   if (body.length === 0) return "too_short";
+  if (SELF_GENERATED.test(body)) return "self_generated";
   const substantive = body.replace(APPROVAL_PHRASES, "").replace(DECORATION, "");
   if (substantive.length < 15) return "approval_only";
   if (body.length < 15) return "too_short";
@@ -8204,12 +8206,18 @@ function selectEvents(events, options) {
     perRepository[event.repository] = count + 1;
     selected.push(event);
   }
+  const hardCap = Math.max(cap, Math.floor(options.target * Math.min(1, options.maxRepositoryShare * 1.5)));
+  const overRepresented = /* @__PURE__ */ new Set();
   for (const event of deferred) {
     if (selected.length >= options.target) break;
-    perRepository[event.repository] = (perRepository[event.repository] ?? 0) + 1;
+    const count = perRepository[event.repository] ?? 0;
+    if (count >= hardCap) continue;
+    if (count >= cap) overRepresented.add(event.repository);
+    perRepository[event.repository] = count + 1;
     selected.push(event);
   }
   const shortfall = Math.max(0, options.target - selected.length);
+  const exhausted = selected.length >= discoveredEligible;
   return {
     selected,
     targetEvents: options.target,
@@ -8217,9 +8225,11 @@ function selectEvents(events, options) {
     importedEvents: selected.length,
     shortfall,
     // Claiming a full scan when the history ran out would misrepresent how
-    // much the policy actually rests on.
-    shortfallReason: shortfall > 0 ? "Accessible review corpus exhausted" : null,
-    perRepository
+    // much the policy actually rests on - and so would blaming an exhausted
+    // corpus when the real limit was diversity.
+    shortfallReason: shortfall === 0 ? null : exhausted ? "Accessible review corpus exhausted" : "Repository diversity limit reached; one repository would otherwise dominate the corpus",
+    perRepository,
+    overRepresented: [...overRepresented]
   };
 }
 
@@ -8281,7 +8291,7 @@ function storeEvents(db, events) {
   });
   return { inserted, alreadyPresent: events.length - inserted };
 }
-function corpusCoverage(db) {
+function corpusCoverage(db, options = {}) {
   const total = db.prepare("SELECT COUNT(*) AS n FROM review_events").get().n;
   const byRepository = Object.fromEntries(
     db.prepare("SELECT repository, COUNT(*) AS n FROM review_events GROUP BY repository").all().map((row) => [row.repository, row.n])
@@ -8291,6 +8301,28 @@ function corpusCoverage(db) {
   );
   const range = db.prepare("SELECT MIN(created_at) AS oldest, MAX(created_at) AS newest FROM review_events").get();
   const warnings = [];
+  const anchored = db.prepare("SELECT COUNT(*) AS n FROM review_events WHERE reviewer_role = 'owner' AND file_path IS NOT NULL").get().n;
+  const ownerTotal = byRole["owner"] ?? 0;
+  if (ownerTotal > 0 && anchored * 2 < ownerTotal) {
+    warnings.push(
+      `${ownerTotal - anchored} of ${ownerTotal} owner events have no file anchor. Unanchored summaries match any candidate, so with the owner weighting applied they surface for every finding regardless of topic. Sync more repositories, or expect weak precedent.`
+    );
+  }
+  for (const repository of options.allowlist ?? []) {
+    if ((byRepository[repository] ?? 0) === 0) {
+      warnings.push(`${repository} is allowlisted but contributed no events. Check it has review history you can read.`);
+    }
+  }
+  const share = options.maxRepositoryShare;
+  if (share !== void 0 && total > 0) {
+    for (const [repository, count] of Object.entries(byRepository)) {
+      if (count / total > share) {
+        warnings.push(
+          `${repository} is ${Math.round(count / total * 100)}% of the corpus, above the configured ${Math.round(share * 100)}% share. Policy compiled from it will mostly describe that repository.`
+        );
+      }
+    }
+  }
   if (total > 0 && (byRole["owner"] ?? 0) === 0) {
     warnings.push(
       "No events authored by the owner reviewer. Policy rules need at least one owner signal, so nothing in this corpus can activate a rule. Check identity.owner_reviewer matches your GitHub login."
@@ -8349,10 +8381,11 @@ function previewPurge(db, scope) {
     db.prepare(`SELECT repository, COUNT(*) AS n FROM review_events WHERE ${where} GROUP BY repository`).all(...params).map((row) => [row.repository, row.n])
   );
   const all = scope.all === true;
+  const watermarks = all ? db.prepare("SELECT COUNT(*) AS n FROM sync_watermarks").get().n : scope.repository !== void 0 ? db.prepare("SELECT COUNT(*) AS n FROM sync_watermarks WHERE repository = ?").get(scope.repository).n : 0;
   const reviewRuns = all ? db.prepare("SELECT COUNT(*) AS n FROM review_runs").get().n : 0;
   const feedback = all ? db.prepare("SELECT COUNT(*) AS n FROM feedback").get().n : 0;
   const auditEvents = all ? db.prepare("SELECT COUNT(*) AS n FROM audit_events").get().n : 0;
-  return { events, reviewRuns, feedback, auditEvents, byRepository };
+  return { events, reviewRuns, feedback, auditEvents, watermarks, byRepository };
 }
 function executePurge(db, scope) {
   const preview = previewPurge(db, scope);
@@ -8361,8 +8394,11 @@ function executePurge(db, scope) {
   try {
     db.prepare(`DELETE FROM review_events WHERE ${where}`).run(...params);
     if (scope.all === true) {
+      db.prepare("DELETE FROM sync_watermarks").run();
       db.prepare("DELETE FROM review_runs").run();
       db.prepare("DELETE FROM feedback").run();
+    } else if (scope.repository !== void 0) {
+      db.prepare("DELETE FROM sync_watermarks WHERE repository = ?").run(scope.repository);
     }
     db.exec("COMMIT");
   } catch (error) {
@@ -8408,10 +8444,10 @@ function recencyWeight(createdAt, now = /* @__PURE__ */ new Date(), halfLifeDays
   return 2 ** (-ageDays / halfLifeDays);
 }
 function specificityWeight(input) {
-  let weight = 0.6;
-  if (input.hasFilePath) weight += 0.15;
-  if (input.hasLine) weight += 0.15;
-  if (input.hasDiffHunk) weight += 0.1;
+  let weight = 0.2;
+  if (input.hasFilePath) weight += 0.4;
+  if (input.hasLine) weight += 0.25;
+  if (input.hasDiffHunk) weight += 0.15;
   return weight;
 }
 function contextWeight(input) {
@@ -9806,7 +9842,15 @@ function explainCommand(argv) {
 function statusCommand() {
   const db = openDatabase();
   try {
-    const coverage = corpusCoverage(db);
+    let allowlist = [];
+    let maxRepositoryShare;
+    try {
+      const config = loadConfig(repositoryRoot(process.cwd()));
+      allowlist = config.allowlist;
+      maxRepositoryShare = 0.5;
+    } catch {
+    }
+    const coverage = corpusCoverage(db, { allowlist, ...maxRepositoryShare === void 0 ? {} : { maxRepositoryShare } });
     const runs = db.prepare("SELECT COUNT(*) AS n FROM review_runs").get().n;
     const audits = db.prepare("SELECT COUNT(*) AS n FROM audit_events").get().n;
     const totals = feedbackTotals(db);
@@ -9827,6 +9871,9 @@ function statusCommand() {
     console.log(
       `corpus           ${coverage.total} event(s)` + (coverage.total === 0 ? "" : ` - ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(", ")}`)
     );
+    for (const [repository, n] of Object.entries(coverage.byRepository)) {
+      console.log(`  ${repository.padEnd(45)} ${n}`);
+    }
     for (const warning of coverage.warnings) console.log(`  warning        ${warning}`);
     return 0;
   } finally {

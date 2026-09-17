@@ -982,7 +982,18 @@ function explainCommand(argv: string[]): number {
 function statusCommand(): number {
   const db = openDatabase();
   try {
-    const coverage = corpusCoverage(db);
+    // Health warnings need the allowlist, which only the repository config
+    // knows. Outside a repository the counts still work.
+    let allowlist: string[] = [];
+    let maxRepositoryShare: number | undefined;
+    try {
+      const config = loadConfig(repositoryRoot(process.cwd()));
+      allowlist = config.allowlist;
+      maxRepositoryShare = 0.5;
+    } catch {
+      // Not in a repository; report counts without allowlist warnings.
+    }
+    const coverage = corpusCoverage(db, { allowlist, ...(maxRepositoryShare === undefined ? {} : { maxRepositoryShare }) });
     const runs = (db.prepare('SELECT COUNT(*) AS n FROM review_runs').get() as { n: number }).n;
     const audits = (db.prepare('SELECT COUNT(*) AS n FROM audit_events').get() as { n: number }).n;
     const totals = feedbackTotals(db);
@@ -1012,6 +1023,9 @@ function statusCommand(): number {
           ? ''
           : ` - ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(', ')}`),
     );
+    for (const [repository, n] of Object.entries(coverage.byRepository)) {
+      console.log(`  ${repository.padEnd(45)} ${n}`);
+    }
     for (const warning of coverage.warnings) console.log(`  warning        ${warning}`);
     return 0;
   } finally {

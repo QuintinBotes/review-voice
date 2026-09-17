@@ -5,6 +5,34 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`purge` now clears sync watermarks.** It deleted events while leaving the
+  record of which pull requests had been read, so the next sync skipped them
+  all as unchanged and rebuilt nothing. A purge followed by a sync returned
+  whatever had been updated since rather than the corpus: 1,057 eligible events
+  became 527, and one allowlisted repository contributed none at all.
+- **One repository can no longer take the corpus.** Backfill past the soft
+  share cap is now bounded at 1.5x it, and the resulting shortfall is reported
+  as a diversity limit rather than an exhausted corpus. Those are different
+  problems with different fixes, and conflating them sent the wrong signal.
+- **Reviews this tool produced are excluded from ingestion.** Output posted to
+  GitHub and read back becomes owner evidence and teaches the reviewer its own
+  voice - a closed loop that compounds every sync. A quarter of the owner
+  precedent in one real corpus was the previous run's output.
+- Unanchored evidence is weighted far lower. Ten of twelve owner events in a
+  real corpus were summaries with no file anchor, and with the owner multiplier
+  applied those same ten documents surfaced for every candidate regardless of
+  topic. An anchored comment is now five times an unanchored one, not 1.7.
+
+### Added
+
+- `status` reports per-repository counts and warns on an unhealthy corpus: an
+  allowlisted repository contributing nothing, one repository above its share,
+  or owner evidence that is mostly unanchored.
+
 ## [0.3.0] - 2026-09-17
 
 ### Changed
