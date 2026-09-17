@@ -18,7 +18,7 @@ export interface PolicyLayer {
 }
 
 export interface ResolvedPolicy {
-  maxFindings: number;
+  maxFindings: number | null;
   maxWordsPerFinding: number;
   maxTotalWords: number;
   noFindingsResponse: string;
@@ -52,7 +52,10 @@ export function resolvePolicy(layers: PolicyLayer[]): ResolvedPolicy {
 
   for (const layer of layers) {
     if (layer.maxFindings !== undefined) {
-      resolved.maxFindings = Math.min(resolved.maxFindings, layer.maxFindings);
+      // A layer may impose a cap where the baseline has none, or tighten an
+      // existing one. It still may not loosen.
+      resolved.maxFindings =
+        resolved.maxFindings === null ? layer.maxFindings : Math.min(resolved.maxFindings, layer.maxFindings);
     }
     if (layer.maxWordsPerFinding !== undefined) {
       resolved.maxWordsPerFinding = Math.min(resolved.maxWordsPerFinding, layer.maxWordsPerFinding);

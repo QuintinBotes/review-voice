@@ -2,80 +2,211 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/QuintinBotes/review-voice/schemas/review-event.schema.json",
   "title": "Review event",
-  "description": "One unit of historical review evidence — not necessarily a pull request. Bodies are stored redacted; raw text is subject to the retention window in PRIVACY.md.",
+  "description": "One unit of historical review evidence \u2014 not necessarily a pull request. Bodies are stored redacted; raw text is subject to the retention window in PRIVACY.md.",
   "type": "object",
   "required": [
-    "event_id", "source", "repository", "reviewer_login", "reviewer_role",
-    "created_at", "body_normalized", "body_redacted", "outcome", "privacy"
+    "event_id",
+    "source",
+    "repository",
+    "reviewer_login",
+    "reviewer_role",
+    "created_at",
+    "body_normalized",
+    "body_redacted",
+    "outcome",
+    "privacy"
   ],
   "additionalProperties": false,
   "properties": {
-    "event_id": { "type": "string" },
-    "source": { "enum": ["github", "local-plugin"] },
-    "repository": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
-    "pull_number": { "type": "integer", "minimum": 1 },
-    "pull_request_url": { "type": "string", "format": "uri" },
-    "thread_id": { "type": "string" },
-    "comment_id": { "type": "string" },
-
-    "reviewer_login": { "type": "string" },
+    "event_id": {
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "github",
+        "local-plugin"
+      ]
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[^/]+/[^/]+$"
+    },
+    "pull_number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "pull_request_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "thread_id": {
+      "type": "string"
+    },
+    "comment_id": {
+      "type": "string"
+    },
+    "reviewer_login": {
+      "type": "string"
+    },
     "reviewer_role": {
-      "enum": ["owner", "team", "external", "bot"],
+      "enum": [
+        "owner",
+        "team",
+        "external",
+        "bot"
+      ],
       "description": "Bot evidence is excluded from voice learning and carries zero weight."
     },
-
-    "created_at": { "type": "string", "format": "date-time" },
-    "updated_at": { "type": "string", "format": "date-time" },
-
-    "body_normalized": { "type": "string" },
-    "body_redacted": { "type": "string" },
-
-    "file_path": { "type": "string" },
-    "line_start": { "type": "integer", "minimum": 1 },
-    "line_end": { "type": "integer", "minimum": 1 },
-    "commit_sha": { "type": "string" },
-    "base_sha": { "type": "string" },
-    "head_sha": { "type": "string" },
-    "diff_hunk": { "type": "string" },
-
-    "pr_title": { "type": "string" },
-    "pr_description": { "type": "string" },
-    "labels": { "type": "array", "items": { "type": "string" } },
-    "changed_file_types": { "type": "array", "items": { "type": "string" } },
-    "language": { "type": "string" },
-
-    "inferred_category": { "$ref": "finding-category.schema.json" },
-    "inferred_severity": { "enum": ["blocking", "important", "minor"] },
-    "actionability_score": { "type": "number", "minimum": 0, "maximum": 1 },
-    "technical_confidence_score": { "type": "number", "minimum": 0, "maximum": 1 },
-    "verbosity_tokens": { "type": "integer", "minimum": 0 },
-
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "body_normalized": {
+      "type": "string"
+    },
+    "body_redacted": {
+      "type": "string"
+    },
+    "file_path": {
+      "type": "string"
+    },
+    "line_start": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "line_end": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "commit_sha": {
+      "type": "string"
+    },
+    "base_sha": {
+      "type": "string"
+    },
+    "head_sha": {
+      "type": "string"
+    },
+    "diff_hunk": {
+      "type": "string"
+    },
+    "pr_title": {
+      "type": "string"
+    },
+    "pr_description": {
+      "type": "string"
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "changed_file_types": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "language": {
+      "type": "string"
+    },
+    "inferred_category": {
+      "$ref": "finding-category.schema.json"
+    },
+    "inferred_severity": {
+      "enum": [
+        "blocking",
+        "important",
+        "minor",
+        "nit",
+        "question"
+      ]
+    },
+    "actionability_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "technical_confidence_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "verbosity_tokens": {
+      "type": "integer",
+      "minimum": 0
+    },
     "outcome": {
       "type": "object",
-      "required": ["status", "evidence", "certainty"],
+      "required": [
+        "status",
+        "evidence",
+        "certainty"
+      ],
       "additionalProperties": false,
       "properties": {
-        "status": { "enum": ["accepted", "dismissed", "rewritten", "unresolved", "unknown"] },
-        "certainty": { "enum": ["strong", "moderate", "weak"] },
-        "observed_at": { "type": "string", "format": "date-time" },
+        "status": {
+          "enum": [
+            "accepted",
+            "dismissed",
+            "rewritten",
+            "unresolved",
+            "unknown"
+          ]
+        },
+        "certainty": {
+          "enum": [
+            "strong",
+            "moderate",
+            "weak"
+          ]
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
         "evidence": {
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["type", "observed_at", "strength"],
+            "required": [
+              "type",
+              "observed_at",
+              "strength"
+            ],
             "additionalProperties": false,
             "properties": {
               "type": {
                 "enum": [
-                  "owner_keep", "owner_dismiss", "owner_rewrite", "owner_never_flag",
-                  "thread_resolution", "author_acknowledgement", "follow_up_commit",
-                  "merge_without_change", "no_response"
+                  "owner_keep",
+                  "owner_dismiss",
+                  "owner_rewrite",
+                  "owner_never_flag",
+                  "thread_resolution",
+                  "author_acknowledgement",
+                  "follow_up_commit",
+                  "merge_without_change",
+                  "no_response"
                 ]
               },
-              "detail": { "type": "string" },
-              "observed_at": { "type": "string", "format": "date-time" },
+              "detail": {
+                "type": "string"
+              },
+              "observed_at": {
+                "type": "string",
+                "format": "date-time"
+              },
               "strength": {
-                "enum": ["strong", "moderate", "weak"],
+                "enum": [
+                  "strong",
+                  "moderate",
+                  "weak"
+                ],
                 "description": "Weak signals cannot create or suppress a policy rule on their own."
               }
             }
@@ -83,15 +214,28 @@
         }
       }
     },
-
     "privacy": {
       "type": "object",
-      "required": ["retention_class", "redaction_version"],
+      "required": [
+        "retention_class",
+        "redaction_version"
+      ],
       "additionalProperties": false,
       "properties": {
-        "retention_class": { "enum": ["raw", "normalized", "derived-only"] },
-        "redaction_version": { "type": "string" },
-        "raw_expires_at": { "type": "string", "format": "date-time" }
+        "retention_class": {
+          "enum": [
+            "raw",
+            "normalized",
+            "derived-only"
+          ]
+        },
+        "redaction_version": {
+          "type": "string"
+        },
+        "raw_expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
       }
     }
   }
