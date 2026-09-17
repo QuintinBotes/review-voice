@@ -161,3 +161,72 @@ test('a brace inside a string does not confuse the extractor', () => {
   assert.equal(v.outcome, 'dropped');
   assert.match(v.reason, /literal \{ and \}/);
 });
+
+test('the external verifier is told what change it is judging', () => {
+  // Without this the command got a finding and nothing else, and ran with the
+  // session's cwd, so it judged whatever the working tree happened to be. A
+  // test run of it returned a false rejection at 0.99.
+  let received = null;
+  const runner = (_command, input) => {
+    received = JSON.parse(input);
+    return { stdout: '{"verdict":"confirmed","confidence":0.9}', stderr: '', failed: false };
+  };
+
+  verifyFindings(
+    [
+      {
+        candidateId: 'cand_001',
+        path: 'src/a.ts',
+        line: 2,
+        severity: 'minor',
+        claim: 'c',
+        failureMode: 'f',
+        evidence: ['e'],
+      },
+    ],
+    { enabled: true, command: 'x', name: 'probe' },
+    {
+      cwd: '/repo',
+      runner,
+      context: {
+        repository: 'org/a',
+        diffPath: '/tmp/diff.patch',
+        base: 'base-sha',
+        head: 'head-sha',
+      },
+    },
+  );
+
+  assert.equal(received.context.repository, 'org/a');
+  assert.equal(received.context.diffPath, '/tmp/diff.patch');
+  assert.equal(received.context.base, 'base-sha');
+  assert.equal(received.context.head, 'head-sha');
+  // The finding itself is unchanged alongside it.
+  assert.equal(received.candidateId, 'cand_001');
+});
+
+test('a verifier with no supplied context is told so explicitly, not left guessing', () => {
+  let received = null;
+  const runner = (_command, input) => {
+    received = JSON.parse(input);
+    return { stdout: '{"verdict":"confirmed","confidence":0.9}', stderr: '', failed: false };
+  };
+
+  verifyFindings(
+    [
+      {
+        candidateId: 'cand_001',
+        path: 'src/a.ts',
+        line: 2,
+        severity: 'minor',
+        claim: 'c',
+        failureMode: 'f',
+        evidence: ['e'],
+      },
+    ],
+    { enabled: true, command: 'x', name: 'probe' },
+    { cwd: '/repo', runner },
+  );
+
+  assert.equal(received.context, null);
+});

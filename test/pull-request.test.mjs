@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
 import { recordRun, runDetail } from '../plugins/review-voice/src/store/runs.ts';
 
@@ -223,5 +224,124 @@ test('a complete read carries no truncation note', async () => {
   } finally {
     globalThis.fetch = original;
     delete process.env.GITHUB_TOKEN;
+  }
+});
+
+// Ref availability. `diff --pr` builds the diff from the API and never touches
+// local git, so nothing downstream had grounds to believe base or head could be
+// read. On a live run head was simply absent and the verifier fell back to the
+// patch without saying so.
+
+/** Built from parts so the identity guard does not read it as an address. */
+const sshRemote = (repo) => `${'git'}@github.com:${repo}.git`;
+
+function gitRepo(originUrl) {
+  const root = mkdtempSync(join(tmpdir(), 'rv-refs-'));
+  const git = (...args) =>
+    execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  git('init', '-q');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Test');
+  git('config', 'commit.gpgsign', 'false');
+  writeFileSync(join(root, 'a.txt'), 'a\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'one');
+  if (originUrl) git('remote', 'add', 'origin', originUrl);
+  return { root, head: git('rev-parse', 'HEAD').trim() };
+}
+
+async function pullRequestWith(shas, options) {
+  const { acquirePullRequestDiff } = await import('../plugins/review-voice/src/diff/pull-request.ts');
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (/\/pulls\/\d+$/.test(String(url))) {
+      return new Response(
+        JSON.stringify({
+          number: 7,
+          title: 't',
+          base: { sha: shas.base, ref: 'main' },
+          head: { sha: shas.head, ref: 'topic' },
+          changed_files: 1,
+          additions: 1,
+          deletions: 0,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    return new Response(
+      JSON.stringify([{ filename: 'a.txt', status: 'modified', patch: '@@ -1 +1 @@\n-a\n+b' }]),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  };
+  try {
+    process.env.GITHUB_TOKEN = 'test-token';
+    return await acquirePullRequestDiff({
+      repository: 'org/a',
+      pullNumber: 7,
+      includeGenerated: false,
+      ...options,
+    });
+  } finally {
+    globalThis.fetch = original;
+    delete process.env.GITHUB_TOKEN;
+  }
+}
+
+test('ref availability is established by asking git, not by assuming a fetch worked', async () => {
+  const { root, head } = gitRepo(null);
+  try {
+    const result = await pullRequestWith(
+      { base: head, head: '0'.repeat(40) },
+      { cwd: root },
+    );
+
+    assert.equal(result.refs.base.available, true, 'a commit that is present reads as present');
+    assert.equal(result.refs.head.available, false, 'a commit that is absent is never assumed present');
+    assert.equal(result.refs.head.sha, '0'.repeat(40));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a clone of a different repository is never fetched from', async () => {
+  // Fetching pull/<n>/head from an unrelated clone yields plausible commits
+  // from the wrong project, which is strictly worse than their absence.
+  const { root, head } = gitRepo(sshRemote('someone/unrelated'));
+  try {
+    const result = await pullRequestWith({ base: head, head: '0'.repeat(40) }, { cwd: root });
+
+    assert.equal(result.refs.fetched, false);
+    assert.match(result.refs.note, /someone\/unrelated/);
+    assert.match(result.refs.note, /wrong project/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a fetch that cannot run is not fatal, and the diff still arrives', async () => {
+  const { root, head } = gitRepo(sshRemote('org/a'));
+  try {
+    const result = await pullRequestWith({ base: head, head: '0'.repeat(40) }, { cwd: root });
+
+    // No network in the test; the fetch fails and the review proceeds.
+    assert.equal(result.reviewedFileCount, 1);
+    assert.equal(result.refs.head.available, false);
+    assert.match(result.refs.note, /could not be made available/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('when both commits are already present nothing is fetched and no note is raised', async () => {
+  const { root, head } = gitRepo(sshRemote('org/a'));
+  try {
+    const result = await pullRequestWith({ base: head, head }, { cwd: root });
+
+    assert.equal(result.refs.fetched, false);
+    assert.equal(result.refs.note, null);
+    assert.equal(result.refs.base.available, true);
+    assert.equal(result.refs.head.available, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
