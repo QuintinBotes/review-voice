@@ -31,6 +31,10 @@ export interface RecordRunInput {
   diff: string;
   output: string;
   candidates?: CandidateHint[] | undefined;
+  /** Score breakdowns, so `explain` can answer "why this finding". */
+  scores?: unknown;
+  /** Precedent ids that informed the review, for the same reason. */
+  precedents?: unknown;
 }
 
 /**
@@ -78,12 +82,10 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
     input.baseRef,
     input.headRef,
     hashDiff(input.diff),
-    // Policy layering and precedent retrieval arrive in later milestones; the
-    // columns exist now so a run recorded today stays readable then.
     JSON.stringify([]),
-    JSON.stringify([]),
+    JSON.stringify(input.precedents ?? []),
     JSON.stringify(input.candidates ?? []),
-    JSON.stringify({ output: input.output, findings }),
+    JSON.stringify({ output: input.output, findings, scores: input.scores ?? [] }),
     new Date().toISOString(),
   );
 
@@ -95,9 +97,49 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
   return { reviewRunId, findings };
 }
 
+export interface RunDetail {
+  reviewRunId: string;
+  repository: string | null;
+  createdAt: string;
+  output: string;
+  findings: StoredFinding[];
+  scores: unknown;
+  precedents: unknown;
+}
+
+/** Everything `explain` needs about a run, without re-deriving any of it. */
+export function runDetail(db: Database, reviewRunId?: string): RunDetail | null {
+  const row = (
+    reviewRunId === undefined
+      // rowid breaks the tie: two runs recorded in the same millisecond would
+      // otherwise return in arbitrary order, and "the last review" has to mean
+      // one specific review or feedback lands on the wrong finding.
+      ? db.prepare('SELECT * FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1').get()
+      : db.prepare('SELECT * FROM review_runs WHERE review_run_id = ?').get(reviewRunId)
+  ) as Record<string, unknown> | undefined;
+
+  if (row === undefined) return null;
+
+  const parsed = JSON.parse(row['output_json'] as string) as {
+    output: string;
+    findings: StoredFinding[];
+    scores?: unknown;
+  };
+
+  return {
+    reviewRunId: row['review_run_id'] as string,
+    repository: row['repository'] as string | null,
+    createdAt: row['created_at'] as string,
+    output: parsed.output,
+    findings: parsed.findings,
+    scores: parsed.scores ?? [],
+    precedents: JSON.parse(row['retrieved_precedents_json'] as string),
+  };
+}
+
 export function latestRun(db: Database): { reviewRunId: string; findings: StoredFinding[] } | null {
   const row = db
-    .prepare('SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC LIMIT 1')
+    .prepare('SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1')
     .get() as { review_run_id: string; output_json: string } | undefined;
   if (row === undefined) return null;
   const parsed = JSON.parse(row.output_json) as { findings: StoredFinding[] };

@@ -1,6 +1,6 @@
 ---
 description: Review the current diff and report only concrete, evidence-backed problems
-argument-hint: "[--base <ref>] [--staged] [--include-generated]"
+argument-hint: "[--base <ref>] [--staged] [--pr <number>] [--include-generated]"
 allowed-tools: Bash(node:*), Bash(git:*), Read, Grep, Glob, Task
 ---
 
@@ -23,7 +23,14 @@ the defect.
 
 Run `RV diff $ARGUMENTS`.
 
-Exit code 2 means this is not a git repository; report that and stop.
+With `--pr <number>` this reads the pull request through the read-only GitHub
+client instead of local git. The repository is taken from the origin remote
+unless `--repository owner/repo` is given. Naming a pull request is the consent
+for reading it, so no allowlist entry is required — the allowlist governs bulk
+history ingestion, which happens without per-item consent.
+
+Exit code 2 means this is not a git repository, or the pull request could not
+be identified; report that and stop.
 
 If `reviewedFileCount` is `0`, output exactly this and stop:
 
@@ -128,6 +135,10 @@ using the values from step 1b.
   The candidates carry each finding's category, which the rendered output
   cannot — the contract permits no text beyond the finding. Without it,
   feedback on that finding can never become a policy rule.
+
+  Pass the score breakdowns too, with `--scores <file>`, so
+  `/review-voice:explain` can show its working later. Without them a finding is
+  recorded with no account of why it was emitted.
 
   This also assigns the positional ids `/review-voice:feedback` needs. Do not
   print the ids.
