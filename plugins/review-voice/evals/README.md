@@ -5,8 +5,22 @@ exercise judgment, so they cost tokens - CI runs them nightly and on the
 `run-eval` label, not on every push.
 
 ```bash
-claude plugin eval plugins/review-voice --eval-dir evals
+claude plugin eval plugins/review-voice --eval-dir evals --trust-plugin
 ```
+
+The eval directory must live **below the plugin root**. It sat at the
+repository root until 1.2.1, so `--eval-dir evals` resolved to a directory that
+did not exist and every invocation - including the nightly CI job - exited 1
+with "No eval cases found". The suite had never run. The cases were also
+written as `case.yaml` without `schema_version`, which the loader rejects; they
+are now `prompt.md` plus `graders/`, the form `claude plugin eval init`
+scaffolds.
+
+**On macOS these cases cannot exercise the pipeline.** The eval sandbox denies
+writes to the system temp directory, and the `git` on PATH is the Xcode shim,
+which needs that directory for its `xcrun` cache. `RV diff` therefore exits 2
+at step 1 and no review agent is ever spawned. Run them in CI, where `git` is a
+real binary, or the result measures the sandbox rather than the plugin.
 
 Each case is a directory with `case.yaml` and one or more grader files.
 
