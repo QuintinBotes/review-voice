@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Reach no longer reads every path as repository-wide. `git grep -l <ref>`
+  prefixes each line with `<ref>:`, and nothing stripped it, so no hit ever
+  matched the changed file or its subtree: `local` was unreachable whenever
+  `--base` was passed, which the review command always does, and the three-way
+  distinction collapsed to two biased upward. The signature was
+  `outsideDirectoryCount` equalling `directoryCount` on every observation.
+- Reach no longer escalates a finding because it mentions a common name. A
+  `correctness` defect in one date formatter was raised a tier because the
+  claim said `Math.round`, which appeared in 58 directories of the repository
+  under review; a local `const canEdit` reached 158. A symbol is now excluded
+  from the measure when the changed file does not contain it, or when its own
+  spread is wide enough to describe the language rather than the change.
+  Excluded symbols are reported in `ignoredSymbols`.
+
 ### Added
 
 - `evals/confinement`, which probes whether a declared agent tool grant

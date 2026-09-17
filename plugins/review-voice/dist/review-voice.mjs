@@ -8761,7 +8761,8 @@ var gitGrepPaths = (symbol, cwd, ref) => {
   const args = ref === null ? ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol] : ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol, ref];
   try {
     const output = execFileSync4("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 1e4 });
-    return output.split("\0").filter((path) => path.length > 0);
+    const prefix = ref === null ? "" : `${ref}:`;
+    return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
   } catch (error) {
     if (error.status === 1) return [];
     throw error;
@@ -8827,6 +8828,7 @@ function isCode(path) {
   if (PROSE_EXTENSIONS.has(extension)) return false;
   return classify(normalisePath(path)) === "source";
 }
+var NON_DISCRIMINATING_DIRECTORIES = 12;
 function withinSubtree(path, changedDirectory) {
   if (changedDirectory === "") return false;
   const normalised = normalisePath(path);
@@ -8840,6 +8842,7 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths)
   const searchedRef = ref ?? "working tree";
   const symbols = namedSymbols(text).slice(0, 12);
   const searched = [];
+  const ignored = [];
   const hits = /* @__PURE__ */ new Set();
   const normalisedChangedPath = normalisePath(changedPath);
   const changedDirectory = directoryOf(changedPath);
@@ -8851,6 +8854,7 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths)
     return {
       reach,
       symbols: searched,
+      ignoredSymbols: [...ignored].sort(),
       paths: [...hits].sort(),
       countedPaths: counted2,
       directoryCount: directoryCount(counted2),
@@ -8862,11 +8866,22 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths)
   if (symbols.length === 0) return result(null, false);
   for (const symbol of symbols) {
     searched.push(symbol);
+    let found;
     try {
-      for (const path of search(symbol, cwd, ref)) hits.add(path);
+      found = search(symbol, cwd, ref);
     } catch {
       return result(null, true);
     }
+    const code = found.filter(isCode);
+    if (!code.some((path) => normalisePath(path) === normalisedChangedPath)) {
+      ignored.push(symbol);
+      continue;
+    }
+    if (directoryCount(code) > NON_DISCRIMINATING_DIRECTORIES) {
+      ignored.push(symbol);
+      continue;
+    }
+    for (const path of found) hits.add(path);
   }
   if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
   const counted = [...hits].filter(isCode);
