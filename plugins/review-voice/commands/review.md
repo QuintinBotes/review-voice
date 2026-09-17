@@ -44,6 +44,23 @@ Note `excludedFileCount`. Excluded files are lock files, generated output,
 vendored code and binaries. Do not comment on them, and do not mention their
 exclusion unless the user asks.
 
+**If `truncated` is true, say so.** Print `truncationNote` on its own line
+after the findings:
+
+```
+Only 300 of 480 changed files were read. This review covers part of the change.
+```
+
+This is a permitted exception to findings-only output, and it is not optional.
+Reviewing part of a change and presenting it as the whole is the one failure a
+reviewer cannot recover from, because nothing downstream can tell anything is
+missing. Silence here would be a lie by omission.
+
+A very large change is also worth naming even when nothing was truncated. If
+`totalChangedFiles` is above roughly 150, or `additions + deletions` above
+roughly 5000, the five-finding budget is thin cover for the change and the user
+should know that is what they are getting. One line, after the findings.
+
 ## Step 1b — Resolve context
 
 Run `RV context`.

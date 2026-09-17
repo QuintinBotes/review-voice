@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `review-voice diff --pr <number>`: reviews a GitHub pull request through the
   read-only client, inferring the repository from the origin remote. Naming a
   pull request is the consent for reading it, so no allowlist entry is needed.
+- Pull request acquisition reads up to GitHub's own 3000-file ceiling instead
+  of 300, applies the cap above classification rather than below it, and
+  reports `truncated` with an explicit note when files could not be read.
 - Score breakdowns carry the location they came from, so `explain` matches a
   score to its finding rather than showing every finding the first one's
   numbers.

@@ -70,6 +70,17 @@ brand-new file is exactly where defects hide. They are diffed against
 `/dev/null` rather than staged with `git add -N`, because Review Voice is
 read-only and that includes the user's index.
 
+**A truncated read says so.** Pull requests are fetched up to GitHub's own
+3000-file ceiling, and the count is compared against the `changed_files` the
+API reports. Reviewing part of a change and presenting it as the whole is the
+one failure a reviewer cannot recover from, because nothing downstream can tell
+that anything is missing.
+
+The cap sits *above* classification, not below it. Applying it first meant a
+pull request that is mostly generated code could exhaust the budget before
+reaching a single source file — reviewing the wrong part of the change, and
+saying nothing about it.
+
 **Every exclusion carries a reason.** Lock files, generated output, vendored
 code and binaries are dropped by default, and each one reports why. A silent
 omission is indistinguishable from a bug, and `--include-generated` brings them
