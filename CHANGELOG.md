@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `status` reports the last completed sync, and warns about a sync that began
+  and never recorded a finish. An empty corpus read identically whether a sync
+  had never run or one had died, and only a manual query distinguished them. A
+  run started within the last half hour is reported as neither, because a sync
+  in flight writes the same row as one that crashed.
+
 ## [0.4.0] - 2026-09-17
 
 ### Added

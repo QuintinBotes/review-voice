@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { GitHubClient } from '../plugins/review-voice/src/github/client.ts';
 import { collectRepository } from '../plugins/review-voice/src/corpus/collect.ts';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
-import { storeEvents } from '../plugins/review-voice/src/corpus/store.ts';
+import { storeEvents, corpusCoverage } from '../plugins/review-voice/src/corpus/store.ts';
+import { beginSyncRun, finishSyncRun, lastSync, unfinishedSyncRuns } from '../plugins/review-voice/src/sync/state.ts';
 import { loadWatermarks, saveWatermarks } from '../plugins/review-voice/src/sync/watermark.ts';
 
 const PULLS = [
@@ -209,4 +210,46 @@ test('the client never sends a conditional request header', async () => {
   for (const headers of seen) {
     assert.equal(headers['if-none-match'], undefined, 'a 304 would be a lie: no response body is ever kept');
   }
+});
+
+// An empty corpus reads the same whether a sync never ran or one died
+
+test('a sync that never finished is reported, not left to a manual query', async () => {
+  await withDb((db) => {
+    const id = beginSyncRun(db, ['org/a', 'org/b']);
+    // Older than the grace period, so it is not a sync still in flight.
+    db.prepare('UPDATE sync_runs SET started_at = ? WHERE sync_run_id = ?').run(
+      '2026-09-17T07:43:08.407Z',
+      id,
+    );
+
+    const unfinished = unfinishedSyncRuns(db, new Date('2026-09-17T09:00:00.000Z'));
+    assert.equal(unfinished.length, 1);
+    assert.equal(unfinished[0].startedAt, '2026-09-17T07:43:08.407Z');
+    assert.deepEqual(unfinished[0].repositories, ['org/a', 'org/b']);
+
+    const coverage = corpusCoverage(db, { now: new Date('2026-09-17T09:00:00.000Z') });
+    assert.equal(coverage.warnings.length, 1);
+    assert.match(coverage.warnings[0], /never recorded a finish/);
+    assert.match(coverage.warnings[0], /org\/a, org\/b/);
+  });
+});
+
+test('a sync that just started is not accused of having died', async () => {
+  await withDb((db) => {
+    beginSyncRun(db, ['org/a']);
+    assert.deepEqual(unfinishedSyncRuns(db), []);
+    assert.deepEqual(corpusCoverage(db).warnings, []);
+  });
+});
+
+test('a finished sync raises nothing', async () => {
+  await withDb((db) => {
+    const id = beginSyncRun(db, ['org/a']);
+    db.prepare('UPDATE sync_runs SET started_at = ? WHERE sync_run_id = ?').run('2026-09-17T07:00:00.000Z', id);
+    finishSyncRun(db, id, {}, 12);
+
+    assert.deepEqual(unfinishedSyncRuns(db, new Date('2026-09-17T09:00:00.000Z')), []);
+    assert.equal(lastSync(db).imported, 12);
+  });
 });

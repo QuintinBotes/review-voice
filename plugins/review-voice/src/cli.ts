@@ -1166,6 +1166,14 @@ function statusCommand(): number {
     if (last !== null) {
       console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(', ') || 'none'}`);
     }
+    const sync = lastSync(db);
+    console.log(
+      `last sync        ${
+        sync === null
+          ? 'never completed'
+          : `${sync.finishedAt ?? sync.startedAt}, ${sync.imported} imported from ${sync.repositories.length} repository/ies`
+      }`,
+    );
     console.log(
       `corpus           ${coverage.total} event(s)` +
         (coverage.total === 0

@@ -29,3 +29,9 @@ than leaving `calibrate` to return nothing forever.
 
 Report coverage honestly. If the corpus holds 147 of its event target, say so
 and say why. Never present a shortfall as a complete scan.
+
+`last sync` and the warnings distinguish a corpus that was never built from one
+whose build died. An empty corpus with a sync that never recorded a finish is
+not the same problem as an empty corpus with no sync at all, and it does not
+have the same fix. A sync started in the last half hour is reported as neither,
+because it may still be running.
