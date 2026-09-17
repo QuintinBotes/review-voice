@@ -138,6 +138,11 @@ Discard every candidate it does not verify. Rejection is the default when
 evidence is weak - do not argue with it, and do not reinstate a candidate
 because it seemed compelling.
 
+**Write its full output to `<tmpdir>/verification.json`.** It is not only a
+pass list: step 4 gates on the confidence it reports, because the verifier is
+the only stage that checked the claim against the repository. Without the file,
+scoring falls back to the analyst's opinion of its own work.
+
 If nothing survives, output exactly `No actionable findings.` and stop.
 
 ## Step 3b - Second-pass verification
@@ -167,14 +172,16 @@ visible instead of indistinguishable from a clean diff.
 ## Step 4 - Score against precedent
 
 Pipe the verified candidates as `{"candidates": [...]}` into
-`RV score --repository <name>`.
+`RV score --repository <name> --verification <tmpdir>/verification.json`.
 
 It retrieves weighted precedents for each candidate and returns a score
 breakdown. **Do not compute or adjust these numbers yourself** - they are
 arithmetic, and a threshold you can talk your way past is not a threshold.
 
 Keep only candidates where `eligible` is true. For the rest, `rejectedBecause`
-says why.
+says why, and `confidenceSource` says whose confidence the gate read: the
+`verifier` where it ran, the `analyst` where it did not, or `unverifiable-cap`
+where the claim itself says it could not be checked.
 
 Then order by severity: `blocking`, `important`, `minor`, `nit`, `question`.
 Within a tier, prefer the higher final score.

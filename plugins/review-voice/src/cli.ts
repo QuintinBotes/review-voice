@@ -43,6 +43,7 @@ import {
   DEFAULT_THRESHOLDS,
   type Candidate,
   type RawCandidate,
+  type Verification,
 } from './scoring/score.ts';
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
@@ -103,6 +104,13 @@ record flags:
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
   actions: ${FEEDBACK_ACTIONS.join(', ')} (hyphens accepted)
+
+score flags:
+  --verification <path>     The evidence-verifier's output. Its confidence
+                            supersedes the analyst's self-report.
+  --min-confidence <n>      Technical confidence gate (default 0.8)
+  --min-score <n>           Final score gate (default 0.78)
+  --repository <name>       Prefer precedents from this repository
 
 conventions flags:
   --files <path>            files.json from diff --out, to scope nested
@@ -312,11 +320,28 @@ function contextCommand(): number {
           ownerReviewer: config.ownerReviewer,
           allowlist: config.allowlist,
           staticEvidence: config.staticEvidence,
+          // Reported whether or not it is configured. A config written before
+          // second-pass verification existed has no `verification:` block at
+          // all, so an upgrading user silently got none of it and nothing in
+          // any command said so.
+          verification: {
+            enabled: config.verification?.enabled === true,
+            verifier: config.verification?.name ?? null,
+            configured: config.verification !== undefined,
+          },
           policy,
           // Repository-supplied policy is a proposal, never an activation:
           // see docs/adr/0006.
           pendingApproval: config.unapproved,
-          warnings: config.warnings,
+          warnings:
+            config.verification === undefined
+              ? [
+                  ...config.warnings,
+                  'No verification block in .review-voice/config.yaml, so the second-pass ' +
+                    'verifier never runs. Configs written before it existed do not have one. ' +
+                    'See the second-pass verification section of the README.',
+                ]
+              : config.warnings,
         },
         null,
         2,
@@ -560,8 +585,23 @@ function evaluateCommand(argv: string[]): number {
     } else {
       for (const metric of metrics) {
         const value = metric.value === null ? 'no data' : metric.value.toFixed(2);
-        const mark = metric.meets === null ? '  -' : metric.meets ? '  ok' : 'FAIL';
-        console.log(`${mark}  ${metric.name.padEnd(32)} ${value.padStart(8)}  target ${metric.target}`);
+        // A goal that is not met is not a failure, and printing it as one
+        // trains the reader to ignore the word.
+        const mark =
+          metric.meets === null || metric.target === 'no target'
+            ? '  -'
+            : metric.meets
+              ? '  ok'
+              : metric.kind === 'goal'
+                ? 'over'
+                : 'FAIL';
+        const target =
+          metric.target === 'no target'
+            ? 'reported, not scored'
+            : metric.kind === 'goal'
+              ? `goal ${metric.target}`
+              : `target ${metric.target}`;
+        console.log(`${mark}  ${metric.name.padEnd(32)} ${value.padStart(8)}  ${target}`);
         console.log(`      ${metric.basis}`);
       }
     }
@@ -594,6 +634,36 @@ function scoreCommand(argv: string[]): number {
     finalScore: Number(flag(argv, '--min-score') ?? DEFAULT_THRESHOLDS.finalScore),
   };
 
+  // The evidence-verifier's conclusions, keyed by candidate. Without them the
+  // gate falls back to the analyst's opinion of its own output, which is the
+  // one number in the pipeline with no evidence behind it.
+  const verifications = new Map<string, Verification>();
+  const verificationFlag = flag(argv, '--verification');
+  if (verificationFlag !== null) {
+    try {
+      const parsed = JSON.parse(readFileSync(verificationFlag, 'utf8')) as unknown;
+      const list = Array.isArray(parsed)
+        ? parsed
+        : ((parsed as { verifications?: unknown[]; candidates?: unknown[] }).verifications ??
+          (parsed as { candidates?: unknown[] }).candidates ??
+          []);
+      for (const raw of list as Record<string, unknown>[]) {
+        const id = (raw['candidate_id'] ?? raw['candidateId']) as string | undefined;
+        if (typeof id !== 'string') continue;
+        verifications.set(id, {
+          candidateId: id,
+          evidenceQuality: (raw['evidence_quality'] ?? raw['evidenceQuality']) as Verification['evidenceQuality'],
+          technicalConfidence: (raw['technical_confidence'] ?? raw['technicalConfidence']) as number | undefined,
+          requiredContextMissing: (raw['required_context_missing'] ??
+            raw['requiredContextMissing']) as string[] | undefined,
+        });
+      }
+    } catch (error) {
+      console.error(`Cannot read ${verificationFlag}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
+
   const db = openDatabase();
   try {
     const kept: Candidate[] = [];
@@ -609,7 +679,13 @@ function scoreCommand(argv: string[]): number {
         maxPositive: 3,
         maxNegative: 2,
       });
-      const breakdown = scoreCandidate(candidate, precedents, kept, thresholds);
+      const breakdown = scoreCandidate(
+        candidate,
+        precedents,
+        kept,
+        thresholds,
+        verifications.get(candidate.candidateId),
+      );
       if (breakdown.eligible) kept.push(candidate);
       results.push({ ...breakdown, precedents });
     }

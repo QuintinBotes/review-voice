@@ -16,8 +16,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instructions to the reviewer. Precedent could not reach these rules: the
   better a convention is observed, the fewer review comments it leaves behind.
 
+### Changed
+
+- Eligibility gates on the `evidence-verifier`'s confidence rather than the
+  analyst's self-report, via `score --verification <path>`. The verifier is the
+  only stage that checks a claim against the repository; the analyst's number
+  was the one input in the pipeline with no evidence behind it.
+- `RV context` reports whether second-pass verification is configured, and warns
+  when the config has no `verification` block at all. Configs written before it
+  existed have none, so upgrading users silently got none of it.
+- `RV evaluate` separates gates from goals. `median_words_per_finding` asked for
+  28 while the contract allows 40, so every compliant review failed a metric it
+  had not broken. Findings-per-review counts are now reported without a target:
+  they carried caps of 2 and 5 from before the output contract stopped limiting
+  findings.
+- The candidate schema allows 50 candidates rather than 20, so a large diff is
+  not truncated before scoring sees it.
+- The `diff-analyst` prompt now carries a severity rubric, because severity was
+  not stable between runs on an identical diff and ordering is severity-first.
+
 ### Fixed
 
+- A claim whose own evidence says it could not be verified is capped below the
+  confidence gate instead of shipping. Observed at confidence 0.8 alongside the
+  bullet "the keys' existence cannot be verified here".
+- `evidenceQuality` accepted "longer than 40 characters" as specificity, which
+  every analyst bullet satisfies, so it scored 1.000 on every candidate and
+  contributed a constant to every score. It now requires an actual anchor.
 - Novelty is measured against the corpus, not only against the other findings
   in the current review. A candidate that repeats a comment already published
   on that line is rejected and names the precedent it repeats, and that

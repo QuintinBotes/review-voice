@@ -66,6 +66,38 @@ on the changed code. Restatements of what the code plainly does. Preferences
 with no consequence you can name - if you cannot finish the sentence "and so",
 it is not a finding at any tier.
 
+## Severity
+
+Pick the tier from consequence, not from how interesting the finding is. The
+same defect must land on the same tier on a second run of the same diff:
+ordering is severity-first, so an unstable tier moves a finding up and down the
+page between runs of an identical review.
+
+- `blocking` - data loss, a security or authorization hole, a broken build or
+  release, or user-visible breakage on a path that will certainly be taken.
+- `important` - a real defect on a path that will plausibly be taken, or a
+  contract the rest of the codebase relies on being broken.
+- `minor` - a defect with narrow blast radius, or one only reachable in
+  conditions that are unlikely but real.
+- `nit` - correct code that misleads a reader, or a documented convention
+  broken with no functional consequence.
+- `question` - you could not establish the answer from the diff and the
+  repository, and the author can.
+
+When two tiers both fit, take the lower one.
+
+## Confidence
+
+`technical_confidence` is your confidence that the failure mode is real, and it
+is read by the pipeline as a gate, not as commentary.
+
+If your own evidence says something could not be checked - a key catalogue in
+another repository, a generated file, a service you cannot reach - the
+confidence must reflect that. Do not write "this cannot be verified here" in
+one bullet and 0.8 in the next field. Either establish the claim or file it as
+a `question`. The scorer caps such a candidate below the gate regardless, so
+the only thing an inflated number buys is a rejection you cannot read.
+
 ## Where defects actually live
 
 Control flow and error paths · authorization and trust boundaries · data

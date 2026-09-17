@@ -199,6 +199,32 @@ exit code is still evidence.
 A check that did not run is reported as such. The reviewer must never imply a
 check passed when it never executed.
 
+### Whose confidence the gate reads
+
+Eligibility used to be gated on `technical_confidence`, a number the analyst
+writes about its own output and the one input in the pipeline with no evidence
+behind it. In a real run both rejections read "technical confidence 0.75 is
+below 0.8" on candidates the `evidence-verifier` had just rated high, and the
+precedent-derived signals rejected nothing at all. An analyst returning 0.9 on
+everything would have faced no gate.
+
+The verifier is the only stage that checks a claim against the repository, so
+its confidence supersedes the analyst's and the breakdown records which was
+used. Verification is no longer a stage that costs a full agent run and then
+changes nothing but which candidates arrive.
+
+Two things cap that confidence below every default gate, whatever either stage
+claims: context the verifier needed and could not obtain, and an admission in
+the candidate's own evidence that the claim could not be checked. The second
+was observed verbatim - "No local key catalogue exists in the repo, so the
+keys' existence cannot be verified here", filed at 0.8 - and is exactly how a
+review comment ends up retracted.
+
+`evidenceQuality` scored specificity as "names a line **or** is longer than 40
+characters". Analyst evidence is always longer than 40 characters, so the term
+returned 1.000 for every candidate in that run: fifteen percent of the score
+carrying no information. Specificity now requires an actual anchor.
+
 ### Repository conventions
 
 `RV conventions` collects the repository's own `CLAUDE.md`, `AGENTS.md`,

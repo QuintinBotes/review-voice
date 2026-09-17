@@ -25,11 +25,54 @@ export interface Candidate {
   path: string;
   line: number;
   category: string;
-  severity: 'blocking' | 'important' | 'minor';
+  severity: 'blocking' | 'important' | 'minor' | 'nit' | 'question';
   claim: string;
   failureMode: string;
   evidence: string[];
   technicalConfidence: number;
+}
+
+/**
+ * What the `evidence-verifier` concluded, when it ran.
+ *
+ * The verifier is the only stage that actually checks a claim against the
+ * repository, and until now its conclusion reached scoring only by deciding
+ * which candidates arrived. Its confidence supersedes the analyst's.
+ */
+export interface Verification {
+  candidateId: string;
+  evidenceQuality?: 'high' | 'medium' | 'low' | undefined;
+  technicalConfidence?: number | undefined;
+  /** Context the verifier needed and could not obtain. */
+  requiredContextMissing?: string[] | undefined;
+}
+
+/** Used when the verifier reports a tier rather than a number. */
+const QUALITY_CONFIDENCE: Record<string, number> = { high: 0.9, medium: 0.75, low: 0.5 };
+
+/**
+ * The ceiling for a claim nobody could check.
+ *
+ * Below every default gate, so such a candidate is rejected rather than merely
+ * discounted. A reviewer that states it cannot verify something and ships the
+ * claim anyway is the failure that produces a retracted comment.
+ */
+export const UNVERIFIABLE_CONFIDENCE = 0.6;
+
+/**
+ * An admission, in the candidate's own evidence, that the claim could not be
+ * checked. Observed verbatim as "No local key catalogue exists in the repo, so
+ * the keys' existence cannot be verified here", filed at confidence 0.8.
+ */
+const ADMITS_UNVERIFIABLE = [
+  /\b(?:cannot|can not|could not|couldn't|unable to)\s+(?:be\s+)?(?:verif|confirm|check|establish|determin)/i,
+  /\bnot\s+verifiable\b/i,
+  /\bwithout\s+access\s+to\b/i,
+  /\bno\s+way\s+to\s+(?:verify|confirm|check)\b/i,
+];
+
+function admitsUnverifiable(candidate: Candidate): boolean {
+  return candidate.evidence.some((item) => ADMITS_UNVERIFIABLE.some((pattern) => pattern.test(item)));
 }
 
 export interface ScoreBreakdown {
@@ -42,7 +85,14 @@ export interface ScoreBreakdown {
    */
   path: string;
   line: number;
+  /** The confidence actually gated on, after supersession and any cap. */
   technicalConfidence: number;
+  /** What the analyst claimed about its own output. */
+  analystConfidence: number;
+  /** What the verifier concluded, when it ran. */
+  verifiedConfidence: number | null;
+  /** Why the effective confidence differs from the analyst's, when it does. */
+  confidenceSource: 'analyst' | 'verifier' | 'unverifiable-cap';
   ownerAlignment: number;
   repositoryAlignment: number;
   evidenceQuality: number;
@@ -183,14 +233,32 @@ function alignmentFrom(precedents: Precedent[]): number {
 }
 
 /**
+ * Something that ties an observation to a specific place in the code: a line
+ * reference, a path, an identifier, or quoted source.
+ */
+const ANCHORED = [
+  /\bline\s+\d+/i,
+  /:\d+\b/,
+  /`[^`]+`/,
+  /\b[\w$]+\.(?:ts|tsx|js|jsx|cs|py|go|rb|java|kt|rs|sql|ya?ml|json)\b/i,
+  /\b[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*\b/,
+  /\b[A-Z][A-Z0-9]+_[A-Z0-9_]+\b/,
+];
+
+/**
  * Evidence quality rewards specificity, not volume. Three vague observations
  * are not better evidence than one that names a line.
+ *
+ * Specificity used to accept "longer than 40 characters", which every analyst
+ * bullet satisfies, so the term scored 1.000 on every candidate in a real run:
+ * a fixed 0.15 added to every score, carrying no information. An anchor has to
+ * be an actual anchor.
  */
 function evidenceQuality(candidate: Candidate): number {
   const items = candidate.evidence.filter((item) => item.trim().length > 0);
   if (items.length === 0) return 0;
 
-  const specific = items.filter((item) => /\b(line|:\d+|\bat \d+)/i.test(item) || item.length > 40).length;
+  const specific = items.filter((item) => ANCHORED.some((pattern) => pattern.test(item))).length;
   const breadth = Math.min(1, items.length / 3);
   const depth = specific / items.length;
   return 0.4 * breadth + 0.6 * depth;
@@ -239,7 +307,29 @@ export function scoreCandidate(
   precedents: Precedent[],
   kept: Candidate[],
   thresholds: Thresholds = DEFAULT_THRESHOLDS,
+  verification?: Verification | undefined,
 ): ScoreBreakdown {
+  const analystConfidence = candidate.technicalConfidence;
+
+  const verifiedConfidence =
+    verification === undefined
+      ? null
+      : (verification.technicalConfidence ??
+        (verification.evidenceQuality === undefined
+          ? null
+          : (QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null)));
+
+  // The verifier is the only stage that checks the claim against the
+  // repository, so where the two disagree it is the one with evidence.
+  let confidence = verifiedConfidence ?? analystConfidence;
+  let confidenceSource: ScoreBreakdown['confidenceSource'] = verifiedConfidence === null ? 'analyst' : 'verifier';
+
+  const missingContext = (verification?.requiredContextMissing ?? []).length > 0;
+  if ((missingContext || admitsUnverifiable(candidate)) && confidence > UNVERIFIABLE_CONFIDENCE) {
+    confidence = UNVERIFIABLE_CONFIDENCE;
+    confidenceSource = 'unverifiable-cap';
+  }
+
   const alreadySaid = duplicatePrecedent(candidate, precedents);
 
   // A precedent that already states this finding on this line is evidence that
@@ -257,7 +347,7 @@ export function scoreCandidate(
   const novel = alreadySaid === null ? novelty(candidate, kept, precedents) : 0;
 
   const finalScore =
-    0.35 * candidate.technicalConfidence +
+    0.35 * confidence +
     0.25 * ownerAlignment +
     0.15 * repositoryAlignment +
     0.15 * quality +
@@ -266,15 +356,18 @@ export function scoreCandidate(
   let rejectedBecause: string | null = null;
   // Checked explicitly: every comparison against NaN is false, so a
   // non-finite score would otherwise pass both thresholds below.
-  if (!Number.isFinite(finalScore) || !Number.isFinite(candidate.technicalConfidence)) {
+  if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
     rejectedBecause = 'score could not be computed from this candidate';
   } else if (alreadySaid !== null) {
     // Not left to the weights. Novelty carries a tenth of the score, so a
     // confident candidate with strong evidence still clears the threshold
     // while repeating a comment already published on that line.
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
-  } else if (candidate.technicalConfidence < thresholds.technicalConfidence) {
-    rejectedBecause = `technical confidence ${candidate.technicalConfidence.toFixed(2)} is below ${thresholds.technicalConfidence}`;
+  } else if (confidence < thresholds.technicalConfidence) {
+    rejectedBecause =
+      confidenceSource === 'unverifiable-cap'
+        ? `the claim states it could not be verified, so confidence is capped at ${UNVERIFIABLE_CONFIDENCE}, below ${thresholds.technicalConfidence}`
+        : `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${thresholds.technicalConfidence}`;
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(2)} is below ${thresholds.finalScore}`;
   }
@@ -283,7 +376,10 @@ export function scoreCandidate(
     candidateId: candidate.candidateId,
     path: candidate.path,
     line: candidate.line,
-    technicalConfidence: candidate.technicalConfidence,
+    technicalConfidence: confidence,
+    analystConfidence,
+    verifiedConfidence,
+    confidenceSource,
     ownerAlignment,
     repositoryAlignment,
     evidenceQuality: quality,

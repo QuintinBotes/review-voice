@@ -8725,6 +8725,17 @@ function retrievePrecedents(db, query) {
 }
 
 // plugins/review-voice/src/scoring/score.ts
+var QUALITY_CONFIDENCE = { high: 0.9, medium: 0.75, low: 0.5 };
+var UNVERIFIABLE_CONFIDENCE = 0.6;
+var ADMITS_UNVERIFIABLE = [
+  /\b(?:cannot|can not|could not|couldn't|unable to)\s+(?:be\s+)?(?:verif|confirm|check|establish|determin)/i,
+  /\bnot\s+verifiable\b/i,
+  /\bwithout\s+access\s+to\b/i,
+  /\bno\s+way\s+to\s+(?:verify|confirm|check)\b/i
+];
+function admitsUnverifiable(candidate) {
+  return candidate.evidence.some((item) => ADMITS_UNVERIFIABLE.some((pattern) => pattern.test(item)));
+}
 var DEFAULT_THRESHOLDS = {
   technicalConfidence: 0.8,
   finalScore: 0.78
@@ -8785,10 +8796,18 @@ function alignmentFrom(precedents) {
   const total = precedents.reduce((sum, p) => sum + p.weight * (p.matchStrength ?? 1), 0);
   return 1 / (1 + Math.exp(-total));
 }
+var ANCHORED = [
+  /\bline\s+\d+/i,
+  /:\d+\b/,
+  /`[^`]+`/,
+  /\b[\w$]+\.(?:ts|tsx|js|jsx|cs|py|go|rb|java|kt|rs|sql|ya?ml|json)\b/i,
+  /\b[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*\b/,
+  /\b[A-Z][A-Z0-9]+_[A-Z0-9_]+\b/
+];
 function evidenceQuality(candidate) {
   const items = candidate.evidence.filter((item) => item.trim().length > 0);
   if (items.length === 0) return 0;
-  const specific = items.filter((item) => /\b(line|:\d+|\bat \d+)/i.test(item) || item.length > 40).length;
+  const specific = items.filter((item) => ANCHORED.some((pattern) => pattern.test(item))).length;
   const breadth = Math.min(1, items.length / 3);
   const depth = specific / items.length;
   return 0.4 * breadth + 0.6 * depth;
@@ -8808,7 +8827,16 @@ function novelty(candidate, kept, precedents) {
   }
   return worst;
 }
-function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS) {
+function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification) {
+  const analystConfidence = candidate.technicalConfidence;
+  const verifiedConfidence = verification === void 0 ? null : verification.technicalConfidence ?? (verification.evidenceQuality === void 0 ? null : QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null);
+  let confidence = verifiedConfidence ?? analystConfidence;
+  let confidenceSource = verifiedConfidence === null ? "analyst" : "verifier";
+  const missingContext = (verification?.requiredContextMissing ?? []).length > 0;
+  if ((missingContext || admitsUnverifiable(candidate)) && confidence > UNVERIFIABLE_CONFIDENCE) {
+    confidence = UNVERIFIABLE_CONFIDENCE;
+    confidenceSource = "unverifiable-cap";
+  }
   const alreadySaid = duplicatePrecedent(candidate, precedents);
   const forAlignment = alreadySaid === null ? precedents : precedents.filter((p) => !sameLocation(candidate, p));
   const ownerPrecedents = forAlignment.filter((p) => p.role === "owner");
@@ -8817,14 +8845,14 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const repositoryAlignment = alignmentFrom(repositoryPrecedents);
   const quality = evidenceQuality(candidate);
   const novel = alreadySaid === null ? novelty(candidate, kept, precedents) : 0;
-  const finalScore = 0.35 * candidate.technicalConfidence + 0.25 * ownerAlignment + 0.15 * repositoryAlignment + 0.15 * quality + 0.1 * novel;
+  const finalScore = 0.35 * confidence + 0.25 * ownerAlignment + 0.15 * repositoryAlignment + 0.15 * quality + 0.1 * novel;
   let rejectedBecause = null;
-  if (!Number.isFinite(finalScore) || !Number.isFinite(candidate.technicalConfidence)) {
+  if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
     rejectedBecause = "score could not be computed from this candidate";
   } else if (alreadySaid !== null) {
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
-  } else if (candidate.technicalConfidence < thresholds.technicalConfidence) {
-    rejectedBecause = `technical confidence ${candidate.technicalConfidence.toFixed(2)} is below ${thresholds.technicalConfidence}`;
+  } else if (confidence < thresholds.technicalConfidence) {
+    rejectedBecause = confidenceSource === "unverifiable-cap" ? `the claim states it could not be verified, so confidence is capped at ${UNVERIFIABLE_CONFIDENCE}, below ${thresholds.technicalConfidence}` : `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${thresholds.technicalConfidence}`;
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(2)} is below ${thresholds.finalScore}`;
   }
@@ -8832,7 +8860,10 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     candidateId: candidate.candidateId,
     path: candidate.path,
     line: candidate.line,
-    technicalConfidence: candidate.technicalConfidence,
+    technicalConfidence: confidence,
+    analystConfidence,
+    verifiedConfidence,
+    confidenceSource,
     ownerAlignment,
     repositoryAlignment,
     evidenceQuality: quality,
@@ -9076,12 +9107,13 @@ function computeMetrics(db) {
   const dismissed = by["dismiss"] ?? 0;
   const labelled = kept + dismissed;
   const ratio = (numerator, denominator) => denominator === 0 ? null : numerator / denominator;
-  const metric = (name, value, target, meets, basis) => ({
+  const metric = (name, value, target, meets, basis, kind = "gate") => ({
     name,
     value,
     target,
     meets: value === null ? null : meets(value),
-    basis
+    basis,
+    kind
   });
   return [
     metric(
@@ -9093,10 +9125,41 @@ function computeMetrics(db) {
       // would make the reviewer look worse the quieter its user is.
       `(${kept} kept or rewritten) / (${labelled} labelled); unlabelled excluded`
     ),
-    metric("median_findings_per_review", median(findingsPerRun), "<= 2", (v) => v <= 2, `${runs.length} runs`),
-    metric("p95_findings_per_review", percentile(findingsPerRun, 95), "<= 5", (v) => v <= 5, `${runs.length} runs`),
-    metric("median_words_per_finding", median(wordsPerFinding), "<= 28", (v) => v <= 28, `${wordsPerFinding.length} findings`),
-    metric("p95_words_per_finding", percentile(wordsPerFinding, 95), "<= 40", (v) => v <= 40, `${wordsPerFinding.length} findings`),
+    // Counts are a property of the pull requests reviewed, not of the
+    // reviewer. Since the output contract stopped capping findings, a run that
+    // correctly reports nine defects in a large diff was failing a target that
+    // asked it to report two.
+    metric(
+      "median_findings_per_review",
+      median(findingsPerRun),
+      "no target",
+      () => true,
+      `${runs.length} runs; a count reflects the diff, not the reviewer`,
+      "goal"
+    ),
+    metric(
+      "p95_findings_per_review",
+      percentile(findingsPerRun, 95),
+      "no target",
+      () => true,
+      `${runs.length} runs; a count reflects the diff, not the reviewer`,
+      "goal"
+    ),
+    metric(
+      "median_words_per_finding",
+      median(wordsPerFinding),
+      "<= 28",
+      (v) => v <= 28,
+      `${wordsPerFinding.length} findings; the contract ceiling is 40, this is the brevity to aim for`,
+      "goal"
+    ),
+    metric(
+      "p95_words_per_finding",
+      percentile(wordsPerFinding, 95),
+      "<= 40",
+      (v) => v <= 40,
+      `${wordsPerFinding.length} findings; this is the contract ceiling the validator enforces`
+    ),
     metric(
       "contract_compliance",
       ratio(compliantOutputs, runs.length),
@@ -9283,6 +9346,13 @@ feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
   actions: ${FEEDBACK_ACTIONS.join(", ")} (hyphens accepted)
 
+score flags:
+  --verification <path>     The evidence-verifier's output. Its confidence
+                            supersedes the analyst's self-report.
+  --min-confidence <n>      Technical confidence gate (default 0.8)
+  --min-score <n>           Final score gate (default 0.78)
+  --repository <name>       Prefer precedents from this repository
+
 conventions flags:
   --files <path>            files.json from diff --out, to scope nested
                             CLAUDE.md and AGENTS.md to the changed subtrees
@@ -9460,11 +9530,23 @@ function contextCommand() {
           ownerReviewer: config.ownerReviewer,
           allowlist: config.allowlist,
           staticEvidence: config.staticEvidence,
+          // Reported whether or not it is configured. A config written before
+          // second-pass verification existed has no `verification:` block at
+          // all, so an upgrading user silently got none of it and nothing in
+          // any command said so.
+          verification: {
+            enabled: config.verification?.enabled === true,
+            verifier: config.verification?.name ?? null,
+            configured: config.verification !== void 0
+          },
           policy,
           // Repository-supplied policy is a proposal, never an activation:
           // see docs/adr/0006.
           pendingApproval: config.unapproved,
-          warnings: config.warnings
+          warnings: config.verification === void 0 ? [
+            ...config.warnings,
+            "No verification block in .review-voice/config.yaml, so the second-pass verifier never runs. Configs written before it existed do not have one. See the second-pass verification section of the README."
+          ] : config.warnings
         },
         null,
         2
@@ -9666,8 +9748,9 @@ function evaluateCommand(argv) {
     } else {
       for (const metric of metrics) {
         const value = metric.value === null ? "no data" : metric.value.toFixed(2);
-        const mark = metric.meets === null ? "  -" : metric.meets ? "  ok" : "FAIL";
-        console.log(`${mark}  ${metric.name.padEnd(32)} ${value.padStart(8)}  target ${metric.target}`);
+        const mark = metric.meets === null || metric.target === "no target" ? "  -" : metric.meets ? "  ok" : metric.kind === "goal" ? "over" : "FAIL";
+        const target = metric.target === "no target" ? "reported, not scored" : metric.kind === "goal" ? `goal ${metric.target}` : `target ${metric.target}`;
+        console.log(`${mark}  ${metric.name.padEnd(32)} ${value.padStart(8)}  ${target}`);
         console.log(`      ${metric.basis}`);
       }
     }
@@ -9694,6 +9777,27 @@ function scoreCommand(argv) {
     technicalConfidence: Number(flag(argv, "--min-confidence") ?? DEFAULT_THRESHOLDS.technicalConfidence),
     finalScore: Number(flag(argv, "--min-score") ?? DEFAULT_THRESHOLDS.finalScore)
   };
+  const verifications = /* @__PURE__ */ new Map();
+  const verificationFlag = flag(argv, "--verification");
+  if (verificationFlag !== null) {
+    try {
+      const parsed = JSON.parse(readFileSync4(verificationFlag, "utf8"));
+      const list = Array.isArray(parsed) ? parsed : parsed.verifications ?? parsed.candidates ?? [];
+      for (const raw of list) {
+        const id = raw["candidate_id"] ?? raw["candidateId"];
+        if (typeof id !== "string") continue;
+        verifications.set(id, {
+          candidateId: id,
+          evidenceQuality: raw["evidence_quality"] ?? raw["evidenceQuality"],
+          technicalConfidence: raw["technical_confidence"] ?? raw["technicalConfidence"],
+          requiredContextMissing: raw["required_context_missing"] ?? raw["requiredContextMissing"]
+        });
+      }
+    } catch (error) {
+      console.error(`Cannot read ${verificationFlag}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
   const db = openDatabase();
   try {
     const kept = [];
@@ -9706,7 +9810,13 @@ function scoreCommand(argv) {
         maxPositive: 3,
         maxNegative: 2
       });
-      const breakdown = scoreCandidate(candidate, precedents, kept, thresholds);
+      const breakdown = scoreCandidate(
+        candidate,
+        precedents,
+        kept,
+        thresholds,
+        verifications.get(candidate.candidateId)
+      );
       if (breakdown.eligible) kept.push(candidate);
       results.push({ ...breakdown, precedents });
     }

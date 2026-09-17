@@ -336,3 +336,120 @@ test('an unanchored precedent can never be a repeat', () => {
   assert.equal(result.duplicateOfPrecedent, null);
   assert.equal(result.eligible, true);
 });
+
+// Whose confidence the gate actually reads
+//
+// Both rejections in a real run read "technical confidence 0.75 is below 0.8",
+// a number the analyst wrote about its own output, on candidates the verifier
+// had just rated high.
+
+test("the verifier's conclusion supersedes the analyst's self-report", () => {
+  // 0.75 from the analyst was rejected outright in a real run, on a candidate
+  // the verifier had just rated high.
+  const result = scoreCandidate(candidate({ technicalConfidence: 0.75 }), [precedent()], [], DEFAULT_THRESHOLDS, {
+    candidateId: 'cand_001',
+    evidenceQuality: 'high',
+  });
+  assert.equal(result.analystConfidence, 0.75);
+  assert.equal(result.verifiedConfidence, 0.9);
+  assert.equal(result.technicalConfidence, 0.9);
+  assert.equal(result.confidenceSource, 'verifier');
+  assert.equal(result.eligible, true);
+});
+
+test('the verifier can lower confidence as well as raise it', () => {
+  const result = scoreCandidate(candidate({ technicalConfidence: 0.95 }), [], [], DEFAULT_THRESHOLDS, {
+    candidateId: 'cand_001',
+    evidenceQuality: 'low',
+  });
+  assert.equal(result.technicalConfidence, 0.5);
+  assert.equal(result.eligible, false);
+});
+
+test('an explicit verifier confidence beats its own quality tier', () => {
+  const result = scoreCandidate(candidate(), [], [], DEFAULT_THRESHOLDS, {
+    candidateId: 'cand_001',
+    evidenceQuality: 'low',
+    technicalConfidence: 0.88,
+  });
+  assert.equal(result.technicalConfidence, 0.88);
+});
+
+test('without a verification the analyst is still what there is', () => {
+  const result = scoreCandidate(candidate({ technicalConfidence: 0.91 }), [], []);
+  assert.equal(result.confidenceSource, 'analyst');
+  assert.equal(result.verifiedConfidence, null);
+  assert.equal(result.technicalConfidence, 0.91);
+});
+
+// A claim nobody could check
+
+test('a candidate whose own evidence admits it is unverifiable cannot ship', () => {
+  // Observed verbatim, filed at 0.8, in two consecutive runs.
+  const result = scoreCandidate(
+    candidate({
+      technicalConfidence: 0.8,
+      evidence: [
+        'lt() is called at line 40 with a key that is not defined locally.',
+        "No local key catalogue exists in the repo, so the keys' existence cannot be verified here.",
+      ],
+    }),
+    [],
+    [],
+  );
+  assert.equal(result.technicalConfidence, 0.6);
+  assert.equal(result.confidenceSource, 'unverifiable-cap');
+  assert.equal(result.eligible, false);
+  assert.match(result.rejectedBecause, /could not be verified/);
+});
+
+test('the cap holds even when the verifier says high', () => {
+  // The verifier passed this same claim twice. A dependency on a repository
+  // nobody in the pipeline can read is not resolved by asserting harder.
+  const result = scoreCandidate(
+    candidate({ evidence: ['This cannot be confirmed without access to the sibling repository.'] }),
+    [],
+    [],
+    DEFAULT_THRESHOLDS,
+    { candidateId: 'cand_001', evidenceQuality: 'high' },
+  );
+  assert.equal(result.technicalConfidence, 0.6);
+  assert.equal(result.eligible, false);
+});
+
+test('context the verifier could not obtain caps confidence too', () => {
+  const result = scoreCandidate(candidate(), [], [], DEFAULT_THRESHOLDS, {
+    candidateId: 'cand_001',
+    evidenceQuality: 'high',
+    requiredContextMissing: ['the localization key catalogue, which lives in another repository'],
+  });
+  assert.equal(result.confidenceSource, 'unverifiable-cap');
+  assert.equal(result.eligible, false);
+});
+
+// Evidence quality has to be able to fail
+
+test('evidence with no anchor scores low, where length alone once scored full', () => {
+  const vague = candidate({
+    evidence: [
+      'the change appears to alter behaviour in ways that may not be intended by the author here',
+      'this pattern is generally discouraged in production code and should probably be avoided',
+      'there are potential issues with how the logic has been restructured in this particular case',
+    ],
+  });
+  const result = scoreCandidate(vague, [], []);
+  // Three bullets, none anchored: full breadth, zero depth.
+  assert.equal(Math.round(result.evidenceQuality * 1000) / 1000, 0.4);
+});
+
+test('anchored evidence scores on how much of it is anchored', () => {
+  // Two of the three bullets name a line; the third names nothing. Under the
+  // old length test all three counted and every candidate scored 1.000.
+  const result = scoreCandidate(candidate(), [], []);
+  assert.equal(Math.round(result.evidenceQuality * 1000) / 1000, 0.8);
+
+  const allAnchored = candidate({
+    evidence: ['Transaction begins at line 65.', 'Response is returned at line 84.', 'Commit runs at line 91.'],
+  });
+  assert.equal(scoreCandidate(allAnchored, [], []).evidenceQuality, 1);
+});

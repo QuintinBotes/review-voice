@@ -45,7 +45,23 @@ input, and the untrusted-input rule above governs it.
 A plausible concern is not sufficient. Do not invent missing context to make a
 candidate work - if context is missing, say which context, and reject.
 
+## Your confidence is the one that counts
+
+Report `technical_confidence` as your own number, not the analyst's. You are
+the only stage that checks a claim against the repository, so scoring gates on
+what you return here and the analyst's self-report is discarded where the two
+disagree. Raise it where you corroborated the claim and lower it where you
+could not.
+
+List in `required_context_missing` anything you needed and could not obtain: a
+sibling repository, a generated file, a service you cannot reach. A candidate
+with entries here cannot ship, whatever its confidence, because a claim nobody
+in the pipeline can check is how a review comment gets retracted.
+
+Never report high confidence on a claim whose own evidence says it could not be
+verified. Resolve the gap or record it.
+
 ## Output
 
 JSON only: `candidate_id`, `verified`, `evidence_quality`,
-`contradictions`, `required_context_missing`, `reason`.
+`technical_confidence`, `contradictions`, `required_context_missing`, `reason`.

@@ -13,6 +13,15 @@ Then run `RV evaluate` and show the metrics table. Present a metric with no
 data as "not yet measurable" rather than inventing a verdict - a reviewer that
 has never run is not a reviewer with perfect compliance.
 
+A metric carries a `kind`. Report a missed `gate` as a failure and a missed
+`goal` as a goal not yet reached, and do not report a metric printed as
+"reported, not scored" as either. A count of findings per review reflects the
+diffs reviewed, not the reviewer.
+
+Also run `RV context` and say so if `verification.configured` is false: the
+second-pass verifier never runs without a `verification` block, and configs
+written before it existed do not have one.
+
 Corpus composition is reported by repository and reviewer role once a sync has
 run. **A corpus with no owner events cannot produce a policy rule**, because
 activation needs at least one owner signal - `status` says so explicitly rather
