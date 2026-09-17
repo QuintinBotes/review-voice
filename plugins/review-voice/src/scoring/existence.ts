@@ -37,8 +37,24 @@ const ASSERTS_ABSENCE = [
  */
 export type AbsenceScope = 'repository' | 'bounded' | 'elsewhere';
 
+/**
+ * Determiners, stripped before a complement is classified.
+ *
+ * Only `the` was stripped, so "in this repository" fell through to be read as a
+ * named unit with the determiner captured as the name, and "in this codebase"
+ * fell through to bounded. One normalisation rather than a pattern per word.
+ */
+const DETERMINER = /^(?:the|this|that|these|those|our|your|their|its|his|her|my|a|an)\s+/i;
+
+function withoutDeterminer(complement: string): string {
+  let text = complement.trim().replace(/[`'"]/g, '');
+  // "in this whole repository" carries two.
+  for (let i = 0; i < 3; i += 1) text = text.replace(DETERMINER, '');
+  return text.trim();
+}
+
 /** Words naming the repository under review, whatever it is called. */
-const GENERIC_REPOSITORY = /^(?:the\s+)?(?:entire\s+|whole\s+)?(?:repo|repository|code\s?base|project|tree)\b/i;
+const GENERIC_REPOSITORY = /^(?:entire\s+|whole\s+)?(?:mono)?(?:repo|repository|code\s?base|project|tree)\b/i;
 
 /** A complement naming a distinct published unit rather than a place inside one. */
 const NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
@@ -61,8 +77,11 @@ function namesThisRepository(complement: string, repository: string | null): boo
   const candidates = [repository, repository.split('/').pop() ?? repository]
     .map((name) => name.trim().toLowerCase())
     .filter((name) => name.length > 0);
-  const said = complement.trim().toLowerCase().replace(/^the\s+/, '').replace(/[`'"]/g, '');
-  return candidates.some((name) => said === name || said === `${name} repository` || said === `${name} repo`);
+
+  const said = withoutDeterminer(complement).toLowerCase();
+  return candidates.some((name) =>
+    [name, `${name} repository`, `${name} repo`, `${name} monorepo`, `${name} codebase`].includes(said),
+  );
 }
 
 /**
@@ -89,9 +108,11 @@ export function absenceScope(text: string, repository: string | null = null): Ab
   if (locative === null) return 'repository';
 
   const complement = (locative[1] ?? '').trim();
-  if (GENERIC_REPOSITORY.test(complement)) return 'repository';
+  const bare = withoutDeterminer(complement);
+
+  if (GENERIC_REPOSITORY.test(bare)) return 'repository';
   if (namesThisRepository(complement, repository)) return 'repository';
-  if (ANOTHER_UNIT.test(complement) || NAMED_UNIT.test(complement) || NAMED_UNIT_SUFFIX.test(complement)) {
+  if (ANOTHER_UNIT.test(complement) || NAMED_UNIT.test(bare) || NAMED_UNIT_SUFFIX.test(bare)) {
     return 'elsewhere';
   }
 

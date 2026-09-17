@@ -118,7 +118,12 @@ score flags:
   --exclude-pull <n>        Drop precedents from this pull request. Pass the
                             pull request under review: its own comments are
                             the conversation, not evidence of general taste.
-  --min-confidence <n>      Technical confidence gate (default 0.8)
+  --min-confidence <n>      Gate on a confidence the verifier established
+                            (default 0.8)
+  --min-analyst-confidence <n>
+                            Gate when only the analyst's self-report exists
+                            (default 0.7). A different measurement, so a
+                            different number.
   --min-score <n>           Final score gate (default 0.78)
   --repository <name>       Prefer precedents from this repository
 
@@ -650,6 +655,9 @@ function scoreCommand(argv: string[]): number {
 
   const thresholds = {
     technicalConfidence: Number(flag(argv, '--min-confidence') ?? DEFAULT_THRESHOLDS.technicalConfidence),
+    analystOnlyConfidence: Number(
+      flag(argv, '--min-analyst-confidence') ?? DEFAULT_THRESHOLDS.analystOnlyConfidence,
+    ),
     finalScore: Number(flag(argv, '--min-score') ?? DEFAULT_THRESHOLDS.finalScore),
   };
 
@@ -806,6 +814,10 @@ function scoreCommand(argv: string[]): number {
             // gate had already rejected, so the block overstated the yield in
             // exactly the place the operator is asked to report it.
             cleared: results.filter((r) => r.eligible).length,
+            // Named, because a run scored without verification has no
+            // precision defence beyond precedent, and that should not be
+            // something the reader has to infer from a missing flag.
+            gatedOnAnalystSelfReport: results.filter((r) => r.confidenceSource === 'analyst').length,
             aboveThreshold: finals.filter((v) => v >= thresholds.finalScore).length,
           },
           // Enough to carry a survivor forward without rejoining by hand.

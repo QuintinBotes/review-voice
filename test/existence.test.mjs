@@ -246,3 +246,21 @@ test('without a repository name the generic wording still works', () => {
   assert.equal(absenceScope('`DataGridRow.tsx` does not exist in the repository.'), 'repository');
   assert.equal(absenceScope('`DataGridRow.tsx` does not exist in acme-web.'), 'elsewhere');
 });
+
+test('any determiner before a repository word still names this repository', () => {
+  // Only `the` was stripped, so "in this repository" was read as a named unit
+  // with the determiner captured as the name, and "in this codebase" fell
+  // through to bounded.
+  for (const determiner of ['the', 'this', 'that', 'our', 'its']) {
+    for (const noun of ['repository', 'codebase']) {
+      const claim = `\`DataGridRow.tsx\` does not exist in ${determiner} ${noun}.`;
+      assert.equal(absenceScope(claim, REPO), 'repository', claim);
+    }
+  }
+});
+
+test('the repository named with a suffix is still this repository', () => {
+  for (const said of ['acme-web', 'AcmeCorp/acme-web', 'the acme-web monorepo', 'the acme-web repo']) {
+    assert.equal(absenceScope(`\`X.tsx\` does not exist in ${said}.`, REPO), 'repository', said);
+  }
+});
