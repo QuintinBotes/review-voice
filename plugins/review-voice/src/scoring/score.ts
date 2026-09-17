@@ -51,6 +51,11 @@ export interface ScoreBreakdown {
   eligible: boolean;
   /** Why it was rejected, when it was. */
   rejectedBecause: string | null;
+  /**
+   * The precedent that already states this finding at this location, when one
+   * exists. Reported so `explain` can name what the corpus already said.
+   */
+  duplicateOfPrecedent: string | null;
   precedentIds: string[];
 }
 
@@ -108,6 +113,60 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
   };
 }
 
+const WORDS = /[^\p{L}\p{N}]+/u;
+
+function significantWords(text: string): Set<string> {
+  return new Set(text.toLowerCase().split(WORDS).filter((word) => word.length > 3));
+}
+
+/** Share of `mine` that also appears in `theirs`, 0..1. */
+function overlap(mine: Set<string>, theirs: Set<string>): number {
+  if (mine.size === 0) return 0;
+  return [...mine].filter((word) => theirs.has(word)).length / mine.size;
+}
+
+/**
+ * How close a precedent sits to the candidate's own line. Comment anchors
+ * drift by a line or two as a file is edited, so an exact match is too strict
+ * to catch a repeat of the same point.
+ */
+const DUPLICATE_LINE_WINDOW = 2;
+
+/**
+ * Absolute overlap required before a precedent counts as the same point.
+ *
+ * `matchStrength` alone cannot carry this. It is normalised to the best hit in
+ * the result set, so the top precedent scores 1.0 whether it is a paraphrase
+ * of the candidate or the least bad of several poor matches. Relative rank
+ * cannot answer an absolute question.
+ */
+const DUPLICATE_OVERLAP = 0.4;
+
+function sameLocation(candidate: Candidate, precedent: Precedent): boolean {
+  if (precedent.filePath === null || precedent.lineStart === null) return false;
+  if (precedent.filePath !== candidate.path) return false;
+  return Math.abs(precedent.lineStart - candidate.line) <= DUPLICATE_LINE_WINDOW;
+}
+
+/**
+ * Finds a precedent that already makes this point on this line.
+ *
+ * Novelty used to be measured only against the other candidates in the current
+ * review, which answers "are we saying this twice today" and not "has this
+ * already been said". A comment published on the same line, matching the same
+ * claim, scored full novelty and its positive polarity then raised alignment
+ * as well - so a finding the corpus already contained verbatim was rewarded
+ * twice for being a repeat.
+ */
+export function duplicatePrecedent(candidate: Candidate, precedents: Precedent[]): Precedent | null {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  for (const precedent of precedents) {
+    if (!sameLocation(candidate, precedent)) continue;
+    if (overlap(mine, significantWords(precedent.excerpt)) >= DUPLICATE_OVERLAP) return precedent;
+  }
+  return null;
+}
+
 /**
  * Maps signed precedent weights onto a 0..1 alignment score.
  *
@@ -138,23 +197,33 @@ function evidenceQuality(candidate: Candidate): number {
 }
 
 /**
- * Penalises a candidate that repeats one already kept. Two findings about the
- * same root cause spend two-fifths of the budget saying one thing.
+ * Penalises a candidate that repeats something already said, whether by
+ * another finding in this review or by a comment already in the corpus.
+ *
+ * Two findings about the same root cause spend two-fifths of the budget saying
+ * one thing. A finding that repeats a published comment spends all of it
+ * saying nothing.
  */
-function novelty(candidate: Candidate, kept: Candidate[]): number {
-  if (kept.length === 0) return 1;
-
-  const words = (text: string) => new Set(text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 3));
-  const mine = words(`${candidate.claim} ${candidate.failureMode}`);
+function novelty(candidate: Candidate, kept: Candidate[], precedents: Precedent[]): number {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
 
   let worst = 1;
+
   for (const other of kept) {
     if (other.path === candidate.path && other.line === candidate.line) return 0;
-    const theirs = words(`${other.claim} ${other.failureMode}`);
-    const shared = [...mine].filter((word) => theirs.has(word)).length;
-    const overlap = mine.size === 0 ? 0 : shared / mine.size;
-    worst = Math.min(worst, 1 - overlap);
+    const theirs = significantWords(`${other.claim} ${other.failureMode}`);
+    worst = Math.min(worst, 1 - overlap(mine, theirs));
   }
+
+  // A precedent elsewhere in the same file that makes the same point is a
+  // weaker signal than one on the line itself, so it caps novelty rather than
+  // zeroing it. The on-line case is handled as a rejection, not a score.
+  for (const precedent of precedents) {
+    if (precedent.filePath !== candidate.path) continue;
+    if (overlap(mine, significantWords(precedent.excerpt)) < 0.7) continue;
+    worst = Math.min(worst, 0.5);
+  }
+
   return worst;
 }
 
@@ -171,13 +240,21 @@ export function scoreCandidate(
   kept: Candidate[],
   thresholds: Thresholds = DEFAULT_THRESHOLDS,
 ): ScoreBreakdown {
-  const ownerPrecedents = precedents.filter((p) => p.role === 'owner');
-  const repositoryPrecedents = precedents.filter((p) => p.role !== 'owner');
+  const alreadySaid = duplicatePrecedent(candidate, precedents);
+
+  // A precedent that already states this finding on this line is evidence that
+  // it has been said, not evidence that it is worth saying. Leaving it in the
+  // alignment sum let the repeat argue for itself.
+  const forAlignment =
+    alreadySaid === null ? precedents : precedents.filter((p) => !sameLocation(candidate, p));
+
+  const ownerPrecedents = forAlignment.filter((p) => p.role === 'owner');
+  const repositoryPrecedents = forAlignment.filter((p) => p.role !== 'owner');
 
   const ownerAlignment = alignmentFrom(ownerPrecedents);
   const repositoryAlignment = alignmentFrom(repositoryPrecedents);
   const quality = evidenceQuality(candidate);
-  const novel = novelty(candidate, kept);
+  const novel = alreadySaid === null ? novelty(candidate, kept, precedents) : 0;
 
   const finalScore =
     0.35 * candidate.technicalConfidence +
@@ -191,6 +268,11 @@ export function scoreCandidate(
   // non-finite score would otherwise pass both thresholds below.
   if (!Number.isFinite(finalScore) || !Number.isFinite(candidate.technicalConfidence)) {
     rejectedBecause = 'score could not be computed from this candidate';
+  } else if (alreadySaid !== null) {
+    // Not left to the weights. Novelty carries a tenth of the score, so a
+    // confident candidate with strong evidence still clears the threshold
+    // while repeating a comment already published on that line.
+    rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
   } else if (candidate.technicalConfidence < thresholds.technicalConfidence) {
     rejectedBecause = `technical confidence ${candidate.technicalConfidence.toFixed(2)} is below ${thresholds.technicalConfidence}`;
   } else if (finalScore < thresholds.finalScore) {
@@ -209,6 +291,7 @@ export function scoreCandidate(
     finalScore,
     eligible: rejectedBecause === null,
     rejectedBecause,
+    duplicateOfPrecedent: alreadySaid?.eventId ?? null,
     precedentIds: precedents.map((p) => p.eventId),
   };
 }

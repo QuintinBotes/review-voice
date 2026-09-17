@@ -5,6 +5,25 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Novelty is measured against the corpus, not only against the other findings
+  in the current review. A candidate that repeats a comment already published
+  on that line is rejected and names the precedent it repeats, and that
+  precedent no longer raises alignment as well. A finding the owner has already
+  made verbatim scored full novelty and was rewarded twice for being a repeat.
+
+### Changed
+
+- Owner events are exempt from the corpus target and the per-repository share
+  cap. They are around one percent of what a sync discovers, so newest-first
+  selection evicted them first.
+- The corpus target and the share cap scale with the allowlist: sixty events
+  per repository between 250 and 1500, and twice a fair share between 0.15 and
+  0.5. `--target` still overrides.
+
 ## [0.3.1] - 2026-09-17
 
 ### Fixed

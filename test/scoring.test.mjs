@@ -281,3 +281,58 @@ test('feedback with no recorded category counts for precision but forms no rule'
     assert.deepEqual(compileProposals(db), []);
   });
 });
+
+// The corpus already said it
+//
+// Novelty used to be measured only against the other candidates in the current
+// review, so a comment published on the same line scored full novelty and its
+// positive polarity raised alignment on top of that.
+
+const echo = (over = {}) =>
+  precedent({
+    eventId: 'ghr_5232333607',
+    excerpt:
+      'This returns the refresh token before the transaction commits, so a retry mints multiple valid tokens.',
+    ...over,
+  });
+
+test('a candidate repeating a precedent on the same line is rejected', () => {
+  const result = scoreCandidate(candidate(), [echo()], []);
+  assert.equal(result.eligible, false);
+  assert.equal(result.duplicateOfPrecedent, 'ghr_5232333607');
+  assert.match(result.rejectedBecause, /already stated at src\/auth\.ts:84/);
+  assert.equal(result.novelty, 0);
+});
+
+test('a comment anchored a line or two off still counts as the same point', () => {
+  // Anchors drift as a file is edited.
+  const result = scoreCandidate(candidate(), [echo({ lineStart: 86 })], []);
+  assert.equal(result.eligible, false);
+  assert.equal(result.duplicateOfPrecedent, 'ghr_5232333607');
+});
+
+test('a repeat does not also argue for itself through alignment', () => {
+  const alone = scoreCandidate(candidate(), [], []);
+  const repeated = scoreCandidate(candidate(), [echo()], []);
+  assert.equal(repeated.ownerAlignment, alone.ownerAlignment);
+});
+
+test('a precedent on the same line about something else is not a repeat', () => {
+  const unrelated = echo({ excerpt: 'Please rename this variable, the abbreviation is unclear.' });
+  const result = scoreCandidate(candidate(), [unrelated], []);
+  assert.equal(result.duplicateOfPrecedent, null);
+  assert.equal(result.eligible, true);
+});
+
+test('the same point elsewhere in the file caps novelty without rejecting', () => {
+  const result = scoreCandidate(candidate(), [echo({ lineStart: 400 })], []);
+  assert.equal(result.duplicateOfPrecedent, null);
+  assert.equal(result.novelty, 0.5);
+});
+
+test('an unanchored precedent can never be a repeat', () => {
+  // A review summary matches any candidate, so it must not silence one.
+  const result = scoreCandidate(candidate(), [echo({ filePath: null, lineStart: null })], []);
+  assert.equal(result.duplicateOfPrecedent, null);
+  assert.equal(result.eligible, true);
+});

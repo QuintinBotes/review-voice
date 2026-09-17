@@ -30,7 +30,7 @@ import { redact } from './redact/redact.ts';
 import { GitHubClient, NotAllowlisted, ReadOnlyViolation } from './github/client.ts';
 import { AuthError } from './github/auth.ts';
 import { collectRepository, type CollectionStats } from './corpus/collect.ts';
-import { selectEvents } from './corpus/select.ts';
+import { scaledRepositoryShare, scaledTarget, selectEvents } from './corpus/select.ts';
 import { storeEvents, corpusCoverage } from './corpus/store.ts';
 import { buildConsentPlan, discoverRepositories } from './consent/plan.ts';
 import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
@@ -103,7 +103,9 @@ feedback usage:
   actions: ${FEEDBACK_ACTIONS.join(', ')} (hyphens accepted)
 
 sync flags:
-  --target <n>              Eligible events to import (default 250)
+  --target <n>              Non-owner events to import (default: 60 per
+                            allowlisted repository, from 250 to 1500).
+                            Owner events are always imported in full.
   --max-pulls <n>           Pull requests inspected per repository (default 60)
   --include-conversation    Also read pull-request conversation comments
   --dry-run                 Report what would be imported without storing anything
@@ -409,8 +411,13 @@ async function syncCommand(argv: string[]): Promise<number> {
     return 2;
   }
 
-  const target = numericFlag(argv, '--target', 250) ?? 250;
+  // Scaled to the allowlist rather than fixed, so a twenty-repository sync
+  // does not read twelve hundred pull requests to keep two hundred and fifty
+  // events. An explicit --target still wins.
+  const defaultTarget = scaledTarget(config.allowlist.length);
+  const target = numericFlag(argv, '--target', defaultTarget) ?? defaultTarget;
   const maxPulls = numericFlag(argv, '--max-pulls', 60) ?? 60;
+  const repositoryShare = scaledRepositoryShare(config.allowlist.length);
   const dryRun = argv.includes('--dry-run');
 
   const client = new GitHubClient({ allowlist: config.allowlist });
@@ -457,7 +464,7 @@ async function syncCommand(argv: string[]): Promise<number> {
 
   const selection = selectEvents(
     collected.map((event) => ({ ...event, role: event.role })),
-    { target, maxRepositoryShare: 0.5 },
+    { target, maxRepositoryShare: repositoryShare },
   );
 
   if (dryRun) {
@@ -482,8 +489,10 @@ async function syncCommand(argv: string[]): Promise<number> {
           stats,
           sourceWindow: {
             targetEvents: selection.targetEvents,
+            maxRepositoryShare: repositoryShare,
             discoveredEligibleEvents: selection.discoveredEligible,
             importedEvents: selection.importedEvents,
+            ownerEvents: selection.ownerEvents,
             shortfall: selection.shortfall,
             shortfallReason: selection.shortfallReason,
             repositories: selection.perRepository,
@@ -908,7 +917,9 @@ function explainCommand(argv: string[]): number {
       technicalConfidence?: number;
       finalScore?: number;
       eligible?: boolean;
+      novelty?: number;
       rejectedBecause?: string | null;
+      duplicateOfPrecedent?: string | null;
       precedentIds?: string[];
     }[];
 
@@ -941,8 +952,14 @@ function explainCommand(argv: string[]): number {
       if (score?.finalScore !== undefined) {
         console.log(`  final score       ${score.finalScore.toFixed(2)}`);
       }
+      if (score?.novelty !== undefined) {
+        console.log(`  novelty           ${score.novelty.toFixed(2)}`);
+      }
       if (score?.precedentIds !== undefined && score.precedentIds.length > 0) {
         console.log(`  precedents        ${score.precedentIds.join(', ')}`);
+      }
+      if (score?.duplicateOfPrecedent != null) {
+        console.log(`  already stated in ${score.duplicateOfPrecedent}`);
       }
       // Saying "no data" beats inventing a rationale after the fact.
       if (score === undefined) {
@@ -989,7 +1006,7 @@ function statusCommand(): number {
     try {
       const config = loadConfig(repositoryRoot(process.cwd()));
       allowlist = config.allowlist;
-      maxRepositoryShare = 0.5;
+      maxRepositoryShare = scaledRepositoryShare(allowlist.length);
     } catch {
       // Not in a repository; report counts without allowlist warnings.
     }

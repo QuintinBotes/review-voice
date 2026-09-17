@@ -8188,15 +8188,17 @@ async function collectRepository(client, options, stats) {
 function selectEvents(events, options) {
   const discoveredEligible = events.length;
   const cap = Math.max(1, Math.floor(options.target * options.maxRepositoryShare));
-  const sorted = [...events].sort((a, b) => {
-    const byDate = b.createdAt.localeCompare(a.createdAt);
-    if (byDate !== 0) return byDate;
-    return (a.role === "owner" ? 0 : 1) - (b.role === "owner" ? 0 : 1);
-  });
+  const sorted = [...events].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const perRepository = {};
   const selected = [];
   const deferred = [];
+  const ownerEvents = sorted.filter((event) => event.role === "owner");
+  for (const event of ownerEvents) {
+    perRepository[event.repository] = (perRepository[event.repository] ?? 0) + 1;
+    selected.push(event);
+  }
   for (const event of sorted) {
+    if (event.role === "owner") continue;
     if (selected.length >= options.target) break;
     const count = perRepository[event.repository] ?? 0;
     if (count >= cap) {
@@ -8221,6 +8223,7 @@ function selectEvents(events, options) {
   return {
     selected,
     targetEvents: options.target,
+    ownerEvents: ownerEvents.length,
     discoveredEligible,
     importedEvents: selected.length,
     shortfall,
@@ -8231,6 +8234,19 @@ function selectEvents(events, options) {
     perRepository,
     overRepresented: [...overRepresented]
   };
+}
+var PER_REPOSITORY_TARGET = 60;
+var TARGET_FLOOR = 250;
+var TARGET_CEILING = 1500;
+function scaledTarget(repositoryCount) {
+  const scaled = PER_REPOSITORY_TARGET * Math.max(1, repositoryCount);
+  return Math.min(TARGET_CEILING, Math.max(TARGET_FLOOR, scaled));
+}
+var SHARE_CEILING = 0.5;
+var SHARE_FLOOR = 0.15;
+function scaledRepositoryShare(repositoryCount) {
+  if (repositoryCount <= 1) return 1;
+  return Math.min(SHARE_CEILING, Math.max(SHARE_FLOOR, 2 / repositoryCount));
 }
 
 // plugins/review-voice/src/corpus/store.ts
@@ -8609,6 +8625,29 @@ function normaliseCandidate(raw, index) {
     technicalConfidence: confidence
   };
 }
+var WORDS = /[^\p{L}\p{N}]+/u;
+function significantWords(text) {
+  return new Set(text.toLowerCase().split(WORDS).filter((word) => word.length > 3));
+}
+function overlap(mine, theirs) {
+  if (mine.size === 0) return 0;
+  return [...mine].filter((word) => theirs.has(word)).length / mine.size;
+}
+var DUPLICATE_LINE_WINDOW = 2;
+var DUPLICATE_OVERLAP = 0.4;
+function sameLocation(candidate, precedent) {
+  if (precedent.filePath === null || precedent.lineStart === null) return false;
+  if (precedent.filePath !== candidate.path) return false;
+  return Math.abs(precedent.lineStart - candidate.line) <= DUPLICATE_LINE_WINDOW;
+}
+function duplicatePrecedent(candidate, precedents) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  for (const precedent of precedents) {
+    if (!sameLocation(candidate, precedent)) continue;
+    if (overlap(mine, significantWords(precedent.excerpt)) >= DUPLICATE_OVERLAP) return precedent;
+  }
+  return null;
+}
 function alignmentFrom(precedents) {
   if (precedents.length === 0) return 0.5;
   const total = precedents.reduce((sum, p) => sum + p.weight * (p.matchStrength ?? 1), 0);
@@ -8622,31 +8661,36 @@ function evidenceQuality(candidate) {
   const depth = specific / items.length;
   return 0.4 * breadth + 0.6 * depth;
 }
-function novelty(candidate, kept) {
-  if (kept.length === 0) return 1;
-  const words = (text) => new Set(text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 3));
-  const mine = words(`${candidate.claim} ${candidate.failureMode}`);
+function novelty(candidate, kept, precedents) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
   let worst = 1;
   for (const other of kept) {
     if (other.path === candidate.path && other.line === candidate.line) return 0;
-    const theirs = words(`${other.claim} ${other.failureMode}`);
-    const shared = [...mine].filter((word) => theirs.has(word)).length;
-    const overlap = mine.size === 0 ? 0 : shared / mine.size;
-    worst = Math.min(worst, 1 - overlap);
+    const theirs = significantWords(`${other.claim} ${other.failureMode}`);
+    worst = Math.min(worst, 1 - overlap(mine, theirs));
+  }
+  for (const precedent of precedents) {
+    if (precedent.filePath !== candidate.path) continue;
+    if (overlap(mine, significantWords(precedent.excerpt)) < 0.7) continue;
+    worst = Math.min(worst, 0.5);
   }
   return worst;
 }
 function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS) {
-  const ownerPrecedents = precedents.filter((p) => p.role === "owner");
-  const repositoryPrecedents = precedents.filter((p) => p.role !== "owner");
+  const alreadySaid = duplicatePrecedent(candidate, precedents);
+  const forAlignment = alreadySaid === null ? precedents : precedents.filter((p) => !sameLocation(candidate, p));
+  const ownerPrecedents = forAlignment.filter((p) => p.role === "owner");
+  const repositoryPrecedents = forAlignment.filter((p) => p.role !== "owner");
   const ownerAlignment = alignmentFrom(ownerPrecedents);
   const repositoryAlignment = alignmentFrom(repositoryPrecedents);
   const quality = evidenceQuality(candidate);
-  const novel = novelty(candidate, kept);
+  const novel = alreadySaid === null ? novelty(candidate, kept, precedents) : 0;
   const finalScore = 0.35 * candidate.technicalConfidence + 0.25 * ownerAlignment + 0.15 * repositoryAlignment + 0.15 * quality + 0.1 * novel;
   let rejectedBecause = null;
   if (!Number.isFinite(finalScore) || !Number.isFinite(candidate.technicalConfidence)) {
     rejectedBecause = "score could not be computed from this candidate";
+  } else if (alreadySaid !== null) {
+    rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
   } else if (candidate.technicalConfidence < thresholds.technicalConfidence) {
     rejectedBecause = `technical confidence ${candidate.technicalConfidence.toFixed(2)} is below ${thresholds.technicalConfidence}`;
   } else if (finalScore < thresholds.finalScore) {
@@ -8664,6 +8708,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     finalScore,
     eligible: rejectedBecause === null,
     rejectedBecause,
+    duplicateOfPrecedent: alreadySaid?.eventId ?? null,
     precedentIds: precedents.map((p) => p.eventId)
   };
 }
@@ -9106,7 +9151,9 @@ feedback usage:
   actions: ${FEEDBACK_ACTIONS.join(", ")} (hyphens accepted)
 
 sync flags:
-  --target <n>              Eligible events to import (default 250)
+  --target <n>              Non-owner events to import (default: 60 per
+                            allowlisted repository, from 250 to 1500).
+                            Owner events are always imported in full.
   --max-pulls <n>           Pull requests inspected per repository (default 60)
   --include-conversation    Also read pull-request conversation comments
   --dry-run                 Report what would be imported without storing anything
@@ -9363,8 +9410,10 @@ async function syncCommand(argv) {
     console.error("No owner reviewer configured. Run /review-voice:init first.");
     return 2;
   }
-  const target = numericFlag(argv, "--target", 250) ?? 250;
+  const defaultTarget = scaledTarget(config.allowlist.length);
+  const target = numericFlag(argv, "--target", defaultTarget) ?? defaultTarget;
   const maxPulls = numericFlag(argv, "--max-pulls", 60) ?? 60;
+  const repositoryShare = scaledRepositoryShare(config.allowlist.length);
   const dryRun = argv.includes("--dry-run");
   const client = new GitHubClient({ allowlist: config.allowlist });
   const stateDb = openDatabase();
@@ -9402,7 +9451,7 @@ async function syncCommand(argv) {
   }
   const selection = selectEvents(
     collected.map((event) => ({ ...event, role: event.role })),
-    { target, maxRepositoryShare: 0.5 }
+    { target, maxRepositoryShare: repositoryShare }
   );
   if (dryRun) {
     finishSyncRun(stateDb, syncRunId, stats, 0);
@@ -9421,8 +9470,10 @@ async function syncCommand(argv) {
           stats,
           sourceWindow: {
             targetEvents: selection.targetEvents,
+            maxRepositoryShare: repositoryShare,
             discoveredEligibleEvents: selection.discoveredEligible,
             importedEvents: selection.importedEvents,
+            ownerEvents: selection.ownerEvents,
             shortfall: selection.shortfall,
             shortfallReason: selection.shortfallReason,
             repositories: selection.perRepository
@@ -9810,8 +9861,14 @@ function explainCommand(argv) {
       if (score?.finalScore !== void 0) {
         console.log(`  final score       ${score.finalScore.toFixed(2)}`);
       }
+      if (score?.novelty !== void 0) {
+        console.log(`  novelty           ${score.novelty.toFixed(2)}`);
+      }
       if (score?.precedentIds !== void 0 && score.precedentIds.length > 0) {
         console.log(`  precedents        ${score.precedentIds.join(", ")}`);
+      }
+      if (score?.duplicateOfPrecedent != null) {
+        console.log(`  already stated in ${score.duplicateOfPrecedent}`);
       }
       if (score === void 0) {
         console.log("  scoring           not recorded for this review");
@@ -9847,7 +9904,7 @@ function statusCommand() {
     try {
       const config = loadConfig(repositoryRoot(process.cwd()));
       allowlist = config.allowlist;
-      maxRepositoryShare = 0.5;
+      maxRepositoryShare = scaledRepositoryShare(allowlist.length);
     } catch {
     }
     const coverage = corpusCoverage(db, { allowlist, ...maxRepositoryShare === void 0 ? {} : { maxRepositoryShare } });

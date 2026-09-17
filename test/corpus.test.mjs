@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ineligibleReason } from '../plugins/review-voice/src/corpus/eligibility.ts';
 import { contentKey } from '../plugins/review-voice/src/corpus/dedup.ts';
-import { selectEvents } from '../plugins/review-voice/src/corpus/select.ts';
+import { selectEvents, scaledTarget, scaledRepositoryShare } from '../plugins/review-voice/src/corpus/select.ts';
 
 const REAL = 'This returns before the transaction commits, so a retry mints two tokens.';
 const base = { role: 'owner', hasCodeContext: true };
@@ -273,4 +273,63 @@ test('storing events writes only redacted text and deduplicates', async () => {
     db.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// Owner evidence is not subject to the target or the share cap
+
+const sample = (i, over = {}) => ({
+  repository: 'org/busy',
+  // Descending, so index 0 is newest.
+  createdAt: new Date(Date.UTC(2026, 0, 1) - i * 86_400_000).toISOString(),
+  role: 'team',
+  ...over,
+});
+
+test('owner events are imported even when they fall outside the target', () => {
+  // Newest-first would have evicted every one of these: they are the oldest
+  // events in the set, and the target is filled several times over without
+  // them.
+  const events = [
+    ...Array.from({ length: 50 }, (_, i) => sample(i)),
+    ...Array.from({ length: 4 }, (_, i) => sample(500 + i, { role: 'owner', repository: 'org/quiet' })),
+  ];
+
+  const report = selectEvents(events, { target: 10, maxRepositoryShare: 0.5 });
+
+  assert.equal(report.ownerEvents, 4);
+  assert.equal(report.selected.filter((e) => e.role === 'owner').length, 4);
+  assert.equal(report.perRepository['org/quiet'], 4);
+});
+
+test('owner events are not held back by the share cap either', () => {
+  const events = Array.from({ length: 30 }, (_, i) => sample(i, { role: 'owner' }));
+  const report = selectEvents(events, { target: 20, maxRepositoryShare: 0.5 });
+
+  // The cap would allow ten from one repository. All thirty are owner events.
+  assert.equal(report.ownerEvents, 30);
+  assert.equal(report.importedEvents, 30);
+});
+
+test('the target still bounds everything that is not owner evidence', () => {
+  const events = Array.from({ length: 100 }, (_, i) => sample(i, { repository: `org/r${i % 10}` }));
+  const report = selectEvents(events, { target: 20, maxRepositoryShare: 0.5 });
+  assert.equal(report.importedEvents, 20);
+  assert.equal(report.ownerEvents, 0);
+});
+
+test('the corpus target scales with the allowlist, within bounds', () => {
+  assert.equal(scaledTarget(1), 250); // Floor: one repository still needs a corpus.
+  assert.equal(scaledTarget(4), 250);
+  assert.equal(scaledTarget(10), 600);
+  assert.equal(scaledTarget(20), 1200);
+  assert.equal(scaledTarget(100), 1500); // Ceiling: sync time, not index size.
+});
+
+test('the share cap tightens as the allowlist grows', () => {
+  // A flat half stops being a diversity control once a fair share is small.
+  assert.equal(scaledRepositoryShare(1), 1);
+  assert.equal(scaledRepositoryShare(3), 0.5);
+  assert.equal(scaledRepositoryShare(10), 0.2);
+  assert.equal(scaledRepositoryShare(20), 0.15);
+  assert.equal(scaledRepositoryShare(50), 0.15);
 });

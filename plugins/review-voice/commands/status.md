@@ -18,5 +18,5 @@ run. **A corpus with no owner events cannot produce a policy rule**, because
 activation needs at least one owner signal - `status` says so explicitly rather
 than leaving `calibrate` to return nothing forever.
 
-Report coverage honestly. If the corpus holds 147 of a 250-event target, say so
+Report coverage honestly. If the corpus holds 147 of its event target, say so
 and say why. Never present a shortfall as a complete scan.

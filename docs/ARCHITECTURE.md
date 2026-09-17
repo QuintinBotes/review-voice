@@ -365,6 +365,19 @@ under-filling the corpus: a smaller corpus is a worse outcome than a slightly
 lopsided one. Shortfalls are reported exactly - claiming a full scan when the
 history ran out would misrepresent how much the policy rests on.
 
+Owner evidence is exempt from both the target and the share cap. It is around
+one percent of what a sync discovers, so under newest-first selection a dozen
+repositories fill the target inside a fortnight and every older owner comment
+is evicted by volume from repositories the owner never reviewed. The scarcest
+signal, and the one retrieval weights highest, was the first one recency threw
+away.
+
+The target and the cap both scale with the allowlist. A fixed target reads
+sixty pull requests per repository and then discards most of what it found; a
+fixed half-share stops being a diversity control once a fair share is five
+percent. The target is sixty events per repository between 250 and 1500, and
+the cap is twice a fair share between 0.15 and 0.5.
+
 ### Posting
 
 ADR 0007 gates posting on measured quality. `evaluatePostingGate` reads what
