@@ -5,6 +5,23 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Severity now combines the finding category with deterministic, CLI-computed
+  reach instead of assigning every member of a category one fixed tier. A
+  category like `ci` spans a build-breaker and a stale comment, so one tier per
+  category was wrong for half its members however it was tuned.
+- Reach is measured relative to the changed file - hits confined to it, within
+  its own directory subtree, or in two or more directories beyond it - and
+  counts only code. Counting distinct top-level directories was wrong in both
+  directions: inert under a monorepo root, and inflated by a symbol named in
+  prose. The search records its symbols, hit paths, counted code paths,
+  directory counts and ref, so a raised tier stays auditable.
+- A missing symbol, no usable code hits, or a failed search retains the
+  previous category tier exactly. No agent supplies reach.
+
 ## [1.0.0] - 2026-09-17
 
 First stable release. 1.0.0 is a claim about the interface, not a new

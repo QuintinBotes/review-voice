@@ -39,6 +39,7 @@ import { collectRepository, type CollectionStats } from './corpus/collect.ts';
 import { scaledRepositoryShare, scaledTarget, selectEvents } from './corpus/select.ts';
 import { changedPathsFrom, discoverConventions } from './conventions/discover.ts';
 import { checkAbsenceClaim, type ExistenceCheck } from './scoring/existence.ts';
+import { computeReach } from './scoring/reach.ts';
 import { storeEvents, corpusCoverage } from './corpus/store.ts';
 import { buildConsentPlan, discoverRepositories } from './consent/plan.ts';
 import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
@@ -724,6 +725,21 @@ function scoreCommand(argv: string[]): number {
         'to search the working tree. Absence claims would otherwise be checked against nothing.',
     );
     return 2;
+  }
+
+  // Reach is deterministic repository evidence, not a verifier verdict. Keep
+  // it alongside verification only because that is the existing metadata
+  // channel into scoring. A reach-only record leaves confidence behaviour
+  // unchanged when no verifier output was supplied.
+  if (searchRoot !== null) {
+    for (const candidate of candidates) {
+      const verification = verifications.get(candidate.candidateId);
+      verifications.set(candidate.candidateId, {
+        ...(verification ?? { candidateId: candidate.candidateId }),
+        candidateId: candidate.candidateId,
+        reach: computeReach(candidate.claim, candidate.path, searchRoot, baseRef),
+      });
+    }
   }
 
   const pullFlag = argv.includes('--exclude-pull') ? numericFlag(argv, '--exclude-pull', 0) : null;

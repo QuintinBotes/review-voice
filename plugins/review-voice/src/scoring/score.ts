@@ -1,4 +1,5 @@
 import type { Precedent } from '../retrieval/retrieve.ts';
+import type { ReachCheck } from './reach.ts';
 import { deriveSeverity, type DerivedSeverity } from './severity.ts';
 
 /**
@@ -46,6 +47,8 @@ export interface Verification {
   technicalConfidence?: number | undefined;
   /** Context the verifier needed and could not obtain. */
   requiredContextMissing?: string[] | undefined;
+  /** Deterministic CLI evidence; it is never read from verifier output. */
+  reach?: ReachCheck | undefined;
 }
 
 /** Used when the verifier reports a tier rather than a number. */
@@ -494,7 +497,7 @@ export function scoreCandidate(
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
-    severity: deriveSeverity(candidate.category, candidate.severity),
+    severity: deriveSeverity(candidate.category, candidate.severity, verification?.reach),
     analystConfidence,
     verifiedConfidence,
     confidenceSource,

@@ -125,7 +125,8 @@
         "minor",
         "nit",
         "question"
-      ]
+      ],
+      "description": "Historical inferred tier. New Review Voice findings derive their reported tier from category and CLI-computed reach."
     },
     "actionability_score": {
       "type": "number",

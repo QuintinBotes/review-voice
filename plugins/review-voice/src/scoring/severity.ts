@@ -1,4 +1,5 @@
 import { SEVERITIES } from '../contract/limits.ts';
+import type { Reach, ReachCheck } from './reach.ts';
 
 export type Severity = (typeof SEVERITIES)[number];
 
@@ -11,8 +12,9 @@ export type Severity = (typeof SEVERITIES)[number];
  * barely moved and the tier jumped. Ordering is severity-first, so an unstable
  * tier moves a finding up and down the page between identical reviews.
  *
- * This is a claim about blast radius, which is a property of the kind of defect
- * rather than of how the reviewer felt about it on the day.
+ * The category says what kind of consequence a claim carries; reach says how
+ * far the named implementation spreads. Reach is computed by the CLI from the
+ * reviewed tree, never supplied by an agent.
  *
  * Confidence deliberately plays no part. A first version weakened one tier
  * below 0.85, which measured as the whole remaining instability: on two runs of
@@ -26,7 +28,7 @@ export type Severity = (typeof SEVERITIES)[number];
  * The tiers are one step quieter than they were to compensate for dropping the
  * weakening, so removing the cliff does not make reviews louder.
  */
-const BY_CATEGORY: Record<string, Severity> = {
+const LEGACY_BY_CATEGORY: Record<string, Severity> = {
   // Reserved for categories that are severe by their nature rather than by
   // circumstance. The confidence gate already keeps anything under 0.8 out.
   security: 'blocking',
@@ -58,6 +60,50 @@ const BY_CATEGORY: Record<string, Severity> = {
   test_coverage: 'nit',
   maintainability: 'nit',
   style: 'nit',
+};
+
+type ReachTiers = Record<Reach, Severity>;
+
+const atEveryReach = (severity: Severity): ReachTiers => ({
+  local: severity,
+  component: severity,
+  repository: severity,
+});
+
+/**
+ * Category supplies the consequence; deterministic reach supplies its extent.
+ *
+ * Categories whose consequence already fixes their tier retain it at every
+ * reach. The remaining thresholds are initial, calibrated-by-guess values:
+ * they are deliberately explicit so a measured run can revise the table
+ * without restoring an agent judgement to this path.
+ */
+const BY_CATEGORY_AND_REACH: Record<string, ReachTiers> = {
+  security: atEveryReach('blocking'),
+  trust_boundary: atEveryReach('blocking'),
+  authorization: atEveryReach('blocking'),
+  authentication: atEveryReach('blocking'),
+  data_integrity: atEveryReach('blocking'),
+
+  concurrency: atEveryReach('important'),
+  persistence: atEveryReach('important'),
+  migration: atEveryReach('important'),
+  api_contract: atEveryReach('important'),
+  release: atEveryReach('important'),
+
+  correctness: { local: 'minor', component: 'important', repository: 'important' },
+  error_handling: { local: 'minor', component: 'important', repository: 'important' },
+  reliability: { local: 'minor', component: 'important', repository: 'important' },
+  user_visible_behavior: { local: 'minor', component: 'important', repository: 'important' },
+  ci: { local: 'nit', component: 'important', repository: 'blocking' },
+  packaging: { local: 'minor', component: 'important', repository: 'blocking' },
+  dependency: { local: 'minor', component: 'important', repository: 'blocking' },
+  performance: { local: 'minor', component: 'minor', repository: 'important' },
+
+  observability: atEveryReach('nit'),
+  test_coverage: atEveryReach('nit'),
+  maintainability: atEveryReach('nit'),
+  style: atEveryReach('nit'),
 };
 
 /**
@@ -111,52 +157,116 @@ export interface DerivedSeverity {
   severity: Severity;
   /** What the analyst asked for, kept so a divergence can be audited. */
   requested: string;
+  /** The CLI's deterministic reach evidence, or absent reach. */
+  reach: ReachCheck | null;
   reason: string;
 }
 
 /**
  * Derives the severity a finding is reported at.
  *
- * `question` is preserved: it says the reviewer could not establish the answer
- * and the author can, which is a kind of finding rather than a level of
- * consequence, and no category implies it.
+ * Absent reach deliberately reproduces the legacy category tier exactly. A
+ * local question remains a question; wider questions use the same
+ * category-and-reach table as every other finding.
  */
-export function deriveSeverity(category: string | null | undefined, requested: string): DerivedSeverity {
-  if (requested === 'question') {
-    return { severity: 'question', requested, reason: 'a question is a kind of finding, not a tier' };
-  }
+export function deriveSeverity(
+  category: string | null | undefined,
+  requested: string,
+  reach: ReachCheck | null | undefined = null,
+): DerivedSeverity {
+  const resolvedReach = reach?.reach;
+  const hasReach =
+    resolvedReach === 'local' || resolvedReach === 'component' || resolvedReach === 'repository';
 
   // A missing category used to be defaulted to `correctness` before it reached
   // here, which silently promoted an unlabelled finding into a real tier and
   // recorded nothing about the substitution. Absent and unrecognised are the
   // same state as far as this can tell, and both take the middle tier.
   if (category === null || category === undefined || category === '') {
+    if (!hasReach && requested === 'question') {
+      return {
+        severity: 'question',
+        requested,
+        reach: reach ?? null,
+        reason: 'a question is a kind of finding, not a tier',
+      };
+    }
     return {
       severity: 'minor',
       requested,
+      reach: reach ?? null,
       reason: 'no category was supplied, so the middle tier is used rather than a guess',
     };
   }
 
   const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, '_');
   const alias = ALIASES[normalised];
-  const resolved = BY_CATEGORY[normalised] !== undefined ? normalised : (alias ?? normalised);
+  const resolved = LEGACY_BY_CATEGORY[normalised] !== undefined ? normalised : (alias ?? normalised);
 
-  const base = BY_CATEGORY[resolved];
-  if (base === undefined) {
+  const legacy = LEGACY_BY_CATEGORY[resolved];
+  if (legacy === undefined) {
     return {
       severity: 'minor',
       requested,
+      reach: reach ?? null,
       reason: `category ${category} has no mapping, so the middle tier is used rather than a guess`,
     };
   }
 
+  // An unanswered search must behave exactly as the previous category-only
+  // derivation. This covers no named symbol, no hits, and every git failure.
+  if (!hasReach) {
+    if (requested === 'question') {
+      return {
+        severity: 'question',
+        requested,
+        reach: reach ?? null,
+        reason: 'a question is a kind of finding, not a tier',
+      };
+    }
+    return {
+      severity: legacy,
+      requested,
+      reach: reach ?? null,
+      reason:
+        resolved === normalised
+          ? `${resolved} carries ${legacy}`
+          : `${category} read as ${resolved}, which carries ${legacy}`,
+    };
+  }
+
+  const tiers = BY_CATEGORY_AND_REACH[resolved];
+  const severity = tiers?.[resolvedReach];
+  if (severity === undefined) {
+    // Keep the legacy fallback even if a future alias maps to a category whose
+    // reach table was accidentally omitted.
+    return {
+      severity: legacy,
+      requested,
+      reach: reach ?? null,
+      reason: `${resolved} has no reach mapping, so its legacy ${legacy} tier is used`,
+    };
+  }
+
+  // The table has been consulted before preserving the interrogative. A
+  // question is a tier only when deterministic evidence confines it locally;
+  // a wider question earns the consequence of its category and reach.
+  if (requested === 'question' && resolvedReach === 'local') {
+    return {
+      severity: 'question',
+      requested,
+      reach: reach ?? null,
+      reason: 'a question at local reach remains question',
+    };
+  }
+
   return {
-    severity: base,
+    severity,
     requested,
+    reach: reach ?? null,
     reason:
       resolved === normalised
-        ? `${resolved} carries ${base}`
-        : `${category} read as ${resolved}, which carries ${base}`,
+        ? `${resolved} at ${resolvedReach} reach carries ${severity}`
+        : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`,
   };
 }

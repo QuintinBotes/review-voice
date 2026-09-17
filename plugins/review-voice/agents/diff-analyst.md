@@ -76,9 +76,11 @@ it is not a finding at any tier.
 
 ## Category
 
-`category` decides the tier a finding is reported at, so pick from this list
-and nothing else. A name outside it falls back to the middle tier, which loses
-the distinction you were making.
+`category` supplies the kind of consequence. The CLI combines it with reach
+computed from the claim's named symbols and changed path at the reviewed ref;
+do not estimate, report, or add a `reach` field yourself. A name outside this
+list falls back to the middle tier, which loses the distinction you were
+making.
 
 Severe by nature:
 `security` · `authorization` · `authentication` · `trust_boundary` ·
@@ -108,9 +110,10 @@ The confusable ones, settled:
 
 ## Severity
 
-The tier is derived from the category, not from what you ask for, so `category`
-is the field that carries this judgement. Your `severity` is recorded for audit
-and does not decide where the finding lands.
+The tier is derived from `category` and CLI-computed reach, not from what you
+ask for. Your `severity` is recorded for audit and does not decide where the
+finding lands. Reach is intentionally absent from the schema: an agent-supplied
+radius would make the threshold unfalsifiable.
 
 Pick the tier you would have chosen anyway, from consequence rather than from
 how interesting the finding is, and use the same reasoning to pick the

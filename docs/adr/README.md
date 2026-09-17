@@ -1,11 +1,13 @@
 # Architecture decision records
 
-Each record closes one of the eight open decisions the specification left for
-implementation. They are numbered, dated, and immutable once accepted - a
-reversal is a new record that supersedes an old one, not an edit.
+Each record closes a design decision. They are numbered, dated, and immutable
+once accepted - a reversal is a new record that supersedes an old one, not an
+edit.
 
-All eight were reviewed and approved by the owner on 2026-09-16, which is the
-gate M1 was waiting on.
+0001 to 0008 close the eight open decisions the specification left for
+implementation, and were reviewed and approved by the owner on 2026-09-16,
+which is the gate M1 was waiting on. Later records close decisions that arose
+after that gate.
 
 | # | Decision | Status |
 |---|---|---|
@@ -17,3 +19,4 @@ gate M1 was waiting on.
 | [0006](0006-team-governance.md) | Team and policy governance | Accepted |
 | [0007](0007-comment-posting.md) | GitHub comment posting | Accepted |
 | [0008](0008-policy-sharing.md) | Policy sharing and export | Accepted |
+| [0009](0009-severity-from-computed-reach.md) | Severity from category and computed reach | Accepted |
