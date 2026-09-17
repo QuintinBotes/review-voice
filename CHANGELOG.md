@@ -5,6 +5,40 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-09-17
+
+### Fixed
+
+- The absence guard reads the claim, never the failure mode. The two were
+  concatenated, so the sentence explaining the consequence voted on whether the
+  assertion was scoped: the same invented claim was checked or ignored
+  depending on how its impact was worded, and a symbol named only in the
+  mechanism could be reported as one the claim said was absent.
+- "in the repository" and "from the codebase" are repo-wide. They classified as
+  scoped, because the scoped pattern matches on "in the", so the widest claim a
+  reviewer can make went unchecked on the strength of one missing word.
+- A claim about another repository returns `inconclusive: true`. `git grep` here
+  speaks only for this repository, and answering anyway gave false corroboration
+  at the base ref and deleted a true finding at the head ref by matching the
+  symbol the diff itself adds.
+- `candidate_set_agreement` has a diff to group by. No shipped command passed
+  `--diff-file`, so every run stored the hash of the empty string, the metric
+  compared unrelated pull requests, and it fell further the more work was
+  recorded. The review command passes the patch, `record` says so when it
+  cannot, and runs without one are excluded and reported as not measurable.
+- Agreement tolerates an anchor drifting a few lines, matched pairwise rather
+  than bucketed: a fixed bucket puts a hard edge somewhere, which is what made
+  severity unstable two releases ago.
+- A pointer document resolves to its own directory before the repository root,
+  so `@AGENTS.md` beside a package's `CLAUDE.md` means the sibling.
+
+### Added
+
+- A fourth seam test runs the shipped command text in `commands/review.md`
+  against the CLI's own flag set. The three existing seams are agent
+  boundaries; the defect that got through was between the prose and the binary,
+  and nothing watched it.
+
 ## [0.8.0] - 2026-09-17
 
 ### Fixed
@@ -504,4 +538,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vulnerability reporting, and the repository security posture documented in
   `docs/REPO-SECURITY.md`.
 
-[0.8.0]: https://github.com/QuintinBotes/review-voice/commits/main
+[0.8.1]: https://github.com/QuintinBotes/review-voice/commits/main
