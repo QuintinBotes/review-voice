@@ -5,6 +5,33 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-09-17
+
+First stable release. 1.0.0 is a claim about the interface, not a new
+capability: the scoring and severity contracts have held four consecutive
+releases, each comparison over identical batches, with a maximum difference of
+1.7e-10.
+
+It is not a claim about measured precision. `owner_accepted_precision` reports
+no data because nothing has been labelled, and `docs/EVALUATION.md` says so.
+
+### Added
+
+- `status` counts findings that carry no feedback label and says how to label
+  them. The gate this tool rests on is computed from labels and nothing else,
+  and after a full test programme none existed, which reported as no data and
+  read as silence.
+
+### Changed
+
+- `docs/ARCHITECTURE.md` and `docs/EVALUATION.md` record that a score belongs to
+  the batch rather than to the candidate. Novelty is measured against what the
+  same review has already kept, so making one candidate eligible costs its
+  neighbours novelty and relaxing any gate can push an unrelated finding down.
+  Measured: one candidate moved 0.7158 to 0.6950 with no change to its own
+  inputs. Every reproducibility figure published is valid because each
+  comparison ran identical batches.
+
 ## [0.9.2] - 2026-09-17
 
 ### Changed
@@ -608,4 +635,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vulnerability reporting, and the repository security posture documented in
   `docs/REPO-SECURITY.md`.
 
-[0.9.2]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.0.0]: https://github.com/QuintinBotes/review-voice/commits/main
