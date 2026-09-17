@@ -3,10 +3,6 @@
 **A code reviewer for Claude Code where every finding names a concrete failure
 mode - ordered worst-first, and silent when it has nothing worth saying.**
 
-> ⚠️ **Pre-release.** Review Voice is being built to its full specification
-> before its first public release. Interfaces will change. See
-> [docs/PLAN.md](docs/PLAN.md) for the milestones.
-
 ---
 
 ## The problem

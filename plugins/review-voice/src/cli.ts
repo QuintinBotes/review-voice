@@ -20,7 +20,13 @@ import { acquirePullRequestDiff } from './diff/pull-request.ts';
 import { openDatabase } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
 import { recordRun, latestRun, runDetail } from './store/runs.ts';
-import { recordFeedback, normaliseAction, feedbackTotals, FEEDBACK_ACTIONS } from './store/feedback.ts';
+import {
+  recordFeedback,
+  normaliseAction,
+  feedbackTotals,
+  unlabelledFindings,
+  FEEDBACK_ACTIONS,
+} from './store/feedback.ts';
 import { loadConfig } from './policy/load.ts';
 import { resolvePolicy } from './policy/schema.ts';
 import { repositoryRoot } from './diff/acquire.ts';
@@ -1363,6 +1369,7 @@ function statusCommand(): number {
       `feedback         ${totals.kept} kept, ${totals.rewritten} rewritten, ${totals.dismissed} dismissed` +
         (totals.other > 0 ? `, ${totals.other} other` : ''),
     );
+    const unlabelled = unlabelledFindings(db);
     console.log(
       `owner precision  ${
         totals.ownerPrecision === null
@@ -1370,6 +1377,14 @@ function statusCommand(): number {
           : `${(totals.ownerPrecision * 100).toFixed(0)}% of labelled findings`
       }`,
     );
+    if (unlabelled > 0) {
+      // Said plainly, because the gate this tool rests on is computed from
+      // labels and nothing else, and after a full test programme none existed.
+      console.log(
+        `unlabelled       ${unlabelled} finding(s). Precision cannot be measured until these carry ` +
+          'a verdict: /review-voice:feedback <id> keep|dismiss|rewrite',
+      );
+    }
     if (last !== null) {
       console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(', ') || 'none'}`);
     }

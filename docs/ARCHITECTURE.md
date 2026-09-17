@@ -303,6 +303,23 @@ returned `found: []`, which reads as corroboration, and at the head ref it found
 the symbol the diff itself adds and deleted the finding with a sentence that was
 false about the claim.
 
+### A score belongs to the batch, not to the candidate
+
+Novelty is measured against what has already been kept in the same review, which
+is what stops two findings spending the word budget on one root cause. The
+consequence is that `finalScore` is not a property of a candidate alone: making
+one candidate eligible costs its neighbours novelty, so relaxing any gate can
+push an unrelated finding down.
+
+Measured, not theorised. Between two releases one candidate moved from 0.7158 to
+0.6950 with no change to its own inputs; scored alone it was 0.715821 on both,
+and lowering a different candidate's confidence until it was cut returned the
+first to 0.7158 exactly.
+
+This qualifies every reproducibility number in `docs/EVALUATION.md`. They are
+valid because each comparison ran identical batches through both versions. A
+comparison over different batches would measure the batch.
+
 ### Two confidence floors, because they measure different things
 
 The verifier checked the claim against the repository. The analyst reported how

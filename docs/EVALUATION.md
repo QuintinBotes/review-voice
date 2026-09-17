@@ -106,6 +106,13 @@ a small sample, and both halves of that sentence matter.
 | Contract compliance | 5 of 5 outputs passed `validate-output` first try |
 | Exact no-findings string | 3 of 3 |
 | Candidate set agreement, two runs of one diff | 0.60 by location, 1.00 by finding identity |
+| Scorer reproducibility, 0.9.1 against 0.9.2 | max difference 1.71e-10, four consecutive releases with no contract move |
+
+Every reproducibility figure above compares **identical batches**. A score is not
+a property of a candidate alone: novelty is measured against what the same review
+has already kept, so making one candidate eligible costs its neighbours novelty.
+A comparison over different batches would measure the batch rather than the
+scorer.
 
 The severity row is the one worth reading twice. Deriving the tier from the
 category rather than from the analyst's requested severity holds the tier
@@ -127,6 +134,15 @@ through the feedback loop that would.
 Until findings are labelled in normal use, the precision claim is a design
 intent with a measurement path, not a result. Reporting it as anything else
 would be the over-claiming this document exists to prevent.
+
+`RV status` now counts unlabelled findings and says how to label them, because a
+gate that silently reports no data is indistinguishable from one that is passing.
+
+This is the honest limit of version 1.0. Everything measured above was
+established by hand, one pull request at a time, by a reader who read the code.
+That does not scale, and a release that cannot tell you whether the next one
+reviews better or worse is a real exposure. The instrument exists; it has no
+readings yet.
 
 ## Online precision
 
