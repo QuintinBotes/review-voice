@@ -8,6 +8,7 @@ import {
   scoreCandidate,
   DEFAULT_THRESHOLDS,
   MAX_QUESTIONS,
+  applyQuestionCap,
   normaliseCandidate,
   MalformedCandidate,
 } from '../plugins/review-voice/src/scoring/score.ts';
@@ -1375,16 +1376,47 @@ test('an assertion at the same confidence is still cut', () => {
 });
 
 test('a review may ask a couple of questions, not a list of them', () => {
-  const asked = [question(), question(), question()];
-  const kept = [];
-  const outcomes = asked.map((candidate) => {
-    const breakdown = scoreCandidate(candidate, [], kept, DEFAULT_THRESHOLDS);
-    if (breakdown.eligible) kept.push(candidate);
-    return breakdown;
-  });
+  const outcomes = [question(), question(), question()].map((candidate) =>
+    scoreCandidate(candidate, [], [], DEFAULT_THRESHOLDS),
+  );
+  applyQuestionCap(outcomes);
 
   assert.equal(outcomes.filter((b) => b.eligible).length, MAX_QUESTIONS);
-  assert.match(outcomes[MAX_QUESTIONS].rejectedBecause, /already asks/);
+  assert.match(
+    outcomes.find((b) => !b.eligible).rejectedBecause,
+    /already asks 2 better-evidenced questions/,
+  );
+});
+
+test('which questions a review asks does not depend on the order they were filed', () => {
+  // The cap was applied while scoring, against the questions already kept, so
+  // it was first-come rather than merit-ranked: four at 0.30, 0.45, 0.60 and
+  // 0.35 kept the first two and dropped the 0.60, and reversing the input kept
+  // a different pair. A byte-identical diff could then produce a different
+  // review on emission order alone.
+  const build = () => [
+    question({ candidate_id: 'cand_a', technical_confidence: 0.3, evidence: ['`alpha` at line 4'] }),
+    question({ candidate_id: 'cand_b', technical_confidence: 0.45, evidence: ['`beta` at line 4'] }),
+    question({
+      candidate_id: 'cand_c',
+      technical_confidence: 0.6,
+      evidence: ['`gamma` at line 4', '`gammaHelper` at line 9', 'and `gammaStore` at line 12'],
+    }),
+    question({ candidate_id: 'cand_d', technical_confidence: 0.35, evidence: ['`delta` at line 4'] }),
+  ];
+
+  const emitted = (candidates) => {
+    const scored = candidates.map((c) => scoreCandidate(c, [], [], DEFAULT_THRESHOLDS));
+    applyQuestionCap(scored);
+    return scored.filter((b) => b.eligible).map((b) => b.candidateId).sort();
+  };
+
+  const asFiled = emitted(build());
+  const reversed = emitted(build().reverse());
+
+  assert.deepEqual(asFiled, reversed, 'emission order decided which questions shipped');
+  // And the best-evidenced one is among them.
+  assert.ok(asFiled.includes('cand_c'), `expected the strongest question to survive, got ${asFiled}`);
 });
 
 test('data_integrity varies by reach, so an analyst who read the code can bound it', () => {
