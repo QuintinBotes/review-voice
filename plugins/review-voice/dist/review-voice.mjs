@@ -1157,6 +1157,26 @@ function recordFeedback(db, input) {
   });
   return { ok: true, feedbackId, reviewRunId, findingId };
 }
+function unlabelledFindings(db) {
+  const runs = db.prepare("SELECT review_run_id, output_json FROM review_runs").all();
+  const labelled = new Set(
+    db.prepare("SELECT review_run_id, finding_id FROM feedback").all().map((row) => `${row.review_run_id}:${row.finding_id}`)
+  );
+  let unlabelled = 0;
+  for (const run of runs) {
+    let findings = [];
+    try {
+      findings = JSON.parse(run.output_json ?? "{}").findings ?? [];
+    } catch {
+      continue;
+    }
+    for (const finding of findings) {
+      if (finding.findingId === void 0) continue;
+      if (!labelled.has(`${run.review_run_id}:${finding.findingId}`)) unlabelled += 1;
+    }
+  }
+  return unlabelled;
+}
 function feedbackTotals(db) {
   const rows = db.prepare("SELECT action, COUNT(*) AS n FROM feedback GROUP BY action").all();
   const by = Object.fromEntries(rows.map((row) => [row.action, row.n]));
@@ -10912,9 +10932,15 @@ function statusCommand() {
     console.log(
       `feedback         ${totals.kept} kept, ${totals.rewritten} rewritten, ${totals.dismissed} dismissed` + (totals.other > 0 ? `, ${totals.other} other` : "")
     );
+    const unlabelled = unlabelledFindings(db);
     console.log(
       `owner precision  ${totals.ownerPrecision === null ? "not yet measurable (no explicit feedback)" : `${(totals.ownerPrecision * 100).toFixed(0)}% of labelled findings`}`
     );
+    if (unlabelled > 0) {
+      console.log(
+        `unlabelled       ${unlabelled} finding(s). Precision cannot be measured until these carry a verdict: /review-voice:feedback <id> keep|dismiss|rewrite`
+      );
+    }
     if (last !== null) {
       console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(", ") || "none"}`);
     }

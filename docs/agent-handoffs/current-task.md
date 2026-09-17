@@ -1,26 +1,35 @@
 # Current task - none open
 
-**Milestone:** M5, the 1.0.0 interface freeze
+**Milestone:** M5 shipped. 1.0.0 is released.
 **Risk:** low. No implementation work is outstanding.
 **Baseline:** `main`
 
 ## State
 
-All four build milestones shipped. Seven releases of real-world testing against
-live pull requests followed, and the findings from those went back in as fixes
-rather than into a backlog. What remains before 1.0.0 is not a feature.
+All five milestones shipped. Eleven releases of real-world testing against live
+pull requests preceded 1.0.0, and the findings from those went back in as fixes
+rather than into a backlog.
 
-## What 1.0.0 means here
+1.0.0 is a claim about the interface. The scoring and severity contracts held
+four consecutive releases, each comparison over identical batches, at a maximum
+difference of 1.7e-10, which is the retrieval's floating-point noise rather than
+anything moving.
 
-A stable interface, not a new capability. Testing moved the scoring threshold
-three times, changed how severity is assigned twice, and rewrote convention
-selection three times. Each move was justified by measurement, and each one
-changed what a review says about the same diff. 1.0.0 is the claim that they
-have settled.
+It is not a claim about measured precision. See below.
 
-*Done when:* a retest reports no change to the scoring or severity contract, the
-README carries real evaluation numbers rather than targets, and the pre-release
-notice comes off.
+## The next piece of work, and it is not a fix
+
+`owner_accepted_precision` has no data. Nothing has ever been labelled through
+`/review-voice:feedback`, so the gate the whole tool rests on reports nothing,
+and `candidate_set_agreement` has a single pair.
+
+Everything published in `docs/EVALUATION.md` was established by hand, one pull
+request at a time, by a reader who read the code. That does not scale, and a
+release that cannot tell you whether the next one reviews better or worse is a
+real exposure. `status` now counts unlabelled findings so the gap is visible
+rather than silent.
+
+**Label findings in normal use.** That is the instrument.
 
 ## Still open, and deliberately
 

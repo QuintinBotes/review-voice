@@ -111,6 +111,44 @@ export interface FeedbackTotals {
   ownerPrecision: number | null;
 }
 
+/**
+ * Findings emitted that carry no label.
+ *
+ * The precision gate is computed only from labelled findings, and after a full
+ * test programme nothing had been labelled at all, so the claim the whole tool
+ * rests on reported no data and nothing said so. A count is the cheapest thing
+ * that turns that from invisible into obvious.
+ */
+export function unlabelledFindings(db: Database): number {
+  const runs = db.prepare('SELECT review_run_id, output_json FROM review_runs').all() as {
+    review_run_id: string;
+    output_json: string | null;
+  }[];
+
+  const labelled = new Set(
+    (db.prepare('SELECT review_run_id, finding_id FROM feedback').all() as {
+      review_run_id: string;
+      finding_id: string;
+    }[]).map((row) => `${row.review_run_id}:${row.finding_id}`),
+  );
+
+  let unlabelled = 0;
+  for (const run of runs) {
+    let findings: { findingId?: string }[] = [];
+    try {
+      findings = (JSON.parse(run.output_json ?? '{}') as { findings?: { findingId?: string }[] }).findings ?? [];
+    } catch {
+      continue;
+    }
+    for (const finding of findings) {
+      if (finding.findingId === undefined) continue;
+      if (!labelled.has(`${run.review_run_id}:${finding.findingId}`)) unlabelled += 1;
+    }
+  }
+
+  return unlabelled;
+}
+
 export function feedbackTotals(db: Database): FeedbackTotals {
   const rows = db.prepare('SELECT action, COUNT(*) AS n FROM feedback GROUP BY action').all() as {
     action: string;
