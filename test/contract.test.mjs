@@ -99,6 +99,33 @@ test('findings must be ordered by severity', () => {
   assert.ok(codes({ result }).includes('severity_order'));
 });
 
+test('the floor budget does not reimpose a count cap on small changes', () => {
+  // At forty words a finding, the old 180-word floor allowed four and a half —
+  // the count cap returning through the back door, without even the honest
+  // message explaining itself. A single dense file can hold more than that.
+  const output = Array.from(
+    { length: 12 },
+    (_, i) => `[minor] \`src/one.ts:${i + 1}\` — A problem here stated in a reasonable number of words. It fails silently. Fix it.`,
+  ).join('\n\n');
+  const { code, result } = validate(output);
+  assert.equal(code, 0, JSON.stringify(result.violations));
+  assert.equal(result.findingCount, 12);
+});
+
+test('the budget still catches runaway output', () => {
+  const output = Array.from(
+    { length: 60 },
+    (_, i) => `[minor] \`src/a${i}.ts:${i + 1}\` — A problem here stated in a reasonable number of words so that it accumulates. It fails silently. Fix it now.`,
+  ).join('\n\n');
+  const { code, result } = validate(output);
+  assert.equal(code, 1);
+  const violation = result.violations.find((v) => v.code === 'output_too_long');
+  // The message has to read as a runaway signal, not an instruction to cut
+  // good findings to fit.
+  assert.match(violation.message, /runaway guard/);
+  assert.match(violation.message, /rather than cutting good ones/);
+});
+
 test('the word budget scales with the size of the change', () => {
   const output = Array.from(
     { length: 20 },
@@ -107,8 +134,8 @@ test('the word budget scales with the size of the change', () => {
 
   // A flat budget written for an ordinary pull request becomes a reason to
   // drop real findings on a large one.
-  const atFloor = validate(output);
-  assert.equal(atFloor.code, 1, 'should not fit the floor budget');
+  const atFloor = validate(output, ['--max-total-words', '200']);
+  assert.equal(atFloor.code, 1, 'should not fit a tight budget');
   assert.ok(codes(atFloor).includes('output_too_long'));
 
   const scaled = validate(output, ['--scale-to-files', '30']);
@@ -135,7 +162,7 @@ test('enforces the total word budget across findings', () => {
     { length: 5 },
     (_, i) => `[minor] \`src/a${i}.ts:1\` — ${prose}`,
   ).join('\n');
-  const { code, result } = validate(output);
+  const { code, result } = validate(output, ['--max-total-words', '150']);
   assert.equal(code, 1);
   assert.ok(codes({ result }).includes('output_too_long'));
   assert.equal(result.totalWords, 190);

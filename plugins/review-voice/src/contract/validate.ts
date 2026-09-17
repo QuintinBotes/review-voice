@@ -171,7 +171,13 @@ export function validateOutput(
   if (totalWords > limits.maxTotalWords) {
     violations.push({
       code: 'output_too_long',
-      message: `${totalWords} words total; the limit is ${limits.maxTotalWords}.`,
+      // Phrased as a runaway signal rather than a trim instruction. The budget
+      // is set not to bind on a real review, so hitting it usually means
+      // something generated far more than it verified.
+      message:
+        `${totalWords} words total against a budget of ${limits.maxTotalWords}. ` +
+        'This budget is a runaway guard, not a trim target — check whether these findings were all actually verified, ' +
+        'rather than cutting good ones to fit.',
     });
   }
 

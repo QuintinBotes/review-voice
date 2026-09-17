@@ -29,18 +29,23 @@ export const SEVERITY_ORDER: Record<Severity, number> = {
   question: 4,
 };
 
-const BUDGET_FLOOR = 180;
-const BUDGET_PER_FILE = 45;
-const BUDGET_CEILING = 2000;
+const BUDGET_FLOOR = 600;
+const BUDGET_PER_FILE = 60;
+const BUDGET_CEILING = 3000;
 
 /**
- * The total word budget scales with the size of the change.
+ * The total word budget, scaled to the size of the change.
  *
- * A flat 180 words was written for an ordinary pull request. On a
- * four-hundred-file change it stops being a discipline and becomes a reason to
- * drop real findings, which is the opposite of what a reviewer is for. The
- * ceiling exists because past a couple of thousand words nobody is reading
- * anyway, and the honest response to a change that large is to say so.
+ * Once the count cap went and severity ordering took over the triage, this
+ * stopped being a discipline. A nit at position nine costs a reader nothing,
+ * because they stop where they choose. What remains is a runaway guard: it
+ * should never bind on a real review, and when it does the output is
+ * pathological rather than merely long.
+ *
+ * So the floor is deliberately generous. At forty words a finding, the old 180
+ * allowed four and a half — which was the count cap returning through the back
+ * door on small changes, without even the honest message explaining itself. A
+ * single dense file can hold more real findings than that.
  */
 export function totalWordBudget(reviewableFiles: number): number {
   const scaled = BUDGET_FLOOR + BUDGET_PER_FILE * Math.max(0, reviewableFiles - 1);
@@ -58,6 +63,8 @@ export const DEFAULT_LIMITS: ContractLimits = {
   maxFindings: null,
   maxWordsPerFinding: 40,
   maxTotalWords: BUDGET_FLOOR,
+  // Kept as the floor rather than a separate constant: a caller that does not
+  // know the file count still gets a budget that will not silently trim.
   noFindingsResponse: 'No actionable findings.',
   // Only phrases that hide a claim or replace one. A hedge makes a finding
   // unfalsifiable — "you might consider" states nothing to agree or disagree

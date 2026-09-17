@@ -21,10 +21,11 @@ voice:
   # worse of the two: on tight findings it discards ones the budget allows.
   max_findings: null
   max_words_per_finding: 40
-  # Floor. The real budget scales with the size of the change — a flat figure
-  # written for an ordinary pull request becomes a reason to drop real findings
-  # on a large one.
-  max_total_words: 180
+  # A runaway guard, not a trim target. Once ordering took over the triage,
+  # a nit at position nine costs the reader nothing — so this is set not to
+  # bind on a real review. The floor allows roughly fifteen findings on a
+  # single file; it scales from there with the size of the change.
+  max_total_words: 600
   no_findings_response: "No actionable findings."
 
 severities:

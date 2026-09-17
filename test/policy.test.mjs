@@ -33,7 +33,7 @@ test('with no config the baseline limits apply', () => {
     // No cap by default: volume is bounded by the word budget alone.
     assert.equal(result.policy.maxFindings, null);
     assert.equal(result.policy.maxWordsPerFinding, 40);
-    assert.equal(result.policy.maxTotalWords, 180);
+    assert.equal(result.policy.maxTotalWords, 600);
     assert.equal(result.ownerReviewer, null);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -74,7 +74,7 @@ test('a narrower layer may tighten a limit but never loosen it', () => {
     // allows, or the baseline means nothing. With no baseline cap on findings,
     // a layer may impose one — that is tightening, not loosening.
     assert.equal(result.policy.maxFindings, 50);
-    assert.equal(result.policy.maxTotalWords, 180);
+    assert.equal(result.policy.maxTotalWords, 600);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -90,9 +90,9 @@ var SEVERITY_ORDER = {
   nit: 3,
   question: 4
 };
-var BUDGET_FLOOR = 180;
-var BUDGET_PER_FILE = 45;
-var BUDGET_CEILING = 2e3;
+var BUDGET_FLOOR = 600;
+var BUDGET_PER_FILE = 60;
+var BUDGET_CEILING = 3e3;
 function totalWordBudget(reviewableFiles) {
   const scaled = BUDGET_FLOOR + BUDGET_PER_FILE * Math.max(0, reviewableFiles - 1);
   return Math.min(BUDGET_CEILING, Math.max(BUDGET_FLOOR, scaled));
@@ -104,6 +104,8 @@ var DEFAULT_LIMITS = {
   maxFindings: null,
   maxWordsPerFinding: 40,
   maxTotalWords: BUDGET_FLOOR,
+  // Kept as the floor rather than a separate constant: a caller that does not
+  // know the file count still gets a budget that will not silently trim.
   noFindingsResponse: "No actionable findings.",
   // Only phrases that hide a claim or replace one. A hedge makes a finding
   // unfalsifiable — "you might consider" states nothing to agree or disagree
@@ -274,7 +276,10 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
   if (totalWords > limits.maxTotalWords) {
     violations.push({
       code: "output_too_long",
-      message: `${totalWords} words total; the limit is ${limits.maxTotalWords}.`
+      // Phrased as a runaway signal rather than a trim instruction. The budget
+      // is set not to bind on a real review, so hitting it usually means
+      // something generated far more than it verified.
+      message: `${totalWords} words total against a budget of ${limits.maxTotalWords}. This budget is a runaway guard, not a trim target \u2014 check whether these findings were all actually verified, rather than cutting good ones to fit.`
     });
   }
   return { valid: violations.length === 0, findingCount: findings.length, totalWords, violations };

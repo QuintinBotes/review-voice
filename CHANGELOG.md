@@ -13,9 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alone. A count cap and a word budget do the same job, and the count is the
   worse of the two: on tight findings it discarded findings the budget would
   have allowed. A policy layer may still impose a cap.
-- **The total word budget scales with the change** rather than sitting at a
-  flat 180. A figure written for an ordinary pull request became a reason to
-  drop real findings on a large one.
+- **The total word budget scales with the change**, from a floor of 600 words
+  rather than 180. At 40 words a finding the old floor allowed four and a half
+  — the count cap returning through the back door on small changes. The budget
+  is now a runaway guard rather than a trim target, and says so when it binds.
 - **Two new severity tiers: `nit` and `question`.** Low-stakes observations and
   open asks now have a structural home instead of being suppressed or written
   into prose where they cannot be sorted or counted.
