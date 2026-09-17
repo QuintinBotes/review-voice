@@ -169,6 +169,23 @@ const MIGRATIONS: string[] = [
     imported INTEGER NOT NULL
   );
   `,
+
+  // v6 — per-pull-request watermarks, replacing HTTP conditional requests.
+  //
+  // The ETag cache in sync_state was actively harmful: a dry run populated it
+  // without storing anything, so the real sync that followed received 304s and
+  // imported almost nothing. It is dropped rather than left to mislead.
+  `
+  DROP TABLE IF EXISTS sync_state;
+
+  CREATE TABLE sync_watermarks (
+    repository TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    processed_at TEXT NOT NULL,
+    PRIMARY KEY (repository, pull_number)
+  );
+  `,
 ];
 
 function migrate(db: Database): void {

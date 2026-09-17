@@ -286,6 +286,26 @@ A bot is a bot even when it is also a collaborator: automated output would
 teach the reviewer to sound like a linter, so it is excluded from voice
 learning regardless of permissions.
 
+### Incremental sync
+
+Sync is incremental at the **pull request** level, not the HTTP level. GitHub's
+`updated_at` is compared against a watermark recorded after the events from
+that pull request were stored.
+
+An earlier design used HTTP conditional requests, and it was wrong twice over.
+The collector re-derives everything from each response body and never kept one,
+so a `304` — "you already have this" — was false. And an empty `304` page
+carries no `Link` header, which silently truncated pagination at whichever page
+happened to be unchanged.
+
+Worse, a dry run populated that cache while storing nothing, so the real sync
+that followed received `304`s and imported almost nothing: one report projected
+250 events and stored 6. Because the consent flow asks the user to approve a
+sync on the strength of the dry-run figures, that made the approval meaningless.
+
+Watermarks are therefore written only after the events are stored, and a dry
+run writes no state at all.
+
 ### Corpus ingestion
 
 Redaction happens in the collector, before an event is returned, so the

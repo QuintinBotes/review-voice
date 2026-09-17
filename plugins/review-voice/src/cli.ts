@@ -37,7 +37,8 @@ import { scoreCandidate, DEFAULT_THRESHOLDS, type Candidate } from './scoring/sc
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
 import { computeMetrics } from './evaluate/metrics.ts';
-import { loadEtags, saveEtags, beginSyncRun, finishSyncRun, lastSync } from './sync/state.ts';
+import { beginSyncRun, finishSyncRun, lastSync } from './sync/state.ts';
+import { loadWatermarks, saveWatermarks, type Watermark } from './sync/watermark.ts';
 import { evaluatePostingGate } from './publish/gate.ts';
 import { buildDraft } from './publish/draft.ts';
 import { hashDiff } from './store/runs.ts';
@@ -378,13 +379,11 @@ async function syncCommand(argv: string[]): Promise<number> {
 
   const client = new GitHubClient({ allowlist: config.allowlist });
 
-  // Conditional requests carry over between runs, so a repeat sync on a quiet
-  // repository costs almost no rate limit and can be run often.
   const stateDb = openDatabase();
   const syncRunId = beginSyncRun(stateDb, config.allowlist);
-  client.primeEtags(loadEtags(stateDb));
   const stats: CollectionStats = {
     pullRequestsScanned: 0,
+    pullRequestsUnchanged: 0,
     commentsSeen: 0,
     bySource: { inline: 0, reviewSummary: 0, conversation: 0 },
     eligible: 0,
@@ -393,8 +392,15 @@ async function syncCommand(argv: string[]): Promise<number> {
   };
 
   const collected = [];
+  const pendingWatermarks: Watermark[] = [];
+
   for (const repository of config.allowlist) {
-    const events = await collectRepository(
+    // A dry run deliberately ignores watermarks: its whole job is to report
+    // what a full import would find, and reading only what changed since the
+    // last sync would understate that.
+    const watermarks = dryRun ? undefined : loadWatermarks(stateDb, repository);
+
+    const result = await collectRepository(
       client,
       {
         repository,
@@ -403,20 +409,20 @@ async function syncCommand(argv: string[]): Promise<number> {
         maxCommentsPerPull: 200,
         includeForks: false,
         includeConversationComments: argv.includes('--include-conversation'),
+        watermarks,
       },
       stats,
     );
-    collected.push(...events);
+    collected.push(...result.events);
+    for (const mark of result.watermarks) {
+      pendingWatermarks.push({ repository, pullNumber: mark.pullNumber, updatedAt: mark.updatedAt });
+    }
   }
 
   const selection = selectEvents(
     collected.map((event) => ({ ...event, role: event.role })),
     { target, maxRepositoryShare: 0.5 },
   );
-
-  // Saved even on a dry run: nothing was stored, but the conditional-request
-  // state is about what was fetched, and re-fetching it would be waste.
-  saveEtags(stateDb, client.exportEtags());
 
   if (dryRun) {
     finishSyncRun(stateDb, syncRunId, stats, 0);
@@ -428,6 +434,11 @@ async function syncCommand(argv: string[]): Promise<number> {
   const db = stateDb;
   try {
     const stored = storeEvents(db, selection.selected);
+
+    // Recorded only after the events are stored. A watermark written for work
+    // that was not persisted is exactly what made the dry run poison the sync
+    // that followed it.
+    saveWatermarks(db, pendingWatermarks);
     finishSyncRun(db, syncRunId, stats, stored.inserted);
     console.log(
       JSON.stringify(
@@ -841,6 +852,7 @@ function explainCommand(argv: string[]): number {
 function statusCommand(): number {
   const db = openDatabase();
   try {
+    const coverage = corpusCoverage(db);
     const runs = (db.prepare('SELECT COUNT(*) AS n FROM review_runs').get() as { n: number }).n;
     const audits = (db.prepare('SELECT COUNT(*) AS n FROM audit_events').get() as { n: number }).n;
     const totals = feedbackTotals(db);
@@ -864,6 +876,13 @@ function statusCommand(): number {
     if (last !== null) {
       console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(', ') || 'none'}`);
     }
+    console.log(
+      `corpus           ${coverage.total} event(s)` +
+        (coverage.total === 0
+          ? ''
+          : ` — ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(', ')}`),
+    );
+    for (const warning of coverage.warnings) console.log(`  warning        ${warning}`);
     return 0;
   } finally {
     db.close();
