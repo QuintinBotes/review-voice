@@ -1,4 +1,4 @@
-# 0004 — Outcome inference limits
+# 0004 - Outcome inference limits
 
 **Status:** Accepted · **Date:** 2026-09-16
 
@@ -6,7 +6,7 @@
 
 Labelling a historical comment as accepted or dismissed requires knowing what
 happened after it. The strongest evidence is a follow-up commit that fixes the
-flagged code — which means fetching and diffing commits, potentially many per
+flagged code - which means fetching and diffing commits, potentially many per
 comment, across a 250-event corpus. That is expensive in API calls, rate limit
 budget, and time, and it reads more repository content than the user may expect.
 
@@ -18,7 +18,7 @@ are opt-in and bounded.**
 Default inference uses, at no additional cost:
 
 - Thread resolution metadata
-- Replies in the thread — acknowledgement, rejection, clarification
+- Replies in the thread - acknowledgement, rejection, clarification
 - Commits already attached to the pull request, matched by file and line range
 - Explicit plugin feedback, which is always the strongest signal available
 
@@ -33,7 +33,7 @@ can never create or suppress a policy rule on its own.
 ## Consequences
 
 - Bootstrap stays within a reasonable API budget and finishes in reasonable time.
-- Many events are labelled `unknown`. That is correct — an unknown outcome
+- Many events are labelled `unknown`. That is correct - an unknown outcome
   carries a 0.45 weight for owner comments, not zero and not one.
 - **Silence is never a negative label.** A comment nobody answered tells us
   nothing.
@@ -42,7 +42,7 @@ can never create or suppress a policy rule on its own.
 ## Alternatives considered
 
 **Always walk follow-up commits.** Rejected: cost and rate limits, for a signal
-that is often ambiguous — a later commit touching the same lines may be
+that is often ambiguous - a later commit touching the same lines may be
 unrelated.
 
 **Treat merge-without-change as dismissal.** Rejected explicitly by the

@@ -38,7 +38,7 @@ const REPO_PATH = /^\/repos\/([^/]+\/[^/]+)(\/|$)/;
  *
  * The second matters more than it looks. The credential comes from `gh` and
  * carries whatever scopes the user already had, which is almost always broader
- * than Review Voice needs — so the allowlist, not the token, is what actually
+ * than Review Voice needs - so the allowlist, not the token, is what actually
  * bounds access.
  */
 export class GitHubClient {
@@ -88,7 +88,7 @@ export class GitHubClient {
       // An earlier version sent If-None-Match and treated a 304 as an empty
       // page. That was wrong twice over: the collector re-derives everything
       // from each response body and never stored one, so "you already have
-      // this" was false — and an empty page with no Link header silently
+      // this" was false - and an empty page with no Link header silently
       // truncated pagination, stopping the walk at whichever page happened to
       // be unchanged.
       //

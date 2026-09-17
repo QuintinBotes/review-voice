@@ -43,7 +43,7 @@ const BUDGET_CEILING = 3000;
  * pathological rather than merely long.
  *
  * So the floor is deliberately generous. At forty words a finding, the old 180
- * allowed four and a half — which was the count cap returning through the back
+ * allowed four and a half - which was the count cap returning through the back
  * door on small changes, without even the honest message explaining itself. A
  * single dense file can hold more real findings than that.
  */
@@ -67,7 +67,7 @@ export const DEFAULT_LIMITS: ContractLimits = {
   // know the file count still gets a budget that will not silently trim.
   noFindingsResponse: 'No actionable findings.',
   // Only phrases that hide a claim or replace one. A hedge makes a finding
-  // unfalsifiable — "you might consider" states nothing to agree or disagree
+  // unfalsifiable - "you might consider" states nothing to agree or disagree
   // with. "overall" and "summary" left out deliberately: they appear in real
   // prose ("overall latency", "the summary endpoint") and word-boundary
   // matching cannot tell those from a summary section.

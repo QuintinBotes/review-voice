@@ -14,7 +14,7 @@ precedent ids that informed it.
 ## Report what was recorded, not what sounds plausible
 
 If a field says `not recorded`, say so. Do not reconstruct a rationale after
-the fact — an explanation invented at explain-time is a story about the
+the fact - an explanation invented at explain-time is a story about the
 finding, not a record of how it was produced.
 
 Scores are only present when the review passed `--scores` to `record`. A review

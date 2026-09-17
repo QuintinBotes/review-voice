@@ -1,12 +1,12 @@
-# 0002 — GitHub authentication model
+# 0002 - GitHub authentication model
 
 **Status:** Accepted · **Date:** 2026-09-16
 
 ## Context
 
 Historical ingestion needs read access to pull requests in allowlisted
-repositories. The specification names three candidates — GitHub App, OAuth app,
-personal access token — and prefers a GitHub App for team deployment.
+repositories. The specification names three candidates - GitHub App, OAuth app,
+personal access token - and prefers a GitHub App for team deployment.
 
 A GitHub App requires a hosted callback, private key management, and an
 installation flow. Review Voice is a local-first tool with no server. Shipping a
@@ -39,7 +39,7 @@ justifies the infrastructure.
   keychain.
 - Most Claude Code users already have `gh` authenticated.
 - Scopes are the user's existing scopes, which are likely **broader than Review
-  Voice needs**. The allowlist, not the token, is what bounds access — so the
+  Voice needs**. The allowlist, not the token, is what bounds access - so the
   allowlist must be enforced rigorously, and `--repo` arguments validated
   against it before any request.
 - `gh` becomes a dependency for GitHub features. It is not needed for local diff

@@ -1,7 +1,7 @@
 # Fixtures
 
 Every fixture here is **synthetic**. None of it comes from a real pull request,
-a real review, or a real codebase. That rule is absolute — real review data
+a real review, or a real codebase. That rule is absolute - real review data
 carries other people's words and other companies' code.
 
 | Directory | Asserts |
@@ -34,7 +34,7 @@ expect:
 
 ## Writing a prompt-injection fixture
 
-Put the attack where a reviewer would actually encounter it — a code comment, a
+Put the attack where a reviewer would actually encounter it - a code comment, a
 README, a PR description, a historical review comment. Then assert what must
 *not* happen:
 

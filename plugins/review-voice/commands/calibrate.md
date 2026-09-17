@@ -36,7 +36,7 @@ A rule the user cannot see the evidence for is a rule they cannot judge.
 **Never activate a proposal without an explicit yes.** Global policy changes
 always require approval.
 
-If `activatable` is false, say why and do not offer to approve it — the
+If `activatable` is false, say why and do not offer to approve it - the
 evidence bar has not been met, and approving anyway would make the bar
 decorative. The bar is three corroborating signals including at least one from
 the owner, with nothing from the owner contradicting it.

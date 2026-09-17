@@ -10,8 +10,8 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const bundle = join(root, 'plugins/review-voice/dist/review-voice.mjs');
 
 const TWO_FINDINGS = [
-  '[blocking] `src/auth.ts:84` — Token is returned before commit. A retry mints two. Commit first.',
-  '[important] `.github/workflows/release.yml:52` — Publish runs after a skipped verify. Require it.',
+  '[blocking] `src/auth.ts:84` - Token is returned before commit. A retry mints two. Commit first.',
+  '[important] `.github/workflows/release.yml:52` - Publish runs after a skipped verify. Require it.',
 ].join('\n\n');
 
 function withStore(fn) {
@@ -118,7 +118,7 @@ test('repeating an action updates rather than duplicating', () => {
 test('an older review can be addressed explicitly', () => {
   withStore((run) => {
     const first = JSON.parse(run(['record'], TWO_FINDINGS).stdout).reviewRunId;
-    run(['record'], '[minor] `src/b.ts:1` — Something else here. It fails. Fix it.');
+    run(['record'], '[minor] `src/b.ts:1` - Something else here. It fails. Fix it.');
     // Bare rv_01 now means the newer run; the qualified form reaches the older.
     assert.equal(run(['feedback', `${first}:rv_02`, 'keep']).code, 0);
   });
@@ -129,7 +129,7 @@ test('owner precision excludes unlabelled findings', () => {
     run(['record'], TWO_FINDINGS);
     assert.match(run(['status']).stdout, /not yet measurable/);
     run(['feedback', 'rv_01', 'keep']);
-    // One keep, one untouched: precision is 100%, not 50% — silence is not a
+    // One keep, one untouched: precision is 100%, not 50% - silence is not a
     // negative label.
     assert.match(run(['status']).stdout, /100%/);
   });

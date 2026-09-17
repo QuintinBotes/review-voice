@@ -20,7 +20,7 @@ Each signal carries: `kind`, `path`, `line`, `claim`, `evidence`
 (the specific tool output supporting it), and `confidence`.
 
 **Do not write review prose. Do not speculate beyond what the tool reported.**
-If a tool did not run, say it did not run — never imply that checks passed when
+If a tool did not run, say it did not run - never imply that checks passed when
 they did not execute.
 
 ## Output

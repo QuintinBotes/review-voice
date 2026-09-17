@@ -3,7 +3,7 @@
 ## What Review Voice touches
 
 Source code and diffs, historical pull-request review text, repository
-configuration, and — if enabled — project commands it has been told to run. It
+configuration, and - if enabled - project commands it has been told to run. It
 puts a bounded subset of that in front of a language model.
 
 ## Assets
@@ -64,7 +64,7 @@ writes to GitHub.
 **Mitigations.** Allowlist-only, with no scan-everything mode. Explicit
 confirmation before adding a repository and before the first sync. Read-only
 enforced in the client by rejecting non-GET requests, covered by test. No
-credential storage — `gh` holds the token
+credential storage - `gh` holds the token
 ([adr/0002](adr/0002-github-auth-model.md)).
 
 ### 4. Arbitrary code execution through static analysis
@@ -81,8 +81,8 @@ Detection suggests; configuration enables. Never both
 **Attack.** Accumulated weak signals, a hostile repository policy file, or noisy
 external-reviewer history gradually reshapes the reviewer's behaviour.
 
-**Mitigations.** Weak signals — a merge with no visible fix, a silent
-resolution, no reply — can never create or suppress a rule alone. Global changes
+**Mitigations.** Weak signals - a merge with no visible fix, a silent
+resolution, no reply - can never create or suppress a rule alone. Global changes
 always require owner approval. Committed repository policies are proposals
 requiring local approval ([adr/0006](adr/0006-team-governance.md)). External
 reviewer evidence carries low weight and cannot establish global rules. Every
@@ -101,7 +101,7 @@ merge. The release workflow refuses to publish a tag whose commit is not an
 ancestor of `main`, so a tag cannot smuggle in unreviewed code.
 
 **Residual risk.** A committed build artifact is inherently more attack-surface
-than a build step. The alternative — requiring `npm install` — was judged worse
+than a build step. The alternative - requiring `npm install` - was judged worse
 for users; see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### 7. A compromised GitHub Action or npm dependency
@@ -109,8 +109,8 @@ for users; see [ARCHITECTURE.md](ARCHITECTURE.md).
 **Attack.** A third-party action or build dependency is compromised upstream and
 executes in CI, where it can read tokens and alter the committed bundle.
 
-**Mitigations.** Every action is pinned to a full commit SHA — a tag can be
-moved by whoever controls the action's repository, a SHA cannot — and
+**Mitigations.** Every action is pinned to a full commit SHA - a tag can be
+moved by whoever controls the action's repository, a SHA cannot - and
 `npm run check:pins` fails the build if a pin regresses to a tag. Workflows
 start from `permissions: {}` and opt into the minimum per job. Checkout uses
 `persist-credentials: false`, so the workflow token is not left on disk for

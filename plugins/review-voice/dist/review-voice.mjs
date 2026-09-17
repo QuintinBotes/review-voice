@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync3 } from "node:fs";
+import { readFileSync as readFileSync3, writeFileSync, mkdirSync as mkdirSync2 } from "node:fs";
+import { join as join4 } from "node:path";
 import { execFileSync as execFileSync4 } from "node:child_process";
 
 // plugins/review-voice/src/warnings.ts
@@ -45,7 +46,7 @@ function checkNode() {
   return {
     name: "node",
     ok: major >= MIN_NODE_MAJOR,
-    detail: major >= MIN_NODE_MAJOR ? `v${process.versions.node}` : `v${process.versions.node} \u2014 Review Voice needs Node ${MIN_NODE_MAJOR} or newer`
+    detail: major >= MIN_NODE_MAJOR ? `v${process.versions.node}` : `v${process.versions.node} - Review Voice needs Node ${MIN_NODE_MAJOR} or newer`
   };
 }
 function checkSqlite() {
@@ -108,7 +109,7 @@ var DEFAULT_LIMITS = {
   // know the file count still gets a budget that will not silently trim.
   noFindingsResponse: "No actionable findings.",
   // Only phrases that hide a claim or replace one. A hedge makes a finding
-  // unfalsifiable — "you might consider" states nothing to agree or disagree
+  // unfalsifiable - "you might consider" states nothing to agree or disagree
   // with. "overall" and "summary" left out deliberately: they appear in real
   // prose ("overall latency", "the summary endpoint") and word-boundary
   // matching cannot tell those from a summary section.
@@ -132,7 +133,7 @@ function countWords(prose) {
 // plugins/review-voice/src/contract/parse.ts
 var SEVERITY_ALTERNATION = SEVERITIES.join("|");
 var OPENS_FINDING = new RegExp(`^\\[(?:${SEVERITY_ALTERNATION}|[a-z_]+)\\]`, "i");
-var FINDING = new RegExp(`^\\[([a-z_]+)\\]\\s+\`([^\`]+):(\\d+)\`\\s+\u2014\\s*([\\s\\S]*)$`, "i");
+var FINDING = new RegExp(`^\\[([a-z_]+)\\]\\s+\`([^\`]+):(\\d+)\`\\s+-\\s*([\\s\\S]*)$`, "i");
 function splitFindings(output) {
   const lines = output.split("\n");
   const blocks = [];
@@ -198,7 +199,7 @@ function validateFinding(finding, limits, violations) {
     violations.push({
       code: "format",
       line: at,
-      message: "Does not match: [severity] `path:line` \u2014 Problem. Consequence. Suggested fix. (severity is blocking, important or minor; the separator is an em dash)"
+      message: "Does not match: [severity] `path:line` - Problem. Consequence. Suggested fix. (severity is blocking, important, minor, nit or question; the separator is a plain hyphen)"
     });
     return 0;
   }
@@ -212,6 +213,13 @@ function validateFinding(finding, limits, violations) {
       code: "finding_too_long",
       line: at,
       message: `${words} words; the limit is ${limits.maxWordsPerFinding}. Cut it or drop the finding.`
+    });
+  }
+  if (/[\u2013\u2014]/u.test(finding.prose)) {
+    violations.push({
+      code: "em_dash",
+      line: at,
+      message: "Contains an em or en dash. Use a comma, a full stop, or a plain hyphen."
     });
   }
   for (const phrase of findForbiddenPhrases(finding.prose, limits.forbiddenPhrases)) {
@@ -279,7 +287,7 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
       // Phrased as a runaway signal rather than a trim instruction. The budget
       // is set not to bind on a real review, so hitting it usually means
       // something generated far more than it verified.
-      message: `${totalWords} words total against a budget of ${limits.maxTotalWords}. This budget is a runaway guard, not a trim target \u2014 check whether these findings were all actually verified, rather than cutting good ones to fit.`
+      message: `${totalWords} words total against a budget of ${limits.maxTotalWords}. This budget is a runaway guard, not a trim target - check whether these findings were all actually verified, rather than cutting good ones to fit.`
     });
   }
   return { valid: violations.length === 0, findingCount: findings.length, totalWords, violations };
@@ -516,6 +524,15 @@ function acquireDiff(options) {
   const range = options.base !== null ? [`${options.base}...HEAD`] : options.staged ? ["--cached"] : [];
   const mode = options.base !== null ? "base" : options.staged ? "staged" : "worktree";
   const entries = parseNameStatus(git(["diff", "--name-status", "-z", ...range], root));
+  const numstat = /* @__PURE__ */ new Map();
+  for (const line of git(["diff", "--numstat", ...range], root).split("\n")) {
+    const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
+    if (match === null) continue;
+    numstat.set(match[3], {
+      additions: match[1] === "-" ? 0 : Number(match[1]),
+      deletions: match[2] === "-" ? 0 : Number(match[2])
+    });
+  }
   if (mode === "worktree") {
     for (const path of untrackedFiles(root)) {
       entries.push({ status: "A", path });
@@ -531,6 +548,8 @@ function acquireDiff(options) {
       status: STATUS[entry.status] ?? "changed",
       class: cls,
       language: languageOf(entry.path),
+      additions: numstat.get(entry.path)?.additions ?? 0,
+      deletions: numstat.get(entry.path)?.deletions ?? 0,
       reviewed,
       ...reviewed ? {} : { excludedBecause: deleted ? "file deleted" : excludedReason(cls) }
     };
@@ -722,6 +741,8 @@ async function acquirePullRequestDiff(options) {
       status: STATUS2[file.status] ?? "changed",
       class: cls,
       language: languageOf(file.filename),
+      additions: file.additions ?? 0,
+      deletions: file.deletions ?? 0,
       reviewed,
       ...excludedBecause === void 0 ? {} : { excludedBecause }
     };
@@ -779,7 +800,7 @@ function databasePath(env) {
 
 // plugins/review-voice/src/store/db.ts
 var MIGRATIONS = [
-  // v1 — review runs, explicit feedback, audit trail.
+  // v1 - review runs, explicit feedback, audit trail.
   `
   CREATE TABLE review_runs (
     review_run_id TEXT PRIMARY KEY,
@@ -818,7 +839,7 @@ var MIGRATIONS = [
   );
   CREATE INDEX idx_audit_created ON audit_events (created_at DESC);
   `,
-  // v2 — the historical review corpus.
+  // v2 - the historical review corpus.
   //
   // There is deliberately no column for the original comment text. Redaction
   // happens at the download boundary and only its output is passed here, so
@@ -855,7 +876,7 @@ var MIGRATIONS = [
   CREATE INDEX idx_events_created ON review_events (created_at DESC);
   CREATE INDEX idx_events_role ON review_events (reviewer_role);
   `,
-  // v3 — lexical retrieval index.
+  // v3 - lexical retrieval index.
   //
   // FTS5 rather than embeddings, per docs/adr/0001: no model download, works
   // offline, and deterministic enough to unit test. Triggers keep the index in
@@ -889,7 +910,7 @@ var MIGRATIONS = [
     VALUES (new.rowid, new.body_redacted, COALESCE(new.file_path, ''));
   END;
   `,
-  // v4 — versioned policy artifacts.
+  // v4 - versioned policy artifacts.
   //
   // A policy row carries its own provenance, so "why does the reviewer say
   // this" is answerable from the store rather than from memory. Old versions
@@ -911,7 +932,7 @@ var MIGRATIONS = [
   );
   CREATE INDEX idx_policies_active ON policies (scope_type, scope_key, active);
   `,
-  // v5 — sync state for incremental polling.
+  // v5 - sync state for incremental polling.
   //
   // ETags persist across runs so a repeat sync costs almost nothing: GitHub
   // does not charge rate limit for a 304. That is what makes polling a
@@ -933,7 +954,7 @@ var MIGRATIONS = [
     imported INTEGER NOT NULL
   );
   `,
-  // v6 — per-pull-request watermarks, replacing HTTP conditional requests.
+  // v6 - per-pull-request watermarks, replacing HTTP conditional requests.
   //
   // The ETag cache in sync_state was actively harmful: a dry run populated it
   // without storing anything, so the real sync that followed received 304s and
@@ -7660,7 +7681,7 @@ function parseOutput(name, command, output) {
 var DEFAULT_TIMEOUT_SECONDS = 120;
 function collectEvidence(commands, options) {
   if (!options.enabled || commands.length === 0) {
-    return { enabled: false, commands: [], didNotRun: commands.map((command) => command.name) };
+    return { enabled: false, signals: [], commands: [], didNotRun: commands.map((command) => command.name) };
   }
   const outcomes = [];
   const didNotRun = [];
@@ -7697,7 +7718,12 @@ ${result.stderr ?? ""}`;
       signals: parseOutput(command.name, command.run, output)
     });
   }
-  return { enabled: true, commands: outcomes, didNotRun };
+  return {
+    enabled: true,
+    signals: outcomes.flatMap((outcome) => outcome.signals),
+    commands: outcomes,
+    didNotRun
+  };
 }
 
 // plugins/review-voice/src/verify/external.ts
@@ -7751,6 +7777,21 @@ function parseVerdict(stdout) {
   }
   return null;
 }
+var spawnRunner = (command, input, timeoutMs, cwd) => {
+  const result = spawnSync2(command, {
+    cwd,
+    shell: true,
+    encoding: "utf8",
+    input,
+    timeout: timeoutMs,
+    maxBuffer: 8 * 1024 * 1024
+  });
+  return {
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    failed: result.error !== void 0 || result.status === null
+  };
+};
 function verifyFindings(findings, config, options) {
   const name = config.name ?? "external";
   if (!config.enabled || config.command.trim().length === 0 || findings.length === 0) {
@@ -7759,18 +7800,17 @@ function verifyFindings(findings, config, options) {
   const dropThreshold = config.dropThreshold ?? DEFAULT_DROP_THRESHOLD;
   const verdicts = [];
   const didNotRun = [];
+  const runner = options.runner ?? spawnRunner;
   for (const finding of findings) {
-    const result = spawnSync2(config.command, {
-      cwd: options.cwd,
-      shell: true,
-      encoding: "utf8",
-      input: JSON.stringify(finding),
-      timeout: (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS2) * 1e3,
-      maxBuffer: 8 * 1024 * 1024
-    });
-    const unavailable = result.error !== void 0 || result.status === null;
-    const raw = unavailable ? null : parseVerdict(`${result.stdout ?? ""}
-${result.stderr ?? ""}`);
+    const result = runner(
+      config.command,
+      JSON.stringify(finding),
+      (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS2) * 1e3,
+      options.cwd
+    );
+    const unavailable = result.failed;
+    const raw = unavailable ? null : parseVerdict(`${result.stdout}
+${result.stderr}`);
     if (raw === null) {
       didNotRun.push(name);
       verdicts.push({
@@ -7779,7 +7819,7 @@ ${result.stderr ?? ""}`);
         line: finding.line,
         verdict: "uncertain",
         confidence: 0,
-        reason: unavailable ? `verifier did not run: ${result.error?.message ?? "no exit status"}` : "verifier produced no parseable verdict",
+        reason: unavailable ? "verifier did not run" : "verifier produced no parseable verdict",
         outcome: "unverified",
         originalSeverity: finding.severity,
         finalSeverity: finding.severity,
@@ -7953,7 +7993,8 @@ function classifyReviewer(input) {
 }
 
 // plugins/review-voice/src/corpus/eligibility.ts
-var APPROVAL_ONLY = /^\s*(lgtm|looks good(?: to me)?|ship it|👍|🚀|\+1|nice|thanks|ty|done|ack|acknowledged|sgtm|✅)[\s.!]*$/i;
+var APPROVAL_PHRASES = /\b(lgtm|looks good(?: to me)?|ship it|approv(?:ed|ing|al)|sgtm|ack(?:nowledged)?|thanks|thank you|ty|nice work|nice one|great|\+1|done|no comments?|nothing from me|all good|fine by me)\b/gi;
+var DECORATION = /[\s.!?,;:\u2013\u2014-]|👍|🚀|✅|🎉|💯|🙏|😄/gu;
 var AUTOMATION_STATUS = [
   /\bcodecov\b.*\breport\b/i,
   /\bdeploy(ed|ment) (preview|succeeded|failed)\b/i,
@@ -7979,7 +8020,8 @@ function ineligibleReason(input) {
   if (input.role === "external") return "external_reviewer";
   const body = input.body.trim();
   if (body.length === 0) return "too_short";
-  if (APPROVAL_ONLY.test(body)) return "approval_only";
+  const substantive = body.replace(APPROVAL_PHRASES, "").replace(DECORATION, "");
+  if (substantive.length < 15) return "approval_only";
   if (body.length < 15) return "too_short";
   if (AUTOMATION_STATUS.some((pattern) => pattern.test(body))) return "template_or_status";
   if (isTemplate(body)) return "template_or_status";
@@ -8484,10 +8526,15 @@ function retrievePrecedents(db, query) {
       excerpt: row.body_redacted.length > EXCERPT_CHARS ? `${row.body_redacted.slice(0, EXCERPT_CHARS)}\u2026` : row.body_redacted,
       weight,
       relevance,
+      matchStrength: 0,
       polarity: weight < 0 ? "negative" : "positive"
     };
   });
-  const rank = (a, b) => Math.abs(b.weight) * b.relevance - Math.abs(a.weight) * a.relevance;
+  const best = Math.max(...scored.map((p) => p.relevance), 1);
+  for (const precedent of scored) {
+    precedent.matchStrength = Math.max(0, Math.min(1, precedent.relevance / best));
+  }
+  const rank = (a, b) => Math.abs(b.weight) * b.matchStrength - Math.abs(a.weight) * a.matchStrength;
   const positive = scored.filter((p) => p.weight > 0).sort(rank).slice(0, query.maxPositive);
   const negative = scored.filter((p) => p.weight < 0).sort(rank).slice(0, query.maxNegative);
   return [...negative, ...positive];
@@ -8498,9 +8545,37 @@ var DEFAULT_THRESHOLDS = {
   technicalConfidence: 0.8,
   finalScore: 0.78
 };
+var MalformedCandidate = class extends Error {
+};
+function normaliseCandidate(raw, index) {
+  const candidateId = raw.candidate_id ?? raw.candidateId ?? `cand_${String(index + 1).padStart(3, "0")}`;
+  const confidence = raw.technical_confidence ?? raw.technicalConfidence;
+  if (typeof raw.path !== "string" || raw.path.length === 0) {
+    throw new MalformedCandidate(`${candidateId}: missing path`);
+  }
+  if (!Number.isFinite(raw.line)) {
+    throw new MalformedCandidate(`${candidateId}: missing or non-numeric line`);
+  }
+  if (!Number.isFinite(confidence)) {
+    throw new MalformedCandidate(
+      `${candidateId}: missing or non-numeric technical_confidence - a score cannot be computed, and a candidate that cannot be scored must not be treated as eligible`
+    );
+  }
+  return {
+    candidateId,
+    path: raw.path,
+    line: raw.line,
+    category: raw.category ?? "correctness",
+    severity: raw.severity ?? "minor",
+    claim: raw.claim ?? "",
+    failureMode: raw.failure_mode ?? raw.failureMode ?? "",
+    evidence: Array.isArray(raw.evidence) ? raw.evidence : [],
+    technicalConfidence: confidence
+  };
+}
 function alignmentFrom(precedents) {
   if (precedents.length === 0) return 0.5;
-  const total = precedents.reduce((sum, p) => sum + p.weight, 0);
+  const total = precedents.reduce((sum, p) => sum + p.weight * (p.matchStrength ?? 1), 0);
   return 1 / (1 + Math.exp(-total));
 }
 function evidenceQuality(candidate) {
@@ -8534,7 +8609,9 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const novel = novelty(candidate, kept);
   const finalScore = 0.35 * candidate.technicalConfidence + 0.25 * ownerAlignment + 0.15 * repositoryAlignment + 0.15 * quality + 0.1 * novel;
   let rejectedBecause = null;
-  if (candidate.technicalConfidence < thresholds.technicalConfidence) {
+  if (!Number.isFinite(finalScore) || !Number.isFinite(candidate.technicalConfidence)) {
+    rejectedBecause = "score could not be computed from this candidate";
+  } else if (candidate.technicalConfidence < thresholds.technicalConfidence) {
     rejectedBecause = `technical confidence ${candidate.technicalConfidence.toFixed(2)} is below ${thresholds.technicalConfidence}`;
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(2)} is below ${thresholds.finalScore}`;
@@ -8920,7 +8997,7 @@ function buildDraft(input) {
     line: finding.line ?? 1,
     // Posted as written. Re-wording here would mean the reviewed text and
     // the sent text were different things.
-    body: `**${finding.severity}** \u2014 ${finding.prose}`
+    body: `**${finding.severity}** - ${finding.prose}`
   }));
   const preview = [
     `Repository: ${input.repository}`,
@@ -8976,6 +9053,8 @@ diff flags:
   --pr <number>          Review a GitHub pull request (needs --repository)
   --repository <name>    owner/repo for --pr; inferred from the git remote if absent
   --include-generated    Include lock files, generated, vendored and binary files
+  --out <dir>            Write diff.patch and files.json separately instead of
+                         one blob on stdout
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -9098,8 +9177,25 @@ async function pullRequestDiffCommand(argv) {
     pullNumber,
     includeGenerated: argv.includes("--include-generated")
   });
-  console.log(JSON.stringify(result, null, 2));
-  return 0;
+  return emitDiff(result, flag(argv, "--out"));
+}
+function emitDiff(result, outDir) {
+  if (outDir === null) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+  try {
+    mkdirSync2(outDir, { recursive: true });
+    const patchPath = join4(outDir, "diff.patch");
+    const metaPath = join4(outDir, "files.json");
+    writeFileSync(patchPath, result.diff);
+    writeFileSync(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
+    console.log(JSON.stringify({ patch: patchPath, files: metaPath, diffBytes: result.diff.length }, null, 2));
+    return 0;
+  } catch (error) {
+    console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
 }
 function diffCommand(argv) {
   const baseIndex = argv.indexOf("--base");
@@ -9115,8 +9211,7 @@ function diffCommand(argv) {
       base,
       includeGenerated: argv.includes("--include-generated")
     });
-    console.log(JSON.stringify(result, null, 2));
-    return 0;
+    return emitDiff(result, flag(argv, "--out"));
   } catch (error) {
     if (error instanceof GitError) {
       console.error(error.message);
@@ -9360,8 +9455,13 @@ function scoreCommand(argv) {
   let candidates;
   try {
     const parsed = JSON.parse(readStdin());
-    candidates = parsed.candidates ?? [];
-  } catch {
+    const raw = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
+    candidates = raw.map((candidate, index) => normaliseCandidate(candidate, index));
+  } catch (error) {
+    if (error instanceof MalformedCandidate) {
+      console.error(`Malformed candidate - ${error.message}`);
+      return 2;
+    }
     console.error('Expected {"candidates": [...]} on stdin.');
     return 2;
   }
@@ -9385,7 +9485,23 @@ function scoreCommand(argv) {
       if (breakdown.eligible) kept.push(candidate);
       results.push({ ...breakdown, precedents });
     }
-    console.log(JSON.stringify({ scores: results, eligible: kept.map((c) => c.candidateId) }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          scores: results,
+          // Enough to carry a survivor forward without rejoining by hand.
+          eligible: kept.map((c) => ({
+            candidateId: c.candidateId,
+            path: c.path,
+            line: c.line,
+            severity: c.severity,
+            category: c.category
+          }))
+        },
+        null,
+        2
+      )
+    );
     return 0;
   } finally {
     db.close();
@@ -9667,7 +9783,7 @@ function explainCommand(argv) {
       const verdict = verdicts.find((v) => v.path === finding.path && v.line === finding.line);
       if (verdict !== void 0) {
         console.log(
-          `  verified          ${verdict.verdict} (${verdict.confidence.toFixed(2)}) by ${verdict.verifier}` + (verdict.outcome === "kept" ? "" : ` \u2014 ${verdict.outcome}`)
+          `  verified          ${verdict.verdict} (${verdict.confidence.toFixed(2)}) by ${verdict.verifier}` + (verdict.outcome === "kept" ? "" : ` - ${verdict.outcome}`)
         );
         if (verdict.reason.length > 0) console.log(`                    ${verdict.reason}`);
       }
@@ -9709,7 +9825,7 @@ function statusCommand() {
       console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(", ") || "none"}`);
     }
     console.log(
-      `corpus           ${coverage.total} event(s)` + (coverage.total === 0 ? "" : ` \u2014 ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(", ")}`)
+      `corpus           ${coverage.total} event(s)` + (coverage.total === 0 ? "" : ` - ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(", ")}`)
     );
     for (const warning of coverage.warnings) console.log(`  warning        ${warning}`);
     return 0;

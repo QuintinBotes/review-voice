@@ -15,7 +15,7 @@ jobs:
   eval:
     name: plugin eval
     # This job holds an API key. A pull request from a fork runs code the
-    # maintainer has not reviewed, so it must never reach that key — a label is
+    # maintainer has not reviewed, so it must never reach that key - a label is
     # not a substitute for trust. Fork PRs are evaluated by checking the branch
     # out locally instead.
     if: >

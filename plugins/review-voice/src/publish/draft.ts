@@ -20,7 +20,7 @@ export interface DraftReview {
  * Renders a validated review as a GitHub draft review.
  *
  * Nothing here posts. The draft exists so a user can read the precise text
- * that would be sent — a preview that is generated separately from what gets
+ * that would be sent - a preview that is generated separately from what gets
  * posted is not a preview, it is a mock-up.
  */
 export function buildDraft(input: {
@@ -37,7 +37,7 @@ export function buildDraft(input: {
       line: finding.line ?? 1,
       // Posted as written. Re-wording here would mean the reviewed text and
       // the sent text were different things.
-      body: `**${finding.severity}** — ${finding.prose}`,
+      body: `**${finding.severity}** - ${finding.prose}`,
     }));
 
   const preview = [

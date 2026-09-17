@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/QuintinBotes/review-voice/schemas/feedback.schema.json",
   "title": "Feedback record",
-  "description": "Explicit owner feedback. Absence of a record means unlabeled — never negative.",
+  "description": "Explicit owner feedback. Absence of a record means unlabeled - never negative.",
   "type": "object",
   "required": ["feedback_id", "review_run_id", "finding_id", "action", "actor", "created_at"],
   "additionalProperties": false,

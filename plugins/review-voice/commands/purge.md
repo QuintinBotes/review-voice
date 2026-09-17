@@ -20,7 +20,7 @@ Show those counts. Then ask.
 Only after an explicit yes, re-run with `--confirm` appended.
 
 For `--all`, ask a second time. It removes the corpus, every review run and all
-feedback — the calibration history as well as the data.
+feedback - the calibration history as well as the data.
 
 Deletion is irreversible. There is no undo, and the data cannot be recovered
 from anywhere else, because it never left this machine.

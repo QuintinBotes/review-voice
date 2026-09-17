@@ -1,4 +1,4 @@
-# 0001 — Embedding and retrieval implementation
+# 0001 - Embedding and retrieval implementation
 
 **Status:** Accepted · **Date:** 2026-09-16
 
@@ -13,7 +13,7 @@ two commitments made elsewhere:
 - **Local only by default.** `privacy.allow_remote_embeddings: false` is the
   shipped default. A hosted embedding API contradicts it.
 
-The corpus is also small — 250 events at the bootstrap target, often fewer. The
+The corpus is also small - 250 events at the bootstrap target, often fewer. The
 regime where embeddings decisively beat lexical search is large, diverse
 corpora.
 
@@ -22,7 +22,7 @@ corpora.
 **Default retrieval is SQLite FTS5 lexical matching plus structural filters,**
 ranked by the owner-weighted scoring in the specification.
 
-Structural filters — category, repository, path glob, language — do most of the
+Structural filters - category, repository, path glob, language - do most of the
 work here, because "did this reviewer dismiss CI-gating comments in this
 repository" is a structured query, not a semantic one.
 
@@ -43,7 +43,7 @@ No embedding model ships with the plugin.
   provider interface is already in place.
 
   **Not yet measurable.** `review-voice evaluate` reports precision, volume and
-  contract compliance, but not precedent recall — knowing a relevant precedent
+  contract compliance, but not precedent recall - knowing a relevant precedent
   was missed requires knowing it existed, which needs labelled retrieval data
   nobody has produced. Until then this decision rests on reasoning rather than
   evidence, which is worth saying plainly.

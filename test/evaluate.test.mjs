@@ -45,7 +45,7 @@ test('every metric explains how it was computed', () => {
 
 test('contract compliance is measured against the validator, not asserted', () => {
   withDb((db) => {
-    run(db, '[blocking] `src/a.ts:8` — Token returned before commit. A retry mints two. Commit first.');
+    run(db, '[blocking] `src/a.ts:8` - Token returned before commit. A retry mints two. Commit first.');
     run(db, 'No actionable findings.');
     const metrics = computeMetrics(db);
     assert.equal(metric(metrics, 'contract_compliance').value, 1);
@@ -55,8 +55,8 @@ test('contract compliance is measured against the validator, not asserted', () =
 
 test('a non-compliant recorded output drags compliance below target', () => {
   withDb((db) => {
-    run(db, '[blocking] `src/a.ts:8` — Fine finding here. It fails. Fix it.');
-    // Recorded through a path that skipped validation — the metric must notice.
+    run(db, '[blocking] `src/a.ts:8` - Fine finding here. It fails. Fix it.');
+    // Recorded through a path that skipped validation - the metric must notice.
     run(db, '## Review\n\nHi! Consider renaming things.\n');
     const compliance = metric(computeMetrics(db), 'contract_compliance');
     assert.ok(compliance.value < 1);
@@ -67,7 +67,7 @@ test('a non-compliant recorded output drags compliance below target', () => {
 test('exact no-findings compliance counts only empty reviews', () => {
   withDb((db) => {
     run(db, 'No actionable findings.');
-    run(db, '[minor] `src/a.ts:1` — A finding here. It fails. Fix it.');
+    run(db, '[minor] `src/a.ts:1` - A finding here. It fails. Fix it.');
     const m = metric(computeMetrics(db), 'exact_no_findings_compliance');
     assert.equal(m.value, 1);
     assert.equal(m.basis, '1/1 empty reviews used the exact string');
@@ -86,8 +86,8 @@ test('a reworded empty review fails the exactness metric', () => {
 test('precision excludes unlabelled findings', () => {
   withDb((db) => {
     run(db, [
-      '[minor] `src/a.ts:1` — First problem here. It fails. Fix it.',
-      '[minor] `src/b.ts:2` — Second problem here. It fails. Fix it.',
+      '[minor] `src/a.ts:1` - First problem here. It fails. Fix it.',
+      '[minor] `src/b.ts:2` - Second problem here. It fails. Fix it.',
     ].join('\n\n'));
     recordFeedback(db, { findingRef: 'rv_01', action: 'keep', actor: 'owner' });
 
@@ -101,8 +101,8 @@ test('precision excludes unlabelled findings', () => {
 test('a dismissal lowers precision', () => {
   withDb((db) => {
     run(db, [
-      '[minor] `src/a.ts:1` — First problem here. It fails. Fix it.',
-      '[minor] `src/b.ts:2` — Second problem here. It fails. Fix it.',
+      '[minor] `src/a.ts:1` - First problem here. It fails. Fix it.',
+      '[minor] `src/b.ts:2` - Second problem here. It fails. Fix it.',
     ].join('\n\n'));
     recordFeedback(db, { findingRef: 'rv_01', action: 'keep', actor: 'owner' });
     recordFeedback(db, { findingRef: 'rv_02', action: 'dismiss', actor: 'owner' });
@@ -112,7 +112,7 @@ test('a dismissal lowers precision', () => {
 
 test('a rewrite counts as accepted, since the problem was real', () => {
   withDb((db) => {
-    run(db, '[minor] `src/a.ts:1` — A problem here. It fails. Fix it.');
+    run(db, '[minor] `src/a.ts:1` - A problem here. It fails. Fix it.');
     recordFeedback(db, { findingRef: 'rv_01', action: 'rewrite', replacementText: 'Better.', actor: 'owner' });
     assert.equal(metric(computeMetrics(db), 'owner_accepted_precision').value, 1);
   });
@@ -120,7 +120,7 @@ test('a rewrite counts as accepted, since the problem was real', () => {
 
 test('word and finding distributions are reported', () => {
   withDb((db) => {
-    run(db, '[minor] `src/a.ts:1` — A short finding here. It fails. Fix it.');
+    run(db, '[minor] `src/a.ts:1` - A short finding here. It fails. Fix it.');
     const metrics = computeMetrics(db);
     assert.ok(metric(metrics, 'median_words_per_finding').value > 0);
     assert.equal(metric(metrics, 'median_findings_per_review').value, 1);

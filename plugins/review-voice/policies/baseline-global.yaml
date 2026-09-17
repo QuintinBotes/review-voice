@@ -22,7 +22,7 @@ voice:
   max_findings: null
   max_words_per_finding: 40
   # A runaway guard, not a trim target. Once ordering took over the triage,
-  # a nit at position nine costs the reader nothing — so this is set not to
+  # a nit at position nine costs the reader nothing - so this is set not to
   # bind on a real review. The floor allows roughly fifteen findings on a
   # single file; it scales from there with the size of the change.
   max_total_words: 600
@@ -39,7 +39,7 @@ severities:
   - question
 
 output:
-  format: "[severity] `path:line` — Problem. Consequence. Suggested fix."
+  format: "[severity] `path:line` - Problem. Consequence. Suggested fix."
   ordered_by_severity: true
   no_headings: true
   no_summary: true
@@ -80,7 +80,7 @@ suppressed_patterns:
   - "Theoretical risks without a realistic triggering path."
 
 # Only phrases that hide a claim or replace one. "nit" is a severity marker,
-# not a hedge — it adds information rather than removing it, and now has its
+# not a hedge - it adds information rather than removing it, and now has its
 # own tier. "overall" and "summary" appear in real prose and word-boundary
 # matching cannot tell those uses from a summary section.
 forbidden_phrases:

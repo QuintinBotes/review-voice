@@ -72,7 +72,7 @@ test('a narrower layer may tighten a limit but never loosen it', () => {
     const result = context(dir);
     // A repository cannot grant itself a bigger budget than the baseline
     // allows, or the baseline means nothing. With no baseline cap on findings,
-    // a layer may impose one — that is tightening, not loosening.
+    // a layer may impose one - that is tightening, not loosening.
     assert.equal(result.policy.maxFindings, 50);
     assert.equal(result.policy.maxTotalWords, 600);
   } finally {

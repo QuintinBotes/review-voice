@@ -17,7 +17,7 @@ agents. A command file orchestrates them.**
 | Candidate generation | `diff-analyst` | genuine judgment |
 | Evidence verification | `evidence-verifier` | genuine judgment |
 | Precedent retrieval | CLI | an index query |
-| Preference scoring | CLI | **arithmetic — never ask a model to do this** |
+| Preference scoring | CLI | **arithmetic - never ask a model to do this** |
 | Dedup and ranking | CLI | deterministic |
 | Concise editing | `concise-editor` | wording |
 | Schema and style validation | CLI | **this is what enforces the limits** |
@@ -35,9 +35,9 @@ existing Claude Code session.
 ## Components
 
 ```
-Claude Code command  (commands/review.md — orchestration)
-  ├── CLI    (dist/review-voice.mjs — deterministic stages, storage, audit)
-  └── Agents (agents/*.md — candidate generation, verification, editing)
+Claude Code command  (commands/review.md - orchestration)
+  ├── CLI    (dist/review-voice.mjs - deterministic stages, storage, audit)
+  └── Agents (agents/*.md - candidate generation, verification, editing)
 ```
 
 ### The CLI
@@ -50,7 +50,7 @@ step, so users must never run `npm install`. Third-party packages are
 devDependencies inlined at build time. JSON Schema validation uses Ajv
 standalone codegen, so schemas compile to plain functions with no runtime Ajv.
 
-Storage is Node's built-in `node:sqlite` — no native modules. It is experimental
+Storage is Node's built-in `node:sqlite` - no native modules. It is experimental
 on Node 22 and stable on Node 24; the experimental warning is filtered at
 startup because it concerns a dependency choice the user never made.
 
@@ -78,7 +78,7 @@ that anything is missing.
 
 The cap sits *above* classification, not below it. Applying it first meant a
 pull request that is mostly generated code could exhaust the budget before
-reaching a single source file — reviewing the wrong part of the change, and
+reaching a single source file - reviewing the wrong part of the change, and
 saying nothing about it.
 
 **Every exclusion carries a reason.** Lock files, generated output, vendored
@@ -104,7 +104,7 @@ evaluation harness shows precedent recall is the binding constraint. See
 
 The contract originally capped a review at five findings. Real use showed that
 was the wrong mechanism: a count cap and a word budget do the same job, and on
-tight findings the count discards ones the budget would have allowed — pure
+tight findings the count discards ones the budget would have allowed - pure
 loss, for no gain.
 
 Volume is now bounded by the word budget alone, and that budget scales with the
@@ -115,7 +115,7 @@ the top of the list useful. The validator checks the ordering.
 
 `nit` and `question` are tiers rather than banned words. Writing "Nit:" into
 prose says the same thing but cannot be sorted, counted, or suppressed by
-category — the label carries information the prose only implies.
+category - the label carries information the prose only implies.
 
 ### The output validator
 
@@ -131,7 +131,7 @@ burns a round trip per fix.
 Word counting measures the prose after the separator. The severity tag and the
 `path:line` location are excluded because the editor cannot shorten them, and
 counting them would give a finding in a deeply nested directory a smaller
-explanation budget than one at the repository root — punishing the finding
+explanation budget than one at the repository root - punishing the finding
 rather than the writing.
 
 The no-findings case is compared exactly. Accepting near-misses would make the
@@ -151,14 +151,14 @@ suppression should be easier to learn than propensity.
 
 The owner multiplier applies to magnitude, so a dismissal is amplified exactly
 as much as a keep. Amplifying only the positives would make the reviewer
-progressively louder — which is the failure mode this product exists to avoid.
+progressively louder - which is the failure mode this product exists to avoid.
 
 An owner comment whose outcome is unknown still carries real weight. It is
 owner judgement; the fact that nobody recorded what happened next does not
 unmake it.
 
 Retrieval indexes redacted text only, and triggers keep the index in step with
-the corpus — an index left behind after a purge would keep surfacing evidence
+the corpus - an index left behind after a purge would keep surfacing evidence
 the user deleted.
 
 ### Storage layout
@@ -175,7 +175,7 @@ exports/             explicit exports only
 
 ### Finding identifiers
 
-Ids are positional — `rv_01` is the first finding displayed — and are assigned
+Ids are positional - `rv_01` is the first finding displayed - and are assigned
 when a review is recorded, not printed alongside the findings. The output
 contract permits no text beyond the findings themselves, and a visible id would
 spend characters the writing needs more. `review-voice status` lists the ids of
@@ -192,7 +192,7 @@ Adapters are parsers, not runners: they map TypeScript, .NET, Python and ESLint
 diagnostics onto signals carrying the verbatim tool output, so a claim stays
 attributable. The adapter is chosen from the user's own name for the check as
 well as the command, because real projects point a named check at a wrapper
-script. Unrecognised output produces no signals rather than guessed ones — the
+script. Unrecognised output produces no signals rather than guessed ones - the
 exit code is still evidence.
 
 A check that did not run is reported as such. The reviewer must never imply a
@@ -221,7 +221,7 @@ Three rules keep it from becoming a worse version of the problem it solves:
 
 Every verdict is recorded, including the ones that change nothing, and
 `explain` lists what was suppressed and why. A verifier that silently deletes
-findings is the finding cap in a different coat — the failure has to be
+findings is the finding cap in a different coat - the failure has to be
 visible, or a bad verifier is indistinguishable from a clean diff.
 
 ### Scoring and activation
@@ -231,7 +231,7 @@ compute it would make the thresholds unfalsifiable, and the point of a
 threshold is that it can be checked.
 
 Novelty is measured against findings already kept in this review, not against
-all candidates — two findings about one root cause spend two-fifths of the
+all candidates - two findings about one root cause spend two-fifths of the
 budget saying one thing. Evidence quality rewards specificity rather than
 volume: three vague observations are not better evidence than one naming a line.
 
@@ -243,15 +243,15 @@ maintainability findings unless they name a concrete failure mode" is a rule;
 "suppress things like the ones in src/a.ts" is an observation about wherever
 you happened to be working that week.
 
-Category cannot be recovered from the rendered output — the contract permits no
-text beyond the finding — so it arrives alongside, via `record --candidates`.
+Category cannot be recovered from the rendered output - the contract permits no
+text beyond the finding - so it arrives alongside, via `record --candidates`.
 Feedback recorded without it still counts toward precision but cannot become a
 rule. Inventing a category from the wording would be manufacturing evidence.
 
 A proposed rule is stored **inactive**. Generation and activation are separate
 operations by construction rather than by discipline. Activation requires three
 corroborating signals including at least one from the owner, with nothing from
-the owner contradicting — and approval refuses any rule that has not met that
+the owner contradicting - and approval refuses any rule that has not met that
 bar, because approving anyway would make the bar decorative.
 
 Old versions are retained rather than overwritten: rollback is only possible if
@@ -267,7 +267,7 @@ global → repository → path → language → current session
 
 An explicit session instruction wins. An explicit narrow rule beats an inferred
 broad one. A suppression beats a propensity to flag. And a candidate must still
-pass technical verification even when history favours it — precedent adjusts
+pass technical verification even when history favours it - precedent adjusts
 preference, it never manufactures truth.
 
 ### Layer resolution in practice
@@ -292,7 +292,7 @@ requests are issued, and only allowlisted repositories are addressed. Both
 throw before any network call, and both are tested.
 
 The allowlist matters more than it looks. The credential comes from `gh` and
-carries whatever scopes the user already had — almost always broader than
+carries whatever scopes the user already had - almost always broader than
 Review Voice needs. So the allowlist, not the token, is what actually bounds
 access.
 
@@ -320,7 +320,7 @@ that pull request were stored.
 
 An earlier design used HTTP conditional requests, and it was wrong twice over.
 The collector re-derives everything from each response body and never kept one,
-so a `304` — "you already have this" — was false. And an empty `304` page
+so a `304` - "you already have this" - was false. And an empty `304` page
 carries no `Link` header, which silently truncated pagination at whichever page
 happened to be unchanged.
 
@@ -340,20 +340,20 @@ schema reinforces that: there is no column for unredacted text, and a test
 asserts there is not.
 
 Three sources are collected: inline review comments, submitted review
-summaries, and — behind a flag — pull-request conversation comments. Measured
+summaries, and - behind a flag - pull-request conversation comments. Measured
 against a real repository, review summaries outnumbered inline comments
 roughly two to one and some pull requests had no inline comments at all, so
 collecting only inline comments captured a minority of the evidence.
 
 Eligibility asks "does this carry review judgement", not "is this a comment". A
 corpus padded with LGTMs and pull-request checklists teaches nothing while
-making every retrieval noisier. Bot output is excluded outright — it would
+making every retrieval noisier. Bot output is excluded outright - it would
 teach the reviewer to sound like a linter.
 
 Template detection measures the *proportion* of structural lines rather than
 the presence of one. The earlier rule discarded fourteen review summaries with
 a median length of 2,400 characters and structure ratios between 0.18 and 0.30
-— substantive reviews that happened to contain a checklist.
+- substantive reviews that happened to contain a checklist.
 
 Identity is content plus location, not the GitHub comment id. A rebase
 resurfaces the same comment under a new id, and the same words at a different
@@ -362,14 +362,14 @@ line are different evidence.
 Selection is newest-first under a per-repository share cap, so one busy
 repository cannot define the global policy. The cap is relaxed rather than
 under-filling the corpus: a smaller corpus is a worse outcome than a slightly
-lopsided one. Shortfalls are reported exactly — claiming a full scan when the
+lopsided one. Shortfalls are reported exactly - claiming a full scan when the
 history ran out would misrepresent how much the policy rests on.
 
 ### Posting
 
 ADR 0007 gates posting on measured quality. `evaluatePostingGate` reads what
-was actually measured — precision at 0.80 or better over at least 20 labelled
-findings, with full contract compliance — rather than a configuration flag. A
+was actually measured - precision at 0.80 or better over at least 20 labelled
+findings, with full contract compliance - rather than a configuration flag. A
 boolean in a config file is a promise the user makes to themselves; this gate
 has to hold when they would rather it did not, so it takes no override
 argument.

@@ -33,7 +33,7 @@ review:
   # tighten a limit but never loosen one.
   # max_findings: 10
   max_words_per_finding: 40
-  # A runaway guard rather than a trim target — see docs/ARCHITECTURE.md.
+  # A runaway guard rather than a trim target - see docs/ARCHITECTURE.md.
   max_total_words: 600
   confidence_threshold: 0.80
   final_score_threshold: 0.78
@@ -56,7 +56,7 @@ verification:
   #
   # Point it at a DIFFERENT model from the one doing the review. A verifier
   # from the same family shares the analyst's blind spots and agrees with a
-  # plausible-sounding defect more often than it should — correlated error is
+  # plausible-sounding defect more often than it should - correlated error is
   # the thing this exists to break.
   #
   # The command receives one finding as JSON on stdin and must print a verdict
@@ -72,7 +72,7 @@ verification:
   command: ""
   timeout_seconds: 90
   # A rejection at or above this confidence drops the finding. Below it, the
-  # finding is downgraded instead — an unsure verifier should not delete
+  # finding is downgraded instead - an unsure verifier should not delete
   # evidence.
   drop_threshold: 0.8
 

@@ -1,4 +1,4 @@
-# 0008 — Policy sharing and export
+# 0008 - Policy sharing and export
 
 **Status:** Accepted · **Date:** 2026-09-16
 
@@ -15,10 +15,10 @@ enters a trusted position.
 
 `review-voice policy export` writes an approved policy as portable YAML,
 including its provenance and the source window it was compiled from, with local
-event ids stripped — the summary counts stay, the pointers into a private corpus
+event ids stripped - the summary counts stay, the pointers into a private corpus
 do not.
 
-Importing a policy — from a repository file, a shared file, or a URL — always
+Importing a policy - from a repository file, a shared file, or a URL - always
 routes through the approval flow in [0006](0006-team-governance.md): validate,
 diff against the active stack, show, wait. Nothing imported is ever active on
 arrival.

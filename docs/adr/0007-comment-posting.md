@@ -1,7 +1,7 @@
-# 0007 — GitHub comment posting
+# 0007 - GitHub comment posting
 
 **Status:** Accepted · **Date:** 2026-09-16
-**Implementation note added:** 2026-09-16 — the gate is now enforced in code;
+**Implementation note added:** 2026-09-16 - the gate is now enforced in code;
 see `plugins/review-voice/src/publish/gate.ts`.
 
 ## Context
@@ -35,8 +35,8 @@ Quality gates first: posting does not ship until the precision targets in
 right should not be publishing.
 
 **How this is enforced.** `evaluatePostingGate` reads what has actually been
-measured — owner-accepted precision at 0.80 or better over at least 20 labelled
-findings, with full contract compliance — rather than a setting. A boolean in a
+measured - owner-accepted precision at 0.80 or better over at least 20 labelled
+findings, with full contract compliance - rather than a setting. A boolean in a
 config file is a promise the user makes to themselves; the point of this gate is
 that it holds when they would rather it did not.
 
@@ -58,7 +58,7 @@ no override parameter, because a gate with a bypass is a suggestion.
 ## Alternatives considered
 
 **Post as a draft review the user submits manually.** Genuinely attractive, and
-still a write. Reconsider in Phase 4 — it may be the right first write.
+still a write. Reconsider in Phase 4 - it may be the right first write.
 
 **Post automatically above a confidence threshold.** Rejected. A threshold is a
 number; a comment on someone's pull request is a social act.

@@ -11,7 +11,7 @@ export interface StoredFinding {
   text: string;
   /**
    * Carried from the candidate that produced this finding. The rendered output
-   * has no category — the contract allows no text beyond the finding — so it
+   * has no category - the contract allows no text beyond the finding - so it
    * has to arrive alongside rather than be parsed back out.
    */
   category?: string | undefined;

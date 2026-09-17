@@ -30,5 +30,5 @@ Full documentation, install instructions and threat model live in the
 
 Node 22 or newer. `git`. `gh` only if you enable GitHub history ingestion.
 
-No `npm install` — the plugin ships a single pre-built bundle with zero runtime
+No `npm install` - the plugin ships a single pre-built bundle with zero runtime
 dependencies.

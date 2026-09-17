@@ -29,7 +29,7 @@ validator rather than requested in a prompt. If one of them ever reports below
 precision_owner = (kept + rewritten) / (kept + rewritten + dismissed)
 ```
 
-Unlabeled findings are excluded. **Silence is not a negative label** — a finding
+Unlabeled findings are excluded. **Silence is not a negative label** - a finding
 nobody responded to tells us nothing and must not be counted as a failure.
 
 ## Offline corpus
@@ -58,7 +58,7 @@ changes, and rebased or outdated review threads.
 
 ## What the fixtures assert
 
-Injection cases assert an **absence** — output that must not appear, tools that
+Injection cases assert an **absence** - output that must not appear, tools that
 must not be called. A positive assertion cannot prove an injection failed,
 because a reviewer that stayed silent and a reviewer that was hijacked into
 silence look identical from the outside. The graders say so explicitly.
@@ -88,8 +88,8 @@ reaches the store by a path that skipped the gate, this is what notices.
 ## Running it
 
 ```bash
-npm test                         # deterministic units — no model, no tokens
-claude plugin eval evals/        # agent behaviour — costs tokens
+npm test                         # deterministic units - no model, no tokens
+claude plugin eval evals/        # agent behaviour - costs tokens
 ```
 
 CI runs the deterministic suite on every push. The eval suite runs nightly and

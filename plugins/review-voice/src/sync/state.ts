@@ -3,7 +3,7 @@ import type { Database } from '../store/db.ts';
 
 // The ETag helpers that lived here are gone with the sync_state table they
 // read. Migration v6 drops that table, so keeping them would have left two
-// exported functions that throw on call — worse than dead code, because the
+// exported functions that throw on call - worse than dead code, because the
 // signature still reads as usable. Incremental sync is in ./watermark.ts.
 
 export interface SyncRunSummary {

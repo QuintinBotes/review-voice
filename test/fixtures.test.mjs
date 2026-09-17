@@ -57,7 +57,7 @@ test('no-findings and negative cases expect the exact response', () => {
   }
 });
 
-test('fixtures are synthetic — no real identities, hosts or credentials', () => {
+test('fixtures are synthetic - no real identities, hosts or credentials', () => {
   // Fixtures are public and permanent. This is the backstop behind the rule in
   // CONTRIBUTING.md, not a substitute for it.
   const forbidden = [

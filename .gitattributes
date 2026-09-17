@@ -8,7 +8,7 @@
 
 # The CLI bundle is a build artifact that must be committed, because plugins
 # install by git clone with no install step. Marking it generated collapses it
-# in pull request review and keeps it out of language statistics — reviewers
+# in pull request review and keeps it out of language statistics - reviewers
 # should read src/ and trust the drift check, not scroll past 3,000 machine
 # generated lines.
 plugins/review-voice/dist/review-voice.mjs linguist-generated=true

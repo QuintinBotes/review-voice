@@ -6,14 +6,14 @@ body:
     attributes:
       value: |
         Review Voice is deliberately narrow. Before filing, please check the
-        non-goals in [docs/PLAN.md](../blob/main/docs/PLAN.md) — features that
+        non-goals in [docs/PLAN.md](../blob/main/docs/PLAN.md) - features that
         turn this into a general review platform are usually out of scope.
 
   - type: textarea
     id: problem
     attributes:
       label: The problem
-      description: What goes wrong today. Not the solution — the problem.
+      description: What goes wrong today. Not the solution - the problem.
     validations:
       required: true
 

@@ -133,8 +133,8 @@ function withDb(fn) {
 }
 
 const OUTPUT = [
-  '[minor] `src/a.ts:1` — First problem here. It fails. Fix it.',
-  '[minor] `src/b.ts:2` — Second problem here. It fails. Fix it.',
+  '[minor] `src/a.ts:1` - First problem here. It fails. Fix it.',
+  '[minor] `src/b.ts:2` - Second problem here. It fails. Fix it.',
 ].join('\n\n');
 
 test('a proposal is never active on arrival', () => {

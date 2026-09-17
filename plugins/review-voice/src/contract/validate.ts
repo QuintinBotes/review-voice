@@ -65,8 +65,8 @@ function validateFinding(
       code: 'format',
       line: at,
       message:
-        'Does not match: [severity] `path:line` — Problem. Consequence. Suggested fix. ' +
-        '(severity is blocking, important or minor; the separator is an em dash)',
+        'Does not match: [severity] `path:line` - Problem. Consequence. Suggested fix. ' +
+        '(severity is blocking, important, minor, nit or question; the separator is a plain hyphen)',
     });
     // Without a parse there is nothing further to check on this finding.
     return 0;
@@ -83,6 +83,16 @@ function validateFinding(
       code: 'finding_too_long',
       line: at,
       message: `${words} words; the limit is ${limits.maxWordsPerFinding}. Cut it or drop the finding.`,
+    });
+  }
+
+  // Em and en dashes read as machine-written. Banned in the prose as well as
+  // the separator, so a finding cannot smuggle one in mid-sentence.
+  if (/[\u2013\u2014]/u.test(finding.prose)) {
+    violations.push({
+      code: 'em_dash',
+      line: at,
+      message: 'Contains an em or en dash. Use a comma, a full stop, or a plain hyphen.',
     });
   }
 
@@ -176,7 +186,7 @@ export function validateOutput(
       // something generated far more than it verified.
       message:
         `${totalWords} words total against a budget of ${limits.maxTotalWords}. ` +
-        'This budget is a runaway guard, not a trim target — check whether these findings were all actually verified, ' +
+        'This budget is a runaway guard, not a trim target - check whether these findings were all actually verified, ' +
         'rather than cutting good ones to fit.',
     });
   }

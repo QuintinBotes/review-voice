@@ -1,27 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { verifyFindings } from '../plugins/review-voice/src/verify/external.ts';
 
 /**
- * Verifier output comes from a file rather than an interpolated shell string.
- * `shell: true` resolves to dash on Linux and bash on macOS, and building a
- * command out of JSON made these fixtures depend on which — they passed
- * locally and failed in CI for reasons that had nothing to do with the code
- * under test.
+ * Verifier output is injected rather than produced by a subprocess.
+ *
+ * Earlier versions of these fixtures built shell commands, then wrote temp
+ * files and ran `cat`. Both failed on Linux and passed on macOS for reasons
+ * that had nothing to do with the code under test. The module takes a runner
+ * so the parsing and decision logic can be tested without a shell, a
+ * filesystem, or a platform.
  */
-const scratch = mkdtempSync(join(tmpdir(), 'rv-verify-'));
-let fixtureCount = 0;
-
-function emitsRaw(text) {
-  const path = join(scratch, `verdict-${(fixtureCount += 1)}.txt`);
-  writeFileSync(path, text);
-  return { enabled: true, command: `cat ${JSON.stringify(path)}`, name: 'test' };
+function emitsRaw(text, opts = {}) {
+  return {
+    config: { enabled: true, command: 'irrelevant', name: 'test', ...opts },
+    runner: () => ({ stdout: text, stderr: '', failed: false }),
+  };
 }
 
-test.after(() => rmSync(scratch, { recursive: true, force: true }));
+const failing = { config: { enabled: true, command: 'irrelevant', name: 'absent' }, runner: () => ({ stdout: '', stderr: '', failed: true }) };
 
 const finding = (over = {}) => ({
   candidateId: 'cand_001',
@@ -35,9 +32,14 @@ const finding = (over = {}) => ({
 });
 
 /** A verifier that emits whatever JSON it is told to. */
-const emits = (json) => emitsRaw(JSON.stringify(json));
+const emits = (json, opts) => emitsRaw(JSON.stringify(json), opts);
 
-const run = (findings, config) => verifyFindings(findings, config, { cwd: process.cwd() });
+/** Accepts either a plain config or a {config, runner} fixture. */
+const run = (findings, fixture) => {
+  const config = fixture.config ?? fixture;
+  const runner = fixture.runner;
+  return verifyFindings(findings, config, { cwd: process.cwd(), ...(runner ? { runner } : {}) });
+};
 
 test('verification is off unless configured', () => {
   const report = run([finding()], { enabled: false, command: 'echo x' });
@@ -70,8 +72,8 @@ test('an unsure rejection downgrades rather than deleting', () => {
 });
 
 test('the drop threshold is configurable', () => {
-  const config = { ...emits({ verdict: 'rejected', confidence: 0.6 }), dropThreshold: 0.5 };
-  assert.equal(run([finding()], config).verdicts[0].outcome, 'dropped');
+  const fixture = emits({ verdict: 'rejected', confidence: 0.6 }, { dropThreshold: 0.5 });
+  assert.equal(run([finding()], fixture).verdicts[0].outcome, 'dropped');
 });
 
 test('an uncertain verdict downgrades', () => {
@@ -98,7 +100,7 @@ test('a verifier may weaken a severity but never strengthen one', () => {
 });
 
 test('a verifier that cannot run never counts as confirmation', () => {
-  const report = run([finding()], { enabled: true, command: 'definitely-not-a-binary-xyz', name: 'absent' });
+  const report = run([finding()], failing);
   const [v] = report.verdicts;
   assert.equal(v.outcome, 'unverified');
   assert.equal(v.finalSeverity, 'blocking', 'the finding must stand unchanged');
@@ -106,7 +108,7 @@ test('a verifier that cannot run never counts as confirmation', () => {
 });
 
 test('unparseable output is not confirmation either', () => {
-  const report = run([finding()], { ...emitsRaw('I think it is probably fine'), name: 'chatty' });
+  const report = run([finding()], emitsRaw('I think it is probably fine', { name: 'chatty' }));
   assert.equal(report.verdicts[0].outcome, 'unverified');
   assert.deepEqual(report.didNotRun, ['chatty']);
 });
@@ -117,7 +119,7 @@ test('a chatty verifier that still emits JSON is understood', () => {
   const config = emitsRaw(
     ['thinking about this one', 'checking the anchor lines', '{"verdict":"rejected","confidence":0.9,"reason":"nope"}'].join('\n'),
   );
-  const [v] = run([finding()], { ...config, name: 'verbose' }).verdicts;
+  const [v] = run([finding()], config).verdicts;
   assert.equal(v.outcome, 'dropped');
   assert.equal(v.reason, 'nope');
 });

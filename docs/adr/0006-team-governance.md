@@ -1,4 +1,4 @@
-# 0006 — Team and policy governance
+# 0006 - Team and policy governance
 
 **Status:** Accepted · **Date:** 2026-09-16
 
@@ -8,7 +8,7 @@ Can a repository's maintainers set review policy for anyone who runs Review
 Voice against their repository, or does the owner reviewer remain the sole
 authority?
 
-Repository-scoped policy is genuinely useful — a repository knows its own
+Repository-scoped policy is genuinely useful - a repository knows its own
 conventions better than a global policy does. But `.review-voice/policy.yaml` is
 repository content, and the threat model classifies repository content as
 untrusted. A policy file that activates on checkout is a supply-chain path into
@@ -43,7 +43,7 @@ are not policy.
   per change. Acceptable: the file changes rarely.
 - Content-hash re-approval means a quiet edit to an approved policy file is
   caught rather than inherited.
-- Multi-maintainer governance — where an organisation sets policy centrally —
+- Multi-maintainer governance - where an organisation sets policy centrally -
   is deliberately not solved here. It needs a trust root this architecture does
   not have, and would be a new ADR.
 

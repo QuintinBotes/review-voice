@@ -1,7 +1,7 @@
 # Eval suites
 
 Behavioural evaluations for the agents, run with `claude plugin eval`. These
-exercise judgment, so they cost tokens — CI runs them nightly and on the
+exercise judgment, so they cost tokens - CI runs them nightly and on the
 `run-eval` label, not on every push.
 
 ```bash
@@ -16,7 +16,7 @@ forces its hand.
 
 ## What is worth evaluating
 
-The deterministic half does not belong here — word limits, schema compliance and
+The deterministic half does not belong here - word limits, schema compliance and
 scoring are unit-tested for free in `npm test`. Evals are for the things only a
 model can get wrong:
 

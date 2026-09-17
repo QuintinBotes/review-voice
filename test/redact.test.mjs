@@ -21,7 +21,7 @@ function redact(input) {
  *
  * This is not paranoia about the values, which are synthetic and issued by
  * nobody. It is that GitHub push protection scans the repository and rejects
- * anything shaped like a credential — and it rejected an earlier version of
+ * anything shaped like a credential - and it rejected an earlier version of
  * this very test. A redaction test suite has to contain credential-shaped
  * strings to be worth anything, so it assembles them instead of storing them.
  */

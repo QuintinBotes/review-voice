@@ -27,7 +27,7 @@ const result = await build({
   target: 'node22',
   format: 'esm',
   // Every dependency must resolve to ESM. A CommonJS build reaches for
-  // `require`, which does not exist in an ESM bundle — and because imports are
+  // `require`, which does not exist in an ESM bundle - and because imports are
   // hoisted, one CJS dependency breaks every command, not just the one that
   // uses it. `yaml` maps its "node" condition to CJS, so it is aliased to its
   // ESM entry explicitly; check-bundle.mjs fails the build if a CJS shim ever
@@ -54,7 +54,7 @@ if (checkOnly) {
   const committed = await readFile(outfile, 'utf8');
   if (committed !== built) {
     console.error(
-      'dist/review-voice.mjs is stale — it does not match plugins/review-voice/src.\n' +
+      'dist/review-voice.mjs is stale - it does not match plugins/review-voice/src.\n' +
         'Run `npm run build` and commit the result.',
     );
     process.exit(1);
@@ -67,7 +67,7 @@ await writeFile(outfile, built, { mode: 0o755 });
 
 // Prove the bundle loads before declaring success. A CommonJS dependency
 // slipping into an ESM bundle throws on the very first import, taking every
-// command down at once — and nothing else in the build would notice, because
+// command down at once - and nothing else in the build would notice, because
 // the bundle is syntactically fine.
 try {
   execFileSync(process.execPath, [outfile, '--version'], { stdio: 'pipe' });
@@ -77,4 +77,4 @@ try {
   process.exit(1);
 }
 
-console.log(`Built ${outfile} (${(built.length / 1024).toFixed(1)} kB) — loads cleanly`);
+console.log(`Built ${outfile} (${(built.length / 1024).toFixed(1)} kB) - loads cleanly`);

@@ -30,7 +30,7 @@ function runDiff(cwd, args = []) {
 
 const pathsReviewed = (r) => r.files.filter((f) => f.reviewed).map((f) => f.path).sort();
 
-test('an untracked file is reviewed — a new file is where defects hide', () => {
+test('an untracked file is reviewed - a new file is where defects hide', () => {
   const { dir } = scratchRepo();
   try {
     writeFileSync(join(dir, 'brand-new.ts'), 'export const x = 1;\n');

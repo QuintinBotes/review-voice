@@ -21,7 +21,7 @@ unless you opt in.
 
 ## What it stores, and where
 
-In your platform's application data directory — **never in your repository, and
+In your platform's application data directory - **never in your repository, and
 never anywhere we control**:
 
 | Path | Contents |
@@ -52,7 +52,7 @@ All configurable in `.review-voice/config.yaml`.
 
 ## Before anything is read
 
-`/review-voice:init` shows a consent plan naming the concrete data categories —
+`/review-voice:init` shows a consent plan naming the concrete data categories -
 not "review history" but the comments, diff hunks, file paths, line numbers and
 pull request identifiers it would read. It lists where that is stored and what
 is discarded. Nothing is read until you agree, and a dry run showing exact
@@ -73,7 +73,7 @@ Each shows exactly what will be deleted before deleting it. `--all` asks twice.
 ## What leaves your machine
 
 Diffs and a bounded amount of retrieved, redacted precedent text are sent to
-Claude as part of the review — this is a Claude Code plugin, so the review
+Claude as part of the review - this is a Claude Code plugin, so the review
 itself happens through your existing Claude Code session and is governed by
 Anthropic's terms for that session.
 
