@@ -26,6 +26,8 @@ export interface CollectedEvent {
 
 export interface CollectionStats {
   pullRequestsScanned: number;
+  /** Skipped because GitHub reports them unchanged since the last sync. */
+  pullRequestsUnchanged: number;
   commentsSeen: number;
   /** Broken down by source, because they are not equally informative. */
   bySource: { inline: number; reviewSummary: number; conversation: number };
@@ -69,6 +71,8 @@ export interface CollectOptions {
    * review judgement.
    */
   includeConversationComments: boolean;
+  /** Pull requests already processed, by number, with the updatedAt seen then. */
+  watermarks?: Map<number, string> | undefined;
 }
 
 interface RawReview {
@@ -87,11 +91,18 @@ interface RawReview {
  * Redaction happens here, at the boundary, before anything is returned — the
  * original text never exists anywhere a caller could accidentally persist it.
  */
+export interface CollectionResult {
+  events: CollectedEvent[];
+  /** Only returned for pull requests actually read, so a caller cannot record
+   *  a watermark for work it never did. */
+  watermarks: { pullNumber: number; updatedAt: string }[];
+}
+
 export async function collectRepository(
   client: GitHubClient,
   options: CollectOptions,
   stats: CollectionStats,
-): Promise<CollectedEvent[]> {
+): Promise<CollectionResult> {
   const pulls = await client.paginate<RawPull>(
     `/repos/${options.repository}/pulls?state=all&sort=updated&direction=desc&per_page=50`,
     options.maxPullRequests,
@@ -99,11 +110,21 @@ export async function collectRepository(
 
   const events: CollectedEvent[] = [];
   const seenKeys = new Set<string>();
+  const watermarks: { pullNumber: number; updatedAt: string }[] = [];
 
   for (const pull of pulls) {
     // Fork content is somebody else's repository; it is opt-in.
     if (!options.includeForks && pull.head?.repo?.fork === true) continue;
+
+    // Unchanged since we last read it. This is a comparison against state we
+    // hold, so skipping is safe in a way an HTTP 304 was not.
+    if (options.watermarks?.get(pull.number) === pull.updated_at) {
+      stats.pullRequestsUnchanged += 1;
+      continue;
+    }
+
     stats.pullRequestsScanned += 1;
+    watermarks.push({ pullNumber: pull.number, updatedAt: pull.updated_at });
 
     const comments = await client.paginate<RawComment>(
       `/repos/${options.repository}/pulls/${pull.number}/comments?per_page=100`,
@@ -248,5 +269,5 @@ export async function collectRepository(
     }
   }
 
-  return events;
+  return { events, watermarks };
 }

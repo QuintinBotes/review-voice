@@ -81,6 +81,8 @@ export interface CorpusCoverage {
   byRole: Record<string, number>;
   oldest: string | null;
   newest: string | null;
+  /** Problems with the corpus that would otherwise only show up as silence. */
+  warnings: string[];
 }
 
 export function corpusCoverage(db: Database): CorpusCoverage {
@@ -101,5 +103,16 @@ export function corpusCoverage(db: Database): CorpusCoverage {
     .prepare('SELECT MIN(created_at) AS oldest, MAX(created_at) AS newest FROM review_events')
     .get() as { oldest: string | null; newest: string | null };
 
-  return { total, byRepository, byRole, oldest: range.oldest, newest: range.newest };
+  const warnings: string[] = [];
+  if (total > 0 && (byRole['owner'] ?? 0) === 0) {
+    // Rule activation requires at least one owner signal, so a corpus with
+    // none can never produce a rule. Without this the failure is silent:
+    // calibrate simply keeps proposing nothing.
+    warnings.push(
+      'No events authored by the owner reviewer. Policy rules need at least one owner signal, ' +
+        'so nothing in this corpus can activate a rule. Check identity.owner_reviewer matches your GitHub login.',
+    );
+  }
+
+  return { total, byRepository, byRole, oldest: range.oldest, newest: range.newest, warnings };
 }
