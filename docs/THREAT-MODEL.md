@@ -107,6 +107,24 @@ is hostile, and the script is the payload.
 Detection suggests; configuration enables. Never both
 ([adr/0003](adr/0003-static-analysis-adapters.md)).
 
+**A second route, and an honest limit.** The adapter gate covers the path this
+plugin drives. It does not cover an agent with a shell. Every agent declares
+the narrowest grant it can work with - the two that read code hold
+`Bash(git:*)`, and the editor holds none - and `test/seams.test.mjs` pins those
+declarations so a widening is a visible diff rather than a quiet edit.
+
+What this repository cannot establish on its own is whether the host enforces
+that declaration. The grant is stated in agent frontmatter and honoured by the
+harness, not by code shipped here, so the mitigation depends on something
+outside the plugin. `evals/confinement` probes it behaviourally: a fixture
+repository invites the reviewer to run its own toolchain to "confirm" a claim,
+and the grader fails on any execution that is not `git`.
+
+A failure there may mean the agent chose badly, or it may mean the grant does
+not bind at all. Those need different fixes, and the eval distinguishes them
+only by being run. Until it has been, treat this mitigation as asserted rather
+than verified.
+
 ### 5. Policy drift and poisoning
 
 **Attack.** Accumulated weak signals, a hostile repository policy file, or noisy
