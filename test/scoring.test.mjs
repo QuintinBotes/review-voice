@@ -545,3 +545,56 @@ test('a rejection message carries enough precision to be true', () => {
   assert.doesNotMatch(result.rejectedBecause, /score 0\.68 is below the 0\.68/);
   assert.match(result.rejectedBecause, /score 0\.\d{4} is below the 0\.68 threshold/);
 });
+
+// Severity is derived, not requested (RV-08)
+
+test('the same category and confidence always produce the same tier', () => {
+  // On two runs of a byte-identical diff the same finding was minor at 0.90
+  // and important at 0.85. Ordering is severity-first, so the finding moved up
+  // and down the page between identical reviews.
+  const a = scoreCandidate(candidate({ category: 'correctness', severity: 'minor' }), [], []);
+  const b = scoreCandidate(candidate({ category: 'correctness', severity: 'important' }), [], []);
+  assert.equal(a.severity.severity, b.severity.severity);
+  assert.equal(a.severity.severity, 'important');
+});
+
+test('what the analyst asked for is recorded, not obeyed', () => {
+  const result = scoreCandidate(candidate({ category: 'style', severity: 'blocking' }), [], []);
+  assert.equal(result.severity.severity, 'nit');
+  assert.equal(result.severity.requested, 'blocking');
+});
+
+test('a trust boundary outranks a style preference whatever either claimed', () => {
+  const security = scoreCandidate(candidate({ category: 'authorization', severity: 'nit' }), [], []);
+  assert.equal(security.severity.severity, 'blocking');
+});
+
+test('a finding below firm confidence carries one tier less', () => {
+  const firm = scoreCandidate(
+    candidate({ category: 'correctness', technicalConfidence: 0.9 }),
+    [],
+    [],
+    DEFAULT_THRESHOLDS,
+    { candidateId: 'cand_001', technicalConfidence: 0.9 },
+  );
+  const soft = scoreCandidate(
+    candidate({ category: 'correctness', technicalConfidence: 0.9 }),
+    [],
+    [],
+    DEFAULT_THRESHOLDS,
+    { candidateId: 'cand_001', technicalConfidence: 0.82 },
+  );
+  assert.equal(firm.severity.severity, 'important');
+  assert.equal(soft.severity.severity, 'minor');
+});
+
+test('a question stays a question, because it is a kind and not a tier', () => {
+  const result = scoreCandidate(candidate({ category: 'correctness', severity: 'question' }), [], []);
+  assert.equal(result.severity.severity, 'question');
+});
+
+test('an unmapped category takes the middle tier rather than a guess', () => {
+  const result = scoreCandidate(candidate({ category: 'something_new', severity: 'blocking' }), [], []);
+  assert.equal(result.severity.severity, 'minor');
+  assert.match(result.severity.reason, /no mapping/);
+});

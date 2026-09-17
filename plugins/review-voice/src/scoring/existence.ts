@@ -62,9 +62,19 @@ export interface ExistenceCheck {
   checked: string[];
   /** True when the search could not run, in which case nothing is concluded. */
   inconclusive: boolean;
+  /**
+   * Which tree answered, always stated.
+   *
+   * An empty `found` is not corroboration unless this names the tree under
+   * review. Searching a checkout 179 commits behind the pull request base
+   * reported `found: []` with `inconclusive: false` for two files that exist,
+   * which reads as the guard confirming the claim rather than failing to
+   * evaluate it.
+   */
+  searchedRef: string;
 }
 
-export type Searcher = (symbol: string, cwd: string) => boolean;
+export type Searcher = (symbol: string, cwd: string, ref: string | null) => boolean;
 
 /**
  * Whether the repository contains a literal token.
@@ -72,13 +82,15 @@ export type Searcher = (symbol: string, cwd: string) => boolean;
  * `git grep` rather than a filesystem walk: it respects the repository's own
  * idea of what is tracked, and it is fast enough to run per symbol.
  */
-export const gitGrep: Searcher = (symbol, cwd) => {
+export const gitGrep: Searcher = (symbol, cwd, ref) => {
+  // The ref goes after the pattern: `git grep -F --quiet -- <sym> <ref>` is
+  // rejected, because everything after `--` is a pathspec.
+  const args =
+    ref === null
+      ? ['grep', '--fixed-strings', '--quiet', '--', symbol]
+      : ['grep', '--fixed-strings', '--quiet', symbol, ref];
   try {
-    execFileSync('git', ['grep', '--fixed-strings', '--quiet', '--', symbol], {
-      cwd,
-      stdio: 'ignore',
-      timeout: 10_000,
-    });
+    execFileSync('git', args, { cwd, stdio: 'ignore', timeout: 10_000 });
     return true;
   } catch (error) {
     // Exit 1 is "no match", which is the answer. Anything else is a failure to
@@ -97,6 +109,7 @@ export const gitGrep: Searcher = (symbol, cwd) => {
 export function checkAbsenceClaim(
   text: string,
   cwd: string,
+  ref: string | null = null,
   search: Searcher = gitGrep,
 ): ExistenceCheck | null {
   if (!assertsAbsence(text)) return null;
@@ -104,17 +117,20 @@ export function checkAbsenceClaim(
   const symbols = namedSymbols(text);
   if (symbols.length === 0) return null;
 
+  const searchedRef = ref ?? 'working tree';
   const found: string[] = [];
   const checked: string[] = [];
 
   for (const symbol of symbols.slice(0, 12)) {
     try {
       checked.push(symbol);
-      if (search(symbol, cwd)) found.push(symbol);
+      if (search(symbol, cwd, ref)) found.push(symbol);
     } catch {
-      return { found: [], checked, inconclusive: true };
+      // A search that could not run is not an answer. A missing ref exits
+      // 128, which must never be read as "the symbol is absent".
+      return { found: [], checked, inconclusive: true, searchedRef };
     }
   }
 
-  return { found, checked, inconclusive: false };
+  return { found, checked, inconclusive: false, searchedRef };
 }

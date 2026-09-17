@@ -53,26 +53,48 @@ test('a claim contradicted by the repository is reported', () => {
   const result = checkAbsenceClaim(
     '`CompanyActionsCell` and `useBulkDeleteCompanies` do not exist anywhere in the repo',
     '/repo',
+    'origin/master',
     (symbol) => present.has(symbol),
   );
   assert.deepEqual(result.found.sort(), ['CompanyActionsCell', 'useBulkDeleteCompanies']);
   assert.equal(result.inconclusive, false);
+  assert.equal(result.searchedRef, 'origin/master');
+});
+
+test('the record always names the tree that answered', () => {
+  // An empty `found` is corroboration only if the right tree was searched. A
+  // checkout 179 commits behind the base reported two present files as absent
+  // with inconclusive: false, which read as the guard confirming the claim.
+  const working = checkAbsenceClaim('`Thing` does not exist', '/repo', null, () => false);
+  assert.equal(working.searchedRef, 'working tree');
+
+  const atRef = checkAbsenceClaim('`Thing` does not exist', '/repo', '44c61fe', () => false);
+  assert.equal(atRef.searchedRef, '44c61fe');
+});
+
+test('the ref is passed to the searcher, not silently dropped', () => {
+  const seen = [];
+  checkAbsenceClaim('`SomeComponent` does not exist', '/repo', 'origin/master', (symbol, cwd, ref) => {
+    seen.push(ref);
+    return false;
+  });
+  assert.deepEqual(seen, ['origin/master']);
 });
 
 test('a claim the repository agrees with is left alone', () => {
-  const result = checkAbsenceClaim('`useNeverWritten` does not exist in this package', '/repo', () => false);
+  const result = checkAbsenceClaim('`useNeverWritten` does not exist in this package', '/repo', null, () => false);
   assert.deepEqual(result.found, []);
   assert.equal(result.inconclusive, false);
 });
 
 test('a claim that names nothing searchable is not graded', () => {
-  assert.equal(checkAbsenceClaim('the key does not exist', '/repo', () => true), null);
+  assert.equal(checkAbsenceClaim('the key does not exist', '/repo', null, () => true), null);
 });
 
 test('a failed search concludes nothing rather than confirming', () => {
   // A search that could not run is not evidence that the symbol is absent,
   // and it is certainly not evidence that it is present.
-  const result = checkAbsenceClaim('`SomeComponent` does not exist', '/repo', () => {
+  const result = checkAbsenceClaim('`SomeComponent` does not exist', '/repo', null, () => {
     throw new Error('git not available');
   });
   assert.equal(result.inconclusive, true);
@@ -81,7 +103,7 @@ test('a failed search concludes nothing rather than confirming', () => {
 
 test('a finding that is not about absence is never checked', () => {
   assert.equal(
-    checkAbsenceClaim('`useEditEventSpaceForm` returns before the mutation settles', '/repo', () => {
+    checkAbsenceClaim('`useEditEventSpaceForm` returns before the mutation settles', '/repo', null, () => {
       throw new Error('should not have searched');
     }),
     null,

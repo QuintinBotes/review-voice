@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { dirname, join, sep } from 'node:path';
+import { frontmatterPaths, governsAny, pointerTarget } from './globs.ts';
 
 export type ConventionKind = 'claude' | 'agents' | 'contributing' | 'skill' | 'rule';
 
@@ -12,7 +13,15 @@ export interface ConventionDocument {
   /** Changed paths this document governs, empty for repository-wide ones. */
   appliesTo: string[];
   /** Why it was selected, so a surprising inclusion can be traced. */
-  reason: 'directory scope' | 'subtree' | 'repository file' | 'name matches the change' | 'remaining budget';
+  reason:
+    | 'directory scope'
+    | 'governs the changed paths'
+    | 'subtree'
+    | 'repository file'
+    | 'name matches the change'
+    | 'remaining budget';
+  /** Globs the document declares, when it declares any. */
+  governs: string[];
   bytes: number;
   truncated: boolean;
   content: string;
@@ -115,6 +124,31 @@ function ancestors(changedPath: string): string[] {
   return out;
 }
 
+/**
+ * Resolves `@.agents/rules/routing.md` from a pointer file.
+ *
+ * Relative to the package that owns the pointer, which is the directory
+ * holding its `.claude` or `.agents` folder, and failing that the repository
+ * root.
+ */
+function resolvePointer(root: string, pointerPath: string, target: string): string | null {
+  const candidates: string[] = [];
+
+  let directory = dirname(pointerPath);
+  while (directory !== '.' && directory !== '' && directory !== sep) {
+    const base = dirname(directory);
+    const name = directory.split(sep).pop();
+    if (name === '.claude' || name === '.agents') candidates.push(join(base === '.' ? '' : base, target));
+    directory = base;
+  }
+  candidates.push(target);
+
+  for (const candidate of candidates) {
+    if (existsSync(join(root, candidate))) return candidate;
+  }
+  return null;
+}
+
 /** Rule and skill documents under one directory of the tree. */
 function listRuleDocuments(root: string, directory: string): { path: string; kind: ConventionKind }[] {
   const out: { path: string; kind: ConventionKind }[] = [];
@@ -202,6 +236,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
     scope: 'repository' | 'directory';
     appliesTo: string[];
     reason: ConventionDocument['reason'];
+    governs: string[];
   };
 
   // Directories the diff touches, nearest first, plus the root. A monorepo
@@ -216,6 +251,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       scope: 'directory' as const,
       appliesTo: changedPaths.filter((changed) => changed.startsWith(`${directory}${sep}`)),
       reason: 'subtree' as const,
+      governs: [],
     })),
   );
 
@@ -235,6 +271,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
         scope: 'directory' as const,
         appliesTo,
         reason: 'directory scope' as const,
+        governs: [],
       })),
     ...subtreeRules,
     ...REPOSITORY_FILES.map((file) => ({
@@ -242,18 +279,21 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       scope: 'repository' as const,
       appliesTo: [],
       reason: 'repository file' as const,
+      governs: [],
     })),
     ...named.map((rule) => ({
       ...rule,
       scope: 'repository' as const,
       appliesTo: [],
       reason: 'name matches the change' as const,
+      governs: [],
     })),
     ...rest.map((rule) => ({
       ...rule,
       scope: 'repository' as const,
       appliesTo: [],
       reason: 'remaining budget' as const,
+      governs: [],
     })),
   ];
 
@@ -264,18 +304,62 @@ export function discoverConventions(root: string, changedPaths: readonly string[
   // alone let four large skills consume the budget before a single rule was
   // read. Ranked this way every short rule lands and the long guides fill
   // whatever is left.
+  // Resolved before ranking, because two things only the content can answer
+  // decide where a document belongs: which paths it declares it governs, and
+  // whether it is a pointer to the document that actually holds the rule.
+  const resolved = new Map<string, string>();
+
   const sized = ordered.map((entry) => {
     let bytes = Number.POSITIVE_INFINITY;
+    let governs: string[] = [];
+
     try {
       bytes = statSync(join(root, entry.path)).size;
+      // Only small files are opened here: a rule declares its globs in the
+      // first few lines, and reading every skill to rank it would cost more
+      // than the budget saves.
+      if (bytes <= CHEAP_BYTES) {
+        const head = readFileSync(join(root, entry.path), 'utf8');
+        governs = frontmatterPaths(head);
+
+        const target = pointerTarget(head);
+        if (target !== null) {
+          const followed = resolvePointer(root, entry.path, target);
+          if (followed !== null) resolved.set(entry.path, followed);
+        }
+      }
     } catch {
       // Unreadable sorts last and is reported when it is reached.
     }
-    return { entry, bytes };
+
+    // Following a pointer keeps the pointer's declared globs, since the stub
+    // is where this repository writes them down.
+    const path = resolved.get(entry.path) ?? entry.path;
+    if (path !== entry.path) {
+      try {
+        bytes = statSync(join(root, path)).size;
+      } catch {
+        bytes = Number.POSITIVE_INFINITY;
+      }
+    }
+
+    const promoted: Entry =
+      governsAny(governs, changedPaths) && entry.reason !== 'directory scope'
+        ? { ...entry, path, governs, reason: 'governs the changed paths' }
+        : { ...entry, path, governs };
+
+    return { entry: promoted, bytes };
   });
 
   const tier = (reason: ConventionDocument['reason']): number =>
-    ['directory scope', 'subtree', 'repository file', 'name matches the change', 'remaining budget'].indexOf(reason);
+    [
+      'directory scope',
+      'governs the changed paths',
+      'subtree',
+      'repository file',
+      'name matches the change',
+      'remaining budget',
+    ].indexOf(reason);
 
   sized.sort((a, b) => {
     const byTier = tier(a.entry.reason) - tier(b.entry.reason);
@@ -323,6 +407,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       scope: entry.scope,
       appliesTo: entry.appliesTo,
       reason: entry.reason,
+      governs: entry.governs,
       bytes: read.bytes,
       truncated: read.truncated,
       content: read.content,

@@ -1,4 +1,5 @@
 import type { Precedent } from '../retrieval/retrieve.ts';
+import { deriveSeverity, type DerivedSeverity } from './severity.ts';
 
 /**
  * A candidate as the schema publishes it. `schemas/candidate.schema.json` is
@@ -93,6 +94,8 @@ export interface ScoreBreakdown {
   verifiedConfidence: number | null;
   /** Why the effective confidence differs from the analyst's, when it does. */
   confidenceSource: 'analyst' | 'verifier' | 'unverifiable-cap';
+  /** The tier this is reported at, derived rather than requested. */
+  severity: DerivedSeverity;
   ownerAlignment: number;
   repositoryAlignment: number;
   evidenceQuality: number;
@@ -437,6 +440,7 @@ export function scoreCandidate(
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
+    severity: deriveSeverity(candidate.category, candidate.severity, confidence),
     analystConfidence,
     verifiedConfidence,
     confidenceSource,

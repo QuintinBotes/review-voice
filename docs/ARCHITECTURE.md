@@ -199,6 +199,22 @@ exit code is still evidence.
 A check that did not run is reported as such. The reviewer must never imply a
 check passed when it never executed.
 
+### Severity is derived, not requested
+
+Ordering is severity-first, so an unstable tier moves a finding up and down the
+page between identical reviews. Asking for one produced `minor` at confidence
+0.90 and `important` at 0.85 for the same finding on a byte-identical diff: the
+evidence barely moved and the tier jumped.
+
+`score` derives it from the category and the verified confidence, weakening one
+tier below 0.85. Blast radius is a property of the kind of defect rather than of
+how the reviewer felt about it on the day. The requested severity is recorded
+beside the derived one so a divergence can be audited.
+
+`question` is preserved rather than derived. It says the reviewer could not
+establish the answer and the author can, which is a kind of finding rather than
+a level of consequence, and no category implies it.
+
 ### Claims of absence
 
 "X does not exist" is the cheapest claim in a review to check and the most
@@ -206,11 +222,20 @@ damaging to get wrong, because the fix proposed on top of it tells the author
 to break working code. On one pull request the analyst asserted at confidence
 0.90, and 0.93 on a re-run, that four files were absent. All four were present.
 
-`score` extracts the symbols such a claim names and runs `git grep` for each.
-If the repository contains any of them the candidate is rejected outright,
-before alignment or novelty are weighed, and the breakdown names what was
-found. A search that cannot run concludes nothing: a failed search is not
-evidence of absence, and certainly not evidence of presence.
+`score` extracts the symbols such a claim names and runs `git grep` for each,
+against the ref passed as `--base`. If the repository contains any of them the
+candidate is rejected outright, before alignment or novelty are weighed, and
+the breakdown names what was found.
+
+The ref matters more than it looks. A working tree 179 commits behind the pull
+request base genuinely lacks the files the base contains, so the first version
+of this check reported `found: []` with `inconclusive: false` for two files
+that exist, which reads as the guard corroborating the claim rather than
+failing to evaluate it. Every result now names the tree that answered, and a
+`--base` that does not resolve is an error rather than a silent fallback.
+
+A search that cannot run concludes nothing: a failed search is not evidence of
+absence, and certainly not evidence of presence.
 
 The check only contradicts specific assertions. A claim naming nothing
 searchable is left alone, because this grades falsehood rather than vagueness.
@@ -286,6 +311,15 @@ that a missing localisation key renders the raw key, when the provider supplies
 a humanised default, and the analyst repeated that claim for four consecutive
 runs. Both prompts now say source wins a factual conflict, and the verifier
 resolves it correctly once told the documents are fallible.
+
+Selection ranks on the globs a document declares. A repository that writes
+`paths: ["**/*.tsx"]` in a rule's frontmatter is saying when the rule applies,
+which is a better signal than how close the file sits: ranking by proximity
+alone sent a 14 KB semaphore guide and a 9.6 KB routing guide to a pull request
+with neither, while every rule whose glob matched the changed files was dropped
+for budget. A stub whose whole content is `@.agents/rules/routing.md` is
+followed to the document that holds the rule, rather than spending budget to
+say where it lives.
 
 The budget buys information rather than bytes. Ranking by proximity alone let
 four large skill documents take 96% of it, truncating a 29 KB page guide into a

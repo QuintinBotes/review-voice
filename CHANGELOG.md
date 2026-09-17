@@ -5,6 +5,39 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The absence guard searches the ref under review, passed as `score --base
+  <ref>`, rather than the working tree. A checkout behind the pull request base
+  genuinely lacks files the base contains, so the check reported `found: []`
+  with `inconclusive: false` for two files that exist, which reads as
+  corroboration of a false claim rather than a failure to evaluate it. Every
+  result now names the tree that answered, and a `--base` that does not resolve
+  is an error rather than a silent fallback to the wrong tree.
+- `distribution.cleared` counts what actually ships. It counted scores above the
+  threshold and ignored candidates the confidence gate had already rejected, so
+  it overstated the yield in the one block operators are asked to report.
+  `aboveThreshold` carries the old number under its own name.
+- Convention documents are ranked on the globs they declare. A repository
+  writing `paths: ["**/*.tsx"]` in frontmatter is saying when a rule applies;
+  ranking by proximity alone sent a 14 KB semaphore guide and a 9.6 KB routing
+  guide to a pull request with neither, while every rule whose glob matched was
+  dropped for budget.
+- A pointer file whose whole content is `@.agents/rules/routing.md` is followed
+  to the document holding the rule. Eight of nineteen documents selected on one
+  pull request were 70-byte stubs saying where a rule lives.
+
+### Changed
+
+- Severity is derived from the category and the verified confidence rather than
+  requested from the analyst, weakening one tier below 0.85 confidence.
+  Ordering is severity-first, and asking produced `minor` at confidence 0.90 and
+  `important` at 0.85 for the same finding on a byte-identical diff. The
+  requested severity is recorded beside the derived one. `question` is
+  preserved, being a kind of finding rather than a level of consequence.
+
 ## [0.6.0] - 2026-09-17
 
 ### Added
