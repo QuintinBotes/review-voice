@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The review command now tells the operator to inline candidate JSON into the
+  editor's prompt rather than pass a file path. The editor declares no tools
+  deliberately - its authority limit, that it cannot add a technical claim,
+  rests on having no way to verify one - so a path left it able only to say it
+  cannot open files.
+- The analyst prompt now carries the candidate schema's nine field names
+  instead of naming the schema file. Three runs returned
+  `title`/`location`/`description` and produced no review.
+- The review command no longer invites aliasing `RV` as a shell variable. zsh
+  does not word-split an unquoted parameter, so `$RV` as a command exits 127.
+- `--min-score` help said the default was 0.78. It has been 0.68 since 0.9.2,
+  and the help is the only place a user learns the number.
 - A convention stub pointing at more than one document now resolves all of
   them. The pointer pattern was anchored to a whole body, so it matched only a
   stub holding exactly one `@path.md` line: a 179-byte file declaring

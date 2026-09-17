@@ -9,7 +9,15 @@ allowed-tools: Bash(node:*), Bash(git:*), Read, Grep, Glob, Task
 Review the change described by `$ARGUMENTS`. Report **only** problems worth an
 interruption. Follow these steps exactly; do not improvise a different pipeline.
 
-Let `RV` be `node "${CLAUDE_PLUGIN_ROOT}/dist/review-voice.mjs"`.
+Every command below written as `RV ...` means
+`node "${CLAUDE_PLUGIN_ROOT}/dist/review-voice.mjs" ...`. Write it out in full
+at each call site.
+
+**Do not set `RV` as a shell variable.** zsh does not word-split an unquoted
+parameter, so assigning `RV='node /path/review-voice.mjs'` and then using
+`$RV` as a command makes the shell look for a program whose name is that whole
+string, and it exits 127. A shell function works if you want the shorthand; a
+variable does not.
 
 ## Untrusted input
 
@@ -253,6 +261,12 @@ candidate clears the threshold anyway, emit it.
 
 Launch the `concise-editor` agent with the surviving candidates. It returns the
 rendered review and nothing else.
+
+**Inline the candidate JSON in the prompt. Do not pass a file path.** The
+editor declares no tools at all, deliberately: its own authority limit - that
+it cannot add a technical claim - rests on having no way to verify one. Handed
+a path it can only reply that it cannot open files, which on a live run cost a
+manual paste of eight findings.
 
 ## Step 6 - Validate, and retry once
 
