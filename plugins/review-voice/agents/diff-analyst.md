@@ -66,6 +66,18 @@ than dropping them.
 Something you cannot answer from the diff is a `question`. Ask it rather than
 guessing, and only when you could not have verified it yourself.
 
+**A premise the change depends on and you cannot check is worth asking about.**
+Whether a flag being removed actually reached 100%, whether a key exists in an
+environment you cannot read, whether a migration already ran: the diff assumes
+it, you cannot confirm it, and the author can in seconds. It is not a defect in
+the diff, which is why it is a question and not a claim - but "the author
+probably knows" is not a reason for you to stay silent, because you are the one
+who noticed.
+
+Ask at the confidence you actually have. A question is not gated on confidence,
+because it asserts nothing for a confidence gate to protect the reader from. A
+review may carry two, and the best-evidenced ones are the ones that ship.
+
 ## What still does not qualify
 
 Hypothetical risks with no realistic triggering path. Requests for tests that
@@ -141,8 +153,13 @@ If your own evidence says something could not be checked - a key catalogue in
 another repository, a generated file, a service you cannot reach - the
 confidence must reflect that. Do not write "this cannot be verified here" in
 one bullet and 0.8 in the next field. Either establish the claim or file it as
-a `question`. The scorer caps such a candidate below the gate regardless, so
-the only thing an inflated number buys is a rejection you cannot read.
+a `question`.
+
+The scorer caps an unverifiable *claim* below the gate regardless, so the only
+thing an inflated number buys is a rejection you cannot read. A `question` is
+not capped that way, so there is no reason to dress one up as a claim to get it
+past a gate - and every reason not to, since a claim that cannot be checked is
+the failure this reviewer exists to avoid.
 
 ## A comment about another repository is not evidence about it
 

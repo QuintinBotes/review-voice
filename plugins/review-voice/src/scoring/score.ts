@@ -200,6 +200,34 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
  */
 export const MAX_QUESTIONS: number = 2;
 
+/**
+ * Keeps the best questions and rejects the rest, after all of them are scored.
+ *
+ * The cap used to be applied while scoring, against the questions already kept,
+ * which made it first-come rather than merit-ranked: four questions at 0.30,
+ * 0.45, 0.60 and 0.35 kept the first two and dropped the 0.60, and reversing
+ * the input kept a different pair. A byte-identical diff could then produce a
+ * different review depending only on the order the analyst emitted them, which
+ * is the nondeterminism severity derivation exists to remove.
+ *
+ * Ties break on candidate id so the order is total, not merely sorted.
+ */
+export function applyQuestionCap(breakdowns: ScoreBreakdown[], limit: number = MAX_QUESTIONS): void {
+  const questions = breakdowns.filter((b) => b.eligible && b.severity.severity === 'question');
+  if (questions.length <= limit) return;
+
+  const ranked = [...questions].sort(
+    (a, b) => b.finalScore - a.finalScore || a.candidateId.localeCompare(b.candidateId),
+  );
+
+  for (const dropped of ranked.slice(limit)) {
+    dropped.eligible = false;
+    dropped.rejectedBecause =
+      `this review already asks ${limit} better-evidenced question${limit === 1 ? '' : 's'}, ` +
+      'and a review that ends in a list of questions has stopped being a review';
+  }
+}
+
 export class MalformedCandidate extends Error {}
 
 /** Field names from shapes agents have returned instead of the schema. */
@@ -543,10 +571,8 @@ export function scoreCandidate(
   // What a question needs is not a confidence bar but a limit on how many can
   // be asked at once, since a review that ends in five questions has stopped
   // being a review.
-  const isQuestion = deriveSeverity(candidate.category, candidate.severity, verification?.reach).severity === 'question';
-  const questionsAlready = kept.filter(
-    (other) => deriveSeverity(other.category, other.severity).severity === 'question',
-  ).length;
+  const isQuestion =
+    deriveSeverity(candidate.category, candidate.severity, verification?.reach).severity === 'question';
 
   let rejectedBecause: string | null = null;
   // Checked explicitly: every comparison against NaN is false, so a
@@ -560,12 +586,8 @@ export function scoreCandidate(
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
   } else if (isQuestion) {
     // Everything below this point gates on confidence in an assertion, and a
-    // question makes none. Only the count is checked.
-    if (questionsAlready >= MAX_QUESTIONS) {
-      rejectedBecause =
-        `this review already asks ${MAX_QUESTIONS} question${MAX_QUESTIONS === 1 ? '' : 's'}, ` +
-        'and a review that ends in a list of questions has stopped being a review';
-    }
+    // question makes none. How many a review may ask is capped by
+    // `applyQuestionCap`, after every question has a score to rank by.
   } else if (confidenceSource === 'unverifiable-cap') {
     // Stated as its own rejection rather than left to the numeric comparison.
     // It used to depend on the cap sitting below the floor, which quietly tied

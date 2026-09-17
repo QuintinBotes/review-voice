@@ -5,6 +5,26 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Which questions a review asks no longer depends on the order the analyst
+  filed them. The cap was applied while scoring, against the questions already
+  kept, so it was first-come rather than merit-ranked: four at 0.30, 0.45, 0.60
+  and 0.35 kept the first two and dropped the 0.60, and reversing the input
+  kept a different pair. A byte-identical diff could produce a different review
+  on emission order alone, which is the nondeterminism severity derivation
+  exists to remove. Questions are now ranked by final score and capped
+  afterwards, with candidate id breaking ties so the order is total.
+- The analyst prompt no longer tells the analyst that a question is capped
+  below the gate regardless. That was true until 1.3.3 and is now false, and it
+  is the likely reason one analyst declined to file a flag-rollout question as
+  "the standing premise of any flag-removal PR" while two others filed the same
+  thing. The prompt now says a premise the change depends on and the analyst
+  cannot check is worth asking about, and that a question is not gated on
+  confidence.
+
 ## [1.3.3] - 2026-09-17
 
 ### Fixed

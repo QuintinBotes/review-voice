@@ -9784,6 +9784,17 @@ var DEFAULT_THRESHOLDS = {
   finalScore: 0.68
 };
 var MAX_QUESTIONS = 2;
+function applyQuestionCap(breakdowns, limit = MAX_QUESTIONS) {
+  const questions = breakdowns.filter((b) => b.eligible && b.severity.severity === "question");
+  if (questions.length <= limit) return;
+  const ranked = [...questions].sort(
+    (a, b) => b.finalScore - a.finalScore || a.candidateId.localeCompare(b.candidateId)
+  );
+  for (const dropped of ranked.slice(limit)) {
+    dropped.eligible = false;
+    dropped.rejectedBecause = `this review already asks ${limit} better-evidenced question${limit === 1 ? "" : "s"}, and a review that ends in a list of questions has stopped being a review`;
+  }
+}
 var MalformedCandidate = class extends Error {
 };
 var FOREIGN_KEYS = ["title", "location", "suggested_direction", "suggestion", "description", "summary"];
@@ -9917,18 +9928,12 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const finalScore = score(ownerAlignment, repositoryAlignment);
   const anchoredFinalScore = score(anchoredOwnerAlignment, anchoredRepositoryAlignment);
   const isQuestion = deriveSeverity(candidate.category, candidate.severity, verification?.reach).severity === "question";
-  const questionsAlready = kept.filter(
-    (other) => deriveSeverity(other.category, other.severity).severity === "question"
-  ).length;
   let rejectedBecause = null;
   if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
     rejectedBecause = "score could not be computed from this candidate";
   } else if (alreadySaid !== null) {
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
   } else if (isQuestion) {
-    if (questionsAlready >= MAX_QUESTIONS) {
-      rejectedBecause = `this review already asks ${MAX_QUESTIONS} question${MAX_QUESTIONS === 1 ? "" : "s"}, and a review that ends in a list of questions has stopped being a review`;
-    }
   } else if (confidenceSource === "unverifiable-cap") {
     rejectedBecause = `the claim states it could not be verified, so it cannot ship whatever it scores`;
   } else if (confidence < confidenceFloor) {
@@ -11094,6 +11099,7 @@ function scoreCommand(argv) {
       if (breakdown.eligible) kept.push(candidate);
       results.push({ ...breakdown, precedents, ...absence === null ? {} : { absenceCheck: absence } });
     }
+    applyQuestionCap(results);
     const finals = results.map((r) => r.finalScore).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
     const at = (p) => finals.length === 0 ? null : finals[Math.min(finals.length - 1, Math.floor(p * finals.length))];
     console.log(
