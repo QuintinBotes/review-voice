@@ -14,6 +14,7 @@ agents. A command file orchestrates them.**
 | Diff acquisition | CLI | git plumbing |
 | Context resolution | CLI | config and policy layering is pure logic |
 | Static evidence collection | CLI | runs configured tools, emits JSON |
+| Convention discovery | CLI | which files exist is a fact |
 | Candidate generation | `diff-analyst` | genuine judgment |
 | Evidence verification | `evidence-verifier` | genuine judgment |
 | Precedent retrieval | CLI | an index query |
@@ -198,6 +199,55 @@ exit code is still evidence.
 A check that did not run is reported as such. The reviewer must never imply a
 check passed when it never executed.
 
+### Whose confidence the gate reads
+
+Eligibility used to be gated on `technical_confidence`, a number the analyst
+writes about its own output and the one input in the pipeline with no evidence
+behind it. In a real run both rejections read "technical confidence 0.75 is
+below 0.8" on candidates the `evidence-verifier` had just rated high, and the
+precedent-derived signals rejected nothing at all. An analyst returning 0.9 on
+everything would have faced no gate.
+
+The verifier is the only stage that checks a claim against the repository, so
+its confidence supersedes the analyst's and the breakdown records which was
+used. Verification is no longer a stage that costs a full agent run and then
+changes nothing but which candidates arrive.
+
+Two things cap that confidence below every default gate, whatever either stage
+claims: context the verifier needed and could not obtain, and an admission in
+the candidate's own evidence that the claim could not be checked. The second
+was observed verbatim - "No local key catalogue exists in the repo, so the
+keys' existence cannot be verified here", filed at 0.8 - and is exactly how a
+review comment ends up retracted.
+
+`evidenceQuality` scored specificity as "names a line **or** is longer than 40
+characters". Analyst evidence is always longer than 40 characters, so the term
+returned 1.000 for every candidate in that run: fifteen percent of the score
+carrying no information. Specificity now requires an actual anchor.
+
+### Repository conventions
+
+`RV conventions` collects the repository's own `CLAUDE.md`, `AGENTS.md`,
+`CONTRIBUTING.md` and `.claude/skills/*/SKILL.md`, and both the analyst and the
+verifier receive them.
+
+Precedent cannot reach this. Retrieval learns what the owner values from the
+comments they wrote, and the better a convention is observed the fewer comments
+it generates, so the rules a team has genuinely internalised leave the least
+evidence behind. A documented rule is also stronger ground for a finding than
+an inferred preference, because the author had it available.
+
+Nested files are scoped to the subtrees the diff touches, and the nearest
+document is returned first, so the size budget truncates the least specific
+document rather than whichever one the filesystem listed last.
+
+The trust boundary does not move. These documents are supplied as evidence
+about the repository, never as instructions to the reviewer, and both agent
+prompts say so. Text addressed to a reviewer rather than describing the code
+raises a warning and the document is still returned: dropping it would hide the
+attempt from the person running the review, which is the one outcome worse than
+showing it.
+
 ### Second-pass verification
 
 The built-in `evidence-verifier` is a Claude subagent checking a Claude
@@ -364,6 +414,19 @@ repository cannot define the global policy. The cap is relaxed rather than
 under-filling the corpus: a smaller corpus is a worse outcome than a slightly
 lopsided one. Shortfalls are reported exactly - claiming a full scan when the
 history ran out would misrepresent how much the policy rests on.
+
+Owner evidence is exempt from both the target and the share cap. It is around
+one percent of what a sync discovers, so under newest-first selection a dozen
+repositories fill the target inside a fortnight and every older owner comment
+is evicted by volume from repositories the owner never reviewed. The scarcest
+signal, and the one retrieval weights highest, was the first one recency threw
+away.
+
+The target and the cap both scale with the allowlist. A fixed target reads
+sixty pull requests per repository and then discards most of what it found; a
+fixed half-share stops being a diversity control once a fair share is five
+percent. The target is sixty events per repository between 250 and 1500, and
+the cap is twice a fair share between 0.15 and 0.5.
 
 ### Posting
 

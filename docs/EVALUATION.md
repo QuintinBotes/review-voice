@@ -2,15 +2,23 @@
 
 Review Voice makes a precision claim. It has to be measured, or it is marketing.
 
-## Targets
+## Gates and goals
+
+A **gate** is a contract the reviewer must meet. A **goal** is something to aim
+at, reported and never failed. `RV evaluate` labels each metric with its kind,
+and prints `FAIL` only for a gate.
+
+The distinction is not cosmetic. `median_words_per_finding` asked for 28 while
+the contract the validator enforces allows 40, so every fully compliant review
+failed a metric it had not broken. A number that cannot be met by following the
+rules is not a target, it is a mislabelled aspiration.
+
+### Gates
 
 | Metric | Target |
 |---|---:|
 | Owner-accepted finding precision | ≥ 80% |
 | False-positive rate on reviewed diffs | ≤ 15% |
-| Median findings per PR | ≤ 2 |
-| 95th percentile findings per PR | ≤ 5 |
-| Median words per finding | ≤ 28 |
 | 95th percentile words per finding | ≤ 40 |
 | Total-output word-limit compliance | 100% |
 | Exact no-findings response compliance | 100% |
@@ -22,6 +30,25 @@ Review Voice makes a precision claim. It has to be measured, or it is marketing.
 The four 100% targets are achievable only because they are enforced by a
 validator rather than requested in a prompt. If one of them ever reports below
 100%, the bug is in the validator, not the model.
+
+### Goals
+
+| Metric | Goal |
+|---|---:|
+| Median words per finding | ≤ 28 |
+
+### Reported, not scored
+
+| Metric | Why |
+|---|---|
+| Median findings per PR | A count is a property of the diff, not the reviewer |
+| 95th percentile findings per PR | As above |
+
+These two carried targets of 2 and 5 from when the output contract capped
+findings at five. It no longer does: a review reports everything that survives
+verification, and ordering rather than omission is what protects the reader. A
+run that correctly finds nine defects in a large change was failing a target
+asking it to find two.
 
 ## Online precision
 

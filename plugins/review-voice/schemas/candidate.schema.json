@@ -11,7 +11,7 @@
   "properties": {
     "candidates": {
       "type": "array",
-      "maxItems": 20,
+      "maxItems": 50,
       "items": {
         "type": "object",
         "required": [

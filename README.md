@@ -67,6 +67,14 @@ that *rejects* non-compliant output and forces a re-edit, not by a prompt that
 asks nicely. Word limits, hedge phrases, severity ordering and the exact
 no-findings string are all checked rather than requested.
 
+**It reads your repository's own rules.** `CLAUDE.md`, `AGENTS.md`,
+`CONTRIBUTING.md` and skill documents all reach the analyst and the verifier,
+with nested files scoped to the subtrees a diff touches. Precedent cannot cover
+this ground: the better a convention is observed, the fewer review comments it
+leaves behind, so the rules a team has most thoroughly internalised are the
+ones its review history knows least about. They are supplied as evidence about
+what the repository requires, never as instructions to the reviewer.
+
 It learns through **retrieval plus policy compilation**, not model fine-tuning.
 Your historical reviews are ingested, redacted, weighted, and compiled into
 short, inspectable YAML rules that you approve before they take effect. Every
@@ -95,6 +103,33 @@ Then:
 **Requirements:** Node 22 or newer, `git`, and `gh` only if you enable GitHub
 history ingestion. There is no install step - the plugin ships a single
 pre-built bundle with zero runtime dependencies.
+
+### Second-pass verification
+
+A finding is checked twice: once by the built-in `evidence-verifier` agent, and
+optionally again by a command you configure. The second pass exists because the
+built-in verifier is a Claude subagent checking a Claude subagent's work, which
+is not an independent opinion.
+
+It is opt-in, and a config written by an older `init` has no block for it at
+all. `/review-voice:context` reports whether yours does.
+
+```yaml
+# .review-voice/config.yaml
+verification:
+  enabled: true
+  name: codex
+  command: codex exec -s read-only
+  timeout_seconds: 90
+  # A rejection at or above this confidence drops the finding. Below it, the
+  # finding is downgraded instead: an unsure verifier should not be able to
+  # delete evidence.
+  drop_threshold: 0.8
+```
+
+The command reads one finding as JSON on stdin and writes a verdict to stdout.
+It runs read-only. A verifier that cannot run never confirms a finding, and
+verification may only weaken a severity, never raise one.
 
 ## Privacy in one paragraph
 

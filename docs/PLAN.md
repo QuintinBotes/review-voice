@@ -136,10 +136,10 @@ Skeleton, MIT licence, CI green on an empty build, docs frame, and **eight ADRs 
 
 ### M1 - Phase 1: fixed-policy concise reviewer (spec §23 Phase 1, build order 1-5)
 Diff acquisition, context resolution, static-evidence adapters, the three review agents, output validator, feedback capture, SQLite + audit store.
-*Done when:* reviews a local diff, emits 0-5 findings, never exceeds word limits, emits exactly `No actionable findings.` when nothing qualifies, and needs no GitHub access. Unit tests cover the validator, diff parser, config layering and audit writes.
+*Done when:* reviews a local diff, emits findings within the word budget, never exceeds word limits, emits exactly `No actionable findings.` when nothing qualifies, and needs no GitHub access. Unit tests cover the validator, diff parser, config layering and audit writes.
 
 ### M2 - Phase 2: read-only GitHub bootstrap (build order 6-8)
-Allowlist consent flow, historical collector with pagination and backoff, redaction, dedup, role classification, outcome labeling, the up-to-250-event corpus with §7.4 diversity caps, policy compiler and approval gate.
+Allowlist consent flow, historical collector with pagination and backoff, redaction, dedup, role classification, outcome labeling, the scaled corpus with §7.4 diversity caps, policy compiler and approval gate.
 *Done when:* imports the accessible corpus **without over-claiming coverage** (§7.2 shortfall reporting is a test, not a doc promise), every active rule carries provenance, and the GitHub client is constrained **in code** to GET - with a test that asserts any non-GET throws.
 
 ### M3 - Phase 3: retrieval and learning loop (build order 9-10)
@@ -187,7 +187,7 @@ Publishing turns §15's internal requirements into public promises. They need he
 | Committed `dist/` drifts from source | CI rebuild-and-diff gate |
 | `node:sqlite` experimental on Node 22 | Test on 22 and 24; suppress the warning; surface a clear error below the floor |
 | Lexical retrieval underperforms embeddings | Measured in M3; `EmbeddingProvider` seam already present |
-| GitHub rate limits during a 250-event bootstrap | Conditional requests, pagination, exponential backoff, resumable sync |
+| GitHub rate limits during a corpus bootstrap | Conditional requests, pagination, exponential backoff, resumable sync |
 | Eval workflow burns tokens | Label-gated and nightly, with a budget cap |
 | Public claims of redaction create liability | Explicit non-guarantee language plus redaction unit tests |
 | Long private build delays real-world feedback | The §20 evaluation harness substitutes until launch; M1 is dogfooded locally from week one |
