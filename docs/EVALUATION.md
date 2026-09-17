@@ -142,6 +142,22 @@ source file sits under one `packages/` or `plugins/` root, and it is inflated
 by prose, where a symbol named in a changelog counts as spread. Only code is
 counted now, and depth in the tree is never used.
 
+Two limits are known and not yet closed.
+
+**Reach is measured at the base ref**, so a symbol the change introduces does
+not exist there, has no spread by construction, and falls back to the category
+tier. Most findings are about new code, which means reach is currently
+measurable mainly for findings naming pre-existing symbols. That is the safe
+direction - absent reach never invents a tier - but the feature is inactive for
+much of what a review says.
+
+**The symbol source is the claim, not the diff.** `namedSymbols` exists to find
+things to check for absence, where a broad net is cheap. Reach wants the
+opposite. Symbols absent from the changed file, and symbols so common their
+spread describes the language rather than the change, are now excluded - but
+the right source is the changed hunks, which name what the pull request
+actually touched. That is a larger change and is not done.
+
 The remaining boundary - that one neighbouring directory is a component
 relationship and two or more is the repository - is **calibrated by guess**. No
 run has measured it, so it is recorded here as a starting point rather than

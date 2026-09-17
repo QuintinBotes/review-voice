@@ -10,6 +10,7 @@ import {
   MalformedCandidate,
 } from '../plugins/review-voice/src/scoring/score.ts';
 import { computeReach } from '../plugins/review-voice/src/scoring/reach.ts';
+import { gitGrepPaths } from '../plugins/review-voice/src/scoring/existence.ts';
 import { deriveSeverity } from '../plugins/review-voice/src/scoring/severity.ts';
 import { canActivate, compileProposals } from '../plugins/review-voice/src/policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from '../plugins/review-voice/src/policy/versions.ts';
@@ -959,4 +960,65 @@ test('a claim that says it could not be verified is rejected on its own terms', 
 test('the default floors are the measured ones', () => {
   assert.equal(DEFAULT_THRESHOLDS.technicalConfidence, 0.8);
   assert.equal(DEFAULT_THRESHOLDS.analystOnlyConfidence, 0.7);
+});
+
+// These run against real git with a real ref on purpose. The synthetic
+// searchers above return bare paths, which is exactly why a ref-prefix bug
+// survived a green suite: `git grep -l <ref>` prefixes every line with
+// `<ref>:`, and production always passes --base.
+
+test('git grep paths come back without the ref prefix', () => {
+  const withRef = gitGrepPaths('deriveSeverity', process.cwd(), 'HEAD');
+  assert.ok(withRef.length > 0, 'expected the probe symbol to exist at HEAD');
+  for (const path of withRef) {
+    assert.ok(
+      !path.startsWith('HEAD:'),
+      `git grep -l <ref> prefixes paths with the ref; ${path} still carries it. ` +
+        'Left on, every path compares unequal to the changed file and local becomes unreachable.',
+    );
+  }
+});
+
+test('local reach is reachable when a ref is passed, not only without one', () => {
+  // The signature of the prefix bug was outsideDirectoryCount === directoryCount
+  // on every observation, because no hit was ever recognised as the changed
+  // file or as inside its subtree.
+  const check = computeReach(
+    '`REPOSITORY_WIDE_TOOLCHAIN_PATHS` misses a case.',
+    'plugins/review-voice/src/scoring/reach.ts',
+    process.cwd(),
+    'HEAD',
+  );
+
+  assert.equal(check.reach, 'local');
+  assert.equal(check.outsideDirectoryCount, 0);
+});
+
+test('a common builtin does not decide how far a change reaches', () => {
+  // A correctness defect in one date formatter was raised a tier because the
+  // claim mentioned Math.round, which appears in 58 directories of the repo it
+  // was reviewing. Popularity of a word is not spread of a change.
+  const check = computeReach(
+    '`Math.round` is asymmetric inside `normalisePath`.',
+    'plugins/review-voice/src/scoring/reach.ts',
+    process.cwd(),
+    'HEAD',
+  );
+
+  assert.ok(check.ignoredSymbols.includes('Math.round'));
+  assert.equal(check.reach, 'local');
+});
+
+test('a symbol the changed file does not contain is not part of its reach', () => {
+  const check = computeReach(
+    '`acquirePullRequestDiff` is misused here.',
+    'plugins/review-voice/src/scoring/reach.ts',
+    process.cwd(),
+    'HEAD',
+  );
+
+  assert.ok(
+    check.ignoredSymbols.includes('acquirePullRequestDiff'),
+    'a symbol absent from the changed file cannot describe that file\'s reach',
+  );
 });
