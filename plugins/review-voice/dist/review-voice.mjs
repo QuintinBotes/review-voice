@@ -8252,7 +8252,85 @@ function scaledRepositoryShare(repositoryCount) {
 
 // plugins/review-voice/src/conventions/discover.ts
 import { existsSync as existsSync2, readFileSync as readFileSync3, readdirSync, statSync } from "node:fs";
-import { join as join4, sep } from "node:path";
+import { dirname as dirname3, join as join4, sep } from "node:path";
+
+// plugins/review-voice/src/conventions/globs.ts
+function frontmatterPaths(content) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
+  if (match === null) return [];
+  const block = match[1] ?? "";
+  const paths = [];
+  let inPaths = false;
+  for (const raw of block.split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    if (/^paths\s*:/.test(line)) {
+      inPaths = true;
+      const inline = line.slice(line.indexOf(":") + 1).trim();
+      if (inline.startsWith("[")) {
+        for (const item of inline.slice(1, -1).split(",")) paths.push(unquote(item));
+        inPaths = false;
+      }
+      continue;
+    }
+    if (!inPaths) continue;
+    if (/^\s*-\s+/.test(line)) {
+      paths.push(unquote(line.replace(/^\s*-\s+/, "")));
+      continue;
+    }
+    if (/^\S/.test(line)) inPaths = false;
+  }
+  return paths.filter((glob) => glob.length > 0);
+}
+function unquote(value) {
+  return value.trim().replace(/^["']|["']$/g, "").trim();
+}
+function globToRegExp(glob) {
+  let source = "";
+  for (let i = 0; i < glob.length; i += 1) {
+    const char = glob[i];
+    if (char === "*") {
+      if (glob[i + 1] === "*") {
+        if (glob[i + 2] === "/") {
+          source += "(?:.*/)?";
+          i += 2;
+        } else {
+          source += ".*";
+          i += 1;
+        }
+        continue;
+      }
+      source += "[^/]*";
+      continue;
+    }
+    if (char === "?") {
+      source += "[^/]";
+      continue;
+    }
+    source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${source}$`);
+}
+function governsAny(globs, changedPaths) {
+  if (globs.length === 0 || changedPaths.length === 0) return false;
+  const normalised = changedPaths.map((path) => path.split("\\").join("/"));
+  return globs.some((glob) => {
+    let pattern;
+    try {
+      pattern = globToRegExp(glob);
+    } catch {
+      return false;
+    }
+    const loose = glob.includes("/") ? null : globToRegExp(`**/${glob}`);
+    return normalised.some((path) => pattern.test(path) || loose !== null && loose.test(path));
+  });
+}
+function pointerTarget(content) {
+  const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---/, "").trim();
+  const match = /^@([^\s]+\.md)$/.exec(body);
+  return match?.[1] ?? null;
+}
+
+// plugins/review-voice/src/conventions/discover.ts
 var REPOSITORY_FILES = [
   { path: "CLAUDE.md", kind: "claude" },
   { path: ".claude/CLAUDE.md", kind: "claude" },
@@ -8294,6 +8372,21 @@ function ancestors(changedPath) {
     parts.pop();
   }
   return out;
+}
+function resolvePointer(root, pointerPath, target) {
+  const candidates = [];
+  let directory = dirname3(pointerPath);
+  while (directory !== "." && directory !== "" && directory !== sep) {
+    const base = dirname3(directory);
+    const name = directory.split(sep).pop();
+    if (name === ".claude" || name === ".agents") candidates.push(join4(base === "." ? "" : base, target));
+    directory = base;
+  }
+  candidates.push(target);
+  for (const candidate of candidates) {
+    if (existsSync2(join4(root, candidate))) return candidate;
+  }
+  return null;
 }
 function listRuleDocuments(root, directory) {
   const out = [];
@@ -8349,7 +8442,8 @@ function discoverConventions(root, changedPaths = []) {
       ...rule,
       scope: "directory",
       appliesTo: changedPaths.filter((changed) => changed.startsWith(`${directory}${sep}`)),
-      reason: "subtree"
+      reason: "subtree",
+      governs: []
     }))
   );
   const rootRules = listRuleDocuments(root, "");
@@ -8361,37 +8455,68 @@ function discoverConventions(root, changedPaths = []) {
       kind: path.endsWith("AGENTS.md") ? "agents" : "claude",
       scope: "directory",
       appliesTo,
-      reason: "directory scope"
+      reason: "directory scope",
+      governs: []
     })),
     ...subtreeRules,
     ...REPOSITORY_FILES.map((file) => ({
       ...file,
       scope: "repository",
       appliesTo: [],
-      reason: "repository file"
+      reason: "repository file",
+      governs: []
     })),
     ...named.map((rule) => ({
       ...rule,
       scope: "repository",
       appliesTo: [],
-      reason: "name matches the change"
+      reason: "name matches the change",
+      governs: []
     })),
     ...rest.map((rule) => ({
       ...rule,
       scope: "repository",
       appliesTo: [],
-      reason: "remaining budget"
+      reason: "remaining budget",
+      governs: []
     }))
   ];
+  const resolved = /* @__PURE__ */ new Map();
   const sized = ordered.map((entry) => {
     let bytes = Number.POSITIVE_INFINITY;
+    let governs = [];
     try {
       bytes = statSync(join4(root, entry.path)).size;
+      if (bytes <= CHEAP_BYTES) {
+        const head = readFileSync3(join4(root, entry.path), "utf8");
+        governs = frontmatterPaths(head);
+        const target = pointerTarget(head);
+        if (target !== null) {
+          const followed = resolvePointer(root, entry.path, target);
+          if (followed !== null) resolved.set(entry.path, followed);
+        }
+      }
     } catch {
     }
-    return { entry, bytes };
+    const path = resolved.get(entry.path) ?? entry.path;
+    if (path !== entry.path) {
+      try {
+        bytes = statSync(join4(root, path)).size;
+      } catch {
+        bytes = Number.POSITIVE_INFINITY;
+      }
+    }
+    const promoted = governsAny(governs, changedPaths) && entry.reason !== "directory scope" ? { ...entry, path, governs, reason: "governs the changed paths" } : { ...entry, path, governs };
+    return { entry: promoted, bytes };
   });
-  const tier = (reason) => ["directory scope", "subtree", "repository file", "name matches the change", "remaining budget"].indexOf(reason);
+  const tier = (reason) => [
+    "directory scope",
+    "governs the changed paths",
+    "subtree",
+    "repository file",
+    "name matches the change",
+    "remaining budget"
+  ].indexOf(reason);
   sized.sort((a, b) => {
     const byTier = tier(a.entry.reason) - tier(b.entry.reason);
     if (byTier !== 0) return byTier;
@@ -8427,6 +8552,7 @@ function discoverConventions(root, changedPaths = []) {
       scope: entry.scope,
       appliesTo: entry.appliesTo,
       reason: entry.reason,
+      governs: entry.governs,
       bytes: read.bytes,
       truncated: read.truncated,
       content: read.content
@@ -8484,34 +8610,32 @@ function namedSymbols(text) {
   }
   return [...found];
 }
-var gitGrep = (symbol, cwd) => {
+var gitGrep = (symbol, cwd, ref) => {
+  const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "--", symbol] : ["grep", "--fixed-strings", "--quiet", symbol, ref];
   try {
-    execFileSync4("git", ["grep", "--fixed-strings", "--quiet", "--", symbol], {
-      cwd,
-      stdio: "ignore",
-      timeout: 1e4
-    });
+    execFileSync4("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
     return true;
   } catch (error) {
     if (error.status === 1) return false;
     throw error;
   }
 };
-function checkAbsenceClaim(text, cwd, search = gitGrep) {
+function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep) {
   if (!assertsAbsence(text)) return null;
   const symbols = namedSymbols(text);
   if (symbols.length === 0) return null;
+  const searchedRef = ref ?? "working tree";
   const found = [];
   const checked = [];
   for (const symbol of symbols.slice(0, 12)) {
     try {
       checked.push(symbol);
-      if (search(symbol, cwd)) found.push(symbol);
+      if (search(symbol, cwd, ref)) found.push(symbol);
     } catch {
-      return { found: [], checked, inconclusive: true };
+      return { found: [], checked, inconclusive: true, searchedRef };
     }
   }
-  return { found, checked, inconclusive: false };
+  return { found, checked, inconclusive: false, searchedRef };
 }
 
 // plugins/review-voice/src/sync/state.ts
@@ -8931,6 +9055,60 @@ function retrievePrecedents(db, query) {
   return [...negative, ...positive];
 }
 
+// plugins/review-voice/src/scoring/severity.ts
+var BY_CATEGORY = {
+  security: "blocking",
+  trust_boundary: "blocking",
+  authorization: "blocking",
+  authentication: "blocking",
+  data_integrity: "blocking",
+  correctness: "important",
+  persistence: "important",
+  concurrency: "important",
+  error_handling: "important",
+  reliability: "important",
+  migration: "important",
+  api_contract: "important",
+  user_visible_behavior: "important",
+  release: "important",
+  ci: "minor",
+  packaging: "minor",
+  dependency: "minor",
+  performance: "minor",
+  observability: "minor",
+  test_coverage: "minor",
+  maintainability: "nit",
+  style: "nit"
+};
+var FIRM_CONFIDENCE = 0.85;
+function weaken(severity) {
+  const index = SEVERITIES.indexOf(severity);
+  if (index === -1) return "nit";
+  return SEVERITIES[Math.min(index + 1, SEVERITIES.indexOf("nit"))] ?? "nit";
+}
+function deriveSeverity(category, requested, confidence) {
+  if (requested === "question") {
+    return { severity: "question", requested, reason: "a question is a kind of finding, not a tier" };
+  }
+  const base = BY_CATEGORY[category];
+  if (base === void 0) {
+    return {
+      severity: "minor",
+      requested,
+      reason: `category ${category} has no mapping, so the middle tier is used rather than a guess`
+    };
+  }
+  if (!Number.isFinite(confidence) || confidence >= FIRM_CONFIDENCE) {
+    return { severity: base, requested, reason: `${category} carries ${base}` };
+  }
+  const weakened = weaken(base);
+  return {
+    severity: weakened,
+    requested,
+    reason: `${category} carries ${base}, weakened to ${weakened} below ${FIRM_CONFIDENCE} confidence`
+  };
+}
+
 // plugins/review-voice/src/scoring/score.ts
 var QUALITY_CONFIDENCE = { high: 0.9, medium: 0.75, low: 0.5 };
 var UNVERIFIABLE_CONFIDENCE = 0.6;
@@ -9076,6 +9254,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
+    severity: deriveSeverity(candidate.category, candidate.severity, confidence),
     analystConfidence,
     verifiedConfidence,
     confidenceSource,
@@ -9533,6 +9712,10 @@ feedback usage:
   actions: ${FEEDBACK_ACTIONS.join(", ")} (hyphens accepted)
 
 score flags:
+  --base <ref>              The ref under review. Claims that something does
+                            not exist are checked against this tree, not the
+                            working tree, which on a pull request is usually
+                            neither the base nor the head.
   --verification <path>     The evidence-verifier's output. Its confidence
                             supersedes the analyst's self-report.
   --exclude-pull <n>        Drop precedents from this pull request. Pass the
@@ -10003,6 +10186,13 @@ function scoreCommand(argv) {
   } catch {
     searchRoot = null;
   }
+  const baseRef = flag(argv, "--base");
+  if (baseRef !== null && searchRoot !== null && !refExists(baseRef, searchRoot)) {
+    console.error(
+      `--base ${baseRef} does not resolve in this repository. Fetch it, or omit the flag to search the working tree. Absence claims would otherwise be checked against nothing.`
+    );
+    return 2;
+  }
   const pullFlag = argv.includes("--exclude-pull") ? numericFlag(argv, "--exclude-pull", 0) : null;
   if (argv.includes("--exclude-pull") && pullFlag === null) {
     console.error("--exclude-pull needs a pull request number.");
@@ -10035,7 +10225,7 @@ function scoreCommand(argv) {
       let absence = null;
       if (searchRoot !== null) {
         try {
-          absence = checkAbsenceClaim(`${candidate.claim} ${candidate.failureMode}`, searchRoot);
+          absence = checkAbsenceClaim(`${candidate.claim} ${candidate.failureMode}`, searchRoot, baseRef);
         } catch {
           absence = null;
         }
@@ -10062,16 +10252,29 @@ function scoreCommand(argv) {
             median: at(0.5),
             max: finals.length === 0 ? null : finals[finals.length - 1],
             threshold: thresholds.finalScore,
-            cleared: finals.filter((v) => v >= thresholds.finalScore).length
+            // What actually ships, not what cleared this one gate. Counting
+            // scores above the threshold ignored candidates the confidence
+            // gate had already rejected, so the block overstated the yield in
+            // exactly the place the operator is asked to report it.
+            cleared: results.filter((r) => r.eligible).length,
+            aboveThreshold: finals.filter((v) => v >= thresholds.finalScore).length
           },
           // Enough to carry a survivor forward without rejoining by hand.
-          eligible: kept.map((c) => ({
-            candidateId: c.candidateId,
-            path: c.path,
-            line: c.line,
-            severity: c.severity,
-            category: c.category
-          }))
+          // Severity is the derived tier, not the requested one. Ordering is
+          // severity-first, and asking produced `minor` at confidence 0.90 and
+          // `important` at 0.85 for the same finding on an identical diff.
+          eligible: kept.map((c) => {
+            const derived = results.find((r) => r.candidateId === c.candidateId)?.severity;
+            return {
+              candidateId: c.candidateId,
+              path: c.path,
+              line: c.line,
+              severity: derived?.severity ?? c.severity,
+              requestedSeverity: c.severity,
+              severityReason: derived?.reason ?? null,
+              category: c.category
+            };
+          })
         },
         null,
         2
@@ -10420,6 +10623,14 @@ function conventionsCommand(argv) {
     )
   );
   return 0;
+}
+function refExists(ref, cwd) {
+  try {
+    execFileSync5("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 var VERDICT_KEYS = ["results", "verifications", "verdicts", "candidates"];
 function verdictList(parsed) {

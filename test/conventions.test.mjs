@@ -275,3 +275,72 @@ test('relevance still outranks size', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Ranking on the globs the repository declares (N6-02)
+
+test('a rule that governs the changed paths outranks a nearer one that does not', () => {
+  // Subtree scope won wholesale, so a 14 KB semaphore guide and a 9.6 KB
+  // routing guide reached a pull request with neither, while every rule whose
+  // glob matched the changed files was dropped for budget.
+  const root = repository({
+    'packages/app/.agents/rules/routing.md': '---\npaths:\n  - "**/routes/**"\n---\nRouting guidance.',
+    '.agents/rules/react.md': '---\npaths:\n  - "**/*.tsx"\n---\nComponents take their theme from tokens.',
+  });
+  try {
+    const report = discoverConventions(root, ['packages/app/src/Grid.tsx']);
+    assert.equal(report.documents[0].path, join('.agents', 'rules', 'react.md'));
+    assert.equal(report.documents[0].reason, 'governs the changed paths');
+    assert.deepEqual(report.documents[0].governs, ['**/*.tsx']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a pointer file is followed to the document that holds the rule', () => {
+  // Eight of nineteen documents selected on one pull request were 70-byte
+  // stubs whose whole content was "@.agents/rules/routing.md".
+  const root = repository({
+    'packages/app/.claude/rules/routing.md': '---\npaths:\n  - "**/*.tsx"\n---\n@.agents/rules/routing.md',
+    'packages/app/.agents/rules/routing.md': 'Routes declare their own loader.',
+  });
+  try {
+    const report = discoverConventions(root, ['packages/app/src/A.tsx']);
+    const paths = report.documents.map((d) => d.path);
+    assert.ok(paths.includes(join('packages', 'app', '.agents', 'rules', 'routing.md')));
+    assert.ok(!paths.includes(join('packages', 'app', '.claude', 'rules', 'routing.md')));
+    assert.match(report.documents[0].content, /Routes declare their own loader/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a rule governing nothing in this change does not jump the queue', () => {
+  const root = repository({
+    'packages/app/AGENTS.md': 'Package rules.',
+    '.agents/rules/csharp.md': '---\npaths:\n  - "**/*.cs"\n---\nIrrelevant to a TypeScript change.',
+  });
+  try {
+    const report = discoverConventions(root, ['packages/app/src/A.tsx']);
+    assert.equal(report.documents[0].path, join('packages', 'app', 'AGENTS.md'));
+    const csharp = report.documents.find((d) => d.path.endsWith('csharp.md'));
+    assert.notEqual(csharp?.reason, 'governs the changed paths');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a directory-scoped file is never demoted by a glob elsewhere', () => {
+  // Proximity is the whole signal for a file governing the directory under
+  // change, and an existing test caught size ranking breaking that once.
+  const root = repository({
+    'src/api/CLAUDE.md': 'Handlers validate first.',
+    '.agents/rules/react.md': '---\npaths:\n  - "**/*.ts"\n---\nA rule that matches.',
+  });
+  try {
+    const report = discoverConventions(root, ['src/api/handler.ts']);
+    assert.equal(report.documents[0].path, join('src', 'api', 'CLAUDE.md'));
+    assert.equal(report.documents[0].reason, 'directory scope');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

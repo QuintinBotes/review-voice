@@ -176,7 +176,15 @@ visible instead of indistinguishable from a clean diff.
 ## Step 4 - Score against precedent
 
 Pipe the verified candidates as `{"candidates": [...]}` into
-`RV score --repository <name> --verification <tmpdir>/verification.json`.
+`RV score --repository <name> --verification <tmpdir>/verification.json --base <ref>`.
+
+**`--base` is the ref the diff was taken against**, the same one from step 1.
+Claims that something does not exist are checked against that tree. Without it
+the check runs against the working tree, which on a pull request is usually
+neither the base nor the head: a checkout behind the base reported two files
+that exist as absent, and an empty result then reads as corroboration of a
+false claim rather than a failure to evaluate it. Omit the flag only when
+reviewing the working tree itself.
 
 When reviewing a pull request, add `--exclude-pull <number>`. Comments on the
 pull request under review are the conversation, not evidence of what the owner
@@ -199,6 +207,13 @@ where the claim itself says it could not be checked.
 
 Then order by severity: `blocking`, `important`, `minor`, `nit`, `question`.
 Within a tier, prefer the higher final score.
+
+**Use the `severity` that `score` returns, not the one the analyst asked for.**
+It is derived from the category and the verified confidence, and `eligible[]`
+carries both plus `severityReason`. Asking produced `minor` at confidence 0.90
+and `important` at 0.85 for the same finding on a byte-identical diff, and
+ordering is severity-first, so the finding moved up and down the page between
+identical reviews.
 
 **Do not trim to a count of your own choosing.** Ordering is what protects the
 reader, not omission - a reader who stops after the blocking findings has seen
