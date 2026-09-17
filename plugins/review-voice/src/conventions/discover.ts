@@ -232,6 +232,18 @@ function relevantSections(text: string, changedPaths: readonly string[], budget:
   );
 }
 
+/**
+ * The first `limit` bytes of a file, decoded without splitting a character.
+ *
+ * Enough for frontmatter and a pointer body, which is all the ranking needs.
+ */
+function readHead(absolute: string, limit: number): string {
+  const raw = readFileSync(absolute);
+  if (raw.length <= limit) return raw.toString('utf8');
+  const decoder = new TextDecoder('utf8', { fatal: false });
+  return decoder.decode(raw.subarray(0, limit));
+}
+
 function readBounded(
   absolute: string,
   changedPaths: readonly string[] = [],
@@ -509,11 +521,21 @@ export function discoverConventions(root: string, changedPaths: readonly string[
 
     try {
       bytes = statSync(join(root, entry.path)).size;
-      // Only small files are opened here: a rule declares its globs in the
-      // first few lines, and reading every skill to rank it would cost more
-      // than the budget saves.
-      if (bytes <= CHEAP_BYTES) {
-        const head = readFileSync(join(root, entry.path), 'utf8');
+      // The head of every candidate is read, not only the small ones.
+      //
+      // A rule declares its globs in the first few lines, so the cost is the
+      // same whatever the file's total size - but the gate was on total size,
+      // so a large rule's declared scope was never read and it could never be
+      // promoted to `governs the changed paths`. Measured: `integration-test.md`
+      // governs four of ten changed files and 734 of 1,073 additions, and lost
+      // its budget slot to documents admitted on the weaker `name matches the
+      // change` heuristic, because the strongest reason was unavailable to it.
+      //
+      // Only the head is taken. Reading every large skill in full to rank it
+      // would still cost more than the budget saves, which is what the original
+      // gate was protecting.
+      {
+        const head = readHead(join(root, entry.path), CHEAP_BYTES);
         governs = frontmatterPaths(head);
 
         // A stub may point at several documents. Following only the first was
@@ -567,6 +589,35 @@ export function discoverConventions(root: string, changedPaths: readonly string[
     });
   });
 
+  // Completeness breaks ties inside a relevance tier. It does not outrank one.
+  //
+  // 1.3.0's section selection kept more of a large document, so large ones
+  // began crowding out small complete ones: three partial rules took 41,762 of
+  // the 60,000-byte budget while a complete 2,668-byte `unit-test.md` was
+  // skipped. 1.3.1 fixed that by admitting everything that fits whole before
+  // anything that must be cut - and overcorrected, because that is a global
+  // partition and relevance is what it partitions away.
+  //
+  // Measured on the same pull request: pass one admitted eleven whole documents
+  // totalling 59,672 bytes and left 328, so nothing was ever sliced. The
+  // casualty was `integration-test.md`, which governs four of the ten changed
+  // files and carries 734 of the 1,073 additions; its slot went to seven
+  // documents admitted on the weaker `name matches the change` heuristic.
+  // `controller-implementation.md` missed the 15,000-byte cliff by 232 bytes
+  // and was relegated behind every small document in the repository.
+  //
+  // Preferring a complete document only among documents of equal relevance
+  // keeps both: the small complete rule that governs the change still wins,
+  // and the large rule that governs it is no longer displaced by a small one
+  // that merely shares a word with a filename.
+  const fitsWhole = (entry: Entry): boolean => {
+    try {
+      return statSync(join(root, entry.path)).size <= PER_DOCUMENT_BYTES;
+    } catch {
+      return false;
+    }
+  };
+
   const tier = (reason: ConventionDocument['reason']): number =>
     [
       'directory scope',
@@ -594,38 +645,18 @@ export function discoverConventions(root: string, changedPaths: readonly string[
     const byCoverage = b.entry.governsPaths - a.entry.governsPaths;
     if (byCoverage !== 0) return byCoverage;
 
+    // Among documents the change needs equally, a complete one is worth more
+    // than a slice of a larger one.
+    const whole = Number(fitsWhole(b.entry)) - Number(fitsWhole(a.entry));
+    if (whole !== 0) return whole;
+
     // Cheap documents are grouped ahead of the rest, then size decides.
     const cheap = Number(b.bytes <= CHEAP_BYTES) - Number(a.bytes <= CHEAP_BYTES);
     if (cheap !== 0) return cheap;
     return a.bytes - b.bytes;
   });
 
-  // Two passes: documents that fit whole, then documents that must be cut.
-  //
-  // Section selection keeps far more of a large rule than byte truncation did,
-  // so large documents began crowding out small complete ones. Measured on one
-  // pull request: three partial rules took 41,762 of the 60,000-byte budget and
-  // `.agents/rules/unit-test.md` - 2,668 bytes and complete - was skipped as
-  // "would take the convention budget past 60000 bytes", on a change whose
-  // largest additions were the test files it governs.
-  //
-  // A complete small rule is worth more than another slice of a large guide, so
-  // it is never displaced by one. Relevance ordering is preserved inside each
-  // pass, so this changes which documents survive a full budget and nothing
-  // else.
-  const fitsWhole = (entry: Entry): boolean => {
-    try {
-      return statSync(join(root, entry.path)).size <= PER_DOCUMENT_BYTES;
-    } catch {
-      return false;
-    }
-  };
-  const ordered2 = [
-    ...sized.filter(({ entry }) => fitsWhole(entry)),
-    ...sized.filter(({ entry }) => !fitsWhole(entry)),
-  ];
-
-  for (const { entry } of ordered2) {
+  for (const { entry } of sized) {
     if (seen.has(entry.path)) continue;
     const absolute = join(root, entry.path);
     if (!existsSync(absolute)) continue;
