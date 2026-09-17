@@ -15,6 +15,12 @@ releases, each comparison over identical batches, with a maximum difference of
 It is not a claim about measured precision. `owner_accepted_precision` reports
 no data because nothing has been labelled, and `docs/EVALUATION.md` says so.
 
+### Fixed
+
+- The plugin manifest and marketplace entry no longer advertise "at most five
+  findings". The cap was removed several releases ago and the description is
+  what a reader sees before installing anything.
+
 ### Added
 
 - `status` counts findings that carry no feedback label and says how to label

@@ -1,6 +1,6 @@
 {
   "name": "review-voice",
-  "description": "A concise, precedent-aware code reviewer that calibrates to your review judgment. At most five findings, 40 words each, evidence required, silence when nothing qualifies.",
+  "description": "A concise, precedent-aware code reviewer that calibrates to your review judgment. Every finding names a concrete failure mode in 40 words or fewer, ordered worst-first, evidence required, silence when nothing qualifies.",
   "version": "1.0.0",
   "author": {
     "name": "Quintin Botes",
