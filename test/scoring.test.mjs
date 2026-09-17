@@ -671,3 +671,51 @@ test('a real category is never rerouted by an alias', () => {
     assert.equal(result.severity.reason, `${category} carries ${result.severity.severity}`);
   }
 });
+
+// The confidence floor, by who established the number
+
+test('an analyst self-report is gated at its own floor, not the verifier gate', () => {
+  // Measured against ground truth: over eleven candidates the self-report did
+  // not separate true from false anywhere above 0.7. Held at 0.8 it discarded a
+  // real behavioural defect, a test that does not test what it claims, and the
+  // finding that drove an actual changes-requested review, while shipping the
+  // only false one.
+  const verified = scoreCandidate(candidate({ technicalConfidence: 0.7 }), [precedent()], []);
+  assert.equal(verified.confidenceSource, 'analyst');
+  assert.equal(verified.eligible, true);
+});
+
+test('a verifier confidence is still held to the higher bar', () => {
+  const result = scoreCandidate(candidate(), [precedent()], [], DEFAULT_THRESHOLDS, {
+    candidateId: 'cand_001',
+    technicalConfidence: 0.7,
+  });
+  assert.equal(result.confidenceSource, 'verifier');
+  assert.equal(result.eligible, false);
+  assert.match(result.rejectedBecause, /0\.70 \(verifier\) is below 0\.8/);
+});
+
+test('below its own floor the analyst self-report still gates', () => {
+  // The signal does carry down there: candidates at 0.50 and 0.65 were weak or
+  // wrong. It is only noise in the band above 0.7.
+  const result = scoreCandidate(candidate({ technicalConfidence: 0.65 }), [precedent()], []);
+  assert.equal(result.eligible, false);
+  assert.match(result.rejectedBecause, /analyst's opinion of its own output/);
+});
+
+test('a claim that says it could not be verified is rejected on its own terms', () => {
+  // Not by sitting under a numeric floor, which tied it to a number that has
+  // since moved twice.
+  const result = scoreCandidate(
+    candidate({ evidence: ['This cannot be verified from here.'] }),
+    [precedent()],
+    [],
+  );
+  assert.equal(result.eligible, false);
+  assert.match(result.rejectedBecause, /cannot ship whatever it scores/);
+});
+
+test('the default floors are the measured ones', () => {
+  assert.equal(DEFAULT_THRESHOLDS.technicalConfidence, 0.8);
+  assert.equal(DEFAULT_THRESHOLDS.analystOnlyConfidence, 0.7);
+});

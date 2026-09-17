@@ -113,7 +113,32 @@ export interface ScoreBreakdown {
 }
 
 export interface Thresholds {
+  /** Applied to a confidence the verifier established. */
   technicalConfidence: number;
+  /**
+   * Applied when only the analyst's self-report exists.
+   *
+   * A separate number because it is a different measurement. The verifier
+   * checked the claim against the repository; the analyst is reporting how it
+   * feels about its own output, and that has now been measured against ground
+   * truth. Over eleven candidates verified or refuted by hand against the code:
+   *
+   *   0.85 true · 0.80 FALSE · 0.80 plausible · 0.75 true
+   *   0.75 plausible · 0.70 true · 0.70 true
+   *
+   * The self-report does not separate true from false anywhere in that band:
+   * the two most thoroughly verified findings sat at 0.70 and the only false
+   * one at 0.80. Held at 0.8 it discarded a real behavioural defect, a test
+   * that does not test what it claims, and the finding that drove an actual
+   * changes-requested review, while shipping the false one. It is also unstable
+   * at the boundary: the same finding on an identical diff scored 0.75 and then
+   * 0.80, which decided whether it reached the author at all.
+   *
+   * 0.7 is where the labelled data puts it. Below that the signal does carry:
+   * candidates at 0.50 and 0.65 were weak or wrong in earlier rounds. Above it
+   * the number is noise, and a gate on noise is a coin toss with a threshold.
+   */
+  analystOnlyConfidence: number;
   finalScore: number;
 }
 
@@ -148,6 +173,7 @@ export interface Thresholds {
  */
 export const DEFAULT_THRESHOLDS: Thresholds = {
   technicalConfidence: 0.8,
+  analystOnlyConfidence: 0.7,
   finalScore: 0.68,
 };
 
@@ -408,6 +434,11 @@ export function scoreCandidate(
     confidenceSource = 'unverifiable-cap';
   }
 
+  // Which floor applies depends on who established the number. The verifier
+  // checked the claim; the analyst did not.
+  const confidenceFloor =
+    confidenceSource === 'verifier' ? thresholds.technicalConfidence : thresholds.analystOnlyConfidence;
+
   const alreadySaid = duplicatePrecedent(candidate, precedents);
 
   // A precedent that already states this finding on this line is evidence that
@@ -441,11 +472,17 @@ export function scoreCandidate(
     // confident candidate with strong evidence still clears the threshold
     // while repeating a comment already published on that line.
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
-  } else if (confidence < thresholds.technicalConfidence) {
+  } else if (confidenceSource === 'unverifiable-cap') {
+    // Stated as its own rejection rather than left to the numeric comparison.
+    // It used to depend on the cap sitting below the floor, which quietly tied
+    // it to a number that has since moved.
+    rejectedBecause = `the claim states it could not be verified, so it cannot ship whatever it scores`;
+  } else if (confidence < confidenceFloor) {
     rejectedBecause =
-      confidenceSource === 'unverifiable-cap'
-        ? `the claim states it could not be verified, so confidence is capped at ${UNVERIFIABLE_CONFIDENCE}, below ${thresholds.technicalConfidence}`
-        : `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${thresholds.technicalConfidence}`;
+      `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` +
+      (confidenceSource === 'analyst'
+        ? '. No verification was supplied, so this is the analyst\'s opinion of its own output.'
+        : '');
   } else if (finalScore < thresholds.finalScore) {
     // Four places, because two produced "score 0.78 is below 0.78" on a
     // finalScore of 0.7788996174443317. True, and unreadable.
