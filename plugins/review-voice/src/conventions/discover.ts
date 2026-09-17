@@ -28,6 +28,11 @@ export interface ConventionDocument {
   /** Bytes actually supplied, which differs from `bytes` when truncated. */
   includedBytes: number;
   truncated: boolean;
+  /**
+   * True when an oversized document was reduced to the sections matching the
+   * change rather than cut at its head.
+   */
+  scoped: boolean;
   content: string;
 }
 
@@ -126,16 +131,135 @@ function truncationMarker(bytes: number, included: number): string {
   );
 }
 
-function readBounded(absolute: string): {
+/**
+ * Splits a markdown document into its top-level sections.
+ *
+ * Heading text is kept with its body so a section can be scored on what it is
+ * about, and the preamble before the first heading is always section zero -
+ * a rule file's scope statement usually lives there.
+ */
+function sections(text: string): { heading: string; body: string }[] {
+  const out: { heading: string; body: string }[] = [];
+  let heading = '';
+  let buffer: string[] = [];
+
+  const flush = (): void => {
+    if (heading !== '' || buffer.join('\n').trim().length > 0) {
+      out.push({ heading, body: buffer.join('\n') });
+    }
+  };
+
+  for (const line of text.split(/\r?\n/)) {
+    if (/^#{1,3} /.test(line)) {
+      flush();
+      heading = line;
+      buffer = [];
+      continue;
+    }
+    buffer.push(line);
+  }
+  flush();
+  return out;
+}
+
+/** Words worth matching a section against, from the paths under review. */
+function changeVocabulary(changedPaths: readonly string[]): Set<string> {
+  const words = new Set<string>();
+  for (const path of changedPaths) {
+    for (const part of path.split(/[^A-Za-z0-9]+/)) {
+      if (part.length < 3) continue;
+      words.add(part.toLowerCase());
+      // Split camelCase so `TravelAgencyContract` offers `travel`, `agency`.
+      for (const piece of part.split(/(?=[A-Z])/)) {
+        if (piece.length >= 3) words.add(piece.toLowerCase());
+      }
+    }
+  }
+  return words;
+}
+
+/**
+ * Keeps the parts of an oversized document that bear on this change.
+ *
+ * Head-of-file truncation cut a 21,441-byte rule at 15,000 and kept whichever
+ * sections happened to sort first. That rule governed 728 of 1,073 added lines
+ * on the run that exposed it, and the sections that mattered survived by luck
+ * of position. Marking the cut made the loss visible; it did not stop it.
+ *
+ * Sections are scored on how much of the change's own vocabulary they use, the
+ * preamble is always kept because a rule states its scope there, and ordering
+ * is preserved so the document still reads as one.
+ */
+function relevantSections(text: string, changedPaths: readonly string[], budget: number): string | null {
+  const parts = sections(text);
+  if (parts.length < 2 || changedPaths.length === 0) return null;
+
+  const vocabulary = changeVocabulary(changedPaths);
+  if (vocabulary.size === 0) return null;
+
+  const scored = parts.map((part, index) => {
+    const words = new Set(`${part.heading} ${part.body}`.toLowerCase().split(/[^a-z0-9]+/));
+    let hits = 0;
+    for (const word of vocabulary) if (words.has(word)) hits += 1;
+    // The preamble carries the scope statement, so it is never dropped.
+    return { index, part, score: index === 0 ? Number.POSITIVE_INFINITY : hits };
+  });
+
+  const keep = new Set<number>();
+  let used = 0;
+  for (const entry of [...scored].sort((a, b) => b.score - a.score)) {
+    if (entry.score === 0) break;
+    const rendered = `${entry.part.heading}\n${entry.part.body}`;
+    const cost = Buffer.byteLength(rendered, 'utf8');
+    if (used + cost > budget) continue;
+    keep.add(entry.index);
+    used += cost;
+  }
+
+  // Nothing matched, or everything did: head-of-file truncation is no worse.
+  if (keep.size === 0 || keep.size === parts.length) return null;
+
+  const kept = scored
+    .filter((entry) => keep.has(entry.index))
+    .map((entry) => `${entry.part.heading}\n${entry.part.body}`.trim())
+    .join('\n\n');
+
+  const dropped = parts.length - keep.size;
+  return (
+    `${kept}\n\n[Review Voice kept the ${keep.size} of ${parts.length} sections that ` +
+    `match the paths under review. ${dropped} other section${dropped === 1 ? '' : 's'} ` +
+    'of this document were not read.]\n'
+  );
+}
+
+function readBounded(
+  absolute: string,
+  changedPaths: readonly string[] = [],
+): {
   content: string;
   bytes: number;
   includedBytes: number;
   truncated: boolean;
+  scoped: boolean;
 } {
   const raw = readFileSync(absolute, 'utf8');
   const bytes = Buffer.byteLength(raw, 'utf8');
   if (bytes <= PER_DOCUMENT_BYTES) {
-    return { content: raw, bytes, includedBytes: bytes, truncated: false };
+    return { content: raw, bytes, includedBytes: bytes, truncated: false, scoped: false };
+  }
+
+  // Relevance before position. Cutting at 15,000 bytes keeps whichever
+  // sections sort first, which is not the same as the ones that bear on the
+  // change.
+  const scoped = relevantSections(raw, changedPaths, PER_DOCUMENT_BYTES - 400);
+  if (scoped !== null) {
+    return {
+      content: scoped,
+      bytes,
+      includedBytes: Buffer.byteLength(scoped, 'utf8'),
+      truncated: true,
+      scoped: true,
+    };
   }
 
   // `slice` counts UTF-16 code units, not bytes. On a document with any
@@ -165,7 +289,13 @@ function readBounded(absolute: string): {
   if (lastBreak > 0) text = text.slice(0, lastBreak);
 
   const content = `${text}${truncationMarker(bytes, Buffer.byteLength(text, 'utf8'))}`;
-  return { content, bytes, includedBytes: Buffer.byteLength(content, 'utf8'), truncated: true };
+  return {
+    content,
+    bytes,
+    includedBytes: Buffer.byteLength(content, 'utf8'),
+    truncated: true,
+    scoped: false,
+  };
 }
 
 /** Directories between a changed file and the repository root, nearest first. */
@@ -505,7 +635,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
 
     let read;
     try {
-      read = readBounded(absolute);
+      read = readBounded(absolute, changedPaths);
     } catch (error) {
       skipped.push({ path: entry.path, reason: error instanceof Error ? error.message : String(error) });
       continue;
@@ -522,14 +652,18 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       bytes: read.bytes,
       includedBytes: read.includedBytes,
       truncated: read.truncated,
+      scoped: read.scoped,
       content: read.content,
     });
     totalBytes += Buffer.byteLength(read.content, 'utf8');
 
     if (read.truncated) {
       warnings.push(
-        `${entry.path} is ${read.bytes} bytes and was truncated to ${read.includedBytes}. ` +
-          'The document itself says so where it was cut.',
+        read.scoped
+          ? `${entry.path} is ${read.bytes} bytes and was reduced to ${read.includedBytes}, ` +
+            'keeping the sections that match the paths under review.'
+          : `${entry.path} is ${read.bytes} bytes and was truncated to ${read.includedBytes}. ` +
+            'The document itself says so where it was cut.',
       );
     }
     for (const pattern of ADDRESSES_THE_REVIEWER) {

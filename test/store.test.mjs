@@ -4,6 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
+import { recordRun, runDetail } from '../plugins/review-voice/src/store/runs.ts';
 import { dirname, join } from 'node:path';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -150,4 +152,40 @@ test('every consequential action is audited', () => {
     // One run + one feedback, each with its own audit row.
     assert.match(run(['status']).stdout, /audit events\s+2/);
   });
+});
+
+test('stage timings are recorded and read back, and their absence is not an error', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-stages-'));
+  const db = openDatabase(join(dir, 'x.db'));
+  try {
+    recordRun(db, {
+      repository: 'org/a',
+      baseRef: null,
+      headRef: null,
+      diff: 'timed',
+      output: '[nit] `src/a.ts:1` - Thing. Consequence. Fix.',
+      stages: [
+        { name: 'analyst', seconds: 600, toolCalls: 94, tokens: 238000 },
+        { name: 'verifier', seconds: 300, toolCalls: 59, tokens: 141000 },
+      ],
+    });
+
+    const detail = runDetail(db);
+    assert.equal(detail.stages.length, 2);
+    assert.equal(detail.stages[0].name, 'analyst');
+    assert.equal(detail.stages[0].toolCalls, 94);
+
+    // A run that records nothing is normal, not a failure.
+    recordRun(db, {
+      repository: 'org/a',
+      baseRef: null,
+      headRef: null,
+      diff: 'untimed',
+      output: '[nit] `src/b.ts:1` - Thing. Consequence. Fix.',
+    });
+    assert.deepEqual(runDetail(db).stages, []);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
