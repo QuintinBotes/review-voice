@@ -86,6 +86,13 @@ because the fix proposed on top of it tells the author to break working code.
 Every symbol such a claim names is searched in the ref under review, and the
 finding is dropped if the repository contains it.
 
+**A single run is a sample, not the answer.** Two reviews of the same diff
+agreed on 2 findings of 8 in measurement, so the second run finding something
+the first did not is expected rather than a defect. `RV evaluate` reports this
+as `candidate_set_agreement`. It is published rather than targeted, because
+there is no defensible target yet and a made-up one would be worse than the
+number.
+
 It learns through **retrieval plus policy compilation**, not model fine-tuning.
 Your historical reviews are ingested, redacted, weighted, and compiled into
 short, inspectable YAML rules that you approve before they take effect. Every

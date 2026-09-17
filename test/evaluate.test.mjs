@@ -153,3 +153,85 @@ test('finding counts are reported without a target', () => {
     }
   });
 });
+
+// Which findings exist at all, run to run
+
+const runWithCandidates = (db, diffHash, candidates) =>
+  recordRun(db, {
+    repository: 'org/a',
+    baseRef: 'base',
+    headRef: 'head',
+    diff: diffHash,
+    output: '[nit] `src/a.ts:1` - A. B. C.',
+    candidates,
+  });
+
+test('candidate set agreement is not measurable from a single run', () => {
+  withDb((db) => {
+    runWithCandidates(db, 'same', [{ path: 'src/a.ts', line: 1 }]);
+    const m = metric(computeMetrics(db), 'candidate_set_agreement');
+    assert.equal(m.value, null);
+    assert.match(m.basis, /reviewed twice/);
+    assert.equal(m.kind, 'goal');
+  });
+});
+
+test('two runs of one diff that agree entirely score 1', () => {
+  withDb((db) => {
+    for (let i = 0; i < 2; i += 1) {
+      runWithCandidates(db, 'same', [
+        { path: 'src/a.ts', line: 1 },
+        { path: 'src/b.ts', line: 9 },
+      ]);
+    }
+    assert.equal(metric(computeMetrics(db), 'candidate_set_agreement').value, 1);
+  });
+});
+
+test('two runs that share nothing score 0', () => {
+  withDb((db) => {
+    runWithCandidates(db, 'same', [{ path: 'src/a.ts', line: 1 }]);
+    runWithCandidates(db, 'same', [{ path: 'src/z.ts', line: 4 }]);
+    assert.equal(metric(computeMetrics(db), 'candidate_set_agreement').value, 0);
+  });
+});
+
+test('agreement is measured by location, not by wording', () => {
+  // The editor rewrites prose. Two runs naming the same defect at the same
+  // line are the same finding however they phrase it.
+  withDb((db) => {
+    runWithCandidates(db, 'same', [{ path: 'src/a.ts', line: 1, claim: 'One phrasing.' }]);
+    runWithCandidates(db, 'same', [{ path: 'src/a.ts', line: 1, claim: 'Entirely different words.' }]);
+    assert.equal(metric(computeMetrics(db), 'candidate_set_agreement').value, 1);
+  });
+});
+
+test('runs of different diffs are never compared to each other', () => {
+  withDb((db) => {
+    runWithCandidates(db, 'one', [{ path: 'src/a.ts', line: 1 }]);
+    runWithCandidates(db, 'two', [{ path: 'src/z.ts', line: 4 }]);
+    assert.equal(metric(computeMetrics(db), 'candidate_set_agreement').value, null);
+  });
+});
+
+test('the observed shape is reproduced: six and four candidates sharing two', () => {
+  // The live number from a real pull request reviewed twice.
+  withDb((db) => {
+    runWithCandidates(db, 'same', [
+      { path: 'a.ts', line: 1 },
+      { path: 'b.ts', line: 2 },
+      { path: 'c.ts', line: 3 },
+      { path: 'd.ts', line: 4 },
+      { path: 'e.ts', line: 5 },
+      { path: 'f.ts', line: 6 },
+    ]);
+    runWithCandidates(db, 'same', [
+      { path: 'a.ts', line: 1 },
+      { path: 'b.ts', line: 2 },
+      { path: 'x.ts', line: 7 },
+      { path: 'y.ts', line: 8 },
+    ]);
+    // Two shared of eight distinct.
+    assert.equal(metric(computeMetrics(db), 'candidate_set_agreement').value, 0.25);
+  });
+});
