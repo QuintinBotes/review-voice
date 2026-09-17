@@ -49,6 +49,30 @@ over-reporting this document exists to prevent.
 |---|---|
 | Median findings per PR | A count is a property of the diff, not the reviewer |
 | 95th percentile findings per PR | As above |
+| Candidate set agreement | Measured, published, and not yet targeted |
+
+#### Candidate set agreement
+
+Two reviews of the same diff do not produce the same findings. `RV evaluate`
+reports the Jaccard overlap by `path:line` across every diff reviewed more than
+once, so this is measured rather than assumed.
+
+The observed figure on a real pull request reviewed twice was **2 of 8, an
+agreement of 0.25**: one run found six findings, the other four, and they
+shared two. Severity stability was measured and fixed across three releases
+while this went untracked, and for a reviewer it is the more consequential
+variance. Which findings exist at all matters more than what tier they carry.
+
+No target is set, because there is no defensible one yet and inventing a number
+would be worse than publishing the measurement. What it means in practice:
+
+**A single review run is a sample, not the answer.** Running a review twice on
+a change that matters is a reasonable thing to do, and the second run finding
+something the first did not is expected behaviour rather than a defect.
+
+Location rather than wording is the identity, because the editor rewrites
+prose: two runs naming the same defect at the same line are the same finding
+however they phrase it.
 
 These two carried targets of 2 and 5 from when the output contract capped
 findings at five. It no longer does: a review reports everything that survives

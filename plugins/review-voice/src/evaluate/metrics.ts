@@ -50,6 +50,8 @@ interface RunRow {
 export function computeMetrics(db: Database): Metric[] {
   const runs = db.prepare('SELECT output_json FROM review_runs').all() as unknown as RunRow[];
 
+  const agreement = candidateSetAgreement(db);
+
   const findingsPerRun: number[] = [];
   const wordsPerFinding: number[] = [];
   let compliantOutputs = 0;
@@ -152,6 +154,19 @@ export function computeMetrics(db: Database): Metric[] {
       (v) => v <= 40,
       `${wordsPerFinding.length} findings; this is the contract ceiling the validator enforces`,
     ),
+    // The variance nobody was tracking. Severity stability was measured for
+    // three releases while which findings exist at all was not, and on one
+    // pull request reviewed twice the two runs agreed on two candidates of
+    // eight. For a reviewer that is the more consequential variance: a single
+    // run is a sample, not the answer.
+    metric(
+      'candidate_set_agreement',
+      agreement.value,
+      'no target',
+      () => true,
+      agreement.basis,
+      'goal',
+    ),
     metric(
       'contract_compliance',
       ratio(compliantOutputs, runs.length),
@@ -167,4 +182,73 @@ export function computeMetrics(db: Database): Metric[] {
       `${exactNoFindings}/${noFindingsRuns} empty reviews used the exact string`,
     ),
   ];
+}
+
+
+/**
+ * How much two reviews of the same diff agree on which findings exist.
+ *
+ * Jaccard over `path:line`, across every diff reviewed more than once. Location
+ * rather than wording, because the editor rewrites prose and two runs naming
+ * the same defect at the same line are the same finding however they phrase it.
+ *
+ * Reported and never scored. There is no defensible target yet, and inventing
+ * one would be worse than saying the number out loud.
+ */
+function candidateSetAgreement(db: Database): { value: number | null; basis: string } {
+  const rows = db
+    .prepare('SELECT diff_hash, candidates_json FROM review_runs WHERE diff_hash IS NOT NULL')
+    .all() as { diff_hash: string; candidates_json: string | null }[];
+
+  const byDiff = new Map<string, Set<string>[]>();
+
+  for (const row of rows) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.candidates_json ?? '[]');
+    } catch {
+      continue;
+    }
+    const list = Array.isArray(parsed) ? parsed : ((parsed as { candidates?: unknown[] }).candidates ?? []);
+    const located = new Set(
+      (list as Record<string, unknown>[])
+        .map((candidate) => `${String(candidate['path'] ?? '')}:${String(candidate['line'] ?? '')}`)
+        .filter((key) => key !== ':'),
+    );
+    if (located.size === 0) continue;
+
+    const existing = byDiff.get(row.diff_hash);
+    if (existing === undefined) byDiff.set(row.diff_hash, [located]);
+    else existing.push(located);
+  }
+
+  const scores: number[] = [];
+  let pairs = 0;
+
+  for (const sets of byDiff.values()) {
+    if (sets.length < 2) continue;
+    for (let i = 0; i < sets.length; i += 1) {
+      for (let j = i + 1; j < sets.length; j += 1) {
+        const a = sets[i] as Set<string>;
+        const b = sets[j] as Set<string>;
+        const shared = [...a].filter((key) => b.has(key)).length;
+        const union = new Set([...a, ...b]).size;
+        if (union === 0) continue;
+        scores.push(shared / union);
+        pairs += 1;
+      }
+    }
+  }
+
+  if (pairs === 0) {
+    return {
+      value: null,
+      basis: 'no diff has been reviewed twice; record two runs of one diff to measure this',
+    };
+  }
+
+  return {
+    value: median(scores),
+    basis: `${pairs} pair(s) of runs over the same diff, by path:line`,
+  };
 }

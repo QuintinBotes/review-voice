@@ -14,12 +14,18 @@ test('the shapes a claim of absence takes are recognised', () => {
   for (const claim of [
     'CompanyActionsCell does not exist anywhere in the repo',
     'useBulkDeleteCompanies is not defined',
-    'The helper is missing from this package',
     'There is no such component',
-    'handleSubmit is never exported',
     'The constant cannot be found',
   ]) {
     assert.equal(assertsAbsence(claim), true, claim);
+  }
+});
+
+test('the same wording scoped to a place is not a claim about the repository', () => {
+  // "missing from this package" and "never exported" were treated as repo-wide
+  // absences. Both are true precisely when the symbol exists somewhere else.
+  for (const claim of ['The helper is missing from this package', 'handleSubmit is never exported']) {
+    assert.equal(assertsAbsence(claim), false, claim);
   }
 });
 
@@ -82,7 +88,7 @@ test('the ref is passed to the searcher, not silently dropped', () => {
 });
 
 test('a claim the repository agrees with is left alone', () => {
-  const result = checkAbsenceClaim('`useNeverWritten` does not exist in this package', '/repo', null, () => false);
+  const result = checkAbsenceClaim('`useNeverWritten` does not exist anywhere in the repo', '/repo', null, () => false);
   assert.deepEqual(result.found, []);
   assert.equal(result.inconclusive, false);
 });
@@ -125,4 +131,50 @@ test('the pattern is passed after -e, so the extractor is not the only defence',
     return false;
   });
   assert.deepEqual(args, [['SomeComponent', 'main']]);
+});
+
+// A scoped claim is not a repo-wide one (the live false positive)
+
+test('a claim scoped to a place is never checked against the whole repository', () => {
+  // These are the common shape, and `git grep` cannot speak to any of them:
+  // "the hook is missing from @scope/ui-kit" is true precisely when the hook
+  // exists somewhere else, so a repository-wide search confirms the symbol and
+  // deletes the finding. Saying where something is absent is what a
+  // well-argued claim does, so the unscoped check preferentially killed the
+  // best ones.
+  for (const claim of [
+    'The `usePrivilegeCheck` hook is missing from `@scope/ui-kit`',
+    'The `canDelete` prop is not present in the CompanyDataGrid call site',
+    '`getDefaultMessage` is not declared in this module',
+    'There is no such symbol as `useBulkDelete` in the profiles package',
+    '`getDefaultMessage` is never exported',
+    'The `actions` column id cannot be found in the exported constants',
+    'The handler is missing from the eventing module',
+  ]) {
+    assert.equal(assertsAbsence(claim), false, claim);
+    assert.equal(
+      checkAbsenceClaim(claim, '/repo', 'main', () => true),
+      null,
+      `${claim} reached the searcher`,
+    );
+  }
+});
+
+test('a repo-wide claim is still checked', () => {
+  for (const claim of [
+    '`CompanyActionsCell` and `useBulkDeleteCompanies` do not exist anywhere in the repo',
+    '`ZzQuuxThing` does not exist at all',
+    '`SomeHelper` appears nowhere in the codebase',
+  ]) {
+    assert.equal(assertsAbsence(claim), true, claim);
+  }
+});
+
+test('repo-wide wording beats the scoping check, since it contains "in the"', () => {
+  // "anywhere in the repo" trips the scoped pattern on "in the". Repo-wide has
+  // to be decided first or the motivating case goes quiet.
+  const claim = '`CompanyActionsCell` does not exist anywhere in the repository';
+  const result = checkAbsenceClaim(claim, '/repo', 'main', () => true);
+  assert.notEqual(result, null);
+  assert.deepEqual(result.found, ['CompanyActionsCell']);
 });
