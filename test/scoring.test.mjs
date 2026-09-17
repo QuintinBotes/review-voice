@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import {
   scoreCandidate,
   DEFAULT_THRESHOLDS,
+  MAX_QUESTIONS,
   normaliseCandidate,
   MalformedCandidate,
 } from '../plugins/review-voice/src/scoring/score.ts';
@@ -1335,4 +1336,65 @@ test('a finding about a file the change does not touch still measures the change
   assert.equal(check.symbolSource, 'diff');
   assert.ok(check.symbols.includes('allocationValueText'));
   assert.equal(check.reach, 'repository');
+});
+
+const question = (over = {}) =>
+  normaliseCandidate(
+    {
+      candidate_id: 'cand_q',
+      path: 'src/a.ts',
+      line: 4,
+      category: 'correctness',
+      severity: 'question',
+      claim: 'Was the flag confirmed at 100% before this removal?',
+      failure_mode: 'Users on the old path lose the feature.',
+      evidence: ['`featureFlag` at line 4, and the flag service is outside this repository'],
+      technical_confidence: 0.3,
+      ...over,
+    },
+    0,
+  );
+
+test('a question is not cut by a confidence floor, because it asserts nothing', () => {
+  // Four questions were filed across the programme at 0.40, 0.30 and 0.40, and
+  // not one ever reached output: every survivor was cut by the analyst-only
+  // floor. A question is raised because something could not be verified, so
+  // low confidence is its content rather than a defect in it.
+  const breakdown = scoreCandidate(question(), [], [], DEFAULT_THRESHOLDS);
+
+  assert.equal(breakdown.severity.severity, 'question');
+  assert.equal(breakdown.eligible, true, breakdown.rejectedBecause ?? '');
+  assert.equal(breakdown.rejectedBecause, null);
+});
+
+test('an assertion at the same confidence is still cut', () => {
+  const breakdown = scoreCandidate(question({ severity: 'minor' }), [], [], DEFAULT_THRESHOLDS);
+
+  assert.equal(breakdown.eligible, false);
+  assert.match(breakdown.rejectedBecause, /below 0\.7/);
+});
+
+test('a review may ask a couple of questions, not a list of them', () => {
+  const asked = [question(), question(), question()];
+  const kept = [];
+  const outcomes = asked.map((candidate) => {
+    const breakdown = scoreCandidate(candidate, [], kept, DEFAULT_THRESHOLDS);
+    if (breakdown.eligible) kept.push(candidate);
+    return breakdown;
+  });
+
+  assert.equal(outcomes.filter((b) => b.eligible).length, MAX_QUESTIONS);
+  assert.match(outcomes[MAX_QUESTIONS].rejectedBecause, /already asks/);
+});
+
+test('data_integrity varies by reach, so an analyst who read the code can bound it', () => {
+  // The only candidate in twenty that still moved three tiers: an analyst
+  // judged a concrete instance `minor` and was overruled into `blocking`.
+  const bounded = deriveSeverity('data_integrity', 'minor', reachCheck('repository'));
+  assert.equal(bounded.severity, 'important');
+  assert.match(bounded.reason, /bounded to important/);
+
+  // A boundary category still cannot be talked down.
+  assert.equal(deriveSeverity('security', 'minor', reachCheck('repository')).severity, 'blocking');
+  assert.equal(deriveSeverity('authorization', 'nit', reachCheck('local')).severity, 'blocking');
 });
