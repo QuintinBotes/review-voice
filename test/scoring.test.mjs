@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scoreCandidate, DEFAULT_THRESHOLDS } from '../plugins/review-voice/src/scoring/score.ts';
+import {
+  scoreCandidate,
+  DEFAULT_THRESHOLDS,
+  normaliseCandidate,
+  MalformedCandidate,
+} from '../plugins/review-voice/src/scoring/score.ts';
 import { canActivate, compileProposals } from '../plugins/review-voice/src/policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from '../plugins/review-voice/src/policy/versions.ts';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
@@ -548,14 +553,14 @@ test('a rejection message carries enough precision to be true', () => {
 
 // Severity is derived, not requested (RV-08)
 
-test('the same category and confidence always produce the same tier', () => {
+test('the same category always produces the same tier, whatever was asked for', () => {
   // On two runs of a byte-identical diff the same finding was minor at 0.90
   // and important at 0.85. Ordering is severity-first, so the finding moved up
   // and down the page between identical reviews.
   const a = scoreCandidate(candidate({ category: 'correctness', severity: 'minor' }), [], []);
   const b = scoreCandidate(candidate({ category: 'correctness', severity: 'important' }), [], []);
   assert.equal(a.severity.severity, b.severity.severity);
-  assert.equal(a.severity.severity, 'important');
+  assert.equal(a.severity.severity, 'minor');
 });
 
 test('what the analyst asked for is recorded, not obeyed', () => {
@@ -564,28 +569,38 @@ test('what the analyst asked for is recorded, not obeyed', () => {
   assert.equal(result.severity.requested, 'blocking');
 });
 
-test('a trust boundary outranks a style preference whatever either claimed', () => {
-  const security = scoreCandidate(candidate({ category: 'authorization', severity: 'nit' }), [], []);
-  assert.equal(security.severity.severity, 'blocking');
+
+
+test('confidence does not move the tier, at any point in the shipping range', () => {
+  // The whole remaining instability was here. Category was identical on both
+  // runs and the tier differed anyway, at 0.82 against 0.90 and 0.85 against
+  // 0.80: everything that ships sits in [0.8, 1.0] and run to run variance is
+  // around 0.08, so any boundary inside that band gets crossed.
+  const tiers = new Set();
+  for (const confidence of [0.8, 0.82, 0.85, 0.9, 0.95, 1]) {
+    const result = scoreCandidate(
+      candidate({ category: 'user_visible_behavior' }),
+      [],
+      [],
+      DEFAULT_THRESHOLDS,
+      { candidateId: 'cand_001', technicalConfidence: confidence },
+    );
+    tiers.add(result.severity.severity);
+  }
+  assert.equal(tiers.size, 1, `tier moved with confidence: ${[...tiers].join(', ')}`);
 });
 
-test('a finding below firm confidence carries one tier less', () => {
-  const firm = scoreCandidate(
-    candidate({ category: 'correctness', technicalConfidence: 0.9 }),
-    [],
-    [],
-    DEFAULT_THRESHOLDS,
-    { candidateId: 'cand_001', technicalConfidence: 0.9 },
-  );
-  const soft = scoreCandidate(
-    candidate({ category: 'correctness', technicalConfidence: 0.9 }),
-    [],
-    [],
-    DEFAULT_THRESHOLDS,
-    { candidateId: 'cand_001', technicalConfidence: 0.82 },
-  );
-  assert.equal(firm.severity.severity, 'important');
-  assert.equal(soft.severity.severity, 'minor');
+test('a missing category is not silently promoted to correctness', () => {
+  // It was defaulted before it reached the derivation, which gave an
+  // unlabelled finding a real tier and recorded nothing about the swap.
+  const result = scoreCandidate(candidate({ category: undefined }), [], []);
+  assert.equal(result.severity.severity, 'minor');
+  assert.match(result.severity.reason, /no category was supplied/);
+});
+
+test('a severe category is severe whatever the wording asked for', () => {
+  const result = scoreCandidate(candidate({ category: 'authorization', severity: 'nit' }), [], []);
+  assert.equal(result.severity.severity, 'blocking');
 });
 
 test('a question stays a question, because it is a kind and not a tier', () => {
@@ -597,4 +612,26 @@ test('an unmapped category takes the middle tier rather than a guess', () => {
   const result = scoreCandidate(candidate({ category: 'something_new', severity: 'blocking' }), [], []);
   assert.equal(result.severity.severity, 'minor');
   assert.match(result.severity.reason, /no mapping/);
+});
+
+test('a foreign shape is named as such, not reported as a missing path', () => {
+  // One analyst run returned title, location and suggested_direction. The
+  // whole pull request produced nothing, and the error said "missing path",
+  // which describes a field rather than the problem.
+  assert.throws(
+    () => normaliseCandidate({ title: 'A thing', location: 'src/a.ts line 4', suggested_direction: 'change it' }, 0),
+    (error) => {
+      assert.ok(error instanceof MalformedCandidate);
+      assert.match(error.message, /has title, location, suggested_direction but no path/);
+      assert.match(error.message, /not the candidate schema/);
+      return true;
+    },
+  );
+});
+
+test('an ordinary missing path is still an ordinary missing path', () => {
+  assert.throws(
+    () => normaliseCandidate({ candidate_id: 'cand_001', line: 4 }, 0),
+    /cand_001: missing path$/,
+  );
 });

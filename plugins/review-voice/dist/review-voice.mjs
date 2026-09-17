@@ -9057,38 +9057,45 @@ function retrievePrecedents(db, query) {
 
 // plugins/review-voice/src/scoring/severity.ts
 var BY_CATEGORY = {
+  // Reserved for categories that are severe by their nature rather than by
+  // circumstance. The confidence gate already keeps anything under 0.8 out.
   security: "blocking",
   trust_boundary: "blocking",
   authorization: "blocking",
   authentication: "blocking",
   data_integrity: "blocking",
-  correctness: "important",
-  persistence: "important",
+  // Wide blast radius follows from the kind of defect.
   concurrency: "important",
-  error_handling: "important",
-  reliability: "important",
+  persistence: "important",
   migration: "important",
   api_contract: "important",
-  user_visible_behavior: "important",
   release: "important",
+  // Real defects whose reach depends on circumstances the scorer cannot see.
+  // The quieter tier is the right default for a reviewer whose whole purpose
+  // is not to overstate; the wording carries the consequence either way.
+  correctness: "minor",
+  error_handling: "minor",
+  reliability: "minor",
+  user_visible_behavior: "minor",
   ci: "minor",
   packaging: "minor",
   dependency: "minor",
   performance: "minor",
-  observability: "minor",
-  test_coverage: "minor",
+  observability: "nit",
+  test_coverage: "nit",
   maintainability: "nit",
   style: "nit"
 };
-var FIRM_CONFIDENCE = 0.85;
-function weaken(severity) {
-  const index = SEVERITIES.indexOf(severity);
-  if (index === -1) return "nit";
-  return SEVERITIES[Math.min(index + 1, SEVERITIES.indexOf("nit"))] ?? "nit";
-}
-function deriveSeverity(category, requested, confidence) {
+function deriveSeverity(category, requested) {
   if (requested === "question") {
     return { severity: "question", requested, reason: "a question is a kind of finding, not a tier" };
+  }
+  if (category === null || category === void 0 || category === "") {
+    return {
+      severity: "minor",
+      requested,
+      reason: "no category was supplied, so the middle tier is used rather than a guess"
+    };
   }
   const base = BY_CATEGORY[category];
   if (base === void 0) {
@@ -9098,15 +9105,7 @@ function deriveSeverity(category, requested, confidence) {
       reason: `category ${category} has no mapping, so the middle tier is used rather than a guess`
     };
   }
-  if (!Number.isFinite(confidence) || confidence >= FIRM_CONFIDENCE) {
-    return { severity: base, requested, reason: `${category} carries ${base}` };
-  }
-  const weakened = weaken(base);
-  return {
-    severity: weakened,
-    requested,
-    reason: `${category} carries ${base}, weakened to ${weakened} below ${FIRM_CONFIDENCE} confidence`
-  };
+  return { severity: base, requested, reason: `${category} carries ${base}` };
 }
 
 // plugins/review-voice/src/scoring/score.ts
@@ -9127,11 +9126,15 @@ var DEFAULT_THRESHOLDS = {
 };
 var MalformedCandidate = class extends Error {
 };
+var FOREIGN_KEYS = ["title", "location", "suggested_direction", "suggestion", "description", "summary"];
 function normaliseCandidate(raw, index) {
   const candidateId = raw.candidate_id ?? raw.candidateId ?? `cand_${String(index + 1).padStart(3, "0")}`;
   const confidence = raw.technical_confidence ?? raw.technicalConfidence;
   if (typeof raw.path !== "string" || raw.path.length === 0) {
-    throw new MalformedCandidate(`${candidateId}: missing path`);
+    const foreign = FOREIGN_KEYS.filter((key) => key in raw);
+    throw new MalformedCandidate(
+      foreign.length > 0 ? `${candidateId}: has ${foreign.join(", ")} but no path. This is not the candidate schema. Expected candidate_id, path, line, category, severity, claim, failure_mode, evidence, technical_confidence, per schemas/candidate.schema.json.` : `${candidateId}: missing path`
+    );
   }
   if (!Number.isFinite(raw.line)) {
     throw new MalformedCandidate(`${candidateId}: missing or non-numeric line`);
@@ -9145,7 +9148,10 @@ function normaliseCandidate(raw, index) {
     candidateId,
     path: raw.path,
     line: raw.line,
-    category: raw.category ?? "correctness",
+    // Deliberately not defaulted. `correctness` used to stand in for a missing
+    // category, which gave an unlabelled finding a real tier and recorded
+    // nothing about the substitution.
+    category: raw.category ?? "",
     severity: raw.severity ?? "minor",
     claim: raw.claim ?? "",
     failureMode: raw.failure_mode ?? raw.failureMode ?? "",
@@ -9254,7 +9260,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
-    severity: deriveSeverity(candidate.category, candidate.severity, confidence),
+    severity: deriveSeverity(candidate.category, candidate.severity),
     analystConfidence,
     verifiedConfidence,
     confidenceSource,
@@ -10144,6 +10150,7 @@ function scoreCommand(argv) {
   } catch (error) {
     if (error instanceof MalformedCandidate) {
       console.error(`Malformed candidate - ${error.message}`);
+      console.error("Re-run the analyst with the schema restated. Do not hand-translate its output.");
       return 2;
     }
     console.error('Expected {"candidates": [...]} on stdin.');
