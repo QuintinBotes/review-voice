@@ -17,6 +17,15 @@ export interface LoadedConfig {
     name?: string | undefined;
     timeoutSeconds?: number | undefined;
     dropThreshold?: number | undefined;
+    /**
+     * Whether the config actually has a `verification:` block.
+     *
+     * The field itself is seeded with a disabled default before parsing, so
+     * `config.verification !== undefined` is always true and the warning that
+     * was meant to catch an upgrading user could never fire. A default that
+     * stands in for an absent block has to say that it is standing in.
+     */
+    blockPresent: boolean;
   };
   layers: PolicyLayer[];
   /** Repository-supplied layers awaiting owner approval. */
@@ -86,7 +95,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
     postingEnabled: false,
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
-    verification: { enabled: false, command: '' },
+    verification: { enabled: false, command: '', blockPresent: false },
     layers: [],
     unapproved: [],
     warnings: [],
@@ -136,6 +145,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
             timeoutSeconds: positiveInt(verification['timeout_seconds']),
             dropThreshold:
               typeof verification['drop_threshold'] === 'number' ? verification['drop_threshold'] : undefined,
+            blockPresent: true,
           };
         }
 

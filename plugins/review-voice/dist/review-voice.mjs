@@ -7489,7 +7489,7 @@ function loadConfig(repositoryRoot2) {
     postingEnabled: false,
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
-    verification: { enabled: false, command: "" },
+    verification: { enabled: false, command: "", blockPresent: false },
     layers: [],
     unapproved: [],
     warnings: []
@@ -7533,7 +7533,8 @@ function loadConfig(repositoryRoot2) {
             command: typeof command === "string" ? command : "",
             name: typeof verification["name"] === "string" ? verification["name"] : void 0,
             timeoutSeconds: positiveInt(verification["timeout_seconds"]),
-            dropThreshold: typeof verification["drop_threshold"] === "number" ? verification["drop_threshold"] : void 0
+            dropThreshold: typeof verification["drop_threshold"] === "number" ? verification["drop_threshold"] : void 0,
+            blockPresent: true
           };
         }
         const review = asRecord(doc["review"]);
@@ -8263,7 +8264,11 @@ var NESTED_FILES = [
   { name: "CLAUDE.md", kind: "claude" },
   { name: "AGENTS.md", kind: "agents" }
 ];
-var SKILLS_DIRECTORY = join4(".claude", "skills");
+var RULE_DIRECTORIES = [
+  { path: join4(".claude", "skills"), kind: "skill" },
+  { path: join4(".agents", "rules"), kind: "rule" },
+  { path: join4(".claude", "rules"), kind: "rule" }
+];
 var PER_DOCUMENT_BYTES = 2e4;
 var TOTAL_BYTES = 6e4;
 var ADDRESSES_THE_REVIEWER = [
@@ -8288,14 +8293,34 @@ function ancestors(changedPath) {
   }
   return out;
 }
-function listSkillDocuments(root) {
-  const base = join4(root, SKILLS_DIRECTORY);
-  if (!existsSync2(base)) return [];
-  try {
-    return readdirSync(base).map((entry) => join4(SKILLS_DIRECTORY, entry, "SKILL.md")).filter((candidate) => existsSync2(join4(root, candidate))).sort();
-  } catch {
-    return [];
+function listRuleDocuments(root, directory) {
+  const out = [];
+  for (const { path: relative, kind } of RULE_DIRECTORIES) {
+    const base = join4(root, directory, relative);
+    if (!existsSync2(base)) continue;
+    try {
+      for (const entry of readdirSync(base).sort()) {
+        for (const candidate of [join4(directory, relative, entry, "SKILL.md"), join4(directory, relative, entry)]) {
+          if (!candidate.endsWith(".md")) continue;
+          if (!existsSync2(join4(root, candidate))) continue;
+          out.push({ path: candidate, kind });
+          break;
+        }
+      }
+    } catch {
+    }
   }
+  return out;
+}
+function nameTokens(path) {
+  const base = path.split(/[\\/]/).filter((part) => part !== "SKILL.md").pop() ?? path;
+  return base.replace(/\.md$/i, "").split(/[^a-z0-9]+/i).filter((token) => token.length > 2).map((token) => token.toLowerCase());
+}
+function matchesChange(path, changedPaths) {
+  if (changedPaths.length === 0) return false;
+  const haystack = changedPaths.join(" ").toLowerCase();
+  const tokens = nameTokens(path);
+  return tokens.length > 0 && tokens.some((token) => haystack.includes(token));
 }
 function discoverConventions(root, changedPaths = []) {
   const documents = [];
@@ -8314,19 +8339,46 @@ function discoverConventions(root, changedPaths = []) {
       }
     }
   }
+  const touched = [...new Set(changedPaths.flatMap((changed) => ancestors(changed)))].sort(
+    (a, b) => b.split(sep).length - a.split(sep).length
+  );
+  const subtreeRules = touched.flatMap(
+    (directory) => listRuleDocuments(root, directory).map((rule) => ({
+      ...rule,
+      scope: "directory",
+      appliesTo: changedPaths.filter((changed) => changed.startsWith(`${directory}${sep}`)),
+      reason: "subtree"
+    }))
+  );
+  const rootRules = listRuleDocuments(root, "");
+  const named = rootRules.filter((rule) => matchesChange(rule.path, changedPaths));
+  const rest = rootRules.filter((rule) => !matchesChange(rule.path, changedPaths));
   const ordered = [
     ...[...governed.entries()].sort((a, b) => b[0].split(sep).length - a[0].split(sep).length).map(([path, appliesTo]) => ({
       path,
       kind: path.endsWith("AGENTS.md") ? "agents" : "claude",
       scope: "directory",
-      appliesTo
+      appliesTo,
+      reason: "directory scope"
     })),
-    ...REPOSITORY_FILES.map((file) => ({ ...file, scope: "repository", appliesTo: [] })),
-    ...listSkillDocuments(root).map((path) => ({
-      path,
-      kind: "skill",
+    ...subtreeRules,
+    ...REPOSITORY_FILES.map((file) => ({
+      ...file,
       scope: "repository",
-      appliesTo: []
+      appliesTo: [],
+      reason: "repository file"
+    })),
+    ...named.map((rule) => ({
+      ...rule,
+      scope: "repository",
+      appliesTo: [],
+      reason: "name matches the change"
+    })),
+    ...rest.map((rule) => ({
+      ...rule,
+      scope: "repository",
+      appliesTo: [],
+      reason: "remaining budget"
     }))
   ];
   for (const entry of ordered) {
@@ -8355,6 +8407,7 @@ function discoverConventions(root, changedPaths = []) {
       kind: entry.kind,
       scope: entry.scope,
       appliesTo: entry.appliesTo,
+      reason: entry.reason,
       bytes: read.bytes,
       truncated: read.truncated,
       content: read.content
@@ -8648,6 +8701,7 @@ function contextWeight(input) {
   if (input.sameRepository) weight += 0.3;
   if (input.samePath) weight += 0.1;
   if (input.sameLanguage) weight += 0.1;
+  if (input.differentLanguage) weight -= 0.25;
   return weight;
 }
 function eventWeight(parts) {
@@ -8716,15 +8770,25 @@ function retrievePrecedents(db, query) {
          FROM review_events_fts
          JOIN review_events e ON e.rowid = review_events_fts.rowid
          WHERE review_events_fts MATCH ?
+           AND (? IS NULL OR e.pull_number IS NULL OR e.pull_number != ?
+                OR (? IS NOT NULL AND e.repository != ?))
          ORDER BY rank
          LIMIT 200`
-    ).all(match);
+    ).all(
+      match,
+      query.excludePullNumber ?? null,
+      query.excludePullNumber ?? null,
+      query.repository ?? null,
+      query.repository ?? null
+    );
   } catch {
     return [];
   }
+  const queryLanguage = query.language ?? (query.filePath === void 0 ? null : languageOf(query.filePath));
   const scored = rows.map((row) => {
     const role = row.reviewer_role;
     const outcome = row.outcome_status;
+    const rowLanguage = row.file_path === null ? null : languageOf(row.file_path);
     const weight = eventWeight({
       role,
       outcome,
@@ -8737,7 +8801,12 @@ function retrievePrecedents(db, query) {
       context: {
         sameRepository: query.repository !== void 0 && row.repository === query.repository,
         samePath: query.filePath !== void 0 && row.file_path === query.filePath,
-        sameLanguage: query.language !== void 0 && row.language === query.language
+        // Derived from the paths rather than read from the column. The column
+        // is null on every stored event, so both the bonus and the penalty
+        // were dead code against a real corpus, and deriving it needs neither
+        // a migration nor a re-sync.
+        sameLanguage: queryLanguage !== null && rowLanguage === queryLanguage,
+        differentLanguage: queryLanguage !== null && rowLanguage !== null && rowLanguage !== queryLanguage
       },
       now: query.now,
       ownerMultiplier: query.ownerMultiplier
@@ -8783,7 +8852,7 @@ function admitsUnverifiable(candidate) {
 }
 var DEFAULT_THRESHOLDS = {
   technicalConfidence: 0.8,
-  finalScore: 0.78
+  finalScore: 0.74
 };
 var MalformedCandidate = class extends Error {
 };
@@ -8857,13 +8926,19 @@ function evidenceQuality(candidate) {
   const depth = specific / items.length;
   return 0.4 * breadth + 0.6 * depth;
 }
+var CROSS_FILE_DUPLICATE = 0.8;
 function novelty(candidate, kept, precedents) {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
   let worst = 1;
   for (const other of kept) {
     if (other.path === candidate.path && other.line === candidate.line) return 0;
     const theirs = significantWords(`${other.claim} ${other.failureMode}`);
-    worst = Math.min(worst, 1 - overlap(mine, theirs));
+    const shared = overlap(mine, theirs);
+    if (other.path === candidate.path) {
+      worst = Math.min(worst, 1 - shared);
+    } else if (shared >= CROSS_FILE_DUPLICATE) {
+      worst = Math.min(worst, 1 - shared);
+    }
   }
   for (const precedent of precedents) {
     if (precedent.filePath !== candidate.path) continue;
@@ -8878,7 +8953,9 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   let confidence = verifiedConfidence ?? analystConfidence;
   let confidenceSource = verifiedConfidence === null ? "analyst" : "verifier";
   const missingContext = (verification?.requiredContextMissing ?? []).length > 0;
-  if ((missingContext || admitsUnverifiable(candidate)) && confidence > UNVERIFIABLE_CONFIDENCE) {
+  const admitted = admitsUnverifiable(candidate);
+  const verifierEngaged = verification?.technicalConfidence !== void 0;
+  if ((missingContext || admitted && !verifierEngaged) && confidence > UNVERIFIABLE_CONFIDENCE) {
     confidence = UNVERIFIABLE_CONFIDENCE;
     confidenceSource = "unverifiable-cap";
   }
@@ -8899,7 +8976,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   } else if (confidence < thresholds.technicalConfidence) {
     rejectedBecause = confidenceSource === "unverifiable-cap" ? `the claim states it could not be verified, so confidence is capped at ${UNVERIFIABLE_CONFIDENCE}, below ${thresholds.technicalConfidence}` : `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${thresholds.technicalConfidence}`;
   } else if (finalScore < thresholds.finalScore) {
-    rejectedBecause = `score ${finalScore.toFixed(2)} is below ${thresholds.finalScore}`;
+    rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
   return {
     candidateId: candidate.candidateId,
@@ -9365,6 +9442,9 @@ feedback usage:
 score flags:
   --verification <path>     The evidence-verifier's output. Its confidence
                             supersedes the analyst's self-report.
+  --exclude-pull <n>        Drop precedents from this pull request. Pass the
+                            pull request under review: its own comments are
+                            the conversation, not evidence of general taste.
   --min-confidence <n>      Technical confidence gate (default 0.8)
   --min-score <n>           Final score gate (default 0.78)
   --repository <name>       Prefer precedents from this repository
@@ -9551,18 +9631,21 @@ function contextCommand() {
           // all, so an upgrading user silently got none of it and nothing in
           // any command said so.
           verification: {
-            enabled: config.verification?.enabled === true,
-            verifier: config.verification?.name ?? null,
-            configured: config.verification !== void 0
+            enabled: config.verification.enabled,
+            verifier: config.verification.name ?? null,
+            configured: config.verification.blockPresent
           },
           policy,
           // Repository-supplied policy is a proposal, never an activation:
           // see docs/adr/0006.
           pendingApproval: config.unapproved,
-          warnings: config.verification === void 0 ? [
+          // Not raised on top of a parse failure: a config that did not parse
+          // says nothing about whether it has a verification block, and the
+          // parse error is the actionable item.
+          warnings: config.verification.blockPresent || config.warnings.length > 0 ? config.warnings : [
             ...config.warnings,
             "No verification block in .review-voice/config.yaml, so the second-pass verifier never runs. Configs written before it existed do not have one. See the second-pass verification section of the README."
-          ] : config.warnings
+          ]
         },
         null,
         2
@@ -9665,7 +9748,8 @@ async function syncCommand(argv) {
   };
   const collected = [];
   const pendingWatermarks = [];
-  for (const repository of config.allowlist) {
+  for (const [index, repository] of config.allowlist.entries()) {
+    console.error(`[${index + 1}/${config.allowlist.length}] reading ${repository} ...`);
     const watermarks = dryRun ? void 0 : loadWatermarks(stateDb, repository);
     const result = await collectRepository(
       client,
@@ -9798,7 +9882,7 @@ function scoreCommand(argv) {
   if (verificationFlag !== null) {
     try {
       const parsed = JSON.parse(readFileSync4(verificationFlag, "utf8"));
-      const list = Array.isArray(parsed) ? parsed : parsed.verifications ?? parsed.candidates ?? [];
+      const list = verdictList(parsed);
       for (const raw of list) {
         const id = raw["candidate_id"] ?? raw["candidateId"];
         if (typeof id !== "string") continue;
@@ -9813,6 +9897,17 @@ function scoreCommand(argv) {
       console.error(`Cannot read ${verificationFlag}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
     }
+    if (verifications.size === 0) {
+      console.error(
+        `${verificationFlag} contained no verifications. Expected an array, or an object with one of: ${VERDICT_KEYS.join(", ")}, each entry carrying candidate_id. Refusing to score on the analyst self-report while a verification file was supplied.`
+      );
+      return 2;
+    }
+  }
+  const pullFlag = argv.includes("--exclude-pull") ? numericFlag(argv, "--exclude-pull", 0) : null;
+  if (argv.includes("--exclude-pull") && pullFlag === null) {
+    console.error("--exclude-pull needs a pull request number.");
+    return 2;
   }
   const db = openDatabase();
   try {
@@ -9823,6 +9918,11 @@ function scoreCommand(argv) {
         text: `${candidate.claim} ${candidate.failureMode}`,
         repository: flag(argv, "--repository") ?? void 0,
         filePath: candidate.path,
+        // A comment on the pull request under review is the conversation, not
+        // precedent, and it is the route by which a posted review comes back
+        // as evidence of the owner's taste on the very finding that produced
+        // it.
+        excludePullNumber: pullFlag ?? void 0,
         maxPositive: 3,
         maxNegative: 2
       });
@@ -9836,10 +9936,23 @@ function scoreCommand(argv) {
       if (breakdown.eligible) kept.push(candidate);
       results.push({ ...breakdown, precedents });
     }
+    const finals = results.map((r) => r.finalScore).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+    const at = (p) => finals.length === 0 ? null : finals[Math.min(finals.length - 1, Math.floor(p * finals.length))];
     console.log(
       JSON.stringify(
         {
           scores: results,
+          // Reported every run so the threshold stops being a constant nobody
+          // can check. A gate sitting above the whole distribution is not
+          // selective, it is miscalibrated, and that is only visible here.
+          distribution: {
+            count: finals.length,
+            min: at(0),
+            median: at(0.5),
+            max: finals.length === 0 ? null : finals[finals.length - 1],
+            threshold: thresholds.finalScore,
+            cleared: finals.filter((v) => v >= thresholds.finalScore).length
+          },
           // Enough to carry a survivor forward without rejoining by hand.
           eligible: kept.map((c) => ({
             candidateId: c.candidateId,
@@ -10161,6 +10274,10 @@ function explainCommand(argv) {
   }
 }
 function conventionsCommand(argv) {
+  if (argv.includes("--help") || argv.includes("-h")) {
+    console.log(USAGE);
+    return 0;
+  }
   let root;
   try {
     root = repositoryRoot(process.cwd());
@@ -10196,6 +10313,16 @@ function conventionsCommand(argv) {
     )
   );
   return 0;
+}
+var VERDICT_KEYS = ["results", "verifications", "verdicts", "candidates"];
+function verdictList(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (typeof parsed !== "object" || parsed === null) return [];
+  const record = parsed;
+  for (const key of VERDICT_KEYS) {
+    if (Array.isArray(record[key])) return record[key];
+  }
+  return [];
 }
 function statusCommand() {
   const db = openDatabase();

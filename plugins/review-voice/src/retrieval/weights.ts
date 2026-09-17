@@ -84,6 +84,8 @@ export interface ContextInput {
   sameRepository: boolean;
   samePath: boolean;
   sameLanguage: boolean;
+  /** Both languages are known and they differ. */
+  differentLanguage: boolean;
 }
 
 /** How much this precedent is about the situation actually under review. */
@@ -92,6 +94,10 @@ export function contextWeight(input: ContextInput): number {
   if (input.sameRepository) weight += 0.3;
   if (input.samePath) weight += 0.1;
   if (input.sameLanguage) weight += 0.1;
+  // A bonus for a match was not enough on its own. The top precedent for a
+  // React data-grid finding was a Python file in another repository, because
+  // nothing ever pushed a mismatch down; it only failed to be pushed up.
+  if (input.differentLanguage) weight -= 0.25;
   return weight;
 }
 

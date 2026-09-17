@@ -150,11 +150,57 @@ test('malformed yaml warns instead of crashing the review', () => {
   const dir = repoWith({ '.review-voice/config.yaml': 'review:\n  max_findings: [unclosed\n' });
   try {
     const result = context(dir);
+    // One warning, not two. A config that did not parse says nothing about
+    // whether it declares a verification block.
     assert.equal(result.warnings.length, 1);
     assert.match(result.warnings[0], /config\.yaml/);
     // A broken config must not silently change the limits.
     assert.equal(result.policy.maxFindings, null);
     assert.equal(result.policy.maxWordsPerFinding, 40);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a config with no verification block is reported as unconfigured', () => {
+  // The field is seeded with a disabled default before parsing, so
+  // `config.verification !== undefined` was always true and the warning this
+  // asserts could never fire.
+  const dir = repoWith({ '.review-voice/config.yaml': 'review:\n  max_words_per_finding: 30\n' });
+  try {
+    const result = context(dir);
+    assert.equal(result.verification.configured, false);
+    assert.equal(result.verification.enabled, false);
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], /No verification block/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a config that declares verification is reported as configured', () => {
+  const dir = repoWith({
+    '.review-voice/config.yaml': 'verification:\n  enabled: true\n  name: codex\n  command: codex exec -s read-only\n',
+  });
+  try {
+    const result = context(dir);
+    assert.equal(result.verification.configured, true);
+    assert.equal(result.verification.enabled, true);
+    assert.equal(result.verification.verifier, 'codex');
+    assert.deepEqual(result.warnings, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a verification block that is present but off is configured, not missing', () => {
+  // Different states. One needs a config change, the other is a choice.
+  const dir = repoWith({ '.review-voice/config.yaml': 'verification:\n  enabled: false\n' });
+  try {
+    const result = context(dir);
+    assert.equal(result.verification.configured, true);
+    assert.equal(result.verification.enabled, false);
+    assert.deepEqual(result.warnings, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
