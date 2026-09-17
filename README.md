@@ -1,7 +1,7 @@
 # Review Voice
 
-**A concise, precedent-aware code reviewer for Claude Code that learns your
-review judgment — and stays quiet when it has nothing worth saying.**
+**A code reviewer for Claude Code where every finding names a concrete failure
+mode — ordered worst-first, and silent when it has nothing worth saying.**
 
 > ⚠️ **Pre-release.** Review Voice is being built to its full specification
 > before its first public release. Interfaces will change. See
@@ -36,9 +36,20 @@ before sending the response.
 
 [important] `.github/workflows/release.yml:52` — The publish job can run after
 a skipped verification job. Make verification a required dependency.
+
+[nit] `src/api/types.ts:20` — Field is optional but every caller sets it. The
+optionality is noise. Make it required.
+
+[question] `src/db/migrate.ts:44` — Is the down migration exercised anywhere? A
+rollback path that never runs is a rollback path that does not work.
 ```
 
 No greeting. No summary. No praise. No process commentary.
+
+Severity runs `blocking` → `important` → `minor` → `nit` → `question`, and the
+ordering is checked. You can stop reading anywhere and know you have seen
+everything more serious. There is no cap on how many findings you get — a real
+finding is never dropped to hit a number.
 
 ## How it works
 
@@ -51,9 +62,10 @@ scoring, deduplication, and output validation.
 **Claude Code agents do the judgment work** — generating candidate defects,
 verifying them against the diff, and wording the result.
 
-This matters for one practical reason: the word limits are enforced by a
-validator that *rejects* non-compliant output, not by a prompt that asks nicely.
-The same goes for the exact no-findings string.
+This matters for one practical reason: the contract is enforced by a validator
+that *rejects* non-compliant output and forces a re-edit, not by a prompt that
+asks nicely. Word limits, hedge phrases, severity ordering and the exact
+no-findings string are all checked rather than requested.
 
 It learns through **retrieval plus policy compilation**, not model fine-tuning.
 Your historical reviews are ingested, redacted, weighted, and compiled into

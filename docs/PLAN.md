@@ -1,6 +1,8 @@
 # Review Voice — Open Source Build & Release Plan
 
-**Status:** proposed, awaiting approval
+**Status:** delivered. M0–M4 shipped; see the milestone table below for what
+each actually turned into. Kept as the record of what was planned and where
+reality diverged, not as a live plan.
 **Source spec:** `review-voice-plugin-specification.md` v1.0
 **Target repo:** `github.com/QuintinBotes/review-voice`
 **Decisions taken:** full spec (Phases 1–4) before first public push · bundled zero-install Node CLI · MIT · marketplace repo with `plugins/review-voice/`
@@ -16,7 +18,7 @@ The spec is written for one operator. Five things have to change before a line o
 | `owner_reviewer: QuintinBotes` hardcoded (§4.1, §10.2, §11, §25) | `owner_reviewer` resolved at `init` from `gh api user`, stored in the user's config. No identity in the repo. |
 | Example allowlist names real private repos (§6.1, §11) | All examples use `your-org/your-repo`. A grep guard in CI fails the build on a hardcoded personal repo or login. |
 | §25 "Initial Reviewer Policy" is *this owner's* policy | Ships as `policies/baseline-global.yaml`, a neutral default every user starts from and then calibrates away from. |
-| Word/finding limits read as product constants | Config-driven defaults (`max_findings: 5`, `max_words_per_finding: 40`, `max_total_words: 180`); enforcement is code, values are settings. |
+| Word/finding limits read as product constants | Config-driven defaults; enforcement is code, values are settings. **Changed in 0.2.0:** the finding cap was removed entirely and the word budget now scales with the change — a count cap discarded findings the budget would have allowed. |
 | Fixtures could be drawn from real review history | 100% synthetic fixtures. Contributor rule in `CONTRIBUTING.md`; CI secret scan; corpus/DB paths are gitignored and live outside the repo. |
 
 **Correction to the spec:** §12.3's `plugin.json` lists `commands` and `agents` arrays. Current Claude Code auto-discovers `commands/`, `agents/`, `skills/` and `hooks/hooks.json`. The manifest should carry metadata only (`name`, `version`, `description`, `author`, `homepage`, `repository`, `license`, `keywords`). Those array fields now mean *extra* search paths, not the canonical list.
@@ -122,7 +124,11 @@ User install path:
 
 ## 5. Milestones
 
-Repo is created **private** now and flipped **public at v1.0.0**, per the "full spec before first push" decision. Each milestone ends in a tagged pre-release on the private repo.
+All four shipped. The repository went public earlier than planned — at 0.1.0
+rather than v1.0.0 — because the private-repo Actions budget ran out and public
+repositories get free unlimited Actions. A full history audit ran first; it
+found two real leaks, both fixed before anything was served publicly. See
+`docs/REPO-SECURITY.md`.
 
 ### M0 — Repo bootstrap
 Skeleton, MIT licence, CI green on an empty build, docs frame, and **eight ADRs closing the §27 open decisions** (embeddings, GitHub auth, static-analysis adapters, outcome-inference limits, encryption, team governance, comment posting, policy sharing). Decisions get made once, in writing, before they leak into code.
@@ -144,7 +150,7 @@ FTS5 index, precedent retrieval with the §9.1 weights and recency decay, the §
 Optional webhook sync, draft PR-review rendering, policy dashboard, and GitHub comment posting behind exact-preview confirmation.
 *Done when:* no write occurs without explicit confirmation, proven by test.
 
-### M5 — Public launch (v1.0.0)
+### M5 — Public launch (v1.0.0) — not yet reached
 README with a real recorded demo, published evaluation numbers against §20.2 targets, threat model finalised, `SECURITY.md` disclosure path live, repo flipped public, `claude plugin tag`, GitHub release, then a submission PR to the `anthropics/claude-plugins-public` marketplace.
 
 ---

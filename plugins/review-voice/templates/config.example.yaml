@@ -28,9 +28,13 @@ bootstrap:
   include_bot_comments: false
 
 review:
-  max_findings: 5
+  # Uncomment to impose a cap. There is none by default: volume is bounded by
+  # the word budget, which scales with the size of the change. A layer may
+  # tighten a limit but never loosen one.
+  # max_findings: 10
   max_words_per_finding: 40
-  max_total_words: 180
+  # A runaway guard rather than a trim target — see docs/ARCHITECTURE.md.
+  max_total_words: 600
   confidence_threshold: 0.80
   final_score_threshold: 0.78
   no_findings_response: "No actionable findings."
