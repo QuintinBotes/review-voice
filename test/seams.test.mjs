@@ -277,3 +277,46 @@ test('check-candidates refuses a foreign shape and accepts a valid one', () => {
   assert.equal(good.status, 0, good.stderr);
   assert.equal(JSON.parse(good.stdout).candidates, 1);
 });
+
+test('every agent declares the narrowest tool grant it can do its job with', () => {
+  // Pinned so a widening is a visible diff rather than a quiet edit. This does
+  // not prove the harness enforces the grant - see docs/THREAT-MODEL.md, threat
+  // 4 - but it does stop the declaration drifting without review.
+  const expected = {
+    'diff-analyst': 'Read, Grep, Glob, Bash(git:*)',
+    'evidence-verifier': 'Read, Grep, Glob, Bash(git:*)',
+    'static-evidence-interpreter': 'Read, Grep',
+    'precedent-ranker': 'Read',
+    'concise-editor': '[]',
+  };
+
+  for (const [name, grant] of Object.entries(expected)) {
+    const agent = readFileSync(
+      new URL(`../plugins/review-voice/agents/${name}.md`, import.meta.url),
+      'utf8',
+    );
+    const declared = /^tools:\s*(.+)$/m.exec(agent)?.[1]?.trim();
+    assert.equal(
+      declared,
+      grant,
+      `${name} declares "${declared}" where the reviewed grant is "${grant}". ` +
+        'Widening an agent grant is a threat-model change, not a refactor.',
+    );
+  }
+});
+
+test('no agent is granted an unrestricted shell', () => {
+  const agents = ['diff-analyst', 'evidence-verifier', 'static-evidence-interpreter', 'precedent-ranker', 'concise-editor'];
+  for (const name of agents) {
+    const agent = readFileSync(
+      new URL(`../plugins/review-voice/agents/${name}.md`, import.meta.url),
+      'utf8',
+    );
+    const declared = /^tools:\s*(.+)$/m.exec(agent)?.[1] ?? '';
+    assert.ok(
+      !/\bBash\b(?!\()/.test(declared),
+      `${name} declares bare Bash. Static analysis is opt-in and config-declared ` +
+        '(adr/0003); an agent with an unrestricted shell reaches the same outcome by another route.',
+    );
+  }
+});
