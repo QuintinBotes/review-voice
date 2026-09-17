@@ -192,6 +192,14 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
   finalScore: 0.68,
 };
 
+/**
+ * How many questions one review may ask.
+ *
+ * A question costs the reader an answer rather than a fix, and several at once
+ * turn a review into an interrogation. Two is a guess, recorded as one.
+ */
+export const MAX_QUESTIONS: number = 2;
+
 export class MalformedCandidate extends Error {}
 
 /** Field names from shapes agents have returned instead of the schema. */
@@ -521,6 +529,25 @@ export function scoreCandidate(
   const finalScore = score(ownerAlignment, repositoryAlignment);
   const anchoredFinalScore = score(anchoredOwnerAlignment, anchoredRepositoryAlignment);
 
+  // A question asserts nothing, so a confidence gate protects the reader from
+  // nothing.
+  //
+  // Four questions have been filed across the programme and not one has ever
+  // reached output: 0.40, 0.30, 0.40, and one the analyst declined to file.
+  // Every survivor was cut by the analyst-only floor. That is a category error
+  // and it compounds - a question is raised *because* something could not be
+  // verified, so low confidence is the content of a question rather than a
+  // defect in it, and `admitsUnverifiable` then caps it lower still for saying
+  // so. 1.3.1 fixed the derivation half of this; the gating half was untouched.
+  //
+  // What a question needs is not a confidence bar but a limit on how many can
+  // be asked at once, since a review that ends in five questions has stopped
+  // being a review.
+  const isQuestion = deriveSeverity(candidate.category, candidate.severity, verification?.reach).severity === 'question';
+  const questionsAlready = kept.filter(
+    (other) => deriveSeverity(other.category, other.severity).severity === 'question',
+  ).length;
+
   let rejectedBecause: string | null = null;
   // Checked explicitly: every comparison against NaN is false, so a
   // non-finite score would otherwise pass both thresholds below.
@@ -531,6 +558,14 @@ export function scoreCandidate(
     // confident candidate with strong evidence still clears the threshold
     // while repeating a comment already published on that line.
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
+  } else if (isQuestion) {
+    // Everything below this point gates on confidence in an assertion, and a
+    // question makes none. Only the count is checked.
+    if (questionsAlready >= MAX_QUESTIONS) {
+      rejectedBecause =
+        `this review already asks ${MAX_QUESTIONS} question${MAX_QUESTIONS === 1 ? '' : 's'}, ` +
+        'and a review that ends in a list of questions has stopped being a review';
+    }
   } else if (confidenceSource === 'unverifiable-cap') {
     // Stated as its own rejection rather than left to the numeric comparison.
     // It used to depend on the cap sitting below the floor, which quietly tied

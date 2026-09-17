@@ -5,6 +5,27 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A question is no longer cut by the confidence floor. Four were filed across
+  the programme - at 0.40, 0.30 and 0.40, plus one the analyst declined to
+  file - and **not one ever reached output**. A question asserts nothing, so a
+  confidence gate protects the reader from nothing, and the error compounds:
+  a question is raised *because* something could not be verified, so low
+  confidence is its content rather than a defect in it, and
+  `admitsUnverifiable` then caps it lower still for saying so. 1.3.1 fixed the
+  derivation half of this; the gating half was untouched. What a question is
+  limited by instead is how many one review may ask, now two.
+- `data_integrity` varies by reach rather than being `blocking` everywhere.
+  `security`, `authorization` and `authentication` name a boundary, and
+  crossing one is severe wherever it happens, which is why an analyst cannot
+  talk them down. `data_integrity` names a property spanning everything from
+  corrupting a shared store to a consistency nit in one file - and holding it
+  at a fixed tier also held it outside the tier bound, leaving it the only
+  candidate in twenty that still moved three tiers.
+
 ## [1.3.2] - 2026-09-17
 
 ### Fixed

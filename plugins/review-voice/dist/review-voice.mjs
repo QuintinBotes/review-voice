@@ -9608,7 +9608,17 @@ var BY_CATEGORY_AND_REACH = {
   trust_boundary: atEveryReach("blocking"),
   authorization: atEveryReach("blocking"),
   authentication: atEveryReach("blocking"),
-  data_integrity: atEveryReach("blocking"),
+  // `data_integrity` varies where its neighbours do not.
+  //
+  // `security`, `authorization` and `authentication` name a boundary: crossing
+  // one is severe wherever it happens, which is why an analyst cannot talk them
+  // down. `data_integrity` names a property, and it spans everything from
+  // corrupting a shared store to a consistency nit in one file. Holding it at
+  // `blocking` everywhere also held it outside the bound, so it was the only
+  // candidate in twenty that still moved three tiers: an analyst that had read
+  // the code judged a concrete instance `minor` and was overruled into a
+  // verdict that says do not merge.
+  data_integrity: { local: "important", component: "blocking", repository: "blocking" },
   concurrency: atEveryReach("important"),
   persistence: atEveryReach("important"),
   migration: atEveryReach("important"),
@@ -9773,6 +9783,7 @@ var DEFAULT_THRESHOLDS = {
   analystOnlyConfidence: 0.7,
   finalScore: 0.68
 };
+var MAX_QUESTIONS = 2;
 var MalformedCandidate = class extends Error {
 };
 var FOREIGN_KEYS = ["title", "location", "suggested_direction", "suggestion", "description", "summary"];
@@ -9905,11 +9916,19 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const score = (owner, repository) => 0.35 * confidence + 0.25 * owner + 0.15 * repository + 0.15 * quality + 0.1 * novel;
   const finalScore = score(ownerAlignment, repositoryAlignment);
   const anchoredFinalScore = score(anchoredOwnerAlignment, anchoredRepositoryAlignment);
+  const isQuestion = deriveSeverity(candidate.category, candidate.severity, verification?.reach).severity === "question";
+  const questionsAlready = kept.filter(
+    (other) => deriveSeverity(other.category, other.severity).severity === "question"
+  ).length;
   let rejectedBecause = null;
   if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
     rejectedBecause = "score could not be computed from this candidate";
   } else if (alreadySaid !== null) {
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
+  } else if (isQuestion) {
+    if (questionsAlready >= MAX_QUESTIONS) {
+      rejectedBecause = `this review already asks ${MAX_QUESTIONS} question${MAX_QUESTIONS === 1 ? "" : "s"}, and a review that ends in a list of questions has stopped being a review`;
+    }
   } else if (confidenceSource === "unverifiable-cap") {
     rejectedBecause = `the claim states it could not be verified, so it cannot ship whatever it scores`;
   } else if (confidence < confidenceFloor) {
