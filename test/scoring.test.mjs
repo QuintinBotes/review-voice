@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import {
   scoreCandidate,
   DEFAULT_THRESHOLDS,
@@ -10,6 +11,7 @@ import {
   MalformedCandidate,
 } from '../plugins/review-voice/src/scoring/score.ts';
 import { computeReach } from '../plugins/review-voice/src/scoring/reach.ts';
+import { gitGrepPaths } from '../plugins/review-voice/src/scoring/existence.ts';
 import { deriveSeverity } from '../plugins/review-voice/src/scoring/severity.ts';
 import { canActivate, compileProposals } from '../plugins/review-voice/src/policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from '../plugins/review-voice/src/policy/versions.ts';
@@ -959,4 +961,101 @@ test('a claim that says it could not be verified is rejected on its own terms', 
 test('the default floors are the measured ones', () => {
   assert.equal(DEFAULT_THRESHOLDS.technicalConfidence, 0.8);
   assert.equal(DEFAULT_THRESHOLDS.analystOnlyConfidence, 0.7);
+});
+
+// These run against real git with a real ref on purpose. The synthetic
+// searchers above return bare paths, which is exactly why a ref-prefix bug
+// survived a green suite: `git grep -l <ref>` prefixes every line with
+// `<ref>:`, and production always passes --base.
+//
+// They build their own repository rather than grepping this one. An earlier
+// version probed this repository at HEAD and passed locally while failing in
+// CI, where HEAD is the merge commit and therefore contains the very code the
+// probes were written against. A test whose expected value depends on what the
+// repository happens to contain today is measuring the wrong thing.
+
+function gitRepository(files) {
+  const root = mkdtempSync(join(tmpdir(), 'rv-reach-'));
+  const git = (...args) =>
+    execFileSync('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] });
+  git('init', '-q');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Test');
+  git('config', 'commit.gpgsign', 'false');
+  for (const [path, body] of Object.entries(files)) {
+    const full = join(root, path);
+    mkdirSync(join(full, '..'), { recursive: true });
+    writeFileSync(full, body);
+  }
+  git('add', '-A');
+  git('commit', '-q', '-m', 'fixture');
+  return root;
+}
+
+test('git grep paths come back without the ref prefix', () => {
+  const root = gitRepository({ 'src/a.ts': 'export const widgetTotal = 1;\n' });
+  try {
+    const hits = gitGrepPaths('widgetTotal', root, 'HEAD');
+    assert.deepEqual(hits, ['src/a.ts'], 'git grep -l <ref> prefixes paths with the ref');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('local reach is reachable when a ref is passed, not only without one', () => {
+  // The signature of the prefix bug was outsideDirectoryCount === directoryCount
+  // on every observation, because no hit was ever recognised as the changed
+  // file or as inside its subtree.
+  const root = gitRepository({
+    'src/only/here.ts': 'export const widgetTotal = 1;\n',
+    'src/other/thing.ts': 'export const unrelated = 2;\n',
+  });
+  try {
+    const check = computeReach('`widgetTotal` is off by one.', 'src/only/here.ts', root, 'HEAD');
+
+    assert.equal(check.reach, 'local');
+    assert.equal(check.outsideDirectoryCount, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a name common enough to describe the language does not decide reach', () => {
+  // A correctness defect in one date formatter was raised a tier because the
+  // claim mentioned Math.round, which appeared in 58 directories of the
+  // repository under review. Popularity of a word is not spread of a change.
+  const files = { 'src/home/format.ts': 'export const x = Math.round(1.5);\n' };
+  for (let i = 0; i < 20; i += 1) files[`src/d${i}/use.ts`] = 'const y = Math.round(2.5);\n';
+  const root = gitRepository(files);
+  try {
+    const check = computeReach('`Math.round` is asymmetric.', 'src/home/format.ts', root, 'HEAD');
+
+    assert.ok(check.ignoredSymbols.includes('Math.round'));
+    assert.equal(check.reach, null, 'with its only symbol ignored there is no evidence of spread');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a symbol the changed file does not contain is not part of its reach', () => {
+  const root = gitRepository({
+    'src/home/format.ts': 'export const widgetTotal = 1;\n',
+    'src/other/client.ts': 'export class RemoteApiClient {}\n',
+  });
+  try {
+    const check = computeReach(
+      '`RemoteApiClient` is misused near `widgetTotal`.',
+      'src/home/format.ts',
+      root,
+      'HEAD',
+    );
+
+    assert.ok(
+      check.ignoredSymbols.includes('RemoteApiClient'),
+      "a symbol absent from the changed file cannot describe that file's reach",
+    );
+    assert.equal(check.reach, 'local');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

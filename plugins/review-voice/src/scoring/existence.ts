@@ -231,7 +231,16 @@ export const gitGrepPaths: PathSearcher = (symbol, cwd, ref) => {
       : ['grep', '--fixed-strings', '--full-name', '-l', '-z', '-e', symbol, ref];
   try {
     const output = execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 });
-    return output.split('\0').filter((path) => path.length > 0);
+    // `git grep -l <ref>` prefixes every line with `<ref>:`. Left on, every
+    // path compares unequal to the changed file and sits outside its subtree,
+    // so `local` becomes unreachable and everything reads as repository-wide.
+    // Stripped by exact prefix rather than by splitting on the first colon,
+    // because a path may legitimately contain one.
+    const prefix = ref === null ? '' : `${ref}:`;
+    return output
+      .split('\0')
+      .filter((path) => path.length > 0)
+      .map((path) => (prefix !== '' && path.startsWith(prefix) ? path.slice(prefix.length) : path));
   } catch (error) {
     // Match `gitGrep`: only git's documented no-match exit answers the
     // question. In particular, a missing ref exits 128 and must remain an

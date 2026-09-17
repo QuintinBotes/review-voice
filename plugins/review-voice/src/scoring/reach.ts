@@ -15,6 +15,12 @@ export interface ReachCheck {
   reach: Reach | null;
   /** Symbols actually given to git grep, in search order. */
   symbols: string[];
+  /**
+   * Symbols searched but excluded from the measure: absent from the changed
+   * file, or so common that their spread describes the language rather than
+   * this change.
+   */
+  ignoredSymbols: string[];
   /** Distinct repository-relative paths git grep found. */
   paths: string[];
   /** Code paths counted for spread, after prose and non-source are dropped. */
@@ -76,6 +82,22 @@ function isCode(path: string): boolean {
   return classify(normalisePath(path)) === 'source';
 }
 
+/**
+ * A symbol so common that its spread says nothing about this change.
+ *
+ * `namedSymbols` exists to find things to check for absence, where a broad net
+ * is cheap and a false hit merely costs a search. Reach needs the opposite. On
+ * a live run a `correctness` defect in one date formatter was raised a tier
+ * because the claim mentioned `Math.round`, which appears in 58 directories,
+ * and a local `const canEdit` in one React component reached 158 - neither is
+ * a shared implementation, both are just common words.
+ *
+ * Measured by hits rather than by a language-specific denylist: a name in this
+ * many directories is a common word in any language, and a denylist would have
+ * to be maintained per ecosystem to catch the same thing.
+ */
+const NON_DISCRIMINATING_DIRECTORIES = 12;
+
 /** Whether a path sits inside the changed file's own directory subtree. */
 function withinSubtree(path: string, changedDirectory: string): boolean {
   if (changedDirectory === '') return false;
@@ -102,6 +124,7 @@ export function computeReach(
   const searchedRef = ref ?? 'working tree';
   const symbols = namedSymbols(text).slice(0, 12);
   const searched: string[] = [];
+  const ignored: string[] = [];
   const hits = new Set<string>();
 
   const normalisedChangedPath = normalisePath(changedPath);
@@ -115,6 +138,7 @@ export function computeReach(
     return {
       reach,
       symbols: searched,
+      ignoredSymbols: [...ignored].sort(),
       paths: [...hits].sort(),
       countedPaths: counted,
       directoryCount: directoryCount(counted),
@@ -129,13 +153,31 @@ export function computeReach(
 
   for (const symbol of symbols) {
     searched.push(symbol);
+    let found: string[];
     try {
-      for (const path of search(symbol, cwd, ref)) hits.add(path);
+      found = search(symbol, cwd, ref);
     } catch {
       // Do not classify partial evidence. A bad ref, timeout, or failed grep
       // is absent reach, never an implicit "only the changed file" answer.
       return result(null, true);
     }
+
+    const code = found.filter(isCode);
+
+    // Reach is the spread of the code under review, not of every word the
+    // finding happens to use. A symbol the changed file does not contain is
+    // not part of this change, however widely it is used elsewhere.
+    if (!code.some((path) => normalisePath(path) === normalisedChangedPath)) {
+      ignored.push(symbol);
+      continue;
+    }
+
+    if (directoryCount(code) > NON_DISCRIMINATING_DIRECTORIES) {
+      ignored.push(symbol);
+      continue;
+    }
+
+    for (const path of found) hits.add(path);
   }
 
   // A repository-wide toolchain file is itself deterministic reach evidence.
