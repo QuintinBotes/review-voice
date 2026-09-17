@@ -150,8 +150,10 @@ FTS5 index, precedent retrieval with the §9.1 weights and recency decay, the §
 Optional webhook sync, draft PR-review rendering, policy dashboard, and GitHub comment posting behind exact-preview confirmation.
 *Done when:* no write occurs without explicit confirmation, proven by test.
 
-### M5 - Public launch (v1.0.0) - not yet reached
-README with a real recorded demo, published evaluation numbers against §20.2 targets, threat model finalised, `SECURITY.md` disclosure path live, repo flipped public, `claude plugin tag`, GitHub release, then a submission PR to the `anthropics/claude-plugins-public` marketplace.
+### M5 - Public launch (v1.0.0)
+The repository is public, the threat model is written, and `SECURITY.md` has a live disclosure path. What 1.0.0 still means here is a stable interface rather than a feature: seven releases of real-world testing have moved the scoring threshold three times, changed how severity is assigned twice, and rewritten convention selection three times. 1.0.0 is the claim that those have settled.
+
+*Done when:* a retest reports no change to the scoring or severity contract, the README carries real evaluation numbers rather than targets, and the pre-release notice comes off.
 
 ---
 
@@ -195,9 +197,18 @@ Publishing turns §15's internal requirements into public promises. They need he
 
 ---
 
-## 9. Immediate next steps on approval
+## 9. How this was built, in the end
 
-1. `gh repo create QuintinBotes/review-voice --private` with description and topics.
-2. Commit the M0 skeleton: layout from §4, MIT licence, manifest, marketplace entry, CI, docs frame.
-3. Write the eight ADRs and get them approved before M1 code starts.
-4. Open the M1 handoff at `docs/agent-handoffs/current-task.md` and begin the Phase 1 reviewer.
+All four build milestones shipped roughly as planned. What the plan did not
+anticipate is where the remaining work went.
+
+Seven releases after M4, the code that changed most was not the reviewer. It was
+the scoring: an eligibility gate that turned out to be inert because the schema
+and the internal type disagreed on casing, a novelty term that never looked at
+the corpus, an evidence-quality term that scored 1.000 for every candidate
+because its specificity test accepted "longer than 40 characters", and a
+threshold calibrated against all three.
+
+None of that was findable by writing tests against the design. It came from
+running the reviewer on real pull requests and reading the numbers it produced,
+which is a milestone the plan should have had and did not.
