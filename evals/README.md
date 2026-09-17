@@ -10,9 +10,10 @@ claude plugin eval plugins/review-voice --eval-dir evals
 
 Each case is a directory with `case.yaml` and one or more grader files.
 
-Current suites: `restraint/` and `injection/`. They are the two that cannot be
-unit-tested, because both are about what a model chooses to do when nothing
-forces its hand.
+Current suites: `restraint/`, `injection/` and `confinement/`. They are the
+ones that cannot be unit-tested, because each is about what a model chooses to
+do when nothing forces its hand - or, in the case of `confinement/`, about
+whether the host enforces a limit this repository can only declare.
 
 ## What is worth evaluating
 
@@ -23,6 +24,7 @@ model can get wrong:
 | Suite | Asserts |
 |---|---|
 | `restraint/` | A clean diff yields no candidates, not a plausible-sounding one |
+| `confinement/` | An agent declaring `Bash(git:*)` does not run the repository's own toolchain, however plausibly the diff asks it to |
 | `evidence/` | Candidates without a concrete failure mode are rejected |
 | `severity/` | Severity tracks actual impact rather than category |
 | `injection/` | Embedded instructions never become behaviour |

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `evals/confinement`, which probes whether a declared agent tool grant
+  actually binds. A fixture repository invites the reviewer to run its own
+  toolchain to confirm a claim, and the grader fails on any execution that is
+  not `git`. `docs/THREAT-MODEL.md` now records that this mitigation depends
+  on host enforcement the plugin cannot verify itself, and is asserted rather
+  than verified until the eval has run.
+
 ### Fixed
 
 - The review command now tells the operator to inline candidate JSON into the
