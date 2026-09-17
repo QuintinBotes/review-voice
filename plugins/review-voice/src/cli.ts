@@ -32,11 +32,11 @@ import { AuthError } from './github/auth.ts';
 import { collectRepository, type CollectionStats } from './corpus/collect.ts';
 import { scaledRepositoryShare, scaledTarget, selectEvents } from './corpus/select.ts';
 import { changedPathsFrom, discoverConventions } from './conventions/discover.ts';
-import { checkAbsenceClaim } from './scoring/existence.ts';
+import { checkAbsenceClaim, type ExistenceCheck } from './scoring/existence.ts';
 import { storeEvents, corpusCoverage } from './corpus/store.ts';
 import { buildConsentPlan, discoverRepositories } from './consent/plan.ts';
 import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
-import { retrievePrecedents } from './retrieval/retrieve.ts';
+import { retrievePrecedents, type Precedent } from './retrieval/retrieve.ts';
 import {
   scoreCandidate,
   normaliseCandidate,
@@ -44,6 +44,7 @@ import {
   DEFAULT_THRESHOLDS,
   type Candidate,
   type RawCandidate,
+  type ScoreBreakdown,
   type Verification,
 } from './scoring/score.ts';
 import { compileProposals } from './policy/compile.ts';
@@ -107,6 +108,10 @@ feedback usage:
   actions: ${FEEDBACK_ACTIONS.join(', ')} (hyphens accepted)
 
 score flags:
+  --base <ref>              The ref under review. Claims that something does
+                            not exist are checked against this tree, not the
+                            working tree, which on a pull request is usually
+                            neither the base nor the head.
   --verification <path>     The evidence-verifier's output. Its confidence
                             supersedes the analyst's self-report.
   --exclude-pull <n>        Drop precedents from this pull request. Pass the
@@ -685,13 +690,24 @@ function scoreCommand(argv: string[]): number {
     }
   }
 
-  // Absence claims are checked against the working tree. Outside a repository
-  // there is nothing to check against, and nothing is concluded.
+  // Absence claims are checked against the tree under review, which is not the
+  // working tree when reviewing a pull request. A checkout behind the base
+  // reports two files as absent that the base contains, and an empty result
+  // then reads as the guard corroborating a false claim.
   let searchRoot: string | null = null;
   try {
     searchRoot = repositoryRoot(process.cwd());
   } catch {
     searchRoot = null;
+  }
+
+  const baseRef = flag(argv, '--base');
+  if (baseRef !== null && searchRoot !== null && !refExists(baseRef, searchRoot)) {
+    console.error(
+      `--base ${baseRef} does not resolve in this repository. Fetch it, or omit the flag ` +
+        'to search the working tree. Absence claims would otherwise be checked against nothing.',
+    );
+    return 2;
   }
 
   const pullFlag = argv.includes('--exclude-pull') ? numericFlag(argv, '--exclude-pull', 0) : null;
@@ -703,7 +719,7 @@ function scoreCommand(argv: string[]): number {
   const db = openDatabase();
   try {
     const kept: Candidate[] = [];
-    const results = [];
+    const results: (ScoreBreakdown & { precedents: Precedent[]; absenceCheck?: ExistenceCheck })[] = [];
 
     // Scored in order so novelty is measured against what has already been
     // kept, not against every candidate including worse duplicates.
@@ -735,7 +751,7 @@ function scoreCommand(argv: string[]): number {
       let absence = null;
       if (searchRoot !== null) {
         try {
-          absence = checkAbsenceClaim(`${candidate.claim} ${candidate.failureMode}`, searchRoot);
+          absence = checkAbsenceClaim(`${candidate.claim} ${candidate.failureMode}`, searchRoot, baseRef);
         } catch {
           absence = null;
         }
@@ -771,16 +787,29 @@ function scoreCommand(argv: string[]): number {
             median: at(0.5),
             max: finals.length === 0 ? null : (finals[finals.length - 1] as number),
             threshold: thresholds.finalScore,
-            cleared: finals.filter((v) => v >= thresholds.finalScore).length,
+            // What actually ships, not what cleared this one gate. Counting
+            // scores above the threshold ignored candidates the confidence
+            // gate had already rejected, so the block overstated the yield in
+            // exactly the place the operator is asked to report it.
+            cleared: results.filter((r) => r.eligible).length,
+            aboveThreshold: finals.filter((v) => v >= thresholds.finalScore).length,
           },
           // Enough to carry a survivor forward without rejoining by hand.
-          eligible: kept.map((c) => ({
-            candidateId: c.candidateId,
-            path: c.path,
-            line: c.line,
-            severity: c.severity,
-            category: c.category,
-          })),
+          // Severity is the derived tier, not the requested one. Ordering is
+          // severity-first, and asking produced `minor` at confidence 0.90 and
+          // `important` at 0.85 for the same finding on an identical diff.
+          eligible: kept.map((c) => {
+            const derived = results.find((r) => r.candidateId === c.candidateId)?.severity;
+            return {
+              candidateId: c.candidateId,
+              path: c.path,
+              line: c.line,
+              severity: derived?.severity ?? c.severity,
+              requestedSeverity: c.severity,
+              severityReason: derived?.reason ?? null,
+              category: c.category,
+            };
+          }),
         },
         null,
         2,
@@ -1216,6 +1245,15 @@ function conventionsCommand(argv: string[]): number {
  * one is right is not, so an unrecognised shape is now an error rather than an
  * empty map.
  */
+function refExists(ref: string, cwd: string): boolean {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const VERDICT_KEYS = ['results', 'verifications', 'verdicts', 'candidates'] as const;
 
 function verdictList(parsed: unknown): Record<string, unknown>[] {
