@@ -32,6 +32,7 @@ import { AuthError } from './github/auth.ts';
 import { collectRepository, type CollectionStats } from './corpus/collect.ts';
 import { scaledRepositoryShare, scaledTarget, selectEvents } from './corpus/select.ts';
 import { changedPathsFrom, discoverConventions } from './conventions/discover.ts';
+import { checkAbsenceClaim } from './scoring/existence.ts';
 import { storeEvents, corpusCoverage } from './corpus/store.ts';
 import { buildConsentPlan, discoverRepositories } from './consent/plan.ts';
 import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
@@ -684,6 +685,15 @@ function scoreCommand(argv: string[]): number {
     }
   }
 
+  // Absence claims are checked against the working tree. Outside a repository
+  // there is nothing to check against, and nothing is concluded.
+  let searchRoot: string | null = null;
+  try {
+    searchRoot = repositoryRoot(process.cwd());
+  } catch {
+    searchRoot = null;
+  }
+
   const pullFlag = argv.includes('--exclude-pull') ? numericFlag(argv, '--exclude-pull', 0) : null;
   if (argv.includes('--exclude-pull') && pullFlag === null) {
     console.error('--exclude-pull needs a pull request number.');
@@ -717,8 +727,28 @@ function scoreCommand(argv: string[]): number {
         thresholds,
         verifications.get(candidate.candidateId),
       );
+
+      // A claim that something is absent is checked against the repository
+      // before anything else is weighed. It is the cheapest class of claim to
+      // verify and the most damaging to get wrong: a reviewer that invents an
+      // absence tells the author to break working code.
+      let absence = null;
+      if (searchRoot !== null) {
+        try {
+          absence = checkAbsenceClaim(`${candidate.claim} ${candidate.failureMode}`, searchRoot);
+        } catch {
+          absence = null;
+        }
+      }
+
+      if (absence !== null && absence.found.length > 0) {
+        breakdown.eligible = false;
+        breakdown.rejectedBecause =
+          `claims something is absent, but the repository contains ${absence.found.join(', ')}`;
+      }
+
       if (breakdown.eligible) kept.push(candidate);
-      results.push({ ...breakdown, precedents });
+      results.push({ ...breakdown, precedents, ...(absence === null ? {} : { absenceCheck: absence }) });
     }
 
     const finals = results
@@ -1136,13 +1166,6 @@ function explainCommand(argv: string[]): number {
  * subtree.
  */
 function conventionsCommand(argv: string[]): number {
-  // Without this, `conventions --help` ran with repository-wide defaults and
-  // dumped every document to stdout, which on a real repository is 82 KB.
-  if (argv.includes('--help') || argv.includes('-h')) {
-    console.log(USAGE);
-    return 0;
-  }
-
   let root: string;
   try {
     root = repositoryRoot(process.cwd());
@@ -1269,6 +1292,15 @@ function statusCommand(): number {
 
 async function main(argv: string[]): Promise<number> {
   const command = argv[0];
+
+  // Before dispatch, so it cannot be swallowed by a command that reads stdin.
+  // `score --help` printed the stdin error and then blocked on a terminal,
+  // which also hid `--exclude-pull`: the flag is in this text, and nobody
+  // could get the text to appear.
+  if (command !== undefined && (argv.includes('--help') || argv.includes('-h'))) {
+    console.log(USAGE);
+    return 0;
+  }
 
   switch (command) {
     case undefined:

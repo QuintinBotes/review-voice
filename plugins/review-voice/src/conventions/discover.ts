@@ -57,14 +57,29 @@ const RULE_DIRECTORIES: { path: string; kind: ConventionKind }[] = [
   { path: join('.claude', 'rules'), kind: 'rule' },
 ];
 
-/** A single document past this is summarised by truncation, not dropped. */
-const PER_DOCUMENT_BYTES = 20_000;
-
 /**
  * Everything here is pasted into an agent prompt. The budget is what keeps a
  * repository with forty skill documents from crowding out the diff itself.
  */
 const TOTAL_BYTES = 60_000;
+
+/**
+ * No single document may take more than this share of the budget.
+ *
+ * Four large subtree skills took 96% of it on a real repository, truncating a
+ * 29 KB guide to building pages into a review of something else entirely while
+ * all 32 rule files were dropped. One of those was 553 bytes.
+ */
+const PER_DOCUMENT_SHARE = 0.25;
+
+/** A single document past this is summarised by truncation, not dropped. */
+const PER_DOCUMENT_BYTES = Math.floor(TOTAL_BYTES * PER_DOCUMENT_SHARE);
+
+/**
+ * Documents at or below this are effectively free, and a rule this short is
+ * usually a single specific instruction rather than a guide.
+ */
+const CHEAP_BYTES = 4_000;
 
 /**
  * Phrasing that addresses the reviewer rather than describing the code.
@@ -242,7 +257,43 @@ export function discoverConventions(root: string, changedPaths: readonly string[
     })),
   ];
 
-  for (const entry of ordered) {
+  // Within a relevance tier, cheapest first.
+  //
+  // Proximity alone was not enough. A 553-byte rule that changes a verdict is
+  // worth more than 20,000 bytes of scaffolding guidance, and ordering by tier
+  // alone let four large skills consume the budget before a single rule was
+  // read. Ranked this way every short rule lands and the long guides fill
+  // whatever is left.
+  const sized = ordered.map((entry) => {
+    let bytes = Number.POSITIVE_INFINITY;
+    try {
+      bytes = statSync(join(root, entry.path)).size;
+    } catch {
+      // Unreadable sorts last and is reported when it is reached.
+    }
+    return { entry, bytes };
+  });
+
+  const tier = (reason: ConventionDocument['reason']): number =>
+    ['directory scope', 'subtree', 'repository file', 'name matches the change', 'remaining budget'].indexOf(reason);
+
+  sized.sort((a, b) => {
+    const byTier = tier(a.entry.reason) - tier(b.entry.reason);
+    if (byTier !== 0) return byTier;
+
+    // A file that governs the directory under change is ranked by how close
+    // it sits, never by how short it is. Size ranking is for the rule and
+    // skill pools, where there is no proximity to go on. The sort is stable,
+    // so returning 0 keeps the depth order these were built in.
+    if (a.entry.reason === 'directory scope') return 0;
+
+    // Cheap documents are grouped ahead of the rest, then size decides.
+    const cheap = Number(b.bytes <= CHEAP_BYTES) - Number(a.bytes <= CHEAP_BYTES);
+    if (cheap !== 0) return cheap;
+    return a.bytes - b.bytes;
+  });
+
+  for (const { entry } of sized) {
     if (seen.has(entry.path)) continue;
     const absolute = join(root, entry.path);
     if (!existsSync(absolute)) continue;

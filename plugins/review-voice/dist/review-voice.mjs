@@ -3,7 +3,7 @@
 // plugins/review-voice/src/cli.ts
 import { readFileSync as readFileSync4, writeFileSync, mkdirSync as mkdirSync2 } from "node:fs";
 import { join as join5 } from "node:path";
-import { execFileSync as execFileSync4 } from "node:child_process";
+import { execFileSync as execFileSync5 } from "node:child_process";
 
 // plugins/review-voice/src/warnings.ts
 function suppressSqliteExperimentalWarning() {
@@ -8269,8 +8269,10 @@ var RULE_DIRECTORIES = [
   { path: join4(".agents", "rules"), kind: "rule" },
   { path: join4(".claude", "rules"), kind: "rule" }
 ];
-var PER_DOCUMENT_BYTES = 2e4;
 var TOTAL_BYTES = 6e4;
+var PER_DOCUMENT_SHARE = 0.25;
+var PER_DOCUMENT_BYTES = Math.floor(TOTAL_BYTES * PER_DOCUMENT_SHARE);
+var CHEAP_BYTES = 4e3;
 var ADDRESSES_THE_REVIEWER = [
   /ignore\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+instructions/i,
   /disregard\s+(?:all\s+)?(?:previous|prior|the)\s+(?:instructions|rules|prompt)/i,
@@ -8381,7 +8383,24 @@ function discoverConventions(root, changedPaths = []) {
       reason: "remaining budget"
     }))
   ];
-  for (const entry of ordered) {
+  const sized = ordered.map((entry) => {
+    let bytes = Number.POSITIVE_INFINITY;
+    try {
+      bytes = statSync(join4(root, entry.path)).size;
+    } catch {
+    }
+    return { entry, bytes };
+  });
+  const tier = (reason) => ["directory scope", "subtree", "repository file", "name matches the change", "remaining budget"].indexOf(reason);
+  sized.sort((a, b) => {
+    const byTier = tier(a.entry.reason) - tier(b.entry.reason);
+    if (byTier !== 0) return byTier;
+    if (a.entry.reason === "directory scope") return 0;
+    const cheap = Number(b.bytes <= CHEAP_BYTES) - Number(a.bytes <= CHEAP_BYTES);
+    if (cheap !== 0) return cheap;
+    return a.bytes - b.bytes;
+  });
+  for (const { entry } of sized) {
     if (seen.has(entry.path)) continue;
     const absolute = join4(root, entry.path);
     if (!existsSync2(absolute)) continue;
@@ -8434,6 +8453,67 @@ function changedPathsFrom(filesJson) {
   return files.map((file) => typeof file === "object" && file !== null ? file.path : void 0).filter((path) => typeof path === "string");
 }
 
+// plugins/review-voice/src/scoring/existence.ts
+import { execFileSync as execFileSync4 } from "node:child_process";
+var ASSERTS_ABSENCE = [
+  /\b(?:does|do)\s+not\s+exist\b/i,
+  /\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)\b/i,
+  /\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)\b/i,
+  /\bnever\s+(?:defined|declared|exported)\b/i,
+  /\bcannot\s+be\s+found\b/i,
+  /\bnowhere\s+in\s+the\s+(?:repo|repository|codebase)\b/i
+];
+function assertsAbsence(text) {
+  return ASSERTS_ABSENCE.some((pattern) => pattern.test(text));
+}
+function namedSymbols(text) {
+  const found = /* @__PURE__ */ new Set();
+  for (const match of text.matchAll(/`([^`]+)`/g)) {
+    const token = (match[1] ?? "").trim();
+    if (token.length >= 4 && !/\s/.test(token)) found.add(token);
+  }
+  for (const match of text.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
+    if (match[1] !== void 0) found.add(match[1]);
+  }
+  for (const match of text.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
+    if (match[1] !== void 0) found.add(match[1]);
+  }
+  for (const token of [...found]) {
+    const base = token.split("/").pop();
+    if (base !== void 0 && base !== token && base.length >= 4) found.add(base);
+  }
+  return [...found];
+}
+var gitGrep = (symbol, cwd) => {
+  try {
+    execFileSync4("git", ["grep", "--fixed-strings", "--quiet", "--", symbol], {
+      cwd,
+      stdio: "ignore",
+      timeout: 1e4
+    });
+    return true;
+  } catch (error) {
+    if (error.status === 1) return false;
+    throw error;
+  }
+};
+function checkAbsenceClaim(text, cwd, search = gitGrep) {
+  if (!assertsAbsence(text)) return null;
+  const symbols = namedSymbols(text);
+  if (symbols.length === 0) return null;
+  const found = [];
+  const checked = [];
+  for (const symbol of symbols.slice(0, 12)) {
+    try {
+      checked.push(symbol);
+      if (search(symbol, cwd)) found.push(symbol);
+    } catch {
+      return { found: [], checked, inconclusive: true };
+    }
+  }
+  return { found, checked, inconclusive: false };
+}
+
 // plugins/review-voice/src/sync/state.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
 function beginSyncRun(db, repositories) {
@@ -8454,7 +8534,20 @@ function finishSyncRun(db, id, stats, imported) {
 var ASSUME_STILL_RUNNING_MINUTES = 30;
 function unfinishedSyncRuns(db, now = /* @__PURE__ */ new Date()) {
   const cutoff = new Date(now.getTime() - ASSUME_STILL_RUNNING_MINUTES * 6e4).toISOString();
-  return db.prepare("SELECT * FROM sync_runs WHERE finished_at IS NULL AND started_at < ? ORDER BY started_at DESC").all(cutoff).map((row) => ({
+  return db.prepare(
+    `SELECT * FROM sync_runs
+         WHERE finished_at IS NULL
+           AND started_at < ?
+           -- A sync that completed afterwards did the work this one abandoned,
+           -- so the dangling row is history rather than an outstanding task.
+           -- Reporting it beside "last sync 07:46, 250 imported" told the user
+           -- to run a sync they had already run four times.
+           AND NOT EXISTS (
+             SELECT 1 FROM sync_runs later
+             WHERE later.finished_at IS NOT NULL AND later.finished_at > sync_runs.started_at
+           )
+         ORDER BY started_at DESC`
+  ).all(cutoff).map((row) => ({
     syncRunId: row["sync_run_id"],
     startedAt: row["started_at"],
     finishedAt: null,
@@ -8852,7 +8945,7 @@ function admitsUnverifiable(candidate) {
 }
 var DEFAULT_THRESHOLDS = {
   technicalConfidence: 0.8,
-  finalScore: 0.74
+  finalScore: 0.68
 };
 var MalformedCandidate = class extends Error {
 };
@@ -9537,7 +9630,7 @@ ${result.violations.length} contract violation(s).`);
 }
 function inferRepository(cwd) {
   try {
-    const url = execFileSync4("git", ["remote", "get-url", "origin"], {
+    const url = execFileSync5("git", ["remote", "get-url", "origin"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -9904,6 +9997,12 @@ function scoreCommand(argv) {
       return 2;
     }
   }
+  let searchRoot = null;
+  try {
+    searchRoot = repositoryRoot(process.cwd());
+  } catch {
+    searchRoot = null;
+  }
   const pullFlag = argv.includes("--exclude-pull") ? numericFlag(argv, "--exclude-pull", 0) : null;
   if (argv.includes("--exclude-pull") && pullFlag === null) {
     console.error("--exclude-pull needs a pull request number.");
@@ -9933,8 +10032,20 @@ function scoreCommand(argv) {
         thresholds,
         verifications.get(candidate.candidateId)
       );
+      let absence = null;
+      if (searchRoot !== null) {
+        try {
+          absence = checkAbsenceClaim(`${candidate.claim} ${candidate.failureMode}`, searchRoot);
+        } catch {
+          absence = null;
+        }
+      }
+      if (absence !== null && absence.found.length > 0) {
+        breakdown.eligible = false;
+        breakdown.rejectedBecause = `claims something is absent, but the repository contains ${absence.found.join(", ")}`;
+      }
       if (breakdown.eligible) kept.push(candidate);
-      results.push({ ...breakdown, precedents });
+      results.push({ ...breakdown, precedents, ...absence === null ? {} : { absenceCheck: absence } });
     }
     const finals = results.map((r) => r.finalScore).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
     const at = (p) => finals.length === 0 ? null : finals[Math.min(finals.length - 1, Math.floor(p * finals.length))];
@@ -10274,10 +10385,6 @@ function explainCommand(argv) {
   }
 }
 function conventionsCommand(argv) {
-  if (argv.includes("--help") || argv.includes("-h")) {
-    console.log(USAGE);
-    return 0;
-  }
   let root;
   try {
     root = repositoryRoot(process.cwd());
@@ -10371,6 +10478,10 @@ function statusCommand() {
 }
 async function main(argv) {
   const command = argv[0];
+  if (command !== void 0 && (argv.includes("--help") || argv.includes("-h"))) {
+    console.log(USAGE);
+    return 0;
+  }
   switch (command) {
     case void 0:
     case "--help":
