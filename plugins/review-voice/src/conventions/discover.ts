@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
-import { frontmatterPaths, governsAny, pointerTarget } from './globs.ts';
+import { frontmatterPaths, governsAny, governsCount, pointerTarget } from './globs.ts';
 
 export type ConventionKind = 'claude' | 'agents' | 'contributing' | 'skill' | 'rule';
 
@@ -22,6 +22,8 @@ export interface ConventionDocument {
     | 'remaining budget';
   /** Globs the document declares, when it declares any. */
   governs: string[];
+  /** How many changed paths those globs cover. */
+  governsPaths: number;
   bytes: number;
   truncated: boolean;
   content: string;
@@ -241,6 +243,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
     appliesTo: string[];
     reason: ConventionDocument['reason'];
     governs: string[];
+    governsPaths: number;
   };
 
   // Directories the diff touches, nearest first, plus the root. A monorepo
@@ -256,6 +259,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       appliesTo: changedPaths.filter((changed) => changed.startsWith(`${directory}${sep}`)),
       reason: 'subtree' as const,
       governs: [],
+      governsPaths: 0,
     })),
   );
 
@@ -276,6 +280,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
         appliesTo,
         reason: 'directory scope' as const,
         governs: [],
+      governsPaths: 0,
       })),
     ...subtreeRules,
     ...REPOSITORY_FILES.map((file) => ({
@@ -284,6 +289,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       appliesTo: [],
       reason: 'repository file' as const,
       governs: [],
+      governsPaths: 0,
     })),
     ...named.map((rule) => ({
       ...rule,
@@ -291,6 +297,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       appliesTo: [],
       reason: 'name matches the change' as const,
       governs: [],
+      governsPaths: 0,
     })),
     ...rest.map((rule) => ({
       ...rule,
@@ -298,6 +305,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       appliesTo: [],
       reason: 'remaining budget' as const,
       governs: [],
+      governsPaths: 0,
     })),
   ];
 
@@ -347,10 +355,11 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       }
     }
 
+    const covers = governsCount(governs, changedPaths);
     const promoted: Entry =
       governsAny(governs, changedPaths) && entry.reason !== 'directory scope'
-        ? { ...entry, path, governs, reason: 'governs the changed paths' }
-        : { ...entry, path, governs };
+        ? { ...entry, path, governs, governsPaths: covers, reason: 'governs the changed paths' }
+        : { ...entry, path, governs, governsPaths: covers };
 
     return { entry: promoted, bytes };
   });
@@ -374,6 +383,13 @@ export function discoverConventions(root: string, changedPaths: readonly string[
     // skill pools, where there is no proximity to go on. The sort is stable,
     // so returning 0 keeps the depth order these were built in.
     if (a.entry.reason === 'directory scope') return 0;
+
+    // How much of the change a rule governs decides before how big it is. A
+    // rule matching the two largest additions in a diff is worth more than one
+    // matching a single incidental file, and ranking by size alone dropped a
+    // test rule from a change whose biggest additions were test files.
+    const byCoverage = b.entry.governsPaths - a.entry.governsPaths;
+    if (byCoverage !== 0) return byCoverage;
 
     // Cheap documents are grouped ahead of the rest, then size decides.
     const cheap = Number(b.bytes <= CHEAP_BYTES) - Number(a.bytes <= CHEAP_BYTES);
@@ -412,6 +428,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       appliesTo: entry.appliesTo,
       reason: entry.reason,
       governs: entry.governs,
+      governsPaths: entry.governsPaths,
       bytes: read.bytes,
       truncated: read.truncated,
       content: read.content,

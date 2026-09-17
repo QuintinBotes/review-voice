@@ -153,7 +153,11 @@ Optional webhook sync, draft PR-review rendering, policy dashboard, and GitHub c
 ### M5 - Public launch (v1.0.0)
 The repository is public, the threat model is written, and `SECURITY.md` has a live disclosure path. What 1.0.0 still means here is a stable interface rather than a feature: seven releases of real-world testing have moved the scoring threshold three times, changed how severity is assigned twice, and rewritten convention selection three times. 1.0.0 is the claim that those have settled.
 
-*Done when:* a retest reports no change to the scoring or severity contract, the README carries real evaluation numbers rather than targets, and the pre-release notice comes off.
+*Done when:* a retest reports no change to the scoring or severity contract, the measured numbers are published rather than targets, and the pre-release notice comes off.
+
+The middle clause originally said the README should carry those numbers. It says published instead, because the README is deliberately lean and `docs/EVALUATION.md` is where measurements belong. Noting the amendment rather than making it quietly: moving one's own bar is exactly the thing that should be visible.
+
+One clause is not on that list, and it should be understood before 1.0 rather than after. `owner_accepted_precision`, the ≥ 80% gate, has no data: nothing has been labelled through `/review-voice:feedback`. The evidence that the reviewer finds real defects is six findings verified, posted to live pull requests and fixed by their authors, which is real and is not that gate. 1.0 claims a stable interface. It does not claim a measured precision figure, and `docs/EVALUATION.md` says so in those words.
 
 ---
 

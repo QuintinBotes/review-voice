@@ -89,6 +89,45 @@ verification, and ordering rather than omission is what protects the reader. A
 run that correctly finds nine defects in a large change was failing a target
 asking it to find two.
 
+## What has actually been measured
+
+Published so the claims can be checked rather than taken. These come from one
+test campaign against three pull requests in a large private TypeScript
+repository, across plugin versions 0.2.1 to 0.8.0. That is a real workload and
+a small sample, and both halves of that sentence matter.
+
+| Measurement | Result |
+|---|---|
+| Scorer reproducibility, same inputs, 0.7.2 against 0.8.0 | max difference 1.48e-10 over 14 candidates |
+| Scorer noise, two runs of one version on identical input | up to 1.35e-7 |
+| Category stability, two runs of one diff | 4 of 4 identical |
+| Derived severity stability, same two runs | 4 of 4 identical, while the analyst's own requested severity differed on 3 of 4 |
+| Category values outside the schema enum | 0 of 8 |
+| Contract compliance | 5 of 5 outputs passed `validate-output` first try |
+| Exact no-findings string | 3 of 3 |
+| Candidate set agreement, two runs of one diff | 0.60 by location, 1.00 by finding identity |
+
+The severity row is the one worth reading twice. Deriving the tier from the
+category rather than from the analyst's requested severity holds the tier
+steady on the same diff even when the analyst's own judgement of severity
+moves, which is what that change was for.
+
+### The headline gate has no data
+
+`owner_accepted_precision`, the ≥ 80% target this document opens with, reports
+**no data**. It is computed from findings labelled through
+`/review-voice:feedback`, and nothing has been labelled.
+
+What exists instead is weaker and worth stating exactly: during testing, six
+findings were verified by hand, posted to live pull requests, and fixed by their
+authors. That is evidence the reviewer finds real defects. It is not the
+measured precision gate, because it counts no dismissals and was not collected
+through the feedback loop that would.
+
+Until findings are labelled in normal use, the precision claim is a design
+intent with a measurement path, not a result. Reporting it as anything else
+would be the over-claiming this document exists to prevent.
+
 ## Online precision
 
 ```

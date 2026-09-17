@@ -8310,6 +8310,19 @@ function globToRegExp(glob) {
   }
   return new RegExp(`^${source}$`);
 }
+function governsCount(globs, changedPaths) {
+  if (globs.length === 0 || changedPaths.length === 0) return 0;
+  const normalised = changedPaths.map((path) => path.split("\\").join("/"));
+  const compiled = globs.flatMap((glob) => {
+    try {
+      const exact = globToRegExp(glob);
+      return glob.includes("/") ? [exact] : [exact, globToRegExp(`**/${glob}`)];
+    } catch {
+      return [];
+    }
+  });
+  return normalised.filter((path) => compiled.some((pattern) => pattern.test(path))).length;
+}
 function governsAny(globs, changedPaths) {
   if (globs.length === 0 || changedPaths.length === 0) return false;
   const normalised = changedPaths.map((path) => path.split("\\").join("/"));
@@ -8444,7 +8457,8 @@ function discoverConventions(root, changedPaths = []) {
       scope: "directory",
       appliesTo: changedPaths.filter((changed) => changed.startsWith(`${directory}${sep}`)),
       reason: "subtree",
-      governs: []
+      governs: [],
+      governsPaths: 0
     }))
   );
   const rootRules = listRuleDocuments(root, "");
@@ -8457,7 +8471,8 @@ function discoverConventions(root, changedPaths = []) {
       scope: "directory",
       appliesTo,
       reason: "directory scope",
-      governs: []
+      governs: [],
+      governsPaths: 0
     })),
     ...subtreeRules,
     ...REPOSITORY_FILES.map((file) => ({
@@ -8465,21 +8480,24 @@ function discoverConventions(root, changedPaths = []) {
       scope: "repository",
       appliesTo: [],
       reason: "repository file",
-      governs: []
+      governs: [],
+      governsPaths: 0
     })),
     ...named.map((rule) => ({
       ...rule,
       scope: "repository",
       appliesTo: [],
       reason: "name matches the change",
-      governs: []
+      governs: [],
+      governsPaths: 0
     })),
     ...rest.map((rule) => ({
       ...rule,
       scope: "repository",
       appliesTo: [],
       reason: "remaining budget",
-      governs: []
+      governs: [],
+      governsPaths: 0
     }))
   ];
   const resolved = /* @__PURE__ */ new Map();
@@ -8507,7 +8525,8 @@ function discoverConventions(root, changedPaths = []) {
         bytes = Number.POSITIVE_INFINITY;
       }
     }
-    const promoted = governsAny(governs, changedPaths) && entry.reason !== "directory scope" ? { ...entry, path, governs, reason: "governs the changed paths" } : { ...entry, path, governs };
+    const covers = governsCount(governs, changedPaths);
+    const promoted = governsAny(governs, changedPaths) && entry.reason !== "directory scope" ? { ...entry, path, governs, governsPaths: covers, reason: "governs the changed paths" } : { ...entry, path, governs, governsPaths: covers };
     return { entry: promoted, bytes };
   });
   const tier = (reason) => [
@@ -8522,6 +8541,8 @@ function discoverConventions(root, changedPaths = []) {
     const byTier = tier(a.entry.reason) - tier(b.entry.reason);
     if (byTier !== 0) return byTier;
     if (a.entry.reason === "directory scope") return 0;
+    const byCoverage = b.entry.governsPaths - a.entry.governsPaths;
+    if (byCoverage !== 0) return byCoverage;
     const cheap = Number(b.bytes <= CHEAP_BYTES) - Number(a.bytes <= CHEAP_BYTES);
     if (cheap !== 0) return cheap;
     return a.bytes - b.bytes;
@@ -8554,6 +8575,7 @@ function discoverConventions(root, changedPaths = []) {
       appliesTo: entry.appliesTo,
       reason: entry.reason,
       governs: entry.governs,
+      governsPaths: entry.governsPaths,
       bytes: read.bytes,
       truncated: read.truncated,
       content: read.content

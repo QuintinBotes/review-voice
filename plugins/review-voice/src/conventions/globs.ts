@@ -87,6 +87,32 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${source}$`);
 }
 
+/**
+ * How many changed paths a document's globs govern.
+ *
+ * Coverage rather than a yes or no, because it decides which rule is read when
+ * the budget cannot hold them all. A rule matching the two largest additions in
+ * a diff is worth more than one matching a single incidental file, and ranking
+ * by size alone dropped a test rule from a change whose biggest additions were
+ * test files.
+ */
+export function governsCount(globs: readonly string[], changedPaths: readonly string[]): number {
+  if (globs.length === 0 || changedPaths.length === 0) return 0;
+
+  const normalised = changedPaths.map((path) => path.split('\\').join('/'));
+  const compiled = globs.flatMap((glob) => {
+    try {
+      const exact = globToRegExp(glob);
+      // A bare `*.tsx` is meant to match anywhere, the way these files use it.
+      return glob.includes('/') ? [exact] : [exact, globToRegExp(`**/${glob}`)];
+    } catch {
+      return [];
+    }
+  });
+
+  return normalised.filter((path) => compiled.some((pattern) => pattern.test(path))).length;
+}
+
 /** Whether any declared glob governs any changed path. */
 export function governsAny(globs: readonly string[], changedPaths: readonly string[]): boolean {
   if (globs.length === 0 || changedPaths.length === 0) return false;
