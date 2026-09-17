@@ -14,6 +14,14 @@ export interface Candidate {
 
 export interface ScoreBreakdown {
   candidateId: string;
+  /**
+   * Location, carried so a breakdown can be matched back to the finding it
+   * produced. A candidate id is meaningless to anything downstream: the
+   * editor may drop candidates it cannot state within the word limit, so
+   * position is not a reliable link either.
+   */
+  path: string;
+  line: number;
   technicalConfidence: number;
   ownerAlignment: number;
   repositoryAlignment: number;
@@ -116,6 +124,8 @@ export function scoreCandidate(
 
   return {
     candidateId: candidate.candidateId,
+    path: candidate.path,
+    line: candidate.line,
     technicalConfidence: candidate.technicalConfidence,
     ownerAlignment,
     repositoryAlignment,

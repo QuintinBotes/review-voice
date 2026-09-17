@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `review-voice diff --pr <number>`: reviews a GitHub pull request through the
   read-only client, inferring the repository from the origin remote. Naming a
   pull request is the consent for reading it, so no allowlist entry is needed.
+- Score breakdowns carry the location they came from, so `explain` matches a
+  score to its finding rather than showing every finding the first one's
+  numbers.
 - `review-voice explain`: reports the category, confidence, score and precedent
   ids recorded for each finding, and says "not recorded" rather than
   reconstructing a rationale.

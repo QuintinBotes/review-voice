@@ -8348,6 +8348,8 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   }
   return {
     candidateId: candidate.candidateId,
+    path: candidate.path,
+    line: candidate.line,
     technicalConfidence: candidate.technicalConfidence,
     ownerAlignment,
     repositoryAlignment,
@@ -9402,7 +9404,7 @@ function explainCommand(argv) {
       return 1;
     }
     for (const finding of shown) {
-      const score = scores.find((s) => s.candidateId !== void 0 && s.candidateId.length > 0 && detail.findings.some((f) => f.findingId === finding.findingId));
+      const score = scores.find((s) => s.path === finding.path && s.line === finding.line);
       console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
       console.log(`  category          ${finding.category ?? "not recorded"}`);
       if (score?.technicalConfidence !== void 0) {

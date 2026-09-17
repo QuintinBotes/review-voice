@@ -81,3 +81,58 @@ test('two runs in the same millisecond still resolve to the newer one', () => {
     }
   });
 });
+
+test('each finding shows its own score, not the first one’s', () => {
+  withDb((db) => {
+    // Found by running the reviewer on its own pull request. The lookup used a
+    // predicate that never discriminated between findings, so every finding
+    // displayed the first finding's numbers — worse than displaying none, in
+    // the command whose whole purpose is auditability.
+    recordRun(db, {
+      repository: 'org/a',
+      baseRef: null,
+      headRef: null,
+      diff: 'd',
+      output: [
+        '[blocking] `src/a.ts:1` — First problem here. It fails. Fix it.',
+        '[minor] `src/b.ts:2` — Second problem here. It fails differently. Fix it.',
+      ].join('\n\n'),
+      candidates: [
+        { path: 'src/a.ts', line: 1, category: 'correctness' },
+        { path: 'src/b.ts', line: 2, category: 'security' },
+      ],
+      scores: [
+        { candidateId: 'cand_001', path: 'src/a.ts', line: 1, technicalConfidence: 0.91, finalScore: 0.86 },
+        { candidateId: 'cand_002', path: 'src/b.ts', line: 2, technicalConfidence: 0.55, finalScore: 0.4 },
+      ],
+    });
+
+    const detail = runDetail(db);
+    const scoreFor = (finding) =>
+      detail.scores.find((s) => s.path === finding.path && s.line === finding.line);
+
+    const [first, second] = detail.findings;
+    assert.equal(scoreFor(first).finalScore, 0.86);
+    assert.equal(scoreFor(second).finalScore, 0.4);
+    assert.notEqual(scoreFor(first).finalScore, scoreFor(second).finalScore);
+  });
+});
+
+test('a score with no location is not attached to some other finding', () => {
+  withDb((db) => {
+    recordRun(db, {
+      repository: 'org/a',
+      baseRef: null,
+      headRef: null,
+      diff: 'd',
+      output: OUTPUT,
+      scores: [{ candidateId: 'cand_001', technicalConfidence: 0.91, finalScore: 0.86 }],
+    });
+
+    const detail = runDetail(db);
+    const finding = detail.findings[0];
+    const matched = detail.scores.find((s) => s.path === finding.path && s.line === finding.line);
+    // Reporting nothing beats reporting somebody else's numbers.
+    assert.equal(matched, undefined);
+  });
+});
