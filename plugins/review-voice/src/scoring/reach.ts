@@ -13,8 +13,13 @@ export type Reach = 'local' | 'component' | 'repository';
  */
 export interface ReachCheck {
   reach: Reach | null;
-  /** Where the searched symbols came from, so a surprising reach is traceable. */
-  symbolSource: 'hunks' | 'claim';
+  /**
+   * Where the searched symbols came from, so a surprising reach is traceable.
+   * `hunks` is the changed file's own; `diff` is the rest of the change, used
+   * when the finding names a file the pull request does not touch; `claim` is
+   * the fallback when no diff was supplied.
+   */
+  symbolSource: 'hunks' | 'diff' | 'claim';
   /**
    * True when no touched symbol existed at the reviewed ref and the changed
    * file's own module name stood in for them.
@@ -56,8 +61,15 @@ export interface ReachCheck {
  * Only `+` and `-` lines are read. A symbol sitting in a context line is what
  * the change is near, not what it changed.
  */
-export function symbolsFromHunks(diff: string, changedPath: string): string[] {
-  const wanted = normalisePath(changedPath);
+export function symbolsFromHunks(diff: string, changedPath: string | null): string[] {
+  // `null` means every file in the diff. A finding about a broken consumer
+  // names the consumer, which the pull request does not touch, so there are no
+  // hunks for its path - and that is the shape of every broken-consumer
+  // finding, the class that produced the only build breaker this reviewer has
+  // caught. The symbol whose spread matters is the one the diff changed
+  // elsewhere, so the whole diff is the right source when the named file has
+  // no hunks of its own.
+  const wanted = changedPath === null ? null : normalisePath(changedPath);
   const found = new Set<string>();
   let inFile = false;
 
@@ -65,7 +77,7 @@ export function symbolsFromHunks(diff: string, changedPath: string): string[] {
     if (raw.startsWith('diff --git ') || raw.startsWith('+++ ')) {
       // `+++ b/path`, and the `diff --git` header for renames.
       const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
-      if (match?.[1] !== undefined) inFile = normalisePath(match[1]) === wanted;
+      if (match?.[1] !== undefined) inFile = wanted === null || normalisePath(match[1]) === wanted;
       else if (raw.startsWith('diff --git ')) inFile = false;
       continue;
     }
@@ -179,9 +191,15 @@ export function computeReach(
   // Symbols the diff touched, when the diff is available; otherwise the
   // claim's, which is what every caller had before the diff was threaded
   // through and remains the honest fallback.
-  const fromHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
-  const source: 'hunks' | 'claim' = fromHunks.length > 0 ? 'hunks' : 'claim';
-  const symbols = (source === 'hunks' ? fromHunks : namedSymbols(text)).slice(0, 12);
+  const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
+  // A finding whose file the diff does not touch still has a diff to measure:
+  // the symbol it is about was changed somewhere else.
+  const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
+  const source: 'hunks' | 'diff' | 'claim' =
+    ownHunks.length > 0 ? 'hunks' : anyHunks.length > 0 ? 'diff' : 'claim';
+  const symbols = (
+    source === 'hunks' ? ownHunks : source === 'diff' ? anyHunks : namedSymbols(text)
+  ).slice(0, 12);
   const searched: string[] = [];
   const ignored: string[] = [];
   const hits = new Set<string>();
@@ -229,7 +247,10 @@ export function computeReach(
     // Reach is the spread of the code under review, not of every word the
     // finding happens to use. A symbol the changed file does not contain is
     // not part of this change, however widely it is used elsewhere.
-    if (!code.some((path) => normalisePath(path) === normalisedChangedPath)) {
+    // Containment in the named file is the right test when the symbol came
+    // from that file's own hunks. For a broken-consumer finding the symbol
+    // lives in the file the change touched, not in the one the finding names.
+    if (source !== 'diff' && !code.some((path) => normalisePath(path) === normalisedChangedPath)) {
       ignored.push(symbol);
       continue;
     }
@@ -259,7 +280,7 @@ export function computeReach(
   // The module is the proxy. A new symbol added to a file that half the
   // repository imports carries that file's blast radius, even though nothing
   // references the symbol itself yet.
-  if (counted.length === 0 && source === 'hunks') {
+  if (counted.length === 0 && source !== 'claim') {
     const moduleName = normalisePath(changedPath).split('/').pop()?.replace(/\.[^.]+$/, '');
     if (moduleName !== undefined && moduleName.length >= 4) {
       searched.push(moduleName);
