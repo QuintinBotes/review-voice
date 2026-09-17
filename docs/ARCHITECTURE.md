@@ -277,6 +277,20 @@ absence, and certainly not evidence of presence.
 The check only contradicts specific assertions. A claim naming nothing
 searchable is left alone, because this grades falsehood rather than vagueness.
 
+It reads the claim and never the failure mode. The two were concatenated, which
+handed the sentence explaining the consequence a vote on whether the assertion
+was scoped: the same invented claim was checked or ignored depending on how its
+impact was worded, and a symbol named in the mechanism could be reported as one
+the claim said was absent.
+
+A claim naming somewhere this repository cannot answer for returns
+`inconclusive: true`. "Absent from the localisation catalogue" is a true and
+useful finding about a sibling repository, and `git grep` here speaks only for
+this one. Answering anyway gave the worst outcome available: at the base ref it
+returned `found: []`, which reads as corroboration, and at the head ref it found
+the symbol the diff itself adds and deleted the finding with a sentence that was
+false about the claim.
+
 ### Whose confidence the gate reads
 
 Eligibility used to be gated on `technical_confidence`, a number the analyst

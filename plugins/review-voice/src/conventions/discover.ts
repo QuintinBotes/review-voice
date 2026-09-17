@@ -132,7 +132,11 @@ function ancestors(changedPath: string): string[] {
  * root.
  */
 function resolvePointer(root: string, pointerPath: string, target: string): string | null {
-  const candidates: string[] = [];
+  const own = dirname(pointerPath);
+  // Its own directory first. `@AGENTS.md` beside `packages/app/CLAUDE.md`
+  // means the sibling, and resolving only from the repository root silently
+  // substituted a different document that happened to share the name.
+  const candidates: string[] = own === '.' || own === '' ? [] : [join(own, target)];
 
   let directory = dirname(pointerPath);
   while (directory !== '.' && directory !== '' && directory !== sep) {
