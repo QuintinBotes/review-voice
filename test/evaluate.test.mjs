@@ -126,3 +126,30 @@ test('word and finding distributions are reported', () => {
     assert.equal(metric(metrics, 'median_findings_per_review').value, 1);
   });
 });
+
+test('a goal is reported but never failed like a contract', () => {
+  // median_words_per_finding asked for 28 while the validator's contract
+  // allows 40, so every compliant review failed a metric it had not broken.
+  withDb((db) => {
+    const metrics = computeMetrics(db);
+    assert.equal(metric(metrics, 'median_words_per_finding').kind, 'goal');
+
+    const ceiling = metric(metrics, 'p95_words_per_finding');
+    assert.equal(ceiling.kind, 'gate');
+    assert.equal(ceiling.target, '<= 40');
+
+    assert.equal(metric(metrics, 'contract_compliance').kind, 'gate');
+  });
+});
+
+test('finding counts are reported without a target', () => {
+  // A count reflects the diff. Since the contract stopped capping findings, a
+  // run that correctly reported nine defects was failing a target of two.
+  withDb((db) => {
+    const metrics = computeMetrics(db);
+    for (const name of ['median_findings_per_review', 'p95_findings_per_review']) {
+      assert.equal(metric(metrics, name).target, 'no target');
+      assert.equal(metric(metrics, name).kind, 'goal');
+    }
+  });
+});

@@ -11,6 +11,17 @@ export interface Metric {
   meets: boolean | null;
   /** How the number was arrived at, so a passing metric can be checked. */
   basis: string;
+  /**
+   * `gate` is a contract the reviewer must meet. `goal` is something to aim
+   * at, reported but never failed.
+   *
+   * The two used to be reported identically, which produced a standing
+   * failure on `median_words_per_finding`: the target said 28 while the
+   * contract the validator enforces says 40, so every compliant review failed
+   * a metric it had not broken. A number that cannot be met by following the
+   * rules is not a target, it is a mislabelled aspiration.
+   */
+  kind: 'gate' | 'goal';
 }
 
 function percentile(values: number[], p: number): number | null {
@@ -86,12 +97,14 @@ export function computeMetrics(db: Database): Metric[] {
     target: string,
     meets: (v: number) => boolean,
     basis: string,
+    kind: Metric['kind'] = 'gate',
   ): Metric => ({
     name,
     value,
     target,
     meets: value === null ? null : meets(value),
     basis,
+    kind,
   });
 
   return [
@@ -104,10 +117,41 @@ export function computeMetrics(db: Database): Metric[] {
       // would make the reviewer look worse the quieter its user is.
       `(${kept} kept or rewritten) / (${labelled} labelled); unlabelled excluded`,
     ),
-    metric('median_findings_per_review', median(findingsPerRun), '<= 2', (v) => v <= 2, `${runs.length} runs`),
-    metric('p95_findings_per_review', percentile(findingsPerRun, 95), '<= 5', (v) => v <= 5, `${runs.length} runs`),
-    metric('median_words_per_finding', median(wordsPerFinding), '<= 28', (v) => v <= 28, `${wordsPerFinding.length} findings`),
-    metric('p95_words_per_finding', percentile(wordsPerFinding, 95), '<= 40', (v) => v <= 40, `${wordsPerFinding.length} findings`),
+    // Counts are a property of the pull requests reviewed, not of the
+    // reviewer. Since the output contract stopped capping findings, a run that
+    // correctly reports nine defects in a large diff was failing a target that
+    // asked it to report two.
+    metric(
+      'median_findings_per_review',
+      median(findingsPerRun),
+      'no target',
+      () => true,
+      `${runs.length} runs; a count reflects the diff, not the reviewer`,
+      'goal',
+    ),
+    metric(
+      'p95_findings_per_review',
+      percentile(findingsPerRun, 95),
+      'no target',
+      () => true,
+      `${runs.length} runs; a count reflects the diff, not the reviewer`,
+      'goal',
+    ),
+    metric(
+      'median_words_per_finding',
+      median(wordsPerFinding),
+      '<= 28',
+      (v) => v <= 28,
+      `${wordsPerFinding.length} findings; the contract ceiling is 40, this is the brevity to aim for`,
+      'goal',
+    ),
+    metric(
+      'p95_words_per_finding',
+      percentile(wordsPerFinding, 95),
+      '<= 40',
+      (v) => v <= 40,
+      `${wordsPerFinding.length} findings; this is the contract ceiling the validator enforces`,
+    ),
     metric(
       'contract_compliance',
       ratio(compliantOutputs, runs.length),
