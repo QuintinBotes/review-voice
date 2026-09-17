@@ -13,7 +13,7 @@ this file.
 
 | # | Item | Where |
 |---|---|---|
-| — | Severity collapsed to minor or nit | #75, ADR 0009 |
+| - | Severity collapsed to minor or nit | #75, ADR 0009 |
 | 1 | Convention stubs pointing at two documents resolved neither | #78 |
 | 9 | Truncation silent; byte budget counted UTF-16 units | #78 |
 | 4 | Editor could not receive findings by path | #79 |
@@ -21,7 +21,7 @@ this file.
 | 6 | `RV` as a shell variable fails under zsh | #79 |
 | 10 | `--min-score` help advertised a default three releases stale | #79 |
 | 10b | Agent tool grants unverified | #80, partially |
-| — | Reach measured word popularity; `local` unreachable | #81 |
+| - | Reach measured word popularity; `local` unreachable | #81 |
 | 2 | Pull request commits never made available locally | #83 |
 | 3a/3b | External verifier judged the working tree | #83 |
 | 8 | Empty untracked files bought word budget | #83 |
