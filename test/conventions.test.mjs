@@ -344,3 +344,55 @@ test('a directory-scoped file is never demoted by a glob elsewhere', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Coverage decides before size (the tests.md case)
+
+test('a rule governing most of the change is read before a smaller one that is not', () => {
+  // Observed: `.agents/rules/tests.md` skipped for budget on a diff whose two
+  // largest additions were spec files, while shorter rules that governed one
+  // incidental file were read.
+  const root = repository({
+    '.agents/rules/tests.md': '---\npaths:\n  - "**/*.spec.tsx"\n---\nName the uncovered behaviour. '.padEnd(900, 'x'),
+    '.agents/rules/datetime.md': '---\npaths:\n  - "**/*.ts"\n---\nUse UTC.',
+  });
+  try {
+    const report = discoverConventions(root, [
+      'src/a.spec.tsx',
+      'src/b.spec.tsx',
+      'src/c.spec.tsx',
+      'src/util.ts',
+    ]);
+    assert.equal(report.documents[0].path, join('.agents', 'rules', 'tests.md'));
+    assert.equal(report.documents[0].governsPaths, 3);
+    assert.equal(report.documents[1].governsPaths, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('size still decides between rules with equal coverage', () => {
+  const root = repository({
+    '.agents/rules/long.md': `---\npaths:\n  - "**/*.ts"\n---\n${'x'.repeat(3000)}`,
+    '.agents/rules/short.md': '---\npaths:\n  - "**/*.ts"\n---\nShort.',
+  });
+  try {
+    const report = discoverConventions(root, ['src/a.ts']);
+    assert.equal(report.documents[0].path, join('.agents', 'rules', 'short.md'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('coverage never demotes a file governing the directory under change', () => {
+  const root = repository({
+    'src/api/CLAUDE.md': 'Handlers validate first.',
+    '.agents/rules/wide.md': '---\npaths:\n  - "**/*"\n---\nGoverns everything.',
+  });
+  try {
+    const report = discoverConventions(root, ['src/api/a.ts', 'src/api/b.ts', 'src/api/c.ts']);
+    assert.equal(report.documents[0].path, join('src', 'api', 'CLAUDE.md'));
+    assert.equal(report.documents[0].reason, 'directory scope');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
