@@ -206,10 +206,30 @@ page between identical reviews. Asking for one produced `minor` at confidence
 0.90 and `important` at 0.85 for the same finding on a byte-identical diff: the
 evidence barely moved and the tier jumped.
 
-`score` derives it from the category and the verified confidence, weakening one
-tier below 0.85. Blast radius is a property of the kind of defect rather than of
-how the reviewer felt about it on the day. The requested severity is recorded
-beside the derived one so a divergence can be audited.
+`score` derives it from the category alone. Blast radius is a property of the
+kind of defect rather than of how the reviewer felt about it on the day, and the
+requested severity is recorded beside the derived one so a divergence can be
+audited.
+
+Confidence deliberately plays no part. A first version weakened one tier below
+0.85, and that turned out to be the whole remaining instability: on two runs of
+an identical diff the category matched both times and the tier differed anyway,
+at 0.82 against 0.90 and at 0.85 against 0.80. Everything that can ship already
+sits in `[0.8, 1.0]` because the confidence gate says so, and run to run
+variance is around 0.08, so any boundary drawn inside that band gets crossed.
+One free judgement had been removed from this path and a second left in with a
+hard edge in the middle of it.
+
+The tiers are a step quieter than a first reading suggests, which is what pays
+for dropping the weakening: `correctness` and `user_visible_behavior` carry
+`minor`, not `important`. Reach depends on circumstances the scorer cannot see,
+and the quieter tier is the right default for a reviewer whose purpose is not to
+overstate. The wording carries the consequence either way.
+
+A missing category is not defaulted. It used to become `correctness` before the
+derivation saw it, which gave an unlabelled finding a real tier and recorded
+nothing about the substitution; absent and unrecognised now both take the middle
+tier and say so.
 
 `question` is preserved rather than derived. It says the reviewer could not
 establish the answer and the author can, which is a kind of finding rather than
