@@ -15,7 +15,7 @@ export interface ChangedFile {
 
 export interface DiffResult {
   repositoryRoot: string;
-  mode: 'worktree' | 'staged' | 'base';
+  mode: 'worktree' | 'staged' | 'base' | 'pull-request';
   base: string | null;
   head: string;
   files: ChangedFile[];

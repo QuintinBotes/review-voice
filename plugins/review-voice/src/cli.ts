@@ -8,15 +8,17 @@
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
 import { pluginVersion } from './version.ts';
 import { runDoctor } from './doctor.ts';
 import { validateOutput } from './contract/validate.ts';
 import { DEFAULT_LIMITS, type ContractLimits } from './contract/limits.ts';
 import { acquireDiff, GitError } from './diff/acquire.ts';
+import { acquirePullRequestDiff } from './diff/pull-request.ts';
 import { openDatabase } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
-import { recordRun, latestRun } from './store/runs.ts';
+import { recordRun, latestRun, runDetail } from './store/runs.ts';
 import { recordFeedback, normaliseAction, feedbackTotals, FEEDBACK_ACTIONS } from './store/feedback.ts';
 import { loadConfig } from './policy/load.ts';
 import { resolvePolicy } from './policy/schema.ts';
@@ -61,6 +63,7 @@ Commands:
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
+  explain           Show why the last review said what it said
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
   --version         Print the plugin version
@@ -69,6 +72,8 @@ Commands:
 diff flags:
   --base <ref>           Review against a base ref (e.g. origin/main)
   --staged               Review staged changes only
+  --pr <number>          Review a GitHub pull request (needs --repository)
+  --repository <name>    owner/repo for --pr; inferred from the git remote if absent
   --include-generated    Include lock files, generated, vendored and binary files
 
 record flags:
@@ -77,6 +82,7 @@ record flags:
   --head <sha>           Head commit reviewed
   --diff-file <path>     Diff the review was produced from (for the run hash)
   --candidates <path>    Scored candidates, so findings carry their category
+  --scores <path>        Score breakdowns, so explain can show its working
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -167,6 +173,43 @@ function validateOutputCommand(argv: string[]): number {
   }
   console.error(`\n${result.violations.length} contract violation(s).`);
   return 1;
+}
+
+/** Reads owner/repo from the origin remote, so --pr usually needs no --repository. */
+function inferRepository(cwd: string): string | null {
+  try {
+    const url = execFileSync('git', ['remote', 'get-url', 'origin'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const match = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
+    return match?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function pullRequestDiffCommand(argv: string[]): Promise<number> {
+  const pullNumber = Number(flag(argv, '--pr'));
+  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+    console.error('--pr needs a pull request number.');
+    return 2;
+  }
+
+  const repository = flag(argv, '--repository') ?? inferRepository(process.cwd());
+  if (repository === null) {
+    console.error('Cannot tell which repository. Pass --repository <owner/repo>.');
+    return 2;
+  }
+
+  const result = await acquirePullRequestDiff({
+    repository,
+    pullNumber,
+    includeGenerated: argv.includes('--include-generated'),
+  });
+  console.log(JSON.stringify(result, null, 2));
+  return 0;
 }
 
 function diffCommand(argv: string[]): number {
@@ -660,6 +703,18 @@ function recordCommand(argv: string[]): number {
     }
   }
 
+  const scoresFile = flag(argv, '--scores');
+  let scores: unknown = [];
+  if (scoresFile !== null) {
+    try {
+      const parsed = JSON.parse(readFileSync(scoresFile, 'utf8')) as { scores?: unknown };
+      scores = Array.isArray(parsed) ? parsed : (parsed.scores ?? []);
+    } catch {
+      console.error(`Cannot read scores from ${scoresFile}.`);
+      return 2;
+    }
+  }
+
   const db = openDatabase();
   try {
     const { reviewRunId, findings } = recordRun(db, {
@@ -669,6 +724,7 @@ function recordCommand(argv: string[]): number {
       diff,
       output,
       candidates,
+      scores,
     });
     console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
     return 0;
@@ -704,6 +760,66 @@ function feedbackCommand(argv: string[]): number {
       return 1;
     }
     console.log(`Recorded ${action} for ${result.findingId}.`);
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+function explainCommand(argv: string[]): number {
+  const db = openDatabase();
+  try {
+    const detail = runDetail(db, flag(argv, '--run') ?? undefined);
+    if (detail === null) {
+      console.log('No review has been recorded yet.');
+      return 0;
+    }
+
+    const wanted = argv.find((arg) => /^rv_\d+$/.test(arg));
+    const scores = (Array.isArray(detail.scores) ? detail.scores : []) as {
+      candidateId?: string;
+      technicalConfidence?: number;
+      finalScore?: number;
+      eligible?: boolean;
+      rejectedBecause?: string | null;
+      precedentIds?: string[];
+    }[];
+
+    if (argv.includes('--json')) {
+      console.log(JSON.stringify(detail, null, 2));
+      return 0;
+    }
+
+    console.log(`Review ${detail.reviewRunId}`);
+    console.log(`Recorded ${detail.createdAt}${detail.repository === null ? '' : ` for ${detail.repository}`}`);
+    console.log('');
+
+    const shown = wanted === undefined ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
+    if (shown.length === 0) {
+      console.log(`No finding ${wanted}. Available: ${detail.findings.map((f) => f.findingId).join(', ') || 'none'}.`);
+      return 1;
+    }
+
+    for (const finding of shown) {
+      const score = scores.find((s) => s.candidateId !== undefined && s.candidateId.length > 0 && detail.findings.some((f) => f.findingId === finding.findingId));
+      console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
+      console.log(`  category          ${finding.category ?? 'not recorded'}`);
+      if (score?.technicalConfidence !== undefined) {
+        console.log(`  technical         ${score.technicalConfidence.toFixed(2)}`);
+      }
+      if (score?.finalScore !== undefined) {
+        console.log(`  final score       ${score.finalScore.toFixed(2)}`);
+      }
+      if (score?.precedentIds !== undefined && score.precedentIds.length > 0) {
+        console.log(`  precedents        ${score.precedentIds.join(', ')}`);
+      }
+      // Saying "no data" beats inventing a rationale after the fact.
+      if (score === undefined) {
+        console.log('  scoring           not recorded for this review');
+      }
+      console.log('');
+    }
+
     return 0;
   } finally {
     db.close();
@@ -759,7 +875,9 @@ async function main(argv: string[]): Promise<number> {
       return 0;
 
     case 'diff':
-      return diffCommand(argv.slice(1));
+      return argv.includes('--pr')
+        ? await pullRequestDiffCommand(argv.slice(1))
+        : diffCommand(argv.slice(1));
 
     case 'context':
       return contextCommand();
@@ -811,6 +929,9 @@ async function main(argv: string[]): Promise<number> {
 
     case 'status':
       return statusCommand();
+
+    case 'explain':
+      return explainCommand(argv.slice(1));
 
     case 'validate-output':
       return validateOutputCommand(argv.slice(1));

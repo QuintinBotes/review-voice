@@ -2,6 +2,7 @@
 
 // plugins/review-voice/src/cli.ts
 import { readFileSync as readFileSync3 } from "node:fs";
+import { execFileSync as execFileSync4 } from "node:child_process";
 
 // plugins/review-voice/src/warnings.ts
 function suppressSqliteExperimentalWarning() {
@@ -524,6 +525,204 @@ function acquireDiff(options) {
   };
 }
 
+// plugins/review-voice/src/github/auth.ts
+import { execFileSync as execFileSync3 } from "node:child_process";
+var AuthError = class extends Error {
+};
+function githubToken(env = process.env) {
+  const fromEnv = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
+  if (fromEnv !== void 0 && fromEnv.length > 0) return fromEnv;
+  try {
+    const token = execFileSync3("gh", ["auth", "token"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    if (token.length > 0) return token;
+  } catch {
+  }
+  throw new AuthError(
+    "No GitHub credential. Run `gh auth login`, or set GITHUB_TOKEN. Review Voice needs read access only."
+  );
+}
+
+// plugins/review-voice/src/github/client.ts
+var ReadOnlyViolation = class extends Error {
+};
+var NotAllowlisted = class extends Error {
+};
+var GitHubError = class extends Error {
+  // Written out rather than declared as a parameter property: Node strips
+  // types to run TypeScript directly, and parameter properties are syntax it
+  // cannot strip. Keeping the source loadable without a build step means tests
+  // can import it directly.
+  status;
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+};
+var REPO_PATH = /^\/repos\/([^/]+\/[^/]+)(\/|$)/;
+var GitHubClient = class {
+  allowlist;
+  baseUrl;
+  doFetch;
+  sleep;
+  token;
+  constructor(options) {
+    this.allowlist = new Set(options.allowlist.map((name) => name.toLowerCase()));
+    this.baseUrl = options.baseUrl ?? "https://api.github.com";
+    this.doFetch = options.fetchImpl ?? fetch;
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.token = options.token ?? null;
+  }
+  authorization() {
+    this.token ??= githubToken();
+    return `Bearer ${this.token}`;
+  }
+  assertAllowed(path) {
+    const match = REPO_PATH.exec(path);
+    if (match === null) return;
+    const repository = match[1].toLowerCase();
+    if (!this.allowlist.has(repository)) {
+      throw new NotAllowlisted(
+        `${match[1]} is not in the allowlist. Add it with /review-voice:init before reading it.`
+      );
+    }
+  }
+  /**
+   * Conditional-request cache. A 304 costs nothing against the rate limit,
+   * which is what makes repeated polling viable without a webhook endpoint —
+   * and an endpoint is what docs/adr/0002 declined to make this tool require.
+   */
+  etags = /* @__PURE__ */ new Map();
+  /** Seeds the cache from a previous run, so polling survives process restarts. */
+  primeEtags(entries) {
+    for (const [url, etag] of Object.entries(entries)) this.etags.set(url, etag);
+  }
+  exportEtags() {
+    return Object.fromEntries(this.etags);
+  }
+  async get(path, init = {}) {
+    if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
+      throw new ReadOnlyViolation(
+        `Review Voice is read-only; refused a ${init.method} to ${path}.`
+      );
+    }
+    this.assertAllowed(path);
+    const url = path.startsWith("http") ? path : `${this.baseUrl}${path}`;
+    for (let attempt = 0; ; attempt += 1) {
+      const knownEtag = this.etags.get(url);
+      const response = await this.doFetch(url, {
+        method: "GET",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: this.authorization(),
+          "x-github-api-version": "2022-11-28",
+          "user-agent": "review-voice",
+          ...knownEtag === void 0 ? {} : { "if-none-match": knownEtag }
+        }
+      });
+      if (response.status === 304) {
+        return { data: [], linkNext: null, notModified: true };
+      }
+      if (response.status === 403 || response.status === 429) {
+        const retryAfter = Number(response.headers.get("retry-after") ?? "0");
+        const remaining = response.headers.get("x-ratelimit-remaining");
+        if ((remaining === "0" || retryAfter > 0) && attempt < 4) {
+          const waitMs = retryAfter > 0 ? retryAfter * 1e3 : 2 ** attempt * 1e3;
+          await this.sleep(waitMs);
+          continue;
+        }
+      }
+      if (!response.ok) {
+        throw new GitHubError(
+          `GitHub returned ${response.status} for ${path}: ${(await response.text()).slice(0, 200)}`,
+          response.status
+        );
+      }
+      const etag = response.headers.get("etag");
+      if (etag !== null) this.etags.set(url, etag);
+      const link = response.headers.get("link");
+      const next = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
+      return { data: await response.json(), linkNext: next };
+    }
+  }
+  /** Follows pagination up to `limit` items, so a huge repository cannot run away. */
+  async paginate(path, limit) {
+    const items = [];
+    let next = path;
+    while (next !== null && items.length < limit) {
+      const page = await this.get(next);
+      if (!Array.isArray(page.data)) break;
+      items.push(...page.data);
+      next = page.linkNext;
+    }
+    return items.slice(0, limit);
+  }
+};
+
+// plugins/review-voice/src/diff/pull-request.ts
+var STATUS2 = {
+  added: "added",
+  modified: "modified",
+  removed: "deleted",
+  renamed: "renamed",
+  copied: "copied",
+  changed: "changed"
+};
+function toUnifiedDiff(file) {
+  const previous = file.previous_filename ?? file.filename;
+  return [
+    `diff --git a/${previous} b/${file.filename}`,
+    `--- a/${previous}`,
+    `+++ b/${file.filename}`,
+    file.patch ?? "",
+    ""
+  ].join("\n");
+}
+async function acquirePullRequestDiff(options) {
+  const client = new GitHubClient({ allowlist: [options.repository] });
+  const { data: pull } = await client.get(
+    `/repos/${options.repository}/pulls/${options.pullNumber}`
+  );
+  const rawFiles = await client.paginate(
+    `/repos/${options.repository}/pulls/${options.pullNumber}/files?per_page=100`,
+    options.maxFiles ?? 300
+  );
+  const files = rawFiles.map((file) => {
+    const cls = classify(file.filename);
+    const deleted = file.status === "removed";
+    const reviewed = !deleted && isReviewable(file.filename, options.includeGenerated) && file.patch !== void 0;
+    let excludedBecause;
+    if (!reviewed) {
+      if (deleted) excludedBecause = "file deleted";
+      else if (file.patch === void 0) excludedBecause = "no patch returned (binary or too large)";
+      else excludedBecause = `${cls} file`;
+    }
+    return {
+      path: file.filename,
+      ...file.previous_filename === void 0 ? {} : { previousPath: file.previous_filename },
+      status: STATUS2[file.status] ?? "changed",
+      class: cls,
+      language: languageOf(file.filename),
+      reviewed,
+      ...excludedBecause === void 0 ? {} : { excludedBecause }
+    };
+  });
+  const diff = rawFiles.filter((file) => files.find((f) => f.path === file.filename)?.reviewed === true).map(toUnifiedDiff).join("");
+  return {
+    repositoryRoot: options.repository,
+    mode: "pull-request",
+    base: pull.base.sha,
+    head: pull.head.sha,
+    title: pull.title,
+    files,
+    reviewedFileCount: files.filter((file) => file.reviewed).length,
+    excludedFileCount: files.filter((file) => !file.reviewed).length,
+    diff
+  };
+}
+
 // plugins/review-voice/src/store/db.ts
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, chmodSync } from "node:fs";
@@ -791,12 +990,10 @@ function recordRun(db, input) {
     input.baseRef,
     input.headRef,
     hashDiff(input.diff),
-    // Policy layering and precedent retrieval arrive in later milestones; the
-    // columns exist now so a run recorded today stays readable then.
     JSON.stringify([]),
-    JSON.stringify([]),
+    JSON.stringify(input.precedents ?? []),
     JSON.stringify(input.candidates ?? []),
-    JSON.stringify({ output: input.output, findings }),
+    JSON.stringify({ output: input.output, findings, scores: input.scores ?? [] }),
     (/* @__PURE__ */ new Date()).toISOString()
   );
   recordAudit(db, "review_run_recorded", { type: "review_run", id: reviewRunId }, {
@@ -805,8 +1002,22 @@ function recordRun(db, input) {
   });
   return { reviewRunId, findings };
 }
+function runDetail(db, reviewRunId) {
+  const row = reviewRunId === void 0 ? db.prepare("SELECT * FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get() : db.prepare("SELECT * FROM review_runs WHERE review_run_id = ?").get(reviewRunId);
+  if (row === void 0) return null;
+  const parsed = JSON.parse(row["output_json"]);
+  return {
+    reviewRunId: row["review_run_id"],
+    repository: row["repository"],
+    createdAt: row["created_at"],
+    output: parsed.output,
+    findings: parsed.findings,
+    scores: parsed.scores ?? [],
+    precedents: JSON.parse(row["retrieved_precedents_json"])
+  };
+}
 function latestRun(db) {
-  const row = db.prepare("SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC LIMIT 1").get();
+  const row = db.prepare("SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get();
   if (row === void 0) return null;
   const parsed = JSON.parse(row.output_json);
   return { reviewRunId: row.review_run_id, findings: parsed.findings };
@@ -7537,142 +7748,6 @@ function redact(input) {
   };
 }
 
-// plugins/review-voice/src/github/auth.ts
-import { execFileSync as execFileSync3 } from "node:child_process";
-var AuthError = class extends Error {
-};
-function githubToken(env = process.env) {
-  const fromEnv = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
-  if (fromEnv !== void 0 && fromEnv.length > 0) return fromEnv;
-  try {
-    const token = execFileSync3("gh", ["auth", "token"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
-    }).trim();
-    if (token.length > 0) return token;
-  } catch {
-  }
-  throw new AuthError(
-    "No GitHub credential. Run `gh auth login`, or set GITHUB_TOKEN. Review Voice needs read access only."
-  );
-}
-
-// plugins/review-voice/src/github/client.ts
-var ReadOnlyViolation = class extends Error {
-};
-var NotAllowlisted = class extends Error {
-};
-var GitHubError = class extends Error {
-  // Written out rather than declared as a parameter property: Node strips
-  // types to run TypeScript directly, and parameter properties are syntax it
-  // cannot strip. Keeping the source loadable without a build step means tests
-  // can import it directly.
-  status;
-  constructor(message, status) {
-    super(message);
-    this.status = status;
-  }
-};
-var REPO_PATH = /^\/repos\/([^/]+\/[^/]+)(\/|$)/;
-var GitHubClient = class {
-  allowlist;
-  baseUrl;
-  doFetch;
-  sleep;
-  token;
-  constructor(options) {
-    this.allowlist = new Set(options.allowlist.map((name) => name.toLowerCase()));
-    this.baseUrl = options.baseUrl ?? "https://api.github.com";
-    this.doFetch = options.fetchImpl ?? fetch;
-    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-    this.token = options.token ?? null;
-  }
-  authorization() {
-    this.token ??= githubToken();
-    return `Bearer ${this.token}`;
-  }
-  assertAllowed(path) {
-    const match = REPO_PATH.exec(path);
-    if (match === null) return;
-    const repository = match[1].toLowerCase();
-    if (!this.allowlist.has(repository)) {
-      throw new NotAllowlisted(
-        `${match[1]} is not in the allowlist. Add it with /review-voice:init before reading it.`
-      );
-    }
-  }
-  /**
-   * Conditional-request cache. A 304 costs nothing against the rate limit,
-   * which is what makes repeated polling viable without a webhook endpoint —
-   * and an endpoint is what docs/adr/0002 declined to make this tool require.
-   */
-  etags = /* @__PURE__ */ new Map();
-  /** Seeds the cache from a previous run, so polling survives process restarts. */
-  primeEtags(entries) {
-    for (const [url, etag] of Object.entries(entries)) this.etags.set(url, etag);
-  }
-  exportEtags() {
-    return Object.fromEntries(this.etags);
-  }
-  async get(path, init = {}) {
-    if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
-      throw new ReadOnlyViolation(
-        `Review Voice is read-only; refused a ${init.method} to ${path}.`
-      );
-    }
-    this.assertAllowed(path);
-    const url = path.startsWith("http") ? path : `${this.baseUrl}${path}`;
-    for (let attempt = 0; ; attempt += 1) {
-      const knownEtag = this.etags.get(url);
-      const response = await this.doFetch(url, {
-        method: "GET",
-        headers: {
-          accept: "application/vnd.github+json",
-          authorization: this.authorization(),
-          "x-github-api-version": "2022-11-28",
-          "user-agent": "review-voice",
-          ...knownEtag === void 0 ? {} : { "if-none-match": knownEtag }
-        }
-      });
-      if (response.status === 304) {
-        return { data: [], linkNext: null, notModified: true };
-      }
-      if (response.status === 403 || response.status === 429) {
-        const retryAfter = Number(response.headers.get("retry-after") ?? "0");
-        const remaining = response.headers.get("x-ratelimit-remaining");
-        if ((remaining === "0" || retryAfter > 0) && attempt < 4) {
-          const waitMs = retryAfter > 0 ? retryAfter * 1e3 : 2 ** attempt * 1e3;
-          await this.sleep(waitMs);
-          continue;
-        }
-      }
-      if (!response.ok) {
-        throw new GitHubError(
-          `GitHub returned ${response.status} for ${path}: ${(await response.text()).slice(0, 200)}`,
-          response.status
-        );
-      }
-      const etag = response.headers.get("etag");
-      if (etag !== null) this.etags.set(url, etag);
-      const link = response.headers.get("link");
-      const next = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
-      return { data: await response.json(), linkNext: next };
-    }
-  }
-  /** Follows pagination up to `limit` items, so a huge repository cannot run away. */
-  async paginate(path, limit) {
-    const items = [];
-    let next = path;
-    while (next !== null && items.length < limit) {
-      const page = await this.get(next);
-      if (!Array.isArray(page.data)) break;
-      items.push(...page.data);
-      next = page.linkNext;
-    }
-    return items.slice(0, limit);
-  }
-};
-
 // plugins/review-voice/src/github/roles.ts
 var BOT_HINTS = [
   /\[bot\]$/i,
@@ -8688,6 +8763,7 @@ Commands:
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
+  explain           Show why the last review said what it said
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
   --version         Print the plugin version
@@ -8696,6 +8772,8 @@ Commands:
 diff flags:
   --base <ref>           Review against a base ref (e.g. origin/main)
   --staged               Review staged changes only
+  --pr <number>          Review a GitHub pull request (needs --repository)
+  --repository <name>    owner/repo for --pr; inferred from the git remote if absent
   --include-generated    Include lock files, generated, vendored and binary files
 
 record flags:
@@ -8704,6 +8782,7 @@ record flags:
   --head <sha>           Head commit reviewed
   --diff-file <path>     Diff the review was produced from (for the run hash)
   --candidates <path>    Scored candidates, so findings carry their category
+  --scores <path>        Score breakdowns, so explain can show its working
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -8784,6 +8863,38 @@ function validateOutputCommand(argv) {
   console.error(`
 ${result.violations.length} contract violation(s).`);
   return 1;
+}
+function inferRepository(cwd) {
+  try {
+    const url = execFileSync4("git", ["remote", "get-url", "origin"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    const match = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
+    return match?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+async function pullRequestDiffCommand(argv) {
+  const pullNumber = Number(flag(argv, "--pr"));
+  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+    console.error("--pr needs a pull request number.");
+    return 2;
+  }
+  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
+  if (repository === null) {
+    console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
+    return 2;
+  }
+  const result = await acquirePullRequestDiff({
+    repository,
+    pullNumber,
+    includeGenerated: argv.includes("--include-generated")
+  });
+  console.log(JSON.stringify(result, null, 2));
+  return 0;
 }
 function diffCommand(argv) {
   const baseIndex = argv.indexOf("--base");
@@ -9210,6 +9321,17 @@ function recordCommand(argv) {
       return 2;
     }
   }
+  const scoresFile = flag(argv, "--scores");
+  let scores = [];
+  if (scoresFile !== null) {
+    try {
+      const parsed = JSON.parse(readFileSync3(scoresFile, "utf8"));
+      scores = Array.isArray(parsed) ? parsed : parsed.scores ?? [];
+    } catch {
+      console.error(`Cannot read scores from ${scoresFile}.`);
+      return 2;
+    }
+  }
   const db = openDatabase();
   try {
     const { reviewRunId, findings } = recordRun(db, {
@@ -9218,7 +9340,8 @@ function recordCommand(argv) {
       headRef: flag(argv, "--head"),
       diff,
       output,
-      candidates
+      candidates,
+      scores
     });
     console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
     return 0;
@@ -9251,6 +9374,51 @@ function feedbackCommand(argv) {
       return 1;
     }
     console.log(`Recorded ${action} for ${result.findingId}.`);
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+function explainCommand(argv) {
+  const db = openDatabase();
+  try {
+    const detail = runDetail(db, flag(argv, "--run") ?? void 0);
+    if (detail === null) {
+      console.log("No review has been recorded yet.");
+      return 0;
+    }
+    const wanted = argv.find((arg) => /^rv_\d+$/.test(arg));
+    const scores = Array.isArray(detail.scores) ? detail.scores : [];
+    if (argv.includes("--json")) {
+      console.log(JSON.stringify(detail, null, 2));
+      return 0;
+    }
+    console.log(`Review ${detail.reviewRunId}`);
+    console.log(`Recorded ${detail.createdAt}${detail.repository === null ? "" : ` for ${detail.repository}`}`);
+    console.log("");
+    const shown = wanted === void 0 ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
+    if (shown.length === 0) {
+      console.log(`No finding ${wanted}. Available: ${detail.findings.map((f) => f.findingId).join(", ") || "none"}.`);
+      return 1;
+    }
+    for (const finding of shown) {
+      const score = scores.find((s) => s.candidateId !== void 0 && s.candidateId.length > 0 && detail.findings.some((f) => f.findingId === finding.findingId));
+      console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
+      console.log(`  category          ${finding.category ?? "not recorded"}`);
+      if (score?.technicalConfidence !== void 0) {
+        console.log(`  technical         ${score.technicalConfidence.toFixed(2)}`);
+      }
+      if (score?.finalScore !== void 0) {
+        console.log(`  final score       ${score.finalScore.toFixed(2)}`);
+      }
+      if (score?.precedentIds !== void 0 && score.precedentIds.length > 0) {
+        console.log(`  precedents        ${score.precedentIds.join(", ")}`);
+      }
+      if (score === void 0) {
+        console.log("  scoring           not recorded for this review");
+      }
+      console.log("");
+    }
     return 0;
   } finally {
     db.close();
@@ -9295,7 +9463,7 @@ async function main(argv) {
       console.log(pluginVersion());
       return 0;
     case "diff":
-      return diffCommand(argv.slice(1));
+      return argv.includes("--pr") ? await pullRequestDiffCommand(argv.slice(1)) : diffCommand(argv.slice(1));
     case "context":
       return contextCommand();
     case "redact":
@@ -9330,6 +9498,8 @@ async function main(argv) {
       return feedbackCommand(argv.slice(1));
     case "status":
       return statusCommand();
+    case "explain":
+      return explainCommand(argv.slice(1));
     case "validate-output":
       return validateOutputCommand(argv.slice(1));
     case "doctor": {
