@@ -95,6 +95,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Score breakdowns carry an `anchored` block: what the final score would be
+  with anchor-less precedents excluded from alignment, and whether eligibility
+  would flip. Unanchored summaries match every candidate equally, so with owner
+  weighting they surface regardless of topic and alignment becomes a constant
+  rather than a signal - 0.40 of the score carrying no information. Excluding
+  them moves the score by 0.05 to 0.11 against a 0.68 gate, which is large
+  enough that switching without measuring would delete findings that pass
+  today, so it ships as a shadow and the gate is unchanged.
+
 - Severity now combines the finding category with deterministic, CLI-computed
   reach instead of assigning every member of a category one fixed tier. A
   category like `ci` spans a build-breaker and a stale comment, so one tier per

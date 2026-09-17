@@ -1059,3 +1059,95 @@ test('a symbol the changed file does not contain is not part of its reach', () =
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('an unanchored precedent is a constant, and the shadow score says so', () => {
+  // matchStrength is normalised to the best hit in each candidate's own result
+  // set, so when the same unanchored summaries come back for every candidate,
+  // every candidate gets the same alignment. On a live run all eight findings
+  // drew the same three precedents and the gate rejected nothing.
+  const unanchored = (id) => ({
+    eventId: id,
+    repository: 'org/a',
+    reviewerLogin: 'owner',
+    role: 'owner',
+    outcome: 'accepted',
+    createdAt: '2026-01-01T00:00:00Z',
+    filePath: null,
+    lineStart: null,
+    excerpt: 'a general remark about quality',
+    weight: 1,
+    relevance: 1,
+    matchStrength: 1,
+  });
+
+  const candidate = {
+    candidate_id: 'cand_001',
+    path: 'src/a.ts',
+    line: 4,
+    category: 'correctness',
+    severity: 'minor',
+    claim: 'The retry writes twice.',
+    failure_mode: 'A duplicate charge.',
+    evidence: ['`chargeOnce` at line 4'],
+    technical_confidence: 0.9,
+  };
+
+  const breakdown = scoreCandidate(
+    normaliseCandidate(candidate, 0),
+    [unanchored('e1'), unanchored('e2'), unanchored('e3')],
+    [],
+    DEFAULT_THRESHOLDS,
+    { candidateId: 'cand_001', technicalConfidence: 0.9 },
+  );
+
+  // Live behaviour is unchanged: the gate still uses the current computation.
+  assert.ok(breakdown.ownerAlignment > 0.9, 'three positive unanchored precedents saturate alignment');
+  // The shadow reports the neutral, and the gap is the thing to measure.
+  assert.equal(breakdown.anchored.ownerAlignment, 0.5);
+  assert.ok(
+    breakdown.finalScore - breakdown.anchored.finalScore > 0.05,
+    'the shift is large enough that switching without measuring would delete findings',
+  );
+});
+
+test('an anchored precedent counts in both the live and the shadow score', () => {
+  const anchored = {
+    eventId: 'e1',
+    repository: 'org/a',
+    reviewerLogin: 'owner',
+    role: 'owner',
+    outcome: 'accepted',
+    createdAt: '2026-01-01T00:00:00Z',
+    filePath: 'src/other.ts',
+    lineStart: 99,
+    excerpt: 'this retry path needs a guard',
+    weight: 1,
+    relevance: 1,
+    matchStrength: 1,
+  };
+
+  const breakdown = scoreCandidate(
+    normaliseCandidate(
+      {
+        candidate_id: 'cand_001',
+        path: 'src/a.ts',
+        line: 4,
+        category: 'correctness',
+        severity: 'minor',
+        claim: 'The retry writes twice.',
+        failure_mode: 'A duplicate charge.',
+        evidence: ['`chargeOnce` at line 4'],
+        technical_confidence: 0.9,
+      },
+      0,
+    ),
+    [anchored],
+    [],
+    DEFAULT_THRESHOLDS,
+    { candidateId: 'cand_001', technicalConfidence: 0.9 },
+  );
+
+  assert.equal(breakdown.anchored.ownerAlignment, breakdown.ownerAlignment);
+  assert.equal(breakdown.anchored.finalScore, breakdown.finalScore);
+  assert.equal(breakdown.anchored.wouldChangeEligibility, false);
+});

@@ -104,6 +104,18 @@ export interface ScoreBreakdown {
   evidenceQuality: number;
   novelty: number;
   finalScore: number;
+  /**
+   * What the score would be with anchor-less precedents excluded from
+   * alignment. Reported so the switch can be made on measurement rather than
+   * arithmetic - see `anchoredAlignmentFrom`.
+   */
+  anchored: {
+    ownerAlignment: number;
+    repositoryAlignment: number;
+    finalScore: number;
+    /** True when the change would flip this candidate's eligibility. */
+    wouldChangeEligibility: boolean;
+  };
   eligible: boolean;
   /** Why it was rejected, when it was. */
   rejectedBecause: string | null;
@@ -303,11 +315,54 @@ export function duplicatePrecedent(candidate: Candidate, precedents: Precedent[]
  * seven unrelated candidates all landed inside a 0.77-0.85 band - a range too
  * narrow to discriminate between anything.
  */
+/**
+ * Whether a precedent is tied to a place in the code.
+ *
+ * An unanchored summary matches every candidate equally, so with owner
+ * weighting applied it surfaces regardless of topic. `corpus/store.ts` already
+ * warns about exactly this - on one corpus 40 of 60 owner events had no file
+ * anchor - and then scores on them anyway.
+ *
+ * The consequence is not a weak signal but a constant one. `matchStrength` is
+ * normalised to the best hit in each candidate's own result set, so when the
+ * same unanchored summaries are retrieved for every candidate, every candidate
+ * gets the same alignment. On a live run all eight findings drew the same three
+ * precedents and the gate rejected nothing.
+ *
+ * A constant does not merely fail to discriminate. Owner alignment carries 0.25
+ * of the final score and repository alignment 0.15, so 0.40 of it is a fixed
+ * addition compressing the range available to the four terms that do. This
+ * repository has ruled on that shape once already: `evidenceQuality` scored
+ * 1.000 on every candidate and was described as "a fixed 0.15 added to every
+ * score, carrying no information".
+ */
+function isAnchored(precedent: Precedent): boolean {
+  return precedent.filePath !== null;
+}
+
+/** Maps signed precedent weights onto a 0..1 alignment score. */
 function alignmentFrom(precedents: Precedent[]): number {
   if (precedents.length === 0) return 0.5; // No evidence either way.
   const total = precedents.reduce((sum, p) => sum + p.weight * (p.matchStrength ?? 1), 0);
   // A bounded squash keeps one loud precedent from saturating the score.
   return 1 / (1 + Math.exp(-total));
+}
+
+/**
+ * The same alignment with anchor-less precedents excluded.
+ *
+ * Reported, not gated on. Excluding them moves the final score by 0.05 to 0.11
+ * on the shapes seen in live runs, against a threshold of 0.68 - large enough
+ * that switching without measuring would silently delete findings that pass
+ * today. The gate's own history is the argument: 0.74 was arithmetic about a
+ * distribution change and was wrong; 0.68 was measured and replaced it.
+ *
+ * So this ships as a shadow. Every breakdown carries what the score would be,
+ * and whether eligibility would change, so the switch can be made on evidence
+ * from real runs rather than on a second round of arithmetic.
+ */
+function anchoredAlignmentFrom(precedents: Precedent[]): number {
+  return alignmentFrom(precedents.filter(isAnchored));
 }
 
 /**
@@ -455,15 +510,16 @@ export function scoreCandidate(
 
   const ownerAlignment = alignmentFrom(ownerPrecedents);
   const repositoryAlignment = alignmentFrom(repositoryPrecedents);
+  const anchoredOwnerAlignment = anchoredAlignmentFrom(ownerPrecedents);
+  const anchoredRepositoryAlignment = anchoredAlignmentFrom(repositoryPrecedents);
   const quality = evidenceQuality(candidate);
   const novel = alreadySaid === null ? novelty(candidate, kept, precedents) : 0;
 
-  const finalScore =
-    0.35 * confidence +
-    0.25 * ownerAlignment +
-    0.15 * repositoryAlignment +
-    0.15 * quality +
-    0.1 * novel;
+  const score = (owner: number, repository: number): number =>
+    0.35 * confidence + 0.25 * owner + 0.15 * repository + 0.15 * quality + 0.1 * novel;
+
+  const finalScore = score(ownerAlignment, repositoryAlignment);
+  const anchoredFinalScore = score(anchoredOwnerAlignment, anchoredRepositoryAlignment);
 
   let rejectedBecause: string | null = null;
   // Checked explicitly: every comparison against NaN is false, so a
@@ -506,6 +562,17 @@ export function scoreCandidate(
     evidenceQuality: quality,
     novelty: novel,
     finalScore,
+    anchored: {
+      ownerAlignment: anchoredOwnerAlignment,
+      repositoryAlignment: anchoredRepositoryAlignment,
+      finalScore: anchoredFinalScore,
+      // Only the score gate can flip here: every other rejection reason is
+      // independent of alignment.
+      wouldChangeEligibility:
+        rejectedBecause === null
+          ? anchoredFinalScore < thresholds.finalScore
+          : rejectedBecause.startsWith('score ') && anchoredFinalScore >= thresholds.finalScore,
+    },
     eligible: rejectedBecause === null,
     rejectedBecause,
     duplicateOfPrecedent: alreadySaid?.eventId ?? null,
