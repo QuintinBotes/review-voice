@@ -5,6 +5,36 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A `question` stays a question at every reach. 1.1.0 derived it from
+  (category, reach) on the theory that the wording carries the interrogative,
+  but `BY_CATEGORY_AND_REACH` contains no `question` at any category or reach,
+  so the tier was unreachable - and 1.3.0's module fallback made reach
+  available far more often, turning a rare bug into a routine one. A candidate
+  whose own evidence said the flag state was outside the repository and could
+  not be read came back as `important`: an honest "I could not check this"
+  published as a claim. The schema accepts `question` and the output contract
+  orders it; only the table could not produce it.
+- `api_contract` varies by reach and is `blocking` at repository reach. A
+  change that added a required prop and missed one of three call sites derived
+  `important` while its head had ten CI failures, each a Code check across a
+  different package.
+- A finding about a file the change does not touch now measures the change.
+  Hunk symbols come from the named file, and a broken-consumer finding names
+  the consumer, which the pull request does not touch - so the class of finding
+  most likely to be serious was the one that fell back to the claim. The rest
+  of the diff is used instead, reported as `symbolSource: "diff"`.
+- A small complete convention rule is no longer displaced by another slice of a
+  large one. Section selection keeps more of a large document than byte
+  truncation did, so large documents began crowding out small ones: on one run
+  three partial rules took 41,762 of the 60,000-byte budget and a complete
+  2,668-byte unit-test rule was skipped, on a change whose largest additions
+  were the test files it governs. Documents that fit whole are now admitted
+  before documents that must be cut.
+
 ## [1.3.0] - 2026-09-17
 
 ### Changed

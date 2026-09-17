@@ -88,7 +88,11 @@ const BY_CATEGORY_AND_REACH: Record<string, ReachTiers> = {
   concurrency: atEveryReach('important'),
   persistence: atEveryReach('important'),
   migration: atEveryReach('important'),
-  api_contract: atEveryReach('important'),
+  // A contract break that reaches the repository stops the build for every
+  // consumer. Measured: a change adding a required prop and missing one of
+  // three call sites derived `important` while its head had ten CI failures,
+  // each a Code check across a different package.
+  api_contract: { local: 'important', component: 'important', repository: 'blocking' },
   release: atEveryReach('important'),
 
   correctness: { local: 'minor', component: 'important', repository: 'important' },
@@ -174,6 +178,31 @@ export function deriveSeverity(
   requested: string,
   reach: ReachCheck | null | undefined = null,
 ): DerivedSeverity {
+  // A question passes through whatever its reach.
+  //
+  // 1.1.0 derived it from (category, reach) like anything else, on the theory
+  // that the interrogative is carried by the wording and `question` as a tier
+  // should mean an ask whose reach is local. The theory was wrong twice over.
+  // `BY_CATEGORY_AND_REACH` contains no `question` at any category or reach, so
+  // the tier was unreachable, and 1.3.0's module fallback made reach available
+  // far more often - which turned the bug from rare into routine.
+  //
+  // Measured consequence: a candidate that said, in its own evidence, that the
+  // LaunchDarkly state was outside the repository and could not be read was
+  // re-derived as `important` and published as an assertion. An honest "I could
+  // not check this" became a claim.
+  //
+  // The schema accepts `question` and the output contract orders it, so the
+  // analyst is invited to request a tier only this line can honour.
+  if (requested === 'question') {
+    return {
+      severity: 'question',
+      requested,
+      reach: reach ?? null,
+      reason: 'a question is a kind of finding, not a tier, whatever its reach',
+    };
+  }
+
   const resolvedReach = reach?.reach;
   const hasReach =
     resolvedReach === 'local' || resolvedReach === 'component' || resolvedReach === 'repository';
