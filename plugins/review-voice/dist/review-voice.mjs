@@ -1060,6 +1060,16 @@ var MIGRATIONS = [
     processed_at TEXT NOT NULL,
     PRIMARY KEY (repository, pull_number)
   );
+  `,
+  // Stage timings, so how long a review takes stops being one anecdote.
+  //
+  // Measured once on a live pull request: analyst 238k tokens across 94 tool
+  // calls and about ten minutes, verifier 141k across 59 and about five. A
+  // recurring sweep at ten minutes cannot wrap a review of that size, and the
+  // design that follows from it - a review as a resumable job rather than a
+  // tick-scoped task - should not be built on a single observation.
+  `
+  ALTER TABLE review_runs ADD COLUMN stages_json TEXT;
   `
 ];
 function migrate(db) {
@@ -1135,8 +1145,8 @@ function recordRun(db, input) {
     `INSERT INTO review_runs (
        review_run_id, repository, base_ref, head_ref, diff_hash,
        active_policy_versions_json, retrieved_precedents_json,
-       candidates_json, output_json, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       candidates_json, output_json, created_at, stages_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     reviewRunId,
     input.repository,
@@ -1152,7 +1162,8 @@ function recordRun(db, input) {
       scores: input.scores ?? [],
       verdicts: input.verdicts ?? []
     }),
-    (/* @__PURE__ */ new Date()).toISOString()
+    (/* @__PURE__ */ new Date()).toISOString(),
+    JSON.stringify(input.stages ?? [])
   );
   recordAudit(db, "review_run_recorded", { type: "review_run", id: reviewRunId }, {
     repository: input.repository,
@@ -1172,6 +1183,17 @@ function runDetail(db, reviewRunId) {
     findings: parsed.findings,
     scores: parsed.scores ?? [],
     verdicts: parsed.verdicts ?? [],
+    // Older rows predate the column, so absence is normal rather than an error.
+    stages: (() => {
+      const raw = row["stages_json"];
+      if (typeof raw !== "string") return [];
+      try {
+        const parsedStages = JSON.parse(raw);
+        return Array.isArray(parsedStages) ? parsedStages : [];
+      } catch {
+        return [];
+      }
+    })(),
     precedents: JSON.parse(row["retrieved_precedents_json"])
   };
 }
@@ -8496,11 +8518,86 @@ function truncationMarker(bytes, included) {
 [Truncated by Review Voice: ${included} of ${bytes} bytes shown. The rest of this document was not read.]
 `;
 }
-function readBounded(absolute) {
+function sections(text) {
+  const out = [];
+  let heading = "";
+  let buffer = [];
+  const flush = () => {
+    if (heading !== "" || buffer.join("\n").trim().length > 0) {
+      out.push({ heading, body: buffer.join("\n") });
+    }
+  };
+  for (const line of text.split(/\r?\n/)) {
+    if (/^#{1,3} /.test(line)) {
+      flush();
+      heading = line;
+      buffer = [];
+      continue;
+    }
+    buffer.push(line);
+  }
+  flush();
+  return out;
+}
+function changeVocabulary(changedPaths) {
+  const words = /* @__PURE__ */ new Set();
+  for (const path of changedPaths) {
+    for (const part of path.split(/[^A-Za-z0-9]+/)) {
+      if (part.length < 3) continue;
+      words.add(part.toLowerCase());
+      for (const piece of part.split(/(?=[A-Z])/)) {
+        if (piece.length >= 3) words.add(piece.toLowerCase());
+      }
+    }
+  }
+  return words;
+}
+function relevantSections(text, changedPaths, budget) {
+  const parts = sections(text);
+  if (parts.length < 2 || changedPaths.length === 0) return null;
+  const vocabulary = changeVocabulary(changedPaths);
+  if (vocabulary.size === 0) return null;
+  const scored = parts.map((part, index) => {
+    const words = new Set(`${part.heading} ${part.body}`.toLowerCase().split(/[^a-z0-9]+/));
+    let hits = 0;
+    for (const word of vocabulary) if (words.has(word)) hits += 1;
+    return { index, part, score: index === 0 ? Number.POSITIVE_INFINITY : hits };
+  });
+  const keep = /* @__PURE__ */ new Set();
+  let used = 0;
+  for (const entry of [...scored].sort((a, b) => b.score - a.score)) {
+    if (entry.score === 0) break;
+    const rendered = `${entry.part.heading}
+${entry.part.body}`;
+    const cost = Buffer.byteLength(rendered, "utf8");
+    if (used + cost > budget) continue;
+    keep.add(entry.index);
+    used += cost;
+  }
+  if (keep.size === 0 || keep.size === parts.length) return null;
+  const kept = scored.filter((entry) => keep.has(entry.index)).map((entry) => `${entry.part.heading}
+${entry.part.body}`.trim()).join("\n\n");
+  const dropped = parts.length - keep.size;
+  return `${kept}
+
+[Review Voice kept the ${keep.size} of ${parts.length} sections that match the paths under review. ${dropped} other section${dropped === 1 ? "" : "s"} of this document were not read.]
+`;
+}
+function readBounded(absolute, changedPaths = []) {
   const raw = readFileSync3(absolute, "utf8");
   const bytes = Buffer.byteLength(raw, "utf8");
   if (bytes <= PER_DOCUMENT_BYTES) {
-    return { content: raw, bytes, includedBytes: bytes, truncated: false };
+    return { content: raw, bytes, includedBytes: bytes, truncated: false, scoped: false };
+  }
+  const scoped = relevantSections(raw, changedPaths, PER_DOCUMENT_BYTES - 400);
+  if (scoped !== null) {
+    return {
+      content: scoped,
+      bytes,
+      includedBytes: Buffer.byteLength(scoped, "utf8"),
+      truncated: true,
+      scoped: true
+    };
   }
   const marker = truncationMarker(bytes, PER_DOCUMENT_BYTES);
   const budget = Math.max(0, PER_DOCUMENT_BYTES - Buffer.byteLength(marker, "utf8"));
@@ -8518,7 +8615,13 @@ function readBounded(absolute) {
   const lastBreak = text.lastIndexOf("\n");
   if (lastBreak > 0) text = text.slice(0, lastBreak);
   const content = `${text}${truncationMarker(bytes, Buffer.byteLength(text, "utf8"))}`;
-  return { content, bytes, includedBytes: Buffer.byteLength(content, "utf8"), truncated: true };
+  return {
+    content,
+    bytes,
+    includedBytes: Buffer.byteLength(content, "utf8"),
+    truncated: true,
+    scoped: false
+  };
 }
 function ancestors(changedPath) {
   const parts = changedPath.split(/[\\/]/).slice(0, -1);
@@ -8730,7 +8833,7 @@ function discoverConventions(root, changedPaths = []) {
     }
     let read;
     try {
-      read = readBounded(absolute);
+      read = readBounded(absolute, changedPaths);
     } catch (error) {
       skipped.push({ path: entry.path, reason: error instanceof Error ? error.message : String(error) });
       continue;
@@ -8746,12 +8849,13 @@ function discoverConventions(root, changedPaths = []) {
       bytes: read.bytes,
       includedBytes: read.includedBytes,
       truncated: read.truncated,
+      scoped: read.scoped,
       content: read.content
     });
     totalBytes += Buffer.byteLength(read.content, "utf8");
     if (read.truncated) {
       warnings.push(
-        `${entry.path} is ${read.bytes} bytes and was truncated to ${read.includedBytes}. The document itself says so where it was cut.`
+        read.scoped ? `${entry.path} is ${read.bytes} bytes and was reduced to ${read.includedBytes}, keeping the sections that match the paths under review.` : `${entry.path} is ${read.bytes} bytes and was truncated to ${read.includedBytes}. The document itself says so where it was cut.`
       );
     }
     for (const pattern of ADDRESSES_THE_REVIEWER) {
@@ -8892,6 +8996,29 @@ function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository =
 }
 
 // plugins/review-voice/src/scoring/reach.ts
+function symbolsFromHunks(diff, changedPath) {
+  const wanted = normalisePath(changedPath);
+  const found = /* @__PURE__ */ new Set();
+  let inFile = false;
+  for (const raw of diff.split(/\r?\n/)) {
+    if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
+      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
+      if (match?.[1] !== void 0) inFile = normalisePath(match[1]) === wanted;
+      else if (raw.startsWith("diff --git ")) inFile = false;
+      continue;
+    }
+    if (!inFile) continue;
+    if (raw.startsWith("--- ")) continue;
+    if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
+    const text = raw.slice(1);
+    for (const m of text.matchAll(
+      /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g
+    )) {
+      if (m[1] !== void 0) found.add(m[1]);
+    }
+  }
+  return [...found];
+}
 var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
   /(?:^|\/)(?:eslint\.config\.[^/]+|\.eslintrc(?:\.[^/]+)?|biome\.json|\.stylelintrc(?:\.[^/]+)?|\.prettierrc(?:\.[^/]+)?)$/i,
   /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/i,
@@ -8929,12 +9056,15 @@ function isRepositoryWideToolchainPath(path) {
   const normalised = normalisePath(path);
   return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
 }
-function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths) {
+function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
   const searchedRef = ref ?? "working tree";
-  const symbols = namedSymbols(text).slice(0, 12);
+  const fromHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
+  const source = fromHunks.length > 0 ? "hunks" : "claim";
+  const symbols = (source === "hunks" ? fromHunks : namedSymbols(text)).slice(0, 12);
   const searched = [];
   const ignored = [];
   const hits = /* @__PURE__ */ new Set();
+  let usedModuleFallback = false;
   const normalisedChangedPath = normalisePath(changedPath);
   const changedDirectory = directoryOf(changedPath);
   const result = (reach, inconclusive) => {
@@ -8944,6 +9074,8 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths)
     );
     return {
       reach,
+      symbolSource: source,
+      moduleFallback: usedModuleFallback,
       symbols: searched,
       ignoredSymbols: [...ignored].sort(),
       paths: [...hits].sort(),
@@ -8975,7 +9107,20 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths)
     for (const path of found) hits.add(path);
   }
   if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
-  const counted = [...hits].filter(isCode);
+  let counted = [...hits].filter(isCode);
+  if (counted.length === 0 && source === "hunks") {
+    const moduleName = normalisePath(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
+    if (moduleName !== void 0 && moduleName.length >= 4) {
+      searched.push(moduleName);
+      try {
+        for (const path of search(moduleName, cwd, ref)) hits.add(path);
+      } catch {
+        return result(null, true);
+      }
+      counted = [...hits].filter(isCode);
+      usedModuleFallback = counted.length > 0;
+    }
+  }
   if (counted.length === 0) return result(null, false);
   if (counted.every((path) => normalisePath(path) === normalisedChangedPath)) {
     return result("local", false);
@@ -9959,6 +10104,20 @@ function median(values) {
 }
 function computeMetrics(db) {
   const runs = db.prepare("SELECT output_json FROM review_runs").all();
+  const stageRows = db.prepare("SELECT stages_json FROM review_runs WHERE stages_json IS NOT NULL AND stages_json != '[]'").all();
+  const runSeconds = [];
+  for (const row of stageRows) {
+    try {
+      const parsed = JSON.parse(row.stages_json);
+      if (!Array.isArray(parsed)) continue;
+      const total = parsed.reduce(
+        (sum, stage) => sum + (typeof stage === "object" && stage !== null && Number.isFinite(stage.seconds) ? stage.seconds : 0),
+        0
+      );
+      if (total > 0) runSeconds.push(total);
+    } catch {
+    }
+  }
   const agreement = candidateSetAgreement(db);
   const findingsPerRun = [];
   const wordsPerFinding = [];
@@ -10011,6 +10170,14 @@ function computeMetrics(db) {
     // reviewer. Since the output contract stopped capping findings, a run that
     // correctly reports nine defects in a large diff was failing a target that
     // asked it to report two.
+    metric(
+      "median_review_seconds",
+      median(runSeconds),
+      "no target",
+      () => true,
+      runSeconds.length === 0 ? "no run has recorded stage timings; pass `record --stages`" : `${runSeconds.length} run(s) with recorded stages`,
+      "goal"
+    ),
     metric(
       "median_findings_per_review",
       median(findingsPerRun),
@@ -10278,6 +10445,9 @@ record flags:
   --candidates <path>    Scored candidates, so findings carry their category
   --scores <path>        Score breakdowns, so explain can show its working
   --verdicts <path>      Verification verdicts, including findings that were dropped
+  --stages <path>        Per-stage timings as
+                         [{"name","seconds","toolCalls","tokens"}], so how long
+                         a review takes is a distribution rather than an anecdote
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -10299,6 +10469,9 @@ score flags:
                             Gate when only the analyst's self-report exists
                             (default 0.7). A different measurement, so a
                             different number.
+  --diff-file <path>        The diff under review. Reach is measured from the
+                            symbols the hunks touch; without it, from the
+                            symbols the claim names, which is weaker.
   --min-score <n>           Final score gate (default 0.68)
   --repository <name>       Prefer precedents from this repository
 
@@ -10782,13 +10955,29 @@ function scoreCommand(argv) {
     );
     return 2;
   }
+  const reachDiff = (() => {
+    const path = flag(argv, "--diff-file");
+    if (path === null) return null;
+    try {
+      return readFileSync4(path, "utf8");
+    } catch {
+      return null;
+    }
+  })();
   if (searchRoot !== null) {
     for (const candidate of candidates) {
       const verification = verifications.get(candidate.candidateId);
       verifications.set(candidate.candidateId, {
         ...verification ?? { candidateId: candidate.candidateId },
         candidateId: candidate.candidateId,
-        reach: computeReach(candidate.claim, candidate.path, searchRoot, baseRef)
+        reach: computeReach(
+          candidate.claim,
+          candidate.path,
+          searchRoot,
+          baseRef,
+          void 0,
+          reachDiff
+        )
       });
     }
   }
@@ -11097,6 +11286,20 @@ function recordCommand(argv) {
       return 2;
     }
   }
+  const stagesFile = flag(argv, "--stages");
+  let stages = [];
+  if (stagesFile !== null) {
+    try {
+      const parsed = JSON.parse(readFileSync4(stagesFile, "utf8"));
+      const list = Array.isArray(parsed) ? parsed : parsed.stages ?? [];
+      stages = (Array.isArray(list) ? list : []).filter(
+        (stage) => typeof stage === "object" && stage !== null && typeof stage.name === "string" && Number.isFinite(stage.seconds)
+      );
+    } catch {
+      console.error(`Cannot read stages from ${stagesFile}.`);
+      return 2;
+    }
+  }
   const db = openDatabase();
   try {
     const { reviewRunId, findings } = recordRun(db, {
@@ -11107,7 +11310,8 @@ function recordCommand(argv) {
       output,
       candidates,
       scores,
-      verdicts
+      verdicts,
+      stages
     });
     console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
     return 0;

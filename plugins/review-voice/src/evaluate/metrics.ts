@@ -51,6 +51,32 @@ interface RunRow {
 export function computeMetrics(db: Database): Metric[] {
   const runs = db.prepare('SELECT output_json FROM review_runs').all() as unknown as RunRow[];
 
+  // How long a review actually takes. Recorded per stage so the cadence
+  // question - a recurring sweep at ten minutes cannot wrap a review that runs
+  // for twenty-five - rests on a distribution rather than the one run somebody
+  // happened to time.
+  const stageRows = db
+    .prepare("SELECT stages_json FROM review_runs WHERE stages_json IS NOT NULL AND stages_json != '[]'")
+    .all() as unknown as { stages_json: string }[];
+  const runSeconds: number[] = [];
+  for (const row of stageRows) {
+    try {
+      const parsed: unknown = JSON.parse(row.stages_json);
+      if (!Array.isArray(parsed)) continue;
+      const total = parsed.reduce(
+        (sum: number, stage: unknown) =>
+          sum +
+          (typeof stage === 'object' && stage !== null && Number.isFinite((stage as { seconds?: number }).seconds)
+            ? ((stage as { seconds: number }).seconds)
+            : 0),
+        0,
+      );
+      if (total > 0) runSeconds.push(total);
+    } catch {
+      // A row that will not parse is not a measurement.
+    }
+  }
+
   const agreement = candidateSetAgreement(db);
 
   const findingsPerRun: number[] = [];
@@ -124,6 +150,16 @@ export function computeMetrics(db: Database): Metric[] {
     // reviewer. Since the output contract stopped capping findings, a run that
     // correctly reports nine defects in a large diff was failing a target that
     // asked it to report two.
+    metric(
+      'median_review_seconds',
+      median(runSeconds),
+      'no target',
+      () => true,
+      runSeconds.length === 0
+        ? 'no run has recorded stage timings; pass `record --stages`'
+        : `${runSeconds.length} run(s) with recorded stages`,
+      'goal',
+    ),
     metric(
       'median_findings_per_review',
       median(findingsPerRun),
