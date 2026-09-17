@@ -39,9 +39,14 @@ No embedding model ships with the plugin.
 - **Paraphrase recall suffers.** A dismissal worded differently from the current
   candidate may not be retrieved. This is a real quality cost, accepted
   knowingly.
-- The evaluation harness measures precedent recall directly. If it shows
-  retrieval is the binding constraint on precision, the provider interface is
-  already in place.
+- If retrieval turns out to be the binding constraint on precision, the
+  provider interface is already in place.
+
+  **Not yet measurable.** `review-voice evaluate` reports precision, volume and
+  contract compliance, but not precedent recall — knowing a relevant precedent
+  was missed requires knowing it existed, which needs labelled retrieval data
+  nobody has produced. Until then this decision rests on reasoning rather than
+  evidence, which is worth saying plainly.
 - FTS5 must be present in the Node build; `review-voice doctor` checks it.
 
 ## Alternatives considered
