@@ -5,6 +5,29 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A dry run no longer starves the sync that follows it.** The dry run
+  populated an HTTP conditional-request cache without storing anything, so the
+  real sync received `304`s and imported almost nothing — one report projected
+  250 events and stored 6. Since the consent flow asks the user to approve a
+  sync on the strength of the dry-run figures, this made that approval
+  meaningless.
+- Conditional requests are removed entirely. The collector re-derives
+  everything from each response body and never kept one, so a `304` was a lie —
+  and an empty `304` page with no `Link` header silently truncated pagination
+  at whichever page happened to be unchanged.
+- Incremental sync now works at the pull-request level, comparing GitHub's
+  `updated_at` against a watermark recorded **after** the events were stored.
+
+### Added
+
+- `status` reports corpus composition by reviewer role, and warns when a corpus
+  contains no owner events — without at least one, no policy rule can ever
+  activate, and the failure was otherwise silent.
+
 ## [0.2.0] — 2026-09-17
 
 ### Changed

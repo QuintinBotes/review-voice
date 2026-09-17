@@ -623,19 +623,6 @@ var GitHubClient = class {
       );
     }
   }
-  /**
-   * Conditional-request cache. A 304 costs nothing against the rate limit,
-   * which is what makes repeated polling viable without a webhook endpoint —
-   * and an endpoint is what docs/adr/0002 declined to make this tool require.
-   */
-  etags = /* @__PURE__ */ new Map();
-  /** Seeds the cache from a previous run, so polling survives process restarts. */
-  primeEtags(entries) {
-    for (const [url, etag] of Object.entries(entries)) this.etags.set(url, etag);
-  }
-  exportEtags() {
-    return Object.fromEntries(this.etags);
-  }
   async get(path, init = {}) {
     if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
       throw new ReadOnlyViolation(
@@ -645,20 +632,15 @@ var GitHubClient = class {
     this.assertAllowed(path);
     const url = path.startsWith("http") ? path : `${this.baseUrl}${path}`;
     for (let attempt = 0; ; attempt += 1) {
-      const knownEtag = this.etags.get(url);
       const response = await this.doFetch(url, {
         method: "GET",
         headers: {
           accept: "application/vnd.github+json",
           authorization: this.authorization(),
           "x-github-api-version": "2022-11-28",
-          "user-agent": "review-voice",
-          ...knownEtag === void 0 ? {} : { "if-none-match": knownEtag }
+          "user-agent": "review-voice"
         }
       });
-      if (response.status === 304) {
-        return { data: [], linkNext: null, notModified: true };
-      }
       if (response.status === 403 || response.status === 429) {
         const retryAfter = Number(response.headers.get("retry-after") ?? "0");
         const remaining = response.headers.get("x-ratelimit-remaining");
@@ -674,8 +656,6 @@ var GitHubClient = class {
           response.status
         );
       }
-      const etag = response.headers.get("etag");
-      if (etag !== null) this.etags.set(url, etag);
       const link = response.headers.get("link");
       const next = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
       return { data: await response.json(), linkNext: next };
@@ -951,6 +931,22 @@ var MIGRATIONS = [
     repositories_json TEXT NOT NULL,
     stats_json TEXT NOT NULL,
     imported INTEGER NOT NULL
+  );
+  `,
+  // v6 — per-pull-request watermarks, replacing HTTP conditional requests.
+  //
+  // The ETag cache in sync_state was actively harmful: a dry run populated it
+  // without storing anything, so the real sync that followed received 304s and
+  // imported almost nothing. It is dropped rather than left to mislead.
+  `
+  DROP TABLE IF EXISTS sync_state;
+
+  CREATE TABLE sync_watermarks (
+    repository TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    processed_at TEXT NOT NULL,
+    PRIMARY KEY (repository, pull_number)
   );
   `
 ];
@@ -7879,9 +7875,15 @@ async function collectRepository(client, options, stats) {
   );
   const events = [];
   const seenKeys = /* @__PURE__ */ new Set();
+  const watermarks = [];
   for (const pull of pulls) {
     if (!options.includeForks && pull.head?.repo?.fork === true) continue;
+    if (options.watermarks?.get(pull.number) === pull.updated_at) {
+      stats.pullRequestsUnchanged += 1;
+      continue;
+    }
     stats.pullRequestsScanned += 1;
+    watermarks.push({ pullNumber: pull.number, updatedAt: pull.updated_at });
     const comments = await client.paginate(
       `/repos/${options.repository}/pulls/${pull.number}/comments?per_page=100`,
       options.maxCommentsPerPull
@@ -7995,7 +7997,7 @@ async function collectRepository(client, options, stats) {
       }
     }
   }
-  return events;
+  return { events, watermarks };
 }
 
 // plugins/review-voice/src/corpus/select.ts
@@ -8106,7 +8108,13 @@ function corpusCoverage(db) {
     db.prepare("SELECT reviewer_role, COUNT(*) AS n FROM review_events GROUP BY reviewer_role").all().map((row) => [row.reviewer_role, row.n])
   );
   const range = db.prepare("SELECT MIN(created_at) AS oldest, MAX(created_at) AS newest FROM review_events").get();
-  return { total, byRepository, byRole, oldest: range.oldest, newest: range.newest };
+  const warnings = [];
+  if (total > 0 && (byRole["owner"] ?? 0) === 0) {
+    warnings.push(
+      "No events authored by the owner reviewer. Policy rules need at least one owner signal, so nothing in this corpus can activate a rule. Check identity.owner_reviewer matches your GitHub login."
+    );
+  }
+  return { total, byRepository, byRole, oldest: range.oldest, newest: range.newest, warnings };
 }
 
 // plugins/review-voice/src/consent/plan.ts
@@ -8678,25 +8686,6 @@ function computeMetrics(db) {
 
 // plugins/review-voice/src/sync/state.ts
 import { randomUUID as randomUUID5 } from "node:crypto";
-function loadEtags(db) {
-  const rows = db.prepare("SELECT url, etag FROM sync_state").all();
-  return Object.fromEntries(rows.map((row) => [row.url, row.etag]));
-}
-function saveEtags(db, etags) {
-  const upsert = db.prepare(
-    `INSERT INTO sync_state (url, etag, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT (url) DO UPDATE SET etag = excluded.etag, updated_at = excluded.updated_at`
-  );
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  db.exec("BEGIN");
-  try {
-    for (const [url, etag] of Object.entries(etags)) upsert.run(url, etag, now);
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-}
 function beginSyncRun(db, repositories) {
   const id = randomUUID5();
   db.prepare(
@@ -8722,6 +8711,30 @@ function lastSync(db) {
     repositories: JSON.parse(row["repositories_json"]),
     imported: row["imported"]
   };
+}
+
+// plugins/review-voice/src/sync/watermark.ts
+function loadWatermarks(db, repository) {
+  const rows = db.prepare("SELECT pull_number, updated_at FROM sync_watermarks WHERE repository = ?").all(repository);
+  return new Map(rows.map((row) => [row.pull_number, row.updated_at]));
+}
+function saveWatermarks(db, marks) {
+  const upsert = db.prepare(
+    `INSERT INTO sync_watermarks (repository, pull_number, updated_at, processed_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT (repository, pull_number) DO UPDATE SET
+       updated_at = excluded.updated_at,
+       processed_at = excluded.processed_at`
+  );
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  db.exec("BEGIN");
+  try {
+    for (const mark of marks) upsert.run(mark.repository, mark.pullNumber, mark.updatedAt, now);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 // plugins/review-voice/src/publish/gate.ts
@@ -9083,9 +9096,9 @@ async function syncCommand(argv) {
   const client = new GitHubClient({ allowlist: config.allowlist });
   const stateDb = openDatabase();
   const syncRunId = beginSyncRun(stateDb, config.allowlist);
-  client.primeEtags(loadEtags(stateDb));
   const stats = {
     pullRequestsScanned: 0,
+    pullRequestsUnchanged: 0,
     commentsSeen: 0,
     bySource: { inline: 0, reviewSummary: 0, conversation: 0 },
     eligible: 0,
@@ -9093,8 +9106,10 @@ async function syncCommand(argv) {
     excluded: {}
   };
   const collected = [];
+  const pendingWatermarks = [];
   for (const repository of config.allowlist) {
-    const events = await collectRepository(
+    const watermarks = dryRun ? void 0 : loadWatermarks(stateDb, repository);
+    const result = await collectRepository(
       client,
       {
         repository,
@@ -9102,17 +9117,20 @@ async function syncCommand(argv) {
         maxPullRequests: maxPulls,
         maxCommentsPerPull: 200,
         includeForks: false,
-        includeConversationComments: argv.includes("--include-conversation")
+        includeConversationComments: argv.includes("--include-conversation"),
+        watermarks
       },
       stats
     );
-    collected.push(...events);
+    collected.push(...result.events);
+    for (const mark of result.watermarks) {
+      pendingWatermarks.push({ repository, pullNumber: mark.pullNumber, updatedAt: mark.updatedAt });
+    }
   }
   const selection = selectEvents(
     collected.map((event) => ({ ...event, role: event.role })),
     { target, maxRepositoryShare: 0.5 }
   );
-  saveEtags(stateDb, client.exportEtags());
   if (dryRun) {
     finishSyncRun(stateDb, syncRunId, stats, 0);
     stateDb.close();
@@ -9122,6 +9140,7 @@ async function syncCommand(argv) {
   const db = stateDb;
   try {
     const stored = storeEvents(db, selection.selected);
+    saveWatermarks(db, pendingWatermarks);
     finishSyncRun(db, syncRunId, stats, stored.inserted);
     console.log(
       JSON.stringify(
@@ -9477,6 +9496,7 @@ function explainCommand(argv) {
 function statusCommand() {
   const db = openDatabase();
   try {
+    const coverage = corpusCoverage(db);
     const runs = db.prepare("SELECT COUNT(*) AS n FROM review_runs").get().n;
     const audits = db.prepare("SELECT COUNT(*) AS n FROM audit_events").get().n;
     const totals = feedbackTotals(db);
@@ -9494,6 +9514,10 @@ function statusCommand() {
     if (last !== null) {
       console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(", ") || "none"}`);
     }
+    console.log(
+      `corpus           ${coverage.total} event(s)` + (coverage.total === 0 ? "" : ` \u2014 ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(", ")}`)
+    );
+    for (const warning of coverage.warnings) console.log(`  warning        ${warning}`);
     return 0;
   } finally {
     db.close();
