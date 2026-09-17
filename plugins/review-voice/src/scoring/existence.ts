@@ -32,8 +32,36 @@ const ASSERTS_ABSENCE = [
 const REPO_WIDE = [
   /\b(?:anywhere|nowhere)\s+in\s+the\s+(?:repo|repository|code\s?base|project|tree)\b/i,
   /\bdoes\s+not\s+exist\s+(?:anywhere|at\s+all)\b/i,
-  /\bin\s+the\s+(?:entire|whole)\s+(?:repo|repository|code\s?base|project)\b/i,
+  // Naming the repository is repo-wide whether or not the word "anywhere" is
+  // there. Without these, "does not exist in the repository" read as scoped,
+  // because the scoped pattern matches on "in the", and the widest claim a
+  // reviewer can make went unchecked on the strength of one missing word.
+  /\b(?:in|from|within|across)\s+(?:the\s+)?(?:entire\s+|whole\s+)?(?:repo|repository|code\s?base|project|tree)\b/i,
 ];
+
+/**
+ * A claim about somewhere this repository cannot answer for.
+ *
+ * "Absent from the localisation catalogue" is a true and useful finding about a
+ * sibling repository, and `git grep` here speaks only for this one. Answering
+ * anyway produced the worst outcome available: at the base ref it returned
+ * `found: []` with `inconclusive: false`, which reads as corroboration, and at
+ * the head ref it found the symbol this very diff adds and deleted the finding
+ * with a sentence that was false about the claim.
+ */
+const ELSEWHERE = [
+  /\b(?:in|from|within)\s+(?:the\s+)?[a-z0-9]+(?:-[a-z0-9]+)+\b/i,
+  /\b(?:in|from|within)\s+@[\w./-]+/,
+  // The name must be a name. `\S+` matched the article, so "in the
+  // repository" read as a named external repo and the widest possible claim
+  // went unchecked.
+  /\b(?:in|from|within)\s+(?:the\s+)?(?!the\b|a\b|an\b)[A-Za-z0-9][\w.-]*\s+(?:repo|repository|service|package|library)\b/i,
+  /\b(?:another|a\s+different|a\s+sibling|the\s+other)\s+(?:repo|repository|package|service)\b/i,
+];
+
+export function namesSomewhereElse(text: string): boolean {
+  return ELSEWHERE.some((pattern) => pattern.test(text));
+}
 
 /**
  * A claim confined to a place: a module, a package, an export list, a call site.
@@ -53,7 +81,11 @@ const SCOPED = [
 ];
 
 export function assertsAbsence(text: string): boolean {
+  // Repo-wide is decided first. "in the repository" names this repository and
+  // nothing else; only a claim that names somewhere by its own name is about
+  // somewhere else.
   if (REPO_WIDE.some((pattern) => pattern.test(text))) return true;
+  if (namesSomewhereElse(text)) return false;
   if (SCOPED.some((pattern) => pattern.test(text))) return false;
   return ASSERTS_ABSENCE.some((pattern) => pattern.test(text));
 }
@@ -149,12 +181,36 @@ export const gitGrep: Searcher = (symbol, cwd, ref) => {
  * A claim that names nothing searchable is left alone: this contradicts
  * specific assertions, it does not grade vagueness.
  */
+/**
+ * Checks a claim of absence against the repository.
+ *
+ * Only the claim is read, never the failure mode. They used to be concatenated
+ * and passed as one string, which handed the sentence explaining the
+ * consequence a vote on whether the assertion was scoped, and let a symbol
+ * named in the mechanism be treated as one the claim said was absent. The same
+ * invented claim was checked or ignored depending on how its impact was
+ * worded, and a rejection could name a symbol the claim never mentioned.
+ */
 export function checkAbsenceClaim(
   text: string,
   cwd: string,
   ref: string | null = null,
   search: Searcher = gitGrep,
 ): ExistenceCheck | null {
+  const searchedRefLabel = ref ?? 'working tree';
+
+  if (!REPO_WIDE.some((pattern) => pattern.test(text)) && namesSomewhereElse(text)) {
+    return {
+      found: [],
+      checked: [],
+      // Not silence. An empty `found` with `inconclusive: false` is the shape
+      // that reads as corroboration, and this repository cannot speak for
+      // another one.
+      inconclusive: true,
+      searchedRef: searchedRefLabel,
+    };
+  }
+
   if (!assertsAbsence(text)) return null;
 
   const symbols = namedSymbols(text);

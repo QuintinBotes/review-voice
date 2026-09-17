@@ -72,7 +72,16 @@ something the first did not is expected behaviour rather than a defect.
 
 Location rather than wording is the identity, because the editor rewrites
 prose: two runs naming the same defect at the same line are the same finding
-however they phrase it.
+however they phrase it. Lines within three of each other count as one location,
+matched pairwise rather than bucketed, since a comment can anchor at 174 in one
+run and 176 in the next and a fixed bucket puts a hard edge somewhere for that
+pair to fall across.
+
+A run recorded without `--diff-file` carries no diff identity and is excluded.
+Every run the shipped pipeline recorded used to be in that state, all colliding
+under the hash of the empty string, so the metric compared unrelated pull
+requests and reported their disagreement as this reviewer's variance. It fell
+further the more work was recorded, which is worse than no number at all.
 
 These two carried targets of 2 and 5 from when the output contract capped
 findings at five. It no longer does: a review reports everything that survives

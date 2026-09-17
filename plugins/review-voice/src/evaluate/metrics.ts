@@ -3,6 +3,7 @@ import { validateOutput } from '../contract/validate.ts';
 import { DEFAULT_LIMITS } from '../contract/limits.ts';
 import { countWords } from '../contract/words.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
+import { hashDiff } from '../store/runs.ts';
 
 export interface Metric {
   name: string;
@@ -186,6 +187,48 @@ export function computeMetrics(db: Database): Metric[] {
 
 
 /**
+ * Lines within this of each other count as the same location.
+ *
+ * Wide enough to absorb an anchor drifting as a file is edited, narrow enough
+ * that two genuinely different findings in one function are still two.
+ *
+ * Matched pairwise rather than by bucketing the line number. Dividing into
+ * fixed buckets puts a hard edge somewhere, and 174 against 176 falls across
+ * one exactly as confidence 0.82 against 0.90 fell across the severity
+ * boundary. A tolerance has no edge to land on.
+ */
+const AGREEMENT_LINE_TOLERANCE = 3;
+
+interface Located {
+  path: string;
+  line: number | null;
+}
+
+/** Pairs each location in `a` with at most one within tolerance in `b`. */
+function sharedLocations(a: Located[], b: Located[]): number {
+  const taken = new Set<number>();
+  let shared = 0;
+
+  for (const left of a) {
+    for (let i = 0; i < b.length; i += 1) {
+      if (taken.has(i)) continue;
+      const right = b[i] as Located;
+      if (right.path !== left.path) continue;
+      const near =
+        left.line === null || right.line === null
+          ? left.line === right.line
+          : Math.abs(left.line - right.line) <= AGREEMENT_LINE_TOLERANCE;
+      if (!near) continue;
+      taken.add(i);
+      shared += 1;
+      break;
+    }
+  }
+
+  return shared;
+}
+
+/**
  * How much two reviews of the same diff agree on which findings exist.
  *
  * Jaccard over `path:line`, across every diff reviewed more than once. Location
@@ -196,11 +239,18 @@ export function computeMetrics(db: Database): Metric[] {
  * one would be worse than saying the number out loud.
  */
 function candidateSetAgreement(db: Database): { value: number | null; basis: string } {
-  const rows = db
-    .prepare('SELECT diff_hash, candidates_json FROM review_runs WHERE diff_hash IS NOT NULL')
-    .all() as { diff_hash: string; candidates_json: string | null }[];
+  // The hash of the empty string is what a run records when no diff was given
+  // to hash. Every such run collides with every other, so grouping by it
+  // compares unrelated pull requests and reports their disagreement as this
+  // reviewer's variance. A number that falls as the tool is used more is worse
+  // than no number, because it will be read as evidence.
+  const EMPTY_DIFF = hashDiff('');
 
-  const byDiff = new Map<string, Set<string>[]>();
+  const rows = db
+    .prepare('SELECT diff_hash, candidates_json FROM review_runs WHERE diff_hash IS NOT NULL AND diff_hash != ?')
+    .all(EMPTY_DIFF) as { diff_hash: string; candidates_json: string | null }[];
+
+  const byDiff = new Map<string, Located[][]>();
 
   for (const row of rows) {
     let parsed: unknown;
@@ -210,12 +260,20 @@ function candidateSetAgreement(db: Database): { value: number | null; basis: str
       continue;
     }
     const list = Array.isArray(parsed) ? parsed : ((parsed as { candidates?: unknown[] }).candidates ?? []);
-    const located = new Set(
-      (list as Record<string, unknown>[])
-        .map((candidate) => `${String(candidate['path'] ?? '')}:${String(candidate['line'] ?? '')}`)
-        .filter((key) => key !== ':'),
-    );
-    if (located.size === 0) continue;
+    // A comment anchored at line 174 in one run and 176 in the next is one
+    // finding described twice. Exact matching scored that pair as two complete
+    // misses, understating agreement on precisely the findings both runs did
+    // agree about.
+    const located: Located[] = (list as Record<string, unknown>[])
+      .map((candidate) => {
+        const line = Number(candidate['line']);
+        return {
+          path: String(candidate['path'] ?? ''),
+          line: Number.isFinite(line) ? line : null,
+        };
+      })
+      .filter((entry) => entry.path !== '');
+    if (located.length === 0) continue;
 
     const existing = byDiff.get(row.diff_hash);
     if (existing === undefined) byDiff.set(row.diff_hash, [located]);
@@ -229,10 +287,10 @@ function candidateSetAgreement(db: Database): { value: number | null; basis: str
     if (sets.length < 2) continue;
     for (let i = 0; i < sets.length; i += 1) {
       for (let j = i + 1; j < sets.length; j += 1) {
-        const a = sets[i] as Set<string>;
-        const b = sets[j] as Set<string>;
-        const shared = [...a].filter((key) => b.has(key)).length;
-        const union = new Set([...a, ...b]).size;
+        const a = sets[i] as Located[];
+        const b = sets[j] as Located[];
+        const shared = sharedLocations(a, b);
+        const union = a.length + b.length - shared;
         if (union === 0) continue;
         scores.push(shared / union);
         pairs += 1;
@@ -241,14 +299,20 @@ function candidateSetAgreement(db: Database): { value: number | null; basis: str
   }
 
   if (pairs === 0) {
+    const unhashed = (
+      db.prepare('SELECT COUNT(*) AS n FROM review_runs WHERE diff_hash = ?').get(EMPTY_DIFF) as { n: number }
+    ).n;
     return {
       value: null,
-      basis: 'no diff has been reviewed twice; record two runs of one diff to measure this',
+      basis:
+        unhashed > 0
+          ? `not measurable: ${unhashed} run(s) recorded without --diff-file, so they carry no diff identity`
+          : 'no diff has been reviewed twice; record two runs of one diff to measure this',
     };
   }
 
   return {
     value: median(scores),
-    basis: `${pairs} pair(s) of runs over the same diff, by path:line`,
+    basis: `${pairs} pair(s) of runs over the same diff, by path and line within ${AGREEMENT_LINE_TOLERANCE}`,
   };
 }

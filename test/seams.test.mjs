@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { normaliseCandidate } from '../plugins/review-voice/src/scoring/score.ts';
@@ -162,4 +162,71 @@ test('every severity the contract allows appears in the prompts that use it', ()
 test('the severity list the editor states matches the contract exactly', () => {
   const stated = [...EDITOR.matchAll(/`(blocking|important|minor|nit|question)`/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(stated)].sort(), [...SEVERITIES].sort());
+});
+
+// Seam four: the shipped command text against the CLI's own flags
+//
+// The three seams above are agent boundaries. The defect that got through was
+// at a different one: `commands/review.md` tells the operator to run `record`
+// without `--diff-file`, so every run recorded the hash of the empty string
+// and `candidate_set_agreement` compared unrelated pull requests. Nothing
+// watched the boundary between the prose and the binary.
+
+const REVIEW = read('commands/review.md');
+
+const cli = (args) => {
+  try {
+    return execFileSync(process.execPath, [join(plugin, 'dist/review-voice.mjs'), ...args], { encoding: 'utf8' });
+  } catch (error) {
+    return error.stdout ?? '';
+  }
+};
+
+/** Every `RV <command> ...` invocation the review command instructs. */
+function invocations(markdown) {
+  return [...markdown.matchAll(/\bRV\s+([a-z-]+)((?:\s+--?[\w-]+(?:\s+[^\s`]+)?)*)/g)].map((match) => ({
+    command: match[1],
+    flags: [...(match[2] ?? '').matchAll(/--[\w-]+/g)].map((flag) => flag[0]),
+  }));
+}
+
+test('every flag the review command instructs is one the CLI defines', () => {
+  const usage = cli(['--help']);
+
+  for (const { command, flags } of invocations(REVIEW)) {
+    for (const flag of flags) {
+      assert.ok(
+        usage.includes(flag),
+        `commands/review.md tells the operator to run \`RV ${command} ${flag}\`, and --help never mentions ${flag}`,
+      );
+    }
+  }
+});
+
+test('the record invocation supplies the diff the agreement metric needs', () => {
+  // `candidate_set_agreement` identifies a run by its diff hash. A `record`
+  // without `--diff-file` hashes the empty string, so every run collides and
+  // the metric reports the disagreement of unrelated pull requests as this
+  // reviewer's variance.
+  // The full invocation, not a passing mention of one flag elsewhere in the
+  // document.
+  const record = invocations(REVIEW).find(
+    (call) => call.command === 'record' && call.flags.includes('--candidates'),
+  );
+  assert.ok(record !== undefined, 'the review command no longer instructs a full `RV record`');
+  assert.ok(
+    record.flags.includes('--diff-file'),
+    `record is instructed without --diff-file, so every run records the same diff identity. Flags: ${record.flags.join(' ')}`,
+  );
+});
+
+test('the score invocation supplies what the gates depend on', () => {
+  const score = invocations(REVIEW).find((call) => call.command === 'score');
+  assert.ok(score !== undefined, 'the review command no longer instructs `RV score`');
+  for (const flag of ['--verification', '--base']) {
+    assert.ok(
+      score.flags.includes(flag),
+      `score is instructed without ${flag}, which silently changes which gate decides`,
+    );
+  }
 });

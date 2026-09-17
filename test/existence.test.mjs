@@ -151,12 +151,14 @@ test('a claim scoped to a place is never checked against the whole repository', 
     'The `actions` column id cannot be found in the exported constants',
     'The handler is missing from the eventing module',
   ]) {
-    assert.equal(assertsAbsence(claim), false, claim);
-    assert.equal(
-      checkAbsenceClaim(claim, '/repo', 'main', () => true),
-      null,
-      `${claim} reached the searcher`,
-    );
+    // Either not checked at all, or checked and inconclusive. What must never
+    // happen is a rejection: a scoped claim is true precisely when the symbol
+    // exists somewhere else, so a repository-wide hit says nothing about it.
+    const result = checkAbsenceClaim(claim, '/repo', 'main', () => true);
+    if (result !== null) {
+      assert.equal(result.inconclusive, true, `${claim} was answered, not deferred`);
+      assert.deepEqual(result.found, [], `${claim} produced a rejection`);
+    }
   }
 });
 

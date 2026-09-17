@@ -259,8 +259,13 @@ request is not held to a figure written for an ordinary one.
 
 - Exit 0: display the output verbatim, then record it. Write the scored
   candidates to a temporary file and pass it:
-  `RV record --repository <name> --base <ref> --head <sha> --candidates <file>`
-  with the validated output on stdin.
+  `RV record --repository <name> --base <ref> --head <sha> --candidates <file>
+  --diff-file <tmpdir>/diff.patch` with the validated output on stdin.
+
+  **`--diff-file` is the patch step 1 wrote.** Without it the run records the
+  hash of the empty string, every run collides with every other, and
+  `candidate_set_agreement` compares unrelated pull requests. No command passed
+  it, so that was every run there was.
 
   The candidates carry each finding's category, which the rendered output
   cannot - the contract permits no text beyond the finding. Without it,

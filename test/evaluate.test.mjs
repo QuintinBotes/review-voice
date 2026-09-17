@@ -235,3 +235,44 @@ test('the observed shape is reproduced: six and four candidates sharing two', ()
     assert.equal(metric(computeMetrics(db), 'candidate_set_agreement').value, 0.25);
   });
 });
+
+test('a run recorded without a diff is never compared to another', () => {
+  // Every run recorded by the shipped pipeline carried the hash of the empty
+  // string, so the metric compared unrelated pull requests and reported their
+  // disagreement as this reviewer's variance. It fell further the more work
+  // was recorded.
+  withDb((db) => {
+    for (const diff of ['', '']) {
+      recordRun(db, {
+        repository: 'org/a',
+        baseRef: 'base',
+        headRef: 'head',
+        diff,
+        output: '[nit] `src/a.ts:1` - A. B. C.',
+        candidates: [{ path: 'src/a.ts', line: 1 }],
+      });
+    }
+    const m = metric(computeMetrics(db), 'candidate_set_agreement');
+    assert.equal(m.value, null);
+    assert.match(m.basis, /not measurable/);
+    assert.match(m.basis, /without --diff-file/);
+  });
+});
+
+test('an anchor that drifted a line or two is the same finding', () => {
+  // Observed: the same comment at 174 in one run and 176 in the next, scored
+  // as two complete misses.
+  withDb((db) => {
+    runWithCandidates(db, 'same', [{ path: 'a.tsx', line: 174 }]);
+    runWithCandidates(db, 'same', [{ path: 'a.tsx', line: 176 }]);
+    assert.equal(metric(computeMetrics(db), 'candidate_set_agreement').value, 1);
+  });
+});
+
+test('two genuinely distant findings in one file are still two', () => {
+  withDb((db) => {
+    runWithCandidates(db, 'same', [{ path: 'a.tsx', line: 10 }]);
+    runWithCandidates(db, 'same', [{ path: 'a.tsx', line: 200 }]);
+    assert.equal(metric(computeMetrics(db), 'candidate_set_agreement').value, 0);
+  });
+});
