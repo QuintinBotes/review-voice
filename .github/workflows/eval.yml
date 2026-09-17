@@ -39,12 +39,22 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+      - name: Install the sandbox backend
+        # `--allow-tools Bash` makes the harness require OS-level confinement
+        # and refuse to start without it, which is the behaviour we want: a
+        # shell granted to a plugin under test should never run unconfined.
+        # The GitHub runner image ships neither dependency.
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
+
       - name: Install Claude Code
         # Pinned deliberately: an unpinned global install is a mutable
         # dependency running in CI with this repository's tokens, which is the
         # same problem SHA-pinning the actions solves. Bump it consciously.
         run: npm install -g @anthropic-ai/claude-code@2.1.273
 
+      # Requires an ANTHROPIC_API_KEY repository secret. Without it every LLM
+      # grader throws "judge call failed: Not logged in" and each case scores
+      # 0.00 - a failure that looks like the plugin behaving badly and is not.
       - name: Run eval suite
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
