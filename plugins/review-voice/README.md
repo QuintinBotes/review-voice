@@ -2,8 +2,8 @@
 
 A concise, precedent-aware code reviewer for Claude Code.
 
-At most five findings. Forty words each. Evidence required. Silence when
-nothing qualifies:
+Every finding names a concrete failure mode, in forty words or fewer, ordered
+worst-first. Silence when nothing qualifies:
 
 ```
 No actionable findings.

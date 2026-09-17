@@ -1,26 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { Database } from '../store/db.ts';
 
-export function loadEtags(db: Database): Record<string, string> {
-  const rows = db.prepare('SELECT url, etag FROM sync_state').all() as { url: string; etag: string }[];
-  return Object.fromEntries(rows.map((row) => [row.url, row.etag]));
-}
-
-export function saveEtags(db: Database, etags: Record<string, string>): void {
-  const upsert = db.prepare(
-    `INSERT INTO sync_state (url, etag, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT (url) DO UPDATE SET etag = excluded.etag, updated_at = excluded.updated_at`,
-  );
-  const now = new Date().toISOString();
-  db.exec('BEGIN');
-  try {
-    for (const [url, etag] of Object.entries(etags)) upsert.run(url, etag, now);
-    db.exec('COMMIT');
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
-}
+// The ETag helpers that lived here are gone with the sync_state table they
+// read. Migration v6 drops that table, so keeping them would have left two
+// exported functions that throw on call — worse than dead code, because the
+// signature still reads as usable. Incremental sync is in ./watermark.ts.
 
 export interface SyncRunSummary {
   syncRunId: string;

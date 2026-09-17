@@ -40,10 +40,10 @@ source_window:
 
 voice:
   tone: [direct, calm, technical, concise]
-  prohibited: [praise, generic_summary, hedging, speculative_language, vague_refactor_advice]
-  max_findings: 5
+  prohibited: [praise, generic_summary, hedging, speculative_language]
+  max_findings: null        # no cap; a layer may impose one
   max_words_per_finding: 40
-  max_total_words: 180
+  max_total_words: 600      # floor; scales with the size of the change
   no_findings_response: "No actionable findings."
 
 comment_contract:
@@ -74,7 +74,7 @@ out the diff:
 
 - 1,500 tokens maximum of active policy text
 - 1,000 tokens maximum of retrieved precedents
-- 8 retrieved precedents per review; 3 positive and 2 negative per candidate
+- 3 positive and 2 negative precedents per candidate
 - 20 active inferred rules per scope layer
 
 The compiler turns repetitive evidence into **short rules**, not stored prose.

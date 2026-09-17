@@ -5,6 +5,24 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Documentation brought in line with 0.2.0's contract: the README, plugin
+  README, `docs/POLICY-FORMAT.md` and `templates/config.example.yaml` no longer
+  describe a five-finding cap or a flat 180-word budget.
+- `docs/PLAN.md` is marked delivered and records where reality diverged —
+  notably the repository going public at 0.1.0 rather than v1.0.0.
+- ADR 0001 no longer claims the evaluation harness measures precedent recall.
+  It does not, and knowing a relevant precedent was missed requires labelled
+  retrieval data nobody has produced.
+
+### Removed
+
+- Dead `loadEtags` / `saveEtags` helpers, which read a table migration v6 drops
+  — two exported functions that would have thrown on call.
+
 ## [0.2.1] — 2026-09-17
 
 ### Fixed
