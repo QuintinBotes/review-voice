@@ -5,6 +5,7 @@ import {
   globToRegExp,
   governsAny,
   pointerTarget,
+  pointerTargets,
 } from '../plugins/review-voice/src/conventions/globs.ts';
 
 // A repository declaring which paths a rule governs is the repository saying
@@ -66,4 +67,28 @@ test('a pointer file names the document that holds the rule', () => {
 test('a document with real content is not a pointer', () => {
   assert.equal(pointerTarget('---\npaths:\n  - "*.ts"\n---\nHandlers validate first.'), null);
   assert.equal(pointerTarget('Just prose.'), null);
+});
+
+test('a stub listing several documents resolves all of them', () => {
+  // The live failure: a 179-byte stub declaring the controller globs listed two
+  // rule files, and the anchored single-line regex matched neither, so the pull
+  // request that added a controller was reviewed without the controller rules.
+  const stub =
+    '---\npaths: ["**/Controllers/**/*.cs", "**/*Controller.cs"]\n---\n' +
+    '@.agents/rules/controller-patterns.md\n@.agents/rules/controller-implementation.md\n';
+
+  assert.deepEqual(pointerTargets(stub), [
+    '.agents/rules/controller-patterns.md',
+    '.agents/rules/controller-implementation.md',
+  ]);
+});
+
+test('a stub with one target still resolves, and prose is never a stub', () => {
+  assert.deepEqual(pointerTargets('@AGENTS.md'), ['AGENTS.md']);
+  assert.deepEqual(pointerTargets('---\npaths:\n  - "*.ts"\n---\nHandlers validate first.'), []);
+  assert.deepEqual(pointerTargets(['@x.md', 'But also this real guidance.'].join('\n')), []);
+});
+
+test('the single-target form refuses to guess when a stub lists two', () => {
+  assert.equal(pointerTarget(['@alpha.md', '@beta.md'].join('\n')), null);
 });

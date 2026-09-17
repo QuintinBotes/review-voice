@@ -8357,10 +8357,18 @@ function governsAny(globs, changedPaths) {
     return normalised.some((path) => pattern.test(path) || loose !== null && loose.test(path));
   });
 }
-function pointerTarget(content) {
+function pointerTargets(content) {
   const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---/, "").trim();
-  const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(body);
-  return match?.[1] ?? null;
+  if (body.length === 0) return [];
+  const targets = [];
+  for (const raw of body.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.length === 0 || line.startsWith("<!--") || line.startsWith("#")) continue;
+    const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(line);
+    if (match?.[1] === void 0) return [];
+    targets.push(match[1]);
+  }
+  return targets;
 }
 
 // plugins/review-voice/src/conventions/discover.ts
@@ -8391,11 +8399,35 @@ var ADDRESSES_THE_REVIEWER = [
   /(?:you\s+(?:must|should|will)\s+)?approve\s+th(?:is|e)\s+(?:pull\s+request|pr|change)/i,
   /system\s+prompt/i
 ];
+function truncationMarker(bytes, included) {
+  return `
+
+[Truncated by Review Voice: ${included} of ${bytes} bytes shown. The rest of this document was not read.]
+`;
+}
 function readBounded(absolute) {
   const raw = readFileSync3(absolute, "utf8");
   const bytes = Buffer.byteLength(raw, "utf8");
-  if (bytes <= PER_DOCUMENT_BYTES) return { content: raw, bytes, truncated: false };
-  return { content: raw.slice(0, PER_DOCUMENT_BYTES), bytes, truncated: true };
+  if (bytes <= PER_DOCUMENT_BYTES) {
+    return { content: raw, bytes, includedBytes: bytes, truncated: false };
+  }
+  const marker = truncationMarker(bytes, PER_DOCUMENT_BYTES);
+  const budget = Math.max(0, PER_DOCUMENT_BYTES - Buffer.byteLength(marker, "utf8"));
+  const buffer = Buffer.from(raw, "utf8");
+  let end = Math.min(budget, buffer.length);
+  const decoder = new TextDecoder("utf8", { fatal: true });
+  let text = "";
+  for (; end > 0; end -= 1) {
+    try {
+      text = decoder.decode(buffer.subarray(0, end));
+      break;
+    } catch {
+    }
+  }
+  const lastBreak = text.lastIndexOf("\n");
+  if (lastBreak > 0) text = text.slice(0, lastBreak);
+  const content = `${text}${truncationMarker(bytes, Buffer.byteLength(text, "utf8"))}`;
+  return { content, bytes, includedBytes: Buffer.byteLength(content, "utf8"), truncated: true };
 }
 function ancestors(changedPath) {
   const parts = changedPath.split(/[\\/]/).slice(0, -1);
@@ -8520,34 +8552,45 @@ function discoverConventions(root, changedPaths = []) {
       governsPaths: 0
     }))
   ];
-  const resolved = /* @__PURE__ */ new Map();
-  const sized = ordered.map((entry) => {
+  const sized = ordered.flatMap((entry) => {
     let bytes = Number.POSITIVE_INFINITY;
     let governs = [];
+    let followed = [];
     try {
       bytes = statSync(join4(root, entry.path)).size;
       if (bytes <= CHEAP_BYTES) {
         const head = readFileSync3(join4(root, entry.path), "utf8");
         governs = frontmatterPaths(head);
-        const target = pointerTarget(head);
-        if (target !== null) {
-          const followed = resolvePointer(root, entry.path, target);
-          if (followed !== null) resolved.set(entry.path, followed);
+        const targets = pointerTargets(head);
+        for (const target of targets) {
+          const resolvedPath = resolvePointer(root, entry.path, target);
+          if (resolvedPath === null) {
+            skipped.push({
+              path: target,
+              reason: `referenced by ${entry.path}, which points at it, but it was not found`
+            });
+            continue;
+          }
+          followed.push(resolvedPath);
         }
       }
     } catch {
     }
-    const path = resolved.get(entry.path) ?? entry.path;
-    if (path !== entry.path) {
-      try {
-        bytes = statSync(join4(root, path)).size;
-      } catch {
-        bytes = Number.POSITIVE_INFINITY;
-      }
-    }
     const covers = governsCount(governs, changedPaths);
-    const promoted = governsAny(governs, changedPaths) && entry.reason !== "directory scope" ? { ...entry, path, governs, governsPaths: covers, reason: "governs the changed paths" } : { ...entry, path, governs, governsPaths: covers };
-    return { entry: promoted, bytes };
+    const withPath = (path) => {
+      const base = { ...entry, path, governs, governsPaths: covers };
+      return governsAny(governs, changedPaths) && entry.reason !== "directory scope" ? { ...base, reason: "governs the changed paths" } : base;
+    };
+    if (followed.length === 0) return [{ entry: withPath(entry.path), bytes }];
+    return followed.map((path) => {
+      let targetBytes = Number.POSITIVE_INFINITY;
+      try {
+        targetBytes = statSync(join4(root, path)).size;
+      } catch {
+        targetBytes = Number.POSITIVE_INFINITY;
+      }
+      return { entry: withPath(path), bytes: targetBytes };
+    });
   });
   const tier = (reason) => [
     "directory scope",
@@ -8581,6 +8624,19 @@ function discoverConventions(root, changedPaths = []) {
       skipped.push({ path: entry.path, reason: "context budget for convention documents was already full" });
       continue;
     }
+    let projected = Number.POSITIVE_INFINITY;
+    try {
+      projected = totalBytes + Math.min(statSync(absolute).size, PER_DOCUMENT_BYTES);
+    } catch {
+      projected = totalBytes;
+    }
+    if (projected > TOTAL_BYTES) {
+      skipped.push({
+        path: entry.path,
+        reason: `would take the convention budget past ${TOTAL_BYTES} bytes`
+      });
+      continue;
+    }
     let read;
     try {
       read = readBounded(absolute);
@@ -8597,12 +8653,15 @@ function discoverConventions(root, changedPaths = []) {
       governs: entry.governs,
       governsPaths: entry.governsPaths,
       bytes: read.bytes,
+      includedBytes: read.includedBytes,
       truncated: read.truncated,
       content: read.content
     });
     totalBytes += Buffer.byteLength(read.content, "utf8");
     if (read.truncated) {
-      warnings.push(`${entry.path} is ${read.bytes} bytes and was truncated to ${PER_DOCUMENT_BYTES}.`);
+      warnings.push(
+        `${entry.path} is ${read.bytes} bytes and was truncated to ${read.includedBytes}. The document itself says so where it was cut.`
+      );
     }
     for (const pattern of ADDRESSES_THE_REVIEWER) {
       if (pattern.test(read.content)) {
