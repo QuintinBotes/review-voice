@@ -16,6 +16,13 @@ written as `case.yaml` without `schema_version`, which the loader rejects; they
 are now `prompt.md` plus `graders/`, the form `claude plugin eval init`
 scaffolds.
 
+**CI needs two things this repository did not have.** `--allow-tools Bash`
+makes the harness require OS-level confinement and refuse to start without it,
+so the runner installs `bubblewrap` and `socat`; and the LLM graders need an
+`ANTHROPIC_API_KEY` repository secret, without which every grader throws "judge
+call failed: Not logged in" and each case scores 0.00 - a failure that reads
+like the plugin behaving badly and is not.
+
 **On macOS these cases cannot exercise the pipeline.** The eval sandbox denies
 writes to the system temp directory, and the `git` on PATH is the Xcode shim,
 which needs that directory for its `xcrun` cache. `RV diff` therefore exits 2

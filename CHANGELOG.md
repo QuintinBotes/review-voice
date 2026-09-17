@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The eval CI job installs `bubblewrap` and `socat`. Granting a shell makes the
+  harness require OS-level confinement and refuse to start without it, which is
+  the behaviour to keep, and the runner image ships neither dependency. The job
+  also needs an `ANTHROPIC_API_KEY` repository secret; without one every LLM
+  grader throws "not logged in" and each case scores 0.00, which reads like the
+  plugin behaving badly and is not.
+
 - The eval suite can now run at all. `--eval-dir` resolves below the plugin
   root, and the cases sat at the repository root, so every invocation exited 1
   with "No eval cases found" - including the nightly CI job, whose only
