@@ -63,13 +63,20 @@ export interface SpecificityInput {
 /**
  * A comment pinned to an exact line with its diff hunk is evidence about
  * something specific. A general remark on a pull request might be about
- * anything, so it should not weigh the same.
+ * anything.
+ *
+ * The floor is deliberately low. Measured against a real corpus, ten of twelve
+ * owner events were unanchored summaries - and with a 3x owner multiplier on
+ * top, those same ten documents surfaced for every candidate regardless of
+ * topic, which is what held owner alignment inside a 0.77-0.85 band. An
+ * unanchored remark has to be much weaker than an anchored one, or amplifying
+ * owner evidence amplifies noise.
  */
 export function specificityWeight(input: SpecificityInput): number {
-  let weight = 0.6;
-  if (input.hasFilePath) weight += 0.15;
-  if (input.hasLine) weight += 0.15;
-  if (input.hasDiffHunk) weight += 0.1;
+  let weight = 0.2;
+  if (input.hasFilePath) weight += 0.4;
+  if (input.hasLine) weight += 0.25;
+  if (input.hasDiffHunk) weight += 0.15;
   return weight;
 }
 

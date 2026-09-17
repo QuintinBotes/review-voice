@@ -18,15 +18,22 @@ export interface SelectionReport<T> {
   shortfall: number;
   shortfallReason: string | null;
   perRepository: Record<string, number>;
+  /** Repositories that exceeded the soft share cap during backfill. */
+  overRepresented: string[];
 }
 
 /**
  * Chooses which eligible events enter the corpus.
  *
  * Newest first, but not only newest: one busy repository would otherwise
- * define the global policy for every other. The share cap is relaxed rather
- * than enforced to the point of importing less than is available - a smaller
- * corpus is a worse outcome than a slightly lopsided one.
+ * define the global policy for every other.
+ *
+ * The soft cap may be exceeded during backfill, because a smaller corpus is a
+ * worse outcome than a slightly lopsided one. It may not be exceeded without
+ * limit. One repository at 84% of the corpus is not a lopsided sample of the
+ * owner's work, it is a sample of one repository - and the resulting shortfall
+ * is reported as a diversity limit rather than an exhausted corpus, because
+ * those are different problems with different fixes.
  *
  * Owner evidence is preferred when the cap forces a choice, since it is the
  * signal the whole system weights highest.
@@ -60,16 +67,22 @@ export function selectEvents<T extends Selectable>(
     selected.push(event);
   }
 
-  // Backfill from the deferred pool rather than under-filling the corpus. The
-  // cap exists to stop one repository dominating, not to shrink the corpus
-  // when nothing else is available.
+  // Backfill past the soft cap, but not past the hard one.
+  const hardCap = Math.max(cap, Math.floor(options.target * Math.min(1, options.maxRepositoryShare * 1.5)));
+  const overRepresented = new Set<string>();
+
   for (const event of deferred) {
     if (selected.length >= options.target) break;
-    perRepository[event.repository] = (perRepository[event.repository] ?? 0) + 1;
+    const count = perRepository[event.repository] ?? 0;
+    if (count >= hardCap) continue;
+    if (count >= cap) overRepresented.add(event.repository);
+    perRepository[event.repository] = count + 1;
     selected.push(event);
   }
 
   const shortfall = Math.max(0, options.target - selected.length);
+  const exhausted = selected.length >= discoveredEligible;
+
   return {
     selected,
     targetEvents: options.target,
@@ -77,8 +90,15 @@ export function selectEvents<T extends Selectable>(
     importedEvents: selected.length,
     shortfall,
     // Claiming a full scan when the history ran out would misrepresent how
-    // much the policy actually rests on.
-    shortfallReason: shortfall > 0 ? 'Accessible review corpus exhausted' : null,
+    // much the policy actually rests on - and so would blaming an exhausted
+    // corpus when the real limit was diversity.
+    shortfallReason:
+      shortfall === 0
+        ? null
+        : exhausted
+          ? 'Accessible review corpus exhausted'
+          : 'Repository diversity limit reached; one repository would otherwise dominate the corpus',
     perRepository,
+    overRepresented: [...overRepresented],
   };
 }

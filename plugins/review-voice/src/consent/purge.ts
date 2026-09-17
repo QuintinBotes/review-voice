@@ -12,6 +12,8 @@ export interface PurgePreview {
   reviewRuns: number;
   feedback: number;
   auditEvents: number;
+  /** Sync watermarks removed, so the next sync rebuilds rather than tops up. */
+  watermarks: number;
   byRepository: Record<string, number>;
 }
 
@@ -42,6 +44,21 @@ export function previewPurge(db: Database, scope: PurgeScope): PurgePreview {
   );
 
   const all = scope.all === true;
+
+  // Watermarks record which pull requests have already been read. Deleting
+  // events while leaving them behind means the next sync skips everything it
+  // previously imported as "unchanged" and rebuilds nothing - the corpus comes
+  // back as whatever happened to be updated since, which is not a rebuild.
+  const watermarks = all
+    ? (db.prepare('SELECT COUNT(*) AS n FROM sync_watermarks').get() as { n: number }).n
+    : scope.repository !== undefined
+      ? (
+          db
+            .prepare('SELECT COUNT(*) AS n FROM sync_watermarks WHERE repository = ?')
+            .get(scope.repository) as { n: number }
+        ).n
+      : 0;
+
   const reviewRuns = all
     ? (db.prepare('SELECT COUNT(*) AS n FROM review_runs').get() as { n: number }).n
     : 0;
@@ -50,7 +67,7 @@ export function previewPurge(db: Database, scope: PurgeScope): PurgePreview {
     ? (db.prepare('SELECT COUNT(*) AS n FROM audit_events').get() as { n: number }).n
     : 0;
 
-  return { events, reviewRuns, feedback, auditEvents, byRepository };
+  return { events, reviewRuns, feedback, auditEvents, watermarks, byRepository };
 }
 
 export function executePurge(db: Database, scope: PurgeScope): PurgePreview {
@@ -60,9 +77,13 @@ export function executePurge(db: Database, scope: PurgeScope): PurgePreview {
   db.exec('BEGIN');
   try {
     db.prepare(`DELETE FROM review_events WHERE ${where}`).run(...params);
+
     if (scope.all === true) {
+      db.prepare('DELETE FROM sync_watermarks').run();
       db.prepare('DELETE FROM review_runs').run();
       db.prepare('DELETE FROM feedback').run();
+    } else if (scope.repository !== undefined) {
+      db.prepare('DELETE FROM sync_watermarks WHERE repository = ?').run(scope.repository);
     }
     db.exec('COMMIT');
   } catch (error) {

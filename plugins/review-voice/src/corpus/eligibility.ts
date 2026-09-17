@@ -8,6 +8,7 @@ export interface EligibilityInput {
 }
 
 export type Ineligible =
+  | 'self_generated'
   | 'bot'
   | 'external_reviewer'
   | 'approval_only'
@@ -60,6 +61,20 @@ function isTemplate(body: string): boolean {
   return structureRatio >= 0.6;
 }
 
+/**
+ * Review Voice's own output format.
+ *
+ * A review this tool produced, posted to GitHub and then read back in, becomes
+ * owner evidence and teaches the reviewer its own voice. That is a closed loop
+ * with no external signal in it: the model's preferences get reinforced as if
+ * they were the owner's, and drift compounds silently every sync.
+ *
+ * Detected by format, which is portable - the recorded review runs that could
+ * confirm it live on one machine, and the comment may have been posted from
+ * another.
+ */
+const SELF_GENERATED = /^\s*\[(blocking|important|minor|nit|question)\]\s+`[^`]+:\d+`\s+-\s/im;
+
 const GENERATED_PATH = [
   /(^|\/)(dist|build|out|coverage|node_modules|vendor|third_party)\//,
   /\.min\.(js|css)$/,
@@ -83,6 +98,10 @@ export function ineligibleReason(input: EligibilityInput): Ineligible | null {
 
   const body = input.body.trim();
   if (body.length === 0) return 'too_short';
+
+  // Checked before anything else: learning from its own output is the one
+  // failure that gets worse every time it happens.
+  if (SELF_GENERATED.test(body)) return 'self_generated';
 
   // What remains once approval language and decoration are removed. A comment
   // that is only approval has nothing to teach; one that approves and then
