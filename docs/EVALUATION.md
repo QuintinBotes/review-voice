@@ -164,6 +164,41 @@ run has measured it, so it is recorded here as a starting point rather than
 presented as evidence. An unsearchable or failed search deliberately retains
 the legacy category tier instead of guessing that a finding is local.
 
+### Precedent alignment is close to a constant, and the fix is shadowed
+
+`RV status` reports the problem itself: on one corpus 40 of 60 owner events had
+no file anchor. An unanchored summary matches every candidate equally, and with
+owner weighting applied it surfaces regardless of topic.
+
+The consequence is not a weak signal but a constant one. `matchStrength` is
+normalised to the best hit in each candidate's own result set, so when the same
+unanchored summaries are retrieved for every candidate, every candidate gets the
+same alignment. On a live run all eight findings drew the same three precedents
+and the gate rejected nothing. Owner alignment carries 0.25 of the final score
+and repository alignment 0.15, so 0.40 of it is a fixed addition compressing the
+range available to the four terms that discriminate - the same shape as
+`evidenceQuality` scoring 1.000 on every candidate, which was diagnosed and
+fixed at a third of the weight.
+
+Excluding anchor-less precedents is the fix, and it is **not yet live**.
+Computed on the shapes these runs produced, it moves the final score by:
+
+| Precedents | Alignment before | After | Final-score impact |
+|---|---|---|---|
+| 3 owner, weight 0.6 | 0.8581 | 0.5000 | −0.0895 |
+| 3 owner, weight 1.0 | 0.9526 | 0.5000 | −0.1131 |
+| 2 owner, weight 0.45 | 0.7109 | 0.5000 | −0.0527 |
+
+Against a threshold of 0.68 that is large enough to delete findings that pass
+today. The gate's own history is the argument for not guessing a new one: 0.74
+was arithmetic about a distribution change and was wrong, and 0.68 was measured
+and replaced it. A second round of arithmetic would repeat the mistake.
+
+So every score breakdown now carries an `anchored` block - what the score would
+be, and whether eligibility would flip - while the gate keeps using the current
+computation. `/review-voice:explain` shows it. The switch is a measurement
+waiting on real runs, not a decision waiting on an opinion.
+
 ### The headline gate has no data
 
 `owner_accepted_precision`, the ≥ 80% target this document opens with, reports

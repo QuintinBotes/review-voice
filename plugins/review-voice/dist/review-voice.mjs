@@ -9551,10 +9551,16 @@ function duplicatePrecedent(candidate, precedents) {
   }
   return null;
 }
+function isAnchored(precedent) {
+  return precedent.filePath !== null;
+}
 function alignmentFrom(precedents) {
   if (precedents.length === 0) return 0.5;
   const total = precedents.reduce((sum, p) => sum + p.weight * (p.matchStrength ?? 1), 0);
   return 1 / (1 + Math.exp(-total));
+}
+function anchoredAlignmentFrom(precedents) {
+  return alignmentFrom(precedents.filter(isAnchored));
 }
 var ANCHORED = [
   /\bline\s+\d+/i,
@@ -9612,9 +9618,13 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const repositoryPrecedents = forAlignment.filter((p) => p.role !== "owner");
   const ownerAlignment = alignmentFrom(ownerPrecedents);
   const repositoryAlignment = alignmentFrom(repositoryPrecedents);
+  const anchoredOwnerAlignment = anchoredAlignmentFrom(ownerPrecedents);
+  const anchoredRepositoryAlignment = anchoredAlignmentFrom(repositoryPrecedents);
   const quality = evidenceQuality(candidate);
   const novel = alreadySaid === null ? novelty(candidate, kept, precedents) : 0;
-  const finalScore = 0.35 * confidence + 0.25 * ownerAlignment + 0.15 * repositoryAlignment + 0.15 * quality + 0.1 * novel;
+  const score = (owner, repository) => 0.35 * confidence + 0.25 * owner + 0.15 * repository + 0.15 * quality + 0.1 * novel;
+  const finalScore = score(ownerAlignment, repositoryAlignment);
+  const anchoredFinalScore = score(anchoredOwnerAlignment, anchoredRepositoryAlignment);
   let rejectedBecause = null;
   if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
     rejectedBecause = "score could not be computed from this candidate";
@@ -9641,6 +9651,14 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     evidenceQuality: quality,
     novelty: novel,
     finalScore,
+    anchored: {
+      ownerAlignment: anchoredOwnerAlignment,
+      repositoryAlignment: anchoredRepositoryAlignment,
+      finalScore: anchoredFinalScore,
+      // Only the score gate can flip here: every other rejection reason is
+      // independent of alignment.
+      wouldChangeEligibility: rejectedBecause === null ? anchoredFinalScore < thresholds.finalScore : rejectedBecause.startsWith("score ") && anchoredFinalScore >= thresholds.finalScore
+    },
     eligible: rejectedBecause === null,
     rejectedBecause,
     duplicateOfPrecedent: alreadySaid?.eventId ?? null,
