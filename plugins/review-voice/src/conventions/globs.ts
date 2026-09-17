@@ -114,6 +114,8 @@ export function governsAny(globs: readonly string[], changedPaths: readonly stri
  */
 export function pointerTarget(content: string): string | null {
   const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---/, '').trim();
-  const match = /^@([^\s]+\.md)$/.exec(body);
+  // `\.?\/?` ate the dot of `.agents/rules/...`. Only `./` as a unit is
+  // optional punctuation; a bare dot is part of the path.
+  const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(body);
   return match?.[1] ?? null;
 }

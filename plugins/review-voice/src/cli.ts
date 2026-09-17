@@ -752,7 +752,13 @@ function scoreCommand(argv: string[]): number {
       let absence = null;
       if (searchRoot !== null) {
         try {
-          absence = checkAbsenceClaim(`${candidate.claim} ${candidate.failureMode}`, searchRoot, baseRef);
+          // The claim only, never the failure mode. Concatenating them handed
+          // the sentence explaining the consequence a vote on whether the
+          // assertion was scoped, so the same invented claim was checked or
+          // ignored depending on how its impact was worded, and a symbol named
+          // in the mechanism could be reported as one the claim said was
+          // absent.
+          absence = checkAbsenceClaim(candidate.claim, searchRoot, baseRef);
         } catch {
           absence = null;
         }
@@ -988,6 +994,16 @@ function recordCommand(argv: string[]): number {
       console.error(`Cannot read ${diffFile}.`);
       return 2;
     }
+  } else {
+    // Loudly, because the run is still recorded and still useful. Without a
+    // diff every run stores the hash of the empty string, so every run looks
+    // like a repeat of every other one: `candidate_set_agreement` then compares
+    // unrelated pull requests and falls further the more work is recorded. No
+    // shipped command passed this flag, so that was every run there was.
+    console.error(
+      'No --diff-file, so this run cannot be compared with another run of the same diff. ' +
+        'Pass the patch that `diff --out` wrote. Recording anyway.',
+    );
   }
 
   // Categories cannot be recovered from the rendered output - the contract

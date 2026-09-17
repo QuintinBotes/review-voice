@@ -8326,7 +8326,7 @@ function governsAny(globs, changedPaths) {
 }
 function pointerTarget(content) {
   const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---/, "").trim();
-  const match = /^@([^\s]+\.md)$/.exec(body);
+  const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(body);
   return match?.[1] ?? null;
 }
 
@@ -8374,7 +8374,8 @@ function ancestors(changedPath) {
   return out;
 }
 function resolvePointer(root, pointerPath, target) {
-  const candidates = [];
+  const own = dirname3(pointerPath);
+  const candidates = own === "." || own === "" ? [] : [join4(own, target)];
   let directory = dirname3(pointerPath);
   while (directory !== "." && directory !== "" && directory !== sep) {
     const base = dirname3(directory);
@@ -8592,8 +8593,24 @@ var ASSERTS_ABSENCE = [
 var REPO_WIDE = [
   /\b(?:anywhere|nowhere)\s+in\s+the\s+(?:repo|repository|code\s?base|project|tree)\b/i,
   /\bdoes\s+not\s+exist\s+(?:anywhere|at\s+all)\b/i,
-  /\bin\s+the\s+(?:entire|whole)\s+(?:repo|repository|code\s?base|project)\b/i
+  // Naming the repository is repo-wide whether or not the word "anywhere" is
+  // there. Without these, "does not exist in the repository" read as scoped,
+  // because the scoped pattern matches on "in the", and the widest claim a
+  // reviewer can make went unchecked on the strength of one missing word.
+  /\b(?:in|from|within|across)\s+(?:the\s+)?(?:entire\s+|whole\s+)?(?:repo|repository|code\s?base|project|tree)\b/i
 ];
+var ELSEWHERE = [
+  /\b(?:in|from|within)\s+(?:the\s+)?[a-z0-9]+(?:-[a-z0-9]+)+\b/i,
+  /\b(?:in|from|within)\s+@[\w./-]+/,
+  // The name must be a name. `\S+` matched the article, so "in the
+  // repository" read as a named external repo and the widest possible claim
+  // went unchecked.
+  /\b(?:in|from|within)\s+(?:the\s+)?(?!the\b|a\b|an\b)[A-Za-z0-9][\w.-]*\s+(?:repo|repository|service|package|library)\b/i,
+  /\b(?:another|a\s+different|a\s+sibling|the\s+other)\s+(?:repo|repository|package|service)\b/i
+];
+function namesSomewhereElse(text) {
+  return ELSEWHERE.some((pattern) => pattern.test(text));
+}
 var SCOPED = [
   /\b(?:in|from|within|under|on)\s+(?:this|that|the|its|our|either|both)\b/i,
   /\b(?:in|from|within|under|on)\s+`[^`]+`/,
@@ -8603,6 +8620,7 @@ var SCOPED = [
 ];
 function assertsAbsence(text) {
   if (REPO_WIDE.some((pattern) => pattern.test(text))) return true;
+  if (namesSomewhereElse(text)) return false;
   if (SCOPED.some((pattern) => pattern.test(text))) return false;
   return ASSERTS_ABSENCE.some((pattern) => pattern.test(text));
 }
@@ -8635,6 +8653,18 @@ var gitGrep = (symbol, cwd, ref) => {
   }
 };
 function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep) {
+  const searchedRefLabel = ref ?? "working tree";
+  if (!REPO_WIDE.some((pattern) => pattern.test(text)) && namesSomewhereElse(text)) {
+    return {
+      found: [],
+      checked: [],
+      // Not silence. An empty `found` with `inconclusive: false` is the shape
+      // that reads as corroboration, and this repository cannot speak for
+      // another one.
+      inconclusive: true,
+      searchedRef: searchedRefLabel
+    };
+  }
   if (!assertsAbsence(text)) return null;
   const symbols = namedSymbols(text);
   if (symbols.length === 0) return null;
@@ -9639,8 +9669,27 @@ function computeMetrics(db) {
     )
   ];
 }
+var AGREEMENT_LINE_TOLERANCE = 3;
+function sharedLocations(a, b) {
+  const taken = /* @__PURE__ */ new Set();
+  let shared = 0;
+  for (const left of a) {
+    for (let i = 0; i < b.length; i += 1) {
+      if (taken.has(i)) continue;
+      const right = b[i];
+      if (right.path !== left.path) continue;
+      const near = left.line === null || right.line === null ? left.line === right.line : Math.abs(left.line - right.line) <= AGREEMENT_LINE_TOLERANCE;
+      if (!near) continue;
+      taken.add(i);
+      shared += 1;
+      break;
+    }
+  }
+  return shared;
+}
 function candidateSetAgreement(db) {
-  const rows = db.prepare("SELECT diff_hash, candidates_json FROM review_runs WHERE diff_hash IS NOT NULL").all();
+  const EMPTY_DIFF = hashDiff("");
+  const rows = db.prepare("SELECT diff_hash, candidates_json FROM review_runs WHERE diff_hash IS NOT NULL AND diff_hash != ?").all(EMPTY_DIFF);
   const byDiff = /* @__PURE__ */ new Map();
   for (const row of rows) {
     let parsed;
@@ -9650,10 +9699,14 @@ function candidateSetAgreement(db) {
       continue;
     }
     const list = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
-    const located = new Set(
-      list.map((candidate) => `${String(candidate["path"] ?? "")}:${String(candidate["line"] ?? "")}`).filter((key) => key !== ":")
-    );
-    if (located.size === 0) continue;
+    const located = list.map((candidate) => {
+      const line = Number(candidate["line"]);
+      return {
+        path: String(candidate["path"] ?? ""),
+        line: Number.isFinite(line) ? line : null
+      };
+    }).filter((entry) => entry.path !== "");
+    if (located.length === 0) continue;
     const existing = byDiff.get(row.diff_hash);
     if (existing === void 0) byDiff.set(row.diff_hash, [located]);
     else existing.push(located);
@@ -9666,8 +9719,8 @@ function candidateSetAgreement(db) {
       for (let j = i + 1; j < sets.length; j += 1) {
         const a = sets[i];
         const b = sets[j];
-        const shared = [...a].filter((key) => b.has(key)).length;
-        const union = (/* @__PURE__ */ new Set([...a, ...b])).size;
+        const shared = sharedLocations(a, b);
+        const union = a.length + b.length - shared;
         if (union === 0) continue;
         scores.push(shared / union);
         pairs2 += 1;
@@ -9675,14 +9728,15 @@ function candidateSetAgreement(db) {
     }
   }
   if (pairs2 === 0) {
+    const unhashed = db.prepare("SELECT COUNT(*) AS n FROM review_runs WHERE diff_hash = ?").get(EMPTY_DIFF).n;
     return {
       value: null,
-      basis: "no diff has been reviewed twice; record two runs of one diff to measure this"
+      basis: unhashed > 0 ? `not measurable: ${unhashed} run(s) recorded without --diff-file, so they carry no diff identity` : "no diff has been reviewed twice; record two runs of one diff to measure this"
     };
   }
   return {
     value: median(scores),
-    basis: `${pairs2} pair(s) of runs over the same diff, by path:line`
+    basis: `${pairs2} pair(s) of runs over the same diff, by path and line within ${AGREEMENT_LINE_TOLERANCE}`
   };
 }
 
@@ -10341,7 +10395,7 @@ function scoreCommand(argv) {
       let absence = null;
       if (searchRoot !== null) {
         try {
-          absence = checkAbsenceClaim(`${candidate.claim} ${candidate.failureMode}`, searchRoot, baseRef);
+          absence = checkAbsenceClaim(candidate.claim, searchRoot, baseRef);
         } catch {
           absence = null;
         }
@@ -10553,6 +10607,10 @@ function recordCommand(argv) {
       console.error(`Cannot read ${diffFile}.`);
       return 2;
     }
+  } else {
+    console.error(
+      "No --diff-file, so this run cannot be compared with another run of the same diff. Pass the patch that `diff --out` wrote. Recording anyway."
+    );
   }
   const candidatesFile = flag(argv, "--candidates");
   let candidates = [];
