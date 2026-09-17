@@ -199,6 +199,22 @@ exit code is still evidence.
 A check that did not run is reported as such. The reviewer must never imply a
 check passed when it never executed.
 
+### Claims of absence
+
+"X does not exist" is the cheapest claim in a review to check and the most
+damaging to get wrong, because the fix proposed on top of it tells the author
+to break working code. On one pull request the analyst asserted at confidence
+0.90, and 0.93 on a re-run, that four files were absent. All four were present.
+
+`score` extracts the symbols such a claim names and runs `git grep` for each.
+If the repository contains any of them the candidate is rejected outright,
+before alignment or novelty are weighed, and the breakdown names what was
+found. A search that cannot run concludes nothing: a failed search is not
+evidence of absence, and certainly not evidence of presence.
+
+The check only contradicts specific assertions. A claim naming nothing
+searchable is left alone, because this grades falsehood rather than vagueness.
+
 ### Whose confidence the gate reads
 
 Eligibility used to be gated on `technical_confidence`, a number the analyst
@@ -264,6 +280,20 @@ prompts say so. Text addressed to a reviewer rather than describing the code
 raises a warning and the document is still returned: dropping it would hide the
 attempt from the person running the review, which is the one outcome worse than
 showing it.
+
+They are also not more authoritative than the code. A skill document asserted
+that a missing localisation key renders the raw key, when the provider supplies
+a humanised default, and the analyst repeated that claim for four consecutive
+runs. Both prompts now say source wins a factual conflict, and the verifier
+resolves it correctly once told the documents are fallible.
+
+The budget buys information rather than bytes. Ranking by proximity alone let
+four large skill documents take 96% of it, truncating a 29 KB page guide into a
+review of something else while all 32 rule files were dropped, one of them 553
+bytes and decisive. Within a relevance tier the short documents are read first,
+and no single document may take more than a quarter of the budget. Proximity
+still decides among directory-scoped files, where closeness is the whole
+signal.
 
 ### Second-pass verification
 

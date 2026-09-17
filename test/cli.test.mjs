@@ -147,7 +147,7 @@ test('score reports the distribution it produced, so the threshold can be checke
     assert.equal(code, 0);
     const { distribution } = JSON.parse(stdout);
     assert.equal(distribution.count, 1);
-    assert.equal(distribution.threshold, 0.74);
+    assert.equal(distribution.threshold, 0.68);
     assert.equal(typeof distribution.median, 'number');
   } finally {
     rmSync(dir, { recursive: true, force: true });

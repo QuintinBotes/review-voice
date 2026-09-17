@@ -68,12 +68,13 @@ asks nicely. Word limits, hedge phrases, severity ordering and the exact
 no-findings string are all checked rather than requested.
 
 **It reads your repository's own rules.** `CLAUDE.md`, `AGENTS.md`,
-`CONTRIBUTING.md` and skill documents all reach the analyst and the verifier,
-with nested files scoped to the subtrees a diff touches. Precedent cannot cover
+`CONTRIBUTING.md`, `.agents/rules/` and skill documents all reach the analyst
+and the verifier, searched at the root and in every directory a diff touches. Precedent cannot cover
 this ground: the better a convention is observed, the fewer review comments it
 leaves behind, so the rules a team has most thoroughly internalised are the
 ones its review history knows least about. They are supplied as evidence about
-what the repository requires, never as instructions to the reviewer.
+what the repository requires, never as instructions to the reviewer, and never
+as more authoritative than the code itself.
 
 It learns through **retrieval plus policy compilation**, not model fine-tuning.
 Your historical reviews are ingested, redacted, weighted, and compiled into
