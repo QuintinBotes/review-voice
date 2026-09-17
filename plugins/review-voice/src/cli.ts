@@ -46,6 +46,7 @@ import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts'
 import { retrievePrecedents, type Precedent } from './retrieval/retrieve.ts';
 import {
   scoreCandidate,
+  applyQuestionCap,
   normaliseCandidate,
   MalformedCandidate,
   DEFAULT_THRESHOLDS,
@@ -844,6 +845,10 @@ function scoreCommand(argv: string[]): number {
       if (breakdown.eligible) kept.push(candidate);
       results.push({ ...breakdown, precedents, ...(absence === null ? {} : { absenceCheck: absence }) });
     }
+
+    // After every question has a score to rank by, not while scoring. Applied
+    // before the distribution below so `cleared` counts what actually ships.
+    applyQuestionCap(results);
 
     const finals = results
       .map((r) => r.finalScore)
