@@ -680,15 +680,18 @@ function toUnifiedDiff(file) {
     ""
   ].join("\n");
 }
+var GITHUB_MAX_FILES = 3e3;
 async function acquirePullRequestDiff(options) {
   const client = new GitHubClient({ allowlist: [options.repository] });
   const { data: pull } = await client.get(
     `/repos/${options.repository}/pulls/${options.pullNumber}`
   );
+  const limit = options.maxFiles ?? GITHUB_MAX_FILES;
   const rawFiles = await client.paginate(
     `/repos/${options.repository}/pulls/${options.pullNumber}/files?per_page=100`,
-    options.maxFiles ?? 300
+    limit
   );
+  const truncated = rawFiles.length < pull.changed_files;
   const files = rawFiles.map((file) => {
     const cls = classify(file.filename);
     const deleted = file.status === "removed";
@@ -719,7 +722,15 @@ async function acquirePullRequestDiff(options) {
     files,
     reviewedFileCount: files.filter((file) => file.reviewed).length,
     excludedFileCount: files.filter((file) => !file.reviewed).length,
-    diff
+    diff,
+    totalChangedFiles: pull.changed_files,
+    additions: pull.additions,
+    deletions: pull.deletions,
+    truncated,
+    // Reviewing part of a change and presenting it as the whole is the one
+    // failure mode a reviewer cannot recover from, because nothing downstream
+    // can tell that anything is missing.
+    truncationNote: truncated ? `Only ${rawFiles.length} of ${pull.changed_files} changed files were read. This review covers part of the change.` : null
   };
 }
 

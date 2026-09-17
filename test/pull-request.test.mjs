@@ -136,3 +136,92 @@ test('a score with no location is not attached to some other finding', () => {
     assert.equal(matched, undefined);
   });
 });
+
+test('a truncated read reports itself rather than passing as complete', async () => {
+  const { acquirePullRequestDiff } = await import('../plugins/review-voice/src/diff/pull-request.ts');
+
+  // A fake transport, so this tests the truncation logic without the network.
+  const files = Array.from({ length: 250 }, (_, i) => ({
+    filename: `src/f${i}.ts`,
+    status: 'modified',
+    patch: '@@ -1 +1 @@\n-a\n+b',
+  }));
+
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (/\/pulls\/\d+$/.test(href)) {
+      return new Response(
+        JSON.stringify({
+          number: 1,
+          title: 'big',
+          base: { sha: 'b', ref: 'main' },
+          head: { sha: 'h', ref: 'topic' },
+          // GitHub says 480; we will only be allowed to read 250.
+          changed_files: 480,
+          additions: 9000,
+          deletions: 4000,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    return new Response(JSON.stringify(files), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    process.env.GITHUB_TOKEN = 'test-token';
+    const result = await acquirePullRequestDiff({
+      repository: 'org/a',
+      pullNumber: 1,
+      includeGenerated: false,
+      maxFiles: 250,
+    });
+    assert.equal(result.totalChangedFiles, 480);
+    assert.equal(result.truncated, true);
+    // Nothing downstream can tell files are missing unless this says so.
+    assert.match(result.truncationNote, /250 of 480/);
+    assert.match(result.truncationNote, /part of the change/);
+  } finally {
+    globalThis.fetch = original;
+    delete process.env.GITHUB_TOKEN;
+  }
+});
+
+test('a complete read carries no truncation note', async () => {
+  const { acquirePullRequestDiff } = await import('../plugins/review-voice/src/diff/pull-request.ts');
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url) =>
+    /\/pulls\/\d+$/.test(String(url))
+      ? new Response(
+          JSON.stringify({
+            number: 1,
+            title: 'small',
+            base: { sha: 'b', ref: 'main' },
+            head: { sha: 'h', ref: 'topic' },
+            changed_files: 1,
+            additions: 2,
+            deletions: 1,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      : new Response(
+          JSON.stringify([{ filename: 'src/a.ts', status: 'modified', patch: '@@ -1 +1 @@\n-a\n+b' }]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+  try {
+    process.env.GITHUB_TOKEN = 'test-token';
+    const result = await acquirePullRequestDiff({
+      repository: 'org/a',
+      pullNumber: 1,
+      includeGenerated: false,
+    });
+    assert.equal(result.truncated, false);
+    assert.equal(result.truncationNote, null);
+  } finally {
+    globalThis.fetch = original;
+    delete process.env.GITHUB_TOKEN;
+  }
+});

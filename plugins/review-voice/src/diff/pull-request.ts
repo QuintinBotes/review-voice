@@ -14,6 +14,9 @@ interface RawPull {
   title: string;
   base: { sha: string; ref: string };
   head: { sha: string; ref: string };
+  changed_files: number;
+  additions: number;
+  deletions: number;
 }
 
 const STATUS: Record<string, ChangedFile['status']> = {
@@ -46,22 +49,47 @@ function toUnifiedDiff(file: RawFile): string {
  * consent, and applying it here would demand setup before someone can review
  * one pull request.
  */
+/**
+ * GitHub's own ceiling for the files endpoint. Fetching up to it costs one
+ * request per hundred files and is far cheaper than reviewing a pull request
+ * without knowing what is in it.
+ */
+const GITHUB_MAX_FILES = 3000;
+
+export interface PullRequestDiff extends DiffResult {
+  title: string;
+  /** What GitHub says the pull request contains, not what we managed to read. */
+  totalChangedFiles: number;
+  additions: number;
+  deletions: number;
+  /** True when files were not fetched. Never silent: see truncationNote. */
+  truncated: boolean;
+  truncationNote: string | null;
+}
+
 export async function acquirePullRequestDiff(options: {
   repository: string;
   pullNumber: number;
   includeGenerated: boolean;
   maxFiles?: number;
-}): Promise<DiffResult & { title: string }> {
+}): Promise<PullRequestDiff> {
   const client = new GitHubClient({ allowlist: [options.repository] });
 
   const { data: pull } = await client.get<RawPull>(
     `/repos/${options.repository}/pulls/${options.pullNumber}`,
   );
 
+  // The cap has to sit above classification, not below it. An earlier version
+  // fetched 300 files and then filtered: on a pull request that is mostly
+  // generated code, that could exhaust the budget before reaching a single
+  // source file, and review the wrong part of the change.
+  const limit = options.maxFiles ?? GITHUB_MAX_FILES;
   const rawFiles = await client.paginate<RawFile>(
     `/repos/${options.repository}/pulls/${options.pullNumber}/files?per_page=100`,
-    options.maxFiles ?? 300,
+    limit,
   );
+
+  const truncated = rawFiles.length < pull.changed_files;
 
   const files: ChangedFile[] = rawFiles.map((file) => {
     const cls = classify(file.filename);
@@ -101,5 +129,15 @@ export async function acquirePullRequestDiff(options: {
     reviewedFileCount: files.filter((file) => file.reviewed).length,
     excludedFileCount: files.filter((file) => !file.reviewed).length,
     diff,
+    totalChangedFiles: pull.changed_files,
+    additions: pull.additions,
+    deletions: pull.deletions,
+    truncated,
+    // Reviewing part of a change and presenting it as the whole is the one
+    // failure mode a reviewer cannot recover from, because nothing downstream
+    // can tell that anything is missing.
+    truncationNote: truncated
+      ? `Only ${rawFiles.length} of ${pull.changed_files} changed files were read. This review covers part of the change.`
+      : null,
   };
 }
