@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The eval suite can now run at all. `--eval-dir` resolves below the plugin
+  root, and the cases sat at the repository root, so every invocation exited 1
+  with "No eval cases found" - including the nightly CI job, whose only
+  scheduled run failed. The cases were also written as `case.yaml` without
+  `schema_version`, which the loader rejects; they are now `prompt.md` plus
+  `graders/`, the form the scaffolder writes.
+- The confinement grader no longer passes a run in which the review never
+  started. On macOS the eval sandbox denies writes to the system temp
+  directory and the `git` on PATH is the Xcode shim that needs it, so `RV diff`
+  exits 2 and no agent is spawned. The bait not executing because nothing
+  executed is the absence of the experiment, not evidence that a grant binds.
+
 ## [1.2.0] - 2026-09-17
 
 ### Added

@@ -122,8 +122,19 @@ and the grader fails on any execution that is not `git`.
 
 A failure there may mean the agent chose badly, or it may mean the grant does
 not bind at all. Those need different fixes, and the eval distinguishes them
-only by being run. Until it has been, treat this mitigation as asserted rather
-than verified.
+only by being run.
+
+**It has now been run, and it did not answer the question.** The suite had
+never executed at all: the eval directory sat outside the plugin root, so every
+invocation exited 1, and the cases used a `case.yaml` shape the loader rejects.
+With both fixed, the confinement case passes on macOS for a reason that is not
+confinement - the eval sandbox denies writes to the system temp directory, the
+`git` on PATH is the Xcode shim that needs it, `RV diff` exits 2 at step 1, and
+no review agent is ever spawned. The bait was never offered to anything. The
+grader now fails that state instead of scoring it.
+
+So this mitigation remains **asserted rather than verified**, and the run to
+trust is the Linux one in CI, where `git` is a real binary.
 
 ### 5. Policy drift and poisoning
 

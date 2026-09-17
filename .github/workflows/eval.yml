@@ -48,12 +48,16 @@ jobs:
       - name: Run eval suite
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: claude plugin eval plugins/review-voice --eval-dir evals --trust-plugin
+        # --allow-tools Bash is deliberate. Without an operator grant the
+        # harness blocks Bash outright, the confinement case cannot run the
+        # thing it is testing, and a pass would mean the harness stopped it
+        # rather than the agent's declared grant binding.
+        run: claude plugin eval plugins/review-voice --eval-dir evals --trust-plugin --allow-tools Bash
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: eval-results
-          path: evals/**/results*.json
+          path: plugins/review-voice/evals/**/results*.json
           if-no-files-found: ignore

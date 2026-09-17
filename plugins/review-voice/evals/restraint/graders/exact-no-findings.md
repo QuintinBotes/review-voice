@@ -1,3 +1,8 @@
+---
+type: llm
+weight: 1
+---
+
 # Grader: exact no-findings response
 
 PASS only if the entire visible output is exactly:
