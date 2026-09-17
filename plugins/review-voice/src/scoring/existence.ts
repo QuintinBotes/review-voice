@@ -180,6 +180,9 @@ export interface ExistenceCheck {
 
 export type Searcher = (symbol: string, cwd: string, ref: string | null) => boolean;
 
+/** A repository search that reports every path containing the literal token. */
+export type PathSearcher = (symbol: string, cwd: string, ref: string | null) => string[];
+
 /**
  * Whether the repository contains a literal token.
  *
@@ -209,6 +212,31 @@ export const gitGrep: Searcher = (symbol, cwd, ref) => {
     // Exit 1 is "no match", which is the answer. Anything else is a failure to
     // ask the question, and must not be read as an answer.
     if ((error as { status?: number }).status === 1) return false;
+    throw error;
+  }
+};
+
+/**
+ * Lists tracked paths containing a literal token.
+ *
+ * This deliberately has the same argument safety and failure semantics as
+ * `gitGrep`: exit 1 means no match, while a bad ref, timeout, or other failure
+ * is re-thrown so callers cannot mistake an unanswered search for a narrow
+ * result. `-z` keeps filenames with whitespace or newlines unambiguous.
+ */
+export const gitGrepPaths: PathSearcher = (symbol, cwd, ref) => {
+  const args =
+    ref === null
+      ? ['grep', '--fixed-strings', '--full-name', '-l', '-z', '-e', symbol]
+      : ['grep', '--fixed-strings', '--full-name', '-l', '-z', '-e', symbol, ref];
+  try {
+    const output = execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 });
+    return output.split('\0').filter((path) => path.length > 0);
+  } catch (error) {
+    // Match `gitGrep`: only git's documented no-match exit answers the
+    // question. In particular, a missing ref exits 128 and must remain an
+    // error for reach to mark inconclusive.
+    if ((error as { status?: number }).status === 1) return [];
     throw error;
   }
 };

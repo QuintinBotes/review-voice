@@ -40,7 +40,8 @@
             "minimum": 1
           },
           "category": {
-            "$ref": "finding-category.schema.json"
+            "$ref": "finding-category.schema.json",
+            "description": "Kind of consequence. The CLI combines it with computed reach; agents must not supply a reach field."
           },
           "severity": {
             "enum": [
@@ -49,7 +50,8 @@
               "minor",
               "nit",
               "question"
-            ]
+            ],
+            "description": "Requested tier retained for audit. The CLI derives the reported tier from category and computed reach."
           },
           "claim": {
             "type": "string",
