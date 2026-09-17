@@ -60,6 +60,53 @@ const BY_CATEGORY: Record<string, Severity> = {
   style: 'nit',
 };
 
+/**
+ * Names agents reach for that are not in the schema.
+ *
+ * The prompt now lists the valid categories, which is the actual fix. This is
+ * the belt: on one pull request half the findings used `testing` and
+ * `documentation`, plausible words that are not in the enum, and both fell back
+ * to the middle tier. The fallback behaved exactly as designed and said so, and
+ * the finding still lost the distinction it was making, because a test-coverage
+ * nit landed on `minor`.
+ *
+ * Only unambiguous synonyms are listed. An alias into a `blocking` tier is the
+ * riskiest kind, so a genuinely ambiguous word like `privacy` is left to the
+ * middle-tier fallback rather than guessed into `security` or `data_integrity`.
+ */
+const ALIASES: Record<string, string> = {
+  testing: 'test_coverage',
+  tests: 'test_coverage',
+  test: 'test_coverage',
+  coverage: 'test_coverage',
+
+  documentation: 'maintainability',
+  docs: 'maintainability',
+  comments: 'maintainability',
+  naming: 'maintainability',
+  readability: 'maintainability',
+
+  perf: 'performance',
+  logging: 'observability',
+  formatting: 'style',
+
+  authz: 'authorization',
+  authn: 'authentication',
+  secrets: 'security',
+  vulnerability: 'security',
+
+  race: 'concurrency',
+  idempotency: 'concurrency',
+  database: 'persistence',
+  schema: 'migration',
+  api: 'api_contract',
+  build: 'ci',
+  deployment: 'release',
+  dependencies: 'dependency',
+  bug: 'correctness',
+  logic: 'correctness',
+};
+
 export interface DerivedSeverity {
   severity: Severity;
   /** What the analyst asked for, kept so a divergence can be audited. */
@@ -91,7 +138,11 @@ export function deriveSeverity(category: string | null | undefined, requested: s
     };
   }
 
-  const base = BY_CATEGORY[category];
+  const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const alias = ALIASES[normalised];
+  const resolved = BY_CATEGORY[normalised] !== undefined ? normalised : (alias ?? normalised);
+
+  const base = BY_CATEGORY[resolved];
   if (base === undefined) {
     return {
       severity: 'minor',
@@ -100,5 +151,12 @@ export function deriveSeverity(category: string | null | undefined, requested: s
     };
   }
 
-  return { severity: base, requested, reason: `${category} carries ${base}` };
+  return {
+    severity: base,
+    requested,
+    reason:
+      resolved === normalised
+        ? `${resolved} carries ${base}`
+        : `${category} read as ${resolved}, which carries ${base}`,
+  };
 }
