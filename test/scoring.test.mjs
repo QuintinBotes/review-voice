@@ -45,6 +45,15 @@ test('a strong candidate with supporting precedent is eligible', () => {
   assert.equal(result.rejectedBecause, null);
 });
 
+test('a breakdown carries the location it came from', () => {
+  // Without it there is no reliable way to match a score back to the finding
+  // it produced: the editor may drop candidates it cannot state in 40 words,
+  // so position is not a link either.
+  const result = scoreCandidate(candidate(), [precedent()], []);
+  assert.equal(result.path, 'src/auth.ts');
+  assert.equal(result.line, 84);
+});
+
 test('low technical confidence is rejected before anything else matters', () => {
   // Precedent cannot manufacture truth; a weak claim stays weak.
   const result = scoreCandidate(candidate({ technicalConfidence: 0.5 }), [precedent({ weight: 5 })], []);

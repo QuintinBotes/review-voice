@@ -778,6 +778,8 @@ function explainCommand(argv: string[]): number {
     const wanted = argv.find((arg) => /^rv_\d+$/.test(arg));
     const scores = (Array.isArray(detail.scores) ? detail.scores : []) as {
       candidateId?: string;
+      path?: string;
+      line?: number;
       technicalConfidence?: number;
       finalScore?: number;
       eligible?: boolean;
@@ -801,7 +803,11 @@ function explainCommand(argv: string[]): number {
     }
 
     for (const finding of shown) {
-      const score = scores.find((s) => s.candidateId !== undefined && s.candidateId.length > 0 && detail.findings.some((f) => f.findingId === finding.findingId));
+      // Matched by location. An earlier version matched on a predicate that
+      // never discriminated, so every finding showed the first finding's
+      // numbers — worse than showing none, in the command whose whole purpose
+      // is auditability.
+      const score = scores.find((s) => s.path === finding.path && s.line === finding.line);
       console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
       console.log(`  category          ${finding.category ?? 'not recorded'}`);
       if (score?.technicalConfidence !== undefined) {
