@@ -22,7 +22,7 @@ export function collectEvidence(
   options: { cwd: string; enabled: boolean },
 ): EvidenceReport {
   if (!options.enabled || commands.length === 0) {
-    return { enabled: false, commands: [], didNotRun: commands.map((command) => command.name) };
+    return { enabled: false, signals: [], commands: [], didNotRun: commands.map((command) => command.name) };
   }
 
   const outcomes: CommandOutcome[] = [];
@@ -69,5 +69,10 @@ export function collectEvidence(
     });
   }
 
-  return { enabled: true, commands: outcomes, didNotRun };
+  return {
+    enabled: true,
+    signals: outcomes.flatMap((outcome) => outcome.signals),
+    commands: outcomes,
+    didNotRun,
+  };
 }

@@ -7,7 +7,8 @@
  * (candidate generation, verification, wording) live in the plugin's agents.
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
 import { pluginVersion } from './version.ts';
@@ -34,7 +35,14 @@ import { storeEvents, corpusCoverage } from './corpus/store.ts';
 import { buildConsentPlan, discoverRepositories } from './consent/plan.ts';
 import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
 import { retrievePrecedents } from './retrieval/retrieve.ts';
-import { scoreCandidate, DEFAULT_THRESHOLDS, type Candidate } from './scoring/score.ts';
+import {
+  scoreCandidate,
+  normaliseCandidate,
+  MalformedCandidate,
+  DEFAULT_THRESHOLDS,
+  type Candidate,
+  type RawCandidate,
+} from './scoring/score.ts';
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
 import { computeMetrics } from './evaluate/metrics.ts';
@@ -78,6 +86,8 @@ diff flags:
   --pr <number>          Review a GitHub pull request (needs --repository)
   --repository <name>    owner/repo for --pr; inferred from the git remote if absent
   --include-generated    Include lock files, generated, vendored and binary files
+  --out <dir>            Write diff.patch and files.json separately instead of
+                         one blob on stdout
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -218,8 +228,32 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
     pullNumber,
     includeGenerated: argv.includes('--include-generated'),
   });
-  console.log(JSON.stringify(result, null, 2));
-  return 0;
+  return emitDiff(result, flag(argv, '--out'));
+}
+
+/**
+ * A whole unified diff inline in a JSON blob is awkward to hand to an agent —
+ * the patch for a mid-sized pull request runs past a hundred kilobytes, and
+ * the caller ends up splitting it back out. `--out` does that here instead.
+ */
+function emitDiff(result: { diff: string }, outDir: string | null): number {
+  if (outDir === null) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+
+  try {
+    mkdirSync(outDir, { recursive: true });
+    const patchPath = join(outDir, 'diff.patch');
+    const metaPath = join(outDir, 'files.json');
+    writeFileSync(patchPath, result.diff);
+    writeFileSync(metaPath, JSON.stringify({ ...result, diff: undefined }, null, 2));
+    console.log(JSON.stringify({ patch: patchPath, files: metaPath, diffBytes: result.diff.length }, null, 2));
+    return 0;
+  } catch (error) {
+    console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
 }
 
 function diffCommand(argv: string[]): number {
@@ -237,10 +271,9 @@ function diffCommand(argv: string[]): number {
       base,
       includeGenerated: argv.includes('--include-generated'),
     });
-    console.log(JSON.stringify(result, null, 2));
     // An empty diff is a valid answer, not an error: the caller should say so
     // rather than invent something to review.
-    return 0;
+    return emitDiff(result, flag(argv, '--out'));
   } catch (error) {
     if (error instanceof GitError) {
       console.error(error.message);
@@ -526,9 +559,16 @@ function evaluateCommand(argv: string[]): number {
 function scoreCommand(argv: string[]): number {
   let candidates: Candidate[];
   try {
-    const parsed = JSON.parse(readStdin()) as { candidates: Candidate[] };
-    candidates = parsed.candidates ?? [];
-  } catch {
+    const parsed = JSON.parse(readStdin()) as { candidates?: RawCandidate[] } | RawCandidate[];
+    const raw = Array.isArray(parsed) ? parsed : (parsed.candidates ?? []);
+    candidates = raw.map((candidate, index) => normaliseCandidate(candidate, index));
+  } catch (error) {
+    if (error instanceof MalformedCandidate) {
+      // Refused rather than scored as zero: a candidate that cannot be scored
+      // must not quietly become eligible.
+      console.error(`Malformed candidate — ${error.message}`);
+      return 2;
+    }
     console.error('Expected {"candidates": [...]} on stdin.');
     return 2;
   }
@@ -558,7 +598,23 @@ function scoreCommand(argv: string[]): number {
       results.push({ ...breakdown, precedents });
     }
 
-    console.log(JSON.stringify({ scores: results, eligible: kept.map((c) => c.candidateId) }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          scores: results,
+          // Enough to carry a survivor forward without rejoining by hand.
+          eligible: kept.map((c) => ({
+            candidateId: c.candidateId,
+            path: c.path,
+            line: c.line,
+            severity: c.severity,
+            category: c.category,
+          })),
+        },
+        null,
+        2,
+      ),
+    );
     return 0;
   } finally {
     db.close();

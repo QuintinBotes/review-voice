@@ -14,6 +14,8 @@ export interface Precedent {
   excerpt: string;
   weight: number;
   relevance: number;
+  /** Relevance normalised to the best match in this result set, 0..1. */
+  matchStrength: number;
   polarity: 'positive' | 'negative';
 }
 
@@ -132,12 +134,21 @@ export function retrievePrecedents(db: Database, query: RetrieveQuery): Preceden
           : row.body_redacted,
       weight,
       relevance,
+      matchStrength: 0,
       polarity: (weight < 0 ? 'negative' : 'positive') as 'positive' | 'negative',
     } satisfies Precedent;
   });
 
+  // Relevance normalised across the result set, so alignment reflects how
+  // well a precedent actually matched rather than treating a marginal hit as
+  // equal to a strong one.
+  const best = Math.max(...scored.map((p) => p.relevance), 1);
+  for (const precedent of scored) {
+    precedent.matchStrength = Math.max(0, Math.min(1, precedent.relevance / best));
+  }
+
   const rank = (a: Precedent, b: Precedent): number =>
-    Math.abs(b.weight) * b.relevance - Math.abs(a.weight) * a.relevance;
+    Math.abs(b.weight) * b.matchStrength - Math.abs(a.weight) * a.matchStrength;
 
   const positive = scored.filter((p) => p.weight > 0).sort(rank).slice(0, query.maxPositive);
   const negative = scored.filter((p) => p.weight < 0).sort(rank).slice(0, query.maxNegative);

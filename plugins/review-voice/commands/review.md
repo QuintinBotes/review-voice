@@ -21,7 +21,12 @@ the defect.
 
 ## Step 1 — Acquire the diff
 
-Run `RV diff $ARGUMENTS`.
+Run `RV diff $ARGUMENTS --out <tmpdir>` with a temporary directory.
+
+That writes `diff.patch` and `files.json` separately and prints their paths.
+Without `--out` the whole unified diff comes back inline in one JSON blob,
+which for a mid-sized pull request runs past a hundred kilobytes and has to be
+split back out before it is usable.
 
 With `--pr <number>` this reads the pull request through the read-only GitHub
 client instead of local git. The repository is taken from the origin remote
@@ -56,10 +61,11 @@ Reviewing part of a change and presenting it as the whole is the one failure a
 reviewer cannot recover from, because nothing downstream can tell anything is
 missing. Silence here would be a lie by omission.
 
-A very large change is also worth naming even when nothing was truncated. If
-`totalChangedFiles` is above roughly 150, or `additions + deletions` above
-roughly 5000, the five-finding budget is thin cover for the change and the user
-should know that is what they are getting. One line, after the findings.
+A very large change is worth naming even when nothing was truncated. Each entry
+in `files` carries its own `additions` and `deletions`, so sum the reviewed
+ones. Above roughly 150 changed files, or 5,000 changed lines, say so in one
+line after the findings — a single pass over a change that size is thin cover
+and the user should know that is what they are getting.
 
 ## Step 1b — Resolve context
 
@@ -87,7 +93,8 @@ Run `RV evidence`.
 If `enabled` is false, skip this step entirely and say nothing about it. Static
 checks are opt-in; their absence is not a finding.
 
-Pass any `signals` to the `diff-analyst` as supporting evidence. A signal is
+Pass `signals` to the `diff-analyst` as supporting evidence. The key is always
+present and is empty when collection is off. A signal is
 evidence for a candidate, never a candidate on its own — a type error the
 compiler already reports does not need a review comment repeating it.
 
@@ -153,10 +160,21 @@ says why.
 Then order by severity: `blocking`, `important`, `minor`, `nit`, `question`.
 Within a tier, prefer the higher final score.
 
-**Do not trim to a count.** There is no cap. Report everything that survived
-verification — ordering is what protects the reader, not omission. A reader who
-stops after the blocking findings has seen the most serious ones, and a nit at
-the bottom costs them nothing.
+**Do not trim to a count of your own choosing.** Ordering is what protects the
+reader, not omission — a reader who stops after the blocking findings has seen
+the most serious ones, and a nit at the bottom costs them nothing.
+
+The one exception is a cap the resolved policy actually sets. Step 1b reports
+`policy.maxFindings`: when it is `null` there is no cap and you report
+everything that survived verification. When it is a number, that is the user's
+own configuration and it binds — keep the highest-scoring findings within each
+severity tier and say how many were held back:
+
+```
+3 further findings were held back by the configured limit of 5.
+```
+
+Never pass `--max-findings` to the validator when the policy did not set one.
 
 A negative precedent means this reviewer has dismissed something like this
 before. It lowers the score; it does not refute a verified defect. If a

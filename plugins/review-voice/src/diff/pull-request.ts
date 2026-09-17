@@ -7,6 +7,8 @@ interface RawFile {
   previous_filename?: string;
   status: string;
   patch?: string;
+  additions?: number;
+  deletions?: number;
 }
 
 interface RawPull {
@@ -109,6 +111,8 @@ export async function acquirePullRequestDiff(options: {
       status: STATUS[file.status] ?? 'changed',
       class: cls,
       language: languageOf(file.filename),
+      additions: file.additions ?? 0,
+      deletions: file.deletions ?? 0,
       reviewed,
       ...(excludedBecause === undefined ? {} : { excludedBecause }),
     };

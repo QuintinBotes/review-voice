@@ -18,8 +18,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It does not, and knowing a relevant precedent was missed requires labelled
   retrieval data nobody has produced.
 
+### Fixed
+
+- **Scoring was inert, not merely wrong.** `schemas/candidate.schema.json`
+  publishes snake_case (`candidate_id`, `technical_confidence`) while the
+  scorer read camelCase, so every field arrived undefined. The arithmetic
+  yielded `NaN`, every comparison against `NaN` is false, and both thresholds
+  therefore passed — every candidate came back `eligible: true` with a null
+  score. Candidates are now normalised from either casing, a non-finite score
+  is rejected explicitly rather than left to a comparison, and a candidate that
+  cannot be scored is refused outright.
+- `score` now returns each eligible candidate with its path, line, severity and
+  category, so survivors can be carried forward without rejoining by hand.
+- Bare approval summaries no longer enter the corpus. Approval language is
+  stripped before judging whether anything substantive remains, so "Approving."
+  is excluded while "Approving. One thing though — …" is kept.
+- Precedent weights are scaled by how well each precedent actually matched.
+  Summing raw weights let a marginal hit count as much as a strong one.
+- `commands/review.md` no longer contradicts itself on capping: it reports
+  everything when the resolved policy sets no cap, and respects a configured
+  one when it does.
+
 ### Added
 
+- `review-voice diff --out <dir>`: writes `diff.patch` and `files.json`
+  separately instead of one blob with the whole unified diff inline.
+- Per-file `additions` and `deletions` on every changed file, so the size of a
+  change is answerable from the tool's own output.
+- `evidence` always returns a flattened `signals` array, empty when collection
+  is off.
 - `review-voice verify`: an optional second verification pass run by a command
   you configure, intended for a **different model** from the one that generated
   the findings. A confident rejection drops a finding, an unsure one downgrades

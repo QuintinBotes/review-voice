@@ -25,6 +25,12 @@ export interface CommandOutcome {
 
 export interface EvidenceReport {
   enabled: boolean;
+  /**
+   * Every signal from every command, flattened. Always present, empty when
+   * collection is off — a caller told to "pass the signals" should not have to
+   * discover that the key is absent.
+   */
+  signals: EvidenceSignal[];
   commands: CommandOutcome[];
   /**
    * Tools that did not run. The reviewer must never imply a check passed when

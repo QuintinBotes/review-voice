@@ -1,5 +1,25 @@
 import type { Precedent } from '../retrieval/retrieve.ts';
 
+/**
+ * A candidate as the schema publishes it. `schemas/candidate.schema.json` is
+ * the contract agents are told to emit against, and it is snake_case — so that
+ * is what arrives, whatever the internal type is called.
+ */
+export interface RawCandidate {
+  candidate_id?: string;
+  candidateId?: string;
+  path?: string;
+  line?: number;
+  category?: string;
+  severity?: string;
+  claim?: string;
+  failure_mode?: string;
+  failureMode?: string;
+  evidence?: string[];
+  technical_confidence?: number;
+  technicalConfidence?: number;
+}
+
 export interface Candidate {
   candidateId: string;
   path: string;
@@ -44,10 +64,61 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
   finalScore: 0.78,
 };
 
-/** Maps a signed precedent weight onto a 0..1 alignment score. */
+export class MalformedCandidate extends Error {}
+
+/**
+ * Normalises a candidate from either casing.
+ *
+ * The schema and the internal type disagreed on naming, so every field read as
+ * undefined. That did not produce an obvious failure: `undefined` arithmetic
+ * yields NaN, and every comparison against NaN is false — so both thresholds
+ * passed and every candidate was declared eligible with a null score. The gate
+ * was not wrong, it was inert.
+ *
+ * Hence the explicit finiteness check below rather than trusting a comparison
+ * to catch it.
+ */
+export function normaliseCandidate(raw: RawCandidate, index: number): Candidate {
+  const candidateId = raw.candidate_id ?? raw.candidateId ?? `cand_${String(index + 1).padStart(3, '0')}`;
+  const confidence = raw.technical_confidence ?? raw.technicalConfidence;
+
+  if (typeof raw.path !== 'string' || raw.path.length === 0) {
+    throw new MalformedCandidate(`${candidateId}: missing path`);
+  }
+  if (!Number.isFinite(raw.line)) {
+    throw new MalformedCandidate(`${candidateId}: missing or non-numeric line`);
+  }
+  if (!Number.isFinite(confidence)) {
+    throw new MalformedCandidate(
+      `${candidateId}: missing or non-numeric technical_confidence — a score cannot be computed, ` +
+        'and a candidate that cannot be scored must not be treated as eligible',
+    );
+  }
+
+  return {
+    candidateId,
+    path: raw.path,
+    line: raw.line as number,
+    category: raw.category ?? 'correctness',
+    severity: (raw.severity ?? 'minor') as Candidate['severity'],
+    claim: raw.claim ?? '',
+    failureMode: raw.failure_mode ?? raw.failureMode ?? '',
+    evidence: Array.isArray(raw.evidence) ? raw.evidence : [],
+    technicalConfidence: confidence as number,
+  };
+}
+
+/**
+ * Maps signed precedent weights onto a 0..1 alignment score.
+ *
+ * Each weight is scaled by how well that precedent actually matched. Summing
+ * raw weights let a marginal hit count as much as a strong one, which is how
+ * seven unrelated candidates all landed inside a 0.77–0.85 band — a range too
+ * narrow to discriminate between anything.
+ */
 function alignmentFrom(precedents: Precedent[]): number {
   if (precedents.length === 0) return 0.5; // No evidence either way.
-  const total = precedents.reduce((sum, p) => sum + p.weight, 0);
+  const total = precedents.reduce((sum, p) => sum + p.weight * (p.matchStrength ?? 1), 0);
   // A bounded squash keeps one loud precedent from saturating the score.
   return 1 / (1 + Math.exp(-total));
 }
@@ -116,7 +187,11 @@ export function scoreCandidate(
     0.1 * novel;
 
   let rejectedBecause: string | null = null;
-  if (candidate.technicalConfidence < thresholds.technicalConfidence) {
+  // Checked explicitly: every comparison against NaN is false, so a
+  // non-finite score would otherwise pass both thresholds below.
+  if (!Number.isFinite(finalScore) || !Number.isFinite(candidate.technicalConfidence)) {
+    rejectedBecause = 'score could not be computed from this candidate';
+  } else if (candidate.technicalConfidence < thresholds.technicalConfidence) {
     rejectedBecause = `technical confidence ${candidate.technicalConfidence.toFixed(2)} is below ${thresholds.technicalConfidence}`;
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(2)} is below ${thresholds.finalScore}`;

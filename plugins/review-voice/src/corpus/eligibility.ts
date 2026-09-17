@@ -16,9 +16,16 @@ export type Ineligible =
   | 'no_code_context'
   | 'template_or_status';
 
-/** Approval-only text carries no judgement to learn from. */
-const APPROVAL_ONLY =
-  /^\s*(lgtm|looks good(?: to me)?|ship it|👍|🚀|\+1|nice|thanks|ty|done|ack|acknowledged|sgtm|✅)[\s.!]*$/i;
+/**
+ * Approval language, stripped before judging whether anything substantive is
+ * left. Matching the whole body missed the common shape: a review summary that
+ * opens "Approving." and then says nothing — which is how three unrelated
+ * "Approving." comments ended up as the top precedents for a code finding.
+ */
+const APPROVAL_PHRASES =
+  /\b(lgtm|looks good(?: to me)?|ship it|approv(?:ed|ing|al)|sgtm|ack(?:nowledged)?|thanks|thank you|ty|nice work|nice one|great|\+1|done|no comments?|nothing from me|all good|fine by me)\b/gi;
+
+const DECORATION = /[\s.!?,;:—–-]|👍|🚀|✅|🎉|💯|🙏|😄/gu;
 
 /** Automation status posts, which carry no judgement whatever their length. */
 const AUTOMATION_STATUS = [
@@ -76,7 +83,13 @@ export function ineligibleReason(input: EligibilityInput): Ineligible | null {
 
   const body = input.body.trim();
   if (body.length === 0) return 'too_short';
-  if (APPROVAL_ONLY.test(body)) return 'approval_only';
+
+  // What remains once approval language and decoration are removed. A comment
+  // that is only approval has nothing to teach; one that approves and then
+  // raises something does.
+  const substantive = body.replace(APPROVAL_PHRASES, '').replace(DECORATION, '');
+  if (substantive.length < 15) return 'approval_only';
+
   // Below roughly a sentence there is no failure mode to extract.
   if (body.length < 15) return 'too_short';
   if (AUTOMATION_STATUS.some((pattern) => pattern.test(body))) return 'template_or_status';
