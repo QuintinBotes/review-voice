@@ -8589,7 +8589,21 @@ var ASSERTS_ABSENCE = [
   /\bcannot\s+be\s+found\b/i,
   /\bnowhere\s+in\s+the\s+(?:repo|repository|codebase)\b/i
 ];
+var REPO_WIDE = [
+  /\b(?:anywhere|nowhere)\s+in\s+the\s+(?:repo|repository|code\s?base|project|tree)\b/i,
+  /\bdoes\s+not\s+exist\s+(?:anywhere|at\s+all)\b/i,
+  /\bin\s+the\s+(?:entire|whole)\s+(?:repo|repository|code\s?base|project)\b/i
+];
+var SCOPED = [
+  /\b(?:in|from|within|under|on)\s+(?:this|that|the|its|our|either|both)\b/i,
+  /\b(?:in|from|within|under|on)\s+`[^`]+`/,
+  /\b(?:in|from|within|under|on)\s+[@A-Z][\w./@-]*/,
+  /\b(?:ex|im)ported\b/i,
+  /\bcall\s?site\b/i
+];
 function assertsAbsence(text) {
+  if (REPO_WIDE.some((pattern) => pattern.test(text))) return true;
+  if (SCOPED.some((pattern) => pattern.test(text))) return false;
   return ASSERTS_ABSENCE.some((pattern) => pattern.test(text));
 }
 function namedSymbols(text) {
@@ -9513,6 +9527,7 @@ function median(values) {
 }
 function computeMetrics(db) {
   const runs = db.prepare("SELECT output_json FROM review_runs").all();
+  const agreement = candidateSetAgreement(db);
   const findingsPerRun = [];
   const wordsPerFinding = [];
   let compliantOutputs = 0;
@@ -9595,6 +9610,19 @@ function computeMetrics(db) {
       (v) => v <= 40,
       `${wordsPerFinding.length} findings; this is the contract ceiling the validator enforces`
     ),
+    // The variance nobody was tracking. Severity stability was measured for
+    // three releases while which findings exist at all was not, and on one
+    // pull request reviewed twice the two runs agreed on two candidates of
+    // eight. For a reviewer that is the more consequential variance: a single
+    // run is a sample, not the answer.
+    metric(
+      "candidate_set_agreement",
+      agreement.value,
+      "no target",
+      () => true,
+      agreement.basis,
+      "goal"
+    ),
     metric(
       "contract_compliance",
       ratio(compliantOutputs, runs.length),
@@ -9610,6 +9638,52 @@ function computeMetrics(db) {
       `${exactNoFindings}/${noFindingsRuns} empty reviews used the exact string`
     )
   ];
+}
+function candidateSetAgreement(db) {
+  const rows = db.prepare("SELECT diff_hash, candidates_json FROM review_runs WHERE diff_hash IS NOT NULL").all();
+  const byDiff = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    let parsed;
+    try {
+      parsed = JSON.parse(row.candidates_json ?? "[]");
+    } catch {
+      continue;
+    }
+    const list = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
+    const located = new Set(
+      list.map((candidate) => `${String(candidate["path"] ?? "")}:${String(candidate["line"] ?? "")}`).filter((key) => key !== ":")
+    );
+    if (located.size === 0) continue;
+    const existing = byDiff.get(row.diff_hash);
+    if (existing === void 0) byDiff.set(row.diff_hash, [located]);
+    else existing.push(located);
+  }
+  const scores = [];
+  let pairs2 = 0;
+  for (const sets of byDiff.values()) {
+    if (sets.length < 2) continue;
+    for (let i = 0; i < sets.length; i += 1) {
+      for (let j = i + 1; j < sets.length; j += 1) {
+        const a = sets[i];
+        const b = sets[j];
+        const shared = [...a].filter((key) => b.has(key)).length;
+        const union = (/* @__PURE__ */ new Set([...a, ...b])).size;
+        if (union === 0) continue;
+        scores.push(shared / union);
+        pairs2 += 1;
+      }
+    }
+  }
+  if (pairs2 === 0) {
+    return {
+      value: null,
+      basis: "no diff has been reviewed twice; record two runs of one diff to measure this"
+    };
+  }
+  return {
+    value: median(scores),
+    basis: `${pairs2} pair(s) of runs over the same diff, by path:line`
+  };
 }
 
 // plugins/review-voice/src/sync/watermark.ts

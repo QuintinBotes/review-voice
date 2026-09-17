@@ -22,7 +22,39 @@ const ASSERTS_ABSENCE = [
   /\bnowhere\s+in\s+the\s+(?:repo|repository|codebase)\b/i,
 ];
 
+/**
+ * A claim that is repo-wide beyond argument.
+ *
+ * Only these are worth a search. `git grep` answers "is this string anywhere in
+ * the repository", which refutes a repo-wide claim and says nothing at all
+ * about a scoped one.
+ */
+const REPO_WIDE = [
+  /\b(?:anywhere|nowhere)\s+in\s+the\s+(?:repo|repository|code\s?base|project|tree)\b/i,
+  /\bdoes\s+not\s+exist\s+(?:anywhere|at\s+all)\b/i,
+  /\bin\s+the\s+(?:entire|whole)\s+(?:repo|repository|code\s?base|project)\b/i,
+];
+
+/**
+ * A claim confined to a place: a module, a package, an export list, a call site.
+ *
+ * These are the common shape and the guard must never touch them. "The hook is
+ * missing from `@scope/ui-kit`" is true precisely when the hook exists somewhere
+ * else, so searching the repository confirms the symbol and rejects the
+ * finding. Worse, saying where something is absent is what a well-argued claim
+ * does, so the unscoped check preferentially deleted the best findings.
+ */
+const SCOPED = [
+  /\b(?:in|from|within|under|on)\s+(?:this|that|the|its|our|either|both)\b/i,
+  /\b(?:in|from|within|under|on)\s+`[^`]+`/,
+  /\b(?:in|from|within|under|on)\s+[@A-Z][\w./@-]*/,
+  /\b(?:ex|im)ported\b/i,
+  /\bcall\s?site\b/i,
+];
+
 export function assertsAbsence(text: string): boolean {
+  if (REPO_WIDE.some((pattern) => pattern.test(text))) return true;
+  if (SCOPED.some((pattern) => pattern.test(text))) return false;
   return ASSERTS_ABSENCE.some((pattern) => pattern.test(text));
 }
 
