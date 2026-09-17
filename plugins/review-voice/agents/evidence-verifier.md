@@ -66,7 +66,14 @@ disagree. Raise it where you corroborated the claim and lower it where you
 could not.
 
 List in `required_context_missing` anything you needed and could not obtain: a
-sibling repository, a generated file, a service you cannot reach. A candidate
+sibling repository, a generated file, a service you cannot reach.
+
+**A commit that is not in this clone belongs here.** If reading a ref fails -
+`fatal: bad object`, or the review told you `refs.head.available` is false -
+say so in `required_context_missing` rather than falling back to the patch and
+reporting a confidence as though you had checked the code. Working from
+base-side evidence alone is not the same as verifying, and only you can report
+that you were limited. A candidate
 with entries here cannot ship, whatever its confidence, because a claim nobody
 in the pipeline can check is how a review comment gets retracted.
 

@@ -5,6 +5,32 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `diff --pr` reports `refs`, saying whether the pull request's base and head
+  commits can actually be read locally. Availability is established with
+  `git cat-file`, never inferred from a fetch's exit status. When they are
+  missing the commits are fetched into `refs/review-voice/pr/<n>/head`, but
+  only when `origin` resolves to the repository under review: fetching from an
+  unrelated clone would supply plausible commits from the wrong project. A
+  fetch that cannot run is never fatal.
+- The external verifier is told what change it is judging. Its command now
+  receives `context` carrying the repository, the diff path, and base and head
+  where those are readable. It previously got a finding and nothing else and
+  ran against whatever the working tree happened to be, which is why a test run
+  returned a false rejection at 0.99.
+- `diff` reports `hunkFileCount` beside `reviewedFileCount`, and
+  `--scale-to-files` uses it. The two answer different questions, and a file
+  that contributes no hunk was buying word budget.
+
+### Changed
+
+- The evidence verifier is told that a commit missing from the clone belongs in
+  `required_context_missing`, rather than falling back to the patch and
+  reporting confidence as though it had checked the code.
+
 ## [1.1.1] - 2026-09-17
 
 ### Fixed

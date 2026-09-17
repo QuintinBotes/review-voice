@@ -3,7 +3,7 @@
 // plugins/review-voice/src/cli.ts
 import { readFileSync as readFileSync4, writeFileSync, mkdirSync as mkdirSync2 } from "node:fs";
 import { join as join5 } from "node:path";
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { execFileSync as execFileSync6 } from "node:child_process";
 
 // plugins/review-voice/src/warnings.ts
 function suppressSqliteExperimentalWarning() {
@@ -566,6 +566,11 @@ function acquireDiff(options) {
     parts.push(gitAllowingDifference(["diff", "--no-index", "--", "/dev/null", path], root));
   }
   const diff = parts.join("").trim().length === 0 ? "" : parts.join("");
+  const hunkPaths = /* @__PURE__ */ new Set();
+  for (const match of diff.matchAll(/^\+\+\+ b\/(.+)$/gm)) {
+    const path = match[1];
+    if (path !== void 0 && path !== "/dev/null") hunkPaths.add(path);
+  }
   return {
     repositoryRoot: root,
     mode,
@@ -573,10 +578,16 @@ function acquireDiff(options) {
     head: git(["rev-parse", "HEAD"], root).trim(),
     files,
     reviewedFileCount: reviewable.length,
+    // Counted from the diff itself, not from the file list: a file can be
+    // reviewable, present and empty.
+    hunkFileCount: reviewable.filter((path) => hunkPaths.has(path)).length,
     excludedFileCount: files.length - reviewable.length,
     diff
   };
 }
+
+// plugins/review-voice/src/diff/pull-request.ts
+import { execFileSync as execFileSync4 } from "node:child_process";
 
 // plugins/review-voice/src/github/auth.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
@@ -714,6 +725,76 @@ function toUnifiedDiff(file) {
   ].join("\n");
 }
 var GITHUB_MAX_FILES = 3e3;
+function git2(args, cwd, timeout = 6e4) {
+  return execFileSync4("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout
+  });
+}
+function hasCommit(sha, cwd) {
+  try {
+    git2(["cat-file", "-e", `${sha}^{commit}`], cwd, 1e4);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function originRepository(cwd) {
+  try {
+    const url = git2(["remote", "get-url", "origin"], cwd, 1e4).trim();
+    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+function ensureRefs(options) {
+  const check = () => ({
+    base: hasCommit(options.base, options.cwd),
+    head: hasCommit(options.head, options.cwd)
+  });
+  let present = check();
+  const result = (fetched, note) => ({
+    base: { sha: options.base, available: present.base },
+    head: { sha: options.head, available: present.head },
+    fetched,
+    note
+  });
+  if (present.base && present.head) return result(false, null);
+  const origin = originRepository(options.cwd);
+  if (origin === null) {
+    return result(false, "No origin remote resolved, so the pull request commits were not fetched.");
+  }
+  if (origin.toLowerCase() !== options.repository.toLowerCase()) {
+    return result(
+      false,
+      `origin is ${origin} but the review is of ${options.repository}, so nothing was fetched. Fetching a pull request from an unrelated clone would supply commits from the wrong project.`
+    );
+  }
+  try {
+    git2(
+      [
+        "fetch",
+        "--no-tags",
+        "--quiet",
+        "origin",
+        `pull/${options.pullNumber}/head:refs/review-voice/pr/${options.pullNumber}/head`
+      ],
+      options.cwd
+    );
+  } catch {
+  }
+  present = check();
+  if (present.base && present.head) {
+    return result(true, null);
+  }
+  const missing = [!present.base ? "base" : null, !present.head ? "head" : null].filter(Boolean);
+  return result(
+    true,
+    `The ${missing.join(" and ")} commit could not be made available locally. Reading code at that ref will fail, so evidence from it is unavailable rather than absent.`
+  );
+}
 async function acquirePullRequestDiff(options) {
   const client = new GitHubClient({ allowlist: [options.repository] });
   const { data: pull } = await client.get(
@@ -756,6 +837,9 @@ async function acquirePullRequestDiff(options) {
     title: pull.title,
     files,
     reviewedFileCount: files.filter((file) => file.reviewed).length,
+    // A pull request file with no patch is already excluded, so every reviewed
+    // file here carries a hunk by construction.
+    hunkFileCount: files.filter((file) => file.reviewed).length,
     excludedFileCount: files.filter((file) => !file.reviewed).length,
     diff,
     totalChangedFiles: pull.changed_files,
@@ -765,7 +849,14 @@ async function acquirePullRequestDiff(options) {
     // Reviewing part of a change and presenting it as the whole is the one
     // failure mode a reviewer cannot recover from, because nothing downstream
     // can tell that anything is missing.
-    truncationNote: truncated ? `Only ${rawFiles.length} of ${pull.changed_files} changed files were read. This review covers part of the change.` : null
+    truncationNote: truncated ? `Only ${rawFiles.length} of ${pull.changed_files} changed files were read. This review covers part of the change.` : null,
+    refs: ensureRefs({
+      repository: options.repository,
+      pullNumber: options.pullNumber,
+      base: pull.base.sha,
+      head: pull.head.sha,
+      cwd: options.cwd ?? process.cwd()
+    })
   };
 }
 
@@ -7825,7 +7916,7 @@ function verifyFindings(findings, config, options) {
   for (const finding of findings) {
     const result = runner(
       config.command,
-      JSON.stringify(finding),
+      JSON.stringify({ ...finding, context: options.context ?? null }),
       (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS2) * 1e3,
       options.cwd
     );
@@ -8682,7 +8773,7 @@ function changedPathsFrom(filesJson) {
 }
 
 // plugins/review-voice/src/scoring/existence.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
+import { execFileSync as execFileSync5 } from "node:child_process";
 var ASSERTS_ABSENCE = [
   /\b(?:does|do)\s+not\s+exist\b/i,
   /\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)\b/i,
@@ -8750,7 +8841,7 @@ function namedSymbols(text) {
 var gitGrep = (symbol, cwd, ref) => {
   const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "-e", symbol] : ["grep", "--fixed-strings", "--quiet", "-e", symbol, ref];
   try {
-    execFileSync4("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
+    execFileSync5("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
     return true;
   } catch (error) {
     if (error.status === 1) return false;
@@ -8760,7 +8851,7 @@ var gitGrep = (symbol, cwd, ref) => {
 var gitGrepPaths = (symbol, cwd, ref) => {
   const args = ref === null ? ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol] : ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol, ref];
   try {
-    const output = execFileSync4("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 1e4 });
+    const output = execFileSync5("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 1e4 });
     const prefix = ref === null ? "" : `${ref}:`;
     return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
   } catch (error) {
@@ -10211,6 +10302,13 @@ score flags:
   --min-score <n>           Final score gate (default 0.68)
   --repository <name>       Prefer precedents from this repository
 
+verify flags:
+  --diff-file <path>        The diff under review, so the command judges the
+                            change rather than the working tree
+  --base <ref>              Base commit, only when it is readable locally
+  --head <ref>              Head commit, only when it is readable locally
+  --repository <name>       owner/repo, inferred from the git remote if absent
+
 conventions flags:
   --files <path>            files.json from diff --out, to scope nested
                             CLAUDE.md and AGENTS.md to the changed subtrees
@@ -10299,7 +10397,7 @@ ${result.violations.length} contract violation(s).`);
 }
 function inferRepository(cwd) {
   try {
-    const url = execFileSync5("git", ["remote", "get-url", "origin"], {
+    const url = execFileSync6("git", ["remote", "get-url", "origin"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -10324,7 +10422,8 @@ async function pullRequestDiffCommand(argv) {
   const result = await acquirePullRequestDiff({
     repository,
     pullNumber,
-    includeGenerated: argv.includes("--include-generated")
+    includeGenerated: argv.includes("--include-generated"),
+    cwd: process.cwd()
   });
   return emitDiff(result, flag(argv, "--out"));
 }
@@ -10891,7 +10990,7 @@ function redactCommand(argv) {
   }
   return 0;
 }
-function verifyCommand() {
+function verifyCommand(argv) {
   let findings;
   try {
     const parsed = JSON.parse(readStdin());
@@ -10903,7 +11002,20 @@ function verifyCommand() {
   try {
     const root = repositoryRoot(process.cwd());
     const config = loadConfig(root);
-    const report = verifyFindings(findings, config.verification, { cwd: root });
+    const base = flag(argv, "--base");
+    const head = flag(argv, "--head");
+    const report = verifyFindings(findings, config.verification, {
+      cwd: root,
+      context: {
+        repository: flag(argv, "--repository") ?? inferRepository(root),
+        diffPath: flag(argv, "--diff-file"),
+        // Only when the caller says they are readable. A ref that is not there
+        // is worse than no ref: a command told to read it fails in a way it may
+        // mistake for evidence.
+        base,
+        head
+      }
+    });
     console.log(JSON.stringify(report, null, 2));
     return 0;
   } catch (error) {
@@ -11140,7 +11252,7 @@ function conventionsCommand(argv) {
 }
 function refExists(ref, cwd) {
   try {
-    execFileSync5("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    execFileSync6("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -11281,7 +11393,7 @@ async function main(argv) {
     case "evidence":
       return evidenceCommand();
     case "verify":
-      return verifyCommand();
+      return verifyCommand(argv);
     case "record":
       return recordCommand(argv.slice(1));
     case "feedback":
