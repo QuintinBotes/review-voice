@@ -23,11 +23,27 @@ so the runner installs `bubblewrap` and `socat`; and the LLM graders need an
 call failed: Not logged in" and each case scores 0.00 - a failure that reads
 like the plugin behaving badly and is not.
 
-**On macOS these cases cannot exercise the pipeline.** The eval sandbox denies
-writes to the system temp directory, and the `git` on PATH is the Xcode shim,
-which needs that directory for its `xcrun` cache. `RV diff` therefore exits 2
-at step 1 and no review agent is ever spawned. Run them in CI, where `git` is a
-real binary, or the result measures the sandbox rather than the plugin.
+**On macOS these cases cannot exercise the pipeline.** Established by probing
+the sandbox directly rather than inferred:
+
+- The sandbox denies writes to the system temp directory, so the Xcode `git`
+  shim cannot write its `xcrun` cache. Setting `TMPDIR` in the operator's shell
+  clears that specific error - `env:` in a case cannot, since only `EVAL_*`
+  keys are accepted from a case file.
+- The shim then fails at `xcode-select: Failed to locate 'git'`, exit 72,
+  because the Developer directory is outside the sandbox.
+- Prepending `/Library/Developer/CommandLineTools/usr/bin` to `PATH` does not
+  help: the sandbox resets `PATH`, so the shim at `/usr/bin/git` is still what
+  resolves.
+- The sandbox working directory is empty apart from `.claude`, so a prompt
+  naming `fixtures/...` resolves to nothing, and the repository path is denied.
+
+`RV diff` therefore exits 2 at step 1, no review agent is spawned, and nothing
+is ever offered the behaviour under test. **A pass in that state measures the
+sandbox, not the plugin**, which is why the confinement grader now fails a run
+that never started.
+
+Run these in CI, on Linux, where `git` is a real binary.
 
 Each case is a directory with `case.yaml` and one or more grader files.
 

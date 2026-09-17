@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The eval documentation records what the macOS sandbox actually does, probed
+  rather than inferred: `TMPDIR` must come from the operator's shell because a
+  case file may only set `EVAL_*` keys, the Xcode `git` shim then fails at
+  `xcode-select` with exit 72 because the Developer directory is outside the
+  sandbox, prepending the real binary to `PATH` does not help because the
+  sandbox resets `PATH`, and the working directory is empty so a prompt naming
+  `fixtures/...` resolves to nothing. A pass in that state measures the
+  sandbox, not the plugin.
 - The eval CI job installs `bubblewrap` and `socat`. Granting a shell makes the
   harness require OS-level confinement and refuse to start without it, which is
   the behaviour to keep, and the runner image ships neither dependency. The job
