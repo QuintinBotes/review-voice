@@ -13,6 +13,13 @@ export type Reach = 'local' | 'component' | 'repository';
  */
 export interface ReachCheck {
   reach: Reach | null;
+  /** Where the searched symbols came from, so a surprising reach is traceable. */
+  symbolSource: 'hunks' | 'claim';
+  /**
+   * True when no touched symbol existed at the reviewed ref and the changed
+   * file's own module name stood in for them.
+   */
+  moduleFallback: boolean;
   /** Symbols actually given to git grep, in search order. */
   symbols: string[];
   /**
@@ -33,6 +40,50 @@ export interface ReachCheck {
   inconclusive: boolean;
   /** The tree searched, so a result can be audited against the reviewed ref. */
   searchedRef: string;
+}
+
+/**
+ * Identifiers the diff actually adds or removes in one file.
+ *
+ * The claim is the wrong source for this. `namedSymbols` exists to find things
+ * to check for absence, where a broad net is cheap, and reach wants the
+ * opposite: the symbol the change touched, not every word the finding used.
+ * Excluding symbols the changed file does not contain caught `Math.round` and
+ * a local `canEdit`, but not the case that matters most - a finding whose whole
+ * point is that some symbol is the **wrong** referent names that symbol, and it
+ * is genuinely in the file, so containment cannot tell them apart.
+ *
+ * Only `+` and `-` lines are read. A symbol sitting in a context line is what
+ * the change is near, not what it changed.
+ */
+export function symbolsFromHunks(diff: string, changedPath: string): string[] {
+  const wanted = normalisePath(changedPath);
+  const found = new Set<string>();
+  let inFile = false;
+
+  for (const raw of diff.split(/\r?\n/)) {
+    if (raw.startsWith('diff --git ') || raw.startsWith('+++ ')) {
+      // `+++ b/path`, and the `diff --git` header for renames.
+      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
+      if (match?.[1] !== undefined) inFile = normalisePath(match[1]) === wanted;
+      else if (raw.startsWith('diff --git ')) inFile = false;
+      continue;
+    }
+    if (!inFile) continue;
+    if (raw.startsWith('--- ')) continue;
+    if (!raw.startsWith('+') && !raw.startsWith('-')) continue;
+
+    // The same shapes `namedSymbols` accepts, so both sources agree on what
+    // counts as a searchable identifier.
+    const text = raw.slice(1);
+    for (const m of text.matchAll(
+      /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g,
+    )) {
+      if (m[1] !== undefined) found.add(m[1]);
+    }
+  }
+
+  return [...found];
 }
 
 /**
@@ -120,12 +171,21 @@ export function computeReach(
   cwd: string,
   ref: string | null = null,
   search: PathSearcher = gitGrepPaths,
+  /** The diff under review. When given, it decides which symbols count. */
+  diff: string | null = null,
 ): ReachCheck {
   const searchedRef = ref ?? 'working tree';
-  const symbols = namedSymbols(text).slice(0, 12);
+
+  // Symbols the diff touched, when the diff is available; otherwise the
+  // claim's, which is what every caller had before the diff was threaded
+  // through and remains the honest fallback.
+  const fromHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
+  const source: 'hunks' | 'claim' = fromHunks.length > 0 ? 'hunks' : 'claim';
+  const symbols = (source === 'hunks' ? fromHunks : namedSymbols(text)).slice(0, 12);
   const searched: string[] = [];
   const ignored: string[] = [];
   const hits = new Set<string>();
+  let usedModuleFallback = false;
 
   const normalisedChangedPath = normalisePath(changedPath);
   const changedDirectory = directoryOf(changedPath);
@@ -137,6 +197,8 @@ export function computeReach(
     );
     return {
       reach,
+      symbolSource: source,
+      moduleFallback: usedModuleFallback,
       symbols: searched,
       ignoredSymbols: [...ignored].sort(),
       paths: [...hits].sort(),
@@ -187,7 +249,30 @@ export function computeReach(
 
   // Spread is measured in code. A symbol named only in prose has no
   // deterministic evidence of coupling, so it is absent rather than local.
-  const counted = [...hits].filter(isCode);
+  let counted = [...hits].filter(isCode);
+
+  // A symbol the change introduces does not exist at the base ref, so it has
+  // no spread there by construction. Measuring at base is right for a modified
+  // symbol - its callers are what the change puts at risk - but it left reach
+  // absent for most findings, because most findings are about new code.
+  //
+  // The module is the proxy. A new symbol added to a file that half the
+  // repository imports carries that file's blast radius, even though nothing
+  // references the symbol itself yet.
+  if (counted.length === 0 && source === 'hunks') {
+    const moduleName = normalisePath(changedPath).split('/').pop()?.replace(/\.[^.]+$/, '');
+    if (moduleName !== undefined && moduleName.length >= 4) {
+      searched.push(moduleName);
+      try {
+        for (const path of search(moduleName, cwd, ref)) hits.add(path);
+      } catch {
+        return result(null, true);
+      }
+      counted = [...hits].filter(isCode);
+      usedModuleFallback = counted.length > 0;
+    }
+  }
+
   if (counted.length === 0) return result(null, false);
 
   // Measured relative to the changed file, never against absolute tree depth.

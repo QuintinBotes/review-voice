@@ -186,6 +186,16 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (repository, pull_number)
   );
   `,
+  // Stage timings, so how long a review takes stops being one anecdote.
+  //
+  // Measured once on a live pull request: analyst 238k tokens across 94 tool
+  // calls and about ten minutes, verifier 141k across 59 and about five. A
+  // recurring sweep at ten minutes cannot wrap a review of that size, and the
+  // design that follows from it - a review as a resumable job rather than a
+  // tick-scoped task - should not be built on a single observation.
+  `
+  ALTER TABLE review_runs ADD COLUMN stages_json TEXT;
+  `,
 ];
 
 function migrate(db: Database): void {

@@ -19,7 +19,7 @@ import { acquireDiff, GitError } from './diff/acquire.ts';
 import { acquirePullRequestDiff } from './diff/pull-request.ts';
 import { openDatabase } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
-import { recordRun, latestRun, runDetail } from './store/runs.ts';
+import { recordRun, latestRun, runDetail, type StageTiming } from './store/runs.ts';
 import {
   recordFeedback,
   normaliseAction,
@@ -110,6 +110,9 @@ record flags:
   --candidates <path>    Scored candidates, so findings carry their category
   --scores <path>        Score breakdowns, so explain can show its working
   --verdicts <path>      Verification verdicts, including findings that were dropped
+  --stages <path>        Per-stage timings as
+                         [{"name","seconds","toolCalls","tokens"}], so how long
+                         a review takes is a distribution rather than an anecdote
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -131,6 +134,9 @@ score flags:
                             Gate when only the analyst's self-report exists
                             (default 0.7). A different measurement, so a
                             different number.
+  --diff-file <path>        The diff under review. Reach is measured from the
+                            symbols the hunks touch; without it, from the
+                            symbols the claim names, which is weaker.
   --min-score <n>           Final score gate (default 0.68)
   --repository <name>       Prefer precedents from this repository
 
@@ -739,13 +745,33 @@ function scoreCommand(argv: string[]): number {
   // it alongside verification only because that is the existing metadata
   // channel into scoring. A reach-only record leaves confidence behaviour
   // unchanged when no verifier output was supplied.
+  // The diff decides which symbols reach is measured from. Without it reach
+  // falls back to the claim's symbols, which measures the words a finding used
+  // rather than the code it is about.
+  const reachDiff = (() => {
+    const path = flag(argv, '--diff-file');
+    if (path === null) return null;
+    try {
+      return readFileSync(path, 'utf8');
+    } catch {
+      return null;
+    }
+  })();
+
   if (searchRoot !== null) {
     for (const candidate of candidates) {
       const verification = verifications.get(candidate.candidateId);
       verifications.set(candidate.candidateId, {
         ...(verification ?? { candidateId: candidate.candidateId }),
         candidateId: candidate.candidateId,
-        reach: computeReach(candidate.claim, candidate.path, searchRoot, baseRef),
+        reach: computeReach(
+          candidate.claim,
+          candidate.path,
+          searchRoot,
+          baseRef,
+          undefined,
+          reachDiff,
+        ),
       });
     }
   }
@@ -1110,6 +1136,25 @@ function recordCommand(argv: string[]): number {
     }
   }
 
+  const stagesFile = flag(argv, '--stages');
+  let stages: StageTiming[] = [];
+  if (stagesFile !== null) {
+    try {
+      const parsed = JSON.parse(readFileSync(stagesFile, 'utf8')) as { stages?: unknown };
+      const list = Array.isArray(parsed) ? parsed : (parsed.stages ?? []);
+      stages = (Array.isArray(list) ? list : []).filter(
+        (stage): stage is StageTiming =>
+          typeof stage === 'object' &&
+          stage !== null &&
+          typeof (stage as StageTiming).name === 'string' &&
+          Number.isFinite((stage as StageTiming).seconds),
+      );
+    } catch {
+      console.error(`Cannot read stages from ${stagesFile}.`);
+      return 2;
+    }
+  }
+
   const db = openDatabase();
   try {
     const { reviewRunId, findings } = recordRun(db, {
@@ -1121,6 +1166,7 @@ function recordCommand(argv: string[]): number {
       candidates,
       scores,
       verdicts,
+      stages,
     });
     console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
     return 0;

@@ -209,7 +209,14 @@ visible instead of indistinguishable from a clean diff.
 ## Step 4 - Score against precedent
 
 Pipe the verified candidates as `{"candidates": [...]}` into
-`RV score --repository <name> --verification <tmpdir>/verification.json --base <ref>`.
+`RV score --repository <name> --verification <tmpdir>/verification.json --base <ref> --diff-file <tmpdir>/diff.patch`.
+
+**`--diff-file` is the diff from step 1.** Reach, which decides how far a defect
+carries and so which tier it is reported at, is measured from the symbols the
+hunks touch. Without the flag it falls back to the symbols the claim names,
+which measures the words a finding used rather than the code it is about - a
+finding whose point is that some symbol is the wrong referent names that
+symbol, and its spread then sets the tier.
 
 **`--base` is the ref the diff was taken against**, the same one from step 1.
 Claims that something does not exist are checked against that tree. Without it
@@ -299,7 +306,14 @@ stray directory and another project's notes took the reviewed count from 11 to
 - Exit 0: display the output verbatim, then record it. Write the scored
   candidates to a temporary file and pass it:
   `RV record --repository <name> --base <ref> --head <sha> --candidates <file>
-  --diff-file <tmpdir>/diff.patch` with the validated output on stdin.
+  --diff-file <tmpdir>/diff.patch --stages <file>` with the validated output on
+  stdin.
+
+  `--stages` takes `[{"name","seconds","toolCalls","tokens"}]`, one entry per
+  agent stage you ran. Write what you observed; omit a field you do not know
+  rather than estimating it. A review measured once took about twenty-five
+  minutes against a sweep that runs every ten, and whether that holds is a
+  distribution nobody has yet.
 
   **`--diff-file` is the patch step 1 wrote.** Without it the run records the
   hash of the empty string, every run collides with every other, and

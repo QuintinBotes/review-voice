@@ -5,6 +5,37 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Reach is measured from the symbols the diff's hunks touch, not the symbols
+  the claim names. Excluding symbols absent from the changed file caught
+  `Math.round` and a local `canEdit`, but not the case containment cannot see:
+  a finding whose point is that some symbol is the *wrong* referent names that
+  symbol, and it is genuinely in the file. Only `+` and `-` lines count, since
+  a symbol on a context line is what the change is near rather than what it
+  changed. `score` takes `--diff-file`; without it the claim remains the
+  fallback, and `symbolSource` says which was used.
+- A symbol the change introduces has no spread at the base ref by
+  construction, which left reach absent for most findings, since most findings
+  are about new code. When no touched symbol exists at the reviewed ref the
+  changed file's own module name stands in for it, reported as
+  `moduleFallback`.
+- An oversized convention document now keeps the sections matching the paths
+  under review rather than its first 15,000 bytes. A 21,441-byte rule
+  governing 728 of 1,073 added lines was cut at the head, and the sections that
+  mattered survived by luck of position; marking the cut made the loss visible
+  without stopping it. The preamble is always kept, since a rule states its
+  scope there, and the document says how many sections were left out.
+
+### Added
+
+- `record --stages` stores per-stage timings, and `evaluate` reports
+  `median_review_seconds`. A review measured once took about twenty-five
+  minutes against a sweep that runs every ten; whether that holds is a
+  distribution nobody had.
+
 ## [1.2.1] - 2026-09-17
 
 ### Fixed

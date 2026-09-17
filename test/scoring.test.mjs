@@ -10,7 +10,7 @@ import {
   normaliseCandidate,
   MalformedCandidate,
 } from '../plugins/review-voice/src/scoring/score.ts';
-import { computeReach } from '../plugins/review-voice/src/scoring/reach.ts';
+import { computeReach, symbolsFromHunks } from '../plugins/review-voice/src/scoring/reach.ts';
 import { gitGrepPaths } from '../plugins/review-voice/src/scoring/existence.ts';
 import { deriveSeverity } from '../plugins/review-voice/src/scoring/severity.ts';
 import { canActivate, compileProposals } from '../plugins/review-voice/src/policy/compile.ts';
@@ -1150,4 +1150,110 @@ test('an anchored precedent counts in both the live and the shadow score', () =>
   assert.equal(breakdown.anchored.ownerAlignment, breakdown.ownerAlignment);
   assert.equal(breakdown.anchored.finalScore, breakdown.finalScore);
   assert.equal(breakdown.anchored.wouldChangeEligibility, false);
+});
+
+test('reach is measured from what the diff touched, not what the claim mentioned', () => {
+  // The case containment could not catch: a finding whose whole point is that
+  // some symbol is the WRONG referent names that symbol, and it is genuinely in
+  // the changed file, so "does the file contain it" cannot tell them apart.
+  const diff = [
+    'diff --git a/src/home/format.ts b/src/home/format.ts',
+    '--- a/src/home/format.ts',
+    '+++ b/src/home/format.ts',
+    '@@ -1,3 +1,3 @@',
+    ' const whenOffsetMinutes = 0;',
+    '-export const shown = roundedTotal(1);',
+    '+export const shown = roundedTotal(2);',
+  ].join('\n');
+
+  const search = (symbol) =>
+    symbol === 'whenOffsetMinutes'
+      ? ['src/home/format.ts', 'src/a/x.ts', 'src/b/y.ts', 'src/c/z.ts']
+      : ['src/home/format.ts'];
+
+  const fromDiff = computeReach(
+    'The wrong referent `whenOffsetMinutes` is used near `roundedTotal`.',
+    'src/home/format.ts',
+    '/repo',
+    'base',
+    search,
+    diff,
+  );
+  const fromClaim = computeReach(
+    'The wrong referent `whenOffsetMinutes` is used near `roundedTotal`.',
+    'src/home/format.ts',
+    '/repo',
+    'base',
+    search,
+  );
+
+  assert.equal(fromDiff.symbolSource, 'hunks');
+  assert.deepEqual(fromDiff.symbols, ['roundedTotal']);
+  assert.equal(fromDiff.reach, 'local');
+
+  // Without the diff the wrong referent still decides the tier.
+  assert.equal(fromClaim.symbolSource, 'claim');
+  assert.ok(fromClaim.symbols.includes('whenOffsetMinutes'));
+  assert.equal(fromClaim.reach, 'repository');
+});
+
+test('a context line is what the change is near, not what it changed', () => {
+  const diff = [
+    'diff --git a/src/home/format.ts b/src/home/format.ts',
+    '--- a/src/home/format.ts',
+    '+++ b/src/home/format.ts',
+    '@@ -1,2 +1,2 @@',
+    ' import { sharedHelper } from "../shared";',
+    '+const localThing = 1;',
+  ].join('\n');
+
+  assert.deepEqual(symbolsFromHunks(diff, 'src/home/format.ts'), ['localThing']);
+});
+
+test("hunks from another file in the same diff are not this finding's reach", () => {
+  const diff = [
+    'diff --git a/src/other/thing.ts b/src/other/thing.ts',
+    '--- a/src/other/thing.ts',
+    '+++ b/src/other/thing.ts',
+    '@@ -1 +1 @@',
+    '+const unrelatedSymbol = 1;',
+    'diff --git a/src/home/format.ts b/src/home/format.ts',
+    '--- a/src/home/format.ts',
+    '+++ b/src/home/format.ts',
+    '@@ -1 +1 @@',
+    '+const ourChangedSymbol = 2;',
+  ].join('\n');
+
+  assert.deepEqual(symbolsFromHunks(diff, 'src/home/format.ts'), ['ourChangedSymbol']);
+});
+
+test('a symbol the change introduces falls back to the module it lives in', () => {
+  // Reach is measured at the base ref, where a new symbol does not exist, so it
+  // had no spread by construction and fell back to the category tier. Most
+  // findings are about new code, so the feature was inert for most of them.
+  const diff = [
+    'diff --git a/src/home/formatter.ts b/src/home/formatter.ts',
+    '--- a/src/home/formatter.ts',
+    '+++ b/src/home/formatter.ts',
+    '@@ -1 +1,2 @@',
+    '+export const brandNewSymbol = 1;',
+  ].join('\n');
+
+  const search = (symbol) =>
+    symbol === 'brandNewSymbol'
+      ? [] // does not exist at base
+      : ['src/home/formatter.ts', 'src/a/x.ts', 'src/b/y.ts', 'src/c/z.ts'];
+
+  const check = computeReach(
+    '`brandNewSymbol` is wrong.',
+    'src/home/formatter.ts',
+    '/repo',
+    'base',
+    search,
+    diff,
+  );
+
+  assert.equal(check.moduleFallback, true);
+  assert.ok(check.symbols.includes('formatter'));
+  assert.equal(check.reach, 'repository');
 });

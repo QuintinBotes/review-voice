@@ -144,19 +144,25 @@ counted now, and depth in the tree is never used.
 
 Two limits are known and not yet closed.
 
-**Reach is measured at the base ref**, so a symbol the change introduces does
-not exist there, has no spread by construction, and falls back to the category
-tier. Most findings are about new code, which means reach is currently
-measurable mainly for findings naming pre-existing symbols. That is the safe
-direction - absent reach never invents a tier - but the feature is inactive for
-much of what a review says.
+**Reach is measured at the base ref**, which is right for a modified symbol -
+its existing callers are what the change puts at risk - and empty for a new
+one. The module fallback below covers the new-symbol case; absent reach still
+never invents a tier.
 
-**The symbol source is the claim, not the diff.** `namedSymbols` exists to find
-things to check for absence, where a broad net is cheap. Reach wants the
-opposite. Symbols absent from the changed file, and symbols so common their
-spread describes the language rather than the change, are now excluded - but
-the right source is the changed hunks, which name what the pull request
-actually touched. That is a larger change and is not done.
+**The symbol source is now the diff.** `namedSymbols` exists to find things to
+check for absence, where a broad net is cheap, and reach wants the opposite.
+Symbols are taken from the `+` and `-` lines of the changed file's hunks when
+`score --diff-file` is given, and `symbolSource` records which source was used.
+A symbol on a context line is what the change is near, not what it changed.
+
+That closes the case containment could not: a finding whose point is that some
+symbol is the wrong referent names that symbol, and it is genuinely in the
+file, so "does the file contain it" cannot tell the two apart.
+
+The base-ref limit is narrowed rather than removed. A symbol the change
+introduces still has no spread at base, but when no touched symbol exists there
+the changed file's own module name stands in - a new symbol in a widely
+imported file carries that file's blast radius. Reported as `moduleFallback`.
 
 The remaining boundary - that one neighbouring directory is a component
 relationship and two or more is the repository - is **calibrated by guess**. No

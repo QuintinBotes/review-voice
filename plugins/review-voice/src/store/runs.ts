@@ -40,6 +40,21 @@ export interface RecordRunInput {
    * finding leaves no other trace, so this is the only record that it existed.
    */
   verdicts?: unknown;
+  /**
+   * How long each stage took, and what it cost.
+   *
+   * Recorded so the cadence question is answered by a distribution rather than
+   * by the one run somebody happened to time.
+   */
+  stages?: StageTiming[] | undefined;
+}
+
+export interface StageTiming {
+  /** `analyst`, `verifier`, `editor`, and so on. */
+  name: string;
+  seconds: number;
+  toolCalls?: number | undefined;
+  tokens?: number | undefined;
 }
 
 /**
@@ -79,8 +94,8 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
     `INSERT INTO review_runs (
        review_run_id, repository, base_ref, head_ref, diff_hash,
        active_policy_versions_json, retrieved_precedents_json,
-       candidates_json, output_json, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       candidates_json, output_json, created_at, stages_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     reviewRunId,
     input.repository,
@@ -97,6 +112,7 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
       verdicts: input.verdicts ?? [],
     }),
     new Date().toISOString(),
+    JSON.stringify(input.stages ?? []),
   );
 
   recordAudit(db, 'review_run_recorded', { type: 'review_run', id: reviewRunId }, {
@@ -108,6 +124,8 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
 }
 
 export interface RunDetail {
+  /** Per-stage timings, empty when the run did not record any. */
+  stages: StageTiming[];
   reviewRunId: string;
   repository: string | null;
   createdAt: string;
@@ -146,6 +164,17 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     findings: parsed.findings,
     scores: parsed.scores ?? [],
     verdicts: parsed.verdicts ?? [],
+    // Older rows predate the column, so absence is normal rather than an error.
+    stages: ((): StageTiming[] => {
+      const raw = row['stages_json'];
+      if (typeof raw !== 'string') return [];
+      try {
+        const parsedStages: unknown = JSON.parse(raw);
+        return Array.isArray(parsedStages) ? (parsedStages as StageTiming[]) : [];
+      } catch {
+        return [];
+      }
+    })(),
     precedents: JSON.parse(row['retrieved_precedents_json'] as string),
   };
 }

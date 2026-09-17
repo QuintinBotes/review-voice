@@ -474,3 +474,55 @@ test('the byte budget is bytes, so multi-byte text cannot overrun its share', ()
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('an oversized rule keeps the sections that match the change, not its first bytes', () => {
+  // The live case: a 21,441-byte rule cut at 15,000, governing 728 of 1,073
+  // added lines. The sections that mattered survived by luck of position.
+  const filler = 'Guidance about something unrelated to this change.\n'.repeat(120);
+  const body = [
+    '# House rules',
+    'Applies to the whole repository.',
+    '',
+    '## Logging conventions',
+    filler,
+    '## Controller conventions',
+    'Controllers must return ActionResult and never touch the database.',
+    filler,
+    '## Styling conventions',
+    filler,
+    '## Serialization conventions',
+    filler,
+  ].join('\n');
+
+  const root = repository({ 'CLAUDE.md': body });
+  try {
+    const report = discoverConventions(root, ['src/Controllers/UserController.cs']);
+    const doc = report.documents.find((d) => d.path === 'CLAUDE.md');
+
+    assert.equal(doc.truncated, true);
+    assert.equal(doc.scoped, true);
+    // The section the change is about survives, wherever it sat in the file.
+    assert.match(doc.content, /Controllers must return ActionResult/);
+    // The preamble is kept because a rule states its scope there.
+    assert.match(doc.content, /Applies to the whole repository/);
+    // And the reader is told what was left out.
+    assert.match(doc.content, /Review Voice kept the \d+ of \d+ sections/);
+    assert.ok(Buffer.byteLength(doc.content, 'utf8') <= PER_DOCUMENT_BYTES);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a document with no sections still falls back to head truncation', () => {
+  const root = repository({ 'CLAUDE.md': 'one long line. '.repeat(3000) });
+  try {
+    const report = discoverConventions(root, ['src/a.ts']);
+    const doc = report.documents.find((d) => d.path === 'CLAUDE.md');
+
+    assert.equal(doc.truncated, true);
+    assert.equal(doc.scoped, false);
+    assert.match(doc.content, /Truncated by Review Voice/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
