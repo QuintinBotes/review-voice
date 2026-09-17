@@ -83,7 +83,18 @@ const BY_CATEGORY_AND_REACH: Record<string, ReachTiers> = {
   trust_boundary: atEveryReach('blocking'),
   authorization: atEveryReach('blocking'),
   authentication: atEveryReach('blocking'),
-  data_integrity: atEveryReach('blocking'),
+
+  // `data_integrity` varies where its neighbours do not.
+  //
+  // `security`, `authorization` and `authentication` name a boundary: crossing
+  // one is severe wherever it happens, which is why an analyst cannot talk them
+  // down. `data_integrity` names a property, and it spans everything from
+  // corrupting a shared store to a consistency nit in one file. Holding it at
+  // `blocking` everywhere also held it outside the bound, so it was the only
+  // candidate in twenty that still moved three tiers: an analyst that had read
+  // the code judged a concrete instance `minor` and was overruled into a
+  // verdict that says do not merge.
+  data_integrity: { local: 'important', component: 'blocking', repository: 'blocking' },
 
   concurrency: atEveryReach('important'),
   persistence: atEveryReach('important'),
