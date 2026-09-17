@@ -114,6 +114,30 @@ because it seemed compelling.
 
 If nothing survives, output exactly `No actionable findings.` and stop.
 
+## Step 3b — Second-pass verification
+
+Run `RV verify` with the surviving candidates as `{"candidates": [...]}` on
+stdin.
+
+If `enabled` is false, skip this step and say nothing about it. It is opt-in.
+
+This pass is deliberately a **different model** from the one that generated the
+candidates. A verifier from the same family shares the analyst's blind spots
+and agrees with a plausible-sounding defect more often than it should.
+
+Apply each verdict:
+
+- `kept` — unchanged.
+- `downgraded` — use `finalSeverity`, not the original.
+- `dropped` — remove the finding from the review.
+- `unverified` — the verifier could not run. **Leave the finding exactly as it
+  is.** A verifier that did not answer has not agreed.
+
+Pass the whole report to `RV record --verdicts <file>` in step 6, including the
+dropped entries. A suppressed finding leaves no other trace, and
+`/review-voice:explain` showing what was removed is what makes a bad verifier
+visible instead of indistinguishable from a clean diff.
+
 ## Step 4 — Score against precedent
 
 Pipe the verified candidates as `{"candidates": [...]}` into
@@ -162,8 +186,9 @@ request is not held to a figure written for an ordinary one.
   cannot — the contract permits no text beyond the finding. Without it,
   feedback on that finding can never become a policy rule.
 
-  Pass the score breakdowns too, with `--scores <file>`, so
-  `/review-voice:explain` can show its working later. Without them a finding is
+  Pass the score breakdowns with `--scores <file>` and, if verification ran,
+  the verdicts with `--verdicts <file>`, so `/review-voice:explain` can show
+  its working later — including findings that were suppressed. Without them a finding is
   recorded with no account of why it was emitted.
 
   This also assigns the positional ids `/review-voice:feedback` needs. Do not

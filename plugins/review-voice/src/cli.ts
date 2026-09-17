@@ -24,6 +24,7 @@ import { loadConfig } from './policy/load.ts';
 import { resolvePolicy } from './policy/schema.ts';
 import { repositoryRoot } from './diff/acquire.ts';
 import { collectEvidence } from './evidence/run.ts';
+import { verifyFindings, type VerifiableFinding } from './verify/external.ts';
 import { redact } from './redact/redact.ts';
 import { GitHubClient, NotAllowlisted, ReadOnlyViolation } from './github/client.ts';
 import { AuthError } from './github/auth.ts';
@@ -49,6 +50,7 @@ Commands:
   diff              Acquire the diff under review as structured JSON
   context           Resolve config and the active policy stack as JSON
   evidence          Run the configured static checks and emit structured signals
+  verify            Second-pass verification of candidates by a configured command
   redact            Redact secrets from stdin (used before anything is stored)
   sync              Ingest review history from allowlisted repositories
   discover          List repositories the credential can see (reads no history)
@@ -84,6 +86,7 @@ record flags:
   --diff-file <path>     Diff the review was produced from (for the run hash)
   --candidates <path>    Scored candidates, so findings carry their category
   --scores <path>        Score breakdowns, so explain can show its working
+  --verdicts <path>      Verification verdicts, including findings that were dropped
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -666,6 +669,32 @@ function redactCommand(argv: string[]): number {
   return 0;
 }
 
+function verifyCommand(): number {
+  let findings: VerifiableFinding[];
+  try {
+    const parsed = JSON.parse(readStdin()) as { candidates?: VerifiableFinding[] } | VerifiableFinding[];
+    findings = Array.isArray(parsed) ? parsed : (parsed.candidates ?? []);
+  } catch {
+    console.error('Expected {"candidates": [...]} on stdin.');
+    return 2;
+  }
+
+  try {
+    const root = repositoryRoot(process.cwd());
+    const config = loadConfig(root);
+    const report = verifyFindings(findings, config.verification, { cwd: root });
+    console.log(JSON.stringify(report, null, 2));
+    // A verifier rejecting findings is a result, not a command failure.
+    return 0;
+  } catch (error) {
+    if (error instanceof GitError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+}
+
 function evidenceCommand(): number {
   try {
     const root = repositoryRoot(process.cwd());
@@ -732,6 +761,18 @@ function recordCommand(argv: string[]): number {
     }
   }
 
+  const verdictsFile = flag(argv, '--verdicts');
+  let verdicts: unknown = [];
+  if (verdictsFile !== null) {
+    try {
+      const parsed = JSON.parse(readFileSync(verdictsFile, 'utf8')) as { verdicts?: unknown };
+      verdicts = Array.isArray(parsed) ? parsed : (parsed.verdicts ?? []);
+    } catch {
+      console.error(`Cannot read verdicts from ${verdictsFile}.`);
+      return 2;
+    }
+  }
+
   const db = openDatabase();
   try {
     const { reviewRunId, findings } = recordRun(db, {
@@ -742,6 +783,7 @@ function recordCommand(argv: string[]): number {
       output,
       candidates,
       scores,
+      verdicts,
     });
     console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
     return 0;
@@ -793,6 +835,16 @@ function explainCommand(argv: string[]): number {
     }
 
     const wanted = argv.find((arg) => /^rv_\d+$/.test(arg));
+    const verdicts = (Array.isArray(detail.verdicts) ? detail.verdicts : []) as {
+      path: string;
+      line: number;
+      verdict: string;
+      confidence: number;
+      reason: string;
+      outcome: string;
+      originalSeverity: string;
+      verifier: string;
+    }[];
     const scores = (Array.isArray(detail.scores) ? detail.scores : []) as {
       candidateId?: string;
       path?: string;
@@ -839,6 +891,28 @@ function explainCommand(argv: string[]): number {
       // Saying "no data" beats inventing a rationale after the fact.
       if (score === undefined) {
         console.log('  scoring           not recorded for this review');
+      }
+
+      const verdict = verdicts.find((v) => v.path === finding.path && v.line === finding.line);
+      if (verdict !== undefined) {
+        console.log(
+          `  verified          ${verdict.verdict} (${verdict.confidence.toFixed(2)}) by ${verdict.verifier}` +
+            (verdict.outcome === 'kept' ? '' : ` — ${verdict.outcome}`),
+        );
+        if (verdict.reason.length > 0) console.log(`                    ${verdict.reason}`);
+      }
+      console.log('');
+    }
+
+    // Findings the verifier removed leave no other trace. Showing them is what
+    // makes a bad verifier visible rather than indistinguishable from a clean
+    // diff.
+    const dropped = verdicts.filter((v) => v.outcome === 'dropped');
+    if (dropped.length > 0 && wanted === undefined) {
+      console.log(`Suppressed by verification (${dropped.length}):`);
+      for (const v of dropped) {
+        console.log(`  [${v.originalSeverity}] ${v.path}:${v.line}  ${v.verifier} @ ${v.confidence.toFixed(2)}`);
+        if (v.reason.length > 0) console.log(`      ${v.reason}`);
       }
       console.log('');
     }
@@ -951,6 +1025,9 @@ async function main(argv: string[]): Promise<number> {
 
     case 'evidence':
       return evidenceCommand();
+
+    case 'verify':
+      return verifyCommand();
 
     case 'record':
       return recordCommand(argv.slice(1));

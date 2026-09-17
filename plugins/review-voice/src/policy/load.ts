@@ -10,6 +10,14 @@ export interface LoadedConfig {
   postingEnabled: boolean;
   allowlist: string[];
   staticEvidence: { enabled: boolean; commands: { name: string; run: string; timeoutSeconds?: number }[] };
+  /** A second, ideally different-model, verification pass. Off by default. */
+  verification: {
+    enabled: boolean;
+    command: string;
+    name?: string | undefined;
+    timeoutSeconds?: number | undefined;
+    dropThreshold?: number | undefined;
+  };
   layers: PolicyLayer[];
   /** Repository-supplied layers awaiting owner approval. */
   unapproved: { source: string; contentHash: string }[];
@@ -78,6 +86,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
     postingEnabled: false,
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
+    verification: { enabled: false, command: '' },
     layers: [],
     unapproved: [],
     warnings: [],
@@ -116,6 +125,19 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
 
         const writes = asRecord(doc['writes']);
         result.postingEnabled = writes?.['github_posting_enabled'] === true;
+
+        const verification = asRecord(doc['verification']);
+        if (verification !== null) {
+          const command = verification['command'];
+          result.verification = {
+            enabled: verification['enabled'] === true && typeof command === 'string' && command.length > 0,
+            command: typeof command === 'string' ? command : '',
+            name: typeof verification['name'] === 'string' ? verification['name'] : undefined,
+            timeoutSeconds: positiveInt(verification['timeout_seconds']),
+            dropThreshold:
+              typeof verification['drop_threshold'] === 'number' ? verification['drop_threshold'] : undefined,
+          };
+        }
 
         const review = asRecord(doc['review']);
         if (review !== null) {

@@ -198,6 +198,32 @@ exit code is still evidence.
 A check that did not run is reported as such. The reviewer must never imply a
 check passed when it never executed.
 
+### Second-pass verification
+
+The built-in `evidence-verifier` is a Claude subagent checking a Claude
+subagent's findings, which shares the analyst's blind spots: asked whether a
+plausible-sounding defect is real, a same-family verifier agrees more often
+than it should. Breaking that correlated error needs a different model.
+
+So there is an optional second pass, configured like static-evidence commands:
+a command that receives one finding as JSON and returns a verdict. Off by
+default, because requiring an external binary would break the zero-install
+promise for everyone who does not have one.
+
+Three rules keep it from becoming a worse version of the problem it solves:
+
+- **A confident rejection drops; an unsure one downgrades.** An unsure verifier
+  should not be able to delete evidence.
+- **A verifier may weaken a severity, never strengthen one.** Its job is to
+  doubt, not to escalate.
+- **A verifier that could not run has not agreed.** Missing or unparseable
+  output leaves the finding exactly as it was, and is reported as `didNotRun`.
+
+Every verdict is recorded, including the ones that change nothing, and
+`explain` lists what was suppressed and why. A verifier that silently deletes
+findings is the finding cap in a different coat — the failure has to be
+visible, or a bad verifier is indistinguishable from a clean diff.
+
 ### Scoring and activation
 
 The eligibility formula is arithmetic and lives in the CLI. Asking a model to
