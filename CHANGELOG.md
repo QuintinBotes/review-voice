@@ -7,8 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `score --verification` accepts `results`, which is the key the
+  `evidence-verifier` actually emits, and exits non-zero when the file yields no
+  verifications. It accepted only `verifications` and `candidates`, so on the
+  documented pipeline every candidate fell back to the analyst's self-report
+  and the command still exited 0. The two headline fixes of 0.4.0 were inert
+  and nothing said so.
+- The unverifiable cap is a prior the verifier can overturn, not a ceiling. An
+  explicit `technical_confidence` from the verifier now wins, because it means
+  the verifier considered the question. Context the verifier itself could not
+  reach still caps absolutely. Previously one regex over the analyst's prose
+  outranked the verifier, inverting the change that let the verifier supersede.
+- Novelty no longer punishes a second real defect in another file. A subsystem
+  has a vocabulary, so two distinct defects in neighbouring hooks scored as
+  restatements of each other; a cross-file penalty now needs near-identical
+  wording. Same-file deduplication is unchanged.
+- `context` can detect a missing `verification` block. The field was seeded with
+  a disabled default before parsing, so the check for its absence was always
+  false and the warning could never fire.
+- `conventions` searches `.agents/rules/` and `.claude/rules/` as well as
+  `.claude/skills/`, and searches every directory the diff touches rather than
+  only the repository root. Selection is ordered by relevance before the size
+  budget applies, so a rule whose name matches the change is read before one
+  that merely sorts early. Each document reports why it was selected.
+- `conventions --help` prints help. It used to run with repository-wide
+  defaults and write every document to stdout.
+- Precedent retrieval penalises a language mismatch rather than only rewarding a
+  match, and derives the language from the file path. The `language` column is
+  null on every stored event, so both the bonus and the penalty were dead
+  against a real corpus and a Python file could top the results for a React
+  finding.
+- `score --exclude-pull <n>` drops precedents from the pull request under
+  review. The self-ingestion detector only catches output posted verbatim, and
+  a review rewritten into prose before posting walked straight past it.
+- A rejection message prints four decimal places, so it no longer reads
+  "score 0.78 is below 0.78".
+- `sync` reports which repository it is reading. It wrote nothing for minutes,
+  which is correct and reads as a hang.
+
 ### Changed
 
+- The final-score threshold moves from 0.78 to 0.74, a deliberate deviation
+  from the specification constant. 0.78 was calibrated when `evidenceQuality`
+  returned 1.000 for every candidate and handed each one a free 0.15. Once that
+  term began to discriminate the distribution moved down and the gate did not,
+  so two of twelve verified findings cleared it where eight of ten had before.
+- `score` reports the score distribution it produced, so the threshold can be
+  checked against data rather than carried forward as a constant.
 - `status` reports the last completed sync, and warns about a sync that began
   and never recorded a finish. An empty corpus read identically whether a sync
   had never run or one had died, and only a manual query distinguished them. A

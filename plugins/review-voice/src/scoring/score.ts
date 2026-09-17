@@ -114,9 +114,28 @@ export interface Thresholds {
   finalScore: number;
 }
 
+/**
+ * The final-score gate, and why it moved.
+ *
+ * 0.78 was calibrated when `evidenceQuality` scored 1.000 for every candidate,
+ * because its specificity test accepted "longer than 40 characters". That term
+ * carries 0.15 of the score, so every candidate was handed 0.15 unconditionally
+ * and the threshold was really 0.63 plus a constant.
+ *
+ * Once the term began to discriminate, spanning 0.40 to 1.00 on a real run, the
+ * whole distribution moved down beneath a gate that had not moved with it: two
+ * of twelve verified findings cleared it where eight of ten had before, and the
+ * threshold sat above the distribution rather than through it.
+ *
+ * 0.74 is 0.78 less the 0.045 the evidence term stopped guaranteeing, taking a
+ * mid-range 0.7 as typical. It is a derivation, not a measurement, and it is
+ * meant to be replaced: `score` reports the distribution it produced so the
+ * next value can come from labelled data rather than arithmetic about the last
+ * change.
+ */
 export const DEFAULT_THRESHOLDS: Thresholds = {
   technicalConfidence: 0.8,
-  finalScore: 0.78,
+  finalScore: 0.74,
 };
 
 export class MalformedCandidate extends Error {}
@@ -265,6 +284,12 @@ function evidenceQuality(candidate: Candidate): number {
 }
 
 /**
+ * How much two candidates in different files must share before one counts as
+ * a restatement of the other rather than a neighbour in the same subsystem.
+ */
+const CROSS_FILE_DUPLICATE = 0.8;
+
+/**
  * Penalises a candidate that repeats something already said, whether by
  * another finding in this review or by a comment already in the corpus.
  *
@@ -280,7 +305,18 @@ function novelty(candidate: Candidate, kept: Candidate[], precedents: Precedent[
   for (const other of kept) {
     if (other.path === candidate.path && other.line === candidate.line) return 0;
     const theirs = significantWords(`${other.claim} ${other.failureMode}`);
-    worst = Math.min(worst, 1 - overlap(mine, theirs));
+    const shared = overlap(mine, theirs);
+
+    // Two defects in one file may well be one defect described twice. Two in
+    // different files usually are not, however much vocabulary they share,
+    // because a subsystem has a vocabulary. A double-submit race and an
+    // unhandled failure in neighbouring hooks are not the same finding, and
+    // the second one was being discarded for sounding like the first.
+    if (other.path === candidate.path) {
+      worst = Math.min(worst, 1 - shared);
+    } else if (shared >= CROSS_FILE_DUPLICATE) {
+      worst = Math.min(worst, 1 - shared);
+    }
   }
 
   // A precedent elsewhere in the same file that makes the same point is a
@@ -324,8 +360,20 @@ export function scoreCandidate(
   let confidence = verifiedConfidence ?? analystConfidence;
   let confidenceSource: ScoreBreakdown['confidenceSource'] = verifiedConfidence === null ? 'analyst' : 'verifier';
 
+  // Context the verifier itself could not obtain is binding: that is the
+  // verifier reporting on its own reach, not a guess about someone else's.
   const missingContext = (verification?.requiredContextMissing ?? []).length > 0;
-  if ((missingContext || admitsUnverifiable(candidate)) && confidence > UNVERIFIABLE_CONFIDENCE) {
+
+  // The analyst's admission is a prior, not a ceiling. It used to outrank the
+  // verifier absolutely, which inverted the whole point of letting the
+  // verifier supersede: on a real diff the verifier established the claim
+  // directly, said in as many words that the caveat bore on severity rather
+  // than confidence, and was overruled by a regex reading the analyst's prose.
+  // An explicit number from the verifier means it considered the question.
+  const admitted = admitsUnverifiable(candidate);
+  const verifierEngaged = verification?.technicalConfidence !== undefined;
+
+  if ((missingContext || (admitted && !verifierEngaged)) && confidence > UNVERIFIABLE_CONFIDENCE) {
     confidence = UNVERIFIABLE_CONFIDENCE;
     confidenceSource = 'unverifiable-cap';
   }
@@ -369,7 +417,9 @@ export function scoreCandidate(
         ? `the claim states it could not be verified, so confidence is capped at ${UNVERIFIABLE_CONFIDENCE}, below ${thresholds.technicalConfidence}`
         : `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${thresholds.technicalConfidence}`;
   } else if (finalScore < thresholds.finalScore) {
-    rejectedBecause = `score ${finalScore.toFixed(2)} is below ${thresholds.finalScore}`;
+    // Four places, because two produced "score 0.78 is below 0.78" on a
+    // finalScore of 0.7788996174443317. True, and unreadable.
+    rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
 
   return {

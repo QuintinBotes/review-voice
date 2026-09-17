@@ -108,6 +108,9 @@ feedback usage:
 score flags:
   --verification <path>     The evidence-verifier's output. Its confidence
                             supersedes the analyst's self-report.
+  --exclude-pull <n>        Drop precedents from this pull request. Pass the
+                            pull request under review: its own comments are
+                            the conversation, not evidence of general taste.
   --min-confidence <n>      Technical confidence gate (default 0.8)
   --min-score <n>           Final score gate (default 0.78)
   --repository <name>       Prefer precedents from this repository
@@ -325,23 +328,26 @@ function contextCommand(): number {
           // all, so an upgrading user silently got none of it and nothing in
           // any command said so.
           verification: {
-            enabled: config.verification?.enabled === true,
-            verifier: config.verification?.name ?? null,
-            configured: config.verification !== undefined,
+            enabled: config.verification.enabled,
+            verifier: config.verification.name ?? null,
+            configured: config.verification.blockPresent,
           },
           policy,
           // Repository-supplied policy is a proposal, never an activation:
           // see docs/adr/0006.
           pendingApproval: config.unapproved,
+          // Not raised on top of a parse failure: a config that did not parse
+          // says nothing about whether it has a verification block, and the
+          // parse error is the actionable item.
           warnings:
-            config.verification === undefined
-              ? [
-                  ...config.warnings,
-                  'No verification block in .review-voice/config.yaml, so the second-pass ' +
-                    'verifier never runs. Configs written before it existed do not have one. ' +
-                    'See the second-pass verification section of the README.',
-                ]
-              : config.warnings,
+            config.verification.blockPresent || config.warnings.length > 0
+            ? config.warnings
+            : [
+                ...config.warnings,
+                'No verification block in .review-voice/config.yaml, so the second-pass ' +
+                  'verifier never runs. Configs written before it existed do not have one. ' +
+                  'See the second-pass verification section of the README.',
+              ],
         },
         null,
         2,
@@ -469,7 +475,12 @@ async function syncCommand(argv: string[]): Promise<number> {
   const collected = [];
   const pendingWatermarks: Watermark[] = [];
 
-  for (const repository of config.allowlist) {
+  for (const [index, repository] of config.allowlist.entries()) {
+    // Progress on stderr, so stdout stays a single JSON document. A sync reads
+    // every pull request before it writes anything, which is correct and also
+    // means three silent minutes that read as a hang.
+    console.error(`[${index + 1}/${config.allowlist.length}] reading ${repository} ...`);
+
     // A dry run deliberately ignores watermarks: its whole job is to report
     // what a full import would find, and reading only what changed since the
     // last sync would understate that.
@@ -642,12 +653,8 @@ function scoreCommand(argv: string[]): number {
   if (verificationFlag !== null) {
     try {
       const parsed = JSON.parse(readFileSync(verificationFlag, 'utf8')) as unknown;
-      const list = Array.isArray(parsed)
-        ? parsed
-        : ((parsed as { verifications?: unknown[]; candidates?: unknown[] }).verifications ??
-          (parsed as { candidates?: unknown[] }).candidates ??
-          []);
-      for (const raw of list as Record<string, unknown>[]) {
+      const list = verdictList(parsed);
+      for (const raw of list) {
         const id = (raw['candidate_id'] ?? raw['candidateId']) as string | undefined;
         if (typeof id !== 'string') continue;
         verifications.set(id, {
@@ -662,6 +669,25 @@ function scoreCommand(argv: string[]): number {
       console.error(`Cannot read ${verificationFlag}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
     }
+
+    // A file that parses to nothing is the failure mode this flag exists to
+    // prevent. Reading zero verifications and scoring anyway is exactly the
+    // silent fallback to the analyst's self-report that the gate was changed
+    // to stop, and it produced a clean exit 0 while doing it.
+    if (verifications.size === 0) {
+      console.error(
+        `${verificationFlag} contained no verifications. Expected an array, or an object with ` +
+          `one of: ${VERDICT_KEYS.join(', ')}, each entry carrying candidate_id. ` +
+          'Refusing to score on the analyst self-report while a verification file was supplied.',
+      );
+      return 2;
+    }
+  }
+
+  const pullFlag = argv.includes('--exclude-pull') ? numericFlag(argv, '--exclude-pull', 0) : null;
+  if (argv.includes('--exclude-pull') && pullFlag === null) {
+    console.error('--exclude-pull needs a pull request number.');
+    return 2;
   }
 
   const db = openDatabase();
@@ -676,6 +702,11 @@ function scoreCommand(argv: string[]): number {
         text: `${candidate.claim} ${candidate.failureMode}`,
         repository: flag(argv, '--repository') ?? undefined,
         filePath: candidate.path,
+        // A comment on the pull request under review is the conversation, not
+        // precedent, and it is the route by which a posted review comes back
+        // as evidence of the owner's taste on the very finding that produced
+        // it.
+        excludePullNumber: pullFlag ?? undefined,
         maxPositive: 3,
         maxNegative: 2,
       });
@@ -690,10 +721,28 @@ function scoreCommand(argv: string[]): number {
       results.push({ ...breakdown, precedents });
     }
 
+    const finals = results
+      .map((r) => r.finalScore)
+      .filter((v) => Number.isFinite(v))
+      .sort((a, b) => a - b);
+    const at = (p: number): number | null =>
+      finals.length === 0 ? null : (finals[Math.min(finals.length - 1, Math.floor(p * finals.length))] as number);
+
     console.log(
       JSON.stringify(
         {
           scores: results,
+          // Reported every run so the threshold stops being a constant nobody
+          // can check. A gate sitting above the whole distribution is not
+          // selective, it is miscalibrated, and that is only visible here.
+          distribution: {
+            count: finals.length,
+            min: at(0),
+            median: at(0.5),
+            max: finals.length === 0 ? null : (finals[finals.length - 1] as number),
+            threshold: thresholds.finalScore,
+            cleared: finals.filter((v) => v >= thresholds.finalScore).length,
+          },
           // Enough to carry a survivor forward without rejoining by hand.
           eligible: kept.map((c) => ({
             candidateId: c.candidateId,
@@ -1087,6 +1136,13 @@ function explainCommand(argv: string[]): number {
  * subtree.
  */
 function conventionsCommand(argv: string[]): number {
+  // Without this, `conventions --help` ran with repository-wide defaults and
+  // dumped every document to stdout, which on a real repository is 82 KB.
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log(USAGE);
+    return 0;
+  }
+
   let root: string;
   try {
     root = repositoryRoot(process.cwd());
@@ -1126,6 +1182,27 @@ function conventionsCommand(argv: string[]): number {
     ),
   );
   return 0;
+}
+
+/**
+ * Keys an agent might wrap its verdicts in.
+ *
+ * The evidence-verifier emits `results`, which this did not accept, so every
+ * candidate fell back to the analyst's self-report on the documented pipeline
+ * and nothing said so. Accepting the obvious synonyms is cheap; guessing which
+ * one is right is not, so an unrecognised shape is now an error rather than an
+ * empty map.
+ */
+const VERDICT_KEYS = ['results', 'verifications', 'verdicts', 'candidates'] as const;
+
+function verdictList(parsed: unknown): Record<string, unknown>[] {
+  if (Array.isArray(parsed)) return parsed as Record<string, unknown>[];
+  if (typeof parsed !== 'object' || parsed === null) return [];
+  const record = parsed as Record<string, unknown>;
+  for (const key of VERDICT_KEYS) {
+    if (Array.isArray(record[key])) return record[key] as Record<string, unknown>[];
+  }
+  return [];
 }
 
 function statusCommand(): number {

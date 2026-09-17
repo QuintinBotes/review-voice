@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
 
-export type ConventionKind = 'claude' | 'agents' | 'contributing' | 'skill';
+export type ConventionKind = 'claude' | 'agents' | 'contributing' | 'skill' | 'rule';
 
 export interface ConventionDocument {
   /** Repository-relative, so it means the same thing on any machine. */
@@ -11,6 +11,8 @@ export interface ConventionDocument {
   scope: 'repository' | 'directory';
   /** Changed paths this document governs, empty for repository-wide ones. */
   appliesTo: string[];
+  /** Why it was selected, so a surprising inclusion can be traced. */
+  reason: 'directory scope' | 'subtree' | 'repository file' | 'name matches the change' | 'remaining budget';
   bytes: number;
   truncated: boolean;
   content: string;
@@ -42,7 +44,18 @@ const NESTED_FILES: { name: string; kind: ConventionKind }[] = [
   { name: 'AGENTS.md', kind: 'agents' },
 ];
 
-const SKILLS_DIRECTORY = join('.claude', 'skills');
+/**
+ * Where a repository keeps rule and skill documents, relative to any directory
+ * in the tree rather than only the root. A monorepo keeps a package's rules
+ * beside the package: searching only the root found none of them, and the five
+ * skills under `packages/commander/.claude/skills` never appeared in
+ * `documents` or in `skipped`.
+ */
+const RULE_DIRECTORIES: { path: string; kind: ConventionKind }[] = [
+  { path: join('.claude', 'skills'), kind: 'skill' },
+  { path: join('.agents', 'rules'), kind: 'rule' },
+  { path: join('.claude', 'rules'), kind: 'rule' },
+];
 
 /** A single document past this is summarised by truncation, not dropped. */
 const PER_DOCUMENT_BYTES = 20_000;
@@ -87,17 +100,55 @@ function ancestors(changedPath: string): string[] {
   return out;
 }
 
-function listSkillDocuments(root: string): string[] {
-  const base = join(root, SKILLS_DIRECTORY);
-  if (!existsSync(base)) return [];
-  try {
-    return readdirSync(base)
-      .map((entry) => join(SKILLS_DIRECTORY, entry, 'SKILL.md'))
-      .filter((candidate) => existsSync(join(root, candidate)))
-      .sort();
-  } catch {
-    return [];
+/** Rule and skill documents under one directory of the tree. */
+function listRuleDocuments(root: string, directory: string): { path: string; kind: ConventionKind }[] {
+  const out: { path: string; kind: ConventionKind }[] = [];
+  for (const { path: relative, kind } of RULE_DIRECTORIES) {
+    const base = join(root, directory, relative);
+    if (!existsSync(base)) continue;
+    try {
+      for (const entry of readdirSync(base).sort()) {
+        // A skill is a directory holding SKILL.md; a rule is a markdown file.
+        for (const candidate of [join(directory, relative, entry, 'SKILL.md'), join(directory, relative, entry)]) {
+          if (!candidate.endsWith('.md')) continue;
+          if (!existsSync(join(root, candidate))) continue;
+          out.push({ path: candidate, kind });
+          break;
+        }
+      }
+    } catch {
+      // An unreadable directory is not a reason to abandon the rest.
+    }
   }
+  return out;
+}
+
+/**
+ * Tokens from a document's own path, used to tell a rule that bears on this
+ * change from one that merely sorted early.
+ */
+function nameTokens(path: string): string[] {
+  const base = path.split(/[\\/]/).filter((part) => part !== 'SKILL.md').pop() ?? path;
+  return base
+    .replace(/\.md$/i, '')
+    .split(/[^a-z0-9]+/i)
+    .filter((token) => token.length > 2)
+    .map((token) => token.toLowerCase());
+}
+
+/**
+ * Whether a document's name appears in the paths the diff touches.
+ *
+ * Without this the budget fills alphabetically. On a real run every pull
+ * request received `add-image-asset`, `build-form`, `bump-vulnerability` and
+ * `check-deploy-status`, none of them relevant to any of the three, and the
+ * cut landed immediately before the one document that was.
+ */
+function matchesChange(path: string, changedPaths: readonly string[]): boolean {
+  if (changedPaths.length === 0) return false;
+  const haystack = changedPaths.join(' ').toLowerCase();
+  const tokens = nameTokens(path);
+  return tokens.length > 0 && tokens.some((token) => haystack.includes(token));
 }
 
 /**
@@ -130,10 +181,37 @@ export function discoverConventions(root: string, changedPaths: readonly string[
     }
   }
 
-  // Nearest to the change first. The budget truncates the tail, so the tail
-  // has to be the least specific thing, not whatever the filesystem listed
-  // last.
-  const ordered: { path: string; kind: ConventionKind; scope: 'repository' | 'directory'; appliesTo: string[] }[] = [
+  type Entry = {
+    path: string;
+    kind: ConventionKind;
+    scope: 'repository' | 'directory';
+    appliesTo: string[];
+    reason: ConventionDocument['reason'];
+  };
+
+  // Directories the diff touches, nearest first, plus the root. A monorepo
+  // keeps a package's rules beside the package, so this is where to look.
+  const touched = [...new Set(changedPaths.flatMap((changed) => ancestors(changed)))].sort(
+    (a, b) => b.split(sep).length - a.split(sep).length,
+  );
+
+  const subtreeRules: Entry[] = touched.flatMap((directory) =>
+    listRuleDocuments(root, directory).map((rule) => ({
+      ...rule,
+      scope: 'directory' as const,
+      appliesTo: changedPaths.filter((changed) => changed.startsWith(`${directory}${sep}`)),
+      reason: 'subtree' as const,
+    })),
+  );
+
+  const rootRules = listRuleDocuments(root, '');
+  const named = rootRules.filter((rule) => matchesChange(rule.path, changedPaths));
+  const rest = rootRules.filter((rule) => !matchesChange(rule.path, changedPaths));
+
+  // Relevance before alphabet, then the budget truncates what is left. The
+  // previous order spent the whole budget on documents that sorted early and
+  // cut the one the change was actually about.
+  const ordered: Entry[] = [
     ...[...governed.entries()]
       .sort((a, b) => b[0].split(sep).length - a[0].split(sep).length)
       .map(([path, appliesTo]) => ({
@@ -141,13 +219,26 @@ export function discoverConventions(root: string, changedPaths: readonly string[
         kind: (path.endsWith('AGENTS.md') ? 'agents' : 'claude') as ConventionKind,
         scope: 'directory' as const,
         appliesTo,
+        reason: 'directory scope' as const,
       })),
-    ...REPOSITORY_FILES.map((file) => ({ ...file, scope: 'repository' as const, appliesTo: [] })),
-    ...listSkillDocuments(root).map((path) => ({
-      path,
-      kind: 'skill' as ConventionKind,
+    ...subtreeRules,
+    ...REPOSITORY_FILES.map((file) => ({
+      ...file,
       scope: 'repository' as const,
       appliesTo: [],
+      reason: 'repository file' as const,
+    })),
+    ...named.map((rule) => ({
+      ...rule,
+      scope: 'repository' as const,
+      appliesTo: [],
+      reason: 'name matches the change' as const,
+    })),
+    ...rest.map((rule) => ({
+      ...rule,
+      scope: 'repository' as const,
+      appliesTo: [],
+      reason: 'remaining budget' as const,
     })),
   ];
 
@@ -180,6 +271,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       kind: entry.kind,
       scope: entry.scope,
       appliesTo: entry.appliesTo,
+      reason: entry.reason,
       bytes: read.bytes,
       truncated: read.truncated,
       content: read.content,

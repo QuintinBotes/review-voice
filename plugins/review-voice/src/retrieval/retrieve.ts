@@ -1,5 +1,6 @@
 import type { Database } from '../store/db.ts';
 import { eventWeight, type OutcomeStatus, type ReviewerRole } from './weights.ts';
+import { languageOf } from '../diff/classify.ts';
 
 export interface Precedent {
   eventId: string;
@@ -25,6 +26,16 @@ export interface RetrieveQuery {
   repository?: string | undefined;
   filePath?: string | undefined;
   language?: string | undefined;
+  /**
+   * The pull request under review, excluded from its own precedent.
+   *
+   * A comment on the pull request being reviewed is the current conversation,
+   * not evidence of what the owner values in general. It is also how the tool
+   * reads its own posted output back as owner judgement: the format detector
+   * at ingestion only catches output posted verbatim, and a review rewritten
+   * into prose before posting walks straight past it.
+   */
+  excludePullNumber?: number | undefined;
   maxPositive: number;
   maxNegative: number;
   now?: Date | undefined;
@@ -85,18 +96,30 @@ export function retrievePrecedents(db: Database, query: RetrieveQuery): Preceden
          FROM review_events_fts
          JOIN review_events e ON e.rowid = review_events_fts.rowid
          WHERE review_events_fts MATCH ?
+           AND (? IS NULL OR e.pull_number IS NULL OR e.pull_number != ?
+                OR (? IS NOT NULL AND e.repository != ?))
          ORDER BY rank
          LIMIT 200`,
       )
-      .all(match) as unknown as Row[];
+      .all(
+        match,
+        query.excludePullNumber ?? null,
+        query.excludePullNumber ?? null,
+        query.repository ?? null,
+        query.repository ?? null,
+      ) as unknown as Row[];
   } catch {
     // An unparseable query is an empty result, not a failed review.
     return [];
   }
 
+  const queryLanguage =
+    query.language ?? (query.filePath === undefined ? null : languageOf(query.filePath));
+
   const scored = rows.map((row) => {
     const role = row.reviewer_role as ReviewerRole;
     const outcome = row.outcome_status as OutcomeStatus;
+    const rowLanguage = row.file_path === null ? null : languageOf(row.file_path);
 
     const weight = eventWeight({
       role,
@@ -110,7 +133,12 @@ export function retrievePrecedents(db: Database, query: RetrieveQuery): Preceden
       context: {
         sameRepository: query.repository !== undefined && row.repository === query.repository,
         samePath: query.filePath !== undefined && row.file_path === query.filePath,
-        sameLanguage: query.language !== undefined && row.language === query.language,
+        // Derived from the paths rather than read from the column. The column
+        // is null on every stored event, so both the bonus and the penalty
+        // were dead code against a real corpus, and deriving it needs neither
+        // a migration nor a re-sync.
+        sameLanguage: queryLanguage !== null && rowLanguage === queryLanguage,
+        differentLanguage: queryLanguage !== null && rowLanguage !== null && rowLanguage !== queryLanguage,
       },
       now: query.now,
       ownerMultiplier: query.ownerMultiplier,

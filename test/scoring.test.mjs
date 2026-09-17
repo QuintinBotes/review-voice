@@ -86,9 +86,16 @@ test('a candidate with no evidence scores zero on evidence', () => {
   assert.equal(scoreCandidate(candidate({ evidence: [] }), [], []).evidenceQuality, 0);
 });
 
-test('thresholds are configurable but default to the specification', () => {
+test('thresholds are configurable, and the final-score gate has moved off the specification', () => {
   assert.equal(DEFAULT_THRESHOLDS.technicalConfidence, 0.8);
-  assert.equal(DEFAULT_THRESHOLDS.finalScore, 0.78);
+
+  // The specification says 0.78. That number was calibrated when
+  // evidenceQuality returned 1.000 for every candidate, handing each one a
+  // free 0.15. Once the term began to discriminate the distribution moved down
+  // and the gate did not, so two of twelve verified findings cleared it where
+  // eight of ten had. This is a deliberate deviation from the spec constant,
+  // recorded here so it cannot be reverted by accident.
+  assert.equal(DEFAULT_THRESHOLDS.finalScore, 0.74);
 });
 
 const evidence = (over = {}) => ({
@@ -452,4 +459,87 @@ test('anchored evidence scores on how much of it is anchored', () => {
     evidence: ['Transaction begins at line 65.', 'Response is returned at line 84.', 'Commit runs at line 91.'],
   });
   assert.equal(scoreCandidate(allAnchored, [], []).evidenceQuality, 1);
+});
+
+// The cap is a prior, not a ceiling (NEW-03)
+
+test('an explicit verifier confidence overturns the analyst self-doubt cap', () => {
+  // The verifier established the claim directly and said in as many words
+  // that the caveat bore on severity rather than confidence. A regex reading
+  // the analyst's prose overruled it.
+  const admitting = candidate({
+    evidence: ['lt() is called at line 40.', 'The catalogue cannot be verified from this repository.'],
+  });
+
+  const unengaged = scoreCandidate(admitting, [precedent()], [], DEFAULT_THRESHOLDS, {
+    candidateId: 'cand_001',
+    evidenceQuality: 'high',
+  });
+  assert.equal(unengaged.confidenceSource, 'unverifiable-cap');
+
+  const engaged = scoreCandidate(admitting, [precedent()], [], DEFAULT_THRESHOLDS, {
+    candidateId: 'cand_001',
+    technicalConfidence: 0.93,
+  });
+  assert.equal(engaged.confidenceSource, 'verifier');
+  assert.equal(engaged.technicalConfidence, 0.93);
+});
+
+test('context the verifier could not reach still caps absolutely', () => {
+  // That is the verifier reporting on its own reach, not a guess about the
+  // analyst's, so an explicit number does not lift it.
+  const result = scoreCandidate(candidate(), [precedent()], [], DEFAULT_THRESHOLDS, {
+    candidateId: 'cand_001',
+    technicalConfidence: 0.95,
+    requiredContextMissing: ['a sibling repository'],
+  });
+  assert.equal(result.confidenceSource, 'unverifiable-cap');
+  assert.equal(result.eligible, false);
+});
+
+// Novelty across files (NEW-04)
+
+test('a second defect in another file is not a restatement of the first', () => {
+  // A double-submit race and an unhandled failure in neighbouring hooks share
+  // a vocabulary because the subsystem has one. The second was being dropped
+  // for sounding like the first.
+  const first = candidate({
+    path: 'src/hooks/useEditForm.ts',
+    line: 20,
+    claim: 'A failed mutation without a status is treated as success.',
+    failureMode: 'The panel closes and the edit is silently lost.',
+  });
+  const second = candidate({
+    candidateId: 'cand_002',
+    path: 'src/hooks/useApply.ts',
+    line: 44,
+    claim: 'Apply re-enables before the refetch completes, so a mutation can be submitted twice.',
+    failureMode: 'A second click issues a duplicate request and two success toasts.',
+  });
+
+  const result = scoreCandidate(second, [], [first]);
+  assert.equal(result.novelty, 1);
+});
+
+test('a near-identical claim in another file is still a restatement', () => {
+  const first = candidate({ path: 'src/a.ts', line: 10 });
+  const second = candidate({ candidateId: 'cand_002', path: 'src/b.ts', line: 10 });
+  const result = scoreCandidate(second, [], [first]);
+  assert.ok(result.novelty < 0.3, `expected a heavy penalty, got ${result.novelty}`);
+});
+
+test('two findings in the same file still deduplicate', () => {
+  const first = candidate({ path: 'src/a.ts', line: 10 });
+  const second = candidate({ candidateId: 'cand_002', path: 'src/a.ts', line: 80 });
+  const result = scoreCandidate(second, [], [first]);
+  assert.ok(result.novelty < 0.3, `expected a heavy penalty, got ${result.novelty}`);
+});
+
+test('a rejection message carries enough precision to be true', () => {
+  // "score 0.78 is below 0.78" on a finalScore of 0.7788996174443317.
+  const weak = candidate({ evidence: ['vague'], technicalConfidence: 0.8 });
+  const result = scoreCandidate(weak, [], []);
+  assert.equal(result.eligible, false);
+  assert.doesNotMatch(result.rejectedBecause, /score 0\.74 is below the 0\.74/);
+  assert.match(result.rejectedBecause, /score 0\.\d{4} is below the 0\.74 threshold/);
 });
