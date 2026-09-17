@@ -775,10 +775,35 @@ test('severity combines category with computed reach', () => {
   }
 });
 
-test('a local question remains a question while a wide question earns its reach', () => {
-  assert.equal(deriveSeverity('correctness', 'question', reachCheck('local')).severity, 'question');
-  assert.equal(deriveSeverity('correctness', 'question', reachCheck('repository')).severity, 'important');
+test('a question stays a question at every reach, because it is not a tier', () => {
+  // 1.1.0 derived a question from (category, reach) on the theory that the
+  // interrogative is carried by the wording. The theory failed twice:
+  // BY_CATEGORY_AND_REACH contains no `question` at any category or reach, so
+  // the tier was unreachable, and 1.3.0's module fallback made reach available
+  // far more often, turning a rare bug into a routine one.
+  //
+  // Measured: a candidate whose own evidence said the LaunchDarkly state was
+  // outside the repository and could not be read came back as `important`. An
+  // honest "I could not check this" was published as a claim.
+  for (const reach of ['local', 'component', 'repository']) {
+    assert.equal(
+      deriveSeverity('correctness', 'question', reachCheck(reach)).severity,
+      'question',
+      `a question at ${reach} reach was re-derived as an assertion`,
+    );
+  }
   assert.equal(deriveSeverity('correctness', 'question').severity, 'question');
+  assert.equal(deriveSeverity('user_visible_behavior', 'question', reachCheck('repository')).severity, 'question');
+});
+
+test('a contract break that reaches the repository is blocking, not important', () => {
+  // Measured: a change adding a required prop and missing one of three call
+  // sites derived `important` while its head had ten CI failures, each a Code
+  // check across a different package.
+  assert.equal(deriveSeverity('api_contract', 'blocking', reachCheck('repository')).severity, 'blocking');
+  assert.equal(deriveSeverity('api_contract', 'blocking', reachCheck('component')).severity, 'important');
+  // With no reach established it must still derive exactly what it did before.
+  assert.equal(deriveSeverity('api_contract', 'blocking').severity, 'important');
 });
 
 test('score carries CLI reach evidence into the derived severity', () => {
@@ -1255,5 +1280,39 @@ test('a symbol the change introduces falls back to the module it lives in', () =
 
   assert.equal(check.moduleFallback, true);
   assert.ok(check.symbols.includes('formatter'));
+  assert.equal(check.reach, 'repository');
+});
+
+test('a finding about a file the change does not touch still measures the change', () => {
+  // The shape of every broken-consumer finding, and the class that produced the
+  // only build breaker this reviewer has caught: a required prop was added to a
+  // component and one of three call sites was never updated. The finding names
+  // the call site, which the pull request does not touch, so there are no hunks
+  // for its path - and it fell back to the claim, carrying the failure mode the
+  // hunk source exists to remove.
+  const diff = [
+    'diff --git a/src/cards/AllocationSummaryCard.tsx b/src/cards/AllocationSummaryCard.tsx',
+    '--- a/src/cards/AllocationSummaryCard.tsx',
+    '+++ b/src/cards/AllocationSummaryCard.tsx',
+    '@@ -20,3 +20,4 @@',
+    '+  allocationValueText: string;',
+  ].join('\n');
+
+  const search = (symbol) =>
+    symbol === 'allocationValueText'
+      ? ['src/cards/AllocationSummaryCard.tsx', 'src/deposits/LogAsDepositLineFields.tsx', 'src/x/Other.tsx']
+      : [];
+
+  const check = computeReach(
+    'A required prop is missing at this call site.',
+    'src/deposits/LogAsDepositLineFields.tsx',
+    '/repo',
+    'base',
+    search,
+    diff,
+  );
+
+  assert.equal(check.symbolSource, 'diff');
+  assert.ok(check.symbols.includes('allocationValueText'));
   assert.equal(check.reach, 'repository');
 });

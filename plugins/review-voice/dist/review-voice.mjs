@@ -8804,7 +8804,18 @@ function discoverConventions(root, changedPaths = []) {
     if (cheap !== 0) return cheap;
     return a.bytes - b.bytes;
   });
-  for (const { entry } of sized) {
+  const fitsWhole = (entry) => {
+    try {
+      return statSync(join4(root, entry.path)).size <= PER_DOCUMENT_BYTES;
+    } catch {
+      return false;
+    }
+  };
+  const ordered2 = [
+    ...sized.filter(({ entry }) => fitsWhole(entry)),
+    ...sized.filter(({ entry }) => !fitsWhole(entry))
+  ];
+  for (const { entry } of ordered2) {
     if (seen.has(entry.path)) continue;
     const absolute = join4(root, entry.path);
     if (!existsSync2(absolute)) continue;
@@ -8997,13 +9008,13 @@ function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository =
 
 // plugins/review-voice/src/scoring/reach.ts
 function symbolsFromHunks(diff, changedPath) {
-  const wanted = normalisePath(changedPath);
+  const wanted = changedPath === null ? null : normalisePath(changedPath);
   const found = /* @__PURE__ */ new Set();
   let inFile = false;
   for (const raw of diff.split(/\r?\n/)) {
     if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
       const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
-      if (match?.[1] !== void 0) inFile = normalisePath(match[1]) === wanted;
+      if (match?.[1] !== void 0) inFile = wanted === null || normalisePath(match[1]) === wanted;
       else if (raw.startsWith("diff --git ")) inFile = false;
       continue;
     }
@@ -9058,9 +9069,10 @@ function isRepositoryWideToolchainPath(path) {
 }
 function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
   const searchedRef = ref ?? "working tree";
-  const fromHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
-  const source = fromHunks.length > 0 ? "hunks" : "claim";
-  const symbols = (source === "hunks" ? fromHunks : namedSymbols(text)).slice(0, 12);
+  const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
+  const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
+  const source = ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
+  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text)).slice(0, 12);
   const searched = [];
   const ignored = [];
   const hits = /* @__PURE__ */ new Set();
@@ -9096,7 +9108,7 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
       return result(null, true);
     }
     const code = found.filter(isCode);
-    if (!code.some((path) => normalisePath(path) === normalisedChangedPath)) {
+    if (source !== "diff" && !code.some((path) => normalisePath(path) === normalisedChangedPath)) {
       ignored.push(symbol);
       continue;
     }
@@ -9108,7 +9120,7 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
   }
   if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
   let counted = [...hits].filter(isCode);
-  if (counted.length === 0 && source === "hunks") {
+  if (counted.length === 0 && source !== "claim") {
     const moduleName = normalisePath(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
     if (moduleName !== void 0 && moduleName.length >= 4) {
       searched.push(moduleName);
@@ -9596,7 +9608,11 @@ var BY_CATEGORY_AND_REACH = {
   concurrency: atEveryReach("important"),
   persistence: atEveryReach("important"),
   migration: atEveryReach("important"),
-  api_contract: atEveryReach("important"),
+  // A contract break that reaches the repository stops the build for every
+  // consumer. Measured: a change adding a required prop and missing one of
+  // three call sites derived `important` while its head had ten CI failures,
+  // each a Code check across a different package.
+  api_contract: { local: "important", component: "important", repository: "blocking" },
   release: atEveryReach("important"),
   correctness: { local: "minor", component: "important", repository: "important" },
   error_handling: { local: "minor", component: "important", repository: "important" },
@@ -9640,6 +9656,14 @@ var ALIASES = {
   logic: "correctness"
 };
 function deriveSeverity(category, requested, reach = null) {
+  if (requested === "question") {
+    return {
+      severity: "question",
+      requested,
+      reach: reach ?? null,
+      reason: "a question is a kind of finding, not a tier, whatever its reach"
+    };
+  }
   const resolvedReach = reach?.reach;
   const hasReach = resolvedReach === "local" || resolvedReach === "component" || resolvedReach === "repository";
   if (category === null || category === void 0 || category === "") {

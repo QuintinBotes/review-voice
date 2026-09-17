@@ -526,3 +526,32 @@ test('a document with no sections still falls back to head truncation', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a small complete rule is never displaced by another slice of a large one', () => {
+  // Measured on a live run: three partial rules took 41,762 of the 60,000-byte
+  // budget and a complete 2,668-byte unit-test rule was skipped, on a change
+  // whose largest additions were the test files it governs.
+  const huge = (name) => `# ${name}\n` + `${name} guidance line.\n`.repeat(900);
+  const root = repository({
+    'CLAUDE.md': huge('root'),
+    '.agents/rules/a-large.md': huge('alpha'),
+    '.agents/rules/b-large.md': huge('beta'),
+    '.agents/rules/c-large.md': huge('gamma'),
+    '.agents/rules/d-large.md': huge('delta'),
+    // Small, complete, and sorts last alphabetically on purpose.
+    '.agents/rules/z-unit-test.md': '---\npaths: ["**/*.test.ts"]\n---\nEvery test names its subject.\n',
+  });
+  try {
+    const report = discoverConventions(root, ['src/thing.test.ts']);
+    const paths = report.documents.map((d) => d.path);
+
+    assert.ok(
+      paths.includes('.agents/rules/z-unit-test.md'),
+      `the complete rule governing the change was dropped. Kept: ${paths.join(', ')}`,
+    );
+    const unit = report.documents.find((d) => d.path === '.agents/rules/z-unit-test.md');
+    assert.equal(unit.truncated, false, 'and it arrives whole');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

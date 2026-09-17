@@ -600,7 +600,32 @@ export function discoverConventions(root: string, changedPaths: readonly string[
     return a.bytes - b.bytes;
   });
 
-  for (const { entry } of sized) {
+  // Two passes: documents that fit whole, then documents that must be cut.
+  //
+  // Section selection keeps far more of a large rule than byte truncation did,
+  // so large documents began crowding out small complete ones. Measured on one
+  // pull request: three partial rules took 41,762 of the 60,000-byte budget and
+  // `.agents/rules/unit-test.md` - 2,668 bytes and complete - was skipped as
+  // "would take the convention budget past 60000 bytes", on a change whose
+  // largest additions were the test files it governs.
+  //
+  // A complete small rule is worth more than another slice of a large guide, so
+  // it is never displaced by one. Relevance ordering is preserved inside each
+  // pass, so this changes which documents survive a full budget and nothing
+  // else.
+  const fitsWhole = (entry: Entry): boolean => {
+    try {
+      return statSync(join(root, entry.path)).size <= PER_DOCUMENT_BYTES;
+    } catch {
+      return false;
+    }
+  };
+  const ordered2 = [
+    ...sized.filter(({ entry }) => fitsWhole(entry)),
+    ...sized.filter(({ entry }) => !fitsWhole(entry)),
+  ];
+
+  for (const { entry } of ordered2) {
     if (seen.has(entry.path)) continue;
     const absolute = join(root, entry.path);
     if (!existsSync(absolute)) continue;
