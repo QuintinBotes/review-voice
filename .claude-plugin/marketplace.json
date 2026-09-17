@@ -11,7 +11,7 @@
       "name": "review-voice",
       "description": "A concise, precedent-aware code reviewer that calibrates to your review judgment. At most five findings, 40 words each, evidence required, silence when nothing qualifies.",
       "source": "./plugins/review-voice",
-      "version": "0.7.1",
+      "version": "0.7.2",
       "category": "development",
       "tags": [
         "code-review",
