@@ -206,10 +206,29 @@ page between identical reviews. Asking for one produced `minor` at confidence
 0.90 and `important` at 0.85 for the same finding on a byte-identical diff: the
 evidence barely moved and the tier jumped.
 
-`score` derives it from the category alone. Blast radius is a property of the
-kind of defect rather than of how the reviewer felt about it on the day, and the
-requested severity is recorded beside the derived one so a divergence can be
-audited.
+`score` derives it from the category **and computed reach**. The category says
+what kind of consequence a claim carries; reach says how far the affected code
+spreads. The requested severity is recorded beside the derived one so a
+divergence can be audited.
+
+One tier per category was the first version, and it was wrong whenever a
+category's members vary in reach: `ci` covers both a change that breaks every
+lint job and a stale comment in a CI config, so on a live run a build-breaker
+rendered indistinguishably from a stale comment.
+
+Reach is computed by the CLI from literal symbol hits at the reviewed ref, never
+supplied by an agent - the same rule the eligibility score follows, since a
+number a model supplies cannot be checked. It is measured relative to the
+changed file and counts only code: hits confined to the file are `local`, hits
+inside its own directory subtree are `component`, and hits in two or more
+directories beyond it are `repository`. Counting distinct top-level directories
+was tried first and measured wrong in both directions - inert under a monorepo
+root, and inflated by a symbol named in a changelog. See
+[adr/0009](adr/0009-severity-from-computed-reach.md).
+
+When no symbol is searchable, no code hit is found, or the search fails, reach
+is absent and the category's own tier is used unchanged. A failed search is
+absent, never `local`: a search that could not run is not an answer.
 
 Confidence deliberately plays no part. A first version weakened one tier below
 0.85, and that turned out to be the whole remaining instability: on two runs of
