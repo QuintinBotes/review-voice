@@ -8698,6 +8698,16 @@ var gitGrep = (symbol, cwd, ref) => {
     throw error;
   }
 };
+var gitGrepPaths = (symbol, cwd, ref) => {
+  const args = ref === null ? ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol] : ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol, ref];
+  try {
+    const output = execFileSync4("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 1e4 });
+    return output.split("\0").filter((path) => path.length > 0);
+  } catch (error) {
+    if (error.status === 1) return [];
+    throw error;
+  }
+};
 function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository = null) {
   const searchedRefLabel = ref ?? "working tree";
   if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text))) return null;
@@ -8728,6 +8738,90 @@ function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository =
     }
   }
   return { found, checked, inconclusive: false, searchedRef };
+}
+
+// plugins/review-voice/src/scoring/reach.ts
+var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
+  /(?:^|\/)(?:eslint\.config\.[^/]+|\.eslintrc(?:\.[^/]+)?|biome\.json|\.stylelintrc(?:\.[^/]+)?|\.prettierrc(?:\.[^/]+)?)$/i,
+  /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/i,
+  /^(?:\.github\/workflows\/|\.gitlab-ci(?:\.yml)?$|\.circleci\/config\.yml$|azure-pipelines(?:\.[^/]+)?\.ya?ml$|Jenkinsfile$)/i,
+  /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|Pipfile\.lock|composer\.lock|go\.sum)$/i,
+  /^(?:package\.json|Makefile|GNUmakefile|justfile|Taskfile\.ya?ml|turbo\.json|nx\.json)$/i,
+  /^(?:scripts|tools|build|bin)\//i
+];
+function normalisePath(path) {
+  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+}
+function directoryOf(path) {
+  const parts = normalisePath(path).split("/");
+  parts.pop();
+  return parts.join("/");
+}
+function directoryCount(paths) {
+  return new Set([...paths].map(directoryOf)).size;
+}
+var PROSE_EXTENSIONS = /* @__PURE__ */ new Set(["md", "markdown", "mdx", "txt", "rst", "adoc"]);
+function isCode(path) {
+  const name = normalisePath(path).split("/").pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  const extension = dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
+  if (PROSE_EXTENSIONS.has(extension)) return false;
+  return classify(normalisePath(path)) === "source";
+}
+function withinSubtree(path, changedDirectory) {
+  if (changedDirectory === "") return false;
+  const normalised = normalisePath(path);
+  return normalised === changedDirectory || normalised.startsWith(`${changedDirectory}/`);
+}
+function isRepositoryWideToolchainPath(path) {
+  const normalised = normalisePath(path);
+  return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
+}
+function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths) {
+  const searchedRef = ref ?? "working tree";
+  const symbols = namedSymbols(text).slice(0, 12);
+  const searched = [];
+  const hits = /* @__PURE__ */ new Set();
+  const normalisedChangedPath = normalisePath(changedPath);
+  const changedDirectory = directoryOf(changedPath);
+  const result = (reach, inconclusive) => {
+    const counted2 = [...hits].filter(isCode).sort();
+    const outside = counted2.filter(
+      (path) => normalisePath(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
+    );
+    return {
+      reach,
+      symbols: searched,
+      paths: [...hits].sort(),
+      countedPaths: counted2,
+      directoryCount: directoryCount(counted2),
+      outsideDirectoryCount: directoryCount(outside),
+      inconclusive,
+      searchedRef
+    };
+  };
+  if (symbols.length === 0) return result(null, false);
+  for (const symbol of symbols) {
+    searched.push(symbol);
+    try {
+      for (const path of search(symbol, cwd, ref)) hits.add(path);
+    } catch {
+      return result(null, true);
+    }
+  }
+  if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
+  const counted = [...hits].filter(isCode);
+  if (counted.length === 0) return result(null, false);
+  if (counted.every((path) => normalisePath(path) === normalisedChangedPath)) {
+    return result("local", false);
+  }
+  const outsideDirectories = directoryCount(
+    counted.filter(
+      (path) => normalisePath(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
+    )
+  );
+  if (outsideDirectories >= 2) return result("repository", false);
+  return result("component", false);
 }
 
 // plugins/review-voice/src/sync/state.ts
@@ -9148,7 +9242,7 @@ function retrievePrecedents(db, query) {
 }
 
 // plugins/review-voice/src/scoring/severity.ts
-var BY_CATEGORY = {
+var LEGACY_BY_CATEGORY = {
   // Reserved for categories that are severe by their nature rather than by
   // circumstance. The confidence gate already keeps anything under 0.8 out.
   security: "blocking",
@@ -9178,6 +9272,35 @@ var BY_CATEGORY = {
   maintainability: "nit",
   style: "nit"
 };
+var atEveryReach = (severity) => ({
+  local: severity,
+  component: severity,
+  repository: severity
+});
+var BY_CATEGORY_AND_REACH = {
+  security: atEveryReach("blocking"),
+  trust_boundary: atEveryReach("blocking"),
+  authorization: atEveryReach("blocking"),
+  authentication: atEveryReach("blocking"),
+  data_integrity: atEveryReach("blocking"),
+  concurrency: atEveryReach("important"),
+  persistence: atEveryReach("important"),
+  migration: atEveryReach("important"),
+  api_contract: atEveryReach("important"),
+  release: atEveryReach("important"),
+  correctness: { local: "minor", component: "important", repository: "important" },
+  error_handling: { local: "minor", component: "important", repository: "important" },
+  reliability: { local: "minor", component: "important", repository: "important" },
+  user_visible_behavior: { local: "minor", component: "important", repository: "important" },
+  ci: { local: "nit", component: "important", repository: "blocking" },
+  packaging: { local: "minor", component: "important", repository: "blocking" },
+  dependency: { local: "minor", component: "important", repository: "blocking" },
+  performance: { local: "minor", component: "minor", repository: "important" },
+  observability: atEveryReach("nit"),
+  test_coverage: atEveryReach("nit"),
+  maintainability: atEveryReach("nit"),
+  style: atEveryReach("nit")
+};
 var ALIASES = {
   testing: "test_coverage",
   tests: "test_coverage",
@@ -9206,32 +9329,76 @@ var ALIASES = {
   bug: "correctness",
   logic: "correctness"
 };
-function deriveSeverity(category, requested) {
-  if (requested === "question") {
-    return { severity: "question", requested, reason: "a question is a kind of finding, not a tier" };
-  }
+function deriveSeverity(category, requested, reach = null) {
+  const resolvedReach = reach?.reach;
+  const hasReach = resolvedReach === "local" || resolvedReach === "component" || resolvedReach === "repository";
   if (category === null || category === void 0 || category === "") {
+    if (!hasReach && requested === "question") {
+      return {
+        severity: "question",
+        requested,
+        reach: reach ?? null,
+        reason: "a question is a kind of finding, not a tier"
+      };
+    }
     return {
       severity: "minor",
       requested,
+      reach: reach ?? null,
       reason: "no category was supplied, so the middle tier is used rather than a guess"
     };
   }
   const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
   const alias = ALIASES[normalised];
-  const resolved = BY_CATEGORY[normalised] !== void 0 ? normalised : alias ?? normalised;
-  const base = BY_CATEGORY[resolved];
-  if (base === void 0) {
+  const resolved = LEGACY_BY_CATEGORY[normalised] !== void 0 ? normalised : alias ?? normalised;
+  const legacy = LEGACY_BY_CATEGORY[resolved];
+  if (legacy === void 0) {
     return {
       severity: "minor",
       requested,
+      reach: reach ?? null,
       reason: `category ${category} has no mapping, so the middle tier is used rather than a guess`
     };
   }
+  if (!hasReach) {
+    if (requested === "question") {
+      return {
+        severity: "question",
+        requested,
+        reach: reach ?? null,
+        reason: "a question is a kind of finding, not a tier"
+      };
+    }
+    return {
+      severity: legacy,
+      requested,
+      reach: reach ?? null,
+      reason: resolved === normalised ? `${resolved} carries ${legacy}` : `${category} read as ${resolved}, which carries ${legacy}`
+    };
+  }
+  const tiers = BY_CATEGORY_AND_REACH[resolved];
+  const severity = tiers?.[resolvedReach];
+  if (severity === void 0) {
+    return {
+      severity: legacy,
+      requested,
+      reach: reach ?? null,
+      reason: `${resolved} has no reach mapping, so its legacy ${legacy} tier is used`
+    };
+  }
+  if (requested === "question" && resolvedReach === "local") {
+    return {
+      severity: "question",
+      requested,
+      reach: reach ?? null,
+      reason: "a question at local reach remains question"
+    };
+  }
   return {
-    severity: base,
+    severity,
     requested,
-    reason: resolved === normalised ? `${resolved} carries ${base}` : `${category} read as ${resolved}, which carries ${base}`
+    reach: reach ?? null,
+    reason: resolved === normalised ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`
   };
 }
 
@@ -9391,7 +9558,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
-    severity: deriveSeverity(candidate.category, candidate.severity),
+    severity: deriveSeverity(candidate.category, candidate.severity, verification?.reach),
     analystConfidence,
     verifiedConfidence,
     confidenceSource,
@@ -10423,6 +10590,16 @@ function scoreCommand(argv) {
       `--base ${baseRef} does not resolve in this repository. Fetch it, or omit the flag to search the working tree. Absence claims would otherwise be checked against nothing.`
     );
     return 2;
+  }
+  if (searchRoot !== null) {
+    for (const candidate of candidates) {
+      const verification = verifications.get(candidate.candidateId);
+      verifications.set(candidate.candidateId, {
+        ...verification ?? { candidateId: candidate.candidateId },
+        candidateId: candidate.candidateId,
+        reach: computeReach(candidate.claim, candidate.path, searchRoot, baseRef)
+      });
+    }
   }
   const pullFlag = argv.includes("--exclude-pull") ? numericFlag(argv, "--exclude-pull", 0) : null;
   if (argv.includes("--exclude-pull") && pullFlag === null) {

@@ -114,10 +114,39 @@ has already kept, so making one candidate eligible costs its neighbours novelty.
 A comparison over different batches would measure the batch rather than the
 scorer.
 
-The severity row is the one worth reading twice. Deriving the tier from the
-category rather than from the analyst's requested severity holds the tier
-steady on the same diff even when the analyst's own judgement of severity
-moves, which is what that change was for.
+The severity row is the one worth reading twice. Its historical category-based
+derivation held the tier steady on the same diff even when the analyst's own
+judgement of severity moved. The current derivation keeps that stable category
+and adds deterministic CLI-computed reach rather than restoring an
+agent-supplied severity judgement.
+
+### Reach calibration
+
+Reach is now computed by the CLI from literal symbol hits at the reviewed ref,
+not reported by an agent. Spread is measured **relative to the changed file**:
+hits confined to it are `local`, hits within its own directory subtree are
+`component`, and hits in two or more directories outside that subtree are
+`repository`. Repository-wide toolchain files are treated as wide regardless.
+
+Two properties of that measure were established by measurement on this
+repository rather than chosen:
+
+| Symbol | Under top-level-directory counting | Relative to the changed file |
+|---|---|---|
+| `deriveSeverity` (6 hits, 2 of them prose) | `repository` - a changelog entry supplied the third directory | `component` |
+| `GitHubClient` (8 hits, referenced from 7 code files) | `component` - everything shares one top-level directory | `repository` |
+
+Counting distinct top-level directories was wrong in both directions at once.
+It is inert in the monorepo layouts this reviewer is pointed at, where every
+source file sits under one `packages/` or `plugins/` root, and it is inflated
+by prose, where a symbol named in a changelog counts as spread. Only code is
+counted now, and depth in the tree is never used.
+
+The remaining boundary - that one neighbouring directory is a component
+relationship and two or more is the repository - is **calibrated by guess**. No
+run has measured it, so it is recorded here as a starting point rather than
+presented as evidence. An unsearchable or failed search deliberately retains
+the legacy category tier instead of guessing that a finding is local.
 
 ### The headline gate has no data
 

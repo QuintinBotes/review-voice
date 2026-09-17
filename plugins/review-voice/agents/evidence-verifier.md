@@ -73,6 +73,15 @@ in the pipeline can check is how a review comment gets retracted.
 Never report high confidence on a claim whose own evidence says it could not be
 verified. Resolve the gap or record it.
 
+For a `question`, `technical_confidence` means confidence that the unresolved
+gap is real and material - that the diff and repository do not settle an
+answer whose answer would change something. It is not confidence in an answer
+you do not have.
+
+Do not report a reach or radius. The CLI computes reach from the candidate's
+claim, changed path, and reviewed ref, and records the symbols and paths it
+searched. An agent-supplied value would make that derivation unfalsifiable.
+
 ## Output
 
 JSON only: `candidate_id`, `verified`, `evidence_quality`,

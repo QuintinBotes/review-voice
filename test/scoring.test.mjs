@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,6 +9,8 @@ import {
   normaliseCandidate,
   MalformedCandidate,
 } from '../plugins/review-voice/src/scoring/score.ts';
+import { computeReach } from '../plugins/review-voice/src/scoring/reach.ts';
+import { deriveSeverity } from '../plugins/review-voice/src/scoring/severity.ts';
 import { canActivate, compileProposals } from '../plugins/review-voice/src/policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from '../plugins/review-voice/src/policy/versions.ts';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
@@ -25,6 +27,16 @@ const candidate = (over = {}) => ({
   failureMode: 'A request retry can create multiple valid tokens.',
   evidence: ['Transaction begins at line 65.', 'Response is returned at line 84.', 'Commit happens after the return path.'],
   technicalConfidence: 0.91,
+  ...over,
+});
+
+const reachCheck = (reach, over = {}) => ({
+  reach,
+  symbols: ['SharedThing'],
+  paths: ['src/auth.ts'],
+  directoryCount: 1,
+  inconclusive: false,
+  searchedRef: 'base',
   ...over,
 });
 
@@ -551,7 +563,7 @@ test('a rejection message carries enough precision to be true', () => {
   assert.match(result.rejectedBecause, /score 0\.\d{4} is below the 0\.68 threshold/);
 });
 
-// Severity is derived, not requested (RV-08)
+// Severity is derived from category and CLI-computed reach, not requested
 
 test('the same category always produces the same tier, whatever was asked for', () => {
   // On two runs of a byte-identical diff the same finding was minor at 0.90
@@ -561,6 +573,235 @@ test('the same category always produces the same tier, whatever was asked for', 
   const b = scoreCandidate(candidate({ category: 'correctness', severity: 'important' }), [], []);
   assert.equal(a.severity.severity, b.severity.severity);
   assert.equal(a.severity.severity, 'minor');
+});
+
+test('reach reports its symbols, hit paths, directory count, and searched ref', () => {
+  const seen = [];
+  const check = computeReach(
+    'The `SharedThing` implementation is used by every consumer.',
+    'src/auth.ts',
+    '/repo',
+    'base-ref',
+    (symbol, cwd, ref) => {
+      seen.push([symbol, cwd, ref]);
+      return ['src/auth.ts', 'packages/client.ts', 'tools/check.ts'];
+    },
+  );
+
+  assert.equal(check.reach, 'repository');
+  assert.deepEqual(check.symbols, ['SharedThing']);
+  assert.deepEqual(check.paths, ['packages/client.ts', 'src/auth.ts', 'tools/check.ts']);
+  assert.equal(check.directoryCount, 3);
+  assert.equal(check.searchedRef, 'base-ref');
+  assert.deepEqual(seen, [['SharedThing', '/repo', 'base-ref']]);
+});
+
+test('reach distinguishes local, component, and repository-wide toolchain changes', () => {
+  const local = computeReach('`SharedThing` is wrong.', 'src/auth.ts', '/repo', 'base', () => ['src/auth.ts']);
+  const component = computeReach(
+    '`SharedThing` is wrong.',
+    'src/auth.ts',
+    '/repo',
+    'base',
+    () => ['src/auth.ts', 'src/consumer.ts'],
+  );
+  const toolchain = computeReach('`SharedThing` is wrong.', 'eslint.config.js', '/repo', 'base', () => []);
+
+  assert.equal(local.reach, 'local');
+  assert.equal(component.reach, 'component');
+  assert.equal(toolchain.reach, 'repository');
+});
+
+test('prose that names a symbol is not evidence that it spreads', () => {
+  // Measured on this repository: `deriveSeverity` hit docs, plugins and test,
+  // and a changelog entry alone pushed it to repository-wide. Reach is a claim
+  // about code coupling, so prose is not counted.
+  const check = computeReach(
+    '`SharedThing` is wrong.',
+    'src/auth.ts',
+    '/repo',
+    'base',
+    () => ['src/auth.ts', 'docs/architecture.md', 'CHANGELOG.md'],
+  );
+
+  assert.equal(check.reach, 'local');
+  assert.deepEqual(check.countedPaths, ['src/auth.ts']);
+  assert.equal(check.outsideDirectoryCount, 0);
+});
+
+test('a symbol named only in prose has absent reach, never local', () => {
+  const check = computeReach('`SharedThing` is wrong.', 'src/auth.ts', '/repo', 'base', () => [
+    'docs/architecture.md',
+  ]);
+
+  assert.equal(check.reach, null);
+  assert.deepEqual(check.countedPaths, []);
+});
+
+test('reach is measured relative to the changed file, not by tree depth', () => {
+  // The monorepo case this reviewer is actually pointed at. Counting distinct
+  // top-level directories is inert here: every source file shares `packages`,
+  // so genuinely shared code read as narrow.
+  const shared = computeReach('`SharedThing` is wrong.', 'packages/core/src/thing.ts', '/repo', 'base', () => [
+    'packages/core/src/thing.ts',
+    'packages/web/src/page.ts',
+    'packages/api/src/route.ts',
+  ]);
+  const withinOwnSubtree = computeReach(
+    '`SharedThing` is wrong.',
+    'packages/core/src/thing.ts',
+    '/repo',
+    'base',
+    () => ['packages/core/src/thing.ts', 'packages/core/src/nested/helper.ts'],
+  );
+
+  assert.equal(shared.reach, 'repository');
+  assert.equal(shared.outsideDirectoryCount, 2);
+  assert.equal(withinOwnSubtree.reach, 'component');
+  assert.equal(withinOwnSubtree.outsideDirectoryCount, 0);
+});
+
+test('one neighbouring directory is a component relationship, not the repository', () => {
+  const check = computeReach('`SharedThing` is wrong.', 'packages/core/src/thing.ts', '/repo', 'base', () => [
+    'packages/core/src/thing.ts',
+    'packages/web/src/page.ts',
+  ]);
+
+  assert.equal(check.reach, 'component');
+  assert.equal(check.outsideDirectoryCount, 1);
+});
+
+test('reach is absent when a claim names no searchable symbol', () => {
+  const check = computeReach('The handler returns before commit.', 'src/auth.ts', '/repo', 'base', () => {
+    throw new Error('a vague claim must not be searched');
+  });
+
+  assert.equal(check.reach, null);
+  assert.deepEqual(check.symbols, []);
+  assert.deepEqual(check.paths, []);
+  assert.equal(check.directoryCount, 0);
+  assert.equal(check.inconclusive, false);
+});
+
+test('a failed reach search is absent, never silently local', () => {
+  const check = computeReach(
+    '`LocalThing` and `TimedOutThing` are inconsistent.',
+    'src/auth.ts',
+    '/repo',
+    'base',
+    (symbol) => {
+      if (symbol === 'LocalThing') return ['src/auth.ts'];
+      throw new Error('git grep timed out');
+    },
+  );
+
+  assert.equal(check.reach, null);
+  assert.equal(check.inconclusive, true);
+  assert.deepEqual(check.paths, ['src/auth.ts']);
+  assert.equal(check.directoryCount, 1);
+});
+
+test('a bad git ref yields absent reach rather than local reach', () => {
+  const check = computeReach(
+    '`ReachFailureProbe` is inconsistent.',
+    'plugins/review-voice/src/scoring/reach.ts',
+    process.cwd(),
+    'refs/does-not-exist-for-reach-test',
+  );
+
+  assert.equal(check.reach, null);
+  assert.equal(check.inconclusive, true);
+});
+
+test('reach is calculated against the supplied ref, which can change its result', () => {
+  const seen = [];
+  const search = (symbol, cwd, ref) => {
+    seen.push(ref);
+    return ref === 'base' ? ['src/auth.ts'] : ['src/auth.ts', 'packages/client.ts', 'tools/check.ts'];
+  };
+
+  const base = computeReach('`SharedThing` is wrong.', 'src/auth.ts', '/repo', 'base', search);
+  const head = computeReach('`SharedThing` is wrong.', 'src/auth.ts', '/repo', 'head', search);
+
+  assert.equal(base.reach, 'local');
+  assert.equal(head.reach, 'repository');
+  assert.deepEqual(seen, ['base', 'head']);
+});
+
+test('absent reach reproduces the legacy tier for every schema category', () => {
+  const categories = JSON.parse(
+    readFileSync(new URL('../plugins/review-voice/schemas/finding-category.schema.json', import.meta.url), 'utf8'),
+  ).enum;
+  const legacy = {
+    security: 'blocking',
+    trust_boundary: 'blocking',
+    authorization: 'blocking',
+    authentication: 'blocking',
+    data_integrity: 'blocking',
+    concurrency: 'important',
+    persistence: 'important',
+    migration: 'important',
+    api_contract: 'important',
+    release: 'important',
+    correctness: 'minor',
+    error_handling: 'minor',
+    reliability: 'minor',
+    user_visible_behavior: 'minor',
+    ci: 'minor',
+    packaging: 'minor',
+    dependency: 'minor',
+    performance: 'minor',
+    observability: 'nit',
+    test_coverage: 'nit',
+    maintainability: 'nit',
+    style: 'nit',
+  };
+
+  for (const category of categories) {
+    assert.equal(deriveSeverity(category, 'minor').severity, legacy[category], category);
+  }
+});
+
+test('severity combines category with computed reach', () => {
+  assert.equal(deriveSeverity('ci', 'minor', reachCheck('repository')).severity, 'blocking');
+  assert.equal(deriveSeverity('ci', 'minor', reachCheck('local')).severity, 'nit');
+  assert.equal(deriveSeverity('correctness', 'minor', reachCheck('repository')).severity, 'important');
+
+  for (const value of ['local', 'component', 'repository']) {
+    assert.equal(deriveSeverity('security', 'minor', reachCheck(value)).severity, 'blocking');
+    assert.equal(deriveSeverity('style', 'minor', reachCheck(value)).severity, 'nit');
+  }
+});
+
+test('a local question remains a question while a wide question earns its reach', () => {
+  assert.equal(deriveSeverity('correctness', 'question', reachCheck('local')).severity, 'question');
+  assert.equal(deriveSeverity('correctness', 'question', reachCheck('repository')).severity, 'important');
+  assert.equal(deriveSeverity('correctness', 'question').severity, 'question');
+});
+
+test('score carries CLI reach evidence into the derived severity', () => {
+  const computed = reachCheck('repository', {
+    symbols: ['BuildScript'],
+    paths: ['.github/workflows/ci.yml', 'scripts/build.ts', 'src/check.ts'],
+    directoryCount: 3,
+  });
+  const result = scoreCandidate(candidate({ category: 'ci' }), [], [], DEFAULT_THRESHOLDS, {
+    candidateId: 'cand_001',
+    reach: computed,
+  });
+
+  assert.equal(result.severity.severity, 'blocking');
+  assert.deepEqual(result.severity.reach, computed);
+});
+
+test('reach and severity derivation never read technical confidence', () => {
+  for (const path of [
+    '../plugins/review-voice/src/scoring/reach.ts',
+    '../plugins/review-voice/src/scoring/severity.ts',
+  ]) {
+    const source = readFileSync(new URL(path, import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /technicalConfidence|technical_confidence/);
+  }
 });
 
 test('what the analyst asked for is recorded, not obeyed', () => {
@@ -636,7 +877,7 @@ test('an ordinary missing path is still an ordinary missing path', () => {
   );
 });
 
-// Category resolution, since severity now depends entirely on it
+// Category resolution remains the consequence half of severity derivation
 
 test('plausible synonyms outside the enum resolve to the category they mean', () => {
   // Half the findings on one pull request used `testing` and `documentation`.
