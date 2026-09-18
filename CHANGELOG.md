@@ -5,6 +5,27 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `atEveryReach` is reserved for the four categories that name a boundary:
+  `security`, `trust_boundary`, `authorization` and `authentication`. Crossing
+  a boundary is severe wherever it happens, which is why an analyst cannot talk
+  those down. Every other category names a consequence, and a consequence has
+  an extent.
+- `release` reaches `blocking` at repository reach. A scaffold naming an Azure
+  Storage container that does not exist derived `important` while Build and E2E
+  were already failing at that head - the third category to need this fix on
+  the same argument, after `api_contract` and `data_integrity`.
+- `concurrency`, `persistence` and `migration` vary by reach too. They are the
+  same shape as the three that were moved and have simply not produced a
+  counterexample yet; moving them one at a time was the mistake. The tier bound
+  makes this safe, since derivation moves a varying category by one step from
+  what the analyst asked and no further. The `nit` categories stay fixed,
+  because no run has argued otherwise and making them vary would make reviews
+  louder on no evidence.
+
 ## [1.3.5] - 2026-09-18
 
 ### Fixed

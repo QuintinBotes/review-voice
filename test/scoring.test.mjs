@@ -1490,3 +1490,49 @@ test('a question is still not gated on the confidence it could not have', () => 
   assert.equal(low.eligible, true, low.rejectedBecause ?? '');
   assert.ok(low.finalScore < DEFAULT_THRESHOLDS.finalScore, 'and its score is below the gate it skips');
 });
+
+test('a deployment that cannot succeed is blocking at repository reach', () => {
+  // Measured: a scaffold naming an Azure container that does not exist derived
+  // `important` while Build and E2E were already failing at that head.
+  assert.equal(deriveSeverity('release', 'blocking', reachCheck('repository')).severity, 'blocking');
+  assert.equal(deriveSeverity('release', 'important', reachCheck('local')).severity, 'important');
+});
+
+test('atEveryReach is reserved for the four categories that name a boundary', () => {
+  // Three categories were moved out one at a time on the same argument, each
+  // with its own CI-confirmed counterexample. Moving them one at a time was the
+  // mistake: a consequence has an extent, and only a boundary does not.
+  const boundary = ['security', 'trust_boundary', 'authorization', 'authentication'];
+  for (const category of boundary) {
+    const tiers = ['local', 'component', 'repository'].map(
+      (reach) => deriveSeverity(category, 'blocking', reachCheck(reach)).severity,
+    );
+    assert.deepEqual(tiers, ['blocking', 'blocking', 'blocking'], `${category} should not vary`);
+    // And an analyst who underrated one cannot talk it down.
+    assert.equal(deriveSeverity(category, 'nit', reachCheck('local')).severity, 'blocking');
+  }
+
+  // The consequence categories vary, and the bound keeps that safe.
+  for (const category of ['concurrency', 'persistence', 'migration', 'release', 'api_contract']) {
+    assert.equal(
+      deriveSeverity(category, 'blocking', reachCheck('repository')).severity,
+      'blocking',
+      `${category} should reach blocking at repository reach`,
+    );
+    assert.equal(
+      deriveSeverity(category, 'minor', reachCheck('repository')).severity,
+      'important',
+      `${category} should be bounded to one tier above the analyst's request`,
+    );
+  }
+});
+
+test('the nit categories stay fixed, because no run has argued otherwise', () => {
+  // Unlike the categories that moved, making these vary would make reviews
+  // louder on no evidence.
+  for (const category of ['observability', 'test_coverage', 'maintainability', 'style']) {
+    for (const reach of ['local', 'component', 'repository']) {
+      assert.equal(deriveSeverity(category, 'nit', reachCheck(reach)).severity, 'nit', category);
+    }
+  }
+});
