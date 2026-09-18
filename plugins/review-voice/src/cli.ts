@@ -14,6 +14,7 @@ import { suppressSqliteExperimentalWarning } from './warnings.ts';
 import { pluginVersion } from './version.ts';
 import { runDoctor } from './doctor.ts';
 import { validateOutput } from './contract/validate.ts';
+import { splitFindings, parseFinding } from './contract/parse.ts';
 import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
 import { acquireDiff, GitError } from './diff/acquire.ts';
 import { acquirePullRequestDiff } from './diff/pull-request.ts';
@@ -96,6 +97,12 @@ Commands:
   doctor            Check that this machine can run Review Voice
   --version         Print the plugin version
   --help            Show this message
+
+anchors:
+  Reads a validated review on stdin and prints one inline anchor per finding.
+  Anchors come from the review text, never from candidate records: the
+  candidate path is the analyst's and the rendered path is what the verifier
+  read, and the two can disagree.
 
 thread flags:
   --pr <number>          Pull request whose existing comments to read
@@ -1083,6 +1090,50 @@ function retrieveCommand(argv: string[]): number {
   }
 }
 
+/**
+ * Inline anchors, taken from the validated review rather than the candidates.
+ *
+ * The candidate's `path` is free text from the analyst and the rendered finding
+ * carries what the verifier actually read, so the two can legitimately
+ * disagree - on one pull request the analyst cited
+ * `InvoicePaymentRequest/InvoicePaymentRequestDetail.tsx` and the finding that
+ * shipped, correctly, cited `bankTransfer/BankTransferCard.tsx`. Building
+ * inline anchors from candidate records would have posted two comments against
+ * the wrong file.
+ *
+ * The validated output is the only artefact that passed the contract, so it is
+ * the only correct source for an anchor.
+ */
+function anchorsCommand(): number {
+  const output = readStdin();
+  const anchors = splitFindings(output)
+    .map((block) => parseFinding(block.raw, block.startLine))
+    .filter((finding) => finding.severity !== null && finding.path !== null && finding.line !== null)
+    .map((finding, index) => ({
+      findingId: `rv_${String(index + 1).padStart(2, '0')}`,
+      severity: finding.severity,
+      path: finding.path,
+      line: finding.line,
+      body: finding.raw,
+    }));
+
+  const skipped = splitFindings(output).length - anchors.length;
+  console.log(
+    JSON.stringify(
+      {
+        anchors,
+        // A finding the contract accepted but that carries no line cannot be
+        // anchored. Said plainly, because the alternative is an inline comment
+        // silently going missing.
+        unanchorable: skipped,
+      },
+      null,
+      2,
+    ),
+  );
+  return 0;
+}
+
 function redactCommand(argv: string[]): number {
   const result = redact(readStdin());
   if (argv.includes('--json')) {
@@ -1612,6 +1663,9 @@ async function main(argv: string[]): Promise<number> {
       return argv.includes('--pr')
         ? await pullRequestDiffCommand(argv.slice(1))
         : diffCommand(argv.slice(1));
+
+    case 'anchors':
+      return anchorsCommand();
 
     case 'thread':
       return await threadCommand(argv.slice(1));

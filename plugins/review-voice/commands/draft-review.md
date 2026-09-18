@@ -53,3 +53,28 @@ diff hash and is correctly a different post.
 
 The posting call itself does not exist yet. This command renders and checks;
 it cannot send. That is the current state of `docs/adr/0007`, not an oversight.
+
+## Inline anchors
+
+To post findings against their lines as well as in one block, take the anchors
+from the **validated review text**, never from the scored candidates:
+
+```
+RV anchors < <validated-output>
+```
+
+The candidate's `path` is free text from the analyst; the rendered finding
+carries what the verifier actually read, and the two can disagree. On one pull
+request the analyst cited
+`InvoicePaymentRequest/InvoicePaymentRequestDetail.tsx` and the finding that
+shipped, correctly, cited `bankTransfer/BankTransferCard.tsx`. Anchors built
+from candidate records would have put two comments on the wrong file.
+
+**Post the validated body as the review summary and attach the inline comments
+alongside it.** The single block is what `validate-output` checks and what
+`record` stores, so the contract and the corpus stay intact; the inline
+comments are an additional rendering of the same findings, not a replacement
+for them.
+
+`unanchorable` counts findings the contract accepted that carry no line. Say so
+rather than letting an inline comment go missing.

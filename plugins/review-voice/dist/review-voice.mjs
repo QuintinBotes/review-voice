@@ -1275,18 +1275,38 @@ function recordAudit(db, action, subject, metadata = {}) {
 }
 
 // plugins/review-voice/src/store/runs.ts
+var basename = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
+function attribute(finding, hints, taken) {
+  const free = hints.filter((hint) => !taken.has(hint));
+  const exact = free.find((hint) => hint.path === finding.path && hint.line === finding.line);
+  if (exact !== void 0) return { hint: exact, how: "exact" };
+  const sameFile = free.filter(
+    (hint) => basename(hint.path) === basename(finding.path) && hint.line === finding.line
+  );
+  if (sameFile.length === 1) return { hint: sameFile[0], how: "basename" };
+  const sameLine = free.filter((hint) => hint.line === finding.line);
+  if (sameLine.length === 1) return { hint: sameLine[0], how: "line" };
+  return { hint: void 0, how: "none" };
+}
 function assignIds(output, hints) {
+  const taken = /* @__PURE__ */ new Set();
   return splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null).map((finding, index) => {
-    const hint = hints.find((c) => c.path === finding.path && c.line === finding.line);
+    const anchor = { path: finding.path, line: finding.line ?? 0 };
+    const { hint, how } = attribute(anchor, hints, taken);
+    if (hint !== void 0) taken.add(hint);
     return {
       findingId: `rv_${String(index + 1).padStart(2, "0")}`,
       severity: finding.severity,
-      path: finding.path,
-      line: finding.line ?? 0,
+      path: anchor.path,
+      line: anchor.line,
       text: finding.raw,
       // Absent when a review ran without candidates to hand. Null is honest;
       // guessing a category from the wording would invent evidence.
-      category: hint?.category
+      category: hint?.category,
+      // Stated so a disagreement between what the analyst cited and what
+      // shipped is visible rather than showing up as a missing category.
+      ...how === "exact" || how === "none" ? {} : { attributedBy: how },
+      ...how === "none" && hints.length > 0 ? { unattributed: true } : {}
     };
   });
 }
@@ -10598,6 +10618,12 @@ Commands:
   --version         Print the plugin version
   --help            Show this message
 
+anchors:
+  Reads a validated review on stdin and prints one inline anchor per finding.
+  Anchors come from the review text, never from candidate records: the
+  candidate path is the analyst's and the rendered path is what the verifier
+  read, and the two can disagree.
+
 thread flags:
   --pr <number>          Pull request whose existing comments to read
   --repository <name>    owner/repo; inferred from the git remote if absent
@@ -11404,6 +11430,31 @@ function retrieveCommand(argv) {
     db.close();
   }
 }
+function anchorsCommand() {
+  const output = readStdin();
+  const anchors = splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null && finding.line !== null).map((finding, index) => ({
+    findingId: `rv_${String(index + 1).padStart(2, "0")}`,
+    severity: finding.severity,
+    path: finding.path,
+    line: finding.line,
+    body: finding.raw
+  }));
+  const skipped = splitFindings(output).length - anchors.length;
+  console.log(
+    JSON.stringify(
+      {
+        anchors,
+        // A finding the contract accepted but that carries no line cannot be
+        // anchored. Said plainly, because the alternative is an inline comment
+        // silently going missing.
+        unanchorable: skipped
+      },
+      null,
+      2
+    )
+  );
+  return 0;
+}
 function redactCommand(argv) {
   const result = redact(readStdin());
   if (argv.includes("--json")) {
@@ -11798,6 +11849,8 @@ async function main(argv) {
       return 0;
     case "diff":
       return argv.includes("--pr") ? await pullRequestDiffCommand(argv.slice(1)) : diffCommand(argv.slice(1));
+    case "anchors":
+      return anchorsCommand();
     case "thread":
       return await threadCommand(argv.slice(1));
     case "context":

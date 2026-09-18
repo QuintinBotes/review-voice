@@ -15,6 +15,13 @@ export interface StoredFinding {
    * has to arrive alongside rather than be parsed back out.
    */
   category?: string | undefined;
+  /**
+   * How this finding was paired with its candidate, when the analyst's cited
+   * path and the rendered one disagreed.
+   */
+  attributedBy?: 'basename' | 'line' | undefined;
+  /** True when candidates were supplied and none could be paired with this. */
+  unattributed?: boolean | undefined;
 }
 
 /** Just enough of a scored candidate to attribute a finding to its category. */
@@ -63,21 +70,69 @@ export interface StageTiming {
  * findings, because the output contract permits no text beyond the findings
  * themselves and a visible id would cost characters the writing needs more.
  */
+const basename = (path: string): string => path.split('/').pop()?.toLowerCase() ?? path.toLowerCase();
+
+/**
+ * Finds the candidate a rendered finding came from.
+ *
+ * Exact path and line first, because that is what agreement looks like. The
+ * ladder below it exists because the two can legitimately disagree: the analyst
+ * supplies `path` as free text and the verifier reads the actual code, so on one
+ * pull request the analyst cited `InvoicePaymentRequest/InvoicePaymentRequestDetail.tsx`
+ * and the finding that shipped, correctly, cited `bankTransfer/BankTransferCard.tsx`.
+ *
+ * The anchors stored are the rendered ones, which is right - the validated
+ * output is the only artefact that passed the contract. But an exact-match
+ * lookup then failed, and `category` went missing **precisely when the analyst
+ * was least reliable**, silently. A category-less finding is one the corpus
+ * cannot classify and `explain` cannot account for.
+ */
+function attribute(
+  finding: { path: string; line: number },
+  hints: CandidateHint[],
+  taken: Set<CandidateHint>,
+): { hint: CandidateHint | undefined; how: 'exact' | 'basename' | 'line' | 'none' } {
+  const free = hints.filter((hint) => !taken.has(hint));
+
+  const exact = free.find((hint) => hint.path === finding.path && hint.line === finding.line);
+  if (exact !== undefined) return { hint: exact, how: 'exact' };
+
+  // A path differing only in case or directory is the miss actually observed.
+  const sameFile = free.filter(
+    (hint) => basename(hint.path) === basename(finding.path) && hint.line === finding.line,
+  );
+  if (sameFile.length === 1) return { hint: sameFile[0], how: 'basename' };
+
+  // Line alone, and only when it is unambiguous. Matching on line alone is how
+  // one rendered finding was paired with the wrong one of two candidates.
+  const sameLine = free.filter((hint) => hint.line === finding.line);
+  if (sameLine.length === 1) return { hint: sameLine[0], how: 'line' };
+
+  return { hint: undefined, how: 'none' };
+}
+
 function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
+  const taken = new Set<CandidateHint>();
   return splitFindings(output)
     .map((block) => parseFinding(block.raw, block.startLine))
     .filter((finding) => finding.severity !== null && finding.path !== null)
     .map((finding, index) => {
-      const hint = hints.find((c) => c.path === finding.path && c.line === finding.line);
+      const anchor = { path: finding.path!, line: finding.line ?? 0 };
+      const { hint, how } = attribute(anchor, hints, taken);
+      if (hint !== undefined) taken.add(hint);
       return {
         findingId: `rv_${String(index + 1).padStart(2, '0')}`,
         severity: finding.severity!,
-        path: finding.path!,
-        line: finding.line ?? 0,
+        path: anchor.path,
+        line: anchor.line,
         text: finding.raw,
         // Absent when a review ran without candidates to hand. Null is honest;
         // guessing a category from the wording would invent evidence.
         category: hint?.category,
+        // Stated so a disagreement between what the analyst cited and what
+        // shipped is visible rather than showing up as a missing category.
+        ...(how === 'exact' || how === 'none' ? {} : { attributedBy: how }),
+        ...(how === 'none' && hints.length > 0 ? { unattributed: true } : {}),
       };
     });
 }
