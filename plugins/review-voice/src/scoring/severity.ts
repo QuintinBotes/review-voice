@@ -78,33 +78,49 @@ const atEveryReach = (severity: Severity): ReachTiers => ({
  * they are deliberately explicit so a measured run can revise the table
  * without restoring an agent judgement to this path.
  */
+/**
+ * `atEveryReach` is reserved for categories that name a boundary.
+ *
+ * Crossing a boundary is severe wherever it happens, so an analyst who
+ * underrated a concrete instance must not be able to talk it down - which is
+ * also why these sit outside the tier bound.
+ *
+ * Every other category names a consequence, and a consequence has an extent.
+ * Three were moved out one at a time on the same argument, each with evidence:
+ * `api_contract` derived `important` on a change whose head had ten CI
+ * failures; `data_integrity` was the last candidate in twenty still moving
+ * three tiers; `release` derived `important` on a deployment naming an Azure
+ * container that does not exist, with Build and E2E already red.
+ *
+ * Moving them one at a time was the mistake. `concurrency`, `persistence` and
+ * `migration` are the same shape and have simply not produced a counterexample
+ * yet, so they vary too. The tier bound makes this safe in a way it was not
+ * before: derivation can move a varying category by one step from what the
+ * analyst asked, and no further.
+ *
+ * The `nit` categories are deliberately left fixed. No run has produced a
+ * counterexample, and unlike the cases above, making them vary would make
+ * reviews louder on no evidence - which is the failure this reviewer exists to
+ * avoid.
+ */
 const BY_CATEGORY_AND_REACH: Record<string, ReachTiers> = {
+  // The boundary categories. These four, and no others.
   security: atEveryReach('blocking'),
   trust_boundary: atEveryReach('blocking'),
   authorization: atEveryReach('blocking'),
   authentication: atEveryReach('blocking'),
 
-  // `data_integrity` varies where its neighbours do not.
-  //
-  // `security`, `authorization` and `authentication` name a boundary: crossing
-  // one is severe wherever it happens, which is why an analyst cannot talk them
-  // down. `data_integrity` names a property, and it spans everything from
-  // corrupting a shared store to a consistency nit in one file. Holding it at
-  // `blocking` everywhere also held it outside the bound, so it was the only
-  // candidate in twenty that still moved three tiers: an analyst that had read
-  // the code judged a concrete instance `minor` and was overruled into a
-  // verdict that says do not merge.
   data_integrity: { local: 'important', component: 'blocking', repository: 'blocking' },
-
-  concurrency: atEveryReach('important'),
-  persistence: atEveryReach('important'),
-  migration: atEveryReach('important'),
-  // A contract break that reaches the repository stops the build for every
-  // consumer. Measured: a change adding a required prop and missing one of
-  // three call sites derived `important` while its head had ten CI failures,
-  // each a Code check across a different package.
   api_contract: { local: 'important', component: 'important', repository: 'blocking' },
-  release: atEveryReach('important'),
+  // A deployment that cannot succeed stops every consumer of the release, and
+  // the evidence was a build already red at the head that derived `important`.
+  release: { local: 'important', component: 'important', repository: 'blocking' },
+
+  // Not yet a counterexample, and the same shape as the three above: a
+  // consequence whose extent the reach search can establish.
+  concurrency: { local: 'important', component: 'important', repository: 'blocking' },
+  persistence: { local: 'important', component: 'important', repository: 'blocking' },
+  migration: { local: 'important', component: 'important', repository: 'blocking' },
 
   correctness: { local: 'minor', component: 'important', repository: 'important' },
   error_handling: { local: 'minor', component: 'important', repository: 'important' },
@@ -115,6 +131,7 @@ const BY_CATEGORY_AND_REACH: Record<string, ReachTiers> = {
   dependency: { local: 'minor', component: 'important', repository: 'blocking' },
   performance: { local: 'minor', component: 'minor', repository: 'important' },
 
+  // Fixed on purpose: see the note above.
   observability: atEveryReach('nit'),
   test_coverage: atEveryReach('nit'),
   maintainability: atEveryReach('nit'),
