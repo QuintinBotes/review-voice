@@ -9,6 +9,7 @@ import {
   DEFAULT_THRESHOLDS,
   MAX_QUESTIONS,
   applyQuestionCap,
+  NEUTRAL_ALIGNMENT,
   normaliseCandidate,
   MalformedCandidate,
 } from '../plugins/review-voice/src/scoring/score.ts';
@@ -1429,4 +1430,63 @@ test('data_integrity varies by reach, so an analyst who read the code can bound 
   // A boundary category still cannot be talked down.
   assert.equal(deriveSeverity('security', 'minor', reachCheck('repository')).severity, 'blocking');
   assert.equal(deriveSeverity('authorization', 'nit', reachCheck('local')).severity, 'blocking');
+});
+
+const dismissedPrecedent = (over = {}) => ({
+  eventId: 'e_neg',
+  repository: 'org/a',
+  reviewerLogin: 'owner',
+  role: 'owner',
+  outcome: 'dismissed',
+  createdAt: '2026-01-01T00:00:00Z',
+  filePath: 'src/other.ts',
+  lineStart: 10,
+  excerpt: 'stop asking whether the flag reached full rollout before removal',
+  weight: -1.5,
+  relevance: 1,
+  matchStrength: 1,
+  ...over,
+});
+
+test('a question the owner has dismissed the like of before is not asked again', () => {
+  // The isQuestion branch was empty and short-circuited everything below it,
+  // including the final score - which is where owner alignment lives. So a
+  // question ignored precedent entirely and feedback could never reach a third
+  // of the output. Measured: a question at 0.6452 shipped while a nit at the
+  // higher 0.6756 was rejected.
+  const withPrecedent = scoreCandidate(question(), [dismissedPrecedent()], [], DEFAULT_THRESHOLDS);
+
+  assert.equal(withPrecedent.eligible, false);
+  assert.match(withPrecedent.rejectedBecause, /owner precedent is against asking this/);
+});
+
+test('a question with no precedent either way is still asked', () => {
+  // Neutral must mean "nothing is known", not "nothing was retrieved, so drop
+  // it" - otherwise restoring precedent would re-suppress what 1.3.3 freed.
+  const neutral = scoreCandidate(question(), [], [], DEFAULT_THRESHOLDS);
+
+  assert.equal(neutral.ownerAlignment, NEUTRAL_ALIGNMENT);
+  assert.equal(neutral.eligible, true, neutral.rejectedBecause ?? '');
+});
+
+test('a question the owner has welcomed before is still asked', () => {
+  const welcomed = scoreCandidate(
+    question(),
+    [dismissedPrecedent({ eventId: 'e_pos', outcome: 'accepted', weight: 1.5 })],
+    [],
+    DEFAULT_THRESHOLDS,
+  );
+
+  assert.ok(welcomed.ownerAlignment > NEUTRAL_ALIGNMENT);
+  assert.equal(welcomed.eligible, true, welcomed.rejectedBecause ?? '');
+});
+
+test('a question is still not gated on the confidence it could not have', () => {
+  // The point of 1.3.3, which restoring precedent must not undo: 0.35 of the
+  // final score is confidence, so reinstating the whole score would re-block
+  // every question it freed.
+  const low = scoreCandidate(question({ technical_confidence: 0.2 }), [], [], DEFAULT_THRESHOLDS);
+
+  assert.equal(low.eligible, true, low.rejectedBecause ?? '');
+  assert.ok(low.finalScore < DEFAULT_THRESHOLDS.finalScore, 'and its score is below the gate it skips');
 });
