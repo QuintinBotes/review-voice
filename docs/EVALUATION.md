@@ -205,6 +205,38 @@ be, and whether eligibility would flip - while the gate keeps using the current
 computation. `/review-voice:explain` shows it. The switch is a measurement
 waiting on real runs, not a decision waiting on an opinion.
 
+### What gates a question
+
+A question skips the confidence floor, the unverifiable cap and the final score
+threshold, all of which measure belief in an assertion it does not make. Three
+things still reach it: the exact-duplicate check, a cap of two per review
+applied after every question has a score to rank by, and **negative owner
+precedent**.
+
+The last was missing until 1.3.5 and is the one that matters for calibration.
+The `isQuestion` branch short-circuited everything below it, and the final score
+is where owner alignment lives - so a question ignored precedent entirely, and
+`/review-voice:feedback` could not teach this reviewer to stop asking a class of
+question. With questions at six of eighteen candidates on one run, that was a
+third of the output the feedback loop could not reach.
+
+The whole score is the wrong instrument to restore, because 0.35 of it is
+confidence and reinstating that would re-block what letting questions ship was
+for. What is restored is the owner's judgement alone: alignment below neutral
+means the owner has actively dismissed comments of that kind, and a question is
+not asked twice.
+
+### The question budget is a prompt lever, and it is strong
+
+Telling the analyst that an unverifiable premise is worth asking about, and that
+a question is not gated on confidence, moved questions from **1 emitted across
+five pull requests to 6 across five** - a third of all candidates, with four of
+five reviews carrying one. Every one was read and judged legitimate.
+
+Whether a third of output as questions is the intended steady state is a
+decision rather than a measurement, and it is recorded here so it is made
+deliberately. The cap is two per review; the volume knob is the analyst prompt.
+
 ### The headline gate has no data
 
 `owner_accepted_precision`, the ≥ 80% target this document opens with, reports

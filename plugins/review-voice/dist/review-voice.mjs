@@ -9856,8 +9856,9 @@ function duplicatePrecedent(candidate, precedents) {
 function isAnchored(precedent) {
   return precedent.filePath !== null;
 }
+var NEUTRAL_ALIGNMENT = 0.5;
 function alignmentFrom(precedents) {
-  if (precedents.length === 0) return 0.5;
+  if (precedents.length === 0) return NEUTRAL_ALIGNMENT;
   const total = precedents.reduce((sum, p) => sum + p.weight * (p.matchStrength ?? 1), 0);
   return 1 / (1 + Math.exp(-total));
 }
@@ -9934,6 +9935,9 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   } else if (alreadySaid !== null) {
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
   } else if (isQuestion) {
+    if (ownerAlignment < NEUTRAL_ALIGNMENT) {
+      rejectedBecause = `owner precedent is against asking this (${ownerAlignment.toFixed(2)} alignment), and a question the owner has dismissed the like of before is noise the second time`;
+    }
   } else if (confidenceSource === "unverifiable-cap") {
     rejectedBecause = `the claim states it could not be verified, so it cannot ship whatever it scores`;
   } else if (confidence < confidenceFloor) {
