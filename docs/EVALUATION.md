@@ -205,6 +205,41 @@ be, and whether eligibility would flip - while the gate keeps using the current
 computation. `/review-voice:explain` shows it. The switch is a measurement
 waiting on real runs, not a decision waiting on an opinion.
 
+### `atEveryReach` is reserved for boundary categories
+
+`security`, `trust_boundary`, `authorization` and `authentication` name a
+boundary: crossing one is severe wherever it happens, so an analyst who
+underrated a concrete instance cannot talk it down, and they sit outside the
+tier bound for that reason.
+
+Every other category names a **consequence**, and a consequence has an extent.
+Three were moved out of the fixed set one at a time, each on the same argument
+and each with its own evidence:
+
+| Category | Derived | Evidence |
+|---|---|---|
+| `api_contract` | `important` | ten CI failures at that head, each a Code check across a package |
+| `data_integrity` | `blocking` from an analyst's `minor` | the last candidate in twenty still moving three tiers |
+| `release` | `important` | an Azure container that does not exist, Build and E2E already red |
+
+Moving them one at a time was the mistake. `concurrency`, `persistence` and
+`migration` are the same shape and have simply not produced a counterexample
+yet, so they vary too. The tier bound makes that safe in a way it was not
+before: derivation moves a varying category by one step from the analyst's
+request and no further.
+
+The `nit` categories stay fixed. No run has argued otherwise, and unlike the
+cases above, making them vary would make reviews louder on no evidence.
+
+### The precedent gate is built and has never had data
+
+Owner alignment ranged 0.536 to 0.847 across 26 candidates on one run, against
+a gate at 0.500. It has never come close, because nothing in this programme has
+been recorded to the corpus, so there is no dismissed-question precedent for it
+to find. A clean run shows it did not regress, not that it works. A few
+`/review-voice:feedback` calls on questions that were not wanted would make it
+real.
+
 ### What gates a question
 
 A question skips the confidence floor, the unverifiable cap and the final score
