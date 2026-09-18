@@ -228,6 +228,56 @@ export function applyQuestionCap(breakdowns: ScoreBreakdown[], limit: number = M
   }
 }
 
+/** A comment already on the pull request, from `diff/thread.ts`. */
+export interface ThreadComment {
+  path: string | null;
+  line: number | null;
+  author: string;
+  body: string;
+}
+
+/**
+ * Whether this point has already been made on this pull request.
+ *
+ * Distinct from `duplicatePrecedent`, which asks whether the *owner* has said
+ * something like this before, across their history, and feeds taste. This asks
+ * only whether the point is already on the page, by anyone - the author, a
+ * human reviewer, or another bot.
+ *
+ * `--exclude-pull` keeps the pull request's own thread out of precedent, and
+ * should: a review this tool posted coming back as evidence of the owner's
+ * taste is circular. Deduplication is the opposite problem, and on the first
+ * batch posted to real pull requests it removed 16 of 30 candidates - more than
+ * every other stage combined - because those repositories already run an
+ * automated reviewer.
+ *
+ * An unanchored comment is compared on wording alone, since a review body or a
+ * conversation comment can make a point about a line without citing it.
+ */
+export function alreadySaidOnThread(
+  candidate: Candidate,
+  thread: ThreadComment[],
+): ThreadComment | null {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+
+  for (const comment of thread) {
+    const anchored = comment.path !== null && comment.line !== null;
+    if (anchored) {
+      if (comment.path !== candidate.path) continue;
+      if (Math.abs((comment.line as number) - candidate.line) > DUPLICATE_LINE_WINDOW) continue;
+      if (overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
+      continue;
+    }
+
+    // Unanchored: the same point stated in a review body still counts, but the
+    // bar is higher because there is no location agreeing with it.
+    if (overlap(mine, significantWords(comment.body)) >= UNANCHORED_DUPLICATE_OVERLAP) return comment;
+  }
+
+  return null;
+}
+
 export class MalformedCandidate extends Error {}
 
 /** Field names from shapes agents have returned instead of the schema. */
@@ -317,6 +367,15 @@ const DUPLICATE_LINE_WINDOW = 2;
  * cannot answer an absolute question.
  */
 const DUPLICATE_OVERLAP = 0.4;
+
+/**
+ * The bar for a comment that names no line.
+ *
+ * Higher than the anchored one because nothing corroborates it: a review body
+ * saying "a few naming nits" should not silence a specific finding that happens
+ * to share some words with it.
+ */
+const UNANCHORED_DUPLICATE_OVERLAP = 0.7;
 
 function sameLocation(candidate: Candidate, precedent: Precedent): boolean {
   if (precedent.filePath === null || precedent.lineStart === null) return false;

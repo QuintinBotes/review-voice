@@ -5,6 +5,28 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `RV thread --pr <n>` reads every comment already on a pull request - inline
+  review comments, review bodies and conversation comments - and `score
+  --thread` drops any candidate that repeats one. On the first batch posted to
+  real pull requests, **16 of 30 candidates were already stated** by another
+  automated reviewer running on those repositories, or already fixed by the
+  author. That removed more than every other stage combined, and nothing in the
+  pipeline could see it: a repository with an existing bot reviewer received
+  duplicates. `--exclude-pull` still keeps the thread out of *precedent*, which
+  is right - a review this tool posted coming back as evidence of the owner's
+  taste is circular - and deduplication is the opposite problem.
+- `score` checks that each candidate's cited path exists at the reviewed ref,
+  or is added by the diff. The path is the one field no other stage verified,
+  and a candidate cited `modules/productChecklist/hooks/...` where the real file
+  was `modules/productCheckList/utils/...`; the line and the substance were
+  right, and the citation would have sent the author to a path that does not
+  exist. A near miss differing only in case is named in the rejection. A search
+  that cannot run is inconclusive, never a wrong-path verdict.
+
 ## [1.4.0] - 2026-09-18
 
 ### Changed
