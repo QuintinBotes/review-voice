@@ -8,7 +8,7 @@
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
 import { pluginVersion } from './version.ts';
@@ -17,6 +17,7 @@ import { validateOutput } from './contract/validate.ts';
 import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
 import { acquireDiff, GitError } from './diff/acquire.ts';
 import { acquirePullRequestDiff } from './diff/pull-request.ts';
+import { readThread, type ThreadComment } from './diff/thread.ts';
 import { openDatabase } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
 import { recordRun, latestRun, runDetail, type StageTiming } from './store/runs.ts';
@@ -40,6 +41,7 @@ import { scaledRepositoryShare, scaledTarget, selectEvents } from './corpus/sele
 import { changedPathsFrom, discoverConventions } from './conventions/discover.ts';
 import { checkAbsenceClaim, type ExistenceCheck } from './scoring/existence.ts';
 import { computeReach } from './scoring/reach.ts';
+import { checkCitation } from './scoring/citation.ts';
 import { storeEvents, corpusCoverage } from './corpus/store.ts';
 import { buildConsentPlan, discoverRepositories } from './consent/plan.ts';
 import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
@@ -47,6 +49,7 @@ import { retrievePrecedents, type Precedent } from './retrieval/retrieve.ts';
 import {
   scoreCandidate,
   applyQuestionCap,
+  alreadySaidOnThread,
   normaliseCandidate,
   MalformedCandidate,
   DEFAULT_THRESHOLDS,
@@ -94,6 +97,11 @@ Commands:
   --version         Print the plugin version
   --help            Show this message
 
+thread flags:
+  --pr <number>          Pull request whose existing comments to read
+  --repository <name>    owner/repo; inferred from the git remote if absent
+  --out <path>           Write the comments to a file instead of stdout
+
 diff flags:
   --base <ref>           Review against a base ref (e.g. origin/main)
   --staged               Review staged changes only
@@ -135,6 +143,9 @@ score flags:
                             Gate when only the analyst's self-report exists
                             (default 0.7). A different measurement, so a
                             different number.
+  --thread <path>           Comments already on the pull request, from
+                            thread --pr <n> --out. A point already made there
+                            is not made again, whoever made it.
   --diff-file <path>        The diff under review. Reach is measured from the
                             symbols the hunks touch; without it, from the
                             symbols the claim names, which is weaker.
@@ -260,6 +271,36 @@ function inferRepository(cwd: string): string | null {
     return match?.[1] ?? null;
   } catch {
     return null;
+  }
+}
+
+async function threadCommand(argv: string[]): Promise<number> {
+  const pullNumber = Number(flag(argv, '--pr'));
+  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+    console.error('--pr needs a pull request number.');
+    return 2;
+  }
+
+  const repository = flag(argv, '--repository') ?? inferRepository(process.cwd());
+  if (repository === null) {
+    console.error('Cannot tell which repository. Pass --repository <owner/repo>.');
+    return 2;
+  }
+
+  const result = await readThread({ repository, pullNumber });
+  const out = flag(argv, '--out');
+  if (out === null) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+  try {
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, JSON.stringify(result, null, 2), 'utf8');
+    console.log(JSON.stringify({ path: out, comments: result.comments.length, truncated: result.truncated }, null, 2));
+    return 0;
+  } catch (error) {
+    console.error(`Cannot write ${out}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
   }
 }
 
@@ -759,6 +800,17 @@ function scoreCommand(argv: string[]): number {
     }
   })();
 
+  const thread: ThreadComment[] = (() => {
+    const path = flag(argv, '--thread');
+    if (path === null) return [];
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as { comments?: ThreadComment[] };
+      return Array.isArray(parsed) ? parsed : (parsed.comments ?? []);
+    } catch {
+      return [];
+    }
+  })();
+
   if (searchRoot !== null) {
     for (const candidate of candidates) {
       const verification = verifications.get(candidate.candidateId);
@@ -842,8 +894,37 @@ function scoreCommand(argv: string[]): number {
           `claims something is absent, but the repository contains ${absence.found.join(', ')}`;
       }
 
+      // A point already on the page is not worth making again, whoever made
+      // it. On the first posted batch this removed more candidates than every
+      // other stage combined, because those repositories already run a bot.
+      const echoed = breakdown.eligible ? alreadySaidOnThread(candidate, thread) : null;
+      if (echoed !== null) {
+        breakdown.eligible = false;
+        breakdown.rejectedBecause =
+          `already said on this pull request by ${echoed.author}` +
+          (echoed.path === null ? '' : ` at ${echoed.path}:${echoed.line ?? '?'}`);
+      }
+
+      // The path is the one field nothing checked, and a wrong one sends the
+      // author to a file that does not exist.
+      let citation = null;
+      if (breakdown.eligible && searchRoot !== null) {
+        citation = checkCitation(candidate.path, searchRoot, baseRef, reachDiff);
+        if (!citation.resolves && !citation.inconclusive) {
+          breakdown.eligible = false;
+          breakdown.rejectedBecause =
+            `cites ${candidate.path}, which does not exist at the reviewed ref` +
+            (citation.suggestion === null ? '' : `; did it mean ${citation.suggestion}?`);
+        }
+      }
+
       if (breakdown.eligible) kept.push(candidate);
-      results.push({ ...breakdown, precedents, ...(absence === null ? {} : { absenceCheck: absence }) });
+      results.push({
+        ...breakdown,
+        precedents,
+        ...(absence === null ? {} : { absenceCheck: absence }),
+        ...(citation === null ? {} : { citationCheck: citation }),
+      });
     }
 
     // After every question has a score to rank by, not while scoring. Applied
@@ -1531,6 +1612,9 @@ async function main(argv: string[]): Promise<number> {
       return argv.includes('--pr')
         ? await pullRequestDiffCommand(argv.slice(1))
         : diffCommand(argv.slice(1));
+
+    case 'thread':
+      return await threadCommand(argv.slice(1));
 
     case 'context':
       return contextCommand();

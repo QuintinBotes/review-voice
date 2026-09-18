@@ -86,6 +86,22 @@ ones. Above roughly 150 changed files, or 5,000 changed lines, say so in one
 line after the findings - a single pass over a change that size is thin cover
 and the user should know that is what they are getting.
 
+## Step 1a - Read what has already been said
+
+On a `--pr` run, before anything else: `RV thread --pr <number> --out <tmpdir>`.
+
+That writes every comment already on the pull request - inline review comments,
+review bodies and conversation comments - and step 4 drops any candidate that
+repeats one.
+
+**This matters more than it sounds.** On the first batch posted to real pull
+requests, 16 of 30 candidates were already stated by another automated reviewer
+running on those repositories, or already fixed by the author. That removed more
+than every other stage combined. A repository with an existing bot reviewer will
+otherwise receive duplicates, and nothing else in this pipeline can see that.
+
+Skip it when not reviewing a pull request; there is no thread to read.
+
 ## Step 1b - Resolve context
 
 Run `RV context`.
@@ -209,7 +225,15 @@ visible instead of indistinguishable from a clean diff.
 ## Step 4 - Score against precedent
 
 Pipe the verified candidates as `{"candidates": [...]}` into
-`RV score --repository <name> --verification <tmpdir>/verification.json --base <ref> --diff-file <tmpdir>/diff.patch`.
+`RV score --repository <name> --verification <tmpdir>/verification.json --base <ref> --diff-file <tmpdir>/diff.patch --thread <tmpdir>/thread.json`.
+
+**`--thread` is the file from step 1a**, on a pull request run. Without it the
+review repeats whatever the pull request already says.
+
+`score` also checks that each candidate's cited path exists at the reviewed ref.
+The path is the one field no other stage verifies, and a wrong one sends the
+author to a file that is not there - observed once, where the directory differed
+only in case.
 
 **`--diff-file` is the diff from step 1.** Reach, which decides how far a defect
 carries and so which tier it is reported at, is measured from the symbols the

@@ -2,8 +2,8 @@
 
 // plugins/review-voice/src/cli.ts
 import { readFileSync as readFileSync4, writeFileSync, mkdirSync as mkdirSync2 } from "node:fs";
-import { join as join5 } from "node:path";
-import { execFileSync as execFileSync6 } from "node:child_process";
+import { dirname as dirname4, join as join5 } from "node:path";
+import { execFileSync as execFileSync7 } from "node:child_process";
 
 // plugins/review-voice/src/warnings.ts
 function suppressSqliteExperimentalWarning() {
@@ -860,6 +860,161 @@ async function acquirePullRequestDiff(options) {
   };
 }
 
+// plugins/review-voice/src/redact/redact.ts
+import { createHash } from "node:crypto";
+
+// plugins/review-voice/src/redact/patterns.ts
+var SECRET_PATTERNS = [
+  // Key material is replaced whole: a PEM block's header is not the secret,
+  // but leaving it invites someone to reconstruct what was removed.
+  {
+    label: "PRIVATE_KEY",
+    pattern: /-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----/g
+  },
+  { label: "PEM_BLOCK", pattern: /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g },
+  { label: "GITHUB_TOKEN", pattern: /\b(gh[pousr]_[A-Za-z0-9]{16,255})\b/g, group: 1 },
+  { label: "GITHUB_TOKEN", pattern: /\b(github_pat_[A-Za-z0-9_]{20,})\b/g, group: 1 },
+  { label: "AWS_ACCESS_KEY", pattern: /\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b/g, group: 1 },
+  {
+    label: "AWS_SECRET_KEY",
+    pattern: /\b(?:aws_secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi,
+    group: 1
+  },
+  { label: "GOOGLE_API_KEY", pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g, group: 1 },
+  { label: "SLACK_TOKEN", pattern: /\b(xox[abposr]-[0-9A-Za-z-]{10,})\b/g, group: 1 },
+  { label: "STRIPE_KEY", pattern: /\b((?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,})\b/g, group: 1 },
+  { label: "NPM_TOKEN", pattern: /\b(npm_[A-Za-z0-9]{36})\b/g, group: 1 },
+  { label: "PYPI_TOKEN", pattern: /\b(pypi-[A-Za-z0-9_-]{16,})\b/g, group: 1 },
+  { label: "OPENAI_KEY", pattern: /\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b/g, group: 1 },
+  { label: "ANTHROPIC_KEY", pattern: /\b(sk-ant-[A-Za-z0-9_-]{20,})\b/g, group: 1 },
+  // JWTs: three base64url segments. The payload is often the sensitive part.
+  {
+    label: "JWT",
+    pattern: /\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g,
+    group: 1
+  },
+  // A connection string's credentials, keeping the scheme and host so the
+  // surrounding review comment still makes sense.
+  {
+    label: "DB_CREDENTIALS",
+    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi,
+    group: 3
+  },
+  {
+    label: "AUTHORIZATION_HEADER",
+    pattern: /\b(?:Authorization|Proxy-Authorization)\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12,})/gi,
+    group: 1
+  },
+  // Assignment-shaped secrets. Deliberately last: it is the broadest rule, and
+  // a more specific label above is more useful in an audit than "SECRET".
+  {
+    label: "SECRET_ASSIGNMENT",
+    pattern: /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["']([^"'\s]{8,})["']/gi,
+    group: 1
+  }
+];
+var PLACEHOLDERS = /* @__PURE__ */ new Set([
+  "xxxxxxxx",
+  "changeme",
+  "password",
+  "redacted",
+  "your_token_here",
+  "example",
+  "placeholder",
+  "dummy",
+  "notarealsecret",
+  "test",
+  "password123",
+  "<token>",
+  "secret",
+  "todo",
+  "fixme",
+  "null",
+  "undefined",
+  "none"
+]);
+
+// plugins/review-voice/src/redact/redact.ts
+var REDACTION_VERSION = "1";
+function hash(value) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 32);
+}
+function isPlaceholder(value) {
+  const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
+  if (PLACEHOLDERS.has(normalised)) return true;
+  return /^(.)\1{3,}$/.test(value);
+}
+function redact(input) {
+  const counts = {};
+  let text = input;
+  for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
+    pattern.lastIndex = 0;
+    text = text.replace(pattern, (match, ...groups) => {
+      const captured = group === void 0 || group === 0 ? match : groups[group - 1];
+      if (captured === void 0 || captured.length === 0) return match;
+      if (isPlaceholder(captured)) return match;
+      counts[label2] = (counts[label2] ?? 0) + 1;
+      const replacement = `[REDACTED:${label2}]`;
+      return group === void 0 || group === 0 ? replacement : match.replace(captured, replacement);
+    });
+  }
+  return {
+    text,
+    counts,
+    sourceHash: hash(input),
+    redactedHash: hash(text),
+    version: REDACTION_VERSION
+  };
+}
+
+// plugins/review-voice/src/diff/thread.ts
+var MAX_COMMENTS = 300;
+function clean(body, author) {
+  if (body === void 0 || body.trim().length === 0) return null;
+  return { body: redact(body).text, author: author ?? "unknown" };
+}
+async function readThread(options) {
+  const client = new GitHubClient({ allowlist: [options.repository] });
+  const comments = [];
+  const inline = await client.paginate(
+    `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,
+    MAX_COMMENTS
+  );
+  for (const raw of inline) {
+    const kept = clean(raw.body, raw.user?.login);
+    if (kept === null) continue;
+    comments.push({
+      path: raw.path ?? null,
+      line: raw.line ?? raw.original_line ?? null,
+      author: kept.author,
+      body: kept.body,
+      kind: "review-comment"
+    });
+  }
+  const reviews = await client.paginate(
+    `/repos/${options.repository}/pulls/${options.pullNumber}/reviews?per_page=100`,
+    MAX_COMMENTS
+  );
+  for (const raw of reviews) {
+    const kept = clean(raw.body, raw.user?.login);
+    if (kept === null) continue;
+    comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: "review-body" });
+  }
+  const conversation = await client.paginate(
+    `/repos/${options.repository}/issues/${options.pullNumber}/comments?per_page=100`,
+    MAX_COMMENTS
+  );
+  for (const raw of conversation) {
+    const kept = clean(raw.body, raw.user?.login);
+    if (kept === null) continue;
+    comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: "conversation" });
+  }
+  return {
+    comments,
+    truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS
+  };
+}
+
 // plugins/review-voice/src/store/db.ts
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, chmodSync } from "node:fs";
@@ -1106,7 +1261,7 @@ function openDatabase(path = databasePath()) {
 }
 
 // plugins/review-voice/src/store/runs.ts
-import { randomUUID as randomUUID2, createHash } from "node:crypto";
+import { randomUUID as randomUUID2, createHash as createHash2 } from "node:crypto";
 
 // plugins/review-voice/src/store/audit.ts
 import { randomUUID } from "node:crypto";
@@ -1136,7 +1291,7 @@ function assignIds(output, hints) {
   });
 }
 function hashDiff(diff) {
-  return createHash("sha256").update(diff).digest("hex").slice(0, 32);
+  return createHash2("sha256").update(diff).digest("hex").slice(0, 32);
 }
 function recordRun(db, input) {
   const reviewRunId = randomUUID2();
@@ -1309,7 +1464,7 @@ function feedbackTotals(db) {
 
 // plugins/review-voice/src/policy/load.ts
 import { readFileSync as readFileSync2, existsSync } from "node:fs";
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import { join as join3 } from "node:path";
 
 // node_modules/yaml/browser/dist/nodes/identity.js
@@ -7593,7 +7748,7 @@ function positiveInt(value) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : void 0;
 }
 function contentHash(text) {
-  return createHash2("sha256").update(text).digest("hex").slice(0, 16);
+  return createHash3("sha256").update(text).digest("hex").slice(0, 16);
 }
 function layerFromPolicyFile(text, source, fallbackKey) {
   const doc = asRecord(parse(text));
@@ -7994,113 +8149,6 @@ ${result.stderr}`);
     });
   }
   return { enabled: true, verifier: name, verdicts, didNotRun: [...new Set(didNotRun)] };
-}
-
-// plugins/review-voice/src/redact/redact.ts
-import { createHash as createHash3 } from "node:crypto";
-
-// plugins/review-voice/src/redact/patterns.ts
-var SECRET_PATTERNS = [
-  // Key material is replaced whole: a PEM block's header is not the secret,
-  // but leaving it invites someone to reconstruct what was removed.
-  {
-    label: "PRIVATE_KEY",
-    pattern: /-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----/g
-  },
-  { label: "PEM_BLOCK", pattern: /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g },
-  { label: "GITHUB_TOKEN", pattern: /\b(gh[pousr]_[A-Za-z0-9]{16,255})\b/g, group: 1 },
-  { label: "GITHUB_TOKEN", pattern: /\b(github_pat_[A-Za-z0-9_]{20,})\b/g, group: 1 },
-  { label: "AWS_ACCESS_KEY", pattern: /\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b/g, group: 1 },
-  {
-    label: "AWS_SECRET_KEY",
-    pattern: /\b(?:aws_secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi,
-    group: 1
-  },
-  { label: "GOOGLE_API_KEY", pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g, group: 1 },
-  { label: "SLACK_TOKEN", pattern: /\b(xox[abposr]-[0-9A-Za-z-]{10,})\b/g, group: 1 },
-  { label: "STRIPE_KEY", pattern: /\b((?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,})\b/g, group: 1 },
-  { label: "NPM_TOKEN", pattern: /\b(npm_[A-Za-z0-9]{36})\b/g, group: 1 },
-  { label: "PYPI_TOKEN", pattern: /\b(pypi-[A-Za-z0-9_-]{16,})\b/g, group: 1 },
-  { label: "OPENAI_KEY", pattern: /\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b/g, group: 1 },
-  { label: "ANTHROPIC_KEY", pattern: /\b(sk-ant-[A-Za-z0-9_-]{20,})\b/g, group: 1 },
-  // JWTs: three base64url segments. The payload is often the sensitive part.
-  {
-    label: "JWT",
-    pattern: /\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g,
-    group: 1
-  },
-  // A connection string's credentials, keeping the scheme and host so the
-  // surrounding review comment still makes sense.
-  {
-    label: "DB_CREDENTIALS",
-    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi,
-    group: 3
-  },
-  {
-    label: "AUTHORIZATION_HEADER",
-    pattern: /\b(?:Authorization|Proxy-Authorization)\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12,})/gi,
-    group: 1
-  },
-  // Assignment-shaped secrets. Deliberately last: it is the broadest rule, and
-  // a more specific label above is more useful in an audit than "SECRET".
-  {
-    label: "SECRET_ASSIGNMENT",
-    pattern: /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["']([^"'\s]{8,})["']/gi,
-    group: 1
-  }
-];
-var PLACEHOLDERS = /* @__PURE__ */ new Set([
-  "xxxxxxxx",
-  "changeme",
-  "password",
-  "redacted",
-  "your_token_here",
-  "example",
-  "placeholder",
-  "dummy",
-  "notarealsecret",
-  "test",
-  "password123",
-  "<token>",
-  "secret",
-  "todo",
-  "fixme",
-  "null",
-  "undefined",
-  "none"
-]);
-
-// plugins/review-voice/src/redact/redact.ts
-var REDACTION_VERSION = "1";
-function hash(value) {
-  return createHash3("sha256").update(value).digest("hex").slice(0, 32);
-}
-function isPlaceholder(value) {
-  const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
-  if (PLACEHOLDERS.has(normalised)) return true;
-  return /^(.)\1{3,}$/.test(value);
-}
-function redact(input) {
-  const counts = {};
-  let text = input;
-  for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
-    pattern.lastIndex = 0;
-    text = text.replace(pattern, (match, ...groups) => {
-      const captured = group === void 0 || group === 0 ? match : groups[group - 1];
-      if (captured === void 0 || captured.length === 0) return match;
-      if (isPlaceholder(captured)) return match;
-      counts[label2] = (counts[label2] ?? 0) + 1;
-      const replacement = `[REDACTED:${label2}]`;
-      return group === void 0 || group === 0 ? replacement : match.replace(captured, replacement);
-    });
-  }
-  return {
-    text,
-    counts,
-    sourceHash: hash(input),
-    redactedHash: hash(text),
-    version: REDACTION_VERSION
-  };
 }
 
 // plugins/review-voice/src/github/roles.ts
@@ -9150,6 +9198,48 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
   return result("component", false);
 }
 
+// plugins/review-voice/src/scoring/citation.ts
+import { execFileSync as execFileSync6 } from "node:child_process";
+function git3(args, cwd) {
+  return execFileSync6("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 1e4
+  });
+}
+function normalise(path) {
+  return path.replaceAll("\\", "/").replace(/^\.\/+/, "");
+}
+function pathsInDiff(diff) {
+  const paths = /* @__PURE__ */ new Set();
+  for (const match of diff.matchAll(/^\+\+\+ [ab]\/(.+)$/gm)) {
+    if (match[1] !== void 0 && match[1] !== "/dev/null") paths.add(normalise(match[1]));
+  }
+  return paths;
+}
+function checkCitation(candidatePath, cwd, ref, diff) {
+  const wanted = normalise(candidatePath);
+  if (wanted.length === 0) return { resolves: false, suggestion: null, inconclusive: false };
+  if (diff !== null && pathsInDiff(diff).has(wanted)) {
+    return { resolves: true, suggestion: null, inconclusive: false };
+  }
+  let tracked;
+  try {
+    const args = ref === null ? ["ls-files"] : ["ls-tree", "-r", "--name-only", ref];
+    tracked = git3(args, cwd).split("\n").filter((line) => line.length > 0);
+  } catch {
+    return { resolves: false, suggestion: null, inconclusive: true };
+  }
+  if (tracked.includes(wanted)) return { resolves: true, suggestion: null, inconclusive: false };
+  const lowered = wanted.toLowerCase();
+  const nearest = tracked.find((path) => path.toLowerCase() === lowered);
+  if (nearest !== void 0) return { resolves: false, suggestion: nearest, inconclusive: false };
+  const base = wanted.split("/").pop();
+  const sameName = base === void 0 ? void 0 : tracked.find((path) => path.split("/").pop() === base);
+  return { resolves: false, suggestion: sameName ?? null, inconclusive: false };
+}
+
 // plugins/review-voice/src/sync/state.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
 function beginSyncRun(db, repositories) {
@@ -9787,6 +9877,21 @@ function applyQuestionCap(breakdowns, limit = MAX_QUESTIONS) {
     dropped.rejectedBecause = `this review already asks ${limit} better-evidenced question${limit === 1 ? "" : "s"}, and a review that ends in a list of questions has stopped being a review`;
   }
 }
+function alreadySaidOnThread(candidate, thread) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+  for (const comment of thread) {
+    const anchored = comment.path !== null && comment.line !== null;
+    if (anchored) {
+      if (comment.path !== candidate.path) continue;
+      if (Math.abs(comment.line - candidate.line) > DUPLICATE_LINE_WINDOW) continue;
+      if (overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
+      continue;
+    }
+    if (overlap(mine, significantWords(comment.body)) >= UNANCHORED_DUPLICATE_OVERLAP) return comment;
+  }
+  return null;
+}
 var MalformedCandidate = class extends Error {
 };
 var FOREIGN_KEYS = ["title", "location", "suggested_direction", "suggestion", "description", "summary"];
@@ -9832,6 +9937,7 @@ function overlap(mine, theirs) {
 }
 var DUPLICATE_LINE_WINDOW = 2;
 var DUPLICATE_OVERLAP = 0.4;
+var UNANCHORED_DUPLICATE_OVERLAP = 0.7;
 function sameLocation(candidate, precedent) {
   if (precedent.filePath === null || precedent.lineStart === null) return false;
   if (precedent.filePath !== candidate.path) return false;
@@ -10492,6 +10598,11 @@ Commands:
   --version         Print the plugin version
   --help            Show this message
 
+thread flags:
+  --pr <number>          Pull request whose existing comments to read
+  --repository <name>    owner/repo; inferred from the git remote if absent
+  --out <path>           Write the comments to a file instead of stdout
+
 diff flags:
   --base <ref>           Review against a base ref (e.g. origin/main)
   --staged               Review staged changes only
@@ -10533,6 +10644,9 @@ score flags:
                             Gate when only the analyst's self-report exists
                             (default 0.7). A different measurement, so a
                             different number.
+  --thread <path>           Comments already on the pull request, from
+                            thread --pr <n> --out. A point already made there
+                            is not made again, whoever made it.
   --diff-file <path>        The diff under review. Reach is measured from the
                             symbols the hunks touch; without it, from the
                             symbols the claim names, which is weaker.
@@ -10634,7 +10748,7 @@ ${result.violations.length} contract violation(s).`);
 }
 function inferRepository(cwd) {
   try {
-    const url = execFileSync6("git", ["remote", "get-url", "origin"], {
+    const url = execFileSync7("git", ["remote", "get-url", "origin"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -10643,6 +10757,33 @@ function inferRepository(cwd) {
     return match?.[1] ?? null;
   } catch {
     return null;
+  }
+}
+async function threadCommand(argv) {
+  const pullNumber = Number(flag(argv, "--pr"));
+  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+    console.error("--pr needs a pull request number.");
+    return 2;
+  }
+  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
+  if (repository === null) {
+    console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
+    return 2;
+  }
+  const result = await readThread({ repository, pullNumber });
+  const out = flag(argv, "--out");
+  if (out === null) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+  try {
+    mkdirSync2(dirname4(out), { recursive: true });
+    writeFileSync(out, JSON.stringify(result, null, 2), "utf8");
+    console.log(JSON.stringify({ path: out, comments: result.comments.length, truncated: result.truncated }, null, 2));
+    return 0;
+  } catch (error) {
+    console.error(`Cannot write ${out}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
   }
 }
 async function pullRequestDiffCommand(argv) {
@@ -11028,6 +11169,16 @@ function scoreCommand(argv) {
       return null;
     }
   })();
+  const thread = (() => {
+    const path = flag(argv, "--thread");
+    if (path === null) return [];
+    try {
+      const parsed = JSON.parse(readFileSync4(path, "utf8"));
+      return Array.isArray(parsed) ? parsed : parsed.comments ?? [];
+    } catch {
+      return [];
+    }
+  })();
   if (searchRoot !== null) {
     for (const candidate of candidates) {
       const verification = verifications.get(candidate.candidateId);
@@ -11092,8 +11243,26 @@ function scoreCommand(argv) {
         breakdown.eligible = false;
         breakdown.rejectedBecause = `claims something is absent, but the repository contains ${absence.found.join(", ")}`;
       }
+      const echoed = breakdown.eligible ? alreadySaidOnThread(candidate, thread) : null;
+      if (echoed !== null) {
+        breakdown.eligible = false;
+        breakdown.rejectedBecause = `already said on this pull request by ${echoed.author}` + (echoed.path === null ? "" : ` at ${echoed.path}:${echoed.line ?? "?"}`);
+      }
+      let citation = null;
+      if (breakdown.eligible && searchRoot !== null) {
+        citation = checkCitation(candidate.path, searchRoot, baseRef, reachDiff);
+        if (!citation.resolves && !citation.inconclusive) {
+          breakdown.eligible = false;
+          breakdown.rejectedBecause = `cites ${candidate.path}, which does not exist at the reviewed ref` + (citation.suggestion === null ? "" : `; did it mean ${citation.suggestion}?`);
+        }
+      }
       if (breakdown.eligible) kept.push(candidate);
-      results.push({ ...breakdown, precedents, ...absence === null ? {} : { absenceCheck: absence } });
+      results.push({
+        ...breakdown,
+        precedents,
+        ...absence === null ? {} : { absenceCheck: absence },
+        ...citation === null ? {} : { citationCheck: citation }
+      });
     }
     applyQuestionCap(results);
     const finals = results.map((r) => r.finalScore).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
@@ -11521,7 +11690,7 @@ function conventionsCommand(argv) {
 }
 function refExists(ref, cwd) {
   try {
-    execFileSync6("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    execFileSync7("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -11629,6 +11798,8 @@ async function main(argv) {
       return 0;
     case "diff":
       return argv.includes("--pr") ? await pullRequestDiffCommand(argv.slice(1)) : diffCommand(argv.slice(1));
+    case "thread":
+      return await threadCommand(argv.slice(1));
     case "context":
       return contextCommand();
     case "redact":

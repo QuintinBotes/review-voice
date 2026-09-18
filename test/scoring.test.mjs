@@ -10,6 +10,7 @@ import {
   MAX_QUESTIONS,
   applyQuestionCap,
   NEUTRAL_ALIGNMENT,
+  alreadySaidOnThread,
   normaliseCandidate,
   MalformedCandidate,
 } from '../plugins/review-voice/src/scoring/score.ts';
@@ -1535,4 +1536,71 @@ test('the nit categories stay fixed, because no run has argued otherwise', () =>
       assert.equal(deriveSeverity(category, 'nit', reachCheck(reach)).severity, 'nit', category);
     }
   }
+});
+
+test('a point already made on the pull request is not made again', () => {
+  // On the first batch posted to real pull requests, 16 of 30 candidates were
+  // already stated by an automated reviewer on those repositories, or already
+  // fixed. That removed more than every other stage combined, and nothing in
+  // the pipeline could see it.
+  const candidate = normaliseCandidate(
+    {
+      candidate_id: 'cand_001',
+      path: 'src/format.ts',
+      line: 42,
+      category: 'correctness',
+      severity: 'minor',
+      claim: 'Math.round breaks ties toward positive infinity, so negative durations lose a second.',
+      failure_mode: 'A negative duration renders one second short.',
+      evidence: ['`roundedTotal` at line 42'],
+      technical_confidence: 0.85,
+    },
+    0,
+  );
+
+  const echoed = alreadySaidOnThread(candidate, [
+    {
+      path: 'src/format.ts',
+      line: 43,
+      author: 'moxly',
+      body: 'Math.round breaks ties toward positive infinity here, so negative durations lose a second.',
+      kind: 'review-comment',
+    },
+  ]);
+
+  assert.ok(echoed !== null);
+  assert.equal(echoed.author, 'moxly');
+});
+
+test('a comment about a different line, or a vague one, does not silence a finding', () => {
+  const candidate = normaliseCandidate(
+    {
+      candidate_id: 'cand_001',
+      path: 'src/format.ts',
+      line: 42,
+      category: 'correctness',
+      severity: 'minor',
+      claim: 'Math.round breaks ties toward positive infinity, so negative durations lose a second.',
+      failure_mode: 'A negative duration renders one second short.',
+      evidence: ['`roundedTotal` at line 42'],
+      technical_confidence: 0.85,
+    },
+    0,
+  );
+
+  // Same words, far away.
+  assert.equal(
+    alreadySaidOnThread(candidate, [
+      { path: 'src/format.ts', line: 400, author: 'moxly', body: 'Math.round breaks ties toward positive infinity.', kind: 'review-comment' },
+    ]),
+    null,
+  );
+
+  // A review body that says nothing specific must not silence a specific point.
+  assert.equal(
+    alreadySaidOnThread(candidate, [
+      { path: null, line: null, author: 'moxly', body: 'A few naming nits and some rounding thoughts.', kind: 'review-body' },
+    ]),
+    null,
+  );
 });
