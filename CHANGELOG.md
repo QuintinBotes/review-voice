@@ -5,6 +5,33 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `RV anchors` reads a validated review on stdin and prints one inline anchor
+  per finding, taken from the review text rather than from candidate records.
+  The candidate's `path` is free text from the analyst and the rendered finding
+  carries what the verifier actually read, so the two can disagree: on one pull
+  request the analyst cited
+  `InvoicePaymentRequest/InvoicePaymentRequestDetail.tsx` while the finding that
+  shipped, correctly, cited `bankTransfer/BankTransferCard.tsx`. Anchors built
+  from candidates would have posted two comments against the wrong file. The
+  validated output is the only artefact that passed the contract, so it is the
+  only correct source for an anchor.
+
+### Fixed
+
+- A finding keeps its category when the analyst's cited path and the rendered
+  one disagree. Stored anchors were already taken from the rendered output and
+  were correct, but the candidate lookup matched on exact path and line, so
+  `category` went missing **precisely when the analyst was least reliable** -
+  silently, in the cases where it matters most. The pairing now falls back to
+  the same file by basename, then to an unambiguous line, and says which was
+  used. Two candidates on one line are reported as unattributed rather than
+  guessed between, which is how one rendered finding was paired with the wrong
+  one of two.
+
 ## [1.5.0] - 2026-09-18
 
 ### Added

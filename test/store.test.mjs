@@ -189,3 +189,63 @@ test('stage timings are recorded and read back, and their absence is not an erro
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a finding keeps its category when the analyst cited the wrong file', () => {
+  // The analyst supplies `path` as free text; the verifier reads the actual
+  // code. On one pull request the analyst cited
+  // InvoicePaymentRequest/InvoicePaymentRequestDetail.tsx and the finding that
+  // shipped, correctly, cited bankTransfer/BankTransferCard.tsx. The anchors
+  // stored were right, and an exact-match lookup then dropped the category
+  // silently - precisely when the analyst was least reliable.
+  const dir = mkdtempSync(join(tmpdir(), 'rv-attr-'));
+  const db = openDatabase(join(dir, 'x.db'));
+  try {
+    recordRun(db, {
+      repository: 'org/a',
+      baseRef: null,
+      headRef: null,
+      diff: 'd',
+      output: '[important] `src/bankTransfer/BankTransferCard.tsx:12` - A. B. C.',
+      candidates: [
+        { path: 'src/InvoicePaymentRequest/InvoicePaymentRequestDetail.tsx', line: 12, category: 'correctness' },
+      ],
+    });
+
+    const finding = runDetail(db).findings[0];
+    // The rendered anchor is what ships and what is stored.
+    assert.equal(finding.path, 'src/bankTransfer/BankTransferCard.tsx');
+    // And the category survives the disagreement, with the pairing named.
+    assert.equal(finding.category, 'correctness');
+    assert.equal(finding.attributedBy, 'line');
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('two candidates on one line are not guessed between', () => {
+  // Matching on line alone is how one rendered finding was paired with the
+  // wrong one of two candidates.
+  const dir = mkdtempSync(join(tmpdir(), 'rv-attr2-'));
+  const db = openDatabase(join(dir, 'x.db'));
+  try {
+    recordRun(db, {
+      repository: 'org/a',
+      baseRef: null,
+      headRef: null,
+      diff: 'd',
+      output: '[nit] `src/c.ts:12` - A. B. C.',
+      candidates: [
+        { path: 'src/a.ts', line: 12, category: 'correctness' },
+        { path: 'src/b.ts', line: 12, category: 'style' },
+      ],
+    });
+
+    const finding = runDetail(db).findings[0];
+    assert.equal(finding.category, undefined, 'an ambiguous pairing must not be guessed');
+    assert.equal(finding.unattributed, true, 'and the silence must be visible');
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
