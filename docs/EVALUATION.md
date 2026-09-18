@@ -272,6 +272,37 @@ Whether a third of output as questions is the intended steady state is a
 decision rather than a measurement, and it is recorded here so it is made
 deliberately. The cap is two per review; the volume knob is the analyst prompt.
 
+### A known blind spot: documentation that overstates a contract
+
+On one pull request the pipeline produced a single candidate and it was a
+duplicate, so its net contribution to the review was nothing. The finding worth
+making - an XML doc comment promising an ordering guarantee the helper beneath
+it does not deliver - was found by reading the diff. Neither the analyst nor the
+other automated reviewer on that repository raised it.
+
+The gap is not detection strength, it is that this defect does not look like one
+in any category the analyst reaches for. Documentation asserting a guarantee the
+code does not provide is a contract defect, but it presents as prose, so it
+falls toward `maintainability`, which is `nit` at every reach, if it is filed at
+all.
+
+**One instance, recorded rather than acted on.** The analyst prompt is the cheap
+lever here and naming a new class of defect there would almost certainly raise
+the rate at which it files them - which is how a single observation became the
+convention-loader detour across 1.3.0 to 1.3.2, later withdrawn by its own
+author. A second instance is what would justify moving.
+
+### What the first posted batch says about deduplication
+
+Reading the pull request's own thread removed 16 of 30 candidates on the batch
+that motivated it, which is more than every other stage combined. It is worth
+keeping in proportion: on a later pull request deduplication would have
+correctly dropped the only candidate produced and would not have found the
+finding that mattered.
+
+Deduplication raises precision by removing what should not be said. It cannot
+raise recall, and recall is where the blind spot above sits.
+
 ### The headline gate has no data
 
 `owner_accepted_precision`, the ≥ 80% target this document opens with, reports
