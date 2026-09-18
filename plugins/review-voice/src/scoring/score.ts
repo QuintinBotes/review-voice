@@ -377,8 +377,17 @@ function isAnchored(precedent: Precedent): boolean {
 }
 
 /** Maps signed precedent weights onto a 0..1 alignment score. */
+/**
+ * What alignment reports when precedent says nothing either way.
+ *
+ * Named because a question is gated on falling below it, so the number has to
+ * mean "the owner has actively dismissed this kind of comment" rather than
+ * "no precedent was retrieved".
+ */
+export const NEUTRAL_ALIGNMENT = 0.5;
+
 function alignmentFrom(precedents: Precedent[]): number {
-  if (precedents.length === 0) return 0.5; // No evidence either way.
+  if (precedents.length === 0) return NEUTRAL_ALIGNMENT; // No evidence either way.
   const total = precedents.reduce((sum, p) => sum + p.weight * (p.matchStrength ?? 1), 0);
   // A bounded squash keeps one loud precedent from saturating the score.
   return 1 / (1 + Math.exp(-total));
@@ -585,9 +594,26 @@ export function scoreCandidate(
     // while repeating a comment already published on that line.
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
   } else if (isQuestion) {
-    // Everything below this point gates on confidence in an assertion, and a
-    // question makes none. How many a review may ask is capped by
-    // `applyQuestionCap`, after every question has a score to rank by.
+    // A question skips the confidence gates below, which measure belief in an
+    // assertion it does not make. It does not skip precedent.
+    //
+    // The branch used to be empty, and everything below it includes the final
+    // score - which is where owner alignment lives. So a question ignored
+    // precedent entirely, and `/review-voice:feedback` could never teach this
+    // reviewer to stop asking a class of question its owner does not want.
+    // With questions now a third of output, that is a third of the review the
+    // feedback loop could not reach. Measured: a question at 0.6452 shipped
+    // while a nit at the higher 0.6756 was rejected.
+    //
+    // The whole score is the wrong instrument to restore, because 0.35 of it is
+    // confidence and reinstating that would re-block the questions 1.3.3 freed.
+    // What is restored is the part that carries the owner's judgement: a
+    // question the owner has dismissed the like of before is not asked again.
+    if (ownerAlignment < NEUTRAL_ALIGNMENT) {
+      rejectedBecause =
+        `owner precedent is against asking this (${ownerAlignment.toFixed(2)} alignment), ` +
+        'and a question the owner has dismissed the like of before is noise the second time';
+    }
   } else if (confidenceSource === 'unverifiable-cap') {
     // Stated as its own rejection rather than left to the numeric comparison.
     // It used to depend on the cap sitting below the floor, which quietly tied

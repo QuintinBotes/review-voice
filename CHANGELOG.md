@@ -5,6 +5,21 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Owner precedent reaches questions again. The `isQuestion` branch skipped
+  every gate below it, and the final score is where owner alignment lives, so a
+  question ignored precedent entirely and `/review-voice:feedback` could never
+  teach this reviewer to stop asking a class of question its owner does not
+  want. Measured on one run: a question at final score 0.6452 shipped while a
+  nit at the higher 0.6756 was rejected. With questions now a third of output
+  that was a third of the review the feedback loop could not reach. The whole
+  score is not restored - 0.35 of it is confidence, and reinstating that would
+  re-block what 1.3.3 freed - only the owner's judgement: alignment below
+  neutral means the owner has actively dismissed comments of that kind.
+
 ## [1.3.4] - 2026-09-17
 
 ### Fixed
