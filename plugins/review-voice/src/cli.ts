@@ -19,6 +19,7 @@ import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract
 import { acquireDiff, GitError } from './diff/acquire.ts';
 import { acquirePullRequestDiff } from './diff/pull-request.ts';
 import { readThread, type ThreadComment } from './diff/thread.ts';
+import { collectSymbolContext } from './diff/symbols.ts';
 import { openDatabase } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
 import { recordRun, latestRun, runDetail, type StageTiming } from './store/runs.ts';
@@ -72,6 +73,7 @@ const USAGE = `review-voice <command>
 
 Commands:
   diff              Acquire the diff under review as structured JSON
+  symbols           Collect changed symbols and their lexical reference paths
   check-candidates  Validate analyst output against the candidate schema
   context           Resolve config and the active policy stack as JSON
   conventions       Collect the repository's own convention documents
@@ -117,6 +119,11 @@ diff flags:
   --include-generated    Include lock files, generated, vendored and binary files
   --out <dir>            Write diff.patch and files.json separately instead of
                          one blob on stdout
+
+symbols flags:
+  --diff-file <path>     Unified diff whose changed symbols to inspect
+  --base <ref>           Search this committed tree instead of the working tree
+  --out <path>           Write the JSON context to a file instead of stdout
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -383,6 +390,58 @@ function diffCommand(argv: string[]): number {
       return 2;
     }
     throw error;
+  }
+}
+
+/**
+ * Gives the agents a bounded list of places worth reading after the diff.
+ *
+ * The search ref has to resolve before collection begins. Passing a bad ref to
+ * git grep would be caught per symbol and correctly marked inconclusive, but
+ * treating that as a normal `--base` invocation would quietly turn a caller's
+ * request for a reviewed tree into a pile of partial working-tree-like data.
+ */
+function symbolsCommand(argv: string[]): number {
+  const diffFile = flag(argv, '--diff-file');
+  if (diffFile === null) {
+    console.error('--diff-file needs a unified diff path.');
+    return 2;
+  }
+
+  let diff: string;
+  try {
+    diff = readFileSync(diffFile, 'utf8');
+  } catch (error) {
+    console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+
+  const baseIndex = argv.indexOf('--base');
+  const base = flag(argv, '--base');
+  if (baseIndex !== -1 && base === null) {
+    console.error('--base needs a git ref, for example: --base origin/main');
+    return 2;
+  }
+  if (base !== null && !refExists(base, process.cwd())) {
+    console.error(`--base ${base} does not resolve in this repository. Fetch it before collecting symbol context.`);
+    return 2;
+  }
+
+  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base });
+  const out = flag(argv, '--out');
+  if (out === null) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+
+  try {
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, JSON.stringify(result, null, 2), 'utf8');
+    console.log(JSON.stringify({ path: out, files: result.files.length, downstreamFiles: result.downstreamFiles }, null, 2));
+    return 0;
+  } catch (error) {
+    console.error(`Cannot write ${out}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
   }
 }
 
@@ -1663,6 +1722,9 @@ async function main(argv: string[]): Promise<number> {
       return argv.includes('--pr')
         ? await pullRequestDiffCommand(argv.slice(1))
         : diffCommand(argv.slice(1));
+
+    case 'symbols':
+      return symbolsCommand(argv.slice(1));
 
     case 'anchors':
       return anchorsCommand();

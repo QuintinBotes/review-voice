@@ -87,6 +87,19 @@ code and binaries are dropped by default, and each one reports why. A silent
 omission is indistinguishable from a bug, and `--include-generated` brings them
 back for the case where the dependency change *is* the review.
 
+### Changed-symbol context
+
+`review-voice symbols` keeps the distinctive identifiers a hunk adds or
+removes, then puts a bounded list of code paths with the same literal name next
+to the patch. It gives the analyst and verifier likely consumers to inspect
+without asking either agent to remember to find callers.
+
+The evidence is deliberately lexical, not a call graph. A literal match can be
+a declaration or an unrelated construct, and unfamiliar languages do not get a
+made-up parser; it is a reading hint, never proof of a call site. A failed grep
+marks that file inconclusive rather than empty, because a search that did not
+answer cannot establish that a changed symbol has no consumers.
+
 ### Retrieval
 
 No embedding model ships with the plugin. A downloaded model would break

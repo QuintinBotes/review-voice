@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `RV symbols` supplies the analyst and verifier with a bounded, lexical view
+  of each changed symbol's code references at the reviewed ref. The context is
+  deliberately a reading hint rather than a call graph, and an unavailable
+  search is reported as inconclusive rather than as no consumers.
 - `RV anchors` reads a validated review on stdin and prints one inline anchor
   per finding, taken from the review text rather than from candidate records.
   The candidate's `path` is free text from the analyst and the rendered finding

@@ -1015,6 +1015,360 @@ async function readThread(options) {
   };
 }
 
+// plugins/review-voice/src/scoring/existence.ts
+import { execFileSync as execFileSync5 } from "node:child_process";
+var ASSERTS_ABSENCE = [
+  /\b(?:does|do)\s+not\s+exist\b/i,
+  /\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)\b/i,
+  /\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)\b/i,
+  /\bnever\s+(?:defined|declared|exported)\b/i,
+  /\bcannot\s+be\s+found\b/i,
+  /\bnowhere\s+in\s+the\s+(?:repo|repository|codebase)\b/i
+];
+var DETERMINER = /^(?:the|this|that|these|those|our|your|their|its|his|her|my|a|an)\s+/i;
+function withoutDeterminer(complement) {
+  let text = complement.trim().replace(/[`'"]/g, "");
+  for (let i = 0; i < 3; i += 1) text = text.replace(DETERMINER, "");
+  return text.trim();
+}
+var GENERIC_REPOSITORY = /^(?:entire\s+|whole\s+)?(?:mono)?(?:repo|repository|code\s?base|project|tree)\b/i;
+var NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
+var NAMED_UNIT_SUFFIX = /^(?:the\s+)?\S+\s+(?:repo|repository|service|package|library)\b/i;
+var ANOTHER_UNIT = /^(?:another|a\s+different|a\s+sibling|the\s+other)\s+(?:repo|repository|package|service)\b/i;
+var ABSENCE_WITH_COMPLEMENT = /\b(?:does|do)\s+not\s+exist|\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)|\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)|\bnever\s+(?:defined|declared|exported)|\bcannot\s+be\s+found/i;
+var LOCATIVE = /\b(?:in|from|within|under|inside|throughout|across)\s+([^.,;]+)/i;
+function namesThisRepository(complement, repository) {
+  if (repository === null) return false;
+  const candidates = [repository, repository.split("/").pop() ?? repository].map((name) => name.trim().toLowerCase()).filter((name) => name.length > 0);
+  const said = withoutDeterminer(complement).toLowerCase();
+  return candidates.some(
+    (name) => [name, `${name} repository`, `${name} repo`, `${name} monorepo`, `${name} codebase`].includes(said)
+  );
+}
+var PROPERTY_NOT_PLACE = /\b(?:ex|im)ported\b|\bnot\s+(?:public|exposed|re-?exported)\b/i;
+function absenceScope(text, repository = null) {
+  if (PROPERTY_NOT_PLACE.test(text)) return "bounded";
+  if (/\b(?:anywhere|nowhere)\b/i.test(text)) return "repository";
+  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text);
+  if (assertion === null) return "repository";
+  const after = text.slice(assertion.index + assertion[0].length);
+  const locative = LOCATIVE.exec(after);
+  if (locative === null) return "repository";
+  const complement = (locative[1] ?? "").trim();
+  const bare = withoutDeterminer(complement);
+  if (GENERIC_REPOSITORY.test(bare)) return "repository";
+  if (namesThisRepository(complement, repository)) return "repository";
+  if (ANOTHER_UNIT.test(complement) || NAMED_UNIT.test(bare) || NAMED_UNIT_SUFFIX.test(bare)) {
+    return "elsewhere";
+  }
+  return "bounded";
+}
+function namedSymbols(text) {
+  const found = /* @__PURE__ */ new Set();
+  for (const match of text.matchAll(/`([^`]+)`/g)) {
+    const token = (match[1] ?? "").trim();
+    if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found.add(token);
+  }
+  for (const match of text.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
+    if (match[1] !== void 0) found.add(match[1]);
+  }
+  for (const match of text.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
+    if (match[1] !== void 0) found.add(match[1]);
+  }
+  for (const token of [...found]) {
+    const base = token.split("/").pop();
+    if (base !== void 0 && base !== token && base.length >= 4 && !base.startsWith("-")) found.add(base);
+  }
+  return [...found];
+}
+var gitGrep = (symbol, cwd, ref) => {
+  const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "-e", symbol] : ["grep", "--fixed-strings", "--quiet", "-e", symbol, ref];
+  try {
+    execFileSync5("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
+    return true;
+  } catch (error) {
+    if (error.status === 1) return false;
+    throw error;
+  }
+};
+var gitGrepPaths = (symbol, cwd, ref) => {
+  const args = ref === null ? ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol] : ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol, ref];
+  try {
+    const output = execFileSync5("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 1e4 });
+    const prefix = ref === null ? "" : `${ref}:`;
+    return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
+  } catch (error) {
+    if (error.status === 1) return [];
+    throw error;
+  }
+};
+function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository = null) {
+  const searchedRefLabel = ref ?? "working tree";
+  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text))) return null;
+  const scope = absenceScope(text, repository);
+  if (scope === "bounded") return null;
+  if (scope === "elsewhere") {
+    return {
+      found: [],
+      checked: [],
+      // Not silence. An empty `found` with `inconclusive: false` is the shape
+      // that reads as corroboration, and this repository cannot speak for
+      // another one.
+      inconclusive: true,
+      searchedRef: searchedRefLabel
+    };
+  }
+  const symbols = namedSymbols(text);
+  if (symbols.length === 0) return null;
+  const searchedRef = ref ?? "working tree";
+  const found = [];
+  const checked = [];
+  for (const symbol of symbols.slice(0, 12)) {
+    try {
+      checked.push(symbol);
+      if (search(symbol, cwd, ref)) found.push(symbol);
+    } catch {
+      return { found: [], checked, inconclusive: true, searchedRef };
+    }
+  }
+  return { found, checked, inconclusive: false, searchedRef };
+}
+
+// plugins/review-voice/src/scoring/reach.ts
+function symbolsFromHunks(diff, changedPath) {
+  const wanted = changedPath === null ? null : normalisePath(changedPath);
+  const found = /* @__PURE__ */ new Set();
+  let inFile = false;
+  for (const raw of diff.split(/\r?\n/)) {
+    if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
+      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
+      if (match?.[1] !== void 0) inFile = wanted === null || normalisePath(match[1]) === wanted;
+      else if (raw.startsWith("diff --git ")) inFile = false;
+      continue;
+    }
+    if (!inFile) continue;
+    if (raw.startsWith("--- ")) continue;
+    if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
+    const text = raw.slice(1);
+    for (const m of text.matchAll(
+      /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g
+    )) {
+      if (m[1] !== void 0) found.add(m[1]);
+    }
+  }
+  return [...found];
+}
+var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
+  /(?:^|\/)(?:eslint\.config\.[^/]+|\.eslintrc(?:\.[^/]+)?|biome\.json|\.stylelintrc(?:\.[^/]+)?|\.prettierrc(?:\.[^/]+)?)$/i,
+  /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/i,
+  /^(?:\.github\/workflows\/|\.gitlab-ci(?:\.yml)?$|\.circleci\/config\.yml$|azure-pipelines(?:\.[^/]+)?\.ya?ml$|Jenkinsfile$)/i,
+  /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|Pipfile\.lock|composer\.lock|go\.sum)$/i,
+  /^(?:package\.json|Makefile|GNUmakefile|justfile|Taskfile\.ya?ml|turbo\.json|nx\.json)$/i,
+  /^(?:scripts|tools|build|bin)\//i
+];
+function normalisePath(path) {
+  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+}
+function directoryOf(path) {
+  const parts = normalisePath(path).split("/");
+  parts.pop();
+  return parts.join("/");
+}
+function directoryCount(paths) {
+  return new Set([...paths].map(directoryOf)).size;
+}
+var PROSE_EXTENSIONS = /* @__PURE__ */ new Set(["md", "markdown", "mdx", "txt", "rst", "adoc"]);
+function isCode(path) {
+  const name = normalisePath(path).split("/").pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  const extension = dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
+  if (PROSE_EXTENSIONS.has(extension)) return false;
+  return classify(normalisePath(path)) === "source";
+}
+var NON_DISCRIMINATING_DIRECTORIES = 12;
+function withinSubtree(path, changedDirectory) {
+  if (changedDirectory === "") return false;
+  const normalised = normalisePath(path);
+  return normalised === changedDirectory || normalised.startsWith(`${changedDirectory}/`);
+}
+function isRepositoryWideToolchainPath(path) {
+  const normalised = normalisePath(path);
+  return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
+}
+function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
+  const searchedRef = ref ?? "working tree";
+  const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
+  const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
+  const source = ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
+  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text)).slice(0, 12);
+  const searched = [];
+  const ignored = [];
+  const hits = /* @__PURE__ */ new Set();
+  let usedModuleFallback = false;
+  const normalisedChangedPath = normalisePath(changedPath);
+  const changedDirectory = directoryOf(changedPath);
+  const result = (reach, inconclusive) => {
+    const counted2 = [...hits].filter(isCode).sort();
+    const outside = counted2.filter(
+      (path) => normalisePath(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
+    );
+    return {
+      reach,
+      symbolSource: source,
+      moduleFallback: usedModuleFallback,
+      symbols: searched,
+      ignoredSymbols: [...ignored].sort(),
+      paths: [...hits].sort(),
+      countedPaths: counted2,
+      directoryCount: directoryCount(counted2),
+      outsideDirectoryCount: directoryCount(outside),
+      inconclusive,
+      searchedRef
+    };
+  };
+  if (symbols.length === 0) return result(null, false);
+  for (const symbol of symbols) {
+    searched.push(symbol);
+    let found;
+    try {
+      found = search(symbol, cwd, ref);
+    } catch {
+      return result(null, true);
+    }
+    const code = found.filter(isCode);
+    if (source !== "diff" && !code.some((path) => normalisePath(path) === normalisedChangedPath)) {
+      ignored.push(symbol);
+      continue;
+    }
+    if (directoryCount(code) > NON_DISCRIMINATING_DIRECTORIES) {
+      ignored.push(symbol);
+      continue;
+    }
+    for (const path of found) hits.add(path);
+  }
+  if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
+  let counted = [...hits].filter(isCode);
+  if (counted.length === 0 && source !== "claim") {
+    const moduleName = normalisePath(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
+    if (moduleName !== void 0 && moduleName.length >= 4) {
+      searched.push(moduleName);
+      try {
+        for (const path of search(moduleName, cwd, ref)) hits.add(path);
+      } catch {
+        return result(null, true);
+      }
+      counted = [...hits].filter(isCode);
+      usedModuleFallback = counted.length > 0;
+    }
+  }
+  if (counted.length === 0) return result(null, false);
+  if (counted.every((path) => normalisePath(path) === normalisedChangedPath)) {
+    return result("local", false);
+  }
+  const outsideDirectories = directoryCount(
+    counted.filter(
+      (path) => normalisePath(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
+    )
+  );
+  if (outsideDirectories >= 2) return result("repository", false);
+  return result("component", false);
+}
+
+// plugins/review-voice/src/diff/symbols.ts
+var MAX_SYMBOLS_PER_FILE = 12;
+var MAX_REFERENCES_PER_SYMBOL = 8;
+function normalisePath2(path) {
+  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+}
+function directoryCount2(paths) {
+  return new Set([...paths].map((path) => normalisePath2(path).split("/").slice(0, -1).join("/"))).size;
+}
+function pathsWithHunks(diff) {
+  const paths = [];
+  const seen = /* @__PURE__ */ new Set();
+  let path = null;
+  let hasHunkLine = false;
+  const keepCurrent = () => {
+    if (path === null || !hasHunkLine) return;
+    const normalised = normalisePath2(path);
+    if (seen.has(normalised)) return;
+    seen.add(normalised);
+    paths.push(normalised);
+  };
+  for (const raw of diff.split(/\r?\n/)) {
+    if (raw.startsWith("diff --git ")) {
+      keepCurrent();
+      path = null;
+      hasHunkLine = false;
+      continue;
+    }
+    if (raw.startsWith("+++ ")) {
+      const match = /^\+\+\+ b\/(.+)$/.exec(raw);
+      path = match?.[1] === void 0 ? null : match[1];
+      continue;
+    }
+    if (path === null || raw.startsWith("--- ")) continue;
+    if (raw.startsWith("+") || raw.startsWith("-")) hasHunkLine = true;
+  }
+  keepCurrent();
+  return paths;
+}
+function reportFile(diff, path, cwd, ref, search) {
+  const allSymbols = symbolsFromHunks(diff, path);
+  const omitted = Math.max(0, allSymbols.length - MAX_SYMBOLS_PER_FILE);
+  const symbols = [];
+  const references = /* @__PURE__ */ new Set();
+  const normalisedPath = normalisePath2(path);
+  const file = (inconclusive) => ({
+    path,
+    symbols,
+    ...omitted === 0 ? {} : { moreSymbols: omitted },
+    ...inconclusive ? { inconclusive: true } : {}
+  });
+  for (const symbol of allSymbols.slice(0, MAX_SYMBOLS_PER_FILE)) {
+    let found;
+    try {
+      found = search(symbol, cwd, ref);
+    } catch {
+      return { file: file(true), references };
+    }
+    const code = new Set(found.filter(isCode).map(normalisePath2));
+    if (directoryCount2(code) > NON_DISCRIMINATING_DIRECTORIES) {
+      symbols.push({ symbol, common: true });
+      continue;
+    }
+    const paths = [...code].filter((candidate) => candidate !== normalisedPath).sort();
+    for (const candidate of paths) references.add(candidate);
+    symbols.push({
+      symbol,
+      references: paths.slice(0, MAX_REFERENCES_PER_SYMBOL),
+      referenceCount: paths.length,
+      ...paths.length > MAX_REFERENCES_PER_SYMBOL ? { truncated: true } : {}
+    });
+  }
+  return { file: file(false), references };
+}
+function collectSymbolContext(options) {
+  const search = options.search ?? gitGrepPaths;
+  const paths = pathsWithHunks(options.diff);
+  const records = paths.map((path) => reportFile(options.diff, path, options.cwd, options.ref, search));
+  const changed = new Set(paths.map(normalisePath2));
+  const downstream = /* @__PURE__ */ new Set();
+  for (const record of records) {
+    for (const path of record.references) {
+      if (!changed.has(normalisePath2(path))) downstream.add(path);
+    }
+  }
+  records.sort(
+    (a, b) => b.references.size - a.references.size || a.file.path.localeCompare(b.file.path)
+  );
+  return {
+    searchedRef: options.ref ?? "working tree",
+    files: records.map((record) => record.file),
+    downstreamFiles: downstream.size
+  };
+}
+
 // plugins/review-voice/src/store/db.ts
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, chmodSync } from "node:fs";
@@ -8959,265 +9313,6 @@ function changedPathsFrom(filesJson) {
   return files.map((file) => typeof file === "object" && file !== null ? file.path : void 0).filter((path) => typeof path === "string");
 }
 
-// plugins/review-voice/src/scoring/existence.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
-var ASSERTS_ABSENCE = [
-  /\b(?:does|do)\s+not\s+exist\b/i,
-  /\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)\b/i,
-  /\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)\b/i,
-  /\bnever\s+(?:defined|declared|exported)\b/i,
-  /\bcannot\s+be\s+found\b/i,
-  /\bnowhere\s+in\s+the\s+(?:repo|repository|codebase)\b/i
-];
-var DETERMINER = /^(?:the|this|that|these|those|our|your|their|its|his|her|my|a|an)\s+/i;
-function withoutDeterminer(complement) {
-  let text = complement.trim().replace(/[`'"]/g, "");
-  for (let i = 0; i < 3; i += 1) text = text.replace(DETERMINER, "");
-  return text.trim();
-}
-var GENERIC_REPOSITORY = /^(?:entire\s+|whole\s+)?(?:mono)?(?:repo|repository|code\s?base|project|tree)\b/i;
-var NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
-var NAMED_UNIT_SUFFIX = /^(?:the\s+)?\S+\s+(?:repo|repository|service|package|library)\b/i;
-var ANOTHER_UNIT = /^(?:another|a\s+different|a\s+sibling|the\s+other)\s+(?:repo|repository|package|service)\b/i;
-var ABSENCE_WITH_COMPLEMENT = /\b(?:does|do)\s+not\s+exist|\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)|\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)|\bnever\s+(?:defined|declared|exported)|\bcannot\s+be\s+found/i;
-var LOCATIVE = /\b(?:in|from|within|under|inside|throughout|across)\s+([^.,;]+)/i;
-function namesThisRepository(complement, repository) {
-  if (repository === null) return false;
-  const candidates = [repository, repository.split("/").pop() ?? repository].map((name) => name.trim().toLowerCase()).filter((name) => name.length > 0);
-  const said = withoutDeterminer(complement).toLowerCase();
-  return candidates.some(
-    (name) => [name, `${name} repository`, `${name} repo`, `${name} monorepo`, `${name} codebase`].includes(said)
-  );
-}
-var PROPERTY_NOT_PLACE = /\b(?:ex|im)ported\b|\bnot\s+(?:public|exposed|re-?exported)\b/i;
-function absenceScope(text, repository = null) {
-  if (PROPERTY_NOT_PLACE.test(text)) return "bounded";
-  if (/\b(?:anywhere|nowhere)\b/i.test(text)) return "repository";
-  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text);
-  if (assertion === null) return "repository";
-  const after = text.slice(assertion.index + assertion[0].length);
-  const locative = LOCATIVE.exec(after);
-  if (locative === null) return "repository";
-  const complement = (locative[1] ?? "").trim();
-  const bare = withoutDeterminer(complement);
-  if (GENERIC_REPOSITORY.test(bare)) return "repository";
-  if (namesThisRepository(complement, repository)) return "repository";
-  if (ANOTHER_UNIT.test(complement) || NAMED_UNIT.test(bare) || NAMED_UNIT_SUFFIX.test(bare)) {
-    return "elsewhere";
-  }
-  return "bounded";
-}
-function namedSymbols(text) {
-  const found = /* @__PURE__ */ new Set();
-  for (const match of text.matchAll(/`([^`]+)`/g)) {
-    const token = (match[1] ?? "").trim();
-    if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found.add(token);
-  }
-  for (const match of text.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
-    if (match[1] !== void 0) found.add(match[1]);
-  }
-  for (const match of text.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
-    if (match[1] !== void 0) found.add(match[1]);
-  }
-  for (const token of [...found]) {
-    const base = token.split("/").pop();
-    if (base !== void 0 && base !== token && base.length >= 4 && !base.startsWith("-")) found.add(base);
-  }
-  return [...found];
-}
-var gitGrep = (symbol, cwd, ref) => {
-  const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "-e", symbol] : ["grep", "--fixed-strings", "--quiet", "-e", symbol, ref];
-  try {
-    execFileSync5("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
-    return true;
-  } catch (error) {
-    if (error.status === 1) return false;
-    throw error;
-  }
-};
-var gitGrepPaths = (symbol, cwd, ref) => {
-  const args = ref === null ? ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol] : ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol, ref];
-  try {
-    const output = execFileSync5("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 1e4 });
-    const prefix = ref === null ? "" : `${ref}:`;
-    return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
-  } catch (error) {
-    if (error.status === 1) return [];
-    throw error;
-  }
-};
-function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository = null) {
-  const searchedRefLabel = ref ?? "working tree";
-  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text))) return null;
-  const scope = absenceScope(text, repository);
-  if (scope === "bounded") return null;
-  if (scope === "elsewhere") {
-    return {
-      found: [],
-      checked: [],
-      // Not silence. An empty `found` with `inconclusive: false` is the shape
-      // that reads as corroboration, and this repository cannot speak for
-      // another one.
-      inconclusive: true,
-      searchedRef: searchedRefLabel
-    };
-  }
-  const symbols = namedSymbols(text);
-  if (symbols.length === 0) return null;
-  const searchedRef = ref ?? "working tree";
-  const found = [];
-  const checked = [];
-  for (const symbol of symbols.slice(0, 12)) {
-    try {
-      checked.push(symbol);
-      if (search(symbol, cwd, ref)) found.push(symbol);
-    } catch {
-      return { found: [], checked, inconclusive: true, searchedRef };
-    }
-  }
-  return { found, checked, inconclusive: false, searchedRef };
-}
-
-// plugins/review-voice/src/scoring/reach.ts
-function symbolsFromHunks(diff, changedPath) {
-  const wanted = changedPath === null ? null : normalisePath(changedPath);
-  const found = /* @__PURE__ */ new Set();
-  let inFile = false;
-  for (const raw of diff.split(/\r?\n/)) {
-    if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
-      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
-      if (match?.[1] !== void 0) inFile = wanted === null || normalisePath(match[1]) === wanted;
-      else if (raw.startsWith("diff --git ")) inFile = false;
-      continue;
-    }
-    if (!inFile) continue;
-    if (raw.startsWith("--- ")) continue;
-    if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
-    const text = raw.slice(1);
-    for (const m of text.matchAll(
-      /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g
-    )) {
-      if (m[1] !== void 0) found.add(m[1]);
-    }
-  }
-  return [...found];
-}
-var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
-  /(?:^|\/)(?:eslint\.config\.[^/]+|\.eslintrc(?:\.[^/]+)?|biome\.json|\.stylelintrc(?:\.[^/]+)?|\.prettierrc(?:\.[^/]+)?)$/i,
-  /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/i,
-  /^(?:\.github\/workflows\/|\.gitlab-ci(?:\.yml)?$|\.circleci\/config\.yml$|azure-pipelines(?:\.[^/]+)?\.ya?ml$|Jenkinsfile$)/i,
-  /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|Pipfile\.lock|composer\.lock|go\.sum)$/i,
-  /^(?:package\.json|Makefile|GNUmakefile|justfile|Taskfile\.ya?ml|turbo\.json|nx\.json)$/i,
-  /^(?:scripts|tools|build|bin)\//i
-];
-function normalisePath(path) {
-  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
-}
-function directoryOf(path) {
-  const parts = normalisePath(path).split("/");
-  parts.pop();
-  return parts.join("/");
-}
-function directoryCount(paths) {
-  return new Set([...paths].map(directoryOf)).size;
-}
-var PROSE_EXTENSIONS = /* @__PURE__ */ new Set(["md", "markdown", "mdx", "txt", "rst", "adoc"]);
-function isCode(path) {
-  const name = normalisePath(path).split("/").pop() ?? "";
-  const dot = name.lastIndexOf(".");
-  const extension = dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
-  if (PROSE_EXTENSIONS.has(extension)) return false;
-  return classify(normalisePath(path)) === "source";
-}
-var NON_DISCRIMINATING_DIRECTORIES = 12;
-function withinSubtree(path, changedDirectory) {
-  if (changedDirectory === "") return false;
-  const normalised = normalisePath(path);
-  return normalised === changedDirectory || normalised.startsWith(`${changedDirectory}/`);
-}
-function isRepositoryWideToolchainPath(path) {
-  const normalised = normalisePath(path);
-  return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
-}
-function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
-  const searchedRef = ref ?? "working tree";
-  const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
-  const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
-  const source = ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
-  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text)).slice(0, 12);
-  const searched = [];
-  const ignored = [];
-  const hits = /* @__PURE__ */ new Set();
-  let usedModuleFallback = false;
-  const normalisedChangedPath = normalisePath(changedPath);
-  const changedDirectory = directoryOf(changedPath);
-  const result = (reach, inconclusive) => {
-    const counted2 = [...hits].filter(isCode).sort();
-    const outside = counted2.filter(
-      (path) => normalisePath(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
-    );
-    return {
-      reach,
-      symbolSource: source,
-      moduleFallback: usedModuleFallback,
-      symbols: searched,
-      ignoredSymbols: [...ignored].sort(),
-      paths: [...hits].sort(),
-      countedPaths: counted2,
-      directoryCount: directoryCount(counted2),
-      outsideDirectoryCount: directoryCount(outside),
-      inconclusive,
-      searchedRef
-    };
-  };
-  if (symbols.length === 0) return result(null, false);
-  for (const symbol of symbols) {
-    searched.push(symbol);
-    let found;
-    try {
-      found = search(symbol, cwd, ref);
-    } catch {
-      return result(null, true);
-    }
-    const code = found.filter(isCode);
-    if (source !== "diff" && !code.some((path) => normalisePath(path) === normalisedChangedPath)) {
-      ignored.push(symbol);
-      continue;
-    }
-    if (directoryCount(code) > NON_DISCRIMINATING_DIRECTORIES) {
-      ignored.push(symbol);
-      continue;
-    }
-    for (const path of found) hits.add(path);
-  }
-  if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
-  let counted = [...hits].filter(isCode);
-  if (counted.length === 0 && source !== "claim") {
-    const moduleName = normalisePath(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
-    if (moduleName !== void 0 && moduleName.length >= 4) {
-      searched.push(moduleName);
-      try {
-        for (const path of search(moduleName, cwd, ref)) hits.add(path);
-      } catch {
-        return result(null, true);
-      }
-      counted = [...hits].filter(isCode);
-      usedModuleFallback = counted.length > 0;
-    }
-  }
-  if (counted.length === 0) return result(null, false);
-  if (counted.every((path) => normalisePath(path) === normalisedChangedPath)) {
-    return result("local", false);
-  }
-  const outsideDirectories = directoryCount(
-    counted.filter(
-      (path) => normalisePath(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
-    )
-  );
-  if (outsideDirectories >= 2) return result("repository", false);
-  return result("component", false);
-}
-
 // plugins/review-voice/src/scoring/citation.ts
 import { execFileSync as execFileSync6 } from "node:child_process";
 function git3(args, cwd) {
@@ -10592,6 +10687,7 @@ var USAGE = `review-voice <command>
 
 Commands:
   diff              Acquire the diff under review as structured JSON
+  symbols           Collect changed symbols and their lexical reference paths
   check-candidates  Validate analyst output against the candidate schema
   context           Resolve config and the active policy stack as JSON
   conventions       Collect the repository's own convention documents
@@ -10637,6 +10733,11 @@ diff flags:
   --include-generated    Include lock files, generated, vendored and binary files
   --out <dir>            Write diff.patch and files.json separately instead of
                          one blob on stdout
+
+symbols flags:
+  --diff-file <path>     Unified diff whose changed symbols to inspect
+  --base <ref>           Search this committed tree instead of the working tree
+  --out <path>           Write the JSON context to a file instead of stdout
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -10871,6 +10972,45 @@ function diffCommand(argv) {
       return 2;
     }
     throw error;
+  }
+}
+function symbolsCommand(argv) {
+  const diffFile = flag(argv, "--diff-file");
+  if (diffFile === null) {
+    console.error("--diff-file needs a unified diff path.");
+    return 2;
+  }
+  let diff;
+  try {
+    diff = readFileSync4(diffFile, "utf8");
+  } catch (error) {
+    console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const baseIndex = argv.indexOf("--base");
+  const base = flag(argv, "--base");
+  if (baseIndex !== -1 && base === null) {
+    console.error("--base needs a git ref, for example: --base origin/main");
+    return 2;
+  }
+  if (base !== null && !refExists(base, process.cwd())) {
+    console.error(`--base ${base} does not resolve in this repository. Fetch it before collecting symbol context.`);
+    return 2;
+  }
+  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base });
+  const out = flag(argv, "--out");
+  if (out === null) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+  try {
+    mkdirSync2(dirname4(out), { recursive: true });
+    writeFileSync(out, JSON.stringify(result, null, 2), "utf8");
+    console.log(JSON.stringify({ path: out, files: result.files.length, downstreamFiles: result.downstreamFiles }, null, 2));
+    return 0;
+  } catch (error) {
+    console.error(`Cannot write ${out}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
   }
 }
 function flag(argv, name) {
@@ -11849,6 +11989,8 @@ async function main(argv) {
       return 0;
     case "diff":
       return argv.includes("--pr") ? await pullRequestDiffCommand(argv.slice(1)) : diffCommand(argv.slice(1));
+    case "symbols":
+      return symbolsCommand(argv.slice(1));
     case "anchors":
       return anchorsCommand();
     case "thread":

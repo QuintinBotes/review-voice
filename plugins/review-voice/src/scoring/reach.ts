@@ -137,7 +137,7 @@ function directoryCount(paths: Iterable<string>): number {
  */
 const PROSE_EXTENSIONS = new Set(['md', 'markdown', 'mdx', 'txt', 'rst', 'adoc']);
 
-function isCode(path: string): boolean {
+export function isCode(path: string): boolean {
   const name = normalisePath(path).split('/').pop() ?? '';
   const dot = name.lastIndexOf('.');
   const extension = dot <= 0 ? '' : name.slice(dot + 1).toLowerCase();
@@ -159,7 +159,7 @@ function isCode(path: string): boolean {
  * many directories is a common word in any language, and a denylist would have
  * to be maintained per ecosystem to catch the same thing.
  */
-const NON_DISCRIMINATING_DIRECTORIES = 12;
+export const NON_DISCRIMINATING_DIRECTORIES = 12;
 
 /** Whether a path sits inside the changed file's own directory subtree. */
 function withinSubtree(path: string, changedDirectory: string): boolean {

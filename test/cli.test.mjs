@@ -161,3 +161,38 @@ test('conventions --help prints help instead of dumping every document', () => {
   assert.match(stdout, /review-voice <command>/);
   assert.ok(stdout.length < 8_000, `help should be help, got ${stdout.length} bytes`);
 });
+
+test('symbols rejects a base ref that does not resolve', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-symbols-cli-'));
+  try {
+    const patch = join(dir, 'diff.patch');
+    writeFileSync(
+      patch,
+      [
+        'diff --git a/src/example.ts b/src/example.ts',
+        '--- a/src/example.ts',
+        '+++ b/src/example.ts',
+        '@@ -1 +1 @@',
+        '+export const exampleSymbol = 1;',
+      ].join('\n'),
+    );
+
+    const { code, stderr } = run([
+      'symbols',
+      '--diff-file',
+      patch,
+      '--base',
+      'refs/does-not-exist-for-symbol-context-test',
+    ]);
+    assert.equal(code, 2);
+    assert.match(stderr, /does not resolve/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('symbols rejects a missing diff file', () => {
+  const { code, stderr } = run(['symbols', '--diff-file', join(tmpdir(), 'rv-symbols-missing.patch')]);
+  assert.equal(code, 2);
+  assert.match(stderr, /Cannot read/);
+});
