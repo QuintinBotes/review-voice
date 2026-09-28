@@ -109,6 +109,7 @@ Then:
 /review-voice:review --base origin/main
 /review-voice:review --staged
 /review-voice:review --pr 85
+/review-voice:review --pr 85 --full
 ```
 
 **Requirements:** Node 22 or newer, `git`, and `gh` only if you enable GitHub

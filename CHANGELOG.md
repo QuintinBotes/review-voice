@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Pull-request re-reviews can narrow to commits added after the last completed
+  review when the local history, file list and range all prove that boundary is
+  safe. Every uncertain shape falls back to a named full review, and an
+  incremental scope is stored and shown with the result.
+
 ## [1.6.0] - 2026-09-28
 
 ### Added

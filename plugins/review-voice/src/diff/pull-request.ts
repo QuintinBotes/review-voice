@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { GitHubClient } from '../github/client.ts';
 import { classify, isReviewable, languageOf } from './classify.ts';
 import type { ChangedFile, DiffResult } from './acquire.ts';
+import type { ReviewScope } from './incremental.ts';
 
 interface RawFile {
   filename: string;
@@ -81,6 +82,7 @@ function git(args: string[], cwd: string, timeout = 60_000): string {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'ignore'],
     timeout,
   });
@@ -191,6 +193,92 @@ export interface PullRequestDiff extends DiffResult {
   truncationNote: string | null;
   /** Whether the pull request's commits can actually be read locally. */
   refs: RefAvailability;
+}
+
+/** A pull-request diff with the exact boundary the caller will review. */
+export interface ScopedPullRequestDiff extends PullRequestDiff {
+  pullNumber: number;
+  scope: ReviewScope;
+  /** Printed after findings when a clean incremental result would mislead. */
+  scopeNote: string | null;
+}
+
+function scopeNote(scope: Extract<ReviewScope, { kind: 'incremental' }>): string {
+  return (
+    `Reviewed ${scope.commits} commit(s) since ${scope.since.slice(0, 7)}; ` +
+    `earlier changes were covered by the review of ${scope.priorReviewedAt.slice(0, 10)}.`
+  );
+}
+
+function pathsWithHunks(diff: string): Set<string> {
+  const paths = new Set<string>();
+  for (const match of diff.matchAll(/^\+\+\+ b\/(.+)$/gm)) {
+    if (match[1] !== undefined && match[1] !== '/dev/null') paths.add(match[1]);
+  }
+  return paths;
+}
+
+function fullScopeResult(
+  result: PullRequestDiff,
+  pullNumber: number,
+  scope: Extract<ReviewScope, { kind: 'full' }>,
+): ScopedPullRequestDiff {
+  return { ...result, pullNumber, scope, scopeNote: null };
+}
+
+/**
+ * Applies a planned boundary to an already acquired pull-request result.
+ *
+ * The API's patch remains the authoritative full diff. Only after the planner
+ * proved that the local range is safe do we substitute a local patch; if that
+ * final read fails, preserving the full patch is safer than returning nothing.
+ */
+export function applyReviewScope(
+  result: PullRequestDiff,
+  pullNumber: number,
+  scope: ReviewScope,
+  cwd: string,
+  readIncrementalDiff: (since: string, head: string, files: string[], cwd: string) => string =
+    (since, head, files, root) => git(['diff', since, head, '--', ...files], root),
+): ScopedPullRequestDiff {
+  if (scope.kind === 'full') return fullScopeResult(result, pullNumber, scope);
+
+  let diff: string;
+  try {
+    diff = readIncrementalDiff(scope.since, result.head, scope.files, cwd);
+  } catch {
+    // The planner's probes passed, but the final range read can still lose a
+    // race with local object cleanup. Do not present an incomplete patch as a
+    // narrowed review; retain the API patch and name the uncertainty instead.
+    return fullScopeResult(result, pullNumber, {
+      kind: 'full',
+      cause: 'compare-unavailable',
+      since: scope.since,
+      priorRunId: scope.priorRunId,
+    });
+  }
+
+  const included = new Set(scope.files);
+  const excludedBecause = `unchanged since the last review (${scope.since.slice(0, 7)})`;
+  const files = result.files.map((file) =>
+    file.reviewed && !included.has(file.path)
+      ? { ...file, reviewed: false, excludedBecause }
+      : file,
+  );
+  const hunkPaths = pathsWithHunks(diff);
+  const reviewedFileCount = files.filter((file) => file.reviewed).length;
+
+  return {
+    ...result,
+    pullNumber,
+    scope,
+    scopeNote: scopeNote(scope),
+    files,
+    reviewedFileCount,
+    hunkFileCount: files.filter((file) => file.reviewed && hunkPaths.has(file.path)).length,
+    excludedFileCount: files.length - reviewedFileCount,
+    diff,
+  };
 }
 
 export async function acquirePullRequestDiff(options: {

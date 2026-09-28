@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
-import { recordRun, runDetail } from '../plugins/review-voice/src/store/runs.ts';
+import { latestRunForPull, recordRun, runDetail } from '../plugins/review-voice/src/store/runs.ts';
 import { dirname, join } from 'node:path';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -20,11 +21,9 @@ function withStore(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'rv-store-'));
   const env = { ...process.env, REVIEW_VOICE_DATA_DIR: dir };
   const run = (args, input) => {
-    try {
-      return { code: 0, stdout: execFileSync(process.execPath, [bundle, ...args], { env, input, encoding: 'utf8' }) };
-    } catch (error) {
-      return { code: error.status, stdout: error.stdout ?? '', stderr: error.stderr ?? '' };
-    }
+    const result = spawnSync(process.execPath, [bundle, ...args], { env, input, encoding: 'utf8' });
+    if (result.error !== undefined) throw result.error;
+    return { code: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
   };
   try {
     return fn(run, dir);
@@ -142,6 +141,148 @@ test('the schema migrates once and reopens cleanly', () => {
     assert.equal(run(['record'], TWO_FINDINGS).code, 0);
     assert.equal(run(['record'], TWO_FINDINGS).code, 0);
     assert.match(run(['status']).stdout, /review runs\s+2/);
+  });
+});
+
+test('an existing v6 database receives pull-request review columns', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-v6-'));
+  const path = join(dir, 'x.db');
+  const legacy = new DatabaseSync(path);
+  try {
+    legacy.exec(`
+      CREATE TABLE schema_version (version INTEGER NOT NULL);
+      INSERT INTO schema_version (version) VALUES (6);
+      CREATE TABLE review_runs (
+        review_run_id TEXT PRIMARY KEY,
+        repository TEXT,
+        base_ref TEXT,
+        head_ref TEXT,
+        diff_hash TEXT NOT NULL,
+        active_policy_versions_json TEXT NOT NULL,
+        retrieved_precedents_json TEXT NOT NULL,
+        candidates_json TEXT NOT NULL,
+        output_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `);
+  } finally {
+    legacy.close();
+  }
+
+  const db = openDatabase(path);
+  try {
+    const columns = db.prepare('PRAGMA table_info(review_runs)').all().map((column) => column.name);
+    assert.ok(columns.includes('stages_json'));
+    assert.ok(columns.includes('pull_number'));
+    assert.ok(columns.includes('scope_json'));
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('pull-request identity and scope round-trip, and lookup stays scoped to that pull request', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-pull-run-'));
+  const db = openDatabase(join(dir, 'x.db'));
+  const scope = {
+    kind: 'incremental',
+    since: 'a'.repeat(40),
+    priorRunId: 'run_before',
+    priorReviewedAt: '2026-09-27T12:00:00.000Z',
+    commits: 2,
+    files: ['src/a.ts'],
+  };
+  try {
+    recordRun(db, {
+      repository: 'Org/Example',
+      baseRef: null,
+      headRef: 'b'.repeat(40),
+      pullNumber: 17,
+      scope,
+      diff: 'first',
+      output: 'No actionable findings.',
+    });
+    recordRun(db, {
+      repository: 'org/example',
+      baseRef: null,
+      headRef: 'c'.repeat(40),
+      pullNumber: 18,
+      scope,
+      diff: 'other pull',
+      output: 'No actionable findings.',
+    });
+    recordRun(db, {
+      repository: 'elsewhere/example',
+      baseRef: null,
+      headRef: 'd'.repeat(40),
+      pullNumber: 17,
+      scope,
+      diff: 'other repository',
+      output: 'No actionable findings.',
+    });
+    const expected = recordRun(db, {
+      repository: 'ORG/EXAMPLE',
+      baseRef: null,
+      headRef: 'e'.repeat(40),
+      pullNumber: 17,
+      scope,
+      diff: 'newest',
+      output: 'No actionable findings.',
+    });
+    recordRun(db, {
+      repository: 'org/example',
+      baseRef: null,
+      headRef: null,
+      pullNumber: 17,
+      scope,
+      diff: 'no head',
+      output: 'No actionable findings.',
+    });
+
+    assert.deepEqual(latestRunForPull(db, 'org/example', 17), {
+      reviewRunId: expected.reviewRunId,
+      headRef: 'e'.repeat(40),
+      createdAt: latestRunForPull(db, 'org/example', 17).createdAt,
+    });
+    const detail = runDetail(db, expected.reviewRunId);
+    assert.equal(detail.pullNumber, 17);
+    assert.deepEqual(detail.scope, scope);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('record reads pull-request scope from files.json without making a missing manifest fatal', () => {
+  withStore((run, dir) => {
+    const manifest = join(dir, 'files.json');
+    writeFileSync(
+      manifest,
+      JSON.stringify({
+        pullNumber: 17,
+        scope: {
+          kind: 'incremental',
+          since: 'abcdef0123456789',
+          priorRunId: 'run_before',
+          priorReviewedAt: '2026-09-27T12:00:00.000Z',
+          commits: 2,
+          files: ['src/a.ts'],
+        },
+      }),
+    );
+
+    assert.equal(
+      run(['record', '--repository', 'org/example', '--head', 'f'.repeat(40), '--files', manifest], TWO_FINDINGS).code,
+      0,
+    );
+    const detail = JSON.parse(run(['explain', '--json']).stdout);
+    assert.equal(detail.pullNumber, 17);
+    assert.equal(detail.scope.kind, 'incremental');
+    assert.match(run(['status']).stdout, /incremental since abcdef0 \(2 commits\)/);
+
+    const missing = run(['record', '--files', join(dir, 'missing.json')], TWO_FINDINGS);
+    assert.equal(missing.code, 0);
+    assert.match(missing.stderr, /recording without pull-request scope/);
   });
 });
 

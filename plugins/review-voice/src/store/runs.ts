@@ -2,6 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import type { Database } from './db.ts';
 import { recordAudit } from './audit.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
+import type { ReviewScope } from '../diff/incremental.ts';
 
 export interface StoredFinding {
   findingId: string;
@@ -35,6 +36,10 @@ export interface RecordRunInput {
   repository: string | null;
   baseRef: string | null;
   headRef: string | null;
+  /** Present only for a review acquired with `diff --pr`. */
+  pullNumber?: number | undefined;
+  /** The full or incremental boundary that produced this run. */
+  scope?: ReviewScope | undefined;
   diff: string;
   output: string;
   candidates?: CandidateHint[] | undefined;
@@ -149,8 +154,9 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
     `INSERT INTO review_runs (
        review_run_id, repository, base_ref, head_ref, diff_hash,
        active_policy_versions_json, retrieved_precedents_json,
-       candidates_json, output_json, created_at, stages_json
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       candidates_json, output_json, created_at, stages_json,
+       pull_number, scope_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     reviewRunId,
     input.repository,
@@ -168,6 +174,8 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
     }),
     new Date().toISOString(),
     JSON.stringify(input.stages ?? []),
+    input.pullNumber ?? null,
+    input.scope === undefined ? null : JSON.stringify(input.scope),
   );
 
   recordAudit(db, 'review_run_recorded', { type: 'review_run', id: reviewRunId }, {
@@ -183,12 +191,46 @@ export interface RunDetail {
   stages: StageTiming[];
   reviewRunId: string;
   repository: string | null;
+  pullNumber: number | null;
+  /** Null is expected for rows recorded before pull-request scopes existed. */
+  scope: ReviewScope | null;
   createdAt: string;
   output: string;
   findings: StoredFinding[];
   scores: unknown;
   precedents: unknown;
   verdicts: unknown;
+}
+
+function storedScope(raw: unknown): ReviewScope | null {
+  if (typeof raw !== 'string') return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const scope = parsed as Record<string, unknown>;
+    if (scope.kind === 'incremental') {
+      return typeof scope.since === 'string' &&
+        typeof scope.priorRunId === 'string' &&
+        typeof scope.priorReviewedAt === 'string' &&
+        typeof scope.commits === 'number' &&
+        Array.isArray(scope.files) &&
+        scope.files.every((path) => typeof path === 'string')
+        ? (scope as unknown as ReviewScope)
+        : null;
+    }
+    if (scope.kind === 'full') {
+      return typeof scope.cause === 'string' &&
+        (typeof scope.since === 'string' || scope.since === null) &&
+        (typeof scope.priorRunId === 'string' || scope.priorRunId === null)
+        ? (scope as unknown as ReviewScope)
+        : null;
+    }
+    return null;
+  } catch {
+    // A row from an interrupted or manually repaired store must not prevent
+    // users from inspecting its otherwise intact review.
+    return null;
+  }
 }
 
 /** Everything `explain` needs about a run, without re-deriving any of it. */
@@ -214,6 +256,8 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
   return {
     reviewRunId: row['review_run_id'] as string,
     repository: row['repository'] as string | null,
+    pullNumber: Number.isInteger(row['pull_number']) ? (row['pull_number'] as number) : null,
+    scope: storedScope(row['scope_json']),
     createdAt: row['created_at'] as string,
     output: parsed.output,
     findings: parsed.findings,
@@ -231,6 +275,40 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
       }
     })(),
     precedents: JSON.parse(row['retrieved_precedents_json'] as string),
+  };
+}
+
+/**
+ * Finds the last completed review of one pull request.
+ *
+ * Repository spelling comes from remotes and APIs, which can disagree only by
+ * case. Matching it case-insensitively keeps that cosmetic difference from
+ * silently turning a repeat review into a first review.
+ */
+export function latestRunForPull(
+  db: Database,
+  repository: string,
+  pullNumber: number,
+): { reviewRunId: string; headRef: string; createdAt: string } | null {
+  const row = db
+    .prepare(
+      `SELECT review_run_id, head_ref, created_at
+       FROM review_runs
+       WHERE LOWER(repository) = LOWER(?)
+         AND pull_number = ?
+         AND head_ref IS NOT NULL
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`,
+    )
+    .get(repository, pullNumber) as
+    | { review_run_id: string; head_ref: string; created_at: string }
+    | undefined;
+
+  if (row === undefined) return null;
+  return {
+    reviewRunId: row.review_run_id,
+    headRef: row.head_ref,
+    createdAt: row.created_at,
   };
 }
 

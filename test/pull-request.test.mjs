@@ -345,3 +345,84 @@ test('when both commits are already present nothing is fetched and no note is ra
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('an incremental scope replaces the patch and makes excluded files visible', async () => {
+  const { applyReviewScope } = await import('../plugins/review-voice/src/diff/pull-request.ts');
+  const result = {
+    repositoryRoot: 'org/a',
+    mode: 'pull-request',
+    base: 'base',
+    head: 'abcdef0123456789',
+    title: 'change',
+    files: [
+      {
+        path: 'src/a.ts',
+        status: 'modified',
+        class: 'source',
+        language: 'TypeScript',
+        additions: 1,
+        deletions: 1,
+        reviewed: true,
+      },
+      {
+        path: 'src/b.ts',
+        status: 'modified',
+        class: 'source',
+        language: 'TypeScript',
+        additions: 1,
+        deletions: 1,
+        reviewed: true,
+      },
+      {
+        path: 'package-lock.json',
+        status: 'modified',
+        class: 'lockfile',
+        language: 'JSON',
+        additions: 1,
+        deletions: 1,
+        reviewed: false,
+        excludedBecause: 'lock file',
+      },
+    ],
+    reviewedFileCount: 2,
+    hunkFileCount: 2,
+    excludedFileCount: 1,
+    diff: 'full patch',
+    totalChangedFiles: 3,
+    additions: 3,
+    deletions: 3,
+    truncated: false,
+    truncationNote: null,
+    refs: {
+      base: { sha: 'base', available: true },
+      head: { sha: 'abcdef0123456789', available: true },
+      fetched: false,
+      note: null,
+    },
+  };
+
+  const scoped = applyReviewScope(
+    result,
+    42,
+    {
+      kind: 'incremental',
+      since: '1234567890abcdef',
+      priorRunId: 'run_001',
+      priorReviewedAt: '2026-09-27T12:00:00.000Z',
+      commits: 2,
+      files: ['src/a.ts'],
+    },
+    process.cwd(),
+    () => 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-a\n+b\n',
+  );
+
+  assert.match(scoped.diff, /diff --git a\/src\/a.ts/);
+  assert.equal(scoped.files[0].reviewed, true);
+  assert.equal(scoped.files[1].reviewed, false);
+  assert.equal(scoped.files[1].excludedBecause, 'unchanged since the last review (1234567)');
+  assert.equal(scoped.files[2].excludedBecause, 'lock file');
+  assert.equal(scoped.reviewedFileCount, 1);
+  assert.equal(scoped.hunkFileCount, 1);
+  assert.equal(scoped.excludedFileCount, 2);
+  assert.equal(scoped.scopeNote, 'Reviewed 2 commit(s) since 1234567; earlier changes were covered by the review of 2026-09-27.');
+});

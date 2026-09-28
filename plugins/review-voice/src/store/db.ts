@@ -196,6 +196,17 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE review_runs ADD COLUMN stages_json TEXT;
   `,
+
+  // v8 - pull-request review boundaries.
+  //
+  // The scope is stored beside the head rather than reconstructed from the
+  // current pull-request state. A later rebase can change that state, while a
+  // recorded review must keep saying exactly what it covered.
+  `
+  ALTER TABLE review_runs ADD COLUMN pull_number INTEGER;
+  ALTER TABLE review_runs ADD COLUMN scope_json TEXT;
+  CREATE INDEX idx_review_runs_pull ON review_runs (repository, pull_number, created_at DESC);
+  `,
 ];
 
 function migrate(db: Database): void {

@@ -87,6 +87,31 @@ code and binaries are dropped by default, and each one reports why. A silent
 omission is indistinguishable from a bug, and `--include-generated` brings them
 back for the case where the dependency change *is* the review.
 
+### Incremental re-review
+
+A later review of the same pull request may read only the commits added after a
+previous completed review. The stored run supplies the earlier `head_ref` and
+the time it was recorded; the pull-request thread does not. A thread can be
+edited, reordered, or contain comments that never represented a completed
+review, while the recorded head is the boundary that was actually read.
+
+The happy path is deliberately smaller than the fallback path. A missing prior
+run, unchanged head, truncated file list, unavailable local objects, rewritten
+history, a merge, or a range that touches none of the pull request's reviewed
+files all produce a full review with a named cause. The implementation can
+prove only a simple descendant range is safe; every other shape is cheaper to
+read again than to explain away after it omits author work.
+
+A merge always falls back. A range diff can show the merge's files, but cannot
+reliably separate base-branch updates from the author's changes, so presenting
+it as a narrow author review would claim more precision than the data has.
+
+The resulting scope is written beside the patch and printed after the findings
+when it is incremental. In particular, `No actionable findings.` then means no
+new issue in the added commits, not that the earlier pull request remains
+clear. The visible boundary is what keeps a useful optimization from becoming
+an accidental claim about the whole change.
+
 ### Changed-symbol context
 
 `review-voice symbols` keeps the distinctive identifiers a hunk adds or

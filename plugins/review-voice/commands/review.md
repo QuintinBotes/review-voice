@@ -1,6 +1,6 @@
 ---
 description: Review the current diff and report only concrete, evidence-backed problems
-argument-hint: "[--base <ref>] [--staged] [--pr <number>] [--include-generated]"
+argument-hint: "[--base <ref>] [--staged] [--pr <number>] [--full] [--include-generated]"
 allowed-tools: Bash(node:*), Bash(git:*), Read, Grep, Glob, Task
 ---
 
@@ -56,6 +56,11 @@ in their prompts, and print `refs.note` after the findings the way
 that quietly falls back to the patch alone is working from base-side evidence
 without saying so - the same failure as a guard searching the wrong tree.
 
+**Read `scope` on a `--pr` run.** An `incremental` scope covers only commits
+after the recorded `since` head; a `full` scope says why the whole pull request
+was read instead. Do not make a claim about earlier changes from an incremental
+patch. If the user asks for a complete review, pass `--full` to `RV diff`.
+
 If `reviewedFileCount` is `0`, output exactly this and stop:
 
 ```
@@ -79,6 +84,12 @@ This is a permitted exception to findings-only output, and it is not optional.
 Reviewing part of a change and presenting it as the whole is the one failure a
 reviewer cannot recover from, because nothing downstream can tell anything is
 missing. Silence here would be a lie by omission.
+
+**If `scopeNote` is not null, print it on its own line after the findings, just
+as `truncationNote` is printed.** This includes an output of exactly
+`No actionable findings.`: in an incremental run, that sentence only applies to
+the newly added commits. A full scope has `scopeNote: null` and prints nothing
+extra.
 
 A very large change is worth naming even when nothing was truncated. Each entry
 in `files` carries its own `additions` and `deletions`, so sum the reviewed
@@ -344,9 +355,14 @@ stray directory and another project's notes took the reviewed count from 11 to
 
 - Exit 0: display the output verbatim, then record it. Write the scored
   candidates to a temporary file and pass it:
-  `RV record --repository <name> --base <ref> --head <sha> --candidates <file>
-  --diff-file <tmpdir>/diff.patch --stages <file>` with the validated output on
+  `RV record --repository <owner/repo> --base <ref> --head <sha> --candidates <file>
+  --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --stages <file>` with the validated output on
   stdin.
+
+  **`--repository` is `owner/repo`, the same name `RV diff --pr` read the pull
+  request from.** The next review of that pull request finds this run by that
+  name and pull-request number; a short name matches nothing, and every later
+  review silently reads the whole pull request again.
 
   `--stages` takes `[{"name","seconds","toolCalls","tokens"}]`, one entry per
   agent stage you ran. Write what you observed; omit a field you do not know

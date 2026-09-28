@@ -17,12 +17,13 @@ import { validateOutput } from './contract/validate.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
 import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
 import { acquireDiff, GitError } from './diff/acquire.ts';
-import { acquirePullRequestDiff } from './diff/pull-request.ts';
+import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
+import { planIncrementalScope, type ReviewScope } from './diff/incremental.ts';
 import { readThread, type ThreadComment } from './diff/thread.ts';
 import { collectSymbolContext } from './diff/symbols.ts';
 import { openDatabase } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
-import { recordRun, latestRun, runDetail, type StageTiming } from './store/runs.ts';
+import { recordRun, latestRun, latestRunForPull, runDetail, type StageTiming } from './store/runs.ts';
 import {
   recordFeedback,
   normaliseAction,
@@ -115,6 +116,7 @@ diff flags:
   --base <ref>           Review against a base ref (e.g. origin/main)
   --staged               Review staged changes only
   --pr <number>          Review a GitHub pull request (needs --repository)
+  --full                 On --pr, review the complete pull request again
   --repository <name>    owner/repo for --pr; inferred from the git remote if absent
   --include-generated    Include lock files, generated, vendored and binary files
   --out <dir>            Write diff.patch and files.json separately instead of
@@ -130,6 +132,7 @@ record flags:
   --base <ref>           Base ref reviewed against
   --head <sha>           Head commit reviewed
   --diff-file <path>     Diff the review was produced from (for the run hash)
+  --files <path>         files.json from diff --out, carrying pull-request scope
   --candidates <path>    Scored candidates, so findings carry their category
   --scores <path>        Score breakdowns, so explain can show its working
   --verdicts <path>      Verification verdicts, including findings that were dropped
@@ -337,7 +340,30 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
     includeGenerated: argv.includes('--include-generated'),
     cwd: process.cwd(),
   });
-  return emitDiff(result, flag(argv, '--out'));
+
+  let scope: ReviewScope;
+  try {
+    const db = openDatabase();
+    try {
+      scope = planIncrementalScope({
+        priorRun: latestRunForPull(db, repository, pullNumber),
+        head: result.head,
+        headAvailable: result.refs.head.available,
+        reviewedFiles: result.files.filter((file) => file.reviewed),
+        cwd: process.cwd(),
+        truncated: result.truncated,
+        forceFull: argv.includes('--full'),
+      });
+    } finally {
+      db.close();
+    }
+  } catch {
+    // The API diff remains useful when local history cannot be read. A store
+    // failure therefore narrows nothing rather than turning review into error.
+    scope = { kind: 'full', cause: 'compare-unavailable', since: null, priorRunId: null };
+  }
+
+  return emitDiff(applyReviewScope(result, pullNumber, scope, process.cwd()), flag(argv, '--out'));
 }
 
 /**
@@ -1264,6 +1290,42 @@ function evidenceCommand(): number {
   }
 }
 
+function reviewScopeFromManifest(value: unknown): ReviewScope | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const scope = value as Record<string, unknown>;
+
+  if (
+    scope.kind === 'incremental' &&
+    typeof scope.since === 'string' &&
+    typeof scope.priorRunId === 'string' &&
+    typeof scope.priorReviewedAt === 'string' &&
+    Number.isInteger(scope.commits) &&
+    Array.isArray(scope.files) &&
+    scope.files.every((path) => typeof path === 'string')
+  ) {
+    return scope as unknown as ReviewScope;
+  }
+
+  if (
+    scope.kind === 'full' &&
+    typeof scope.cause === 'string' &&
+    (typeof scope.since === 'string' || scope.since === null) &&
+    (typeof scope.priorRunId === 'string' || scope.priorRunId === null)
+  ) {
+    return scope as unknown as ReviewScope;
+  }
+
+  return undefined;
+}
+
+function describeReviewScope(scope: ReviewScope | null): string | null {
+  if (scope === null) return null;
+  if (scope.kind === 'incremental') {
+    return `incremental since ${scope.since.slice(0, 7)} (${scope.commits} commit${scope.commits === 1 ? '' : 's'})`;
+  }
+  return `full (${scope.cause})`;
+}
+
 function recordCommand(argv: string[]): number {
   const output = readStdin();
   if (output.trim().length === 0) {
@@ -1290,6 +1352,25 @@ function recordCommand(argv: string[]): number {
       'No --diff-file, so this run cannot be compared with another run of the same diff. ' +
         'Pass the patch that `diff --out` wrote. Recording anyway.',
     );
+  }
+
+  // Scope comes from the manifest written beside the patch, so the record is
+  // tied to the exact boundary the analyst saw rather than to a later lookup.
+  const filesFile = flag(argv, '--files');
+  let pullNumber: number | undefined;
+  let scope: ReviewScope | undefined;
+  if (filesFile !== null) {
+    try {
+      const manifest = JSON.parse(readFileSync(filesFile, 'utf8')) as Record<string, unknown>;
+      if (Number.isInteger(manifest.pullNumber) && (manifest.pullNumber as number) > 0) {
+        pullNumber = manifest.pullNumber as number;
+      }
+      scope = reviewScopeFromManifest(manifest.scope);
+    } catch {
+      // The review text and patch remain enough to record a useful run. Losing
+      // metadata must not turn that record into a failed command.
+      console.error(`Cannot read ${filesFile}; recording without pull-request scope.`);
+    }
   }
 
   // Categories cannot be recovered from the rendered output - the contract
@@ -1357,6 +1438,8 @@ function recordCommand(argv: string[]): number {
       repository: flag(argv, '--repository'),
       baseRef: flag(argv, '--base'),
       headRef: flag(argv, '--head'),
+      pullNumber,
+      scope,
       diff,
       output,
       candidates,
@@ -1444,6 +1527,9 @@ function explainCommand(argv: string[]): number {
 
     console.log(`Review ${detail.reviewRunId}`);
     console.log(`Recorded ${detail.createdAt}${detail.repository === null ? '' : ` for ${detail.repository}`}`);
+    if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
+    const recordedScope = describeReviewScope(detail.scope);
+    if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
     console.log('');
 
     const shown = wanted === undefined ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
@@ -1641,6 +1727,7 @@ function statusCommand(): number {
     const audits = (db.prepare('SELECT COUNT(*) AS n FROM audit_events').get() as { n: number }).n;
     const totals = feedbackTotals(db);
     const last = latestRun(db);
+    const lastDetail = runDetail(db);
 
     console.log(`data directory   ${dataDirectory()}`);
     console.log(`database         ${databasePath()}`);
@@ -1668,6 +1755,8 @@ function statusCommand(): number {
     }
     if (last !== null) {
       console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(', ') || 'none'}`);
+      const recordedScope = describeReviewScope(lastDetail?.scope ?? null);
+      if (recordedScope !== null) console.log(`last scope       ${recordedScope}`);
     }
     const sync = lastSync(db);
     console.log(
