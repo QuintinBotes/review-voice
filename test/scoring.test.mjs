@@ -1562,14 +1562,14 @@ test('a point already made on the pull request is not made again', () => {
     {
       path: 'src/format.ts',
       line: 43,
-      author: 'moxly',
+      author: 'review-bot',
       body: 'Math.round breaks ties toward positive infinity here, so negative durations lose a second.',
       kind: 'review-comment',
     },
   ]);
 
   assert.ok(echoed !== null);
-  assert.equal(echoed.author, 'moxly');
+  assert.equal(echoed.author, 'review-bot');
 });
 
 test('a comment about a different line, or a vague one, does not silence a finding', () => {
@@ -1591,7 +1591,7 @@ test('a comment about a different line, or a vague one, does not silence a findi
   // Same words, far away.
   assert.equal(
     alreadySaidOnThread(candidate, [
-      { path: 'src/format.ts', line: 400, author: 'moxly', body: 'Math.round breaks ties toward positive infinity.', kind: 'review-comment' },
+      { path: 'src/format.ts', line: 400, author: 'review-bot', body: 'Math.round breaks ties toward positive infinity.', kind: 'review-comment' },
     ]),
     null,
   );
@@ -1599,7 +1599,7 @@ test('a comment about a different line, or a vague one, does not silence a findi
   // A review body that says nothing specific must not silence a specific point.
   assert.equal(
     alreadySaidOnThread(candidate, [
-      { path: null, line: null, author: 'moxly', body: 'A few naming nits and some rounding thoughts.', kind: 'review-body' },
+      { path: null, line: null, author: 'review-bot', body: 'A few naming nits and some rounding thoughts.', kind: 'review-body' },
     ]),
     null,
   );
