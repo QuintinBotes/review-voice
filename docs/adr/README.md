@@ -17,7 +17,8 @@ after that gate.
 | [0004](0004-outcome-inference-limits.md) | Outcome inference limits | Accepted |
 | [0005](0005-data-encryption.md) | Data encryption at rest | Accepted |
 | [0006](0006-team-governance.md) | Team and policy governance | Accepted |
-| [0007](0007-comment-posting.md) | GitHub comment posting | Accepted |
+| [0007](0007-comment-posting.md) | GitHub comment posting | Accepted, superseded in part by 0010 |
 | [0008](0008-policy-sharing.md) | Policy sharing and export | Accepted |
 | [0009](0009-severity-from-computed-reach.md) | Severity from category and computed reach | Accepted |
+| [0010](0010-review-verdict-posting.md) | Posting a review with its verdict | Accepted |
 | [0011](0011-severity-escalation-needs-traced-impact.md) | Severity escalation needs traced impact | Accepted |

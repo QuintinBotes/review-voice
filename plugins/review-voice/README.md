@@ -34,7 +34,7 @@ Full documentation, install instructions and threat model live in the
 | `/review-voice:calibrate` | Approve or reject proposed policy changes |
 | `/review-voice:policy` | Show, diff, roll back or export policies |
 | `/review-voice:explain` | Show why a finding was emitted or suppressed |
-| `/review-voice:draft-review` | Render the last review as a GitHub draft |
+| `/review-voice:draft-review` | Compute the verdict and post the review after one confirmation |
 | `/review-voice:status` | Corpus coverage, policy versions, retention |
 | `/review-voice:sync` | Pull new review history (read-only) |
 | `/review-voice:purge` | Delete stored data by repo, age, or entirely |

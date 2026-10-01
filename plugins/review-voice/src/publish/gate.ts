@@ -23,6 +23,9 @@ const MIN_PRECISION = 0.8;
  * point of the gate is that it holds when they would rather it did not.
  *
  * There is deliberately no override. A gate with a bypass is a suggestion.
+ *
+ * Since docs/adr/0010 it no longer holds a verified finding back: `post`
+ * reports it with every post, and verification is the gate for a finding.
  */
 export function evaluatePostingGate(db: Database, configEnabled: boolean): GateResult {
   const metrics = computeMetrics(db);

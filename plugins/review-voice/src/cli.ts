@@ -84,6 +84,9 @@ import { beginSyncRun, finishSyncRun, lastSync } from './sync/state.ts';
 import { loadWatermarks, saveWatermarks, type Watermark } from './sync/watermark.ts';
 import { evaluatePostingGate } from './publish/gate.ts';
 import { buildDraft } from './publish/draft.ts';
+import { extractAnchors } from './publish/anchors.ts';
+import { computeVerdict, postReview } from './publish/post.ts';
+import { ReviewWriter, WriteViolation } from './github/writer.ts';
 import { hashDiff } from './store/runs.ts';
 
 const USAGE = `review-voice <command>
@@ -108,6 +111,8 @@ Commands:
   evaluate          Report the evaluation metrics against their targets
   draft             Render a validated review as a GitHub draft (posts nothing)
   post-check        Report whether posting is permitted, and why not
+  verdict           Review event under the head and CI guards (reads only)
+  post              Submit the review; needs --confirm --event <EVENT>
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -908,6 +913,93 @@ function postCheckCommand(): number {
   }
 }
 
+interface ReviewTarget {
+  repository: string;
+  pullNumber: number;
+  head: string;
+  review: string;
+  runId: string | undefined;
+}
+
+/** Flags shared by `verdict` and `post`; a string is what was wrong with them. */
+function reviewTarget(argv: string[], command: string): ReviewTarget | string {
+  const pullNumber = Number(flag(argv, '--pr'));
+  const repository = flag(argv, '--repository') ?? inferRepository(process.cwd());
+  const head = flag(argv, '--head');
+  if (!Number.isInteger(pullNumber) || pullNumber < 1 || repository === null || head === null) {
+    return `${command} needs --pr <number>, --head <sha> and --repository <owner/repo>, with the validated review on stdin.`;
+  }
+  const review = readStdin();
+  if (review.trim().length === 0) return 'Nothing on stdin. Pipe the validated review in.';
+  return { repository, pullNumber, head, review, runId: flag(argv, '--run') ?? undefined };
+}
+
+function repositoryConfig(): ReturnType<typeof loadConfig> | null {
+  try {
+    return loadConfig(repositoryRoot(process.cwd()));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The review event, head guard and CI guard, computed and printed. Reads only;
+ * see docs/adr/0010. Exit 3 means the head moved, 4 that CI is still running
+ * on an approval, 5 that a re-check found CI red.
+ */
+async function verdictCommand(argv: string[]): Promise<number> {
+  const target = reviewTarget(argv, 'verdict');
+  if (typeof target === 'string') {
+    console.error(target);
+    return 2;
+  }
+  const db = openDatabase();
+  try {
+    const { exitCode, output } = await computeVerdict({
+      ...target,
+      db,
+      client: new GitHubClient({ allowlist: [target.repository] }),
+      recheck: argv.includes('--recheck'),
+      gateChecks: repositoryConfig()?.ciGateChecks ?? [],
+    });
+    console.log(JSON.stringify(output, null, 2));
+    return exitCode;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Submits the review with its event: the plugin's one write (docs/adr/0010).
+ * Recomputes the verdict live, and sends nothing without --confirm.
+ */
+async function postCommand(argv: string[]): Promise<number> {
+  const target = reviewTarget(argv, 'post');
+  if (typeof target === 'string') {
+    console.error(target);
+    return 2;
+  }
+  const config = repositoryConfig();
+  const db = openDatabase();
+  try {
+    const { exitCode, output } = await postReview({
+      ...target,
+      db,
+      client: new GitHubClient({ allowlist: [target.repository] }),
+      // Built from the recorded run's repository, not from --repository.
+      writerFor: (allowlist) => new ReviewWriter({ allowlist }),
+      confirm: argv.includes('--confirm'),
+      event: flag(argv, '--event')?.toUpperCase(),
+      postingEnabled: config?.postingEnabled ?? false,
+      gateChecks: config?.ciGateChecks ?? [],
+    });
+    console.log(JSON.stringify(output, null, 2));
+    return exitCode;
+  } finally {
+    db.close();
+  }
+}
+
 function evaluateCommand(argv: string[]): number {
   const db = openDatabase();
   try {
@@ -1388,47 +1480,9 @@ function retrieveCommand(argv: string[]): number {
   }
 }
 
-/**
- * Inline anchors, taken from the validated review rather than the candidates.
- *
- * The candidate's `path` is free text from the analyst and the rendered finding
- * carries what the verifier actually read, so the two can legitimately
- * disagree - on one pull request the analyst cited
- * `InvoicePaymentRequest/InvoicePaymentRequestDetail.tsx` and the finding that
- * shipped, correctly, cited `bankTransfer/BankTransferCard.tsx`. Building
- * inline anchors from candidate records would have posted two comments against
- * the wrong file.
- *
- * The validated output is the only artefact that passed the contract, so it is
- * the only correct source for an anchor.
- */
+/** Inline anchors from the validated review; see publish/anchors.ts for why. */
 function anchorsCommand(): number {
-  const output = readStdin();
-  const anchors = splitFindings(output)
-    .map((block) => parseFinding(block.raw, block.startLine))
-    .filter((finding) => finding.severity !== null && finding.path !== null && finding.line !== null)
-    .map((finding, index) => ({
-      findingId: `rv_${String(index + 1).padStart(2, '0')}`,
-      severity: finding.severity,
-      path: finding.path,
-      line: finding.line,
-      body: finding.raw,
-    }));
-
-  const skipped = splitFindings(output).length - anchors.length;
-  console.log(
-    JSON.stringify(
-      {
-        anchors,
-        // A finding the contract accepted but that carries no line cannot be
-        // anchored. Said plainly, because the alternative is an inline comment
-        // silently going missing.
-        unanchorable: skipped,
-      },
-      null,
-      2,
-    ),
-  );
+  console.log(JSON.stringify(extractAnchors(readStdin()), null, 2));
   return 0;
 }
 
@@ -2252,6 +2306,12 @@ async function main(argv: string[]): Promise<number> {
     case 'draft':
       return draftCommand(argv.slice(1));
 
+    case 'verdict':
+      return await verdictCommand(argv.slice(1));
+
+    case 'post':
+      return await postCommand(argv.slice(1));
+
     case 'post-check':
       return postCheckCommand();
 
@@ -2315,7 +2375,12 @@ try {
 } catch (error) {
   // Network and credential problems are ordinary operating conditions, not
   // crashes, and a stack trace tells the user nothing they can act on.
-  if (error instanceof AuthError || error instanceof NotAllowlisted || error instanceof ReadOnlyViolation) {
+  if (
+    error instanceof AuthError ||
+    error instanceof NotAllowlisted ||
+    error instanceof ReadOnlyViolation ||
+    error instanceof WriteViolation
+  ) {
     console.error(error.message);
     process.exitCode = 2;
   } else if (error instanceof GitError) {

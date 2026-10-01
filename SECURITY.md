@@ -58,12 +58,16 @@ valuable bug report, not an embarrassment.
 Prompt injection is an open research problem. These defences reduce risk
 substantially; they do not eliminate it.
 
-### Read-only
+### One write, behind guards
 
-Through v1, Review Voice performs no GitHub write operations. This is enforced
-in code - the GitHub client rejects any non-GET request - and covered by test,
-not merely documented. It cannot post comments, approve or block pull requests,
-merge, or modify repository state.
+The GitHub client that reads review history rejects any non-GET request, in
+code and covered by test. The single write is `RV post`, through a separate
+writer that can only create a pull request review
+([ADR 0010](docs/adr/0010-review-verdict-posting.md)). It posts only findings
+the verifier established, inline on their lines, only with `--confirm` for that
+post and with `writes.github_posting_enabled` set, records an idempotency key
+before sending, and approves only while the reviewed head is current and CI is
+green. It never merges, dismisses reviews, resolves threads or sets a status.
 
 ### Static analysis commands are opt-in
 

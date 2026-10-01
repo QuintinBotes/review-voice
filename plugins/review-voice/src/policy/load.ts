@@ -3,11 +3,17 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { PolicyLayer, ScopeType } from './schema.ts';
+import type { GateCheck } from '../publish/ci.ts';
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
   /** Necessary for posting but nowhere near sufficient; see publish/gate.ts. */
   postingEnabled: boolean;
+  /**
+   * Checks that fail by design until something else happens, so they are
+   * reported as gates rather than as red CI. None are built in.
+   */
+  ciGateChecks: GateCheck[];
   allowlist: string[];
   staticEvidence: { enabled: boolean; commands: { name: string; run: string; timeoutSeconds?: number }[] };
   /** A second, ideally different-model, verification pass. Off by default. */
@@ -93,6 +99,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
   const result: LoadedConfig = {
     ownerReviewer: null,
     postingEnabled: false,
+    ciGateChecks: [],
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
     verification: { enabled: false, command: '', blockPresent: false },
@@ -134,6 +141,25 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
 
         const writes = asRecord(doc['writes']);
         result.postingEnabled = writes?.['github_posting_enabled'] === true;
+
+        const ci = asRecord(doc['ci']);
+        const gateChecks = Array.isArray(ci?.['gate_checks']) ? (ci['gate_checks'] as unknown[]) : [];
+        for (const entry of gateChecks) {
+          // A bare string is a name; anything malformed is skipped rather than
+          // guessed at, since a wrong gate would hide a real failure.
+          if (typeof entry === 'string' && entry.length > 0) {
+            result.ciGateChecks.push({ name: entry });
+            continue;
+          }
+          const gate = asRecord(entry);
+          const name = gate?.['name'];
+          if (typeof name !== 'string' || name.length === 0) continue;
+          const summary = gate?.['summary'];
+          result.ciGateChecks.push({
+            name,
+            ...(typeof summary === 'string' && summary.length > 0 ? { summary } : {}),
+          });
+        }
 
         const verification = asRecord(doc['verification']);
         if (verification !== null) {

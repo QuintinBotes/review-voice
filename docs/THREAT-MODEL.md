@@ -61,6 +61,18 @@ it for four consecutive runs before the prompts were changed to say source
 wins. An honest document that is out of date is the common case; a hostile one
 is the rare case; the same rule covers both.
 
+**Consequence of posting a verdict
+([adr/0010](adr/0010-review-verdict-posting.md)).** Once a review can be
+submitted with an event, a successful injection reaches further: text that
+steers the analyst toward silence could now yield an APPROVE rather than an
+empty comment, and an approval can unblock a merge. The bounds are these. The
+event is computed in code from the severities of the validated review, never
+from model prose. Only findings the verifier established in the recorded run
+are posted, and an unverified finding above a nit holds an approval back to a
+comment. APPROVE also needs the head the review read and green CI, both re-read
+immediately before the request. And a person confirms each post with
+`--confirm`; nothing approves on its own.
+
 ### 2. Secrets in code or review history
 
 **Attack.** A credential lands in the corpus, the index, a log, or a prompt.
@@ -85,6 +97,12 @@ confirmation before adding a repository and before the first sync. Read-only
 enforced in the client by rejecting non-GET requests, covered by test. No
 credential storage - `gh` holds the token
 ([adr/0002](adr/0002-github-auth-model.md)).
+
+Since [adr/0010](adr/0010-review-verdict-posting.md) there is one write, and
+it is bounded the same way. A separate writer can only create a review on a
+pull request, and its allowlist is the repository of the recorded run being
+posted: having reviewed that pull request is the consent, and a repository
+named on the command line is not. A flag naming another repository is refused.
 
 ### 3b. Untrusted text reaching a subprocess argument
 

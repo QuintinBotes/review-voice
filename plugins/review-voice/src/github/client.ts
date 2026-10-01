@@ -143,4 +143,27 @@ export class GitHubClient {
 
     return items.slice(0, limit);
   }
+
+  /**
+   * Pagination for endpoints that wrap each page as `{ total_count, <key>: [] }`
+   * rather than returning an array, such as check runs and combined statuses.
+   * `paginate` stops at the first page of those, because the page is not an
+   * array, which is how a pull request with more than 100 check runs read as
+   * having only its first 100.
+   */
+  async paginateWrapped<T>(path: string, key: string, limit: number): Promise<T[]> {
+    const items: T[] = [];
+    let next: string | null = path;
+
+    while (next !== null && items.length < limit) {
+      const page: { data: Record<string, unknown>; linkNext: string | null } =
+        await this.get<Record<string, unknown>>(next);
+      const list = page.data?.[key];
+      if (!Array.isArray(list)) break;
+      items.push(...(list as T[]));
+      next = page.linkNext;
+    }
+
+    return items.slice(0, limit);
+  }
 }

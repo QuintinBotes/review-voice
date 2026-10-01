@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `verdict` computes the review event from the verified findings (none or
+  nits approve, minor or a question comments, important or blocking requests
+  changes), refuses a moved head, caps an approval at COMMENT on red CI and
+  waits on pending CI. Check runs are read with `filter=latest`, every page,
+  with combined statuses; `ci.gate_checks` names checks that fail by design.
+  `--recheck` emits an approval only when the head holds and CI is green.
+- `post --confirm` submits the review with its event in one request, through a
+  writer that can only create a pull request review. Every anchored finding is
+  an inline comment and the body is the one-line verdict. Only findings the
+  verifier established in the recorded run post; the measured-precision gate is
+  reported with every post and no longer holds a verified finding back.
+  A finding is verified only by an unused score with the same path, line and
+  derived severity. `post` needs `--event`, the event the preview showed, and
+  refuses if the recomputed event differs. Comments already posted on the same
+  head are not sent again. CI with no checks, a cancelled run with nothing
+  after it, or a capped reading is pending, and a failure is never masked by
+  another run. Approval re-reads head and CI before sending, the idempotency key
+  is checked and audited in one transaction before the request, and a key
+  already sent is refused. The writer posts only to the recorded run's
+  repository. See ADR 0010.
+
 - `record --held <file>` keeps the candidates a review held back (repeats of an
   existing comment, partly confirmed, refuted or unverified claims) with the
   source and reason, and `explain` lists them under "Held back". Older runs

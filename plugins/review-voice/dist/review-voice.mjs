@@ -714,6 +714,25 @@ var GitHubClient = class {
     }
     return items.slice(0, limit);
   }
+  /**
+   * Pagination for endpoints that wrap each page as `{ total_count, <key>: [] }`
+   * rather than returning an array, such as check runs and combined statuses.
+   * `paginate` stops at the first page of those, because the page is not an
+   * array, which is how a pull request with more than 100 check runs read as
+   * having only its first 100.
+   */
+  async paginateWrapped(path, key, limit) {
+    const items = [];
+    let next = path;
+    while (next !== null && items.length < limit) {
+      const page = await this.get(next);
+      const list = page.data?.[key];
+      if (!Array.isArray(list)) break;
+      items.push(...list);
+      next = page.linkNext;
+    }
+    return items.slice(0, limit);
+  }
 };
 
 // plugins/review-voice/src/diff/incremental.ts
@@ -1107,12 +1126,12 @@ function compareOwnDiffs(before, after) {
   let unrepresentable = false;
   for (const path of /* @__PURE__ */ new Set([...before.keys(), ...after.keys()])) {
     const earlier = before.get(path);
-    const later = after.get(path);
-    if ((earlier?.metadata ?? "") !== (later?.metadata ?? "")) unrepresentable = true;
+    const later2 = after.get(path);
+    if ((earlier?.metadata ?? "") !== (later2?.metadata ?? "")) unrepresentable = true;
     const remaining = /* @__PURE__ */ new Map();
     for (const hunk of earlier?.hunks ?? []) remaining.set(hunk.key, [...remaining.get(hunk.key) ?? [], hunk]);
     const fresh = [];
-    for (const hunk of later?.hunks ?? []) {
+    for (const hunk of later2?.hunks ?? []) {
       const left = remaining.get(hunk.key) ?? [];
       if (left.length > 0) remaining.set(hunk.key, left.slice(1));
       else fresh.push(hunk);
@@ -1123,7 +1142,7 @@ function compareOwnDiffs(before, after) {
       if (index === -1) unrepresentable = true;
       else unused.splice(index, 1);
     }
-    if (earlier === void 0 !== (later === void 0) && fresh.length === 0) unrepresentable = true;
+    if (earlier === void 0 !== (later2 === void 0) && fresh.length === 0) unrepresentable = true;
     if (fresh.length > 0) added.set(path, fresh);
   }
   return { added, unrepresentable };
@@ -2469,6 +2488,23 @@ function runDetail(db, reviewRunId) {
       }
     })(),
     precedents: JSON.parse(row["retrieved_precedents_json"])
+  };
+}
+function latestRunForPull(db, repository, pullNumber) {
+  const row = db.prepare(
+    `SELECT review_run_id, head_ref, created_at
+       FROM review_runs
+       WHERE LOWER(repository) = LOWER(?)
+         AND pull_number = ?
+         AND head_ref IS NOT NULL
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`
+  ).get(repository, pullNumber);
+  if (row === void 0) return null;
+  return {
+    reviewRunId: row.review_run_id,
+    headRef: row.head_ref,
+    createdAt: row.created_at
   };
 }
 function recordedRunsForPull(db, repository, pullNumber, limit = 10) {
@@ -8986,6 +9022,7 @@ function loadConfig(repositoryRoot2) {
   const result = {
     ownerReviewer: null,
     postingEnabled: false,
+    ciGateChecks: [],
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
     verification: { enabled: false, command: "", blockPresent: false },
@@ -8998,9 +9035,9 @@ function loadConfig(repositoryRoot2) {
     try {
       const doc = asRecord(parse(readFileSync2(configPath, "utf8")));
       if (doc !== null) {
-        const identity = asRecord(doc["identity"]);
-        if (typeof identity?.["owner_reviewer"] === "string") {
-          result.ownerReviewer = identity["owner_reviewer"];
+        const identity2 = asRecord(doc["identity"]);
+        if (typeof identity2?.["owner_reviewer"] === "string") {
+          result.ownerReviewer = identity2["owner_reviewer"];
         }
         const repositories = asRecord(doc["repositories"]);
         result.allowlist = asStringArray(repositories?.["include"]);
@@ -9024,15 +9061,31 @@ function loadConfig(repositoryRoot2) {
         }
         const writes = asRecord(doc["writes"]);
         result.postingEnabled = writes?.["github_posting_enabled"] === true;
-        const verification = asRecord(doc["verification"]);
-        if (verification !== null) {
-          const command = verification["command"];
+        const ci = asRecord(doc["ci"]);
+        const gateChecks = Array.isArray(ci?.["gate_checks"]) ? ci["gate_checks"] : [];
+        for (const entry of gateChecks) {
+          if (typeof entry === "string" && entry.length > 0) {
+            result.ciGateChecks.push({ name: entry });
+            continue;
+          }
+          const gate = asRecord(entry);
+          const name = gate?.["name"];
+          if (typeof name !== "string" || name.length === 0) continue;
+          const summary = gate?.["summary"];
+          result.ciGateChecks.push({
+            name,
+            ...typeof summary === "string" && summary.length > 0 ? { summary } : {}
+          });
+        }
+        const verification2 = asRecord(doc["verification"]);
+        if (verification2 !== null) {
+          const command = verification2["command"];
           result.verification = {
-            enabled: verification["enabled"] === true && typeof command === "string" && command.length > 0,
+            enabled: verification2["enabled"] === true && typeof command === "string" && command.length > 0,
             command: typeof command === "string" ? command : "",
-            name: typeof verification["name"] === "string" ? verification["name"] : void 0,
-            timeoutSeconds: positiveInt(verification["timeout_seconds"]),
-            dropThreshold: typeof verification["drop_threshold"] === "number" ? verification["drop_threshold"] : void 0,
+            name: typeof verification2["name"] === "string" ? verification2["name"] : void 0,
+            timeoutSeconds: positiveInt(verification2["timeout_seconds"]),
+            dropThreshold: typeof verification2["drop_threshold"] === "number" ? verification2["drop_threshold"] : void 0,
             blockPresent: true
           };
         }
@@ -10820,7 +10873,7 @@ function isInterrogativeClaim(claim) {
   if (text.endsWith("?")) return true;
   return text.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
 }
-function boundSeverityByEvidence(derived, candidate, verification) {
+function boundSeverityByEvidence(derived, candidate, verification2) {
   if (BOUNDARY_CATEGORIES.has(candidate.category)) return derived;
   if (candidate.severity === "question" || derived.severity === "question") return derived;
   let result = derived;
@@ -10834,8 +10887,8 @@ function boundSeverityByEvidence(derived, candidate, verification) {
   const asked = TIER_ORDER.indexOf(candidate.severity);
   const got = TIER_ORDER.indexOf(result.severity);
   if (asked === -1 || got === -1 || got <= asked) return result;
-  const confidence = verification?.technicalConfidence ?? (verification?.evidenceQuality === void 0 ? null : QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null);
-  if (verification?.impactTraced === true && confidence !== null && confidence >= ESCALATION_CONFIDENCE) {
+  const confidence = verification2?.technicalConfidence ?? (verification2?.evidenceQuality === void 0 ? null : QUALITY_CONFIDENCE[verification2.evidenceQuality] ?? null);
+  if (verification2?.impactTraced === true && confidence !== null && confidence >= ESCALATION_CONFIDENCE) {
     return result;
   }
   return {
@@ -11041,15 +11094,15 @@ function assertUniqueCandidateIds(candidates) {
     seen.add(candidate.candidateId);
   }
 }
-function renderFix(candidate, verification, thresholds) {
+function renderFix(candidate, verification2, thresholds) {
   const suggested = candidate.suggestedFix ?? null;
-  const rawVerdict = verification?.fixVerdict;
+  const rawVerdict = verification2?.fixVerdict;
   const verdict = isFixVerdict(rawVerdict) ? rawVerdict : null;
-  const rawConfidence = verification?.fixConfidence;
+  const rawConfidence = verification2?.fixConfidence;
   const confidence = typeof rawConfidence === "number" && Number.isFinite(rawConfidence) && rawConfidence >= 0 && rawConfidence <= 1 ? rawConfidence : null;
-  const rawDirection = verification?.fixDirection;
+  const rawDirection = verification2?.fixDirection;
   const direction = typeof rawDirection === "string" ? rawDirection : null;
-  const verifierReason = verification?.fixReason?.trim().length ? verification.fixReason : null;
+  const verifierReason = verification2?.fixReason?.trim().length ? verification2.fixReason : null;
   const hasSuggested = suggested !== null && suggested.trim().length > 0;
   const analystConfidence = candidate.fixConfidence ?? null;
   const hasDirection = direction !== null && direction.trim().length > 0;
@@ -11099,14 +11152,14 @@ function renderFix(candidate, verification, thresholds) {
     reason: verifierReason ?? reason2
   };
 }
-function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification) {
+function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2) {
   const analystConfidence = candidate.technicalConfidence;
-  const verifiedConfidence = verification === void 0 ? null : verification.technicalConfidence ?? (verification.evidenceQuality === void 0 ? null : QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null);
+  const verifiedConfidence = verification2 === void 0 ? null : verification2.technicalConfidence ?? (verification2.evidenceQuality === void 0 ? null : QUALITY_CONFIDENCE[verification2.evidenceQuality] ?? null);
   let confidence = verifiedConfidence ?? analystConfidence;
   let confidenceSource = verifiedConfidence === null ? "analyst" : "verifier";
-  const missingContext = (verification?.requiredContextMissing ?? []).length > 0;
+  const missingContext = (verification2?.requiredContextMissing ?? []).length > 0;
   const admitted = admitsUnverifiable(candidate);
-  const verifierEngaged = verification?.technicalConfidence !== void 0;
+  const verifierEngaged = verification2?.technicalConfidence !== void 0;
   if ((missingContext || admitted && !verifierEngaged) && confidence > UNVERIFIABLE_CONFIDENCE) {
     confidence = UNVERIFIABLE_CONFIDENCE;
     confidenceSource = "unverifiable-cap";
@@ -11125,7 +11178,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const score = (owner, repository) => 0.35 * confidence + 0.25 * owner + 0.15 * repository + 0.15 * quality + 0.1 * novel;
   const finalScore = score(ownerAlignment, repositoryAlignment);
   const anchoredFinalScore = score(anchoredOwnerAlignment, anchoredRepositoryAlignment);
-  const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification?.reach);
+  const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification2?.reach);
   const isQuestion = derivedSeverity.severity === "question";
   let rejectedBecause = null;
   if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
@@ -11143,13 +11196,13 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
-  const fix = renderFix(candidate, verification, thresholds);
+  const fix = renderFix(candidate, verification2, thresholds);
   return {
     candidateId: candidate.candidateId,
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
-    severity: boundSeverityByEvidence(derivedSeverity, candidate, verification),
+    severity: boundSeverityByEvidence(derivedSeverity, candidate, verification2),
     analystConfidence,
     verifiedConfidence,
     confidenceSource,
@@ -11669,6 +11722,752 @@ function buildDraft(input) {
   };
 }
 
+// plugins/review-voice/src/publish/anchors.ts
+function extractAnchors(output) {
+  const blocks = splitFindings(output);
+  const anchors = blocks.map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null && finding.line !== null).map((finding, index) => ({
+    findingId: `rv_${String(index + 1).padStart(2, "0")}`,
+    severity: finding.severity,
+    path: finding.path,
+    line: finding.line,
+    body: finding.raw
+  }));
+  return { anchors, unanchorable: blocks.length - anchors.length };
+}
+
+// plugins/review-voice/src/github/writer.ts
+var WriteViolation = class extends Error {
+};
+var REVIEW_EVENTS = ["APPROVE", "COMMENT", "REQUEST_CHANGES"];
+var REVIEW_PATH = /^\/repos\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)\/pulls\/([1-9][0-9]*)\/reviews$/;
+var SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+var ReviewWriter = class {
+  allowlist;
+  baseUrl;
+  doFetch;
+  token;
+  constructor(options) {
+    this.allowlist = new Set(options.allowlist.map((name) => name.toLowerCase()));
+    this.baseUrl = options.baseUrl ?? "https://api.github.com";
+    this.doFetch = options.fetchImpl ?? fetch;
+    this.token = options.token ?? null;
+  }
+  /** Submits a review with its event in one request. Never a pending review. */
+  async submitReview(repository, pullNumber, payload) {
+    if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+      throw new WriteViolation(`Refused a review on pull request ${String(pullNumber)}: not a pull request number.`);
+    }
+    assertPayload(payload);
+    const data = await this.request("POST", `/repos/${repository}/pulls/${pullNumber}/reviews`, payload);
+    const record = typeof data === "object" && data !== null ? data : {};
+    return {
+      id: typeof record["id"] === "number" ? record["id"] : null,
+      htmlUrl: typeof record["html_url"] === "string" ? record["html_url"] : null,
+      state: typeof record["state"] === "string" ? record["state"] : null
+    };
+  }
+  /**
+   * Every request goes through here, and here admits one method and one path.
+   * Public so the refusal can be tested directly rather than inferred.
+   */
+  async request(method, path, body) {
+    if (method !== "POST") {
+      throw new WriteViolation(`Review Voice writes one thing; refused a ${method} to ${path}.`);
+    }
+    const match = REVIEW_PATH.exec(path);
+    if (match === null) {
+      throw new WriteViolation(`Review Voice writes one thing; refused a POST to ${path}.`);
+    }
+    const repository = `${match[1]}/${match[2]}`;
+    if (!this.allowlist.has(repository.toLowerCase())) {
+      throw new NotAllowlisted(`${repository} is not a repository this writer may post to.`);
+    }
+    const response = await this.doFetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${this.token ??= githubToken()}`,
+        "content-type": "application/json",
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "review-voice"
+      },
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      throw new GitHubError(
+        `GitHub returned ${response.status} for ${path}: ${(await response.text()).slice(0, 300)}`,
+        response.status
+      );
+    }
+    try {
+      return await response.json();
+    } catch {
+      return null;
+    }
+  }
+};
+function assertPayload(payload) {
+  if (!REVIEW_EVENTS.includes(payload.event)) {
+    throw new WriteViolation(`Refused a review with event ${String(payload.event)}; it must be one of ${REVIEW_EVENTS.join(", ")}.`);
+  }
+  if (typeof payload.commit_id !== "string" || !SHA.test(payload.commit_id)) {
+    throw new WriteViolation("Refused a review without the full commit it was written against.");
+  }
+  if (typeof payload.body !== "string") {
+    throw new WriteViolation("Refused a review without a body.");
+  }
+  if (!Array.isArray(payload.comments)) {
+    throw new WriteViolation("Refused a review whose comments are not a list.");
+  }
+  for (const comment of payload.comments) {
+    if (typeof comment.path !== "string" || comment.path.length === 0 || !Number.isInteger(comment.line) || comment.line < 1 || comment.side !== "RIGHT" || typeof comment.body !== "string" || comment.body.length === 0) {
+      throw new WriteViolation("Refused a review with a comment that is not anchored to a line.");
+    }
+  }
+  const keys = Object.keys(payload).sort().join(",");
+  if (keys !== "body,comments,commit_id,event") {
+    throw new WriteViolation(`Refused a review with unexpected fields: ${keys}.`);
+  }
+}
+
+// plugins/review-voice/src/publish/ci.ts
+var MAX_ENTRIES = 1e3;
+var IGNORED_CONCLUSIONS = /* @__PURE__ */ new Set(["stale", "skipped", "neutral"]);
+var FAILED_CONCLUSIONS = /* @__PURE__ */ new Set(["failure", "timed_out", "action_required", "startup_failure"]);
+function classifyCheckRun(run) {
+  const status = (run.status ?? "").toLowerCase();
+  if (status !== "completed") {
+    return { result: "pending", detail: status.length > 0 ? status : "unknown" };
+  }
+  const conclusion = (run.conclusion ?? "").toLowerCase();
+  if (conclusion === "success") return { result: "passed", detail: conclusion };
+  if (IGNORED_CONCLUSIONS.has(conclusion)) return { result: "ignored", detail: conclusion };
+  if (FAILED_CONCLUSIONS.has(conclusion)) return { result: "failed", detail: conclusion };
+  if (conclusion === "cancelled") return { result: "pending", detail: "cancelled, with no later run" };
+  if (conclusion.length === 0) return { result: "pending", detail: "completed without a conclusion" };
+  return { result: "failed", detail: conclusion };
+}
+function classifyStatus(status) {
+  const state = (status.state ?? "").toLowerCase();
+  if (state === "success") return { result: "passed", detail: state };
+  if (state === "pending") return { result: "pending", detail: state };
+  return { result: "failed", detail: state.length > 0 ? state : "unknown" };
+}
+function nameGlob(glob) {
+  const source = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+  return new RegExp(`^${source}$`, "i");
+}
+function matchingGate(name, text, gates) {
+  for (const gate of gates) {
+    if (!nameGlob(gate.name).test(name)) continue;
+    if (gate.summary !== void 0 && !text.toLowerCase().includes(gate.summary.toLowerCase())) continue;
+    return gate;
+  }
+  return null;
+}
+var identity = (run) => `${run.app?.id ?? run.app?.slug ?? ""}\0${run.name ?? ""}`;
+function later(a, b) {
+  if (typeof a.id === "number" && typeof b.id === "number") return a.id > b.id;
+  return (a.started_at ?? a.completed_at ?? "") > (b.started_at ?? b.completed_at ?? "");
+}
+function withoutSuperseded(runs) {
+  return runs.filter((run) => {
+    const unfinished = (run.status ?? "").toLowerCase() !== "completed";
+    const cancelled = !unfinished && (run.conclusion ?? "").toLowerCase() === "cancelled";
+    if (!unfinished && !cancelled) return true;
+    return !runs.some(
+      (other) => other !== run && (other.status ?? "").toLowerCase() === "completed" && identity(other) === identity(run) && later(other, run)
+    );
+  });
+}
+function summariseCi(checkRuns, statuses, gates = [], reading = {}) {
+  const entries = [];
+  for (const run of withoutSuperseded(checkRuns)) {
+    const { result, detail } = classifyCheckRun(run);
+    const text = `${run.output?.title ?? ""}
+${run.output?.summary ?? ""}`;
+    entries.push({ entry: { name: run.name ?? "", source: "check-run", result, detail }, text });
+  }
+  for (const status of statuses) {
+    const { result, detail } = classifyStatus(status);
+    entries.push({ entry: { name: status.context ?? "", source: "status", result, detail }, text: status.description ?? "" });
+  }
+  const state = { state: "green", passed: 0, failed: [], pending: [], ignored: [], gates: [] };
+  for (const { entry, text } of entries) {
+    if (entry.result === "passed") {
+      state.passed += 1;
+      continue;
+    }
+    if (entry.result === "ignored") {
+      state.ignored.push(entry);
+      continue;
+    }
+    const gate = matchingGate(entry.name, text, gates);
+    if (gate !== null) {
+      state.gates.push({ ...entry, gate: gate.name });
+    } else if (entry.result === "failed") {
+      state.failed.push(entry);
+    } else {
+      state.pending.push(entry);
+    }
+  }
+  if (checkRuns.length === 0 && statuses.length === 0) {
+    state.pending.push({ name: "no checks reported yet", source: "check-run", result: "pending", detail: "none" });
+  }
+  if (reading.truncated === true) {
+    state.pending.push({ name: `more than ${MAX_ENTRIES} checks`, source: "check-run", result: "pending", detail: "not all read" });
+  }
+  if (reading.combined !== void 0 && reading.combined.totalCount > 0 && reading.combined.state?.toLowerCase() === "pending") {
+    state.pending.push({ name: "combined status", source: "status", result: "pending", detail: "pending" });
+  }
+  state.state = state.failed.length > 0 ? "red" : state.pending.length > 0 ? "pending" : "green";
+  return state;
+}
+async function readCi(client, repository, sha, gates = []) {
+  const checkRuns = await client.paginateWrapped(
+    `/repos/${repository}/commits/${sha}/check-runs?filter=latest&per_page=100`,
+    "check_runs",
+    MAX_ENTRIES + 1
+  );
+  const first = await client.get(
+    `/repos/${repository}/commits/${sha}/status?per_page=100`
+  );
+  const statuses = Array.isArray(first.data?.statuses) ? first.data.statuses : [];
+  if (first.linkNext !== null) {
+    statuses.push(...await client.paginateWrapped(first.linkNext, "statuses", MAX_ENTRIES + 1 - statuses.length));
+  }
+  return summariseCi(checkRuns.slice(0, MAX_ENTRIES), statuses.slice(0, MAX_ENTRIES), gates, {
+    combined: {
+      state: typeof first.data?.state === "string" ? first.data.state : null,
+      totalCount: typeof first.data?.total_count === "number" ? first.data.total_count : statuses.length
+    },
+    truncated: checkRuns.length > MAX_ENTRIES || statuses.length > MAX_ENTRIES
+  });
+}
+
+// plugins/review-voice/src/publish/verdict.ts
+import { createHash as createHash5 } from "node:crypto";
+function eventFor(severities) {
+  if (severities.some((severity) => severity === "blocking" || severity === "important")) return "REQUEST_CHANGES";
+  if (severities.some((severity) => severity === "minor" || severity === "question")) return "COMMENT";
+  return "APPROVE";
+}
+var RANK = { blocking: 0, important: 1, minor: 2, question: 3, nit: 4 };
+var NO_LINE = /^\[([a-z_]+)\]\s+`([^`]+)`\s+-\s*([\s\S]*)$/i;
+function reviewFindings(output) {
+  let index = 0;
+  return splitFindings(output).map((block) => {
+    const finding = parseFinding(block.raw, block.startLine);
+    const numbered = finding.severity !== null && finding.path !== null;
+    if (numbered) index += 1;
+    if (finding.path === null) {
+      const match = NO_LINE.exec(block.raw.replace(/\s*\n\s*/g, " ").trim());
+      const severity = match?.[1]?.toLowerCase();
+      if (match !== null && SEVERITIES.includes(severity ?? "")) {
+        return {
+          findingId: null,
+          severity,
+          path: match[2],
+          line: null,
+          raw: finding.raw,
+          prose: (match[3] ?? "").trim()
+        };
+      }
+    }
+    return {
+      findingId: numbered ? `rv_${String(index).padStart(2, "0")}` : null,
+      severity: finding.severity,
+      path: finding.path,
+      line: finding.line,
+      raw: finding.raw,
+      prose: finding.prose
+    };
+  });
+}
+var MAX_CARRY_DEPTH = 8;
+function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
+  if (finding.path === null || finding.severity === null) {
+    return { verified: false, reason: "it names no file, so no score can be matched to it", runId: run.reviewRunId };
+  }
+  let current = run;
+  let path = finding.path;
+  let line = finding.line;
+  const severity = finding.severity;
+  let reason2 = "no score was recorded for it";
+  for (let depth = 0; depth <= MAX_CARRY_DEPTH; depth += 1) {
+    const scores = Array.isArray(current.scores) ? current.scores : [];
+    const here = scores.filter(
+      (score) => typeof score === "object" && score !== null && score.path === path && (line === null || score.line === line)
+    );
+    const same = here.filter((score) => score.severity?.severity === severity && !used.has(score));
+    const backing = same.find((score) => score.confidenceSource === "verifier" && score.eligible === true);
+    if (backing !== void 0) {
+      used.add(backing);
+      return { verified: true, reason: "established by the verifier", runId: current.reviewRunId };
+    }
+    if (same.some((score) => score.confidenceSource === "verifier")) {
+      reason2 = "the verifier scored it, but it did not clear the gates";
+    } else if (same.length > 0) {
+      reason2 = "its confidence is the analyst's own, not the verifier's";
+    } else if (here.length > 0) {
+      reason2 = `no unused score at ${line === null ? path : `${path}:${line}`} was derived at ${severity}`;
+    }
+    if (line === null) break;
+    const stored = current.findings.find(
+      (candidate) => candidate.path === path && candidate.line === line && candidate.severity === severity
+    );
+    if (stored?.carriedFrom === void 0) break;
+    const from = stored.carriedFrom;
+    const source = loadRun(from.runId);
+    const origin = source?.findings.find((candidate) => candidate.findingId === from.findingId);
+    if (source === null || origin === void 0) {
+      reason2 = `it was carried from run ${from.runId}, which is no longer stored`;
+      break;
+    }
+    current = source;
+    path = origin.path;
+    line = origin.line;
+  }
+  return { verified: false, reason: reason2, runId: current.reviewRunId };
+}
+function planFindings(output, run, loadRun) {
+  const inline = [];
+  const unanchored = [];
+  const held = [];
+  const heldSeverities = [];
+  const loaded = /* @__PURE__ */ new Map([[run.reviewRunId, run]]);
+  const cachedLoad = (id) => {
+    if (!loaded.has(id)) loaded.set(id, loadRun(id));
+    return loaded.get(id) ?? null;
+  };
+  const used = /* @__PURE__ */ new Set();
+  const findings = reviewFindings(output);
+  const ordered = [...findings.filter((f) => f.line !== null), ...findings.filter((f) => f.line === null)];
+  const outcome = /* @__PURE__ */ new Map();
+  for (const finding of ordered) outcome.set(finding, verification(finding, run, cachedLoad, used));
+  for (const finding of findings) {
+    const result = outcome.get(finding);
+    if (!result.verified || finding.severity === null) {
+      held.push({
+        findingId: finding.findingId,
+        severity: finding.severity,
+        path: finding.path,
+        line: finding.line,
+        reason: result.reason
+      });
+      heldSeverities.push(finding.severity ?? "minor");
+      continue;
+    }
+    (finding.path !== null && finding.line !== null ? inline : unanchored).push(finding);
+  }
+  const posted = [...inline, ...unanchored].map((finding) => finding.severity);
+  let mapped = eventFor(posted);
+  const heldBackApproval = mapped === "APPROVE" && eventFor(heldSeverities) !== "APPROVE";
+  if (heldBackApproval) mapped = "COMMENT";
+  return { inline, unanchored, held, mapped, heldBackApproval };
+}
+function decide(input) {
+  const reasons = [];
+  if (input.heldBackApproval === true) {
+    reasons.push("an unverified finding above a nit was held back, so this comments rather than approves");
+  }
+  if (input.headMoved) {
+    return {
+      event: input.mapped,
+      action: "refuse",
+      reasons: [...reasons, "the pull request head moved since the review read it; review the new head"],
+      exitCode: 3,
+      cappedByCi: false
+    };
+  }
+  if (input.recheck) {
+    if (input.mapped !== "APPROVE") {
+      return {
+        event: input.mapped,
+        action: "refuse",
+        reasons: [...reasons, `the review maps to ${input.mapped}, so there is no approval to re-check`],
+        exitCode: 2,
+        cappedByCi: false
+      };
+    }
+    if (input.ci === "pending") {
+      return { event: "APPROVE", action: "wait", reasons: [...reasons, "CI is still running"], exitCode: 4, cappedByCi: false };
+    }
+    if (input.ci !== "green") {
+      return {
+        event: "COMMENT",
+        action: "refuse",
+        reasons: [...reasons, "CI is red, so there is no approval to send"],
+        exitCode: 5,
+        cappedByCi: true
+      };
+    }
+    return { event: "APPROVE", action: "post", reasons: [...reasons, "head unchanged and CI green"], exitCode: 0, cappedByCi: false };
+  }
+  if (input.mapped === "APPROVE" && input.ci === "red") {
+    return {
+      event: "COMMENT",
+      action: "post",
+      reasons: [...reasons, "CI is red, so the approval is capped at COMMENT"],
+      exitCode: 0,
+      cappedByCi: true
+    };
+  }
+  if (input.mapped === "APPROVE" && input.ci !== "green") {
+    return {
+      event: "APPROVE",
+      action: "wait",
+      reasons: [...reasons, "CI is still running; approve once it is green with verdict --recheck"],
+      exitCode: 4,
+      cappedByCi: false
+    };
+  }
+  return { event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false };
+}
+function plural(count, word) {
+  return `${count} ${word}${count === 1 ? "" : "s"}`;
+}
+function summaryLine(event, posted, cappedBy) {
+  const count = posted.length;
+  const highest = [...posted].map((finding) => finding.severity).sort((a, b) => RANK[a] - RANK[b])[0];
+  if (cappedBy === "ci") {
+    return count === 0 ? "No problems found, but not approving while CI is red." : `${plural(count, "nit")}; not approving while CI is red.`;
+  }
+  if (cappedBy === "held") {
+    return count === 0 ? "Not approving yet." : `${plural(count, "nit")}; not approving yet.`;
+  }
+  if (event === "APPROVE") {
+    return count === 0 ? "No problems found." : `Approved, with ${plural(count, "nit")}.`;
+  }
+  if (event === "REQUEST_CHANGES") {
+    return `Changes requested: ${plural(count, "comment")}, the highest ${highest}.`;
+  }
+  return `${plural(count, "comment")}, the highest ${highest}.`;
+}
+function inlineComment(finding) {
+  return {
+    path: finding.path,
+    line: finding.line,
+    side: "RIGHT",
+    // The same rendering `draft` uses. The location is the comment's anchor,
+    // so repeating it in the text would only be noise.
+    body: `**${finding.severity}** - ${finding.prose}`
+  };
+}
+function buildPayload(input) {
+  const posted = [...input.planned.inline, ...input.planned.unanchored];
+  const body = [summaryLine(input.event, posted, input.cappedBy), ...input.planned.unanchored.map((finding) => finding.raw)].join(
+    "\n\n"
+  );
+  return {
+    commit_id: input.head,
+    event: input.event,
+    body,
+    comments: input.planned.inline.map(inlineComment)
+  };
+}
+function renderPreview(input) {
+  const { payload } = input;
+  const lines = [
+    payload.event,
+    `Repository: ${input.repository}`,
+    `Pull request: #${input.pullNumber}`,
+    `Head: ${payload.commit_id}`,
+    `Body: ${payload.body}`,
+    `Comments: ${payload.comments.length}`,
+    ...payload.comments.map((comment) => `${comment.path}:${comment.line}
+  ${comment.body}`)
+  ];
+  if ((input.alreadyInline ?? 0) > 0) {
+    lines.push(`Already inline from an earlier post of this head, not sent again: ${input.alreadyInline}`);
+  }
+  if (input.held.length > 0) {
+    lines.push(`Held back, not verified: ${input.held.length}`);
+    for (const held of input.held) {
+      const where = held.path === null ? "no anchor" : `${held.path}:${held.line ?? "?"}`;
+      lines.push(`  ${held.findingId ?? "-"} ${where} (${held.reason})`);
+    }
+  }
+  return lines.join("\n");
+}
+function commentSignature(comment) {
+  return `${comment.path}:${comment.line}:${createHash5("sha256").update(comment.body).digest("hex").slice(0, 32)}`;
+}
+function idempotencyKey(repository, pullNumber, payload) {
+  const digest = createHash5("sha256").update(JSON.stringify(payload)).digest("hex");
+  return `${repository.toLowerCase()}#${pullNumber}@${payload.commit_id}:${digest}`;
+}
+
+// plugins/review-voice/src/publish/post.ts
+var SHA2 = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+function normalise2(text) {
+  return text.replace(/\r\n/g, "\n").trim();
+}
+function subjectId(repository, pullNumber) {
+  return `${repository.toLowerCase()}#${pullNumber}`;
+}
+async function readHead2(client, repository, pullNumber) {
+  const { data } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
+  const sha = data?.head?.sha;
+  return typeof sha === "string" ? sha.toLowerCase() : null;
+}
+function refusal(head, reason2) {
+  return {
+    exitCode: 2,
+    run: null,
+    output: {
+      event: null,
+      action: "refuse",
+      reasons: [reason2],
+      head: { expected: head, actual: null },
+      ci: null,
+      run: null,
+      held: [],
+      payload: null,
+      alreadyInline: 0,
+      key: null,
+      preview: null
+    }
+  };
+}
+function recordedRun(options, head) {
+  const runId = options.runId ?? latestRunForPull(options.db, options.repository, options.pullNumber)?.reviewRunId ?? null;
+  if (runId === null) {
+    return `no review of ${options.repository}#${options.pullNumber} is recorded; record it first, so what posts is what was verified`;
+  }
+  const run = runDetail(options.db, runId);
+  if (run === null) return `run ${runId} is not recorded`;
+  if (run.repository?.toLowerCase() !== options.repository.toLowerCase() || run.pullNumber !== options.pullNumber) {
+    return `run ${runId} is not a review of ${options.repository}#${options.pullNumber}`;
+  }
+  const recordedHead = run.headRef?.toLowerCase() ?? null;
+  if (recordedHead === null || !(recordedHead === head || recordedHead.length >= 7 && head.startsWith(recordedHead))) {
+    return `run ${runId} reviewed ${recordedHead ?? "no recorded head"}, not ${head}`;
+  }
+  if (normalise2(run.output) !== normalise2(options.review)) {
+    return `the review on stdin is not the review recorded as run ${runId}`;
+  }
+  return run;
+}
+function sentInline(db, repository, pullNumber, head) {
+  const rows = db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND subject_id = ?`).all(subjectId(repository, pullNumber));
+  const sent = /* @__PURE__ */ new Set();
+  for (const row of rows) {
+    const meta = JSON.parse(row.metadata_json);
+    if (meta.head !== head || !Array.isArray(meta.inline)) continue;
+    for (const signature of meta.inline) if (typeof signature === "string") sent.add(signature);
+  }
+  return sent;
+}
+async function computeVerdict(options) {
+  const head = options.head.toLowerCase();
+  if (!SHA2.test(head)) return refusal(options.head, "--head must be the full commit sha the review read");
+  const run = recordedRun(options, head);
+  if (typeof run === "string") return refusal(head, run);
+  const planned = planFindings(options.review, run, (id) => runDetail(options.db, id));
+  const actual = await readHead2(options.client, options.repository, options.pullNumber);
+  const headMoved = actual !== head;
+  const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? []);
+  const decision = decide({
+    mapped: planned.mapped,
+    headMoved,
+    ci: ci?.state ?? null,
+    recheck: options.recheck === true,
+    heldBackApproval: planned.heldBackApproval
+  });
+  let payload = null;
+  let preview = null;
+  let key = null;
+  let alreadyInline = 0;
+  if (decision.action === "post") {
+    const full2 = buildPayload({
+      head,
+      event: decision.event,
+      planned,
+      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval ? "held" : null
+    });
+    key = idempotencyKey(options.repository, options.pullNumber, full2);
+    const sent = sentInline(options.db, options.repository, options.pullNumber, head);
+    const comments = full2.comments.filter((comment) => !sent.has(commentSignature(comment)));
+    alreadyInline = full2.comments.length - comments.length;
+    payload = { ...full2, comments };
+    preview = renderPreview({
+      repository: options.repository,
+      pullNumber: options.pullNumber,
+      payload,
+      held: planned.held,
+      alreadyInline
+    });
+  }
+  return {
+    exitCode: decision.exitCode,
+    run,
+    output: {
+      event: decision.event,
+      action: decision.action,
+      reasons: decision.reasons,
+      head: { expected: head, actual },
+      ci,
+      run: run.reviewRunId,
+      held: planned.held,
+      payload,
+      alreadyInline,
+      key,
+      preview
+    }
+  };
+}
+function keyBlocked(db, key) {
+  const rows = db.prepare(
+    `SELECT audit_id, action, metadata_json FROM audit_events
+       WHERE action LIKE 'review_post_%' AND json_extract(metadata_json, '$.key') = ?`
+  ).all(key);
+  const parsed = rows.map((row) => ({ id: row.audit_id, action: row.action, meta: JSON.parse(row.metadata_json) }));
+  if (parsed.some((row) => row.action === "review_post_sent")) {
+    return "this exact review of this head was already sent";
+  }
+  for (const attempt of parsed.filter((row) => row.action === "review_post_attempted")) {
+    const outcome = parsed.find(
+      (row) => (row.action === "review_post_sent" || row.action === "review_post_failed") && row.meta["attempt"] === attempt.id
+    );
+    if (outcome === void 0 || outcome.meta["uncertain"] === true) {
+      return "an earlier attempt with this key got no definite answer from GitHub and may have posted; check the pull request";
+    }
+  }
+  return null;
+}
+function claimKey(db, key, subject, metadata) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const blocked = keyBlocked(db, key);
+    if (blocked !== null) {
+      db.exec("ROLLBACK");
+      return { blocked };
+    }
+    const attempt = recordAudit(db, "review_post_attempted", subject, { key, ...metadata });
+    db.exec("COMMIT");
+    return attempt;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+async function postReview(options) {
+  const subject = { type: "pull_request", id: subjectId(options.repository, options.pullNumber) };
+  const postCheck = evaluatePostingGate(options.db, options.postingEnabled);
+  const refuse = (exitCode2, reasons, verdict2, key2) => {
+    recordAudit(options.db, "review_post_refused", subject, {
+      reasons,
+      key: key2,
+      head: options.head,
+      event: verdict2?.event ?? null
+    });
+    return { exitCode: exitCode2, output: { status: "refused", reasons, key: key2, verdict: verdict2, postCheck } };
+  };
+  if (!options.postingEnabled) {
+    return refuse(2, ["writes.github_posting_enabled is false in .review-voice/config.yaml"], null, null);
+  }
+  if (options.confirm && !REVIEW_EVENTS.includes(options.event)) {
+    return refuse(
+      2,
+      [`--confirm needs --event ${REVIEW_EVENTS.join("|")}, the event shown in the preview`],
+      null,
+      null
+    );
+  }
+  let computed;
+  try {
+    computed = await computeVerdict({ ...options, recheck: false });
+  } catch (error) {
+    return refuse(1, [`could not read the pull request or its CI: ${error instanceof Error ? error.message : String(error)}`], null, null);
+  }
+  const { exitCode, output: verdict, run } = computed;
+  if (verdict.action !== "post" || verdict.payload === null || verdict.key === null || run === null) {
+    return refuse(exitCode === 0 ? 2 : exitCode, verdict.reasons, verdict, null);
+  }
+  const payload = verdict.payload;
+  const key = verdict.key;
+  const blocked = keyBlocked(options.db, key);
+  if (blocked !== null) return refuse(2, [blocked], verdict, key);
+  if (!options.confirm) {
+    return refuse(2, ["no --confirm: nothing is posted without one, per post"], verdict, key);
+  }
+  if (payload.event !== options.event) {
+    return refuse(
+      3,
+      [`the event is now ${payload.event}, not the ${String(options.event)} that was confirmed; preview it again`],
+      verdict,
+      key
+    );
+  }
+  if (run.repository === null || run.repository.toLowerCase() !== options.repository.toLowerCase()) {
+    return refuse(2, [`run ${run.reviewRunId} reviewed ${run.repository ?? "no repository"}, not ${options.repository}`], verdict, key);
+  }
+  if (payload.event === "APPROVE") {
+    let reread;
+    try {
+      reread = {
+        head: await readHead2(options.client, options.repository, options.pullNumber),
+        ci: await readCi(options.client, options.repository, payload.commit_id, options.gateChecks ?? [])
+      };
+    } catch (error) {
+      return refuse(1, [`could not re-read head and CI before approving: ${error instanceof Error ? error.message : String(error)}`], verdict, key);
+    }
+    if (reread.head !== payload.commit_id) {
+      return refuse(3, ["the pull request head moved before sending; review the new head"], verdict, key);
+    }
+    if (reread.ci.state !== "green") {
+      return refuse(
+        reread.ci.state === "pending" ? 4 : 5,
+        [`CI turned ${reread.ci.state} before sending; not approving`],
+        { ...verdict, ci: reread.ci },
+        key
+      );
+    }
+  }
+  const claimed = claimKey(options.db, key, subject, {
+    head: payload.commit_id,
+    event: payload.event,
+    comments: payload.comments.length,
+    run: run.reviewRunId
+  });
+  if (typeof claimed !== "string") return refuse(2, [claimed.blocked], verdict, key);
+  const attempt = claimed;
+  try {
+    const writer = options.writerFor([run.repository]);
+    const review = await writer.submitReview(options.repository, options.pullNumber, payload);
+    recordAudit(options.db, "review_post_sent", subject, {
+      key,
+      attempt,
+      head: payload.commit_id,
+      event: payload.event,
+      inline: payload.comments.map(commentSignature),
+      reviewId: review.id,
+      url: review.htmlUrl
+    });
+    return {
+      exitCode: 0,
+      output: { status: "sent", reasons: verdict.reasons, key, verdict, postCheck, review: { id: review.id, url: review.htmlUrl, state: review.state } }
+    };
+  } catch (error) {
+    const status = error instanceof GitHubError ? error.status : null;
+    const message = error instanceof Error ? error.message : String(error);
+    recordAudit(options.db, "review_post_failed", subject, {
+      key,
+      attempt,
+      status,
+      message: message.slice(0, 300),
+      // Refused in code before any request, or GitHub answered with a 4xx: not
+      // sent. Anything else may have been.
+      uncertain: !(error instanceof WriteViolation || error instanceof NotAllowlisted || error instanceof AuthError || status !== null && status < 500)
+    });
+    return {
+      exitCode: 1,
+      output: { status: "failed", reasons: [message], key, verdict, postCheck, error: { status, message } }
+    };
+  }
+}
+
 // plugins/review-voice/src/cli.ts
 var USAGE = `review-voice <command>
 
@@ -11692,6 +12491,8 @@ Commands:
   evaluate          Report the evaluation metrics against their targets
   draft             Render a validated review as a GitHub draft (posts nothing)
   post-check        Report whether posting is permitted, and why not
+  verdict           Review event under the head and CI guards (reads only)
+  post              Submit the review; needs --confirm --event <EVENT>
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
@@ -12329,6 +13130,71 @@ function postCheckCommand() {
     db.close();
   }
 }
+function reviewTarget(argv, command) {
+  const pullNumber = Number(flag(argv, "--pr"));
+  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
+  const head = flag(argv, "--head");
+  if (!Number.isInteger(pullNumber) || pullNumber < 1 || repository === null || head === null) {
+    return `${command} needs --pr <number>, --head <sha> and --repository <owner/repo>, with the validated review on stdin.`;
+  }
+  const review = readStdin();
+  if (review.trim().length === 0) return "Nothing on stdin. Pipe the validated review in.";
+  return { repository, pullNumber, head, review, runId: flag(argv, "--run") ?? void 0 };
+}
+function repositoryConfig() {
+  try {
+    return loadConfig(repositoryRoot(process.cwd()));
+  } catch {
+    return null;
+  }
+}
+async function verdictCommand(argv) {
+  const target = reviewTarget(argv, "verdict");
+  if (typeof target === "string") {
+    console.error(target);
+    return 2;
+  }
+  const db = openDatabase();
+  try {
+    const { exitCode, output } = await computeVerdict({
+      ...target,
+      db,
+      client: new GitHubClient({ allowlist: [target.repository] }),
+      recheck: argv.includes("--recheck"),
+      gateChecks: repositoryConfig()?.ciGateChecks ?? []
+    });
+    console.log(JSON.stringify(output, null, 2));
+    return exitCode;
+  } finally {
+    db.close();
+  }
+}
+async function postCommand(argv) {
+  const target = reviewTarget(argv, "post");
+  if (typeof target === "string") {
+    console.error(target);
+    return 2;
+  }
+  const config = repositoryConfig();
+  const db = openDatabase();
+  try {
+    const { exitCode, output } = await postReview({
+      ...target,
+      db,
+      client: new GitHubClient({ allowlist: [target.repository] }),
+      // Built from the recorded run's repository, not from --repository.
+      writerFor: (allowlist) => new ReviewWriter({ allowlist }),
+      confirm: argv.includes("--confirm"),
+      event: flag(argv, "--event")?.toUpperCase(),
+      postingEnabled: config?.postingEnabled ?? false,
+      gateChecks: config?.ciGateChecks ?? []
+    });
+    console.log(JSON.stringify(output, null, 2));
+    return exitCode;
+  } finally {
+    db.close();
+  }
+}
 function evaluateCommand(argv) {
   const db = openDatabase();
   try {
@@ -12458,9 +13324,9 @@ function scoreCommand(argv) {
   }
   if (searchRoot !== null) {
     for (const candidate of candidates) {
-      const verification = verifications.get(candidate.candidateId);
+      const verification2 = verifications.get(candidate.candidateId);
       verifications.set(candidate.candidateId, {
-        ...verification ?? { candidateId: candidate.candidateId },
+        ...verification2 ?? { candidateId: candidate.candidateId },
         candidateId: candidate.candidateId,
         reach: computeReach(
           candidate.claim,
@@ -12699,28 +13565,7 @@ function retrieveCommand(argv) {
   }
 }
 function anchorsCommand() {
-  const output = readStdin();
-  const anchors = splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null && finding.line !== null).map((finding, index) => ({
-    findingId: `rv_${String(index + 1).padStart(2, "0")}`,
-    severity: finding.severity,
-    path: finding.path,
-    line: finding.line,
-    body: finding.raw
-  }));
-  const skipped = splitFindings(output).length - anchors.length;
-  console.log(
-    JSON.stringify(
-      {
-        anchors,
-        // A finding the contract accepted but that carries no line cannot be
-        // anchored. Said plainly, because the alternative is an inline comment
-        // silently going missing.
-        unanchorable: skipped
-      },
-      null,
-      2
-    )
-  );
+  console.log(JSON.stringify(extractAnchors(readStdin()), null, 2));
   return 0;
 }
 function redactCommand(argv) {
@@ -13343,6 +14188,10 @@ async function main(argv) {
       return evaluateCommand(argv.slice(1));
     case "draft":
       return draftCommand(argv.slice(1));
+    case "verdict":
+      return await verdictCommand(argv.slice(1));
+    case "post":
+      return await postCommand(argv.slice(1));
     case "post-check":
       return postCheckCommand();
     case "calibrate":
@@ -13388,7 +14237,7 @@ suppressSqliteExperimentalWarning();
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
-  if (error instanceof AuthError || error instanceof NotAllowlisted || error instanceof ReadOnlyViolation) {
+  if (error instanceof AuthError || error instanceof NotAllowlisted || error instanceof ReadOnlyViolation || error instanceof WriteViolation) {
     console.error(error.message);
     process.exitCode = 2;
   } else if (error instanceof GitError) {

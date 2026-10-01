@@ -3,6 +3,9 @@
 **Status:** Accepted · **Date:** 2026-09-16
 **Implementation note added:** 2026-09-16 - the gate is now enforced in code;
 see `plugins/review-voice/src/publish/gate.ts`.
+**Superseded in part by:** [0010](0010-review-verdict-posting.md) (2026-10-01) -
+decision 4 ("Comments only") is replaced, and the quality gate is advisory for
+verified findings. Decisions 1, 2, 3 and 5 stand.
 
 ## Context
 

@@ -118,12 +118,16 @@ pre-built bundle with zero runtime dependencies.
 
 ## Privacy in one paragraph
 
-Review Voice is local-first and read-only. It reads only repositories you
+Review Voice is local-first and reads before it writes. It reads only repositories you
 explicitly allowlist, never everything your token can reach. Everything it
 stores lives in your platform's data directory, never in your repository and
 never on a server we control. Secrets are redacted before anything is persisted,
 indexed, logged, or put in a prompt - as defence in depth, not as a guarantee.
-It cannot post comments, approve pull requests, or change repository state.
+Its one write is `RV post`: a review of verified findings, inline on their
+lines, sent only with `--confirm` for that post, and an approval only while the
+head is unchanged and CI is green (see
+[ADR 0010](docs/adr/0010-review-verdict-posting.md)). It never merges, dismisses
+reviews, resolves threads or sets a status.
 Full detail in [PRIVACY.md](PRIVACY.md) and
 [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 

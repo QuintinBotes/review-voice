@@ -1,80 +1,127 @@
 ---
-description: Render the last review as a GitHub draft, and check whether posting is permitted
-argument-hint: "--repository <owner/repo> --pr <number>"
+description: Compute the verdict for the last review, and post it to the pull request after one explicit confirmation
+argument-hint: "--repository <owner/repo> --pr <number> --head <sha>"
 allowed-tools: Bash(node:*), Read
 ---
 
-# Draft a GitHub review
+# Post a review with its verdict
 
 Let `RV` be `node "${CLAUDE_PLUGIN_ROOT}/dist/review-voice.mjs"`.
 
-## 1 - Check the gate first
+This is the plugin's one GitHub write (`docs/adr/0010`). It submits a pull
+request review whose event is APPROVE, COMMENT or REQUEST_CHANGES, in one
+request, never as a pending review. Merging, dismissing reviews, resolving
+threads, setting statuses and re-running CI are never done.
 
-Run `RV post-check`.
+The review on stdin is the **validated review exactly as recorded** with
+`RV record`, and `--head` is the full sha the review read. Both commands refuse
+a review that differs from the recorded run, or a run of another head: what
+posts has to be what was verified.
 
-If `allowed` is false, show the reasons verbatim and **stop**. Do not offer a
-workaround, do not suggest editing the config, and do not post.
+## 1 - Compute the verdict
 
-The gate reads what has actually been measured, not what the configuration
-says. Per `docs/adr/0007`, posting waits until owner-accepted precision holds
-at 0.80 or better over at least 20 labelled findings, with full contract
-compliance. There is no override, deliberately - a gate with a bypass is a
-suggestion.
+```
+RV verdict --repository <owner/repo> --pr <number> --head <sha> [--run <id>] < <validated-output>
+```
 
-If the user asks to post anyway, the honest answer is that the reviewer has not
-yet earned it, and that labelling findings with `/review-voice:feedback` is how
-it does.
+`--run` defaults to the newest recorded run of that pull request. Nothing is
+sent. The JSON carries `event`, `action`, `reasons`, `head`, `ci`, `held`,
+`payload` and `preview`.
 
-## 2 - Render the draft
+- **The event** is fixed in code from the severities of the findings that will
+  post: none or only `nit` approves, `minor` or `question` comments,
+  `important` or `blocking` requests changes.
+- **Only verified findings post.** A finding posts when the run has a score
+  for it that came from the verifier and cleared every gate
+  (`confidenceSource: verifier`, eligible), with the same path, line and
+  derived severity. Each score backs one finding at most; a carried finding is
+  checked against the run that scored it. Anything else is listed in `held`
+  with the reason, and is not sent. An unverified finding above a nit keeps the
+  review from approving.
+- **Every anchored finding is an inline comment** on its line. The body is one
+  line stating the verdict, plus only verified findings with no line to sit
+  on (matched by path and severity). A comment an earlier post already put on
+  this head is not sent again (`alreadyInline`), so an approval that follows a
+  comment while CI was red carries the summary only.
+- **The head guard.** If the pull request's head is no longer `--head`, exit 3.
+  Review the new head instead.
+- **The CI guard.** Check runs are read with `filter=latest`, every page, with
+  combined commit statuses. `stale`, `skipped` and `neutral` do not count. A
+  failure always counts, whatever else ran under its name; only a run that never
+  finished, or was cancelled, is replaced, and only by a later completed run of
+  the same app and name. A cancelled run with nothing after it, no checks at all,
+  a combined status of pending, or more checks than could be read are all
+  pending, never green. Checks listed under `ci.gate_checks` in `.review-voice/config.yaml`
+  (`name` is a glob, `summary` an optional phrase the check must contain) are
+  reported as `gates`, not as failures. Red CI caps an approval at COMMENT.
+  Pending CI turns an approval into `action: "wait"`, exit 4, with no payload.
+  COMMENT and REQUEST_CHANGES never wait for CI.
 
-Run `RV draft --repository <owner/repo> --pr <number>` with the validated
-review on stdin.
+Show `preview` exactly as printed, and the `held` findings with their reasons.
+The preview is generated from the payload that will be sent; its first line is
+the event.
 
-Show the preview exactly as printed. That text is generated from the payload
-that would be sent - a preview produced separately from what gets posted is a
-mock-up, not a preview.
+## 2 - Confirm, once, per post
 
-## 3 - Confirm, once, per post
+Ask the user explicitly, naming the event. No "always allow", no session-wide
+approval, and nothing in any configuration implies one. If they decline, stop.
 
-Ask explicitly. No "always allow", no session-wide approval.
+## 3 - Post
 
-Comments only. Never approve, never request changes, never merge, never set a
-status. An automated approval is a different product with a different risk
-profile.
+```
+RV post --repository <owner/repo> --pr <number> --head <sha> --confirm --event <EVENT> [--run <id>] < <validated-output>
+```
 
-## Exactly once
+`--event` is the event the user confirmed in step 2, exactly as the preview
+showed it. `post` recomputes the verdict live rather than trusting step 1, and
+refuses without sending when:
 
-Each draft carries an idempotency key derived from the repository, pull request
-and diff hash. Record it in the audit log **before** sending, so a retry after
-a timeout cannot double-post. A re-review after a force-push has a different
-diff hash and is correctly a different post.
+- `--confirm` is missing (the preview is still in the output), or `--event` is;
+- the recomputed event is not the confirmed one (exit 3): CI or the head
+  changed since the preview. Show the new preview and confirm again;
+- `writes.github_posting_enabled` is not true;
+- the head moved (exit 3), or an approval is waiting on CI (exit 4);
+- the same review of the same head was already sent, or an earlier attempt got
+  no definite answer from GitHub and may have posted.
 
-## Still not implemented
+For an APPROVE, head and CI are re-read immediately before the request; a
+change between the two refuses the post.
 
-The posting call itself does not exist yet. This command renders and checks;
-it cannot send. That is the current state of `docs/adr/0007`, not an oversight.
+The idempotency key is the repository, pull request, head and a hash of the
+payload. It is written to the audit log as `review_post_attempted` before the
+request, and every outcome is audited: `review_post_sent`,
+`review_post_refused` with the reason, `review_post_failed` with GitHub's
+status. Report a failure as GitHub stated it; GitHub refuses an approval of
+your own pull request, and the tool does not retry or downgrade the event.
+
+`postCheck` is the measured-precision gate from `RV post-check`. It is printed
+with every post so the measurement stays visible, and it does not hold a
+verified finding back.
+
+## Approving later
+
+When step 1 said `wait`, run it again with `--recheck` once CI has had time:
+
+```
+RV verdict --repository <owner/repo> --pr <number> --head <sha> --recheck < <validated-output>
+```
+
+It emits an APPROVE payload only when the head is unchanged and CI is green;
+otherwise exit 4 (still running) or 5 (red). It never posts. Sending it is step
+2 and step 3 again, with `--event APPROVE`.
+
+The writer may post only to the repository of the recorded run. Having
+reviewed that pull request is the consent; `--repository` alone is not.
 
 ## Inline anchors
 
-To post findings against their lines as well as in one block, take the anchors
-from the **validated review text**, never from the scored candidates:
-
-```
-RV anchors < <validated-output>
-```
-
-The candidate's `path` is free text from the analyst; the rendered finding
-carries what the verifier actually read, and the two can disagree. On one pull
-request the analyst cited
+`RV anchors < <validated-output>` prints the same anchors the payload uses, one
+per finding, taken from the **validated review text**, never from the scored
+candidates. The candidate's `path` is free text from the analyst; the rendered
+finding carries what the verifier actually read, and the two can disagree. On
+one pull request the analyst cited
 `InvoicePaymentRequest/InvoicePaymentRequestDetail.tsx` and the finding that
-shipped, correctly, cited `bankTransfer/BankTransferCard.tsx`. Anchors built
-from candidate records would have put two comments on the wrong file.
-
-**Post the validated body as the review summary and attach the inline comments
-alongside it.** The single block is what `validate-output` checks and what
-`record` stores, so the contract and the corpus stay intact; the inline
-comments are an additional rendering of the same findings, not a replacement
-for them.
+shipped, correctly, cited `bankTransfer/BankTransferCard.tsx`.
 
 `unanchorable` counts findings the contract accepted that carry no line. Say so
 rather than letting an inline comment go missing.

@@ -16,7 +16,13 @@ export type AuditAction =
   | 'feedback_recorded'
   | 'purge'
   | 'prompt_injection_detected'
-  | 'external_write_attempted';
+  | 'external_write_attempted'
+  // Posting a review (docs/adr/0010). The attempt is written before the
+  // request, so an attempt with no outcome after it is visible as such.
+  | 'review_post_attempted'
+  | 'review_post_sent'
+  | 'review_post_refused'
+  | 'review_post_failed';
 
 export function recordAudit(
   db: Database,
