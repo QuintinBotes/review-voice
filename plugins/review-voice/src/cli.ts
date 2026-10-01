@@ -24,7 +24,17 @@ import { readThread, type ThreadComment } from './diff/thread.ts';
 import { collectSymbolContext } from './diff/symbols.ts';
 import { openDatabase } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
-import { recordRun, latestRun, recordedRunsForPull, runDetail, type StageTiming } from './store/runs.ts';
+import {
+  recordRun,
+  latestRun,
+  recordedRunsForPull,
+  runDetail,
+  heldProblem,
+  CarryMismatch,
+  type HeldFinding,
+  type StageTiming,
+} from './store/runs.ts';
+import { carryFindings, CarryError, type CarriedFinding } from './diff/carry.ts';
 import { latestOwnReview, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
   recordFeedback,
@@ -101,6 +111,7 @@ Commands:
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
+  carry             Carry an earlier run's untouched findings to a new head
   explain           Show why the last review said what it said
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
@@ -146,9 +157,14 @@ record flags:
   --candidates <path>    Scored candidates, so findings carry their category
   --scores <path>        Score breakdowns, so explain can show its working
   --verdicts <path>      Verification verdicts, including findings that were dropped
+  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
+  --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
   --stages <path>        Per-stage timings as
                          [{"name","seconds","toolCalls","tokens"}], so how long
                          a review takes is a distribution rather than an anecdote
+
+carry flags:
+  --from <run-id> --head <sha>   Findings of that run still valid at the new head
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -1582,6 +1598,26 @@ function recordCommand(argv: string[]): number {
     }
   }
 
+  // Held-back candidates: a malformed entry is refused outright, because a
+  // reason that was silently dropped would make the held list look complete.
+  const heldFile = flag(argv, '--held');
+  let held: HeldFinding[] = [];
+  if (heldFile !== null) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(heldFile, 'utf8'));
+      const list = Array.isArray(parsed) ? parsed : (parsed as { held?: unknown } | null)?.held;
+      if (!Array.isArray(list)) throw new Error('expected an array or {"held": [...]}');
+      list.forEach((entry, index) => {
+        const problem = heldProblem(entry);
+        if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
+      });
+      held = list as HeldFinding[];
+    } catch (error) {
+      console.error(`Cannot read held findings from ${heldFile}: ${(error as Error).message}`);
+      return 2;
+    }
+  }
+
   const stagesFile = flag(argv, '--stages');
   let stages: StageTiming[] = [];
   if (stagesFile !== null) {
@@ -1603,6 +1639,23 @@ function recordCommand(argv: string[]): number {
 
   const db = openDatabase();
   try {
+    let carried: { runId: string; findings: CarriedFinding[] } | undefined;
+    const carriedFrom = flag(argv, '--carried-from');
+    if (carriedFrom !== null) {
+      const head = flag(argv, '--head');
+      if (head === null) {
+        console.error('--carried-from needs --head, the commit the findings were carried to.');
+        return 2;
+      }
+      try {
+        const result = carryForRun(db, carriedFrom, head);
+        carried = { runId: carriedFrom, findings: result.carried };
+      } catch (error) {
+        console.error((error as Error).message);
+        return 2;
+      }
+    }
+
     const { reviewRunId, findings } = recordRun(db, {
       repository: flag(argv, '--repository'),
       baseRef: flag(argv, '--base'),
@@ -1614,10 +1667,55 @@ function recordCommand(argv: string[]): number {
       candidates,
       scores,
       verdicts,
+      held,
+      carried,
       stages,
     });
     console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
     return 0;
+  } catch (error) {
+    if (error instanceof CarryMismatch) {
+      console.error(`A carried finding was recorded on a different line than carry gave it:\n${error.message}`);
+      return 2;
+    }
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+
+/** Runs the carry for one stored run against the repository in the working directory. */
+function carryForRun(db: ReturnType<typeof openDatabase>, runId: string, head: string): ReturnType<typeof carryFindings> {
+  const detail = runDetail(db, runId);
+  if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
+  if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head, so nothing can be carried from it.`);
+  return carryFindings(detail.findings, detail.headRef, head, process.cwd());
+}
+
+/**
+ * Lists which findings of an earlier run still hold at a new head.
+ *
+ * Used when a pull request moved but its own diff did not, so those findings
+ * can be repeated at their new lines instead of being re-derived.
+ */
+function carryCommand(argv: string[]): number {
+  const from = flag(argv, '--from');
+  const head = flag(argv, '--head');
+  if (from === null || head === null) {
+    console.error('Usage: carry --from <run-id> --head <sha>');
+    return 2;
+  }
+  const db = openDatabase();
+  try {
+    const result = carryForRun(db, from, head);
+    console.log(JSON.stringify({ from, head, ...result }, null, 2));
+    return 0;
+  } catch (error) {
+    if (error instanceof CarryError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
   } finally {
     db.close();
   }
@@ -1722,6 +1820,9 @@ function explainCommand(argv: string[]): number {
       // is auditability.
       const score = scores.find((s) => s.path === finding.path && s.line === finding.line);
       console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
+      if (finding.carriedFrom !== undefined) {
+        console.log(`  carried from      ${finding.carriedFrom.findingId} of run ${finding.carriedFrom.runId}`);
+      }
       console.log(`  category          ${finding.category ?? 'not recorded'}`);
       if (score?.technicalConfidence !== undefined) {
         console.log(`  technical         ${score.technicalConfidence.toFixed(2)}`);
@@ -1770,6 +1871,14 @@ function explainCommand(argv: string[]): number {
         );
         if (verdict.reason.length > 0) console.log(`                    ${verdict.reason}`);
       }
+      console.log('');
+    }
+
+    // Held-back candidates, unlike the suppressed ones below, include repeats of
+    // an existing comment and cross-check results that no verifier produced.
+    if (detail.held.length > 0 && wanted === undefined) {
+      console.log(`Held back (${detail.held.length}):`);
+      for (const h of detail.held) console.log(`  [${h.verdict}] ${h.path}:${h.line}  ${h.source} - ${h.reason}`);
       console.log('');
     }
 
@@ -2166,6 +2275,9 @@ async function main(argv: string[]): Promise<number> {
 
     case 'record':
       return recordCommand(argv.slice(1));
+
+    case 'carry':
+      return carryCommand(argv.slice(1));
 
     case 'feedback':
       return feedbackCommand(argv.slice(1));

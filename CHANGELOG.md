@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `record --held <file>` keeps the candidates a review held back (repeats of an
+  existing comment, partly confirmed, refuted or unverified claims) with the
+  source and reason, and `explain` lists them under "Held back". Older runs
+  load without it.
+- `carry --from <run> --head <sha>` moves an earlier run's findings to a new head
+  when the code around them did not change, and `record --carried-from <run>`
+  checks that each carried finding was recorded on its remapped line. When the
+  pull request's own diff is `unchanged`, `/review-voice:review` carries instead
+  of stopping.
 - A finding is reported above the tier the analyst asked for only when the
   verifier traced its impact beyond the changed code (`impact_traced`) with
   confidence of at least 0.85, and a claim framed as a question is capped at

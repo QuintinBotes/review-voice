@@ -3,7 +3,7 @@
 // plugins/review-voice/src/cli.ts
 import { readFileSync as readFileSync4, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2 } from "node:fs";
 import { dirname as dirname4, join as join5 } from "node:path";
-import { execFileSync as execFileSync9 } from "node:child_process";
+import { execFileSync as execFileSync10 } from "node:child_process";
 
 // plugins/review-voice/src/warnings.ts
 function suppressSqliteExperimentalWarning() {
@@ -2212,7 +2212,144 @@ function recordAudit(db, action, subject, metadata = {}) {
   return id;
 }
 
+// plugins/review-voice/src/diff/carry.ts
+import { execFileSync as execFileSync7 } from "node:child_process";
+var NEIGHBOURHOOD = 2;
+function commitReadable(ref, cwd) {
+  try {
+    execFileSync7("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function oldSideHunks(patch) {
+  const hunks = [];
+  for (const line of patch.split("\n")) {
+    const match = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+    if (match === null) continue;
+    hunks.push({
+      oldStart: Number(match[1]),
+      oldCount: match[2] === void 0 ? 1 : Number(match[2]),
+      newCount: match[3] === void 0 ? 1 : Number(match[3])
+    });
+  }
+  return hunks;
+}
+function remapLine(hunks, line) {
+  const low = line - NEIGHBOURHOOD;
+  const high = line + NEIGHBOURHOOD;
+  let shift = 0;
+  for (const hunk of hunks) {
+    const first = hunk.oldStart;
+    const last = hunk.oldCount === 0 ? hunk.oldStart + 1 : hunk.oldStart + hunk.oldCount - 1;
+    if (last >= low && first <= high) return { reason: "anchor or its neighbours changed" };
+    if (last < low) shift += hunk.newCount - hunk.oldCount;
+  }
+  return { line: line + shift };
+}
+var CarryError = class extends Error {
+};
+function gitOut(args, cwd) {
+  try {
+    return execFileSync7("git", args, {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    throw new CarryError(`git ${args.join(" ")} failed: ${error.message}`);
+  }
+}
+function existsAt(ref, path, cwd) {
+  try {
+    execFileSync7("git", ["cat-file", "-e", `${ref}:${path}`], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function rewriteAnchor(text, path, oldLine, line) {
+  return text.replace(`\`${path}:${oldLine}\``, `\`${path}:${line}\``);
+}
+function carryFindings(findings, previousHead, head, cwd) {
+  for (const ref of [previousHead, head]) {
+    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in this repository.`);
+  }
+  const carried = [];
+  const notCarried = [];
+  for (const finding of findings) {
+    const skip = (reason2) => {
+      notCarried.push({ findingId: finding.findingId, path: finding.path, line: finding.line, reason: reason2 });
+    };
+    if (!existsAt(head, finding.path, cwd)) {
+      skip("file deleted or renamed");
+      continue;
+    }
+    const patch = gitOut(
+      ["diff", "--unified=0", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", previousHead, head, "--", ...topPathspecs([finding.path])],
+      cwd
+    );
+    const moved = remapLine(oldSideHunks(patch), finding.line);
+    if ("reason" in moved) {
+      skip(moved.reason);
+      continue;
+    }
+    carried.push({
+      findingId: finding.findingId,
+      path: finding.path,
+      oldLine: finding.line,
+      line: moved.line,
+      text: rewriteAnchor(finding.text, finding.path, finding.line, moved.line)
+    });
+  }
+  return { carried, notCarried, output: carried.map((c) => c.text).join("\n\n") };
+}
+function findingBody(text) {
+  const joined = text.replace(/\s+/g, " ").trim();
+  const match = /^\[[a-z_]+\]\s+`[^`]+:\d+`\s*(.*)$/i.exec(joined);
+  return match === null ? joined : match[1] ?? "";
+}
+function matchCarried(recorded, carried) {
+  const matches = /* @__PURE__ */ new Map();
+  const mismatches = [];
+  const used = /* @__PURE__ */ new Set();
+  for (const finding of recorded) {
+    const body = findingBody(finding.text);
+    const source = carried.find(
+      (c) => !used.has(c.findingId) && c.path === finding.path && findingBody(c.text) === body
+    );
+    if (source === void 0) continue;
+    used.add(source.findingId);
+    if (source.line !== finding.line) {
+      mismatches.push(`${finding.findingId} (${finding.path}:${finding.line}) repeats ${source.findingId}, which carries to line ${source.line}`);
+      continue;
+    }
+    matches.set(finding.findingId, source.findingId);
+  }
+  return { matches, mismatches };
+}
+
 // plugins/review-voice/src/store/runs.ts
+var HELD_VERDICTS = ["partly", "refuted", "unverified", "repeat"];
+function heldProblem(entry) {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "not an object";
+  const e = entry;
+  if (typeof e["path"] !== "string" || e["path"].length === 0) return "path must be a non-empty string";
+  if (!Number.isInteger(e["line"]) || e["line"] < 1) return "line must be a positive integer";
+  if (!HELD_VERDICTS.includes(e["verdict"])) return `verdict must be one of ${HELD_VERDICTS.join(", ")}`;
+  for (const key of ["source", "reason"]) {
+    const value = e[key];
+    if (typeof value !== "string" || value.trim().length === 0) return `${key} must be a non-empty string`;
+  }
+  for (const key of ["severity", "candidateId", "text"]) {
+    if (e[key] !== void 0 && typeof e[key] !== "string") return `${key} must be a string when present`;
+  }
+  return null;
+}
+var CarryMismatch = class extends Error {
+};
 var basename = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
 function attribute(finding, hints, taken) {
   const free = hints.filter((hint) => !taken.has(hint));
@@ -2254,6 +2391,14 @@ function hashDiff(diff) {
 function recordRun(db, input) {
   const reviewRunId = randomUUID2();
   const findings = assignIds(input.output, input.candidates ?? []);
+  if (input.carried !== void 0) {
+    const { matches, mismatches } = matchCarried(findings, input.carried.findings);
+    if (mismatches.length > 0) throw new CarryMismatch(mismatches.join("\n"));
+    for (const finding of findings) {
+      const from = matches.get(finding.findingId);
+      if (from !== void 0) finding.carriedFrom = { runId: input.carried.runId, findingId: from };
+    }
+  }
   db.prepare(
     `INSERT INTO review_runs (
        review_run_id, repository, base_ref, head_ref, diff_hash,
@@ -2274,7 +2419,8 @@ function recordRun(db, input) {
       output: input.output,
       findings,
       scores: input.scores ?? [],
-      verdicts: input.verdicts ?? []
+      verdicts: input.verdicts ?? [],
+      held: input.held ?? []
     }),
     (/* @__PURE__ */ new Date()).toISOString(),
     JSON.stringify(input.stages ?? []),
@@ -2304,11 +2450,13 @@ function runDetail(db, reviewRunId) {
     repository: row["repository"],
     pullNumber: Number.isInteger(row["pull_number"]) ? row["pull_number"] : null,
     scope: storedScope(row["scope_json"]),
+    headRef: typeof row["head_ref"] === "string" ? row["head_ref"] : null,
     createdAt: row["created_at"],
     output: parsed.output,
     findings: parsed.findings,
     scores: parsed.scores ?? [],
     verdicts: parsed.verdicts ?? [],
+    held: Array.isArray(parsed.held) ? parsed.held : [],
     // Older rows predate the column, so absence is normal rather than an error.
     stages: (() => {
       const raw = row["stages_json"];
@@ -2343,9 +2491,9 @@ function latestRun(db) {
 }
 
 // plugins/review-voice/src/diff/prior.ts
-import { execFileSync as execFileSync7 } from "node:child_process";
+import { execFileSync as execFileSync8 } from "node:child_process";
 function git3(args, cwd) {
-  return execFileSync7("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
+  return execFileSync8("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
 }
 function resolveCommit(ref, cwd) {
   try {
@@ -10003,9 +10151,9 @@ function changedPathsFrom(filesJson) {
 }
 
 // plugins/review-voice/src/scoring/citation.ts
-import { execFileSync as execFileSync8 } from "node:child_process";
+import { execFileSync as execFileSync9 } from "node:child_process";
 function git4(args, cwd) {
-  return execFileSync8("git", args, {
+  return execFileSync9("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -11547,6 +11695,7 @@ Commands:
   record            Store a validated review from stdin and assign finding ids
   feedback          Record feedback on a finding
   status            Show what is stored locally
+  carry             Carry an earlier run's untouched findings to a new head
   explain           Show why the last review said what it said
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
@@ -11592,9 +11741,14 @@ record flags:
   --candidates <path>    Scored candidates, so findings carry their category
   --scores <path>        Score breakdowns, so explain can show its working
   --verdicts <path>      Verification verdicts, including findings that were dropped
+  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
+  --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
   --stages <path>        Per-stage timings as
                          [{"name","seconds","toolCalls","tokens"}], so how long
                          a review takes is a distribution rather than an anecdote
+
+carry flags:
+  --from <run-id> --head <sha>   Findings of that run still valid at the new head
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -11708,7 +11862,7 @@ ${result.violations.length} contract violation(s).`);
 }
 function inferRepository(cwd) {
   try {
-    const url = execFileSync9("git", ["remote", "get-url", "origin"], {
+    const url = execFileSync10("git", ["remote", "get-url", "origin"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -12705,6 +12859,23 @@ function recordCommand(argv) {
       return 2;
     }
   }
+  const heldFile = flag(argv, "--held");
+  let held = [];
+  if (heldFile !== null) {
+    try {
+      const parsed = JSON.parse(readFileSync4(heldFile, "utf8"));
+      const list = Array.isArray(parsed) ? parsed : parsed?.held;
+      if (!Array.isArray(list)) throw new Error('expected an array or {"held": [...]}');
+      list.forEach((entry, index) => {
+        const problem = heldProblem(entry);
+        if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
+      });
+      held = list;
+    } catch (error) {
+      console.error(`Cannot read held findings from ${heldFile}: ${error.message}`);
+      return 2;
+    }
+  }
   const stagesFile = flag(argv, "--stages");
   let stages = [];
   if (stagesFile !== null) {
@@ -12721,6 +12892,22 @@ function recordCommand(argv) {
   }
   const db = openDatabase();
   try {
+    let carried;
+    const carriedFrom = flag(argv, "--carried-from");
+    if (carriedFrom !== null) {
+      const head = flag(argv, "--head");
+      if (head === null) {
+        console.error("--carried-from needs --head, the commit the findings were carried to.");
+        return 2;
+      }
+      try {
+        const result = carryForRun(db, carriedFrom, head);
+        carried = { runId: carriedFrom, findings: result.carried };
+      } catch (error) {
+        console.error(error.message);
+        return 2;
+      }
+    }
     const { reviewRunId, findings } = recordRun(db, {
       repository: flag(argv, "--repository"),
       baseRef: flag(argv, "--base"),
@@ -12732,10 +12919,47 @@ function recordCommand(argv) {
       candidates,
       scores,
       verdicts,
+      held,
+      carried,
       stages
     });
     console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
     return 0;
+  } catch (error) {
+    if (error instanceof CarryMismatch) {
+      console.error(`A carried finding was recorded on a different line than carry gave it:
+${error.message}`);
+      return 2;
+    }
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+function carryForRun(db, runId, head) {
+  const detail = runDetail(db, runId);
+  if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
+  if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head, so nothing can be carried from it.`);
+  return carryFindings(detail.findings, detail.headRef, head, process.cwd());
+}
+function carryCommand(argv) {
+  const from = flag(argv, "--from");
+  const head = flag(argv, "--head");
+  if (from === null || head === null) {
+    console.error("Usage: carry --from <run-id> --head <sha>");
+    return 2;
+  }
+  const db = openDatabase();
+  try {
+    const result = carryForRun(db, from, head);
+    console.log(JSON.stringify({ from, head, ...result }, null, 2));
+    return 0;
+  } catch (error) {
+    if (error instanceof CarryError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
   } finally {
     db.close();
   }
@@ -12799,6 +13023,9 @@ function explainCommand(argv) {
     for (const finding of shown) {
       const score = scores.find((s) => s.path === finding.path && s.line === finding.line);
       console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
+      if (finding.carriedFrom !== void 0) {
+        console.log(`  carried from      ${finding.carriedFrom.findingId} of run ${finding.carriedFrom.runId}`);
+      }
       console.log(`  category          ${finding.category ?? "not recorded"}`);
       if (score?.technicalConfidence !== void 0) {
         console.log(`  technical         ${score.technicalConfidence.toFixed(2)}`);
@@ -12841,6 +13068,11 @@ function explainCommand(argv) {
         );
         if (verdict.reason.length > 0) console.log(`                    ${verdict.reason}`);
       }
+      console.log("");
+    }
+    if (detail.held.length > 0 && wanted === void 0) {
+      console.log(`Held back (${detail.held.length}):`);
+      for (const h of detail.held) console.log(`  [${h.verdict}] ${h.path}:${h.line}  ${h.source} - ${h.reason}`);
       console.log("");
     }
     const dropped = verdicts.filter((v) => v.outcome === "dropped");
@@ -12896,7 +13128,7 @@ function conventionsCommand(argv) {
 }
 function refExists(ref, cwd) {
   try {
-    execFileSync9("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    execFileSync10("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -13127,6 +13359,8 @@ async function main(argv) {
       return verifyCommand(argv);
     case "record":
       return recordCommand(argv.slice(1));
+    case "carry":
+      return carryCommand(argv.slice(1));
     case "feedback":
       return feedbackCommand(argv.slice(1));
     case "status":

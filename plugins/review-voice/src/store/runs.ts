@@ -3,6 +3,7 @@ import type { Database } from './db.ts';
 import { recordAudit } from './audit.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
+import { matchCarried, type CarriedFinding } from '../diff/carry.ts';
 
 export interface StoredFinding {
   findingId: string;
@@ -23,7 +24,46 @@ export interface StoredFinding {
   attributedBy?: 'basename' | 'line' | undefined;
   /** True when candidates were supplied and none could be paired with this. */
   unattributed?: boolean | undefined;
+  /** The earlier run and finding this one was carried forward from, unchanged. */
+  carriedFrom?: { runId: string; findingId: string } | undefined;
 }
+
+/** Why a candidate was held back rather than reported. */
+export type HeldVerdict = 'partly' | 'refuted' | 'unverified' | 'repeat';
+
+export interface HeldFinding {
+  path: string;
+  line: number;
+  verdict: HeldVerdict;
+  /** What held it back: a verifier, a cross-check, or the existing thread. */
+  source: string;
+  reason: string;
+  severity?: string | undefined;
+  candidateId?: string | undefined;
+  text?: string | undefined;
+}
+
+export const HELD_VERDICTS: readonly HeldVerdict[] = ['partly', 'refuted', 'unverified', 'repeat'];
+
+/** Null when the entry is well formed, else what is wrong with it. */
+export function heldProblem(entry: unknown): string | null {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return 'not an object';
+  const e = entry as Record<string, unknown>;
+  if (typeof e['path'] !== 'string' || e['path'].length === 0) return 'path must be a non-empty string';
+  if (!Number.isInteger(e['line']) || (e['line'] as number) < 1) return 'line must be a positive integer';
+  if (!HELD_VERDICTS.includes(e['verdict'] as HeldVerdict)) return `verdict must be one of ${HELD_VERDICTS.join(', ')}`;
+  for (const key of ['source', 'reason'] as const) {
+    const value = e[key];
+    if (typeof value !== 'string' || value.trim().length === 0) return `${key} must be a non-empty string`;
+  }
+  for (const key of ['severity', 'candidateId', 'text'] as const) {
+    if (e[key] !== undefined && typeof e[key] !== 'string') return `${key} must be a string when present`;
+  }
+  return null;
+}
+
+/** Raised when a recorded finding repeats a carried one but sits on another line. */
+export class CarryMismatch extends Error {}
 
 /** Just enough of a scored candidate to attribute a finding to its category. */
 export interface CandidateHint {
@@ -52,6 +92,14 @@ export interface RecordRunInput {
    * finding leaves no other trace, so this is the only record that it existed.
    */
   verdicts?: unknown;
+  /**
+   * Candidates held back rather than reported, with the reason. Unlike a
+   * verdict, this also covers repeats of an existing comment and cross-check
+   * results, which no verifier pass produces.
+   */
+  held?: HeldFinding[] | undefined;
+  /** The earlier run's carried findings, to be matched against what is recorded. */
+  carried?: { runId: string; findings: CarriedFinding[] } | undefined;
   /**
    * How long each stage took, and what it cost.
    *
@@ -150,6 +198,16 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
   const reviewRunId = randomUUID();
   const findings = assignIds(input.output, input.candidates ?? []);
 
+  // Checked before anything is written, so a refused record leaves no run behind.
+  if (input.carried !== undefined) {
+    const { matches, mismatches } = matchCarried(findings, input.carried.findings);
+    if (mismatches.length > 0) throw new CarryMismatch(mismatches.join('\n'));
+    for (const finding of findings) {
+      const from = matches.get(finding.findingId);
+      if (from !== undefined) finding.carriedFrom = { runId: input.carried.runId, findingId: from };
+    }
+  }
+
   db.prepare(
     `INSERT INTO review_runs (
        review_run_id, repository, base_ref, head_ref, diff_hash,
@@ -171,6 +229,7 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
       findings,
       scores: input.scores ?? [],
       verdicts: input.verdicts ?? [],
+      held: input.held ?? [],
     }),
     new Date().toISOString(),
     JSON.stringify(input.stages ?? []),
@@ -194,12 +253,16 @@ export interface RunDetail {
   pullNumber: number | null;
   /** Null is expected for rows recorded before pull-request scopes existed. */
   scope: ReviewScope | null;
+  /** The commit reviewed. Null for runs recorded without `--head`. */
+  headRef: string | null;
   createdAt: string;
   output: string;
   findings: StoredFinding[];
   scores: unknown;
   precedents: unknown;
   verdicts: unknown;
+  /** Empty for runs recorded before held findings were kept. */
+  held: HeldFinding[];
 }
 
 function storedScope(raw: unknown): ReviewScope | null {
@@ -231,6 +294,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     findings: StoredFinding[];
     scores?: unknown;
     verdicts?: unknown;
+    held?: unknown;
   };
 
   return {
@@ -238,11 +302,13 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     repository: row['repository'] as string | null,
     pullNumber: Number.isInteger(row['pull_number']) ? (row['pull_number'] as number) : null,
     scope: storedScope(row['scope_json']),
+    headRef: typeof row['head_ref'] === 'string' ? row['head_ref'] : null,
     createdAt: row['created_at'] as string,
     output: parsed.output,
     findings: parsed.findings,
     scores: parsed.scores ?? [],
     verdicts: parsed.verdicts ?? [],
+    held: Array.isArray(parsed.held) ? (parsed.held as HeldFinding[]) : [],
     // Older rows predate the column, so absence is normal rather than an error.
     stages: ((): StageTiming[] => {
       const raw = row['stages_json'];

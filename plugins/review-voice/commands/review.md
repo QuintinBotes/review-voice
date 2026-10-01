@@ -63,8 +63,13 @@ GitHub; `prior.source` says which and `prior.recordedRuns` lists what was
 recorded. The scope is one of:
 
 - `unchanged` - the pull request's own diff is the same as at the previous
-  head (a base merge or a rebase only). Print `scopeNote` and stop; the earlier
-  review still applies.
+  head (a base merge or a rebase only). Do not review again: run
+  `RV carry --from <prior.runId> --head <sha>`, which keeps each earlier finding
+  whose line and the two lines either side are unchanged, at its new line, and
+  lists the rest under `notCarried`. Send `output` through `RV validate-output`,
+  display it, and record it in step 6 with `--carried-from <prior.runId>`. If
+  nothing is carried, print `scopeNote` and stop; the earlier review still
+  applies.
 - `interdiff` - only the author's hunks that are new since the previous head,
   with base-branch churn excluded and head-side line numbers kept.
 - `incremental` - only the commits after the previous head (used only when
@@ -429,6 +434,12 @@ stray directory and another project's notes took the reviewed count from 11 to
   The candidates carry each finding's category, which the rendered output
   cannot - the contract permits no text beyond the finding. Without it,
   feedback on that finding can never become a policy rule.
+
+  Pass every candidate that was held back rather than reported with
+  `--held <file>` (an array of `{path, line, verdict, source, reason}`, verdict
+  one of `partly`, `refuted`, `unverified`, `repeat`): the `droppedAsRepeat` from
+  step 2 as `repeat`, and any cross-check result of PARTLY or REFUTED. Malformed
+  entries exit 2. `/review-voice:explain` lists them under "Held back".
 
   Pass the score breakdowns with `--scores <file>` and, if verification ran,
   the verdicts with `--verdicts <file>`, so `/review-voice:explain` can show
