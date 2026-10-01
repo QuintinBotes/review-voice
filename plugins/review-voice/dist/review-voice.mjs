@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync4, writeFileSync, mkdirSync as mkdirSync2 } from "node:fs";
+import { readFileSync as readFileSync4, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2 } from "node:fs";
 import { dirname as dirname4, join as join5 } from "node:path";
 import { execFileSync as execFileSync8 } from "node:child_process";
 
@@ -490,6 +490,7 @@ var STATUS = {
   C: "copied",
   T: "changed"
 };
+var PATCH_OPTIONS = ["--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"];
 function parseNameStatus(raw) {
   const fields = raw.split("\0").filter((field) => field.length > 0);
   const out = [];
@@ -560,10 +561,10 @@ function acquireDiff(options) {
   const untrackedReviewable = reviewable.filter((path) => untracked.has(path));
   const parts = [];
   if (trackedReviewable.length > 0) {
-    parts.push(git(["diff", ...range, "--", ...trackedReviewable], root));
+    parts.push(git(["diff", ...PATCH_OPTIONS, ...range, "--", ...trackedReviewable], root));
   }
   for (const path of untrackedReviewable) {
-    parts.push(gitAllowingDifference(["diff", "--no-index", "--", "/dev/null", path], root));
+    parts.push(gitAllowingDifference(["diff", ...PATCH_OPTIONS, "--no-index", "--", "/dev/null", path], root));
   }
   const diff = parts.join("").trim().length === 0 ? "" : parts.join("");
   const hunkPaths = /* @__PURE__ */ new Set();
@@ -809,7 +810,7 @@ function pathsWithHunks(diff) {
 function fullScopeResult(result, pullNumber, scope) {
   return { ...result, pullNumber, scope, scopeNote: null };
 }
-function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = (since, head, files, root) => git2(["diff", since, head, "--", ...files], root)) {
+function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = (since, head, files, root) => git2(["diff", "--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", since, head, "--", ...files], root)) {
   if (scope.kind === "full") return fullScopeResult(result, pullNumber, scope);
   let diff;
   try {
@@ -997,6 +998,218 @@ function planIncrementalScope(options) {
   } catch {
     return full("compare-unavailable", prior);
   }
+}
+
+// plugins/review-voice/src/diff/hunks.ts
+function normalisePath(path) {
+  return path.replaceAll("\\", "/").replace(/^\.\/+/, "");
+}
+function blankFileHunks() {
+  return {
+    added: /* @__PURE__ */ new Set(),
+    context: /* @__PURE__ */ new Set(),
+    deletionSites: /* @__PURE__ */ new Set(),
+    ranges: [],
+    patchLines: /* @__PURE__ */ new Map()
+  };
+}
+var C_ESCAPES = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+function unquoteGitPath(raw) {
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw;
+  const body = raw.slice(1, -1);
+  const bytes = [];
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index];
+    if (char !== "\\") {
+      bytes.push(...Buffer.from(char, "utf8"));
+      continue;
+    }
+    const next = body[index + 1] ?? "";
+    const octal = /^[0-7]{3}/.exec(body.slice(index + 1));
+    if (octal !== null) {
+      bytes.push(Number.parseInt(octal[0], 8));
+      index += 3;
+    } else if (next in C_ESCAPES) {
+      bytes.push(C_ESCAPES[next]);
+      index += 1;
+    } else {
+      bytes.push(92);
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+function headerPath(raw) {
+  const field = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
+  const path = unquoteGitPath(field.trimEnd());
+  if (path === "/dev/null") return null;
+  return path.replace(/^[ab]\//, "").replace(/^\.\/+/, "");
+}
+function diffGitPath(line) {
+  const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line);
+  if (quoted !== null) return headerPath(quoted[1]);
+  const match = /^diff --git (?:a\/)?(.+?) (?:b\/)?(.+)$/.exec(line);
+  return match === null ? null : headerPath(match[2]);
+}
+function hunkHeader(line) {
+  const match = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+  if (match === null) return null;
+  const oldCount = match[1] === void 0 ? 1 : Number(match[1]);
+  const start = Number(match[2]);
+  const count = match[3] === void 0 ? 1 : Number(match[3]);
+  if (!Number.isSafeInteger(oldCount) || !Number.isSafeInteger(start) || !Number.isSafeInteger(count) || oldCount < 0 || start < 0 || count < 0) return null;
+  return { oldCount, start, count };
+}
+function settleDeletion(hunk, nextRightLine) {
+  if (!hunk.deleting) return;
+  const site = nextRightLine ?? hunk.lastRightLine;
+  if (site !== null && site > 0) hunk.file.deletionSites.add(site);
+  hunk.deleting = false;
+}
+function parseHunks(diff) {
+  const files = /* @__PURE__ */ new Map();
+  let current = null;
+  let provisionalPath = null;
+  let active = null;
+  const finishHunk = () => {
+    if (active === null) return;
+    settleDeletion(active, null);
+    active = null;
+  };
+  const finishWhenCounted = () => {
+    if (active?.remainingOld === 0 && active.remainingRight === 0) finishHunk();
+  };
+  const selectPath = (path, provisional) => {
+    finishHunk();
+    if (provisionalPath !== null && provisionalPath !== path) files.delete(provisionalPath);
+    provisionalPath = provisional ? path : null;
+    current = path === null ? null : blankFileHunks();
+    if (path !== null && current !== null) files.set(path, current);
+  };
+  for (const [index, raw] of diff.split("\n").entries()) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const patchLine = index + 1;
+    if (line.startsWith("diff --git ")) {
+      selectPath(diffGitPath(line), true);
+      continue;
+    }
+    const header = hunkHeader(line);
+    if (header !== null) {
+      finishHunk();
+      const file = current;
+      if (file !== null) {
+        file.ranges.push({ start: header.start, end: header.start + header.count - 1 });
+        active = {
+          file,
+          nextRightLine: header.start,
+          lastRightLine: null,
+          deleting: false,
+          remainingOld: header.oldCount,
+          remainingRight: header.count
+        };
+      }
+      continue;
+    }
+    if (active !== null) {
+      if (line === "\\ No newline at end of file") continue;
+      if (line.startsWith("+")) {
+        settleDeletion(active, active.nextRightLine);
+        active.file.added.add(active.nextRightLine);
+        active.file.patchLines.set(patchLine, active.nextRightLine);
+        active.lastRightLine = active.nextRightLine;
+        active.nextRightLine += 1;
+        active.remainingRight -= 1;
+        finishWhenCounted();
+        continue;
+      }
+      if (line.startsWith("-")) {
+        active.deleting = true;
+        active.remainingOld -= 1;
+        finishWhenCounted();
+        continue;
+      }
+      if (line.startsWith(" ") || line === "" && active.remainingRight > 0 && active.remainingOld > 0) {
+        settleDeletion(active, active.nextRightLine);
+        active.file.context.add(active.nextRightLine);
+        active.file.patchLines.set(patchLine, active.nextRightLine);
+        active.lastRightLine = active.nextRightLine;
+        active.nextRightLine += 1;
+        active.remainingOld -= 1;
+        active.remainingRight -= 1;
+        finishWhenCounted();
+        continue;
+      }
+      finishHunk();
+    }
+    if (line.startsWith("+++ ")) {
+      selectPath(headerPath(line.slice(4)), false);
+      continue;
+    }
+    if (line.startsWith("--- ")) continue;
+  }
+  finishHunk();
+  return files;
+}
+function changedLines(file, line) {
+  const byDistance = [.../* @__PURE__ */ new Set([...file.added, ...file.deletionSites])].sort(
+    (left, right) => Math.abs(left - line) - Math.abs(right - line) || left - right
+  );
+  const near = byDistance.filter((changed) => Math.abs(changed - line) <= 3);
+  return near.length > 0 ? near : byDistance.slice(0, 1);
+}
+function patchLineFor(hunks, line) {
+  for (const [path, file] of hunks) {
+    const fileLine = file.patchLines.get(line);
+    if (fileLine !== void 0 && file.added.has(fileLine)) return { path, line: fileLine };
+  }
+  return null;
+}
+function classifyAnchor(hunks, path, line) {
+  const literal = path.replace(/^\.\/+/, "");
+  const normalised = hunks.has(literal) ? literal : normalisePath(path);
+  const file = hunks.get(normalised);
+  const patchLine = patchLineFor(hunks, line);
+  if (file === void 0) {
+    return { path: normalised, line, kind: "file-not-in-diff", ok: false, nearest: [], patchLine, beyondHunks: false };
+  }
+  const kind = file.added.has(line) ? "added" : file.deletionSites.has(line) ? "deletion-site" : file.context.has(line) ? "context" : "outside-hunk";
+  return {
+    path: normalised,
+    line,
+    kind,
+    ok: kind === "added" || kind === "deletion-site",
+    nearest: changedLines(file, line),
+    patchLine,
+    beyondHunks: file.ranges.length > 0 && file.ranges.every((range) => line > range.end)
+  };
+}
+function reason(anchor) {
+  const { path, line } = anchor;
+  let detail;
+  switch (anchor.kind) {
+    case "added":
+      detail = "an added line";
+      break;
+    case "deletion-site":
+      detail = "the right-side location of removed code";
+      break;
+    case "context":
+      detail = "an unchanged context line";
+      break;
+    case "outside-hunk":
+      detail = anchor.beyondHunks ? "past every hunk in that file" : "outside every hunk in that file";
+      break;
+    case "file-not-in-diff":
+      detail = "in a file the diff does not touch";
+      break;
+  }
+  let rendered = `anchors on ${path}:${line}, ${detail}`;
+  if (!anchor.ok && anchor.nearest.length > 0) {
+    rendered += anchor.nearest.length === 1 ? `; the nearest changed line is ${anchor.nearest[0]}` : `; the nearest changed lines are ${anchor.nearest.join(", ")}`;
+  }
+  if (!anchor.ok && anchor.patchLine !== null) {
+    return `${rendered}; line ${line} of diff.patch is ${anchor.patchLine.path}:${anchor.patchLine.line} - was that the line meant?`;
+  }
+  return `${rendered}.`;
 }
 
 // plugins/review-voice/src/redact/redact.ts
@@ -1275,13 +1488,13 @@ function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository =
 
 // plugins/review-voice/src/scoring/reach.ts
 function symbolsFromHunks(diff, changedPath) {
-  const wanted = changedPath === null ? null : normalisePath(changedPath);
+  const wanted = changedPath === null ? null : normalisePath2(changedPath);
   const found = /* @__PURE__ */ new Set();
   let inFile = false;
   for (const raw of diff.split(/\r?\n/)) {
     if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
       const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
-      if (match?.[1] !== void 0) inFile = wanted === null || normalisePath(match[1]) === wanted;
+      if (match?.[1] !== void 0) inFile = wanted === null || normalisePath2(match[1]) === wanted;
       else if (raw.startsWith("diff --git ")) inFile = false;
       continue;
     }
@@ -1305,11 +1518,11 @@ var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
   /^(?:package\.json|Makefile|GNUmakefile|justfile|Taskfile\.ya?ml|turbo\.json|nx\.json)$/i,
   /^(?:scripts|tools|build|bin)\//i
 ];
-function normalisePath(path) {
+function normalisePath2(path) {
   return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
 }
 function directoryOf(path) {
-  const parts = normalisePath(path).split("/");
+  const parts = normalisePath2(path).split("/");
   parts.pop();
   return parts.join("/");
 }
@@ -1318,20 +1531,20 @@ function directoryCount(paths) {
 }
 var PROSE_EXTENSIONS = /* @__PURE__ */ new Set(["md", "markdown", "mdx", "txt", "rst", "adoc"]);
 function isCode(path) {
-  const name = normalisePath(path).split("/").pop() ?? "";
+  const name = normalisePath2(path).split("/").pop() ?? "";
   const dot = name.lastIndexOf(".");
   const extension = dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
   if (PROSE_EXTENSIONS.has(extension)) return false;
-  return classify(normalisePath(path)) === "source";
+  return classify(normalisePath2(path)) === "source";
 }
 var NON_DISCRIMINATING_DIRECTORIES = 12;
 function withinSubtree(path, changedDirectory) {
   if (changedDirectory === "") return false;
-  const normalised = normalisePath(path);
+  const normalised = normalisePath2(path);
   return normalised === changedDirectory || normalised.startsWith(`${changedDirectory}/`);
 }
 function isRepositoryWideToolchainPath(path) {
-  const normalised = normalisePath(path);
+  const normalised = normalisePath2(path);
   return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
 }
 function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
@@ -1344,12 +1557,12 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
   const ignored = [];
   const hits = /* @__PURE__ */ new Set();
   let usedModuleFallback = false;
-  const normalisedChangedPath = normalisePath(changedPath);
+  const normalisedChangedPath = normalisePath2(changedPath);
   const changedDirectory = directoryOf(changedPath);
   const result = (reach, inconclusive) => {
     const counted2 = [...hits].filter(isCode).sort();
     const outside = counted2.filter(
-      (path) => normalisePath(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
+      (path) => normalisePath2(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
     );
     return {
       reach,
@@ -1375,7 +1588,7 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
       return result(null, true);
     }
     const code = found.filter(isCode);
-    if (source !== "diff" && !code.some((path) => normalisePath(path) === normalisedChangedPath)) {
+    if (source !== "diff" && !code.some((path) => normalisePath2(path) === normalisedChangedPath)) {
       ignored.push(symbol);
       continue;
     }
@@ -1388,7 +1601,7 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
   if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
   let counted = [...hits].filter(isCode);
   if (counted.length === 0 && source !== "claim") {
-    const moduleName = normalisePath(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
+    const moduleName = normalisePath2(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
     if (moduleName !== void 0 && moduleName.length >= 4) {
       searched.push(moduleName);
       try {
@@ -1401,12 +1614,12 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
     }
   }
   if (counted.length === 0) return result(null, false);
-  if (counted.every((path) => normalisePath(path) === normalisedChangedPath)) {
+  if (counted.every((path) => normalisePath2(path) === normalisedChangedPath)) {
     return result("local", false);
   }
   const outsideDirectories = directoryCount(
     counted.filter(
-      (path) => normalisePath(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
+      (path) => normalisePath2(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
     )
   );
   if (outsideDirectories >= 2) return result("repository", false);
@@ -1416,11 +1629,11 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
 // plugins/review-voice/src/diff/symbols.ts
 var MAX_SYMBOLS_PER_FILE = 12;
 var MAX_REFERENCES_PER_SYMBOL = 8;
-function normalisePath2(path) {
+function normalisePath3(path) {
   return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
 }
 function directoryCount2(paths) {
-  return new Set([...paths].map((path) => normalisePath2(path).split("/").slice(0, -1).join("/"))).size;
+  return new Set([...paths].map((path) => normalisePath3(path).split("/").slice(0, -1).join("/"))).size;
 }
 function pathsWithHunks2(diff) {
   const paths = [];
@@ -1429,7 +1642,7 @@ function pathsWithHunks2(diff) {
   let hasHunkLine = false;
   const keepCurrent = () => {
     if (path === null || !hasHunkLine) return;
-    const normalised = normalisePath2(path);
+    const normalised = normalisePath3(path);
     if (seen.has(normalised)) return;
     seen.add(normalised);
     paths.push(normalised);
@@ -1457,7 +1670,7 @@ function reportFile(diff, path, cwd, ref, search) {
   const omitted = Math.max(0, allSymbols.length - MAX_SYMBOLS_PER_FILE);
   const symbols = [];
   const references = /* @__PURE__ */ new Set();
-  const normalisedPath = normalisePath2(path);
+  const normalisedPath = normalisePath3(path);
   const file = (inconclusive) => ({
     path,
     symbols,
@@ -1471,7 +1684,7 @@ function reportFile(diff, path, cwd, ref, search) {
     } catch {
       return { file: file(true), references };
     }
-    const code = new Set(found.filter(isCode).map(normalisePath2));
+    const code = new Set(found.filter(isCode).map(normalisePath3));
     if (directoryCount2(code) > NON_DISCRIMINATING_DIRECTORIES) {
       symbols.push({ symbol, common: true });
       continue;
@@ -1491,11 +1704,11 @@ function collectSymbolContext(options) {
   const search = options.search ?? gitGrepPaths;
   const paths = pathsWithHunks2(options.diff);
   const records = paths.map((path) => reportFile(options.diff, path, options.cwd, options.ref, search));
-  const changed = new Set(paths.map(normalisePath2));
+  const changed = new Set(paths.map(normalisePath3));
   const downstream = /* @__PURE__ */ new Set();
   for (const record of records) {
     for (const path of record.references) {
-      if (!changed.has(normalisePath2(path))) downstream.add(path);
+      if (!changed.has(normalisePath3(path))) downstream.add(path);
     }
   }
   records.sort(
@@ -8547,13 +8760,13 @@ function collectEvidence(commands, options) {
     });
     const durationMs = Date.now() - startedAt;
     if (result.error !== void 0) {
-      const reason = result.error.code === "ETIMEDOUT" ? `timed out after ${command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS}s` : result.error.message;
+      const reason2 = result.error.code === "ETIMEDOUT" ? `timed out after ${command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS}s` : result.error.message;
       outcomes.push({
         name: command.name,
         command: command.run,
         exitCode: null,
         durationMs,
-        unavailable: reason,
+        unavailable: reason2,
         signals: []
       });
       didNotRun.push(command.name);
@@ -8680,7 +8893,7 @@ ${result.stderr}`);
     }
     const verdict = raw.verdict;
     const confidence = typeof raw.confidence === "number" ? Math.min(1, Math.max(0, raw.confidence)) : 0.5;
-    const reason = raw.reason ?? "";
+    const reason2 = raw.reason ?? "";
     let outcome = "kept";
     let finalSeverity = finding.severity;
     if (verdict === "rejected") {
@@ -8703,7 +8916,7 @@ ${result.stderr}`);
       line: finding.line,
       verdict,
       confidence,
-      reason,
+      reason: reason2,
       outcome,
       originalSeverity: finding.severity,
       finalSeverity,
@@ -8826,14 +9039,14 @@ async function collectRepository(client, options, stats) {
         teamLogins: options.teamLogins,
         authorAssociation: raw.association
       });
-      const reason = ineligibleReason({
+      const reason2 = ineligibleReason({
         body: raw.body,
         role,
         filePath: raw.filePath,
         hasCodeContext: (raw.diffHunk ?? "").length > 0
       });
-      if (reason !== null) {
-        stats.excluded[reason] = (stats.excluded[reason] ?? 0) + 1;
+      if (reason2 !== null) {
+        stats.excluded[reason2] = (stats.excluded[reason2] ?? 0) + 1;
         return;
       }
       const key = contentKey({
@@ -9409,14 +9622,14 @@ function discoverConventions(root, changedPaths = []) {
       return false;
     }
   };
-  const tier = (reason) => [
+  const tier = (reason2) => [
     "directory scope",
     "governs the changed paths",
     "subtree",
     "repository file",
     "name matches the change",
     "remaining budget"
-  ].indexOf(reason);
+  ].indexOf(reason2);
   sized.sort((a, b) => {
     const byTier = tier(a.entry.reason) - tier(b.entry.reason);
     if (byTier !== 0) return byTier;
@@ -10055,22 +10268,22 @@ var ALIASES = {
   logic: "correctness"
 };
 var MAX_TIER_MOVEMENT = 1;
-function boundToRequest(derived, requested, reach, reason) {
+function boundToRequest(derived, requested, reach, reason2) {
   const asked = SEVERITIES.indexOf(requested);
   const got = SEVERITIES.indexOf(derived);
   if (asked === -1 || got === -1) {
-    return { severity: derived, requested, reach, reason };
+    return { severity: derived, requested, reach, reason: reason2 };
   }
   const distance = got - asked;
   if (Math.abs(distance) <= MAX_TIER_MOVEMENT) {
-    return { severity: derived, requested, reach, reason };
+    return { severity: derived, requested, reach, reason: reason2 };
   }
   const bounded = SEVERITIES[asked + Math.sign(distance) * MAX_TIER_MOVEMENT];
   return {
     severity: bounded,
     requested,
     reach,
-    reason: `${reason}, bounded to ${bounded} because the analyst asked for ${requested} and derivation may move a tier by one`
+    reason: `${reason2}, bounded to ${bounded} because the analyst asked for ${requested} and derivation may move a tier by one`
   };
 }
 function deriveSeverity(category, requested, reach = null) {
@@ -10375,19 +10588,19 @@ function renderFix(candidate, verification, thresholds) {
       reason: verifierReason ?? "the verifier could confirm only the repair direction"
     };
   }
-  let reason = "the suggested fix was not verified";
+  let reason2 = "the suggested fix was not verified";
   if (!hasSuggested) {
-    reason = "no fix was proposed";
+    reason2 = "no fix was proposed";
   } else if (verdict === "verified" && confidence !== null) {
-    reason = `verified fix confidence ${confidence.toFixed(2)} is below the ${thresholds.technicalConfidence} threshold`;
+    reason2 = `verified fix confidence ${confidence.toFixed(2)} is below the ${thresholds.technicalConfidence} threshold`;
   } else if (verdict === "partial" && hasDirection) {
-    reason = "the direction is not one short sentence without code, so it is withheld";
+    reason2 = "the direction is not one short sentence without code, so it is withheld";
   } else if (verdict === "partial") {
-    reason = "the verifier gave a partial fix verdict without a direction";
+    reason2 = "the verifier gave a partial fix verdict without a direction";
   } else if (verdict === "refuted") {
-    reason = "the verifier refuted the suggested fix";
+    reason2 = "the verifier refuted the suggested fix";
   } else if (verdict === "absent") {
-    reason = "the verifier reports no suggested fix";
+    reason2 = "the verifier reports no suggested fix";
   }
   return {
     suggested,
@@ -10396,7 +10609,7 @@ function renderFix(candidate, verification, thresholds) {
     confidence,
     direction,
     render: "none",
-    reason: verifierReason ?? reason
+    reason: verifierReason ?? reason2
   };
 }
 function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification) {
@@ -11009,7 +11222,7 @@ anchors:
 thread flags:
   --pr <number>          Pull request whose existing comments to read
   --repository <name>    owner/repo; inferred from the git remote if absent
-  --out <path>           Write the comments to a file instead of stdout
+  --out <path>           Write <path> or <dir>/thread.json instead of stdout
 
 diff flags:
   --base <ref>           Review against a base ref (e.g. origin/main)
@@ -11018,13 +11231,15 @@ diff flags:
   --full                 On --pr, review the complete pull request again
   --repository <name>    owner/repo for --pr; inferred from the git remote if absent
   --include-generated    Include lock files, generated, vendored and binary files
-  --out <dir>            Write diff.patch and files.json separately instead of
-                         one blob on stdout
+  --out <dir>            Write diff.patch and files.json; stdout includes a summary
 
 symbols flags:
   --diff-file <path>     Unified diff whose changed symbols to inspect
   --base <ref>           Search this committed tree instead of the working tree
-  --out <path>           Write the JSON context to a file instead of stdout
+  --out <path>           Write <path> or <dir>/symbols.json instead of stdout
+
+check-candidates:
+  --diff-file <path>     Require anchors on changed lines
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -11044,27 +11259,15 @@ feedback usage:
   actions: ${FEEDBACK_ACTIONS.join(", ")} (hyphens accepted)
 
 score flags:
-  --base <ref>              The ref under review. Claims that something does
-                            not exist are checked against this tree, not the
-                            working tree, which on a pull request is usually
-                            neither the base nor the head.
-  --verification <path>     Verifier output. Its defect confidence gates
-                            defects; its fix verdict controls rendering.
-  --exclude-pull <n>        Drop precedents from this pull request. Pass the
-                            pull request under review: its own comments are
-                            the conversation, not evidence of general taste.
+  --base <ref>              Reviewed tree for absence checks
+  --verification <path>     Verifier output for confidence and fix rendering
+  --exclude-pull <n>        Exclude precedents from this pull request
   --min-confidence <n>      Gate on a confidence the verifier established
                             (default 0.8)
   --min-analyst-confidence <n>
-                            Gate when only the analyst's self-report exists
-                            (default 0.7). A different measurement, so a
-                            different number.
-  --thread <path>           Comments already on the pull request, from
-                            thread --pr <n> --out. A point already made there
-                            is not made again, whoever made it.
-  --diff-file <path>        The diff under review. Reach is measured from the
-                            symbols the hunks touch; without it, from the
-                            symbols the claim names, which is weaker.
+                            Analyst-only confidence gate (default 0.7)
+  --thread <path>           Existing pull-request comments
+  --diff-file <path>        Diff for reach and anchor checks
   --min-score <n>           Final score gate (default 0.68)
   --repository <name>       Prefer precedents from this repository
 
@@ -11192,12 +11395,14 @@ async function threadCommand(argv) {
     return 0;
   }
   try {
-    mkdirSync2(dirname4(out), { recursive: true });
-    writeFileSync(out, JSON.stringify(result, null, 2), "utf8");
-    console.log(JSON.stringify({ path: out, comments: result.comments.length, truncated: result.truncated }, null, 2));
+    const path = resolveOutPath(out, "thread.json");
+    writeFileSync(path, JSON.stringify(result, null, 2), "utf8");
+    console.log(JSON.stringify({ path, comments: result.comments.length, truncated: result.truncated }, null, 2));
     return 0;
   } catch (error) {
-    console.error(`Cannot write ${out}: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `Cannot write ${out}: expected a file path or a directory; ${error instanceof Error ? error.message : String(error)}`
+    );
     return 2;
   }
 }
@@ -11239,6 +11444,27 @@ async function pullRequestDiffCommand(argv) {
   }
   return emitDiff(applyReviewScope(result, pullNumber, scope, process.cwd()), flag(argv, "--out"));
 }
+function diffSummary(result) {
+  const scope = result.scope === void 0 ? null : {
+    kind: result.scope.kind,
+    cause: result.scope.kind === "full" ? result.scope.cause : null,
+    since: result.scope.since
+  };
+  return {
+    mode: result.mode,
+    base: result.base,
+    head: result.head,
+    pullNumber: result.pullNumber ?? null,
+    scope,
+    scopeNote: result.scopeNote ?? null,
+    truncated: result.truncated ?? false,
+    truncationNote: result.truncationNote ?? null,
+    reviewedFileCount: result.reviewedFileCount,
+    hunkFileCount: result.hunkFileCount,
+    excludedFileCount: result.excludedFileCount,
+    refs: result.refs === void 0 ? null : { base: result.refs.base, head: result.refs.head }
+  };
+}
 function emitDiff(result, outDir) {
   if (outDir === null) {
     console.log(JSON.stringify(result, null, 2));
@@ -11250,7 +11476,13 @@ function emitDiff(result, outDir) {
     const metaPath = join5(outDir, "files.json");
     writeFileSync(patchPath, result.diff);
     writeFileSync(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
-    console.log(JSON.stringify({ patch: patchPath, files: metaPath, diffBytes: result.diff.length }, null, 2));
+    console.log(
+      JSON.stringify(
+        { patch: patchPath, files: metaPath, diffBytes: result.diff.length, summary: diffSummary(result) },
+        null,
+        2
+      )
+    );
     return 0;
   } catch (error) {
     console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -11311,12 +11543,14 @@ function symbolsCommand(argv) {
     return 0;
   }
   try {
-    mkdirSync2(dirname4(out), { recursive: true });
-    writeFileSync(out, JSON.stringify(result, null, 2), "utf8");
-    console.log(JSON.stringify({ path: out, files: result.files.length, downstreamFiles: result.downstreamFiles }, null, 2));
+    const path = resolveOutPath(out, "symbols.json");
+    writeFileSync(path, JSON.stringify(result, null, 2), "utf8");
+    console.log(JSON.stringify({ path, files: result.files.length, downstreamFiles: result.downstreamFiles }, null, 2));
     return 0;
   } catch (error) {
-    console.error(`Cannot write ${out}: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `Cannot write ${out}: expected a file path or a directory; ${error instanceof Error ? error.message : String(error)}`
+    );
     return 2;
   }
 }
@@ -11325,6 +11559,26 @@ function flag(argv, name) {
   if (index === -1) return null;
   const value = argv[index + 1];
   return value === void 0 || value.startsWith("--") ? null : value;
+}
+function resolveOutPath(out, defaultName) {
+  let target = out;
+  try {
+    if (out.endsWith("/") || statSync2(out).isDirectory()) target = join5(out, defaultName);
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw new Error(
+        `${out}: expected a file path or a directory (${error instanceof Error ? error.message : String(error)})`
+      );
+    }
+  }
+  try {
+    mkdirSync2(dirname4(target), { recursive: true });
+  } catch (error) {
+    throw new Error(
+      `${out}: expected a file path or a directory (${error instanceof Error ? error.message : String(error)})`
+    );
+  }
+  return target;
 }
 function contextCommand() {
   try {
@@ -11644,25 +11898,37 @@ function scoreCommand(argv) {
     );
     return 2;
   }
-  const reachDiff = (() => {
+  let reachDiff = null;
+  let anchorHunks = null;
+  if (argv.includes("--diff-file")) {
     const path = flag(argv, "--diff-file");
-    if (path === null) return null;
-    try {
-      return readFileSync4(path, "utf8");
-    } catch {
-      return null;
+    if (path === null) {
+      console.error("--diff-file needs a unified diff path.");
+      return 2;
     }
-  })();
-  const thread = (() => {
+    try {
+      reachDiff = readFileSync4(path, "utf8");
+      anchorHunks = parseHunks(reachDiff);
+    } catch (error) {
+      console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
+  let thread = [];
+  if (argv.includes("--thread")) {
     const path = flag(argv, "--thread");
-    if (path === null) return [];
+    if (path === null) {
+      console.error("--thread needs a thread JSON path.");
+      return 2;
+    }
     try {
       const parsed = JSON.parse(readFileSync4(path, "utf8"));
-      return Array.isArray(parsed) ? parsed : parsed.comments ?? [];
-    } catch {
-      return [];
+      thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
+    } catch (error) {
+      console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
     }
-  })();
+  }
   if (searchRoot !== null) {
     for (const candidate of candidates) {
       const verification = verifications.get(candidate.candidateId);
@@ -11732,6 +11998,12 @@ function scoreCommand(argv) {
         breakdown.eligible = false;
         breakdown.rejectedBecause = `already said on this pull request by ${echoed.author}` + (echoed.path === null ? "" : ` at ${echoed.path}:${echoed.line ?? "?"}`);
       }
+      const anchorCheck = anchorHunks === null ? null : classifyAnchor(anchorHunks, candidate.path, candidate.line);
+      if (anchorCheck !== null && !anchorCheck.ok) {
+        const earlier = breakdown.rejectedBecause;
+        breakdown.eligible = false;
+        breakdown.rejectedBecause = reason(anchorCheck) + (earlier === null ? "" : ` Also: ${earlier}`);
+      }
       let citation = null;
       if (breakdown.eligible && searchRoot !== null) {
         citation = checkCitation(candidate.path, searchRoot, baseRef, reachDiff);
@@ -11745,6 +12017,7 @@ function scoreCommand(argv) {
         ...breakdown,
         precedents,
         ...absence === null ? {} : { absenceCheck: absence },
+        ...anchorCheck === null ? {} : { anchorCheck },
         ...citation === null ? {} : { citationCheck: citation }
       });
     }
@@ -12278,7 +12551,7 @@ function verdictList(parsed) {
   }
   return [];
 }
-function checkCandidatesCommand() {
+function checkCandidatesCommand(argv) {
   let raw;
   try {
     const parsed = JSON.parse(readStdin());
@@ -12290,7 +12563,36 @@ function checkCandidatesCommand() {
   try {
     const candidates = raw.map((candidate, index) => normaliseCandidate(candidate, index));
     assertUniqueCandidateIds(candidates);
-    console.log(JSON.stringify({ valid: true, candidates: candidates.length }, null, 2));
+    if (!argv.includes("--diff-file")) {
+      console.log(JSON.stringify({ valid: true, candidates: candidates.length }, null, 2));
+      return 0;
+    }
+    const diffFile = flag(argv, "--diff-file");
+    if (diffFile === null) {
+      console.error("--diff-file needs a unified diff path.");
+      return 2;
+    }
+    let hunks;
+    try {
+      hunks = parseHunks(readFileSync4(diffFile, "utf8"));
+    } catch (error) {
+      console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    const anchorFailures = candidates.map((candidate) => ({ candidate, anchor: classifyAnchor(hunks, candidate.path, candidate.line) })).filter(({ anchor }) => !anchor.ok).map(({ candidate, anchor }) => ({
+      candidateId: candidate.candidateId,
+      path: candidate.path,
+      line: candidate.line,
+      kind: anchor.kind,
+      reason: reason(anchor),
+      nearest: anchor.nearest
+    }));
+    if (anchorFailures.length > 0) {
+      console.log(JSON.stringify({ valid: false, anchorFailures }, null, 2));
+      console.error(`${anchorFailures.length} candidate anchor failure${anchorFailures.length === 1 ? "" : "s"}.`);
+      return 1;
+    }
+    console.log(JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length } }, null, 2));
     return 0;
   } catch (error) {
     if (error instanceof MalformedCandidate) {
@@ -12407,7 +12709,7 @@ async function main(argv) {
     case "policy":
       return policyCommand(argv.slice(1));
     case "check-candidates":
-      return checkCandidatesCommand();
+      return checkCandidatesCommand(argv.slice(1));
     case "conventions":
       return conventionsCommand(argv.slice(1));
     case "evidence":
@@ -12454,3 +12756,6 @@ try {
     process.exitCode = 1;
   }
 }
+export {
+  resolveOutPath
+};

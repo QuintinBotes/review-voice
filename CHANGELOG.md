@@ -15,16 +15,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The concise editor receives each eligible candidate's claim, failure mode,
   evidence and fix inline. A withheld repair's text is not handed to it at all,
   so it has nothing unverified to repeat.
+- Candidate anchors are checked against the reviewed diff before verification.
+  Added lines and deletion sites are accepted; context, off-hunk and off-diff
+  locations receive a reason that lets the analyst re-anchor or withdraw them.
+- `diff --out` now returns a compact summary, and `thread --out` and
+  `symbols --out` accept either a file path or a directory with a default
+  artifact name.
 
 ### Changed
 
 - `check-candidates` and `score` refuse two candidates with the same id.
   Verification is joined by id, so a repeated id could attach one candidate's
   verified repair to another.
-- The identity guard scans what git would publish - tracked files as staged,
-  untracked files that are not ignored, and a symlink's own text - instead of
+- The identity guard scans what git would publish - tracked files (from the
+  index when the working copy is gone), untracked files that are not ignored,
+  and a symlink's own text - instead of
   walking the directory, so a contributor's ignored local state no longer fails
   it and a staged file deleted from the working tree is still checked.
+- `score --thread` now fails when its thread file cannot be read or parsed,
+  rather than silently scoring without pull-request deduplication, and
+  `score --diff-file` fails on an unreadable patch rather than measuring reach
+  without it.
+- Paths git writes in quoted form (non-ASCII names, quotes, backslashes) are
+  decoded before anchors are matched, so findings in such files are not
+  rejected as being outside the diff.
 
 ## [1.7.0] - 2026-09-28
 

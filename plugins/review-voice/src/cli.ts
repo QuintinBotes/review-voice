@@ -7,7 +7,7 @@
  * (candidate generation, verification, wording) live in the plugin's agents.
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
@@ -19,6 +19,7 @@ import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract
 import { acquireDiff, GitError } from './diff/acquire.ts';
 import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
 import { planIncrementalScope, type ReviewScope } from './diff/incremental.ts';
+import { classifyAnchor, parseHunks, reason, type FileHunks } from './diff/hunks.ts';
 import { readThread, type ThreadComment } from './diff/thread.ts';
 import { collectSymbolContext } from './diff/symbols.ts';
 import { openDatabase } from './store/db.ts';
@@ -113,7 +114,7 @@ anchors:
 thread flags:
   --pr <number>          Pull request whose existing comments to read
   --repository <name>    owner/repo; inferred from the git remote if absent
-  --out <path>           Write the comments to a file instead of stdout
+  --out <path>           Write <path> or <dir>/thread.json instead of stdout
 
 diff flags:
   --base <ref>           Review against a base ref (e.g. origin/main)
@@ -122,13 +123,15 @@ diff flags:
   --full                 On --pr, review the complete pull request again
   --repository <name>    owner/repo for --pr; inferred from the git remote if absent
   --include-generated    Include lock files, generated, vendored and binary files
-  --out <dir>            Write diff.patch and files.json separately instead of
-                         one blob on stdout
+  --out <dir>            Write diff.patch and files.json; stdout includes a summary
 
 symbols flags:
   --diff-file <path>     Unified diff whose changed symbols to inspect
   --base <ref>           Search this committed tree instead of the working tree
-  --out <path>           Write the JSON context to a file instead of stdout
+  --out <path>           Write <path> or <dir>/symbols.json instead of stdout
+
+check-candidates:
+  --diff-file <path>     Require anchors on changed lines
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -148,27 +151,15 @@ feedback usage:
   actions: ${FEEDBACK_ACTIONS.join(', ')} (hyphens accepted)
 
 score flags:
-  --base <ref>              The ref under review. Claims that something does
-                            not exist are checked against this tree, not the
-                            working tree, which on a pull request is usually
-                            neither the base nor the head.
-  --verification <path>     Verifier output. Its defect confidence gates
-                            defects; its fix verdict controls rendering.
-  --exclude-pull <n>        Drop precedents from this pull request. Pass the
-                            pull request under review: its own comments are
-                            the conversation, not evidence of general taste.
+  --base <ref>              Reviewed tree for absence checks
+  --verification <path>     Verifier output for confidence and fix rendering
+  --exclude-pull <n>        Exclude precedents from this pull request
   --min-confidence <n>      Gate on a confidence the verifier established
                             (default 0.8)
   --min-analyst-confidence <n>
-                            Gate when only the analyst's self-report exists
-                            (default 0.7). A different measurement, so a
-                            different number.
-  --thread <path>           Comments already on the pull request, from
-                            thread --pr <n> --out. A point already made there
-                            is not made again, whoever made it.
-  --diff-file <path>        The diff under review. Reach is measured from the
-                            symbols the hunks touch; without it, from the
-                            symbols the claim names, which is weaker.
+                            Analyst-only confidence gate (default 0.7)
+  --thread <path>           Existing pull-request comments
+  --diff-file <path>        Diff for reach and anchor checks
   --min-score <n>           Final score gate (default 0.68)
   --repository <name>       Prefer precedents from this repository
 
@@ -314,12 +305,15 @@ async function threadCommand(argv: string[]): Promise<number> {
     return 0;
   }
   try {
-    mkdirSync(dirname(out), { recursive: true });
-    writeFileSync(out, JSON.stringify(result, null, 2), 'utf8');
-    console.log(JSON.stringify({ path: out, comments: result.comments.length, truncated: result.truncated }, null, 2));
+    const path = resolveOutPath(out, 'thread.json');
+    writeFileSync(path, JSON.stringify(result, null, 2), 'utf8');
+    console.log(JSON.stringify({ path, comments: result.comments.length, truncated: result.truncated }, null, 2));
     return 0;
   } catch (error) {
-    console.error(`Cannot write ${out}: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `Cannot write ${out}: expected a file path or a directory; ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
     return 2;
   }
 }
@@ -374,7 +368,64 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
  * the patch for a mid-sized pull request runs past a hundred kilobytes, and
  * the caller ends up splitting it back out. `--out` does that here instead.
  */
-function emitDiff(result: { diff: string }, outDir: string | null): number {
+interface EmittedDiff {
+  diff: string;
+  mode: 'worktree' | 'staged' | 'base' | 'pull-request';
+  base: string | null;
+  head: string;
+  reviewedFileCount: number;
+  hunkFileCount: number;
+  excludedFileCount: number;
+  pullNumber?: number;
+  scope?: ReviewScope;
+  scopeNote?: string | null;
+  truncated?: boolean;
+  truncationNote?: string | null;
+  refs?: {
+    base: { sha: string; available: boolean };
+    head: { sha: string; available: boolean };
+  };
+}
+
+/** The compact metadata a command runner needs after `diff --out`. */
+function diffSummary(result: EmittedDiff): {
+  mode: EmittedDiff['mode'];
+  base: string | null;
+  head: string;
+  pullNumber: number | null;
+  scope: { kind: 'incremental' | 'full'; cause: string | null; since: string | null } | null;
+  scopeNote: string | null;
+  truncated: boolean;
+  truncationNote: string | null;
+  reviewedFileCount: number;
+  hunkFileCount: number;
+  excludedFileCount: number;
+  refs: { base: { sha: string; available: boolean }; head: { sha: string; available: boolean } } | null;
+} {
+  const scope = result.scope === undefined
+    ? null
+    : {
+        kind: result.scope.kind,
+        cause: result.scope.kind === 'full' ? result.scope.cause : null,
+        since: result.scope.since,
+      };
+  return {
+    mode: result.mode,
+    base: result.base,
+    head: result.head,
+    pullNumber: result.pullNumber ?? null,
+    scope,
+    scopeNote: result.scopeNote ?? null,
+    truncated: result.truncated ?? false,
+    truncationNote: result.truncationNote ?? null,
+    reviewedFileCount: result.reviewedFileCount,
+    hunkFileCount: result.hunkFileCount,
+    excludedFileCount: result.excludedFileCount,
+    refs: result.refs === undefined ? null : { base: result.refs.base, head: result.refs.head },
+  };
+}
+
+function emitDiff(result: EmittedDiff, outDir: string | null): number {
   if (outDir === null) {
     console.log(JSON.stringify(result, null, 2));
     return 0;
@@ -386,7 +437,13 @@ function emitDiff(result: { diff: string }, outDir: string | null): number {
     const metaPath = join(outDir, 'files.json');
     writeFileSync(patchPath, result.diff);
     writeFileSync(metaPath, JSON.stringify({ ...result, diff: undefined }, null, 2));
-    console.log(JSON.stringify({ patch: patchPath, files: metaPath, diffBytes: result.diff.length }, null, 2));
+    console.log(
+      JSON.stringify(
+        { patch: patchPath, files: metaPath, diffBytes: result.diff.length, summary: diffSummary(result) },
+        null,
+        2,
+      ),
+    );
     return 0;
   } catch (error) {
     console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -464,12 +521,15 @@ function symbolsCommand(argv: string[]): number {
   }
 
   try {
-    mkdirSync(dirname(out), { recursive: true });
-    writeFileSync(out, JSON.stringify(result, null, 2), 'utf8');
-    console.log(JSON.stringify({ path: out, files: result.files.length, downstreamFiles: result.downstreamFiles }, null, 2));
+    const path = resolveOutPath(out, 'symbols.json');
+    writeFileSync(path, JSON.stringify(result, null, 2), 'utf8');
+    console.log(JSON.stringify({ path, files: result.files.length, downstreamFiles: result.downstreamFiles }, null, 2));
     return 0;
   } catch (error) {
-    console.error(`Cannot write ${out}: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `Cannot write ${out}: expected a file path or a directory; ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
     return 2;
   }
 }
@@ -479,6 +539,33 @@ function flag(argv: string[], name: string): string | null {
   if (index === -1) return null;
   const value = argv[index + 1];
   return value === undefined || value.startsWith('--') ? null : value;
+}
+
+/**
+ * Resolves the two commands that can write either one file or a named artifact
+ * in a directory. `diff --out` remains directory-only because it writes two
+ * files by design.
+ */
+export function resolveOutPath(out: string, defaultName: string): string {
+  let target = out;
+  try {
+    if (out.endsWith('/') || statSync(out).isDirectory()) target = join(out, defaultName);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error(
+        `${out}: expected a file path or a directory (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+  }
+
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+  } catch (error) {
+    throw new Error(
+      `${out}: expected a file path or a directory (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+  return target;
 }
 
 function contextCommand(): number {
@@ -902,26 +989,38 @@ function scoreCommand(argv: string[]): number {
   // The diff decides which symbols reach is measured from. Without it reach
   // falls back to the claim's symbols, which measures the words a finding used
   // rather than the code it is about.
-  const reachDiff = (() => {
+  let reachDiff: string | null = null;
+  let anchorHunks: Map<string, FileHunks> | null = null;
+  if (argv.includes('--diff-file')) {
     const path = flag(argv, '--diff-file');
-    if (path === null) return null;
-    try {
-      return readFileSync(path, 'utf8');
-    } catch {
-      return null;
+    if (path === null) {
+      console.error('--diff-file needs a unified diff path.');
+      return 2;
     }
-  })();
+    try {
+      reachDiff = readFileSync(path, 'utf8');
+      anchorHunks = parseHunks(reachDiff);
+    } catch (error) {
+      console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
 
-  const thread: ThreadComment[] = (() => {
+  let thread: ThreadComment[] = [];
+  if (argv.includes('--thread')) {
     const path = flag(argv, '--thread');
-    if (path === null) return [];
+    if (path === null) {
+      console.error('--thread needs a thread JSON path.');
+      return 2;
+    }
     try {
       const parsed = JSON.parse(readFileSync(path, 'utf8')) as { comments?: ThreadComment[] };
-      return Array.isArray(parsed) ? parsed : (parsed.comments ?? []);
-    } catch {
-      return [];
+      thread = Array.isArray(parsed) ? parsed : (parsed.comments ?? []);
+    } catch (error) {
+      console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
     }
-  })();
+  }
 
   if (searchRoot !== null) {
     for (const candidate of candidates) {
@@ -1017,6 +1116,19 @@ function scoreCommand(argv: string[]): number {
           (echoed.path === null ? '' : ` at ${echoed.path}:${echoed.line ?? '?'}`);
       }
 
+      // A candidate can only become a review comment where the reviewed diff
+      // changed code. A nearby removed guard is valid at its right-side site;
+      // an unchanged context line is not silently moved there for the analyst.
+      const anchorCheck = anchorHunks === null ? null : classifyAnchor(anchorHunks, candidate.path, candidate.line);
+      // The anchor reason leads even when something else rejected the
+      // candidate first: it is the one an analyst can act on, and leaving it
+      // behind a score threshold hides why re-anchoring was needed.
+      if (anchorCheck !== null && !anchorCheck.ok) {
+        const earlier = breakdown.rejectedBecause;
+        breakdown.eligible = false;
+        breakdown.rejectedBecause = reason(anchorCheck) + (earlier === null ? '' : ` Also: ${earlier}`);
+      }
+
       // The path is the one field nothing checked, and a wrong one sends the
       // author to a file that does not exist.
       let citation = null;
@@ -1035,6 +1147,7 @@ function scoreCommand(argv: string[]): number {
         ...breakdown,
         precedents,
         ...(absence === null ? {} : { absenceCheck: absence }),
+        ...(anchorCheck === null ? {} : { anchorCheck }),
         ...(citation === null ? {} : { citationCheck: citation }),
       });
     }
@@ -1744,7 +1857,7 @@ function verdictList(parsed: unknown): Record<string, unknown>[] {
  * on a real run that cost the only pass which found the best defect of the day.
  * Failing here costs one re-run of one agent.
  */
-function checkCandidatesCommand(): number {
+function checkCandidatesCommand(argv: string[]): number {
   let raw: unknown[];
   try {
     const parsed = JSON.parse(readStdin()) as { candidates?: unknown[] } | unknown[];
@@ -1757,7 +1870,47 @@ function checkCandidatesCommand(): number {
   try {
     const candidates = raw.map((candidate, index) => normaliseCandidate(candidate as RawCandidate, index));
     assertUniqueCandidateIds(candidates);
-    console.log(JSON.stringify({ valid: true, candidates: candidates.length }, null, 2));
+
+    // Keep the no-flag answer byte-for-byte compatible for callers that use
+    // this command only as the cheap schema boundary before a diff exists.
+    if (!argv.includes('--diff-file')) {
+      console.log(JSON.stringify({ valid: true, candidates: candidates.length }, null, 2));
+      return 0;
+    }
+
+    const diffFile = flag(argv, '--diff-file');
+    if (diffFile === null) {
+      console.error('--diff-file needs a unified diff path.');
+      return 2;
+    }
+
+    let hunks: Map<string, FileHunks>;
+    try {
+      hunks = parseHunks(readFileSync(diffFile, 'utf8'));
+    } catch (error) {
+      console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+
+    const anchorFailures = candidates
+      .map((candidate) => ({ candidate, anchor: classifyAnchor(hunks, candidate.path, candidate.line) }))
+      .filter(({ anchor }) => !anchor.ok)
+      .map(({ candidate, anchor }) => ({
+        candidateId: candidate.candidateId,
+        path: candidate.path,
+        line: candidate.line,
+        kind: anchor.kind,
+        reason: reason(anchor),
+        nearest: anchor.nearest,
+      }));
+
+    if (anchorFailures.length > 0) {
+      console.log(JSON.stringify({ valid: false, anchorFailures }, null, 2));
+      console.error(`${anchorFailures.length} candidate anchor failure${anchorFailures.length === 1 ? '' : 's'}.`);
+      return 1;
+    }
+
+    console.log(JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length } }, null, 2));
     return 0;
   } catch (error) {
     if (error instanceof MalformedCandidate) {
@@ -1922,7 +2075,7 @@ async function main(argv: string[]): Promise<number> {
       return policyCommand(argv.slice(1));
 
     case 'check-candidates':
-      return checkCandidatesCommand();
+      return checkCandidatesCommand(argv.slice(1));
 
     case 'conventions':
       return conventionsCommand(argv.slice(1));

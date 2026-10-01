@@ -14,6 +14,13 @@ Suggested fixes are verified independently from defects. The concise editor has
 no tools, so each eligible candidate and its fix rendering instruction must be
 passed inline, never as a file path.
 
+Candidate anchors are checked against the reviewed diff before verification.
+They must name an added line or the right-side location of removed code; an
+unchanged context line is rejected with the nearest changed line for the analyst
+to re-anchor or withdraw. `thread --out` and `symbols --out` accept either a
+file path or a directory, writing `thread.json` or `symbols.json` in a
+directory.
+
 Full documentation, install instructions and threat model live in the
 [repository root](https://github.com/QuintinBotes/review-voice).
 

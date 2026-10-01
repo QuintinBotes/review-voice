@@ -214,6 +214,16 @@ persistence and transaction ordering · retry and idempotency behavior ·
 concurrency and resource lifecycle · CI, release and packaging correctness ·
 public API and user-visible behavior.
 
+## Anchors
+
+`line` is the 1-based line number in the file at the head of the diff. Put it
+on a `+` line, or on the right-side line where removed code used to be. It is
+never a line number within `diff.patch`, and never an unchanged context line.
+
+When a changed line breaks a consumer in a file the diff does not touch, anchor
+the finding on the changed line that breaks it. Name the consumer and its path
+in both `claim` and `evidence`; there is no off-diff exception.
+
 ## Output
 
 JSON matching `schemas/candidate.schema.json`. No summary, no praise, no

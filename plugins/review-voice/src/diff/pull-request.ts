@@ -239,7 +239,8 @@ export function applyReviewScope(
   scope: ReviewScope,
   cwd: string,
   readIncrementalDiff: (since: string, head: string, files: string[], cwd: string) => string =
-    (since, head, files, root) => git(['diff', since, head, '--', ...files], root),
+    (since, head, files, root) =>
+      git(['diff', '--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', since, head, '--', ...files], root),
 ): ScopedPullRequestDiff {
   if (scope.kind === 'full') return fullScopeResult(result, pullNumber, scope);
 

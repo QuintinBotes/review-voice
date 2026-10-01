@@ -96,6 +96,11 @@ const STATUS: Record<string, ChangedFile['status']> = {
   A: 'added', M: 'modified', D: 'deleted', R: 'renamed', C: 'copied', T: 'changed',
 };
 
+// Parsers consume these patches, so their shape cannot depend on a user's git
+// configuration or an external diff driver. Metadata queries stay untouched:
+// they do not produce patch text for a parser to read.
+const PATCH_OPTIONS = ['--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/'];
+
 /** Parse `git diff --name-status -z`, which is NUL-delimited to survive odd paths. */
 function parseNameStatus(raw: string): { status: string; path: string; previousPath?: string }[] {
   const fields = raw.split('\0').filter((field) => field.length > 0);
@@ -192,10 +197,10 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
 
   const parts: string[] = [];
   if (trackedReviewable.length > 0) {
-    parts.push(git(['diff', ...range, '--', ...trackedReviewable], root));
+    parts.push(git(['diff', ...PATCH_OPTIONS, ...range, '--', ...trackedReviewable], root));
   }
   for (const path of untrackedReviewable) {
-    parts.push(gitAllowingDifference(['diff', '--no-index', '--', '/dev/null', path], root));
+    parts.push(gitAllowingDifference(['diff', ...PATCH_OPTIONS, '--no-index', '--', '/dev/null', path], root));
   }
   const diff = parts.join('').trim().length === 0 ? '' : parts.join('');
 

@@ -31,10 +31,11 @@ the defect.
 
 Run `RV diff $ARGUMENTS --out <tmpdir>` with a temporary directory.
 
-That writes `diff.patch` and `files.json` separately and prints their paths.
-Without `--out` the whole unified diff comes back inline in one JSON blob,
-which for a mid-sized pull request runs past a hundred kilobytes and has to be
-split back out before it is usable.
+That writes `diff.patch` and `files.json` separately and prints their paths
+with a compact `summary`. Read the summary for the review mode, refs, scope,
+truncation and file counts. Without `--out` the whole unified diff comes back
+inline in one JSON blob, which for a mid-sized pull request runs past a hundred
+kilobytes and has to be split back out before it is usable.
 
 With `--pr <number>` this reads the pull request through the read-only GitHub
 client instead of local git. The repository is taken from the origin remote
@@ -102,8 +103,8 @@ and the user should know that is what they are getting.
 On a `--pr` run, before anything else: `RV thread --pr <number> --out <tmpdir>`.
 
 That writes every comment already on the pull request - inline review comments,
-review bodies and conversation comments - and step 4 drops any candidate that
-repeats one.
+review bodies and conversation comments - to `<tmpdir>/thread.json`. Step 4
+reads that exact file and drops any candidate that repeats one.
 
 **This matters more than it sounds.** On the first batch posted to real pull
 requests, 16 of 30 candidates were already stated by another automated reviewer
@@ -192,11 +193,11 @@ convention `documents`, plus `symbols.json`.
 It returns JSON matching `schemas/candidate.schema.json`. `{"candidates": []}`
 is a correct and common answer.
 
-**Check the shape before going further:** pipe the output into
-`RV check-candidates`.
+**Check the shape and anchors before going further:** pipe the output into
+`RV check-candidates --diff-file <tmpdir>/diff.patch`.
 
-If it exits non-zero, **relaunch the analyst once with the schema restated, and
-do not translate its output by hand.** Two real runs returned `title`,
+If it exits 2, **relaunch the analyst once with the schema restated, and do not
+translate its output by hand.** Two real runs returned `title`,
 `location` and `suggestion` instead of the schema. Rewriting that yourself
 would put a judgement into the pipeline that no stage recorded.
 
@@ -205,6 +206,11 @@ has already cost a verification pass, and on one run it cost the only analyst
 pass that found the most serious defect in the diff. Failing at this step costs
 one re-run of one agent. If the second attempt is also malformed, say so and
 stop.
+
+If it exits 1, send **only the failing candidates** back to the analyst once,
+including each reported `reason`, and ask it to re-anchor or withdraw each one.
+Run the same check again. Drop candidates that still fail and say the dropped
+count once after the findings. Never correct an anchor by hand.
 
 If there are no candidates, output exactly `No actionable findings.` and stop.
 
@@ -255,10 +261,17 @@ visible instead of indistinguishable from a clean diff.
 ## Step 4 - Score against precedent
 
 Pipe the verified candidates as `{"candidates": [...]}` into
-`RV score --repository <name> --verification <tmpdir>/verification.json --base <ref> --diff-file <tmpdir>/diff.patch --thread <tmpdir>/thread.json`.
+`RV score --repository <name> --verification <tmpdir>/verification.json --base <ref> --diff-file <tmpdir>/diff.patch`,
+adding `--thread <tmpdir>/thread.json` on a `--pr` run.
 
-**`--thread` is the file from step 1a**, on a pull request run. Without it the
-review repeats whatever the pull request already says.
+**`--thread` is the file from step 1a**, so pass it only on a pull request run;
+`score` refuses a thread file it cannot read. Without it a pull request review
+repeats whatever the pull request already says.
+
+With `--diff-file`, `score` also rejects a candidate that is not anchored on an
+added line or a deletion site. Keep the `anchorCheck` and its
+`rejectedBecause` reason with the score output; re-anchor or withdraw a rejected
+candidate instead of moving it by hand.
 
 `score` also checks that each candidate's cited path exists at the reviewed ref.
 The path is the one field no other stage verifies, and a wrong one sends the
