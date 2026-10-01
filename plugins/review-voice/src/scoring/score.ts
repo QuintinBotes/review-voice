@@ -67,10 +67,98 @@ export interface Verification {
   requiredContextMissing?: string[] | undefined;
   /** Deterministic CLI evidence; it is never read from verifier output. */
   reach?: ReachCheck | undefined;
+  /**
+   * True only when the verifier followed the failure to a caller, consumer or
+   * data path outside the changed code and saw it break there. This is what
+   * the verifier observed, not how widely the touched file is referenced.
+   */
+  impactTraced?: boolean | undefined;
 }
 
 /** Used when the verifier reports a tier rather than a number. */
 const QUALITY_CONFIDENCE: Record<string, number> = { high: 0.9, medium: 0.75, low: 0.5 };
+
+/** Weakest to strongest, the order a tier can be escalated along. */
+const TIER_ORDER = ['nit', 'minor', 'important', 'blocking'] as const;
+
+/** Categories whose severity is a property of the boundary, not of the claim. */
+const BOUNDARY_CATEGORIES: ReadonlySet<string> = new Set([
+  'security',
+  'trust_boundary',
+  'authorization',
+  'authentication',
+]);
+
+/** The verifier confidence an escalation above the requested tier must clear. */
+export const ESCALATION_CONFIDENCE = 0.85;
+
+const INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
+
+/**
+ * Whether a claim asks rather than asserts: it ends with a question mark, or
+ * contains a sentence that opens with an interrogative word and ends with one.
+ */
+export function isInterrogativeClaim(claim: string): boolean {
+  const text = claim.trim();
+  if (text.endsWith('?')) return true;
+  return text
+    .split(/(?<=[.?!])\s+/u)
+    .some((sentence) => sentence.trim().endsWith('?') && INTERROGATIVE_SENTENCE.test(sentence.trim()));
+}
+
+/**
+ * Bounds a derived severity by what the verifier actually established.
+ *
+ * `deriveSeverity` is a pure function of category and reach, and reach measures
+ * how widely the touched file's symbols are referenced, not whether this defect
+ * propagates. Left alone it raised analyst-minor findings to important on
+ * popularity alone, and let a claim ending "Is that intended?" block. This
+ * stage sits after it, in the scorer, so that table stays exactly as pinned.
+ *
+ * Boundary categories keep their tier. An interrogative claim never exceeds
+ * minor. Anything else is reported above the requested tier only when the
+ * verifier traced the impact and was at least ESCALATION_CONFIDENCE sure.
+ * Downward derivation is untouched.
+ */
+export function boundSeverityByEvidence(
+  derived: DerivedSeverity,
+  candidate: Candidate,
+  verification?: Verification | undefined,
+): DerivedSeverity {
+  if (BOUNDARY_CATEGORIES.has(candidate.category)) return derived;
+  // A question request is already the weakest assertion there is.
+  if (candidate.severity === 'question' || derived.severity === 'question') return derived;
+
+  let result = derived;
+  if (
+    (result.severity === 'important' || result.severity === 'blocking') &&
+    isInterrogativeClaim(candidate.claim)
+  ) {
+    result = {
+      ...result,
+      severity: 'minor',
+      reason: `${result.reason}, capped at minor because the claim is framed as a question`,
+    };
+  }
+
+  const asked = TIER_ORDER.indexOf(candidate.severity as (typeof TIER_ORDER)[number]);
+  const got = TIER_ORDER.indexOf(result.severity as (typeof TIER_ORDER)[number]);
+  if (asked === -1 || got === -1 || got <= asked) return result;
+
+  const confidence =
+    verification?.technicalConfidence ??
+    (verification?.evidenceQuality === undefined ? null : (QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null));
+  if (verification?.impactTraced === true && confidence !== null && confidence >= ESCALATION_CONFIDENCE) {
+    return result;
+  }
+  return {
+    ...result,
+    severity: TIER_ORDER[asked] as DerivedSeverity['severity'],
+    reason:
+      `${result.reason}, held at ${candidate.severity} because escalation needs the verifier ` +
+      'to trace impact beyond the changed code',
+  };
+}
 
 /**
  * The ceiling for a claim nobody could check.
@@ -850,8 +938,10 @@ export function scoreCandidate(
   // What a question needs is not a confidence bar but a limit on how many can
   // be asked at once, since a review that ends in five questions has stopped
   // being a review.
-  const isQuestion =
-    deriveSeverity(candidate.category, candidate.severity, verification?.reach).severity === 'question';
+  // Based on the unbounded derivation, so the evidence bound cannot change
+  // which candidates are gated as questions.
+  const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification?.reach);
+  const isQuestion = derivedSeverity.severity === 'question';
 
   let rejectedBecause: string | null = null;
   // Checked explicitly: every comparison against NaN is false, so a
@@ -908,7 +998,7 @@ export function scoreCandidate(
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
-    severity: deriveSeverity(candidate.category, candidate.severity, verification?.reach),
+    severity: boundSeverityByEvidence(derivedSeverity, candidate, verification),
     analystConfidence,
     verifiedConfidence,
     confidenceSource,

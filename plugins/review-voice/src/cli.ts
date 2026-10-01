@@ -971,6 +971,7 @@ function scoreCommand(argv: string[]): number {
         const fixConfidence = raw['fix_confidence'] ?? raw['fixConfidence'];
         const fixReason = raw['fix_reason'] ?? raw['fixReason'];
         const fixDirection = raw['fix_direction'] ?? raw['fixDirection'];
+        const impactTraced = raw['impact_traced'] ?? raw['impactTraced'];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: (raw['evidence_quality'] ?? raw['evidenceQuality']) as Verification['evidenceQuality'],
@@ -987,6 +988,8 @@ function scoreCommand(argv: string[]): number {
               : undefined,
           fixReason: typeof fixReason === 'string' ? fixReason : undefined,
           fixDirection: typeof fixDirection === 'string' ? fixDirection : undefined,
+          // Only a real boolean counts; a string "true" is not evidence.
+          impactTraced: typeof impactTraced === 'boolean' ? impactTraced : undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
             raw['requiredContextMissing']) as string[] | undefined,
         });

@@ -129,4 +129,12 @@ For every candidate, return these fields in addition to the defect fields:
 
 JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `technical_confidence`, `contradictions`, `required_context_missing`, `reason`,
-`fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`.
+`fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`,
+`impact_traced`.
+
+`impact_traced` is a boolean: true only when you followed the failure to a
+caller, consumer or data path outside the changed function or component and saw
+it break there. Otherwise false. It does not report reach, and how many places
+reference a symbol is not evidence that this defect propagates to them. A
+finding is reported above the tier the analyst asked for only when this is true
+and your confidence is at least 0.85.

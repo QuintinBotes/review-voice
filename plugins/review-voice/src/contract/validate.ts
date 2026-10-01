@@ -96,6 +96,19 @@ function validateFinding(
     });
   }
 
+  // A question asserts nothing, so it cannot block or be important. The
+  // problem sentence is the text up to its first terminator.
+  if (finding.severity === 'important' || finding.severity === 'blocking') {
+    const problem = /^[^.?!]*[.?!]/u.exec(finding.prose)?.[0] ?? finding.prose;
+    if (problem.trimEnd().endsWith('?')) {
+      violations.push({
+        code: 'question_as_blocking',
+        line: at,
+        message: 'A question cannot be important or blocking; ask it as [question] or state it as a claim.',
+      });
+    }
+  }
+
   for (const phrase of findForbiddenPhrases(finding.prose, limits.forbiddenPhrases)) {
     violations.push({
       code: 'forbidden_phrase',

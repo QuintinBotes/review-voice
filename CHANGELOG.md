@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A finding is reported above the tier the analyst asked for only when the
+  verifier traced its impact beyond the changed code (`impact_traced`) with
+  confidence of at least 0.85, and a claim framed as a question is capped at
+  minor. Security and trust boundary categories are exempt. `validate-output`
+  rejects an `[important]` or `[blocking]` finding whose problem sentence is a
+  question (`question_as_blocking`). See ADR 0011.
 - Candidates that repeat a comment already on the pull request are dropped
   before verification (`check-candidates --thread`); a near match is kept and
   flagged for the verifier. The pull request description now counts as a

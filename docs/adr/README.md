@@ -20,3 +20,4 @@ after that gate.
 | [0007](0007-comment-posting.md) | GitHub comment posting | Accepted |
 | [0008](0008-policy-sharing.md) | Policy sharing and export | Accepted |
 | [0009](0009-severity-from-computed-reach.md) | Severity from category and computed reach | Accepted |
+| [0011](0011-severity-escalation-needs-traced-impact.md) | Severity escalation needs traced impact | Accepted |

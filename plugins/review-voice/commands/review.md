@@ -252,6 +252,8 @@ scoring falls back to the analyst's opinion of its own work.
 Keep `fix_verdict`, `fix_confidence`, `fix_reason` and `fix_direction` in
 `verification.json` with every other verifier field. They verify a suggested
 repair separately from the defect and must not be derived or filled in later.
+Keep `impact_traced` there too: scoring reads it to decide whether a finding may
+be reported above the tier the analyst asked for.
 
 If nothing survives, output exactly `No actionable findings.` and stop.
 
@@ -288,6 +290,10 @@ adding `--thread <tmpdir>/thread.json` on a `--pr` run.
 **`--thread` is the file from step 1a**, so pass it only on a pull request run;
 `score` refuses a thread file it cannot read. Without it a pull request review
 repeats whatever the pull request already says.
+
+`score` reports a finding above the analyst's requested tier only when the
+verifier set `impact_traced` and reported confidence of at least 0.85, and caps
+a question-framed claim at minor; boundary categories are exempt.
 
 With `--diff-file`, `score` also rejects a candidate that is not anchored on an
 added line or a deletion site. Keep the `anchorCheck` and its

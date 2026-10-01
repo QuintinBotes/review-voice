@@ -222,6 +222,16 @@ function validateFinding(finding, limits, violations) {
       message: "Contains an em or en dash. Use a comma, a full stop, or a plain hyphen."
     });
   }
+  if (finding.severity === "important" || finding.severity === "blocking") {
+    const problem = /^[^.?!]*[.?!]/u.exec(finding.prose)?.[0] ?? finding.prose;
+    if (problem.trimEnd().endsWith("?")) {
+      violations.push({
+        code: "question_as_blocking",
+        line: at,
+        message: "A question cannot be important or blocking; ask it as [question] or state it as a claim."
+      });
+    }
+  }
   for (const phrase of findForbiddenPhrases(finding.prose, limits.forbiddenPhrases)) {
     violations.push({
       code: "forbidden_phrase",
@@ -10648,6 +10658,44 @@ function isFixVerdict(value) {
   return typeof value === "string" && FIX_VERDICTS.includes(value);
 }
 var QUALITY_CONFIDENCE = { high: 0.9, medium: 0.75, low: 0.5 };
+var TIER_ORDER = ["nit", "minor", "important", "blocking"];
+var BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
+  "security",
+  "trust_boundary",
+  "authorization",
+  "authentication"
+]);
+var ESCALATION_CONFIDENCE = 0.85;
+var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
+function isInterrogativeClaim(claim) {
+  const text = claim.trim();
+  if (text.endsWith("?")) return true;
+  return text.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
+}
+function boundSeverityByEvidence(derived, candidate, verification) {
+  if (BOUNDARY_CATEGORIES.has(candidate.category)) return derived;
+  if (candidate.severity === "question" || derived.severity === "question") return derived;
+  let result = derived;
+  if ((result.severity === "important" || result.severity === "blocking") && isInterrogativeClaim(candidate.claim)) {
+    result = {
+      ...result,
+      severity: "minor",
+      reason: `${result.reason}, capped at minor because the claim is framed as a question`
+    };
+  }
+  const asked = TIER_ORDER.indexOf(candidate.severity);
+  const got = TIER_ORDER.indexOf(result.severity);
+  if (asked === -1 || got === -1 || got <= asked) return result;
+  const confidence = verification?.technicalConfidence ?? (verification?.evidenceQuality === void 0 ? null : QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null);
+  if (verification?.impactTraced === true && confidence !== null && confidence >= ESCALATION_CONFIDENCE) {
+    return result;
+  }
+  return {
+    ...result,
+    severity: TIER_ORDER[asked],
+    reason: `${result.reason}, held at ${candidate.severity} because escalation needs the verifier to trace impact beyond the changed code`
+  };
+}
 var UNVERIFIABLE_CONFIDENCE = 0.6;
 var ADMITS_UNVERIFIABLE = [
   /\b(?:cannot|can not|could not|couldn't|unable to)\s+(?:be\s+)?(?:verif|confirm|check|establish|determin)/i,
@@ -10929,7 +10977,8 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const score = (owner, repository) => 0.35 * confidence + 0.25 * owner + 0.15 * repository + 0.15 * quality + 0.1 * novel;
   const finalScore = score(ownerAlignment, repositoryAlignment);
   const anchoredFinalScore = score(anchoredOwnerAlignment, anchoredRepositoryAlignment);
-  const isQuestion = deriveSeverity(candidate.category, candidate.severity, verification?.reach).severity === "question";
+  const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification?.reach);
+  const isQuestion = derivedSeverity.severity === "question";
   let rejectedBecause = null;
   if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
     rejectedBecause = "score could not be computed from this candidate";
@@ -10952,7 +11001,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
-    severity: deriveSeverity(candidate.category, candidate.severity, verification?.reach),
+    severity: boundSeverityByEvidence(derivedSeverity, candidate, verification),
     analystConfidence,
     verifiedConfidence,
     confidenceSource,
@@ -12182,6 +12231,7 @@ function scoreCommand(argv) {
         const fixConfidence = raw["fix_confidence"] ?? raw["fixConfidence"];
         const fixReason = raw["fix_reason"] ?? raw["fixReason"];
         const fixDirection = raw["fix_direction"] ?? raw["fixDirection"];
+        const impactTraced = raw["impact_traced"] ?? raw["impactTraced"];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: raw["evidence_quality"] ?? raw["evidenceQuality"],
@@ -12192,6 +12242,8 @@ function scoreCommand(argv) {
           fixConfidence: typeof fixConfidence === "number" && Number.isFinite(fixConfidence) && fixConfidence >= 0 && fixConfidence <= 1 ? fixConfidence : void 0,
           fixReason: typeof fixReason === "string" ? fixReason : void 0,
           fixDirection: typeof fixDirection === "string" ? fixDirection : void 0,
+          // Only a real boolean counts; a string "true" is not evidence.
+          impactTraced: typeof impactTraced === "boolean" ? impactTraced : void 0,
           requiredContextMissing: raw["required_context_missing"] ?? raw["requiredContextMissing"]
         });
       }
