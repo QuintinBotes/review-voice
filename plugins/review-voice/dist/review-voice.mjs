@@ -3,7 +3,7 @@
 // plugins/review-voice/src/cli.ts
 import { readFileSync as readFileSync4, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2 } from "node:fs";
 import { dirname as dirname4, join as join5 } from "node:path";
-import { execFileSync as execFileSync8 } from "node:child_process";
+import { execFileSync as execFileSync9 } from "node:child_process";
 
 // plugins/review-voice/src/warnings.ts
 function suppressSqliteExperimentalWarning() {
@@ -588,7 +588,7 @@ function acquireDiff(options) {
 }
 
 // plugins/review-voice/src/diff/pull-request.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
+import { execFileSync as execFileSync5 } from "node:child_process";
 
 // plugins/review-voice/src/github/auth.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
@@ -706,299 +706,8 @@ var GitHubClient = class {
   }
 };
 
-// plugins/review-voice/src/diff/pull-request.ts
-var STATUS2 = {
-  added: "added",
-  modified: "modified",
-  removed: "deleted",
-  renamed: "renamed",
-  copied: "copied",
-  changed: "changed"
-};
-function toUnifiedDiff(file) {
-  const previous = file.previous_filename ?? file.filename;
-  return [
-    `diff --git a/${previous} b/${file.filename}`,
-    `--- a/${previous}`,
-    `+++ b/${file.filename}`,
-    file.patch ?? "",
-    ""
-  ].join("\n");
-}
-var GITHUB_MAX_FILES = 3e3;
-function git2(args, cwd, timeout = 6e4) {
-  return execFileSync4("git", args, {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout
-  });
-}
-function hasCommit(sha, cwd) {
-  try {
-    git2(["cat-file", "-e", `${sha}^{commit}`], cwd, 1e4);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function originRepository(cwd) {
-  try {
-    const url = git2(["remote", "get-url", "origin"], cwd, 1e4).trim();
-    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
-  } catch {
-    return null;
-  }
-}
-function ensureRefs(options) {
-  const check = () => ({
-    base: hasCommit(options.base, options.cwd),
-    head: hasCommit(options.head, options.cwd)
-  });
-  let present = check();
-  const result = (fetched, note) => ({
-    base: { sha: options.base, available: present.base },
-    head: { sha: options.head, available: present.head },
-    fetched,
-    note
-  });
-  if (present.base && present.head) return result(false, null);
-  const origin = originRepository(options.cwd);
-  if (origin === null) {
-    return result(false, "No origin remote resolved, so the pull request commits were not fetched.");
-  }
-  if (origin.toLowerCase() !== options.repository.toLowerCase()) {
-    return result(
-      false,
-      `origin is ${origin} but the review is of ${options.repository}, so nothing was fetched. Fetching a pull request from an unrelated clone would supply commits from the wrong project.`
-    );
-  }
-  try {
-    git2(
-      [
-        "fetch",
-        "--no-tags",
-        "--quiet",
-        "origin",
-        `pull/${options.pullNumber}/head:refs/review-voice/pr/${options.pullNumber}/head`
-      ],
-      options.cwd
-    );
-  } catch {
-  }
-  present = check();
-  if (present.base && present.head) {
-    return result(true, null);
-  }
-  const missing = [!present.base ? "base" : null, !present.head ? "head" : null].filter(Boolean);
-  return result(
-    true,
-    `The ${missing.join(" and ")} commit could not be made available locally. Reading code at that ref will fail, so evidence from it is unavailable rather than absent.`
-  );
-}
-function scopeNote(scope) {
-  return `Reviewed ${scope.commits} commit(s) since ${scope.since.slice(0, 7)}; earlier changes were covered by the review of ${scope.priorReviewedAt.slice(0, 10)}.`;
-}
-function pathsWithHunks(diff) {
-  const paths = /* @__PURE__ */ new Set();
-  for (const match of diff.matchAll(/^\+\+\+ b\/(.+)$/gm)) {
-    if (match[1] !== void 0 && match[1] !== "/dev/null") paths.add(match[1]);
-  }
-  return paths;
-}
-function fullScopeResult(result, pullNumber, scope) {
-  return { ...result, pullNumber, scope, scopeNote: null };
-}
-function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = (since, head, files, root) => git2(["diff", "--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", since, head, "--", ...files], root)) {
-  if (scope.kind === "full") return fullScopeResult(result, pullNumber, scope);
-  let diff;
-  try {
-    diff = readIncrementalDiff(scope.since, result.head, scope.files, cwd);
-  } catch {
-    return fullScopeResult(result, pullNumber, {
-      kind: "full",
-      cause: "compare-unavailable",
-      since: scope.since,
-      priorRunId: scope.priorRunId
-    });
-  }
-  const included = new Set(scope.files);
-  const excludedBecause = `unchanged since the last review (${scope.since.slice(0, 7)})`;
-  const files = result.files.map(
-    (file) => file.reviewed && !included.has(file.path) ? { ...file, reviewed: false, excludedBecause } : file
-  );
-  const hunkPaths = pathsWithHunks(diff);
-  const reviewedFileCount = files.filter((file) => file.reviewed).length;
-  return {
-    ...result,
-    pullNumber,
-    scope,
-    scopeNote: scopeNote(scope),
-    files,
-    reviewedFileCount,
-    hunkFileCount: files.filter((file) => file.reviewed && hunkPaths.has(file.path)).length,
-    excludedFileCount: files.length - reviewedFileCount,
-    diff
-  };
-}
-async function acquirePullRequestDiff(options) {
-  const client = new GitHubClient({ allowlist: [options.repository] });
-  const { data: pull } = await client.get(
-    `/repos/${options.repository}/pulls/${options.pullNumber}`
-  );
-  const limit = options.maxFiles ?? GITHUB_MAX_FILES;
-  const rawFiles = await client.paginate(
-    `/repos/${options.repository}/pulls/${options.pullNumber}/files?per_page=100`,
-    limit
-  );
-  const truncated = rawFiles.length < pull.changed_files;
-  const files = rawFiles.map((file) => {
-    const cls = classify(file.filename);
-    const deleted = file.status === "removed";
-    const reviewed = !deleted && isReviewable(file.filename, options.includeGenerated) && file.patch !== void 0;
-    let excludedBecause;
-    if (!reviewed) {
-      if (deleted) excludedBecause = "file deleted";
-      else if (file.patch === void 0) excludedBecause = "no patch returned (binary or too large)";
-      else excludedBecause = `${cls} file`;
-    }
-    return {
-      path: file.filename,
-      ...file.previous_filename === void 0 ? {} : { previousPath: file.previous_filename },
-      status: STATUS2[file.status] ?? "changed",
-      class: cls,
-      language: languageOf(file.filename),
-      additions: file.additions ?? 0,
-      deletions: file.deletions ?? 0,
-      reviewed,
-      ...excludedBecause === void 0 ? {} : { excludedBecause }
-    };
-  });
-  const diff = rawFiles.filter((file) => files.find((f) => f.path === file.filename)?.reviewed === true).map(toUnifiedDiff).join("");
-  return {
-    repositoryRoot: options.repository,
-    mode: "pull-request",
-    base: pull.base.sha,
-    head: pull.head.sha,
-    title: pull.title,
-    files,
-    reviewedFileCount: files.filter((file) => file.reviewed).length,
-    // A pull request file with no patch is already excluded, so every reviewed
-    // file here carries a hunk by construction.
-    hunkFileCount: files.filter((file) => file.reviewed).length,
-    excludedFileCount: files.filter((file) => !file.reviewed).length,
-    diff,
-    totalChangedFiles: pull.changed_files,
-    additions: pull.additions,
-    deletions: pull.deletions,
-    truncated,
-    // Reviewing part of a change and presenting it as the whole is the one
-    // failure mode a reviewer cannot recover from, because nothing downstream
-    // can tell that anything is missing.
-    truncationNote: truncated ? `Only ${rawFiles.length} of ${pull.changed_files} changed files were read. This review covers part of the change.` : null,
-    refs: ensureRefs({
-      repository: options.repository,
-      pullNumber: options.pullNumber,
-      base: pull.base.sha,
-      head: pull.head.sha,
-      cwd: options.cwd ?? process.cwd()
-    })
-  };
-}
-
 // plugins/review-voice/src/diff/incremental.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
-function runGit(args, cwd) {
-  return execFileSync5("git", args, {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "ignore"]
-  });
-}
-var systemGit = {
-  hasCommit(sha, cwd) {
-    try {
-      runGit(["cat-file", "-e", `${sha}^{commit}`], cwd);
-      return true;
-    } catch {
-      return false;
-    }
-  },
-  isAncestor(ancestor, descendant, cwd) {
-    try {
-      runGit(["merge-base", "--is-ancestor", ancestor, descendant], cwd);
-      return true;
-    } catch (error) {
-      if (error.status === 1) return false;
-      throw error;
-    }
-  },
-  mergeCommits(since, head, cwd) {
-    return runGit(["rev-list", "--merges", `${since}..${head}`], cwd).split("\n").filter((sha) => sha.length > 0);
-  },
-  changedPaths(since, head, cwd) {
-    return runGit(["diff", "--name-only", "-z", since, head], cwd).split("\0").filter((path) => path.length > 0);
-  },
-  commitCount(since, head, cwd) {
-    const count = Number(runGit(["rev-list", "--count", `${since}..${head}`], cwd).trim());
-    if (!Number.isSafeInteger(count) || count < 0) throw new Error("git returned an invalid commit count");
-    return count;
-  }
-};
-function full(cause, priorRun) {
-  return {
-    kind: "full",
-    cause,
-    since: priorRun?.headRef ?? null,
-    priorRunId: priorRun?.reviewRunId ?? null
-  };
-}
-function changedReviewedFiles(files, changedPaths) {
-  const changed = new Set(changedPaths);
-  const selected = /* @__PURE__ */ new Set();
-  for (const file of files) {
-    if (changed.has(file.path) || file.previousPath !== void 0 && changed.has(file.previousPath)) {
-      selected.add(file.path);
-    }
-  }
-  return [...selected].sort();
-}
-function planIncrementalScope(options) {
-  const prior = options.priorRun;
-  if (options.forceFull) return full("requested", prior);
-  if (prior === null) return full("no-prior-review", null);
-  if (prior.headRef === options.head) return full("no-new-commits", prior);
-  if (options.truncated) return full("truncated", prior);
-  try {
-    const git4 = options.git ?? systemGit;
-    if (!options.headAvailable || !git4.hasCommit(prior.headRef, options.cwd)) {
-      return full("compare-unavailable", prior);
-    }
-    if (!git4.isAncestor(prior.headRef, options.head, options.cwd)) {
-      return full("history-rewritten", prior);
-    }
-    if (git4.mergeCommits(prior.headRef, options.head, options.cwd).length > 0) {
-      return full("base-merged", prior);
-    }
-    const files = changedReviewedFiles(
-      options.reviewedFiles,
-      git4.changedPaths(prior.headRef, options.head, options.cwd)
-    );
-    if (files.length === 0) return full("base-sync-only", prior);
-    return {
-      kind: "incremental",
-      since: prior.headRef,
-      priorRunId: prior.reviewRunId,
-      priorReviewedAt: prior.createdAt,
-      commits: git4.commitCount(prior.headRef, options.head, options.cwd),
-      files
-    };
-  } catch {
-    return full("compare-unavailable", prior);
-  }
-}
+import { execFileSync as execFileSync4 } from "node:child_process";
 
 // plugins/review-voice/src/diff/hunks.ts
 function normalisePath(path) {
@@ -1210,6 +919,494 @@ function reason(anchor) {
     return `${rendered}; line ${line} of diff.patch is ${anchor.patchLine.path}:${anchor.patchLine.line} - was that the line meant?`;
   }
   return `${rendered}.`;
+}
+
+// plugins/review-voice/src/diff/incremental.ts
+var nullableString = (value) => typeof value === "string" || value === null;
+var UNCHANGED_REASONS = /* @__PURE__ */ new Set(["base-merged", "history-rewritten", "base-sync-only"]);
+function parseReviewScope(value) {
+  if (typeof value !== "object" || value === null) return null;
+  const scope = value;
+  const strings = (list) => Array.isArray(list) && list.every((item) => typeof item === "string");
+  const prior = typeof scope.since === "string" && nullableString(scope.priorRunId) && nullableString(scope.priorReviewedAt);
+  if (scope.kind === "incremental" && prior && Number.isInteger(scope.commits) && strings(scope.files)) {
+    return scope;
+  }
+  if (scope.kind === "unchanged" && prior && typeof scope.mergeBase === "string" && UNCHANGED_REASONS.has(scope.reason)) {
+    return scope;
+  }
+  if (scope.kind === "interdiff" && prior && typeof scope.mergeBase === "string" && strings(scope.files) && Number.isInteger(scope.hunks)) {
+    return scope;
+  }
+  if (scope.kind === "full" && typeof scope.cause === "string" && nullableString(scope.since) && nullableString(scope.priorRunId)) {
+    return scope;
+  }
+  return null;
+}
+function describeScope(scope) {
+  if (scope === null) return null;
+  switch (scope.kind) {
+    case "incremental":
+      return `incremental since ${scope.since.slice(0, 7)} (${scope.commits} commit${scope.commits === 1 ? "" : "s"})`;
+    case "unchanged":
+      return `unchanged since ${scope.since.slice(0, 7)} (${scope.reason})`;
+    case "interdiff":
+      return `interdiff since ${scope.since.slice(0, 7)} (${scope.hunks} hunk${scope.hunks === 1 ? "" : "s"} in ${scope.files.length} file${scope.files.length === 1 ? "" : "s"})`;
+    case "full":
+      return `full (${scope.cause})`;
+  }
+}
+function runGit(args, cwd) {
+  return execFileSync4("git", args, {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+}
+var systemGit = {
+  hasCommit(sha, cwd) {
+    try {
+      runGit(["cat-file", "-e", `${sha}^{commit}`], cwd);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  isAncestor(ancestor, descendant, cwd) {
+    try {
+      runGit(["merge-base", "--is-ancestor", ancestor, descendant], cwd);
+      return true;
+    } catch (error) {
+      if (error.status === 1) return false;
+      throw error;
+    }
+  },
+  mergeCommits(since, head, cwd) {
+    return runGit(["rev-list", "--merges", `${since}..${head}`], cwd).split("\n").filter((sha) => sha.length > 0);
+  },
+  changedPaths(since, head, cwd) {
+    return runGit(["diff", "--name-only", "-z", since, head], cwd).split("\0").filter((path) => path.length > 0);
+  },
+  commitCount(since, head, cwd) {
+    const count = Number(runGit(["rev-list", "--count", `${since}..${head}`], cwd).trim());
+    if (!Number.isSafeInteger(count) || count < 0) throw new Error("git returned an invalid commit count");
+    return count;
+  },
+  mergeBase(left, right, cwd) {
+    const base = runGit(["merge-base", left, right], cwd).trim();
+    if (!/^[0-9a-f]{7,64}$/.test(base)) throw new Error("git returned no merge base");
+    return base;
+  },
+  diffText(from, to, paths, cwd) {
+    return runGit(
+      ["diff", "--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", from, to, "--", ...topPathspecs(paths)],
+      cwd
+    );
+  }
+};
+function topPathspecs(paths) {
+  return paths.map((path) => `:(top,literal)${path}`);
+}
+function full(cause, priorRun) {
+  return {
+    kind: "full",
+    cause,
+    since: priorRun?.headRef ?? null,
+    priorRunId: priorRun?.reviewRunId ?? null
+  };
+}
+function changedReviewedFiles(files, changedPaths) {
+  const changed = new Set(changedPaths);
+  const selected = /* @__PURE__ */ new Set();
+  for (const file of files) {
+    if (changed.has(file.path) || file.previousPath !== void 0 && changed.has(file.previousPath)) {
+      selected.add(file.path);
+    }
+  }
+  return [...selected].sort();
+}
+var METADATA = /^(?:old mode|new mode|deleted file mode|new file mode|similarity index|rename from|rename to|copy from|copy to|Binary files) /;
+function hunkKey(body) {
+  const keep = /* @__PURE__ */ new Set();
+  body.forEach((line, index) => {
+    if (!line.startsWith("+") && !line.startsWith("-")) return;
+    keep.add(index);
+    if (index > 0 && body[index - 1].startsWith(" ")) keep.add(index - 1);
+    if (index + 1 < body.length && body[index + 1].startsWith(" ")) keep.add(index + 1);
+  });
+  return [...keep].sort((x, y) => x - y).map((index) => body[index]).join("\n");
+}
+function hunkSite(body) {
+  const first = body.findIndex((line) => line.startsWith("+") || line.startsWith("-"));
+  const before = first > 0 && body[first - 1].startsWith(" ") ? body[first - 1] : "";
+  return [before, ...body.filter((line) => line.startsWith("-"))].join("\n");
+}
+function gitHeaderPath(line) {
+  const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line);
+  const raw = quoted?.[1] ?? /^diff --git (?:a\/)?.+? (b\/.+)$/.exec(line)?.[1] ?? null;
+  return raw === null ? null : unquoteGitPath(raw).replace(/^b\//, "");
+}
+function ownDiffFiles(patch) {
+  const files = /* @__PURE__ */ new Map();
+  let file = null;
+  let hunk = null;
+  const closeHunk = () => {
+    while (hunk !== null && hunk.length > 1 && hunk.at(-1) === "") hunk.pop();
+    if (file !== null && hunk !== null) {
+      file.hunks.push({ key: hunkKey(hunk.slice(1)), site: hunkSite(hunk.slice(1)), text: hunk.join("\n") });
+    }
+    hunk = null;
+  };
+  for (const raw of patch.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (line.startsWith("diff --git ")) {
+      closeHunk();
+      const path = gitHeaderPath(line);
+      file = { header: [line], metadata: "", hunks: [] };
+      if (path !== null) files.set(path, file);
+      continue;
+    }
+    if (line.startsWith("@@ ")) {
+      closeHunk();
+      hunk = [line];
+      continue;
+    }
+    if (hunk !== null) {
+      if (line.startsWith("+") || line.startsWith("-") || line.startsWith(" ") || line.startsWith("\\") || line === "") {
+        hunk.push(line);
+        continue;
+      }
+      closeHunk();
+    }
+    if (file === null) continue;
+    file.header.push(line);
+    if (METADATA.test(line)) file.metadata += `${line}
+`;
+  }
+  closeHunk();
+  return files;
+}
+function compareOwnDiffs(before, after) {
+  const added = /* @__PURE__ */ new Map();
+  let unrepresentable = false;
+  for (const path of /* @__PURE__ */ new Set([...before.keys(), ...after.keys()])) {
+    const earlier = before.get(path);
+    const later = after.get(path);
+    if ((earlier?.metadata ?? "") !== (later?.metadata ?? "")) unrepresentable = true;
+    const remaining = /* @__PURE__ */ new Map();
+    for (const hunk of earlier?.hunks ?? []) remaining.set(hunk.key, [...remaining.get(hunk.key) ?? [], hunk]);
+    const fresh = [];
+    for (const hunk of later?.hunks ?? []) {
+      const left = remaining.get(hunk.key) ?? [];
+      if (left.length > 0) remaining.set(hunk.key, left.slice(1));
+      else fresh.push(hunk);
+    }
+    const sites = new Set(fresh.map((hunk) => hunk.site));
+    const gone = [...remaining.values()].flat();
+    if (gone.some((hunk) => !sites.has(hunk.site))) unrepresentable = true;
+    if (earlier === void 0 !== (later === void 0) && fresh.length === 0) unrepresentable = true;
+    if (fresh.length > 0) added.set(path, fresh);
+  }
+  return { added, unrepresentable };
+}
+function planScope(options) {
+  const prior = options.priorRun;
+  const only = (scope) => ({ scope, interdiffPatch: null });
+  if (options.forceFull) return only(full("requested", prior));
+  if (prior === null) return only(full("no-prior-review", null));
+  if (prior.headRef === options.head) return only(full("no-new-commits", prior));
+  if (options.truncated) return only(full("truncated", prior));
+  try {
+    const git5 = options.git ?? systemGit;
+    if (!options.headAvailable || !git5.hasCommit(prior.headRef, options.cwd)) {
+      return only(full("compare-unavailable", prior));
+    }
+    const ancestor = git5.isAncestor(prior.headRef, options.head, options.cwd);
+    const merged = ancestor && git5.mergeCommits(prior.headRef, options.head, options.cwd).length > 0;
+    if (options.base !== void 0) {
+      return ownDiffScope(options, prior, git5, ancestor, merged);
+    }
+    if (!ancestor) return only(full("history-rewritten", prior));
+    if (merged) return only(full("base-merged", prior));
+    const files = changedReviewedFiles(
+      options.reviewedFiles,
+      git5.changedPaths(prior.headRef, options.head, options.cwd)
+    );
+    if (files.length === 0) return only(full("base-sync-only", prior));
+    return only(incremental(options, prior, git5, files));
+  } catch {
+    return only(full("compare-unavailable", prior));
+  }
+}
+function incremental(options, prior, git5, files) {
+  return {
+    kind: "incremental",
+    since: prior.headRef,
+    priorRunId: prior.reviewRunId,
+    priorReviewedAt: prior.createdAt,
+    commits: git5.commitCount(prior.headRef, options.head, options.cwd),
+    files
+  };
+}
+function ownDiffScope(options, prior, git5, ancestor, merged) {
+  const base = options.base;
+  if (git5.mergeBase === void 0 || git5.diffText === void 0 || !git5.hasCommit(base, options.cwd)) {
+    return { scope: full("compare-unavailable", prior), interdiffPatch: null };
+  }
+  const paths = [
+    ...new Set(
+      options.reviewedFiles.flatMap((file) => file.previousPath === void 0 ? [file.path] : [file.path, file.previousPath])
+    )
+  ];
+  const mergeBase = git5.mergeBase(base, options.head, options.cwd);
+  const before = ownDiffFiles(git5.diffText(git5.mergeBase(base, prior.headRef, options.cwd), prior.headRef, paths, options.cwd));
+  const after = ownDiffFiles(git5.diffText(mergeBase, options.head, paths, options.cwd));
+  const { added, unrepresentable } = compareOwnDiffs(before, after);
+  if (unrepresentable) return { scope: full("own-diff-unrepresentable", prior), interdiffPatch: null };
+  const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
+  if (added.size === 0) {
+    const reason2 = !ancestor ? "history-rewritten" : merged ? "base-merged" : "base-sync-only";
+    return { scope: { kind: "unchanged", ...common, reason: reason2 }, interdiffPatch: null };
+  }
+  const reviewed = /* @__PURE__ */ new Map();
+  for (const file of options.reviewedFiles) {
+    reviewed.set(file.path, file.path);
+    if (file.previousPath !== void 0) reviewed.set(file.previousPath, file.path);
+  }
+  const parts = [];
+  const files = /* @__PURE__ */ new Set();
+  let hunks = 0;
+  for (const [path, fresh] of added) {
+    const shown = reviewed.get(path);
+    if (shown === void 0) return { scope: full("compare-unavailable", prior), interdiffPatch: null };
+    files.add(shown);
+    hunks += fresh.length;
+    parts.push([...after.get(path)?.header ?? [], ...fresh.map((hunk) => hunk.text)].join("\n"));
+  }
+  return {
+    scope: { kind: "interdiff", ...common, files: [...files].sort(), hunks },
+    interdiffPatch: `${parts.join("\n")}
+`
+  };
+}
+
+// plugins/review-voice/src/diff/pull-request.ts
+var STATUS2 = {
+  added: "added",
+  modified: "modified",
+  removed: "deleted",
+  renamed: "renamed",
+  copied: "copied",
+  changed: "changed"
+};
+function toUnifiedDiff(file) {
+  const previous = file.previous_filename ?? file.filename;
+  return [
+    `diff --git a/${previous} b/${file.filename}`,
+    `--- a/${previous}`,
+    `+++ b/${file.filename}`,
+    file.patch ?? "",
+    ""
+  ].join("\n");
+}
+var GITHUB_MAX_FILES = 3e3;
+function git2(args, cwd, timeout = 6e4) {
+  return execFileSync5("git", args, {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout
+  });
+}
+function hasCommit(sha, cwd) {
+  try {
+    git2(["cat-file", "-e", `${sha}^{commit}`], cwd, 1e4);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function originRepository(cwd) {
+  try {
+    const url = git2(["remote", "get-url", "origin"], cwd, 1e4).trim();
+    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+function ensureRefs(options) {
+  const check = () => ({
+    base: hasCommit(options.base, options.cwd),
+    head: hasCommit(options.head, options.cwd)
+  });
+  let present = check();
+  const result = (fetched, note) => ({
+    base: { sha: options.base, available: present.base },
+    head: { sha: options.head, available: present.head },
+    fetched,
+    note
+  });
+  if (present.base && present.head) return result(false, null);
+  const origin = originRepository(options.cwd);
+  if (origin === null) {
+    return result(false, "No origin remote resolved, so the pull request commits were not fetched.");
+  }
+  if (origin.toLowerCase() !== options.repository.toLowerCase()) {
+    return result(
+      false,
+      `origin is ${origin} but the review is of ${options.repository}, so nothing was fetched. Fetching a pull request from an unrelated clone would supply commits from the wrong project.`
+    );
+  }
+  try {
+    git2(
+      [
+        "fetch",
+        "--no-tags",
+        "--quiet",
+        "origin",
+        `pull/${options.pullNumber}/head:refs/review-voice/pr/${options.pullNumber}/head`
+      ],
+      options.cwd
+    );
+  } catch {
+  }
+  present = check();
+  if (present.base && present.head) {
+    return result(true, null);
+  }
+  const missing = [!present.base ? "base" : null, !present.head ? "head" : null].filter(Boolean);
+  return result(
+    true,
+    `The ${missing.join(" and ")} commit could not be made available locally. Reading code at that ref will fail, so evidence from it is unavailable rather than absent.`
+  );
+}
+function earlierReview(scope) {
+  return scope.priorReviewedAt === null ? `the review at ${scope.since.slice(0, 7)}` : `the review of ${scope.priorReviewedAt.slice(0, 10)}`;
+}
+function scopeNote(scope) {
+  switch (scope.kind) {
+    case "incremental":
+      return `Reviewed ${scope.commits} commit(s) since ${scope.since.slice(0, 7)}; earlier changes were covered by ${earlierReview(scope)}.`;
+    case "unchanged":
+      return `No change to this pull request's own diff since ${scope.since.slice(0, 7)}; ${earlierReview(scope)} still applies.`;
+    case "interdiff":
+      return `Reviewed changes to this pull request's own diff since ${scope.since.slice(0, 7)}; base-branch changes merged in were not reviewed.`;
+  }
+}
+function pathsWithHunks(diff) {
+  return new Set([...parseHunks(diff)].filter(([, file]) => file.ranges.length > 0).map(([path]) => path));
+}
+function fullScopeResult(result, pullNumber, scope) {
+  return { ...result, pullNumber, scope, scopeNote: null };
+}
+function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = (since, head, files, root) => git2(["diff", "--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", since, head, "--", ...topPathspecs(files)], root), interdiffPatch = null) {
+  if (scope.kind === "full") return fullScopeResult(result, pullNumber, scope);
+  const fallBack = () => fullScopeResult(result, pullNumber, {
+    kind: "full",
+    cause: "compare-unavailable",
+    since: scope.since,
+    priorRunId: scope.priorRunId
+  });
+  let diff;
+  let included;
+  if (scope.kind === "unchanged") {
+    diff = "";
+    included = /* @__PURE__ */ new Set();
+  } else if (scope.kind === "interdiff") {
+    if (interdiffPatch === null) return fallBack();
+    diff = interdiffPatch;
+    included = new Set(scope.files);
+  } else {
+    try {
+      diff = readIncrementalDiff(scope.since, result.head, scope.files, cwd);
+    } catch {
+      return fallBack();
+    }
+    included = new Set(scope.files);
+  }
+  const excludedBecause = `unchanged since the last review (${scope.since.slice(0, 7)})`;
+  const files = result.files.map(
+    (file) => file.reviewed && !included.has(file.path) ? { ...file, reviewed: false, excludedBecause } : file
+  );
+  const hunkPaths = pathsWithHunks(diff);
+  const reviewedFileCount = files.filter((file) => file.reviewed).length;
+  return {
+    ...result,
+    pullNumber,
+    scope,
+    scopeNote: scopeNote(scope),
+    files,
+    reviewedFileCount,
+    hunkFileCount: files.filter((file) => file.reviewed && hunkPaths.has(file.path)).length,
+    excludedFileCount: files.length - reviewedFileCount,
+    diff
+  };
+}
+async function acquirePullRequestDiff(options) {
+  const client = new GitHubClient({ allowlist: [options.repository] });
+  const { data: pull } = await client.get(
+    `/repos/${options.repository}/pulls/${options.pullNumber}`
+  );
+  const limit = options.maxFiles ?? GITHUB_MAX_FILES;
+  const rawFiles = await client.paginate(
+    `/repos/${options.repository}/pulls/${options.pullNumber}/files?per_page=100`,
+    limit
+  );
+  const truncated = rawFiles.length < pull.changed_files;
+  const files = rawFiles.map((file) => {
+    const cls = classify(file.filename);
+    const deleted = file.status === "removed";
+    const reviewed = !deleted && isReviewable(file.filename, options.includeGenerated) && file.patch !== void 0;
+    let excludedBecause;
+    if (!reviewed) {
+      if (deleted) excludedBecause = "file deleted";
+      else if (file.patch === void 0) excludedBecause = "no patch returned (binary or too large)";
+      else excludedBecause = `${cls} file`;
+    }
+    return {
+      path: file.filename,
+      ...file.previous_filename === void 0 ? {} : { previousPath: file.previous_filename },
+      status: STATUS2[file.status] ?? "changed",
+      class: cls,
+      language: languageOf(file.filename),
+      additions: file.additions ?? 0,
+      deletions: file.deletions ?? 0,
+      reviewed,
+      ...excludedBecause === void 0 ? {} : { excludedBecause }
+    };
+  });
+  const diff = rawFiles.filter((file) => files.find((f) => f.path === file.filename)?.reviewed === true).map(toUnifiedDiff).join("");
+  return {
+    repositoryRoot: options.repository,
+    mode: "pull-request",
+    base: pull.base.sha,
+    head: pull.head.sha,
+    title: pull.title,
+    files,
+    reviewedFileCount: files.filter((file) => file.reviewed).length,
+    // A pull request file with no patch is already excluded, so every reviewed
+    // file here carries a hunk by construction.
+    hunkFileCount: files.filter((file) => file.reviewed).length,
+    excludedFileCount: files.filter((file) => !file.reviewed).length,
+    diff,
+    totalChangedFiles: pull.changed_files,
+    additions: pull.additions,
+    deletions: pull.deletions,
+    truncated,
+    // Reviewing part of a change and presenting it as the whole is the one
+    // failure mode a reviewer cannot recover from, because nothing downstream
+    // can tell that anything is missing.
+    truncationNote: truncated ? `Only ${rawFiles.length} of ${pull.changed_files} changed files were read. This review covers part of the change.` : null,
+    refs: ensureRefs({
+      repository: options.repository,
+      pullNumber: options.pullNumber,
+      base: pull.base.sha,
+      head: pull.head.sha,
+      cwd: options.cwd ?? process.cwd()
+    })
+  };
 }
 
 // plugins/review-voice/src/redact/redact.ts
@@ -2068,16 +2265,7 @@ function recordRun(db, input) {
 function storedScope(raw) {
   if (typeof raw !== "string") return null;
   try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const scope = parsed;
-    if (scope.kind === "incremental") {
-      return typeof scope.since === "string" && typeof scope.priorRunId === "string" && typeof scope.priorReviewedAt === "string" && typeof scope.commits === "number" && Array.isArray(scope.files) && scope.files.every((path) => typeof path === "string") ? scope : null;
-    }
-    if (scope.kind === "full") {
-      return typeof scope.cause === "string" && (typeof scope.since === "string" || scope.since === null) && (typeof scope.priorRunId === "string" || scope.priorRunId === null) ? scope : null;
-    }
-    return null;
+    return parseReviewScope(JSON.parse(raw));
   } catch {
     return null;
   }
@@ -2110,28 +2298,103 @@ function runDetail(db, reviewRunId) {
     precedents: JSON.parse(row["retrieved_precedents_json"])
   };
 }
-function latestRunForPull(db, repository, pullNumber) {
-  const row = db.prepare(
+function recordedRunsForPull(db, repository, pullNumber, limit = 10) {
+  const rows = db.prepare(
     `SELECT review_run_id, head_ref, created_at
        FROM review_runs
        WHERE LOWER(repository) = LOWER(?)
          AND pull_number = ?
          AND head_ref IS NOT NULL
        ORDER BY created_at DESC, rowid DESC
-       LIMIT 1`
-  ).get(repository, pullNumber);
-  if (row === void 0) return null;
-  return {
-    reviewRunId: row.review_run_id,
-    headRef: row.head_ref,
-    createdAt: row.created_at
-  };
+       LIMIT ?`
+  ).all(repository, pullNumber, limit);
+  return rows.map((row) => ({ runId: row.review_run_id, head: row.head_ref, createdAt: row.created_at }));
 }
 function latestRun(db) {
   const row = db.prepare("SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get();
   if (row === void 0) return null;
   const parsed = JSON.parse(row.output_json);
   return { reviewRunId: row.review_run_id, findings: parsed.findings };
+}
+
+// plugins/review-voice/src/diff/prior.ts
+import { execFileSync as execFileSync7 } from "node:child_process";
+function git3(args, cwd) {
+  return execFileSync7("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
+}
+function resolveCommit(ref, cwd) {
+  try {
+    return git3(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd).trim() || null;
+  } catch {
+    return null;
+  }
+}
+function originRepository2(cwd) {
+  try {
+    const url = git3(["remote", "get-url", "origin"], cwd).trim();
+    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+function resolveSince(since, repository, cwd) {
+  const present = resolveCommit(since, cwd);
+  if (present !== null) return present;
+  if (!/^[0-9a-f]{7,64}$/i.test(since)) return null;
+  if (originRepository2(cwd)?.toLowerCase() !== repository.toLowerCase()) return null;
+  try {
+    git3(["fetch", "--no-tags", "--quiet", "origin", since], cwd);
+  } catch {
+    return null;
+  }
+  return resolveCommit(since, cwd);
+}
+async function latestOwnReview(client, repository, pullNumber) {
+  try {
+    const { data: viewer } = await client.get("/user");
+    const login = viewer.login?.toLowerCase();
+    if (login === void 0) return null;
+    const reviews = await client.paginate(
+      `/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`,
+      1e3
+    );
+    const own = reviews.filter((review) => review.user?.login?.toLowerCase() === login).filter((review) => typeof review.commit_id === "string" && review.commit_id.length > 0).filter(
+      (review) => review.state === "APPROVED" || review.state === "CHANGES_REQUESTED" || review.state === "COMMENTED" && (review.body ?? "").trim().length > 0
+    ).sort((a, b) => (a.submitted_at ?? "").localeCompare(b.submitted_at ?? ""));
+    const latest = own.at(-1);
+    return latest === void 0 ? null : { head: latest.commit_id, submittedAt: latest.submitted_at ?? null };
+  } catch {
+    return null;
+  }
+}
+async function resolvePrior(options) {
+  const resolution = (source, head, runId) => ({
+    source,
+    head,
+    runId,
+    recordedRuns: options.recorded.slice(0, 10)
+  });
+  if (options.since !== null) {
+    return {
+      prior: { reviewRunId: null, headRef: options.since, createdAt: null },
+      resolution: resolution("flag", options.since, null)
+    };
+  }
+  const latest = options.recorded[0];
+  if (latest !== void 0) {
+    return {
+      prior: { reviewRunId: latest.runId, headRef: latest.head, createdAt: latest.createdAt },
+      resolution: resolution("recorded", latest.head, latest.runId)
+    };
+  }
+  const own = await options.ownReview();
+  if (own !== null) {
+    return {
+      prior: { reviewRunId: null, headRef: own.head, createdAt: own.submittedAt },
+      resolution: resolution("github-review", own.head, null)
+    };
+  }
+  return { prior: null, resolution: resolution(null, null, null) };
 }
 
 // plugins/review-voice/src/store/feedback.ts
@@ -9715,9 +9978,9 @@ function changedPathsFrom(filesJson) {
 }
 
 // plugins/review-voice/src/scoring/citation.ts
-import { execFileSync as execFileSync7 } from "node:child_process";
-function git3(args, cwd) {
-  return execFileSync7("git", args, {
+import { execFileSync as execFileSync8 } from "node:child_process";
+function git4(args, cwd) {
+  return execFileSync8("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -9743,7 +10006,7 @@ function checkCitation(candidatePath, cwd, ref, diff) {
   let tracked;
   try {
     const args = ref === null ? ["ls-files"] : ["ls-tree", "-r", "--name-only", ref];
-    tracked = git3(args, cwd).split("\n").filter((line) => line.length > 0);
+    tracked = git4(args, cwd).split("\n").filter((line) => line.length > 0);
   } catch {
     return { resolves: false, suggestion: null, inconclusive: true };
   }
@@ -11229,6 +11492,7 @@ diff flags:
   --staged               Review staged changes only
   --pr <number>          Review a GitHub pull request (needs --repository)
   --full                 On --pr, review the complete pull request again
+  --since <sha>          On --pr, the head last reviewed (overrides the record)
   --repository <name>    owner/repo for --pr; inferred from the git remote if absent
   --include-generated    Include lock files, generated, vendored and binary files
   --out <dir>            Write diff.patch and files.json; stdout includes a summary
@@ -11366,7 +11630,7 @@ ${result.violations.length} contract violation(s).`);
 }
 function inferRepository(cwd) {
   try {
-    const url = execFileSync8("git", ["remote", "get-url", "origin"], {
+    const url = execFileSync9("git", ["remote", "get-url", "origin"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -11417,38 +11681,65 @@ async function pullRequestDiffCommand(argv) {
     console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
     return 2;
   }
+  let since = null;
+  if (argv.includes("--since")) {
+    const wanted = flag(argv, "--since");
+    since = wanted === null ? null : resolveSince(wanted, repository, process.cwd());
+    if (since === null) {
+      console.error(
+        wanted === null ? "--since needs a commit." : `--since ${wanted} is not a commit in this clone.`
+      );
+      return 2;
+    }
+  }
   const result = await acquirePullRequestDiff({
     repository,
     pullNumber,
     includeGenerated: argv.includes("--include-generated"),
     cwd: process.cwd()
   });
-  let scope;
+  let recorded = [];
   try {
     const db = openDatabase();
     try {
-      scope = planIncrementalScope({
-        priorRun: latestRunForPull(db, repository, pullNumber),
-        head: result.head,
-        headAvailable: result.refs.head.available,
-        reviewedFiles: result.files.filter((file) => file.reviewed),
-        cwd: process.cwd(),
-        truncated: result.truncated,
-        forceFull: argv.includes("--full")
-      });
+      recorded = recordedRunsForPull(db, repository, pullNumber);
     } finally {
       db.close();
     }
   } catch {
-    scope = { kind: "full", cause: "compare-unavailable", since: null, priorRunId: null };
   }
-  return emitDiff(applyReviewScope(result, pullNumber, scope, process.cwd()), flag(argv, "--out"));
+  const { prior, resolution } = await resolvePrior({
+    since,
+    recorded,
+    ownReview: () => latestOwnReview(new GitHubClient({ allowlist: [repository] }), repository, pullNumber)
+  });
+  let planned;
+  try {
+    planned = planScope({
+      priorRun: prior,
+      head: result.head,
+      headAvailable: result.refs.head.available,
+      reviewedFiles: result.files.filter((file) => file.reviewed),
+      cwd: process.cwd(),
+      truncated: result.truncated,
+      forceFull: argv.includes("--full"),
+      base: result.refs.base.available && result.base !== null ? result.base : void 0
+    });
+  } catch {
+    planned = {
+      scope: { kind: "full", cause: "compare-unavailable", since: prior?.headRef ?? null, priorRunId: prior?.reviewRunId ?? null },
+      interdiffPatch: null
+    };
+  }
+  const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), void 0, planned.interdiffPatch);
+  return emitDiff({ ...scoped, prior: resolution }, flag(argv, "--out"));
 }
 function diffSummary(result) {
   const scope = result.scope === void 0 ? null : {
     kind: result.scope.kind,
-    cause: result.scope.kind === "full" ? result.scope.cause : null,
-    since: result.scope.since
+    cause: result.scope.kind === "full" ? result.scope.cause : result.scope.kind === "unchanged" ? result.scope.reason : null,
+    since: result.scope.since,
+    mergeBase: result.scope.kind === "unchanged" || result.scope.kind === "interdiff" ? result.scope.mergeBase : null
   };
   return {
     mode: result.mode,
@@ -11462,7 +11753,8 @@ function diffSummary(result) {
     reviewedFileCount: result.reviewedFileCount,
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,
-    refs: result.refs === void 0 ? null : { base: result.refs.base, head: result.refs.head }
+    refs: result.refs === void 0 ? null : { base: result.refs.base, head: result.refs.head },
+    prior: result.prior === void 0 ? null : { source: result.prior.source, head: result.prior.head, runId: result.prior.runId }
   };
 }
 function emitDiff(result, outDir) {
@@ -12260,22 +12552,10 @@ function evidenceCommand() {
   }
 }
 function reviewScopeFromManifest(value) {
-  if (typeof value !== "object" || value === null) return void 0;
-  const scope = value;
-  if (scope.kind === "incremental" && typeof scope.since === "string" && typeof scope.priorRunId === "string" && typeof scope.priorReviewedAt === "string" && Number.isInteger(scope.commits) && Array.isArray(scope.files) && scope.files.every((path) => typeof path === "string")) {
-    return scope;
-  }
-  if (scope.kind === "full" && typeof scope.cause === "string" && (typeof scope.since === "string" || scope.since === null) && (typeof scope.priorRunId === "string" || scope.priorRunId === null)) {
-    return scope;
-  }
-  return void 0;
+  return parseReviewScope(value) ?? void 0;
 }
 function describeReviewScope(scope) {
-  if (scope === null) return null;
-  if (scope.kind === "incremental") {
-    return `incremental since ${scope.since.slice(0, 7)} (${scope.commits} commit${scope.commits === 1 ? "" : "s"})`;
-  }
-  return `full (${scope.cause})`;
+  return describeScope(scope);
 }
 function recordCommand(argv) {
   const output = readStdin();
@@ -12535,7 +12815,7 @@ function conventionsCommand(argv) {
 }
 function refExists(ref, cwd) {
   try {
-    execFileSync8("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    execFileSync9("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;

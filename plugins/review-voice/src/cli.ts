@@ -18,13 +18,14 @@ import { splitFindings, parseFinding } from './contract/parse.ts';
 import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
 import { acquireDiff, GitError } from './diff/acquire.ts';
 import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
-import { planIncrementalScope, type ReviewScope } from './diff/incremental.ts';
+import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
 import { classifyAnchor, parseHunks, reason, type FileHunks } from './diff/hunks.ts';
 import { readThread, type ThreadComment } from './diff/thread.ts';
 import { collectSymbolContext } from './diff/symbols.ts';
 import { openDatabase } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
-import { recordRun, latestRun, latestRunForPull, runDetail, type StageTiming } from './store/runs.ts';
+import { recordRun, latestRun, recordedRunsForPull, runDetail, type StageTiming } from './store/runs.ts';
+import { latestOwnReview, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
   recordFeedback,
   normaliseAction,
@@ -121,6 +122,7 @@ diff flags:
   --staged               Review staged changes only
   --pr <number>          Review a GitHub pull request (needs --repository)
   --full                 On --pr, review the complete pull request again
+  --since <sha>          On --pr, the head last reviewed (overrides the record)
   --repository <name>    owner/repo for --pr; inferred from the git remote if absent
   --include-generated    Include lock files, generated, vendored and binary files
   --out <dir>            Write diff.patch and files.json; stdout includes a summary
@@ -331,6 +333,21 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
     return 2;
   }
 
+  // An explicit previous head overrides whatever was recorded, and must be a
+  // commit this clone can read: comparing against a guess would narrow the
+  // review on a boundary nobody checked.
+  let since: string | null = null;
+  if (argv.includes('--since')) {
+    const wanted = flag(argv, '--since');
+    since = wanted === null ? null : resolveSince(wanted, repository, process.cwd());
+    if (since === null) {
+      console.error(
+        wanted === null ? '--since needs a commit.' : `--since ${wanted} is not a commit in this clone.`,
+      );
+      return 2;
+    }
+  }
+
   const result = await acquirePullRequestDiff({
     repository,
     pullNumber,
@@ -338,29 +355,45 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
     cwd: process.cwd(),
   });
 
-  let scope: ReviewScope;
+  let recorded: RecordedRun[] = [];
   try {
     const db = openDatabase();
     try {
-      scope = planIncrementalScope({
-        priorRun: latestRunForPull(db, repository, pullNumber),
-        head: result.head,
-        headAvailable: result.refs.head.available,
-        reviewedFiles: result.files.filter((file) => file.reviewed),
-        cwd: process.cwd(),
-        truncated: result.truncated,
-        forceFull: argv.includes('--full'),
-      });
+      recorded = recordedRunsForPull(db, repository, pullNumber);
     } finally {
       db.close();
     }
   } catch {
-    // The API diff remains useful when local history cannot be read. A store
-    // failure therefore narrows nothing rather than turning review into error.
-    scope = { kind: 'full', cause: 'compare-unavailable', since: null, priorRunId: null };
+    // A store that cannot be read only removes one source of the previous head.
   }
 
-  return emitDiff(applyReviewScope(result, pullNumber, scope, process.cwd()), flag(argv, '--out'));
+  const { prior, resolution } = await resolvePrior({
+    since,
+    recorded,
+    ownReview: () => latestOwnReview(new GitHubClient({ allowlist: [repository] }), repository, pullNumber),
+  });
+
+  let planned: { scope: ReviewScope; interdiffPatch: string | null };
+  try {
+    planned = planScope({
+      priorRun: prior,
+      head: result.head,
+      headAvailable: result.refs.head.available,
+      reviewedFiles: result.files.filter((file) => file.reviewed),
+      cwd: process.cwd(),
+      truncated: result.truncated,
+      forceFull: argv.includes('--full'),
+      base: result.refs.base.available && result.base !== null ? result.base : undefined,
+    });
+  } catch {
+    planned = {
+      scope: { kind: 'full', cause: 'compare-unavailable', since: prior?.headRef ?? null, priorRunId: prior?.reviewRunId ?? null },
+      interdiffPatch: null,
+    };
+  }
+
+  const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), undefined, planned.interdiffPatch);
+  return emitDiff({ ...scoped, prior: resolution }, flag(argv, '--out'));
 }
 
 /**
@@ -385,6 +418,7 @@ interface EmittedDiff {
     base: { sha: string; available: boolean };
     head: { sha: string; available: boolean };
   };
+  prior?: PriorResolution;
 }
 
 /** The compact metadata a command runner needs after `diff --out`. */
@@ -393,7 +427,7 @@ function diffSummary(result: EmittedDiff): {
   base: string | null;
   head: string;
   pullNumber: number | null;
-  scope: { kind: 'incremental' | 'full'; cause: string | null; since: string | null } | null;
+  scope: { kind: ReviewScope['kind']; cause: string | null; since: string | null; mergeBase: string | null } | null;
   scopeNote: string | null;
   truncated: boolean;
   truncationNote: string | null;
@@ -401,13 +435,21 @@ function diffSummary(result: EmittedDiff): {
   hunkFileCount: number;
   excludedFileCount: number;
   refs: { base: { sha: string; available: boolean }; head: { sha: string; available: boolean } } | null;
+  prior: { source: PriorResolution['source']; head: string | null; runId: string | null } | null;
 } {
   const scope = result.scope === undefined
     ? null
     : {
         kind: result.scope.kind,
-        cause: result.scope.kind === 'full' ? result.scope.cause : null,
+        cause:
+          result.scope.kind === 'full'
+            ? result.scope.cause
+            : result.scope.kind === 'unchanged'
+              ? result.scope.reason
+              : null,
         since: result.scope.since,
+        mergeBase:
+          result.scope.kind === 'unchanged' || result.scope.kind === 'interdiff' ? result.scope.mergeBase : null,
       };
   return {
     mode: result.mode,
@@ -422,6 +464,10 @@ function diffSummary(result: EmittedDiff): {
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,
     refs: result.refs === undefined ? null : { base: result.refs.base, head: result.refs.head },
+    prior:
+      result.prior === undefined
+        ? null
+        : { source: result.prior.source, head: result.prior.head, runId: result.prior.runId },
   };
 }
 
@@ -1437,39 +1483,11 @@ function evidenceCommand(): number {
 }
 
 function reviewScopeFromManifest(value: unknown): ReviewScope | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
-  const scope = value as Record<string, unknown>;
-
-  if (
-    scope.kind === 'incremental' &&
-    typeof scope.since === 'string' &&
-    typeof scope.priorRunId === 'string' &&
-    typeof scope.priorReviewedAt === 'string' &&
-    Number.isInteger(scope.commits) &&
-    Array.isArray(scope.files) &&
-    scope.files.every((path) => typeof path === 'string')
-  ) {
-    return scope as unknown as ReviewScope;
-  }
-
-  if (
-    scope.kind === 'full' &&
-    typeof scope.cause === 'string' &&
-    (typeof scope.since === 'string' || scope.since === null) &&
-    (typeof scope.priorRunId === 'string' || scope.priorRunId === null)
-  ) {
-    return scope as unknown as ReviewScope;
-  }
-
-  return undefined;
+  return parseReviewScope(value) ?? undefined;
 }
 
 function describeReviewScope(scope: ReviewScope | null): string | null {
-  if (scope === null) return null;
-  if (scope.kind === 'incremental') {
-    return `incremental since ${scope.since.slice(0, 7)} (${scope.commits} commit${scope.commits === 1 ? '' : 's'})`;
-  }
-  return `full (${scope.cause})`;
+  return describeScope(scope);
 }
 
 function recordCommand(argv: string[]): number {

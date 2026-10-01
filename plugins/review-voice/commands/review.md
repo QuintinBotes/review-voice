@@ -57,9 +57,21 @@ in their prompts, and print `refs.note` after the findings the way
 that quietly falls back to the patch alone is working from base-side evidence
 without saying so - the same failure as a guard searching the wrong tree.
 
-**Read `scope` on a `--pr` run.** An `incremental` scope covers only commits
-after the recorded `since` head; a `full` scope says why the whole pull request
-was read instead. Do not make a claim about earlier changes from an incremental
+**Read `scope` on a `--pr` run.** The previous head comes from `--since <sha>`
+when given, else the latest recorded run, else your own latest review on
+GitHub; `prior.source` says which and `prior.recordedRuns` lists what was
+recorded. The scope is one of:
+
+- `unchanged` - the pull request's own diff is the same as at the previous
+  head (a base merge or a rebase only). Print `scopeNote` and stop; the earlier
+  review still applies.
+- `interdiff` - only the author's hunks that are new since the previous head,
+  with base-branch churn excluded and head-side line numbers kept.
+- `incremental` - only the commits after the previous head (used only when
+  the base commit is not readable locally).
+- `full` - the whole pull request, with `cause` saying why.
+
+Do not make a claim about earlier changes from an `interdiff` or `incremental`
 patch. If the user asks for a complete review, pass `--full` to `RV diff`.
 
 If `reviewedFileCount` is `0`, output exactly this and stop:

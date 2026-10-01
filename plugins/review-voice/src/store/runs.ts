@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import type { Database } from './db.ts';
 import { recordAudit } from './audit.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
-import type { ReviewScope } from '../diff/incremental.ts';
+import { parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
 
 export interface StoredFinding {
   findingId: string;
@@ -205,27 +205,7 @@ export interface RunDetail {
 function storedScope(raw: unknown): ReviewScope | null {
   if (typeof raw !== 'string') return null;
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== 'object' || parsed === null) return null;
-    const scope = parsed as Record<string, unknown>;
-    if (scope.kind === 'incremental') {
-      return typeof scope.since === 'string' &&
-        typeof scope.priorRunId === 'string' &&
-        typeof scope.priorReviewedAt === 'string' &&
-        typeof scope.commits === 'number' &&
-        Array.isArray(scope.files) &&
-        scope.files.every((path) => typeof path === 'string')
-        ? (scope as unknown as ReviewScope)
-        : null;
-    }
-    if (scope.kind === 'full') {
-      return typeof scope.cause === 'string' &&
-        (typeof scope.since === 'string' || scope.since === null) &&
-        (typeof scope.priorRunId === 'string' || scope.priorRunId === null)
-        ? (scope as unknown as ReviewScope)
-        : null;
-    }
-    return null;
+    return parseReviewScope(JSON.parse(raw));
   } catch {
     // A row from an interrupted or manually repaired store must not prevent
     // users from inspecting its otherwise intact review.
@@ -310,6 +290,27 @@ export function latestRunForPull(
     headRef: row.head_ref,
     createdAt: row.created_at,
   };
+}
+
+/** Every recorded run of one pull request, newest first. */
+export function recordedRunsForPull(
+  db: Database,
+  repository: string,
+  pullNumber: number,
+  limit = 10,
+): { runId: string; head: string; createdAt: string }[] {
+  const rows = db
+    .prepare(
+      `SELECT review_run_id, head_ref, created_at
+       FROM review_runs
+       WHERE LOWER(repository) = LOWER(?)
+         AND pull_number = ?
+         AND head_ref IS NOT NULL
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT ?`,
+    )
+    .all(repository, pullNumber, limit) as { review_run_id: string; head_ref: string; created_at: string }[];
+  return rows.map((row) => ({ runId: row.review_run_id, head: row.head_ref, createdAt: row.created_at }));
 }
 
 export function latestRun(db: Database): { reviewRunId: string; findings: StoredFinding[] } | null {

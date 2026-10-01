@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `symbols --out` accept either a file path or a directory with a default
   artifact name.
 
+- Follow-up reviews compare the pull request's own diff before and after.
+  A head that only merged the base or was rebased is `unchanged` and needs no
+  new review; one that also gained author work is an `interdiff` holding only
+  the new author hunks, with base churn excluded and head-side line numbers
+  kept, all measured against the merge base, which the scope records. A
+  revert, a moved edit, a rename or a mode change since the last review reads
+  the pull request in full, and so does every comparison that cannot run.
+- `diff --pr --since <sha>` names the head last reviewed. Without it the
+  previous head is the latest recorded run, or else your own latest review on
+  GitHub, so a run recorded from another clone or profile is no longer needed;
+  `prior` in the output says which source was used and lists recorded runs.
+
 ### Changed
 
 - `check-candidates` and `score` refuse two candidates with the same id.

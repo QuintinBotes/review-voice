@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { GitHubClient } from '../github/client.ts';
 import { classify, isReviewable, languageOf } from './classify.ts';
 import type { ChangedFile, DiffResult } from './acquire.ts';
-import type { ReviewScope } from './incremental.ts';
+import { topPathspecs, type ReviewScope } from './incremental.ts';
+import { parseHunks } from './hunks.ts';
 
 interface RawFile {
   filename: string;
@@ -203,19 +204,36 @@ export interface ScopedPullRequestDiff extends PullRequestDiff {
   scopeNote: string | null;
 }
 
-function scopeNote(scope: Extract<ReviewScope, { kind: 'incremental' }>): string {
-  return (
-    `Reviewed ${scope.commits} commit(s) since ${scope.since.slice(0, 7)}; ` +
-    `earlier changes were covered by the review of ${scope.priorReviewedAt.slice(0, 10)}.`
-  );
+/** "the review of <date>" when a run was recorded, else "the review at <sha>". */
+function earlierReview(scope: { since: string; priorReviewedAt: string | null }): string {
+  return scope.priorReviewedAt === null
+    ? `the review at ${scope.since.slice(0, 7)}`
+    : `the review of ${scope.priorReviewedAt.slice(0, 10)}`;
+}
+
+function scopeNote(scope: Exclude<ReviewScope, { kind: 'full' }>): string {
+  switch (scope.kind) {
+    case 'incremental':
+      return (
+        `Reviewed ${scope.commits} commit(s) since ${scope.since.slice(0, 7)}; ` +
+        `earlier changes were covered by ${earlierReview(scope)}.`
+      );
+    case 'unchanged':
+      return (
+        `No change to this pull request's own diff since ${scope.since.slice(0, 7)}; ` +
+        `${earlierReview(scope)} still applies.`
+      );
+    case 'interdiff':
+      return (
+        `Reviewed changes to this pull request's own diff since ${scope.since.slice(0, 7)}; ` +
+        'base-branch changes merged in were not reviewed.'
+      );
+  }
 }
 
 function pathsWithHunks(diff: string): Set<string> {
-  const paths = new Set<string>();
-  for (const match of diff.matchAll(/^\+\+\+ b\/(.+)$/gm)) {
-    if (match[1] !== undefined && match[1] !== '/dev/null') paths.add(match[1]);
-  }
-  return paths;
+  // The hunk parser decodes paths git quoted, which a header regex would not.
+  return new Set([...parseHunks(diff)].filter(([, file]) => file.ranges.length > 0).map(([path]) => path));
 }
 
 function fullScopeResult(
@@ -240,26 +258,42 @@ export function applyReviewScope(
   cwd: string,
   readIncrementalDiff: (since: string, head: string, files: string[], cwd: string) => string =
     (since, head, files, root) =>
-      git(['diff', '--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', since, head, '--', ...files], root),
+      git(['diff', '--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', since, head, '--', ...topPathspecs(files)], root),
+  interdiffPatch: string | null = null,
 ): ScopedPullRequestDiff {
   if (scope.kind === 'full') return fullScopeResult(result, pullNumber, scope);
 
-  let diff: string;
-  try {
-    diff = readIncrementalDiff(scope.since, result.head, scope.files, cwd);
-  } catch {
-    // The planner's probes passed, but the final range read can still lose a
-    // race with local object cleanup. Do not present an incomplete patch as a
-    // narrowed review; retain the API patch and name the uncertainty instead.
-    return fullScopeResult(result, pullNumber, {
+  const fallBack = (): ScopedPullRequestDiff =>
+    fullScopeResult(result, pullNumber, {
       kind: 'full',
       cause: 'compare-unavailable',
       since: scope.since,
       priorRunId: scope.priorRunId,
     });
+
+  let diff: string;
+  let included: Set<string>;
+  if (scope.kind === 'unchanged') {
+    diff = '';
+    included = new Set();
+  } else if (scope.kind === 'interdiff') {
+    // Only the planner can produce this patch; without it there is nothing
+    // narrower that is known to be safe.
+    if (interdiffPatch === null) return fallBack();
+    diff = interdiffPatch;
+    included = new Set(scope.files);
+  } else {
+    try {
+      diff = readIncrementalDiff(scope.since, result.head, scope.files, cwd);
+    } catch {
+      // The planner's probes passed, but the final range read can still lose a
+      // race with local object cleanup. Do not present an incomplete patch as a
+      // narrowed review; retain the API patch and name the uncertainty instead.
+      return fallBack();
+    }
+    included = new Set(scope.files);
   }
 
-  const included = new Set(scope.files);
   const excludedBecause = `unchanged since the last review (${scope.since.slice(0, 7)})`;
   const files = result.files.map((file) =>
     file.reviewed && !included.has(file.path)
