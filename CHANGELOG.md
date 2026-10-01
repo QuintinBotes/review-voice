@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Candidates that repeat a comment already on the pull request are dropped
+  before verification (`check-candidates --thread`); a near match is kept and
+  flagged for the verifier. The pull request description now counts as a
+  comment, and the analyst is given the thread.
 - Suggested fixes are verified independently from defects. Only a sufficiently
   confident verified repair is rendered; partial verification may provide a
   direction, and every other repair is withheld.

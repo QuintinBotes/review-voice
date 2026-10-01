@@ -309,6 +309,32 @@ export function alreadySaidOnThread(
   return null;
 }
 
+/** Lower overlap, wider window: a comment close enough to be worth a look. */
+const POSSIBLE_REPEAT_OVERLAP = 0.25;
+const POSSIBLE_REPEAT_LINE_WINDOW = 5;
+
+/**
+ * An anchored comment near this candidate that shares some of its wording but
+ * not enough for `alreadySaidOnThread` to drop it. The candidate is kept and
+ * the verifier is pointed at the comment, so it can reject a real repeat first.
+ */
+export function possiblySaidOnThread(
+  candidate: Candidate,
+  thread: ThreadComment[],
+): ThreadComment | null {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+
+  for (const comment of thread) {
+    if (comment.path === null || comment.line === null) continue;
+    if (comment.path !== candidate.path) continue;
+    if (Math.abs(comment.line - candidate.line) > POSSIBLE_REPEAT_LINE_WINDOW) continue;
+    if (overlap(mine, significantWords(comment.body)) >= POSSIBLE_REPEAT_OVERLAP) return comment;
+  }
+
+  return null;
+}
+
 export class MalformedCandidate extends Error {}
 
 /** Field names from shapes agents have returned instead of the schema. */

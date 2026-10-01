@@ -23,7 +23,7 @@ export interface ThreadComment {
   author: string;
   /** Redacted. Only redacted text ever reaches a prompt or a comparison. */
   body: string;
-  kind: 'review-comment' | 'review-body' | 'conversation';
+  kind: 'review-comment' | 'review-body' | 'conversation' | 'description';
 }
 
 interface RawInline {
@@ -61,11 +61,24 @@ function clean(body: string | undefined, author: string | undefined): { body: st
 export async function readThread(options: {
   repository: string;
   pullNumber: number;
+  /** Injectable so a test can stub fetch. */
+  client?: GitHubClient;
 }): Promise<{ comments: ThreadComment[]; truncated: boolean }> {
   // Naming a pull request is the consent for reading it, the same rule
   // `acquirePullRequestDiff` follows.
-  const client = new GitHubClient({ allowlist: [options.repository] });
+  const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
   const comments: ThreadComment[] = [];
+
+  // The description counts as a comment: a deploy order, a trade-off the author
+  // states or a question CI already answered is a point already made, and
+  // field use showed about five candidates a day repeating one.
+  const pull = await client.get<{ body?: string | null; user?: { login?: string } }>(
+    `/repos/${options.repository}/pulls/${options.pullNumber}`,
+  );
+  const description = clean(pull.data.body ?? undefined, pull.data.user?.login);
+  if (description !== null) {
+    comments.push({ path: null, line: null, author: description.author, body: description.body, kind: 'description' });
+  }
 
   const inline = await client.paginate<RawInline>(
     `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,

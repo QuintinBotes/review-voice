@@ -55,6 +55,7 @@ import {
   scoreCandidate,
   applyQuestionCap,
   alreadySaidOnThread,
+  possiblySaidOnThread,
   normaliseCandidate,
   isFixVerdict,
   editorFix,
@@ -134,6 +135,7 @@ symbols flags:
 
 check-candidates:
   --diff-file <path>     Require anchors on changed lines
+  --thread <path>        Drop candidates the thread already states
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -1928,7 +1930,62 @@ function checkCandidatesCommand(argv: string[]): number {
       return 1;
     }
 
-    console.log(JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length } }, null, 2));
+    if (!argv.includes('--thread')) {
+      console.log(JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length } }, null, 2));
+      return 0;
+    }
+
+    // A repeat is removed here, before the verifier spends a pass on it. The
+    // same check still runs inside `score` as the second line of defence.
+    const threadFile = flag(argv, '--thread');
+    if (threadFile === null) {
+      console.error('--thread needs a thread JSON path.');
+      return 2;
+    }
+    let thread: ThreadComment[];
+    try {
+      const parsed = JSON.parse(readFileSync(threadFile, 'utf8')) as { comments?: ThreadComment[] } | ThreadComment[];
+      thread = Array.isArray(parsed) ? parsed : (parsed.comments ?? []);
+      if (!Array.isArray(thread)) throw new Error('comments is not a list');
+    } catch (error) {
+      console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+
+    const kept: unknown[] = [];
+    const droppedAsRepeat: unknown[] = [];
+    candidates.forEach((candidate, index) => {
+      const repeat = alreadySaidOnThread(candidate, thread);
+      if (repeat !== null) {
+        droppedAsRepeat.push({
+          candidateId: candidate.candidateId,
+          path: candidate.path,
+          line: candidate.line,
+          author: repeat.author,
+          commentPath: repeat.path,
+          commentLine: repeat.line,
+          reason: `Already stated by ${repeat.author} on this pull request.`,
+        });
+        return;
+      }
+      const possible = possiblySaidOnThread(candidate, thread);
+      const original = raw[index] as Record<string, unknown>;
+      kept.push(
+        possible === null
+          ? original
+          : {
+              ...original,
+              possibleRepeatOf: {
+                author: possible.author,
+                path: possible.path,
+                line: possible.line,
+                excerpt: possible.body.slice(0, 200),
+              },
+            },
+      );
+    });
+
+    console.log(JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat }, null, 2));
     return 0;
   } catch (error) {
     if (error instanceof MalformedCandidate) {

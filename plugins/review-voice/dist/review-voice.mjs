@@ -1030,7 +1030,7 @@ var METADATA = /^(?:old mode|new mode|deleted file mode|new file mode|similarity
 function hunkKey(body) {
   const keep = /* @__PURE__ */ new Set();
   body.forEach((line, index) => {
-    if (!line.startsWith("+") && !line.startsWith("-")) return;
+    if (!line.startsWith("+") && !line.startsWith("-") && !line.startsWith("\\")) return;
     keep.add(index);
     if (index > 0 && body[index - 1].startsWith(" ")) keep.add(index - 1);
     if (index + 1 < body.length && body[index + 1].startsWith(" ")) keep.add(index + 1);
@@ -1038,9 +1038,14 @@ function hunkKey(body) {
   return [...keep].sort((x, y) => x - y).map((index) => body[index]).join("\n");
 }
 function hunkSite(body) {
-  const first = body.findIndex((line) => line.startsWith("+") || line.startsWith("-"));
-  const before = first > 0 && body[first - 1].startsWith(" ") ? body[first - 1] : "";
-  return [before, ...body.filter((line) => line.startsWith("-"))].join("\n");
+  const site = /* @__PURE__ */ new Set();
+  body.forEach((line, index) => {
+    if (line.startsWith("-")) site.add(line);
+    if (!line.startsWith("+") && !line.startsWith("-")) return;
+    if (index > 0 && body[index - 1].startsWith(" ")) site.add(body[index - 1]);
+    if (index + 1 < body.length && body[index + 1].startsWith(" ")) site.add(body[index + 1]);
+  });
+  return site;
 }
 function gitHeaderPath(line) {
   const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line);
@@ -1059,10 +1064,10 @@ function ownDiffFiles(patch) {
     hunk = null;
   };
   for (const raw of patch.split("\n")) {
-    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const line = raw;
     if (line.startsWith("diff --git ")) {
       closeHunk();
-      const path = gitHeaderPath(line);
+      const path = gitHeaderPath(line.endsWith("\r") ? line.slice(0, -1) : line);
       file = { header: [line], metadata: "", hunks: [] };
       if (path !== null) files.set(path, file);
       continue;
@@ -1102,9 +1107,12 @@ function compareOwnDiffs(before, after) {
       if (left.length > 0) remaining.set(hunk.key, left.slice(1));
       else fresh.push(hunk);
     }
-    const sites = new Set(fresh.map((hunk) => hunk.site));
-    const gone = [...remaining.values()].flat();
-    if (gone.some((hunk) => !sites.has(hunk.site))) unrepresentable = true;
+    const unused = [...fresh];
+    for (const hunk of [...remaining.values()].flat()) {
+      const index = unused.findIndex((candidate) => [...hunk.site].every((line) => candidate.site.has(line)));
+      if (index === -1) unrepresentable = true;
+      else unused.splice(index, 1);
+    }
     if (earlier === void 0 !== (later === void 0) && fresh.length === 0) unrepresentable = true;
     if (fresh.length > 0) added.set(path, fresh);
   }
@@ -1523,8 +1531,15 @@ function clean(body, author) {
   return { body: redact(body).text, author: author ?? "unknown" };
 }
 async function readThread(options) {
-  const client = new GitHubClient({ allowlist: [options.repository] });
+  const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
   const comments = [];
+  const pull = await client.get(
+    `/repos/${options.repository}/pulls/${options.pullNumber}`
+  );
+  const description = clean(pull.data.body ?? void 0, pull.data.user?.login);
+  if (description !== null) {
+    comments.push({ path: null, line: null, author: description.author, body: description.body, kind: "description" });
+  }
   const inline = await client.paginate(
     `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,
     MAX_COMMENTS
@@ -10675,6 +10690,19 @@ function alreadySaidOnThread(candidate, thread) {
   }
   return null;
 }
+var POSSIBLE_REPEAT_OVERLAP = 0.25;
+var POSSIBLE_REPEAT_LINE_WINDOW = 5;
+function possiblySaidOnThread(candidate, thread) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+  for (const comment of thread) {
+    if (comment.path === null || comment.line === null) continue;
+    if (comment.path !== candidate.path) continue;
+    if (Math.abs(comment.line - candidate.line) > POSSIBLE_REPEAT_LINE_WINDOW) continue;
+    if (overlap(mine, significantWords(comment.body)) >= POSSIBLE_REPEAT_OVERLAP) return comment;
+  }
+  return null;
+}
 var MalformedCandidate = class extends Error {
 };
 var FOREIGN_KEYS = ["title", "location", "suggested_direction", "suggestion", "description", "summary"];
@@ -11504,6 +11532,7 @@ symbols flags:
 
 check-candidates:
   --diff-file <path>     Require anchors on changed lines
+  --thread <path>        Drop candidates the thread already states
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -12872,7 +12901,55 @@ function checkCandidatesCommand(argv) {
       console.error(`${anchorFailures.length} candidate anchor failure${anchorFailures.length === 1 ? "" : "s"}.`);
       return 1;
     }
-    console.log(JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length } }, null, 2));
+    if (!argv.includes("--thread")) {
+      console.log(JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length } }, null, 2));
+      return 0;
+    }
+    const threadFile = flag(argv, "--thread");
+    if (threadFile === null) {
+      console.error("--thread needs a thread JSON path.");
+      return 2;
+    }
+    let thread;
+    try {
+      const parsed = JSON.parse(readFileSync4(threadFile, "utf8"));
+      thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
+      if (!Array.isArray(thread)) throw new Error("comments is not a list");
+    } catch (error) {
+      console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    const kept = [];
+    const droppedAsRepeat = [];
+    candidates.forEach((candidate, index) => {
+      const repeat = alreadySaidOnThread(candidate, thread);
+      if (repeat !== null) {
+        droppedAsRepeat.push({
+          candidateId: candidate.candidateId,
+          path: candidate.path,
+          line: candidate.line,
+          author: repeat.author,
+          commentPath: repeat.path,
+          commentLine: repeat.line,
+          reason: `Already stated by ${repeat.author} on this pull request.`
+        });
+        return;
+      }
+      const possible = possiblySaidOnThread(candidate, thread);
+      const original = raw[index];
+      kept.push(
+        possible === null ? original : {
+          ...original,
+          possibleRepeatOf: {
+            author: possible.author,
+            path: possible.path,
+            line: possible.line,
+            excerpt: possible.body.slice(0, 200)
+          }
+        }
+      );
+    });
+    console.log(JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat }, null, 2));
     return 0;
   } catch (error) {
     if (error instanceof MalformedCandidate) {

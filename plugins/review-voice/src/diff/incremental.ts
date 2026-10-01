@@ -271,10 +271,11 @@ interface OwnHunk {
    */
   key: string;
   /**
-   * Where in the base the hunk applies: the context line before its first
-   * change and the base lines it removes. Two versions of one edit share it.
+   * Where in the base the hunk applies: every unchanged line next to one of
+   * its changes, and the base lines it removes. A rewrite of the same edit
+   * keeps all of them; a revert of part of it, or a move, does not.
    */
-  site: string;
+  site: Set<string>;
   text: string;
 }
 
@@ -290,7 +291,9 @@ const METADATA = /^(?:old mode|new mode|deleted file mode|new file mode|similari
 function hunkKey(body: string[]): string {
   const keep = new Set<number>();
   body.forEach((line, index) => {
-    if (!line.startsWith('+') && !line.startsWith('-')) return;
+    // `\ No newline at end of file` is part of what changed: adding or removing
+    // a file's final newline is an edit, and without the marker it vanishes.
+    if (!line.startsWith('+') && !line.startsWith('-') && !line.startsWith('\\')) return;
     keep.add(index);
     if (index > 0 && body[index - 1]!.startsWith(' ')) keep.add(index - 1);
     if (index + 1 < body.length && body[index + 1]!.startsWith(' ')) keep.add(index + 1);
@@ -298,10 +301,15 @@ function hunkKey(body: string[]): string {
   return [...keep].sort((x, y) => x - y).map((index) => body[index]).join('\n');
 }
 
-function hunkSite(body: string[]): string {
-  const first = body.findIndex((line) => line.startsWith('+') || line.startsWith('-'));
-  const before = first > 0 && body[first - 1]!.startsWith(' ') ? body[first - 1]! : '';
-  return [before, ...body.filter((line) => line.startsWith('-'))].join('\n');
+function hunkSite(body: string[]): Set<string> {
+  const site = new Set<string>();
+  body.forEach((line, index) => {
+    if (line.startsWith('-')) site.add(line);
+    if (!line.startsWith('+') && !line.startsWith('-')) return;
+    if (index > 0 && body[index - 1]!.startsWith(' ')) site.add(body[index - 1]!);
+    if (index + 1 < body.length && body[index + 1]!.startsWith(' ')) site.add(body[index + 1]!);
+  });
+  return site;
 }
 
 /** The right-side path a `diff --git` header names, quoted or not. */
@@ -333,10 +341,13 @@ export function ownDiffFiles(patch: string): Map<string, OwnFile> {
   };
 
   for (const raw of patch.split('\n')) {
-    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    // A carriage return is kept: changing a line's ending is an author edit,
+    // and stripping it here would make that edit compare as unchanged. Only
+    // the header path is read without it.
+    const line = raw;
     if (line.startsWith('diff --git ')) {
       closeHunk();
-      const path = gitHeaderPath(line);
+      const path = gitHeaderPath(line.endsWith('\r') ? line.slice(0, -1) : line);
       file = { header: [line], metadata: '', hunks: [] };
       if (path !== null) files.set(path, file);
       continue;
@@ -397,9 +408,16 @@ function compareOwnDiffs(before: Map<string, OwnFile>, after: Map<string, OwnFil
     // A reviewed hunk that is gone is fine only when a new hunk sits on the
     // same site: the author rewrote that edit, and the new hunk shows the
     // result. Gone with nothing in its place is a revert or a move.
-    const sites = new Set(fresh.map((hunk) => hunk.site));
-    const gone = [...remaining.values()].flat();
-    if (gone.some((hunk) => !sites.has(hunk.site))) unrepresentable = true;
+    // A gone hunk is replaced only by a new hunk whose site holds all of its
+    // own, and each new hunk replaces at most one: two reviewed additions after
+    // the same closing brace must not both be accounted for by one rewrite, or
+    // the other's revert goes unread.
+    const unused = [...fresh];
+    for (const hunk of [...remaining.values()].flat()) {
+      const index = unused.findIndex((candidate) => [...hunk.site].every((line) => candidate.site.has(line)));
+      if (index === -1) unrepresentable = true;
+      else unused.splice(index, 1);
+    }
     // A file on one side only, with no hunk to carry it (an empty new file).
     if ((earlier === undefined) !== (later === undefined) && fresh.length === 0) unrepresentable = true;
     if (fresh.length > 0) added.set(path, fresh);

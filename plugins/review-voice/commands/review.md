@@ -115,8 +115,9 @@ and the user should know that is what they are getting.
 On a `--pr` run, before anything else: `RV thread --pr <number> --out <tmpdir>`.
 
 That writes every comment already on the pull request - inline review comments,
-review bodies and conversation comments - to `<tmpdir>/thread.json`. Step 4
-reads that exact file and drops any candidate that repeats one.
+review bodies, conversation comments and the pull request description - to
+`<tmpdir>/thread.json`. Step 2 drops any candidate that repeats one before
+verification, and step 4 reads that exact file as a second check.
 
 **This matters more than it sounds.** On the first batch posted to real pull
 requests, 16 of 30 candidates were already stated by another automated reviewer
@@ -200,7 +201,8 @@ of zero consumers.
 ## Step 2 - Generate candidates
 
 Launch the `diff-analyst` agent with the `diff` field, the `files` list and the
-convention `documents`, plus `symbols.json`.
+convention `documents`, plus `symbols.json` and, on a `--pr` run, `thread.json`.
+A point already made in the thread is not a candidate.
 
 It returns JSON matching `schemas/candidate.schema.json`. `{"candidates": []}`
 is a correct and common answer.
@@ -223,6 +225,13 @@ If it exits 1, send **only the failing candidates** back to the analyst once,
 including each reported `reason`, and ask it to re-anchor or withdraw each one.
 Run the same check again. Drop candidates that still fail and say the dropped
 count once after the findings. Never correct an anchor by hand.
+
+**On a `--pr` run, add `--thread <tmpdir>/thread.json`** to that command. It
+removes candidates that repeat a comment already on the pull request, so the
+verifier does not spend a pass on them, and flags a near match with
+`possibleRepeatOf`. Send only `kept` to step 3. Keep `droppedAsRepeat` for
+step 6 (`record --held`); until then, do not pass them to `--verdicts`. An
+unreadable thread file exits 2: fix the path rather than skipping the check.
 
 If there are no candidates, output exactly `No actionable findings.` and stop.
 
