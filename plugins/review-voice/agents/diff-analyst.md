@@ -172,6 +172,16 @@ not capped that way, so there is no reason to dress one up as a claim to get it
 past a gate - and every reason not to, since a claim that cannot be checked is
 the failure this reviewer exists to avoid.
 
+## Suggested fixes
+
+Propose `suggested_fix` only when you can name the concrete change. Trace that
+change through every input the failure mode names and through the paths the
+current code already serves correctly. Otherwise omit `suggested_fix` and
+`fix_confidence`; a plausible repair is not evidence that it is safe.
+
+`fix_confidence` is audit metadata, like `severity`. It does not decide whether
+the defect is reported or whether the fix is rendered.
+
 ## A comment about another repository is not evidence about it
 
 If a claim rests on the state of a sibling repository, read that repository. A
@@ -210,7 +220,8 @@ JSON matching `schemas/candidate.schema.json`. No summary, no praise, no
 commentary. Return `{"candidates": []}` when nothing qualifies - that is a
 correct and common answer, not a failure.
 
-Every candidate has exactly these nine fields, all required:
+Every candidate has these nine required fields. It may also have the optional
+`suggested_fix` and `fix_confidence` fields described above:
 
 ```json
 {
@@ -236,3 +247,4 @@ schema, and a response using them is rejected whole rather than translated -
 on three separate runs a review produced nothing because of it. `path` and
 `line` locate the finding; `claim` and `failure_mode` are separate fields
 because the scorer reads only the claim when checking an assertion of absence.
+`suggestion` is not `suggested_fix`.

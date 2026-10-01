@@ -54,7 +54,7 @@
           "text": {
             "type": "string",
             "minLength": 1,
-            "description": "Rendered as: [severity] `path:line` \u2014 Problem. Consequence. Suggested fix."
+            "description": "Rendered as: [severity] `path:line` - Problem. Consequence. An optional fix sentence follows only when separately verified."
           },
           "word_count": {
             "type": "integer",

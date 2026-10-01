@@ -10,8 +10,9 @@
  * wordlist that never reaches the repository.
  */
 import { readdir, readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync, readlinkSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -91,13 +92,83 @@ async function* walk(dir) {
   }
 }
 
+/**
+ * The files git would publish: tracked, plus untracked files that are not
+ * ignored. The guard exists to keep names out of what reaches the repository,
+ * and a contributor's ignored local tooling state never does - walking it made
+ * the guard fail on files that cannot leak. A new file is still checked before
+ * it is added, because untracked-but-not-ignored is included.
+ *
+ * Returns null when git cannot answer, so the caller walks the tree instead and
+ * the guard never passes by checking nothing.
+ */
+function publishable() {
+  let listed;
+  try {
+    listed = git(['ls-files', '--cached', '--others', '--exclude-standard', '-z']);
+  } catch {
+    return null;
+  }
+  return [...new Set(listed.split('\0'))]
+    .filter((rel) => rel.length > 0)
+    .filter((rel) => !rel.split('/').some((segment) => SKIP_DIRS.has(segment)))
+    .filter((rel) => TEXT.test(rel));
+}
+
+function git(args) {
+  return execFileSync('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    maxBuffer: 64 * 1024 * 1024,
+  });
+}
+
+/**
+ * The text git would publish for one path.
+ *
+ * A symlink is published as its link text, not its target, so that is what is
+ * read. A path deleted from the working tree but still staged is published
+ * from the index, so the staged content is read - skipping it would let a file
+ * be staged, deleted, and committed without the guard ever seeing it.
+ */
+async function publishedText(rel) {
+  const path = join(root, rel);
+  let stat = null;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    stat = null;
+  }
+  if (stat?.isSymbolicLink()) return readlinkSync(path);
+  if (stat?.isFile()) return readFile(path, 'utf8');
+  try {
+    return git(['show', `:${rel}`]);
+  } catch {
+    // Neither in the working tree nor in the index: nothing left to publish.
+    return null;
+  }
+}
+
+async function* files() {
+  const fromGit = publishable();
+  if (fromGit !== null && fromGit.length > 0) {
+    for (const rel of fromGit) {
+      const text = await publishedText(rel);
+      if (text !== null) yield { rel, text };
+    }
+    return;
+  }
+  for await (const file of walk(root)) {
+    yield { rel: relative(root, file), text: await readFile(file, 'utf8') };
+  }
+}
+
 const checks = [...FORBIDDEN, ...(await loadLocalTerms())];
 let failures = 0;
 
-for await (const file of walk(root)) {
-  const rel = relative(root, file);
+for await (const { rel, text } of files()) {
   if (ALLOWLIST.has(rel)) continue;
-  const text = await readFile(file, 'utf8');
   for (const { pattern, why } of checks) {
     pattern.lastIndex = 0;
     const match = pattern.exec(text);

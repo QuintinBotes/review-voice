@@ -5,6 +5,27 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Suggested fixes are verified independently from defects. Only a sufficiently
+  confident verified repair is rendered; partial verification may provide a
+  direction, and every other repair is withheld.
+- The concise editor receives each eligible candidate's claim, failure mode,
+  evidence and fix inline. A withheld repair's text is not handed to it at all,
+  so it has nothing unverified to repeat.
+
+### Changed
+
+- `check-candidates` and `score` refuse two candidates with the same id.
+  Verification is joined by id, so a repeated id could attach one candidate's
+  verified repair to another.
+- The identity guard scans what git would publish - tracked files as staged,
+  untracked files that are not ignored, and a symlink's own text - instead of
+  walking the directory, so a contributor's ignored local state no longer fails
+  it and a staged file deleted from the working tree is still checked.
+
 ## [1.7.0] - 2026-09-28
 
 ### Added
@@ -439,7 +460,7 @@ no data because nothing has been labelled, and `docs/EVALUATION.md` says so.
 ### Fixed
 
 - Absence claims are scoped by the claim's grammar rather than by how a place is
-  spelled. The pattern that read "in some-repo" as somewhere else, so a claim
+  spelled. The pattern that read "in <repository>" as somewhere else, so a claim
   about that very repository went unchecked, also left a bare path unprotected,
   so a true claim about a subtree was deleted; the difference between them was a
   pair of backticks. What decides now is whether the assertion carries a

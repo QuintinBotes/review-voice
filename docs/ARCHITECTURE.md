@@ -549,6 +549,20 @@ volume: three vague observations are not better evidence than one naming a line.
 A negative precedent lowers a candidate's score but cannot refute a verified
 defect. Precedent adjusts preference; it never manufactures or unmakes truth.
 
+### Fixes are verified separately
+
+A defect can be real while its suggested repair is unsafe. The verifier traces
+the repair through the failure input and paths the current code already serves;
+only a verified repair above the confidence threshold renders as a fix. A
+partial repair may render a generic direction, and every other result renders
+no fix. This decision never changes the defect's confidence, eligibility, or
+severity.
+
+The concise editor has no tools. Each eligible candidate, including its
+deterministic `fix` instruction, is passed inline rather than as a path the
+editor cannot open. It may state only the fix or direction that instruction
+permits.
+
 Rules are compiled by finding **category**, not by file path. "Suppress
 maintainability findings unless they name a concrete failure mode" is a rule;
 "suppress things like the ones in src/a.ts" is an observation about wherever

@@ -1,4 +1,187 @@
-# Current task - none open
+# Current task - verify the suggested fix separately from the defect
+
+**Slice:** 1 of 8 from the field-feedback plan (fix verification, anchors,
+follow-up scoping, verdict and posting, thread dedupe, severity, held and
+carried findings, CLI consistency).
+**Risk:** medium. Changes agent prompts, the score output and what the editor
+renders; no GitHub, storage schema or security surface.
+**Baseline:** `origin/main` at `abf7d00` (release 1.7.0). Branch
+`feat/verify-suggested-fix`.
+
+## Goal
+
+A review states a fix only when the evidence-verifier traced that fix and
+found it correct. Today no stage checks the fix: the analyst never sends one,
+`normaliseCandidate` drops `suggested_fix` if it does, and the concise-editor
+invents "the smallest practical correction" with no tools to check it.
+Independent cross-checks then reject verified defects because the fix they
+carry is wrong - on one pull request two successive fixes each broke an admin
+path the original code served.
+
+## Decided (do not re-open)
+
+- **Fail closed.** No verified fix, no fix sentence. A verification file
+  without fix fields renders no fix.
+- The fix verdict **never** changes whether the defect is verified, its
+  confidence, its eligibility or its severity.
+- The rendering decision is arithmetic in the CLI, not a judgement in the
+  editor.
+
+## Design
+
+### Analyst (`agents/diff-analyst.md`, `schemas/candidate.schema.json`)
+
+- `suggested_fix` (string, max 300, already in the schema) and a new
+  `fix_confidence` (number 0..1) are **optional**. Keep the nine required
+  fields exactly as they are.
+- Replace "exactly these nine fields" with wording that says nine required
+  fields plus these two optional ones. The foreign-key list (`title`,
+  `suggestion`, ...) stays refused; `suggestion` is still not `suggested_fix`.
+- Instruct: propose a fix only when you can name the concrete change, and
+  check it against every input the failure mode names **and** the paths the
+  current code already serves correctly. Otherwise omit the field.
+- `fix_confidence` is recorded for audit only, like `severity`.
+
+### Verifier (`agents/evidence-verifier.md`)
+
+Add to the output, per candidate:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `fix_verdict` | `verified` \| `partial` \| `refuted` \| `absent` | `absent` when the candidate has no `suggested_fix` |
+| `fix_confidence` | number 0..1 | Confidence the fix removes the failure without breaking a served path |
+| `fix_reason` | string | One sentence: which input was traced, what it showed |
+| `fix_direction` | string, optional | One imperative clause, no specifics, no hedging words; only for `partial` |
+
+State that the fix is traced through the same real inputs as the defect,
+including paths the current code handles correctly, and that the fix verdict
+does not feed `verified` or `technical_confidence`.
+
+### Score (`src/scoring/score.ts`, `src/cli.ts` scoreCommand)
+
+- `RawCandidate`/`Candidate` carry `suggestedFix` and `fixConfidence`.
+  `normaliseCandidate` throws `MalformedCandidate` for a non-string
+  `suggested_fix` or a `fix_confidence` that is not finite in [0, 1].
+- `Verification` carries `fixVerdict`, `fixConfidence`, `fixReason`,
+  `fixDirection`, read from snake_case or camelCase like the existing fields.
+  An unknown `fix_verdict` value is treated as missing.
+- Every `ScoreBreakdown` and every `eligible[]` entry gains:
+
+  ```
+  fix: {
+    suggested: string | null,
+    verdict: 'verified' | 'partial' | 'refuted' | 'absent' | null,
+    confidence: number | null,
+    direction: string | null,
+    render: 'fix' | 'direction' | 'none',
+    reason: string          // why this render, human-readable
+  }
+  ```
+
+- Render rule, exactly:
+  1. `fix` when `suggested` is non-empty, `verdict === 'verified'` and
+     `confidence >= thresholds.technicalConfidence`;
+  2. `direction` when `verdict === 'partial'` and `direction` is non-empty;
+  3. otherwise `none`.
+- Nothing else in scoring reads the fix fields.
+
+### Editor (`agents/concise-editor.md`)
+
+- Contract line becomes `[severity] \`path:line\` - Problem. Consequence. Fix.`
+  with the fix sentence present only when `fix.render` is not `none`.
+- `fix`: state `fix.suggested`, shortened if needed, without changing what it
+  changes. `direction`: state `fix.direction`. `none`: stop after the
+  consequence.
+- Remove "State the smallest practical correction when it is evident from the
+  candidate." The editor never writes a fix of its own.
+
+### Contract and output (`src/contract/validate.ts`, `schemas/review-output.schema.json`)
+
+The format regex is unchanged; a finding without a fix already validates. Only
+the violation message at `validate.ts:68` and the schema's `text` description
+change, to show the fix as optional.
+
+### Explain (`src/cli.ts` explainCommand)
+
+Per finding, from the stored score breakdown: `fix  verified 0.86`,
+`fix  direction (partial 0.70)`, `fix  withheld (refuted): <reason>`, or
+`fix  none proposed`. Older runs without `fix` print nothing extra.
+
+### Command and docs
+
+- `commands/review.md` step 3: the verifier's fix fields go into
+  `verification.json` with everything else. Step 5: pass each `eligible[]`
+  entry with its `fix` inline; the editor renders only what `fix.render` says.
+- `plugins/review-voice/README.md` and `docs/ARCHITECTURE.md`: say that the
+  editor has no tools, so candidate content must be passed inline, never as a
+  path; and that fixes are verified separately from defects.
+- `CHANGELOG.md`: an Unreleased entry.
+
+## Allowed files
+
+- `plugins/review-voice/agents/diff-analyst.md`
+- `plugins/review-voice/agents/evidence-verifier.md`
+- `plugins/review-voice/agents/concise-editor.md`
+- `plugins/review-voice/schemas/candidate.schema.json`
+- `plugins/review-voice/schemas/review-output.schema.json`
+- `plugins/review-voice/src/scoring/score.ts`
+- `plugins/review-voice/src/cli.ts` - `scoreCommand`, `explainCommand`,
+  `checkCandidatesCommand` and the USAGE text only
+- `plugins/review-voice/src/contract/validate.ts` - the message string only
+- `plugins/review-voice/commands/review.md` - steps 3 to 5 only
+- `plugins/review-voice/README.md`, `docs/ARCHITECTURE.md`, `CHANGELOG.md`
+- `plugins/review-voice/dist/review-voice.mjs` - regenerated by
+  `npm run build`, never hand-edited
+- `test/scoring.test.mjs`, `test/seams.test.mjs`, `test/cli.test.mjs`,
+  `test/contract.test.mjs`
+
+## Non-goals
+
+- The external second-pass `RV verify` and its report shape.
+- Anchor checks, severity, thread dedupe, scoping, posting: later slices.
+- Version bump, release, commits, pushes, pull requests.
+- Agent tool grants: `concise-editor` stays `tools: []`.
+
+## Acceptance criteria
+
+1. The render rule holds for every row: verified at 0.8 and above → `fix`;
+   verified below 0.8 → `none`; partial with a direction → `direction`;
+   partial without one → `none`; refuted, absent, missing or unknown verdict
+   → `none`.
+2. For one candidate, `eligible`, `technicalConfidence`, `rejectedBecause` and
+   `severity` are identical whether its fix verdict is `verified` or
+   `refuted`.
+3. A verification file with no fix fields scores exactly as it does today,
+   apart from the new `fix` object with `render: 'none'`.
+4. `check-candidates` accepts `suggested_fix` and `fix_confidence`, and exits
+   2 for `fix_confidence` outside [0, 1] or a non-string `suggested_fix`.
+5. Seam tests: every fix field `score` reads is named in the verifier prompt;
+   the analyst prompt names `suggested_fix` and `fix_confidence`; the editor
+   prompt names the three render values and no longer tells the editor to
+   write its own correction.
+6. `validate-output` accepts a finding with no fix sentence.
+7. `explain` prints the fix line for a run whose scores carry `fix`, and
+   nothing extra for an older run.
+8. `npm run verify` passes, including `check:dist` and `guard:identity`.
+9. No code, test, fixture or comment names a real employer, repository, bot
+   or pull request. Use neutral names such as `acme/web` and describe
+   incidents generically.
+
+## Commands
+
+```
+npm run build
+npm run verify
+```
+
+## Return format
+
+Files changed; tests run and their outcomes; assumptions; risks; deviations
+from this handoff; unfinished work.
+
+---
+
+# Standing items from 1.2.0 (unchanged)
 
 **Milestone:** 1.2.0 released. The queue from the September retests is empty of
 code fixes.

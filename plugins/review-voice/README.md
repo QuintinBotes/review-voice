@@ -10,6 +10,10 @@ for. Silence when nothing qualifies:
 No actionable findings.
 ```
 
+Suggested fixes are verified independently from defects. The concise editor has
+no tools, so each eligible candidate and its fix rendering instruction must be
+passed inline, never as a file path.
+
 Full documentation, install instructions and threat model live in the
 [repository root](https://github.com/QuintinBotes/review-voice).
 

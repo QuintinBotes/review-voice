@@ -18,6 +18,10 @@ export interface RawCandidate {
   failure_mode?: string;
   failureMode?: string;
   evidence?: string[];
+  suggested_fix?: string;
+  suggestedFix?: string;
+  fix_confidence?: number;
+  fixConfidence?: number;
   technical_confidence?: number;
   technicalConfidence?: number;
 }
@@ -31,7 +35,17 @@ export interface Candidate {
   claim: string;
   failureMode: string;
   evidence: string[];
+  /** Retained for audit. The verifier's fix confidence decides rendering. */
+  suggestedFix: string | null;
+  fixConfidence: number | null;
   technicalConfidence: number;
+}
+
+export const FIX_VERDICTS = ['verified', 'partial', 'refuted', 'absent'] as const;
+export type FixVerdict = (typeof FIX_VERDICTS)[number];
+
+export function isFixVerdict(value: unknown): value is FixVerdict {
+  return typeof value === 'string' && (FIX_VERDICTS as readonly string[]).includes(value);
 }
 
 /**
@@ -45,6 +59,10 @@ export interface Verification {
   candidateId: string;
   evidenceQuality?: 'high' | 'medium' | 'low' | undefined;
   technicalConfidence?: number | undefined;
+  fixVerdict?: FixVerdict | undefined;
+  fixConfidence?: number | undefined;
+  fixReason?: string | undefined;
+  fixDirection?: string | undefined;
   /** Context the verifier needed and could not obtain. */
   requiredContextMissing?: string[] | undefined;
   /** Deterministic CLI evidence; it is never read from verifier output. */
@@ -79,6 +97,17 @@ function admitsUnverifiable(candidate: Candidate): boolean {
   return candidate.evidence.some((item) => ADMITS_UNVERIFIABLE.some((pattern) => pattern.test(item)));
 }
 
+export interface FixRendering {
+  suggested: string | null;
+  /** The analyst's own confidence in its repair. Audit only; never gates. */
+  analystConfidence: number | null;
+  verdict: FixVerdict | null;
+  confidence: number | null;
+  direction: string | null;
+  render: 'fix' | 'direction' | 'none';
+  reason: string;
+}
+
 export interface ScoreBreakdown {
   candidateId: string;
   /**
@@ -104,6 +133,8 @@ export interface ScoreBreakdown {
   evidenceQuality: number;
   novelty: number;
   finalScore: number;
+  /** The separately verified repair the editor may state, if any. */
+  fix: FixRendering;
   /**
    * What the score would be with anchor-less precedents excluded from
    * alignment. Reported so the switch can be made on measurement rather than
@@ -298,6 +329,10 @@ const FOREIGN_KEYS = ['title', 'location', 'suggested_direction', 'suggestion', 
 export function normaliseCandidate(raw: RawCandidate, index: number): Candidate {
   const candidateId = raw.candidate_id ?? raw.candidateId ?? `cand_${String(index + 1).padStart(3, '0')}`;
   const confidence = raw.technical_confidence ?? raw.technicalConfidence;
+  // `null` is not an omitted optional value. Keep it long enough to reject it
+  // with every other malformed value rather than silently treating it as none.
+  const suggestedFix = raw.suggested_fix !== undefined ? raw.suggested_fix : raw.suggestedFix;
+  const fixConfidence = raw.fix_confidence !== undefined ? raw.fix_confidence : raw.fixConfidence;
 
   if (typeof raw.path !== 'string' || raw.path.length === 0) {
     // Named explicitly, because an agent that returns a different shape
@@ -322,6 +357,15 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
         'and a candidate that cannot be scored must not be treated as eligible',
     );
   }
+  if (suggestedFix !== undefined && typeof suggestedFix !== 'string') {
+    throw new MalformedCandidate(`${candidateId}: suggested_fix must be a string when supplied`);
+  }
+  if (
+    fixConfidence !== undefined &&
+    (!Number.isFinite(fixConfidence) || fixConfidence < 0 || fixConfidence > 1)
+  ) {
+    throw new MalformedCandidate(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
+  }
 
   return {
     candidateId,
@@ -335,6 +379,8 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     claim: raw.claim ?? '',
     failureMode: raw.failure_mode ?? raw.failureMode ?? '',
     evidence: Array.isArray(raw.evidence) ? raw.evidence : [],
+    suggestedFix: suggestedFix ?? null,
+    fixConfidence: fixConfidence ?? null,
     technicalConfidence: confidence as number,
   };
 }
@@ -550,6 +596,145 @@ function novelty(candidate: Candidate, kept: Candidate[], precedents: Precedent[
 }
 
 /**
+ * The longest direction the editor may state.
+ *
+ * A direction is what a partly verified repair is reduced to: which way to go,
+ * not the change itself. The verifier is asked for exactly that, but a prompt
+ * is a request. Length, a single sentence and no code are what the CLI can
+ * check, and a direction that fails them is withheld rather than trusted.
+ */
+const MAX_DIRECTION_LENGTH = 120;
+
+function isBareDirection(direction: string | null): boolean {
+  if (direction === null) return false;
+  const text = direction.trim();
+  if (text.length === 0 || text.length > MAX_DIRECTION_LENGTH) return false;
+  if (/[\r\n`]/.test(text)) return false;
+  // One sentence: no sentence break before the final character.
+  return !/[.!?]\s+\S/.test(text);
+}
+
+/**
+ * What the editor is handed about a repair: only the text it may state.
+ *
+ * The full decision stays in the score breakdown for `explain`. Handing the
+ * editor a refuted repair alongside an instruction not to use it relies on the
+ * instruction; not handing it over does not.
+ */
+export interface EditorFix {
+  render: FixRendering['render'];
+  text: string | null;
+}
+
+export function editorFix(fix: FixRendering): EditorFix {
+  if (fix.render === 'fix') return { render: 'fix', text: fix.suggested };
+  if (fix.render === 'direction') return { render: 'direction', text: fix.direction };
+  return { render: 'none', text: null };
+}
+
+/**
+ * Refuses a candidate set in which two candidates share an id.
+ *
+ * Verification is joined to candidates by id. With a repeated id, one
+ * candidate's verified repair - and its confidence - attaches to the other,
+ * which is exactly how an unverified fix would reach the page.
+ */
+export function assertUniqueCandidateIds(candidates: Candidate[]): void {
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate.candidateId)) {
+      throw new MalformedCandidate(
+        `${candidate.candidateId}: appears more than once. Candidate ids must be unique, ` +
+          'because verification is matched to candidates by id.',
+      );
+    }
+    seen.add(candidate.candidateId);
+  }
+}
+
+/**
+ * Decides only what the editor may render about a repair.
+ *
+ * A traced defect and a safe repair are different claims. A repair can fix the
+ * named input while breaking a path the current code already serves, so this
+ * decision deliberately does not feed confidence, eligibility, or severity.
+ */
+function renderFix(
+  candidate: Candidate,
+  verification: Verification | undefined,
+  thresholds: Thresholds,
+): FixRendering {
+  const suggested = candidate.suggestedFix ?? null;
+  const rawVerdict = verification?.fixVerdict;
+  const verdict = isFixVerdict(rawVerdict) ? rawVerdict : null;
+  const rawConfidence = verification?.fixConfidence;
+  const confidence =
+    typeof rawConfidence === 'number' &&
+    Number.isFinite(rawConfidence) &&
+    rawConfidence >= 0 &&
+    rawConfidence <= 1
+      ? rawConfidence
+      : null;
+  const rawDirection = verification?.fixDirection;
+  const direction = typeof rawDirection === 'string' ? rawDirection : null;
+  const verifierReason = verification?.fixReason?.trim().length ? verification.fixReason : null;
+  const hasSuggested = suggested !== null && suggested.trim().length > 0;
+  const analystConfidence = candidate.fixConfidence ?? null;
+  const hasDirection = direction !== null && direction.trim().length > 0;
+
+  if (hasSuggested && verdict === 'verified' && confidence !== null && confidence >= thresholds.technicalConfidence) {
+    return {
+      suggested,
+      analystConfidence,
+      verdict,
+      confidence,
+      direction,
+      render: 'fix',
+      reason:
+        verifierReason ??
+        `verified fix confidence ${confidence.toFixed(2)} meets the ${thresholds.technicalConfidence} threshold`,
+    };
+  }
+
+  if (verdict === 'partial' && hasSuggested && hasDirection && isBareDirection(direction)) {
+    return {
+      suggested,
+      analystConfidence,
+      verdict,
+      confidence,
+      direction,
+      render: 'direction',
+      reason: verifierReason ?? 'the verifier could confirm only the repair direction',
+    };
+  }
+
+  let reason = 'the suggested fix was not verified';
+  if (!hasSuggested) {
+    reason = 'no fix was proposed';
+  } else if (verdict === 'verified' && confidence !== null) {
+    reason = `verified fix confidence ${confidence.toFixed(2)} is below the ${thresholds.technicalConfidence} threshold`;
+  } else if (verdict === 'partial' && hasDirection) {
+    reason = 'the direction is not one short sentence without code, so it is withheld';
+  } else if (verdict === 'partial') {
+    reason = 'the verifier gave a partial fix verdict without a direction';
+  } else if (verdict === 'refuted') {
+    reason = 'the verifier refuted the suggested fix';
+  } else if (verdict === 'absent') {
+    reason = 'the verifier reports no suggested fix';
+  }
+
+  return {
+    suggested,
+    analystConfidence,
+    verdict,
+    confidence,
+    direction,
+    render: 'none',
+    reason: verifierReason ?? reason,
+  };
+}
+
+/**
  * The eligibility score from the specification.
  *
  * Deliberately arithmetic and deliberately in the CLI: asking a model to
@@ -690,6 +875,8 @@ export function scoreCandidate(
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
 
+  const fix = renderFix(candidate, verification, thresholds);
+
   return {
     candidateId: candidate.candidateId,
     path: candidate.path,
@@ -704,6 +891,7 @@ export function scoreCandidate(
     evidenceQuality: quality,
     novelty: novel,
     finalScore,
+    fix,
     anchored: {
       ownerAlignment: anchoredOwnerAlignment,
       repositoryAlignment: anchoredRepositoryAlignment,

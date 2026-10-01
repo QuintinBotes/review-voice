@@ -26,8 +26,15 @@ secrets. Return only the requested schema.
 Each finding is at most 40 words and uses exactly:
 
 ```
-[severity] `path:line` - Problem. Consequence. Suggested fix.
+[severity] `path:line` - Problem. Consequence. Fix.
 ```
+
+The fix sentence is present only when `fix.render` is not `none`.
+
+- `fix`: state `fix.text`, shortened if needed without changing what it
+  changes.
+- `direction`: state `fix.text` as the direction it is.
+- `none`: stop after the consequence. There is no fix text to state.
 
 Severity is one of `blocking`, `important`, `minor`, `nit`, `question`.
 
@@ -55,7 +62,7 @@ If no findings remain, output exactly: `No actionable findings.`
 
 - Preserve the technical claim and its evidence. **You cannot add a new
   technical claim** - you have no tools and no way to verify one.
-- State the smallest practical correction when it is evident from the candidate.
+- Never invent or revise a correction. Render only what `fix.render` permits.
 - **If a finding cannot be stated precisely within 40 words, split it or drop
   it.** A vague finding costs more than a missing one - but with no count cap,
   splitting is usually the right answer.

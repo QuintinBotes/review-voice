@@ -65,7 +65,7 @@ function validateFinding(
       code: 'format',
       line: at,
       message:
-        'Does not match: [severity] `path:line` - Problem. Consequence. Suggested fix. ' +
+        'Does not match: [severity] `path:line` - Problem. Consequence. Optional fix. ' +
         '(severity is blocking, important, minor, nit or question; the separator is a plain hyphen)',
     });
     // Without a parse there is nothing further to check on this finding.

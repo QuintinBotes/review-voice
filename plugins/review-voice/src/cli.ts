@@ -54,6 +54,9 @@ import {
   applyQuestionCap,
   alreadySaidOnThread,
   normaliseCandidate,
+  isFixVerdict,
+  editorFix,
+  assertUniqueCandidateIds,
   MalformedCandidate,
   DEFAULT_THRESHOLDS,
   type Candidate,
@@ -149,8 +152,8 @@ score flags:
                             not exist are checked against this tree, not the
                             working tree, which on a pull request is usually
                             neither the base nor the head.
-  --verification <path>     The evidence-verifier's output. Its confidence
-                            supersedes the analyst's self-report.
+  --verification <path>     Verifier output. Its defect confidence gates
+                            defects; its fix verdict controls rendering.
   --exclude-pull <n>        Drop precedents from this pull request. Pass the
                             pull request under review: its own comments are
                             the conversation, not evidence of general taste.
@@ -796,6 +799,7 @@ function scoreCommand(argv: string[]): number {
     const parsed = JSON.parse(readStdin()) as { candidates?: RawCandidate[] } | RawCandidate[];
     const raw = Array.isArray(parsed) ? parsed : (parsed.candidates ?? []);
     candidates = raw.map((candidate, index) => normaliseCandidate(candidate, index));
+    assertUniqueCandidateIds(candidates);
   } catch (error) {
     if (error instanceof MalformedCandidate) {
       // Refused rather than scored as zero: a candidate that cannot be scored
@@ -828,10 +832,26 @@ function scoreCommand(argv: string[]): number {
       for (const raw of list) {
         const id = (raw['candidate_id'] ?? raw['candidateId']) as string | undefined;
         if (typeof id !== 'string') continue;
+        const fixVerdict = raw['fix_verdict'] ?? raw['fixVerdict'];
+        const fixConfidence = raw['fix_confidence'] ?? raw['fixConfidence'];
+        const fixReason = raw['fix_reason'] ?? raw['fixReason'];
+        const fixDirection = raw['fix_direction'] ?? raw['fixDirection'];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: (raw['evidence_quality'] ?? raw['evidenceQuality']) as Verification['evidenceQuality'],
           technicalConfidence: (raw['technical_confidence'] ?? raw['technicalConfidence']) as number | undefined,
+          // Unknown verdicts are missing, not a new state an editor could
+          // interpret optimistically. Rendering must fail closed here.
+          fixVerdict: isFixVerdict(fixVerdict) ? fixVerdict : undefined,
+          fixConfidence:
+            typeof fixConfidence === 'number' &&
+            Number.isFinite(fixConfidence) &&
+            fixConfidence >= 0 &&
+            fixConfidence <= 1
+              ? fixConfidence
+              : undefined,
+          fixReason: typeof fixReason === 'string' ? fixReason : undefined,
+          fixDirection: typeof fixDirection === 'string' ? fixDirection : undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
             raw['requiredContextMissing']) as string[] | undefined,
         });
@@ -1059,7 +1079,8 @@ function scoreCommand(argv: string[]): number {
           // severity-first, and asking produced `minor` at confidence 0.90 and
           // `important` at 0.85 for the same finding on an identical diff.
           eligible: kept.map((c) => {
-            const derived = results.find((r) => r.candidateId === c.candidateId)?.severity;
+            const scored = results.find((r) => r.candidateId === c.candidateId);
+            const derived = scored?.severity;
             return {
               candidateId: c.candidateId,
               path: c.path,
@@ -1068,6 +1089,18 @@ function scoreCommand(argv: string[]): number {
               requestedSeverity: c.severity,
               severityReason: derived?.reason ?? null,
               category: c.category,
+              // What the editor writes from. It has no tools, so everything it
+              // may state has to be here, and nothing it may not.
+              claim: c.claim,
+              failureMode: c.failureMode,
+              evidence: c.evidence,
+              // Only the repair text the editor may state. A refuted repair is
+              // left out rather than handed over with an instruction not to use
+              // it; the full decision stays in `scores` for `explain`.
+              fix:
+                scored === undefined
+                  ? { render: 'none' as const, text: null }
+                  : editorFix(scored.fix),
             };
           }),
         },
@@ -1518,6 +1551,14 @@ function explainCommand(argv: string[]): number {
       rejectedBecause?: string | null;
       duplicateOfPrecedent?: string | null;
       precedentIds?: string[];
+      fix?: {
+        suggested?: string | null;
+        verdict?: 'verified' | 'partial' | 'refuted' | 'absent' | null;
+        confidence?: number | null;
+        direction?: string | null;
+        render?: 'fix' | 'direction' | 'none';
+        reason?: string;
+      };
     }[];
 
     if (argv.includes('--json')) {
@@ -1560,6 +1601,25 @@ function explainCommand(argv: string[]): number {
       }
       if (score?.duplicateOfPrecedent != null) {
         console.log(`  already stated in ${score.duplicateOfPrecedent}`);
+      }
+      if (score?.fix !== undefined) {
+        const fix = score.fix;
+        const confidence =
+          typeof fix.confidence === 'number' && Number.isFinite(fix.confidence)
+            ? fix.confidence.toFixed(2)
+            : 'unrecorded';
+        if (fix.render === 'fix') {
+          console.log(`  fix  verified ${confidence}`);
+        } else if (fix.render === 'direction') {
+          console.log(`  fix  direction (partial ${confidence})`);
+        } else {
+          const proposed = typeof fix.suggested === 'string' && fix.suggested.trim().length > 0;
+          if (!proposed) {
+            console.log('  fix  none proposed');
+          } else {
+            console.log(`  fix  withheld (${fix.verdict ?? 'not verified'}): ${fix.reason ?? 'no reason recorded'}`);
+          }
+        }
       }
       // Saying "no data" beats inventing a rationale after the fact.
       if (score === undefined) {
@@ -1696,6 +1756,7 @@ function checkCandidatesCommand(): number {
 
   try {
     const candidates = raw.map((candidate, index) => normaliseCandidate(candidate as RawCandidate, index));
+    assertUniqueCandidateIds(candidates);
     console.log(JSON.stringify({ valid: true, candidates: candidates.length }, null, 2));
     return 0;
   } catch (error) {

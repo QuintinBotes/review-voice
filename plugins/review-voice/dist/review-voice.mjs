@@ -199,7 +199,7 @@ function validateFinding(finding, limits, violations) {
     violations.push({
       code: "format",
       line: at,
-      message: "Does not match: [severity] `path:line` - Problem. Consequence. Suggested fix. (severity is blocking, important, minor, nit or question; the separator is a plain hyphen)"
+      message: "Does not match: [severity] `path:line` - Problem. Consequence. Optional fix. (severity is blocking, important, minor, nit or question; the separator is a plain hyphen)"
     });
     return 0;
   }
@@ -10152,6 +10152,10 @@ function deriveSeverity(category, requested, reach = null) {
 }
 
 // plugins/review-voice/src/scoring/score.ts
+var FIX_VERDICTS = ["verified", "partial", "refuted", "absent"];
+function isFixVerdict(value) {
+  return typeof value === "string" && FIX_VERDICTS.includes(value);
+}
 var QUALITY_CONFIDENCE = { high: 0.9, medium: 0.75, low: 0.5 };
 var UNVERIFIABLE_CONFIDENCE = 0.6;
 var ADMITS_UNVERIFIABLE = [
@@ -10201,6 +10205,8 @@ var FOREIGN_KEYS = ["title", "location", "suggested_direction", "suggestion", "d
 function normaliseCandidate(raw, index) {
   const candidateId = raw.candidate_id ?? raw.candidateId ?? `cand_${String(index + 1).padStart(3, "0")}`;
   const confidence = raw.technical_confidence ?? raw.technicalConfidence;
+  const suggestedFix = raw.suggested_fix !== void 0 ? raw.suggested_fix : raw.suggestedFix;
+  const fixConfidence = raw.fix_confidence !== void 0 ? raw.fix_confidence : raw.fixConfidence;
   if (typeof raw.path !== "string" || raw.path.length === 0) {
     const foreign = FOREIGN_KEYS.filter((key) => key in raw);
     throw new MalformedCandidate(
@@ -10215,6 +10221,12 @@ function normaliseCandidate(raw, index) {
       `${candidateId}: missing or non-numeric technical_confidence - a score cannot be computed, and a candidate that cannot be scored must not be treated as eligible`
     );
   }
+  if (suggestedFix !== void 0 && typeof suggestedFix !== "string") {
+    throw new MalformedCandidate(`${candidateId}: suggested_fix must be a string when supplied`);
+  }
+  if (fixConfidence !== void 0 && (!Number.isFinite(fixConfidence) || fixConfidence < 0 || fixConfidence > 1)) {
+    throw new MalformedCandidate(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
+  }
   return {
     candidateId,
     path: raw.path,
@@ -10227,6 +10239,8 @@ function normaliseCandidate(raw, index) {
     claim: raw.claim ?? "",
     failureMode: raw.failure_mode ?? raw.failureMode ?? "",
     evidence: Array.isArray(raw.evidence) ? raw.evidence : [],
+    suggestedFix: suggestedFix ?? null,
+    fixConfidence: fixConfidence ?? null,
     technicalConfidence: confidence
   };
 }
@@ -10303,6 +10317,88 @@ function novelty(candidate, kept, precedents) {
   }
   return worst;
 }
+var MAX_DIRECTION_LENGTH = 120;
+function isBareDirection(direction) {
+  if (direction === null) return false;
+  const text = direction.trim();
+  if (text.length === 0 || text.length > MAX_DIRECTION_LENGTH) return false;
+  if (/[\r\n`]/.test(text)) return false;
+  return !/[.!?]\s+\S/.test(text);
+}
+function editorFix(fix) {
+  if (fix.render === "fix") return { render: "fix", text: fix.suggested };
+  if (fix.render === "direction") return { render: "direction", text: fix.direction };
+  return { render: "none", text: null };
+}
+function assertUniqueCandidateIds(candidates) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const candidate of candidates) {
+    if (seen.has(candidate.candidateId)) {
+      throw new MalformedCandidate(
+        `${candidate.candidateId}: appears more than once. Candidate ids must be unique, because verification is matched to candidates by id.`
+      );
+    }
+    seen.add(candidate.candidateId);
+  }
+}
+function renderFix(candidate, verification, thresholds) {
+  const suggested = candidate.suggestedFix ?? null;
+  const rawVerdict = verification?.fixVerdict;
+  const verdict = isFixVerdict(rawVerdict) ? rawVerdict : null;
+  const rawConfidence = verification?.fixConfidence;
+  const confidence = typeof rawConfidence === "number" && Number.isFinite(rawConfidence) && rawConfidence >= 0 && rawConfidence <= 1 ? rawConfidence : null;
+  const rawDirection = verification?.fixDirection;
+  const direction = typeof rawDirection === "string" ? rawDirection : null;
+  const verifierReason = verification?.fixReason?.trim().length ? verification.fixReason : null;
+  const hasSuggested = suggested !== null && suggested.trim().length > 0;
+  const analystConfidence = candidate.fixConfidence ?? null;
+  const hasDirection = direction !== null && direction.trim().length > 0;
+  if (hasSuggested && verdict === "verified" && confidence !== null && confidence >= thresholds.technicalConfidence) {
+    return {
+      suggested,
+      analystConfidence,
+      verdict,
+      confidence,
+      direction,
+      render: "fix",
+      reason: verifierReason ?? `verified fix confidence ${confidence.toFixed(2)} meets the ${thresholds.technicalConfidence} threshold`
+    };
+  }
+  if (verdict === "partial" && hasSuggested && hasDirection && isBareDirection(direction)) {
+    return {
+      suggested,
+      analystConfidence,
+      verdict,
+      confidence,
+      direction,
+      render: "direction",
+      reason: verifierReason ?? "the verifier could confirm only the repair direction"
+    };
+  }
+  let reason = "the suggested fix was not verified";
+  if (!hasSuggested) {
+    reason = "no fix was proposed";
+  } else if (verdict === "verified" && confidence !== null) {
+    reason = `verified fix confidence ${confidence.toFixed(2)} is below the ${thresholds.technicalConfidence} threshold`;
+  } else if (verdict === "partial" && hasDirection) {
+    reason = "the direction is not one short sentence without code, so it is withheld";
+  } else if (verdict === "partial") {
+    reason = "the verifier gave a partial fix verdict without a direction";
+  } else if (verdict === "refuted") {
+    reason = "the verifier refuted the suggested fix";
+  } else if (verdict === "absent") {
+    reason = "the verifier reports no suggested fix";
+  }
+  return {
+    suggested,
+    analystConfidence,
+    verdict,
+    confidence,
+    direction,
+    render: "none",
+    reason: verifierReason ?? reason
+  };
+}
 function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification) {
   const analystConfidence = candidate.technicalConfidence;
   const verifiedConfidence = verification === void 0 ? null : verification.technicalConfidence ?? (verification.evidenceQuality === void 0 ? null : QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null);
@@ -10346,6 +10442,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
+  const fix = renderFix(candidate, verification, thresholds);
   return {
     candidateId: candidate.candidateId,
     path: candidate.path,
@@ -10360,6 +10457,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     evidenceQuality: quality,
     novelty: novel,
     finalScore,
+    fix,
     anchored: {
       ownerAlignment: anchoredOwnerAlignment,
       repositoryAlignment: anchoredRepositoryAlignment,
@@ -10950,8 +11048,8 @@ score flags:
                             not exist are checked against this tree, not the
                             working tree, which on a pull request is usually
                             neither the base nor the head.
-  --verification <path>     The evidence-verifier's output. Its confidence
-                            supersedes the analyst's self-report.
+  --verification <path>     Verifier output. Its defect confidence gates
+                            defects; its fix verdict controls rendering.
   --exclude-pull <n>        Drop precedents from this pull request. Pass the
                             pull request under review: its own comments are
                             the conversation, not evidence of general taste.
@@ -11479,6 +11577,7 @@ function scoreCommand(argv) {
     const parsed = JSON.parse(readStdin());
     const raw = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
     candidates = raw.map((candidate, index) => normaliseCandidate(candidate, index));
+    assertUniqueCandidateIds(candidates);
   } catch (error) {
     if (error instanceof MalformedCandidate) {
       console.error(`Malformed candidate - ${error.message}`);
@@ -11504,10 +11603,20 @@ function scoreCommand(argv) {
       for (const raw of list) {
         const id = raw["candidate_id"] ?? raw["candidateId"];
         if (typeof id !== "string") continue;
+        const fixVerdict = raw["fix_verdict"] ?? raw["fixVerdict"];
+        const fixConfidence = raw["fix_confidence"] ?? raw["fixConfidence"];
+        const fixReason = raw["fix_reason"] ?? raw["fixReason"];
+        const fixDirection = raw["fix_direction"] ?? raw["fixDirection"];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: raw["evidence_quality"] ?? raw["evidenceQuality"],
           technicalConfidence: raw["technical_confidence"] ?? raw["technicalConfidence"],
+          // Unknown verdicts are missing, not a new state an editor could
+          // interpret optimistically. Rendering must fail closed here.
+          fixVerdict: isFixVerdict(fixVerdict) ? fixVerdict : void 0,
+          fixConfidence: typeof fixConfidence === "number" && Number.isFinite(fixConfidence) && fixConfidence >= 0 && fixConfidence <= 1 ? fixConfidence : void 0,
+          fixReason: typeof fixReason === "string" ? fixReason : void 0,
+          fixDirection: typeof fixDirection === "string" ? fixDirection : void 0,
           requiredContextMissing: raw["required_context_missing"] ?? raw["requiredContextMissing"]
         });
       }
@@ -11671,7 +11780,8 @@ function scoreCommand(argv) {
           // severity-first, and asking produced `minor` at confidence 0.90 and
           // `important` at 0.85 for the same finding on an identical diff.
           eligible: kept.map((c) => {
-            const derived = results.find((r) => r.candidateId === c.candidateId)?.severity;
+            const scored = results.find((r) => r.candidateId === c.candidateId);
+            const derived = scored?.severity;
             return {
               candidateId: c.candidateId,
               path: c.path,
@@ -11679,7 +11789,16 @@ function scoreCommand(argv) {
               severity: derived?.severity ?? c.severity,
               requestedSeverity: c.severity,
               severityReason: derived?.reason ?? null,
-              category: c.category
+              category: c.category,
+              // What the editor writes from. It has no tools, so everything it
+              // may state has to be here, and nothing it may not.
+              claim: c.claim,
+              failureMode: c.failureMode,
+              evidence: c.evidence,
+              // Only the repair text the editor may state. A refuted repair is
+              // left out rather than handed over with an instruction not to use
+              // it; the full decision stays in `scores` for `explain`.
+              fix: scored === void 0 ? { render: "none", text: null } : editorFix(scored.fix)
             };
           })
         },
@@ -12062,6 +12181,22 @@ function explainCommand(argv) {
       if (score?.duplicateOfPrecedent != null) {
         console.log(`  already stated in ${score.duplicateOfPrecedent}`);
       }
+      if (score?.fix !== void 0) {
+        const fix = score.fix;
+        const confidence = typeof fix.confidence === "number" && Number.isFinite(fix.confidence) ? fix.confidence.toFixed(2) : "unrecorded";
+        if (fix.render === "fix") {
+          console.log(`  fix  verified ${confidence}`);
+        } else if (fix.render === "direction") {
+          console.log(`  fix  direction (partial ${confidence})`);
+        } else {
+          const proposed = typeof fix.suggested === "string" && fix.suggested.trim().length > 0;
+          if (!proposed) {
+            console.log("  fix  none proposed");
+          } else {
+            console.log(`  fix  withheld (${fix.verdict ?? "not verified"}): ${fix.reason ?? "no reason recorded"}`);
+          }
+        }
+      }
       if (score === void 0) {
         console.log("  scoring           not recorded for this review");
       }
@@ -12154,6 +12289,7 @@ function checkCandidatesCommand() {
   }
   try {
     const candidates = raw.map((candidate, index) => normaliseCandidate(candidate, index));
+    assertUniqueCandidateIds(candidates);
     console.log(JSON.stringify({ valid: true, candidates: candidates.length }, null, 2));
     return 0;
   } catch (error) {

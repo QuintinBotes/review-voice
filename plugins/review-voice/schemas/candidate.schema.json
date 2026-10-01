@@ -76,6 +76,12 @@
             "type": "string",
             "maxLength": 300
           },
+          "fix_confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Optional analyst confidence retained for audit. The verifier's separate fix confidence controls rendering."
+          },
           "technical_confidence": {
             "type": "number",
             "minimum": 0,

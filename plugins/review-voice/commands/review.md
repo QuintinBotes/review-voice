@@ -222,6 +222,10 @@ pass list: step 4 gates on the confidence it reports, because the verifier is
 the only stage that checked the claim against the repository. Without the file,
 scoring falls back to the analyst's opinion of its own work.
 
+Keep `fix_verdict`, `fix_confidence`, `fix_reason` and `fix_direction` in
+`verification.json` with every other verifier field. They verify a suggested
+repair separately from the defect and must not be derived or filled in later.
+
 If nothing survives, output exactly `No actionable findings.` and stop.
 
 ## Step 3b - Second-pass verification
@@ -327,11 +331,18 @@ candidate clears the threshold anyway, emit it.
 
 ## Step 5 - Edit
 
-Launch the `concise-editor` agent with the surviving candidates. It returns the
-rendered review and nothing else.
+Launch the `concise-editor` agent with each surviving `eligible[]` entry. Each
+carries what the editor writes from - `claim`, `failureMode`, `evidence`, the
+derived `severity` - and a `fix` object. It returns the rendered review and
+nothing else.
 
-**Inline the candidate JSON in the prompt. Do not pass a file path.** The
-editor declares no tools at all, deliberately: its own authority limit - that
+`fix` holds only what may be stated: `render` is `fix` or `direction` with the
+text to state, or `none` with no text. The editor does not decide or invent a
+correction, and a withheld repair never reaches it. The full fix decision stays
+in `scores` for `/review-voice:explain`.
+
+**Inline the candidate JSON for each eligible entry. Do not pass a file path.**
+The editor declares no tools at all, deliberately: its own authority limit - that
 it cannot add a technical claim - rests on having no way to verify one. Handed
 a path it can only reply that it cannot open files, which on a live run cost a
 manual paste of eight findings.

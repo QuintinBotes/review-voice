@@ -100,7 +100,25 @@ Do not report a reach or radius. The CLI computes reach from the candidate's
 claim, changed path, and reviewed ref, and records the symbols and paths it
 searched. An agent-supplied value would make that derivation unfalsifiable.
 
+## Verify the suggested fix separately
+
+Trace a candidate's `suggested_fix` through the same real inputs as the defect,
+including the paths the current code already handles correctly. A repair that
+handles the named failure but breaks a served path is refuted. The fix verdict
+does not feed `verified` or `technical_confidence`; it only decides what repair
+text may render.
+
+For every candidate, return these fields in addition to the defect fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `fix_verdict` | `verified` \| `partial` \| `refuted` \| `absent` | `absent` when the candidate has no `suggested_fix` |
+| `fix_confidence` | number 0..1 | Confidence the fix removes the failure without breaking a served path |
+| `fix_reason` | string | One sentence naming the input traced and what it showed |
+| `fix_direction` | string, optional | One imperative clause with no specifics or hedging, only for `partial` |
+
 ## Output
 
 JSON only: `candidate_id`, `verified`, `evidence_quality`,
-`technical_confidence`, `contradictions`, `required_context_missing`, `reason`.
+`technical_confidence`, `contradictions`, `required_context_missing`, `reason`,
+`fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`.
