@@ -31,4 +31,10 @@ export interface VerificationReport {
   verdicts: FindingVerdict[];
   /** Verifiers that could not run. Never treated as confirmation. */
   didNotRun: string[];
+  /**
+   * Present when the pass is off because nothing is configured: how to turn
+   * it on. A second model is the stand-in when another reviewer is
+   * unavailable, and "enabled: false" alone did not say how to get one.
+   */
+  howToEnable?: string;
 }

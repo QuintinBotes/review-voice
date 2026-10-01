@@ -50,6 +50,12 @@ export interface VerifierConfig {
 const DEFAULT_TIMEOUT_SECONDS = 90;
 const DEFAULT_DROP_THRESHOLD = 0.8;
 
+/** What `verify` says when the pass is off because nothing is configured. */
+export const HOW_TO_ENABLE =
+  'Add a `verification:` block to .review-voice/config.yaml with `enabled: true` and a `command` ' +
+  'that runs a different model on the candidates JSON from stdin (optional: name, timeout_seconds, ' +
+  'drop_threshold). See templates/config.example.yaml.';
+
 /** Severity tiers, weakest last, so a downgrade has somewhere to go. */
 const TIERS = ['blocking', 'important', 'minor', 'nit', 'question'];
 
@@ -161,8 +167,17 @@ export function verifyFindings(
 ): VerificationReport {
   const name = config.name ?? 'external';
 
-  if (!config.enabled || config.command.trim().length === 0 || findings.length === 0) {
-    return { enabled: false, verifier: null, verdicts: [], didNotRun: findings.length > 0 ? [name] : [] };
+  if (!config.enabled || config.command.trim().length === 0) {
+    return {
+      enabled: false,
+      verifier: null,
+      verdicts: [],
+      didNotRun: findings.length > 0 ? [name] : [],
+      howToEnable: HOW_TO_ENABLE,
+    };
+  }
+  if (findings.length === 0) {
+    return { enabled: false, verifier: null, verdicts: [], didNotRun: [] };
   }
 
   const dropThreshold = config.dropThreshold ?? DEFAULT_DROP_THRESHOLD;

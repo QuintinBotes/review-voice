@@ -89,7 +89,10 @@ Do not explain that the diff was empty. Silence is the answer.
 
 Note `excludedFileCount`. Excluded files are lock files, generated output,
 vendored code and binaries. Do not comment on them, and do not mention their
-exclusion unless the user asks.
+exclusion unless the user asks. The exception is `handEditSuspected` in the
+summary: a generated file whose header says not to edit it, changed alone in
+its directory. It is kept in the diff because a hand edit is a real change, so
+review it like source and say once that it was edited by hand.
 
 **If `truncated` is true, say so.** Print `truncationNote` on its own line
 after the findings:
@@ -267,7 +270,10 @@ If nothing survives, output exactly `No actionable findings.` and stop.
 Run `RV verify` with the surviving candidates as `{"candidates": [...]}` on
 stdin.
 
-If `enabled` is false, skip this step and say nothing about it. It is opt-in.
+If `enabled` is false, skip this step. It is opt-in. When the output carries
+`howToEnable`, print it once after the findings, so the user knows a
+different-model check is available - it is the stand-in when no other
+reviewer can cross-check the findings.
 
 This pass is deliberately a **different model** from the one that generated the
 candidates. A verifier from the same family shares the analyst's blind spots

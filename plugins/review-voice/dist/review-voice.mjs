@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync4, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2 } from "node:fs";
-import { dirname as dirname4, join as join5 } from "node:path";
+import { readFileSync as readFileSync5, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2 } from "node:fs";
+import { dirname as dirname4, join as join6 } from "node:path";
 import { execFileSync as execFileSync10 } from "node:child_process";
 
 // plugins/review-voice/src/warnings.ts
@@ -305,6 +305,8 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
 
 // plugins/review-voice/src/diff/acquire.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
+import { readFileSync as readFileSync2 } from "node:fs";
+import { join as join2 } from "node:path";
 
 // plugins/review-voice/src/diff/classify.ts
 var LOCKFILES = /* @__PURE__ */ new Set([
@@ -455,6 +457,33 @@ function classify(path) {
 function isReviewable(path, includeGenerated) {
   return includeGenerated || classify(path) === "source";
 }
+var DO_NOT_EDIT = /@generated|do not edit|don'?t edit|auto-?generated|automatically generated/i;
+var HEADER_LINES = 20;
+function hasDoNotEditHeader(content) {
+  return DO_NOT_EDIT.test(content.split("\n", HEADER_LINES).join("\n"));
+}
+function generatedRoot(path) {
+  const dirPattern = /(^|\/)(dist|build|out|coverage|__generated__|generated|\.next|\.nuxt)\//;
+  const match = dirPattern.exec(path);
+  if (match !== null) return path.slice(0, match.index + match[0].length);
+  const slash = path.lastIndexOf("/");
+  return slash < 0 ? "" : path.slice(0, slash + 1);
+}
+function findHandEdited(changedPaths, readHeader) {
+  const generated = changedPaths.filter((path) => classify(path) === "generated");
+  const perRoot = /* @__PURE__ */ new Map();
+  for (const path of generated) {
+    const root = generatedRoot(path);
+    perRoot.set(root, (perRoot.get(root) ?? 0) + 1);
+  }
+  const suspected = /* @__PURE__ */ new Set();
+  for (const path of generated) {
+    if (perRoot.get(generatedRoot(path)) !== 1) continue;
+    const header = readHeader(path);
+    if (header !== null && hasDoNotEditHeader(header)) suspected.add(path);
+  }
+  return suspected;
+}
 
 // plugins/review-voice/src/diff/acquire.ts
 var GitError = class extends Error {
@@ -549,10 +578,23 @@ function acquireDiff(options) {
       entries.push({ status: "A", path });
     }
   }
+  const readHead3 = (path) => {
+    try {
+      if (mode === "worktree") return readFileSync2(join2(root, path), "utf8");
+      return git(["show", mode === "staged" ? `:${path}` : `HEAD:${path}`], root);
+    } catch {
+      return null;
+    }
+  };
+  const handEdited = findHandEdited(
+    entries.filter((entry) => entry.status !== "D").map((entry) => entry.path),
+    readHead3
+  );
   const files = entries.map((entry) => {
     const cls = classify(entry.path);
     const deleted = entry.status === "D";
-    const reviewed = !deleted && isReviewable(entry.path, options.includeGenerated);
+    const suspected = handEdited.has(entry.path);
+    const reviewed = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated));
     return {
       path: entry.path,
       ...entry.previousPath === void 0 ? {} : { previousPath: entry.previousPath },
@@ -562,6 +604,7 @@ function acquireDiff(options) {
       additions: numstat.get(entry.path)?.additions ?? 0,
       deletions: numstat.get(entry.path)?.deletions ?? 0,
       reviewed,
+      ...suspected ? { handEditSuspected: true } : {},
       ...reviewed ? {} : { excludedBecause: deleted ? "file deleted" : excludedReason(cls) }
     };
   });
@@ -1392,10 +1435,28 @@ async function acquirePullRequestDiff(options) {
     limit
   );
   const truncated = rawFiles.length < pull.changed_files;
+  const cwd = options.cwd ?? process.cwd();
+  const headLocal = hasCommit(pull.head.sha, cwd);
+  const byName = new Map(rawFiles.map((file) => [file.filename, file]));
+  const handEdited = findHandEdited(
+    rawFiles.filter((file) => file.status !== "removed" && file.patch !== void 0).map((file) => file.filename),
+    (path) => {
+      if (headLocal) {
+        try {
+          return git2(["show", `${pull.head.sha}:${path}`], cwd);
+        } catch {
+          return null;
+        }
+      }
+      const added = (byName.get(path)?.patch ?? "").split("\n").filter((line) => line.startsWith("+")).map((line) => line.slice(1));
+      return added.join("\n");
+    }
+  );
   const files = rawFiles.map((file) => {
     const cls = classify(file.filename);
     const deleted = file.status === "removed";
-    const reviewed = !deleted && isReviewable(file.filename, options.includeGenerated) && file.patch !== void 0;
+    const suspected = handEdited.has(file.filename);
+    const reviewed = !deleted && (suspected || isReviewable(file.filename, options.includeGenerated)) && file.patch !== void 0;
     let excludedBecause;
     if (!reviewed) {
       if (deleted) excludedBecause = "file deleted";
@@ -1411,6 +1472,7 @@ async function acquirePullRequestDiff(options) {
       additions: file.additions ?? 0,
       deletions: file.deletions ?? 0,
       reviewed,
+      ...suspected ? { handEditSuspected: true } : {},
       ...excludedBecause === void 0 ? {} : { excludedBecause }
     };
   });
@@ -1441,7 +1503,7 @@ async function acquirePullRequestDiff(options) {
       pullNumber: options.pullNumber,
       base: pull.base.sha,
       head: pull.head.sha,
-      cwd: options.cwd ?? process.cwd()
+      cwd
     })
   };
 }
@@ -1969,26 +2031,26 @@ import { dirname as dirname2 } from "node:path";
 
 // plugins/review-voice/src/store/paths.ts
 import { homedir } from "node:os";
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 function dataDirectory(env = process.env) {
   const override = env["REVIEW_VOICE_DATA_DIR"];
   if (override !== void 0 && override.length > 0) return override;
   const home = homedir();
   switch (process.platform) {
     case "darwin":
-      return join2(home, "Library", "Application Support", "review-voice");
+      return join3(home, "Library", "Application Support", "review-voice");
     case "win32": {
       const appData = env["APPDATA"];
-      return appData !== void 0 && appData.length > 0 ? join2(appData, "review-voice") : join2(home, "AppData", "Roaming", "review-voice");
+      return appData !== void 0 && appData.length > 0 ? join3(appData, "review-voice") : join3(home, "AppData", "Roaming", "review-voice");
     }
     default: {
       const xdg = env["XDG_DATA_HOME"];
-      return xdg !== void 0 && xdg.length > 0 ? join2(xdg, "review-voice") : join2(home, ".local", "share", "review-voice");
+      return xdg !== void 0 && xdg.length > 0 ? join3(xdg, "review-voice") : join3(home, ".local", "share", "review-voice");
     }
   }
 }
 function databasePath(env) {
-  return join2(dataDirectory(env), "review-voice.db");
+  return join3(dataDirectory(env), "review-voice.db");
 }
 
 // plugins/review-voice/src/store/db.ts
@@ -2710,9 +2772,9 @@ function feedbackTotals(db) {
 }
 
 // plugins/review-voice/src/policy/load.ts
-import { readFileSync as readFileSync2, existsSync } from "node:fs";
+import { readFileSync as readFileSync3, existsSync } from "node:fs";
 import { createHash as createHash3 } from "node:crypto";
-import { join as join3 } from "node:path";
+import { join as join4 } from "node:path";
 
 // node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
@@ -9030,10 +9092,10 @@ function loadConfig(repositoryRoot2) {
     unapproved: [],
     warnings: []
   };
-  const configPath = join3(repositoryRoot2, ".review-voice", "config.yaml");
+  const configPath = join4(repositoryRoot2, ".review-voice", "config.yaml");
   if (existsSync(configPath)) {
     try {
-      const doc = asRecord(parse(readFileSync2(configPath, "utf8")));
+      const doc = asRecord(parse(readFileSync3(configPath, "utf8")));
       if (doc !== null) {
         const identity2 = asRecord(doc["identity"]);
         if (typeof identity2?.["owner_reviewer"] === "string") {
@@ -9105,10 +9167,10 @@ function loadConfig(repositoryRoot2) {
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }
   }
-  const policyPath = join3(repositoryRoot2, ".review-voice", "policy.yaml");
+  const policyPath = join4(repositoryRoot2, ".review-voice", "policy.yaml");
   if (existsSync(policyPath)) {
     try {
-      const text = readFileSync2(policyPath, "utf8");
+      const text = readFileSync3(policyPath, "utf8");
       const layer = layerFromPolicyFile(text, ".review-voice/policy.yaml", repositoryRoot2);
       if (layer !== null) {
         result.unapproved.push({ source: ".review-voice/policy.yaml", contentHash: contentHash(text) });
@@ -9283,6 +9345,7 @@ ${result.stderr ?? ""}`;
 import { spawnSync as spawnSync2 } from "node:child_process";
 var DEFAULT_TIMEOUT_SECONDS2 = 90;
 var DEFAULT_DROP_THRESHOLD = 0.8;
+var HOW_TO_ENABLE = "Add a `verification:` block to .review-voice/config.yaml with `enabled: true` and a `command` that runs a different model on the candidates JSON from stdin (optional: name, timeout_seconds, drop_threshold). See templates/config.example.yaml.";
 var TIERS = ["blocking", "important", "minor", "nit", "question"];
 function downgrade(severity) {
   const index = TIERS.indexOf(severity);
@@ -9347,8 +9410,17 @@ var spawnRunner = (command, input, timeoutMs, cwd) => {
 };
 function verifyFindings(findings, config, options) {
   const name = config.name ?? "external";
-  if (!config.enabled || config.command.trim().length === 0 || findings.length === 0) {
-    return { enabled: false, verifier: null, verdicts: [], didNotRun: findings.length > 0 ? [name] : [] };
+  if (!config.enabled || config.command.trim().length === 0) {
+    return {
+      enabled: false,
+      verifier: null,
+      verdicts: [],
+      didNotRun: findings.length > 0 ? [name] : [],
+      howToEnable: HOW_TO_ENABLE
+    };
+  }
+  if (findings.length === 0) {
+    return { enabled: false, verifier: null, verdicts: [], didNotRun: [] };
   }
   const dropThreshold = config.dropThreshold ?? DEFAULT_DROP_THRESHOLD;
   const verdicts = [];
@@ -9696,8 +9768,8 @@ function scaledRepositoryShare(repositoryCount) {
 }
 
 // plugins/review-voice/src/conventions/discover.ts
-import { existsSync as existsSync2, readFileSync as readFileSync3, readdirSync, statSync } from "node:fs";
-import { dirname as dirname3, join as join4, sep } from "node:path";
+import { existsSync as existsSync2, readFileSync as readFileSync4, readdirSync, statSync } from "node:fs";
+import { dirname as dirname3, join as join5, sep } from "node:path";
 
 // plugins/review-voice/src/conventions/globs.ts
 function frontmatterPaths(content) {
@@ -9809,9 +9881,9 @@ var NESTED_FILES = [
   { name: "AGENTS.md", kind: "agents" }
 ];
 var RULE_DIRECTORIES = [
-  { path: join4(".claude", "skills"), kind: "skill" },
-  { path: join4(".agents", "rules"), kind: "rule" },
-  { path: join4(".claude", "rules"), kind: "rule" }
+  { path: join5(".claude", "skills"), kind: "skill" },
+  { path: join5(".agents", "rules"), kind: "rule" },
+  { path: join5(".claude", "rules"), kind: "rule" }
 ];
 var TOTAL_BYTES = 6e4;
 var PER_DOCUMENT_SHARE = 0.25;
@@ -9896,13 +9968,13 @@ ${entry.part.body}`.trim()).join("\n\n");
 `;
 }
 function readHead(absolute, limit) {
-  const raw = readFileSync3(absolute);
+  const raw = readFileSync4(absolute);
   if (raw.length <= limit) return raw.toString("utf8");
   const decoder = new TextDecoder("utf8", { fatal: false });
   return decoder.decode(raw.subarray(0, limit));
 }
 function readBounded(absolute, changedPaths = []) {
-  const raw = readFileSync3(absolute, "utf8");
+  const raw = readFileSync4(absolute, "utf8");
   const bytes = Buffer.byteLength(raw, "utf8");
   if (bytes <= PER_DOCUMENT_BYTES) {
     return { content: raw, bytes, includedBytes: bytes, truncated: false, scoped: false };
@@ -9952,30 +10024,30 @@ function ancestors(changedPath) {
 }
 function resolvePointer(root, pointerPath, target) {
   const own = dirname3(pointerPath);
-  const candidates = own === "." || own === "" ? [] : [join4(own, target)];
+  const candidates = own === "." || own === "" ? [] : [join5(own, target)];
   let directory = dirname3(pointerPath);
   while (directory !== "." && directory !== "" && directory !== sep) {
     const base = dirname3(directory);
     const name = directory.split(sep).pop();
-    if (name === ".claude" || name === ".agents") candidates.push(join4(base === "." ? "" : base, target));
+    if (name === ".claude" || name === ".agents") candidates.push(join5(base === "." ? "" : base, target));
     directory = base;
   }
   candidates.push(target);
   for (const candidate of candidates) {
-    if (existsSync2(join4(root, candidate))) return candidate;
+    if (existsSync2(join5(root, candidate))) return candidate;
   }
   return null;
 }
 function listRuleDocuments(root, directory) {
   const out = [];
   for (const { path: relative, kind } of RULE_DIRECTORIES) {
-    const base = join4(root, directory, relative);
+    const base = join5(root, directory, relative);
     if (!existsSync2(base)) continue;
     try {
       for (const entry of readdirSync(base).sort()) {
-        for (const candidate of [join4(directory, relative, entry, "SKILL.md"), join4(directory, relative, entry)]) {
+        for (const candidate of [join5(directory, relative, entry, "SKILL.md"), join5(directory, relative, entry)]) {
           if (!candidate.endsWith(".md")) continue;
-          if (!existsSync2(join4(root, candidate))) continue;
+          if (!existsSync2(join5(root, candidate))) continue;
           out.push({ path: candidate, kind });
           break;
         }
@@ -10005,7 +10077,7 @@ function discoverConventions(root, changedPaths = []) {
   for (const changed of changedPaths) {
     for (const directory of ancestors(changed)) {
       for (const { name } of NESTED_FILES) {
-        const candidate = join4(directory, name);
+        const candidate = join5(directory, name);
         const existing = governed.get(candidate);
         if (existing === void 0) governed.set(candidate, [changed]);
         else existing.push(changed);
@@ -10069,9 +10141,9 @@ function discoverConventions(root, changedPaths = []) {
     let governs = [];
     let followed = [];
     try {
-      bytes = statSync(join4(root, entry.path)).size;
+      bytes = statSync(join5(root, entry.path)).size;
       {
-        const head = readHead(join4(root, entry.path), CHEAP_BYTES);
+        const head = readHead(join5(root, entry.path), CHEAP_BYTES);
         governs = frontmatterPaths(head);
         const targets = pointerTargets(head);
         for (const target of targets) {
@@ -10097,7 +10169,7 @@ function discoverConventions(root, changedPaths = []) {
     return followed.map((path) => {
       let targetBytes = Number.POSITIVE_INFINITY;
       try {
-        targetBytes = statSync(join4(root, path)).size;
+        targetBytes = statSync(join5(root, path)).size;
       } catch {
         targetBytes = Number.POSITIVE_INFINITY;
       }
@@ -10106,7 +10178,7 @@ function discoverConventions(root, changedPaths = []) {
   });
   const fitsWhole = (entry) => {
     try {
-      return statSync(join4(root, entry.path)).size <= PER_DOCUMENT_BYTES;
+      return statSync(join5(root, entry.path)).size <= PER_DOCUMENT_BYTES;
     } catch {
       return false;
     }
@@ -10133,7 +10205,7 @@ function discoverConventions(root, changedPaths = []) {
   });
   for (const { entry } of sized) {
     if (seen.has(entry.path)) continue;
-    const absolute = join4(root, entry.path);
+    const absolute = join5(root, entry.path);
     if (!existsSync2(absolute)) continue;
     try {
       if (!statSync(absolute).isFile()) continue;
@@ -12613,9 +12685,27 @@ Exit codes: 0 compliant, 1 violations found, 2 bad invocation.
 
 Review Voice is normally driven by its Claude Code commands
 (/review-voice:review, /review-voice:init) rather than invoked directly.`;
+var STDIN_INPUT = {
+  "check-candidates": "candidates JSON",
+  score: "candidates JSON",
+  record: "the validated review",
+  "validate-output": "the review text",
+  anchors: "the validated review",
+  verify: "candidates JSON",
+  redact: "the text to redact",
+  draft: "the validated review",
+  verdict: "the validated review",
+  post: "the validated review"
+};
 function readStdin() {
+  if (process.stdin.isTTY === true) {
+    const command = process.argv[2] ?? "command";
+    const what = STDIN_INPUT[command] ?? "its input";
+    console.error(`${command} reads ${what} on stdin; pipe it in, e.g. cat input | RV ${command}`);
+    process.exit(2);
+  }
   try {
-    return readFileSync4(0, "utf8");
+    return readFileSync5(0, "utf8");
   } catch {
     return "";
   }
@@ -12786,6 +12876,7 @@ function diffSummary(result) {
     reviewedFileCount: result.reviewedFileCount,
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,
+    handEditSuspected: (result.files ?? []).filter((file) => file.handEditSuspected === true).map((file) => file.path),
     refs: result.refs === void 0 ? null : { base: result.refs.base, head: result.refs.head },
     prior: result.prior === void 0 ? null : { source: result.prior.source, head: result.prior.head, runId: result.prior.runId }
   };
@@ -12797,8 +12888,8 @@ function emitDiff(result, outDir) {
   }
   try {
     mkdirSync2(outDir, { recursive: true });
-    const patchPath = join5(outDir, "diff.patch");
-    const metaPath = join5(outDir, "files.json");
+    const patchPath = join6(outDir, "diff.patch");
+    const metaPath = join6(outDir, "files.json");
     writeFileSync(patchPath, result.diff);
     writeFileSync(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
     console.log(
@@ -12846,7 +12937,7 @@ function symbolsCommand(argv) {
   }
   let diff;
   try {
-    diff = readFileSync4(diffFile, "utf8");
+    diff = readFileSync5(diffFile, "utf8");
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -12888,7 +12979,7 @@ function flag(argv, name) {
 function resolveOutPath(out, defaultName) {
   let target = out;
   try {
-    if (out.endsWith("/") || statSync2(out).isDirectory()) target = join5(out, defaultName);
+    if (out.endsWith("/") || statSync2(out).isDirectory()) target = join6(out, defaultName);
   } catch (error) {
     if (error.code !== "ENOENT") {
       throw new Error(
@@ -13215,6 +13306,27 @@ function evaluateCommand(argv) {
     db.close();
   }
 }
+var LIST_CAP = 20;
+var EXCERPT_CAP = 300;
+function boundLists(value) {
+  if (Array.isArray(value)) return value.map(boundLists);
+  if (value === null || typeof value !== "object") return value;
+  const out = {};
+  let cut = false;
+  for (const [key, item] of Object.entries(value)) {
+    if (Array.isArray(item) && item.length > LIST_CAP && item.every((entry) => typeof entry === "string")) {
+      out[key] = item.slice(0, LIST_CAP);
+      out[`${key}Total`] = item.length;
+      cut = true;
+    } else if (key === "excerpt" && typeof item === "string" && item.length > EXCERPT_CAP) {
+      out[key] = `${item.slice(0, EXCERPT_CAP)}...`;
+    } else {
+      out[key] = boundLists(item);
+    }
+  }
+  if (cut) out["truncated"] = true;
+  return out;
+}
 function scoreCommand(argv) {
   let candidates;
   try {
@@ -13242,7 +13354,7 @@ function scoreCommand(argv) {
   const verificationFlag = flag(argv, "--verification");
   if (verificationFlag !== null) {
     try {
-      const parsed = JSON.parse(readFileSync4(verificationFlag, "utf8"));
+      const parsed = JSON.parse(readFileSync5(verificationFlag, "utf8"));
       const list = verdictList(parsed);
       for (const raw of list) {
         const id = raw["candidate_id"] ?? raw["candidateId"];
@@ -13300,7 +13412,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      reachDiff = readFileSync4(path, "utf8");
+      reachDiff = readFileSync5(path, "utf8");
       anchorHunks = parseHunks(reachDiff);
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -13315,7 +13427,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync4(path, "utf8"));
+      const parsed = JSON.parse(readFileSync5(path, "utf8"));
       thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -13420,7 +13532,7 @@ function scoreCommand(argv) {
     console.log(
       JSON.stringify(
         {
-          scores: results,
+          scores: boundLists(results),
           // Reported every run so the threshold stops being a constant nobody
           // can check. A gate sitting above the whole distribution is not
           // selective, it is miscalibrated, and that is only visible here.
@@ -13647,7 +13759,7 @@ function recordCommand(argv) {
   let diff = "";
   if (diffFile !== null) {
     try {
-      diff = readFileSync4(diffFile, "utf8");
+      diff = readFileSync5(diffFile, "utf8");
     } catch {
       console.error(`Cannot read ${diffFile}.`);
       return 2;
@@ -13662,7 +13774,7 @@ function recordCommand(argv) {
   let scope;
   if (filesFile !== null) {
     try {
-      const manifest = JSON.parse(readFileSync4(filesFile, "utf8"));
+      const manifest = JSON.parse(readFileSync5(filesFile, "utf8"));
       if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
         pullNumber = manifest.pullNumber;
       }
@@ -13675,7 +13787,7 @@ function recordCommand(argv) {
   let candidates = [];
   if (candidatesFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync4(candidatesFile, "utf8"));
+      const parsed = JSON.parse(readFileSync5(candidatesFile, "utf8"));
       candidates = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
     } catch {
       console.error(`Cannot read candidates from ${candidatesFile}.`);
@@ -13686,7 +13798,7 @@ function recordCommand(argv) {
   let scores = [];
   if (scoresFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync4(scoresFile, "utf8"));
+      const parsed = JSON.parse(readFileSync5(scoresFile, "utf8"));
       scores = Array.isArray(parsed) ? parsed : parsed.scores ?? [];
     } catch {
       console.error(`Cannot read scores from ${scoresFile}.`);
@@ -13697,7 +13809,7 @@ function recordCommand(argv) {
   let verdicts = [];
   if (verdictsFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync4(verdictsFile, "utf8"));
+      const parsed = JSON.parse(readFileSync5(verdictsFile, "utf8"));
       verdicts = Array.isArray(parsed) ? parsed : parsed.verdicts ?? [];
     } catch {
       console.error(`Cannot read verdicts from ${verdictsFile}.`);
@@ -13708,7 +13820,7 @@ function recordCommand(argv) {
   let held = [];
   if (heldFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync4(heldFile, "utf8"));
+      const parsed = JSON.parse(readFileSync5(heldFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed?.held;
       if (!Array.isArray(list)) throw new Error('expected an array or {"held": [...]}');
       list.forEach((entry, index) => {
@@ -13725,7 +13837,7 @@ function recordCommand(argv) {
   let stages = [];
   if (stagesFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync4(stagesFile, "utf8"));
+      const parsed = JSON.parse(readFileSync5(stagesFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed.stages ?? [];
       stages = (Array.isArray(list) ? list : []).filter(
         (stage) => typeof stage === "object" && stage !== null && typeof stage.name === "string" && Number.isFinite(stage.seconds)
@@ -13946,7 +14058,7 @@ function conventionsCommand(argv) {
   const changed = [];
   if (filesFlag !== null) {
     try {
-      changed.push(...changedPathsFrom(JSON.parse(readFileSync4(filesFlag, "utf8"))));
+      changed.push(...changedPathsFrom(JSON.parse(readFileSync5(filesFlag, "utf8"))));
     } catch (error) {
       console.error(`Cannot read ${filesFlag}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -14012,7 +14124,7 @@ function checkCandidatesCommand(argv) {
     }
     let hunks;
     try {
-      hunks = parseHunks(readFileSync4(diffFile, "utf8"));
+      hunks = parseHunks(readFileSync5(diffFile, "utf8"));
     } catch (error) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -14041,7 +14153,7 @@ function checkCandidatesCommand(argv) {
     }
     let thread;
     try {
-      const parsed = JSON.parse(readFileSync4(threadFile, "utf8"));
+      const parsed = JSON.parse(readFileSync5(threadFile, "utf8"));
       thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
       if (!Array.isArray(thread)) throw new Error("comments is not a list");
     } catch (error) {

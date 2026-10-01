@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { classify, isReviewable, languageOf, type FileClass } from './classify.ts';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { classify, findHandEdited, isReviewable, languageOf, type FileClass } from './classify.ts';
 
 export interface ChangedFile {
   path: string;
@@ -13,6 +15,11 @@ export interface ChangedFile {
   reviewed: boolean;
   /** Why an excluded file was excluded, so the omission is visible. */
   excludedBecause?: string;
+  /**
+   * A generated file whose header says not to edit it, changed alone in its
+   * generated directory. Kept for review because a hand edit is a real change.
+   */
+  handEditSuspected?: boolean;
 }
 
 export interface DiffResult {
@@ -170,12 +177,27 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
     }
   }
 
+  // Head content of a generated file, read from where the compared side lives.
+  const readHead = (path: string): string | null => {
+    try {
+      if (mode === 'worktree') return readFileSync(join(root, path), 'utf8');
+      return git(['show', mode === 'staged' ? `:${path}` : `HEAD:${path}`], root);
+    } catch {
+      return null;
+    }
+  };
+  const handEdited = findHandEdited(
+    entries.filter((entry) => entry.status !== 'D').map((entry) => entry.path),
+    readHead,
+  );
+
   const files: ChangedFile[] = entries.map((entry) => {
     const cls = classify(entry.path);
     // A deleted file has no content to review; its removal shows up in the
     // diff of whatever referenced it.
     const deleted = entry.status === 'D';
-    const reviewed = !deleted && isReviewable(entry.path, options.includeGenerated);
+    const suspected = handEdited.has(entry.path);
+    const reviewed = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated));
     return {
       path: entry.path,
       ...(entry.previousPath === undefined ? {} : { previousPath: entry.previousPath }),
@@ -185,6 +207,7 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
       additions: numstat.get(entry.path)?.additions ?? 0,
       deletions: numstat.get(entry.path)?.deletions ?? 0,
       reviewed,
+      ...(suspected ? { handEditSuspected: true } : {}),
       ...(reviewed ? {} : { excludedBecause: deleted ? 'file deleted' : excludedReason(cls) }),
     };
   });

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A generated file edited by hand stays in the review. When its first lines
+  say not to edit it and no other generated file in the same generated
+  directory changed, `diff` keeps it with `handEditSuspected: true` and the
+  `diff --out` summary lists the paths. A regeneration stays excluded. On a
+  pull request the head content is read when the commit is local, else the
+  patch's added lines. Lock files and vendored code are unchanged.
 - `verdict` computes the review event from the verified findings (none or
   nits approve, minor or a question comments, important or blocking requests
   changes), refuses a moved head, caps an approval at COMMENT on red CI and
@@ -75,6 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `prior` in the output says which source was used and lists recorded runs.
 
 ### Changed
+
+- `verify` names how to enable the second-pass verifier when none is
+  configured, and the review command relays it once; a different-model check
+  is the stand-in when no other reviewer can cross-check findings.
 
 - `check-candidates` and `score` refuse two candidates with the same id.
   Verification is joined by id, so a repeated id could attach one candidate's

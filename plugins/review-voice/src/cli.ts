@@ -234,7 +234,29 @@ Exit codes: 0 compliant, 1 violations found, 2 bad invocation.
 Review Voice is normally driven by its Claude Code commands
 (/review-voice:review, /review-voice:init) rather than invoked directly.`;
 
+/** What each stdin-reading command expects, for the message a terminal gets. */
+const STDIN_INPUT: Record<string, string> = {
+  'check-candidates': 'candidates JSON',
+  score: 'candidates JSON',
+  record: 'the validated review',
+  'validate-output': 'the review text',
+  anchors: 'the validated review',
+  verify: 'candidates JSON',
+  redact: 'the text to redact',
+  draft: 'the validated review',
+  verdict: 'the validated review',
+  post: 'the validated review',
+};
+
 function readStdin(): string {
+  // Run from a terminal with nothing piped, a read blocks forever and looks
+  // like a hang. Say what to pipe and stop at once; piped input is untouched.
+  if (process.stdin.isTTY === true) {
+    const command = process.argv[2] ?? 'command';
+    const what = STDIN_INPUT[command] ?? 'its input';
+    console.error(`${command} reads ${what} on stdin; pipe it in, e.g. cat input | RV ${command}`);
+    process.exit(2);
+  }
   try {
     return readFileSync(0, 'utf8');
   } catch {
@@ -432,6 +454,7 @@ interface EmittedDiff {
   reviewedFileCount: number;
   hunkFileCount: number;
   excludedFileCount: number;
+  files?: { path: string; handEditSuspected?: boolean }[];
   pullNumber?: number;
   scope?: ReviewScope;
   scopeNote?: string | null;
@@ -457,6 +480,7 @@ function diffSummary(result: EmittedDiff): {
   reviewedFileCount: number;
   hunkFileCount: number;
   excludedFileCount: number;
+  handEditSuspected: string[];
   refs: { base: { sha: string; available: boolean }; head: { sha: string; available: boolean } } | null;
   prior: { source: PriorResolution['source']; head: string | null; runId: string | null } | null;
 } {
@@ -486,6 +510,7 @@ function diffSummary(result: EmittedDiff): {
     reviewedFileCount: result.reviewedFileCount,
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,
+    handEditSuspected: (result.files ?? []).filter((file) => file.handEditSuspected === true).map((file) => file.path),
     refs: result.refs === undefined ? null : { base: result.refs.base, head: result.refs.head },
     prior:
       result.prior === undefined
@@ -1036,6 +1061,37 @@ function evaluateCommand(argv: string[]): number {
   }
 }
 
+/** The most entries a serialised path list carries; counts keep the rest honest. */
+const LIST_CAP = 20;
+const EXCERPT_CAP = 300;
+
+/**
+ * Caps long string lists and precedent excerpts in score output.
+ *
+ * Reach lists every path git grep found, and one line of change produced a
+ * 137 KB report. Only the serialised copy is cut, so computeReach still
+ * returns the full lists. A cut list gets `<name>Total` and `truncated`.
+ */
+function boundLists(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(boundLists);
+  if (value === null || typeof value !== 'object') return value;
+  const out: Record<string, unknown> = {};
+  let cut = false;
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (Array.isArray(item) && item.length > LIST_CAP && item.every((entry) => typeof entry === 'string')) {
+      out[key] = item.slice(0, LIST_CAP);
+      out[`${key}Total`] = item.length;
+      cut = true;
+    } else if (key === 'excerpt' && typeof item === 'string' && item.length > EXCERPT_CAP) {
+      out[key] = `${item.slice(0, EXCERPT_CAP)}...`;
+    } else {
+      out[key] = boundLists(item);
+    }
+  }
+  if (cut) out['truncated'] = true;
+  return out;
+}
+
 function scoreCommand(argv: string[]): number {
   let candidates: Candidate[];
   try {
@@ -1325,7 +1381,7 @@ function scoreCommand(argv: string[]): number {
     console.log(
       JSON.stringify(
         {
-          scores: results,
+          scores: boundLists(results),
           // Reported every run so the threshold stops being a constant nobody
           // can check. A gate sitting above the whole distribution is not
           // selective, it is miscalibrated, and that is only visible here.

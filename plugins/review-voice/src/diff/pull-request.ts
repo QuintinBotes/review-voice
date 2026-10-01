@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { GitHubClient } from '../github/client.ts';
-import { classify, isReviewable, languageOf } from './classify.ts';
+import { classify, findHandEdited, isReviewable, languageOf } from './classify.ts';
 import type { ChangedFile, DiffResult } from './acquire.ts';
 import { topPathspecs, type ReviewScope } from './incremental.ts';
 import { parseHunks } from './hunks.ts';
@@ -342,10 +342,38 @@ export async function acquirePullRequestDiff(options: {
 
   const truncated = rawFiles.length < pull.changed_files;
 
+  // A generated file with a do-not-edit header that changed alone in its
+  // generated directory is a hand edit. Prefer the head content, which holds
+  // the header even when the patch does not reach it; with no head commit
+  // locally, fall back to the patch's added lines and leave the file excluded
+  // when those do not show the header.
+  const cwd = options.cwd ?? process.cwd();
+  const headLocal = hasCommit(pull.head.sha, cwd);
+  const byName = new Map(rawFiles.map((file) => [file.filename, file]));
+  const handEdited = findHandEdited(
+    rawFiles.filter((file) => file.status !== 'removed' && file.patch !== undefined).map((file) => file.filename),
+    (path) => {
+      if (headLocal) {
+        try {
+          return git(['show', `${pull.head.sha}:${path}`], cwd);
+        } catch {
+          return null;
+        }
+      }
+      const added = (byName.get(path)?.patch ?? '')
+        .split('\n')
+        .filter((line) => line.startsWith('+'))
+        .map((line) => line.slice(1));
+      return added.join('\n');
+    },
+  );
+
   const files: ChangedFile[] = rawFiles.map((file) => {
     const cls = classify(file.filename);
     const deleted = file.status === 'removed';
-    const reviewed = !deleted && isReviewable(file.filename, options.includeGenerated) && file.patch !== undefined;
+    const suspected = handEdited.has(file.filename);
+    const reviewed =
+      !deleted && (suspected || isReviewable(file.filename, options.includeGenerated)) && file.patch !== undefined;
 
     let excludedBecause: string | undefined;
     if (!reviewed) {
@@ -363,6 +391,7 @@ export async function acquirePullRequestDiff(options: {
       additions: file.additions ?? 0,
       deletions: file.deletions ?? 0,
       reviewed,
+      ...(suspected ? { handEditSuspected: true } : {}),
       ...(excludedBecause === undefined ? {} : { excludedBecause }),
     };
   });
@@ -400,7 +429,7 @@ export async function acquirePullRequestDiff(options: {
       pullNumber: options.pullNumber,
       base: pull.base.sha,
       head: pull.head.sha,
-      cwd: options.cwd ?? process.cwd(),
+      cwd,
     }),
   };
 }
