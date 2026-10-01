@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.8.0] - 2026-10-01
 
 ### Added
 
@@ -1106,7 +1106,8 @@ no data because nothing has been labelled, and `docs/EVALUATION.md` says so.
   vulnerability reporting, and the repository security posture documented in
   `docs/REPO-SECURITY.md`.
 
-[1.7.0]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.8.0]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.7.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.7.0
 [1.6.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.6.0
 [1.5.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.5.0
 [1.4.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.4.0
