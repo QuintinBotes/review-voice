@@ -5,6 +5,28 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-10-02
+
+### Added
+
+- A high-complexity change is raised for a human and never approved by
+  Review Voice (ADR 0012, amending 0010). `diff --out` counts the decision
+  points added to reviewed source files (`if`, loops, `case`, `catch`, `&&`,
+  `||`, ternaries) for the whole change and its densest hunk, and matches
+  every changed path against sensitive globs (by default
+  `.github/workflows/**`, `**/migrations/**`, `**/auth/**`, `**/security/**`).
+  The assessment and a `humanReviewNote` go into `files.json` and the
+  summary; `record --files` stores it with the run, and `explain` shows it.
+  Limits and paths are set under `review.human_review`.
+
+### Changed
+
+- `verdict` and `post` cap an approval at COMMENT when the recorded run, or
+  any prior run a narrower run follows, was assessed high; pending CI no
+  longer turns that approval into a wait, and `verdict --recheck` refuses. The
+  posted body carries the `Raised for human review` line for every event. A
+  run with no recorded assessment is not capped, and `verdict` says so.
+
 ## [1.8.0] - 2026-10-01
 
 ### Added
@@ -1106,7 +1128,8 @@ no data because nothing has been labelled, and `docs/EVALUATION.md` says so.
   vulnerability reporting, and the repository security posture documented in
   `docs/REPO-SECURITY.md`.
 
-[1.8.0]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.9.0]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.8.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.8.0
 [1.7.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.7.0
 [1.6.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.6.0
 [1.5.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.5.0
