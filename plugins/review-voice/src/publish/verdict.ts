@@ -258,6 +258,8 @@ export function decide(input: {
   ci: CiState['state'] | null;
   recheck: boolean;
   heldBackApproval?: boolean;
+  /** The change was assessed high-complexity, so a person, not this tool, approves it. */
+  needsHuman?: boolean;
 }): Decision {
   const reasons: string[] = [];
   if (input.heldBackApproval === true) {
@@ -269,6 +271,27 @@ export function decide(input: {
       action: 'refuse',
       reasons: [...reasons, 'the pull request head moved since the review read it; review the new head'],
       exitCode: 3,
+      cappedByCi: false,
+    };
+  }
+
+  // Before the CI guard, so pending CI cannot turn a capped approval into a
+  // wait for an approval that will never be sent (docs/adr/0012).
+  if (input.needsHuman === true && input.mapped === 'APPROVE') {
+    if (input.recheck) {
+      return {
+        event: 'COMMENT',
+        action: 'refuse',
+        reasons: [...reasons, 'the change was raised for human review, so there is no approval to re-check'],
+        exitCode: 2,
+        cappedByCi: false,
+      };
+    }
+    return {
+      event: 'COMMENT',
+      action: 'post',
+      reasons: [...reasons, 'the change was raised for human review, so this comments rather than approves'],
+      exitCode: 0,
       cappedByCi: false,
     };
   }
@@ -327,7 +350,7 @@ function plural(count: number, word: string): string {
 export function summaryLine(
   event: ReviewEvent,
   posted: readonly ReviewFinding[],
-  cappedBy: 'ci' | 'held' | null,
+  cappedBy: 'ci' | 'held' | 'complexity' | null,
 ): string {
   const count = posted.length;
   const highest = [...posted]
@@ -341,6 +364,11 @@ export function summaryLine(
   }
   if (cappedBy === 'held') {
     return count === 0 ? 'Not approving yet.' : `${plural(count, 'nit')}; not approving yet.`;
+  }
+  if (cappedBy === 'complexity') {
+    return count === 0
+      ? 'No problems found; leaving approval to a human reviewer.'
+      : `${plural(count, 'nit')}; leaving approval to a human reviewer.`;
   }
   if (event === 'APPROVE') {
     return count === 0 ? 'No problems found.' : `Approved, with ${plural(count, 'nit')}.`;
@@ -371,12 +399,17 @@ export function buildPayload(input: {
   head: string;
   event: ReviewEvent;
   planned: PlannedFindings;
-  cappedBy: 'ci' | 'held' | null;
+  cappedBy: 'ci' | 'held' | 'complexity' | null;
+  /** The one line naming why a person should look; the second paragraph for every event. */
+  humanReviewNote?: string | null | undefined;
 }): ReviewPayload {
   const posted = [...input.planned.inline, ...input.planned.unanchored];
-  const body = [summaryLine(input.event, posted, input.cappedBy), ...input.planned.unanchored.map((finding) => finding.raw)].join(
-    '\n\n',
-  );
+  const note = input.humanReviewNote ?? null;
+  const body = [
+    summaryLine(input.event, posted, input.cappedBy),
+    ...(note === null ? [] : [note]),
+    ...input.planned.unanchored.map((finding) => finding.raw),
+  ].join('\n\n');
   return {
     commit_id: input.head,
     event: input.event,

@@ -1,6 +1,7 @@
 import type { Database } from '../store/db.ts';
 import { recordAudit } from '../store/audit.ts';
 import { latestRunForPull, runDetail, type RunDetail } from '../store/runs.ts';
+import { humanReviewNote, type ComplexityAssessment } from '../diff/complexity.ts';
 import { AuthError } from '../github/auth.ts';
 import { GitHubError, NotAllowlisted, type GitHubClient } from '../github/client.ts';
 import { REVIEW_EVENTS, WriteViolation, type ReviewWriter } from '../github/writer.ts';
@@ -44,6 +45,8 @@ export interface VerdictOutput {
   ci: CiState | null;
   run: string | null;
   held: HeldBack[];
+  /** The recorded assessment, the pull request's own or a prior run's; null when none was recorded. */
+  complexity: ComplexityAssessment | null;
   /** What would be sent: inline comments already posted on this head are left out. */
   payload: ReviewPayload | null;
   /** Inline comments an earlier post of this head already sent. */
@@ -81,12 +84,45 @@ function refusal(head: string, reason: string): { exitCode: number; output: Verd
       ci: null,
       run: null,
       held: [],
+      complexity: null,
       payload: null,
       alreadyInline: 0,
       key: null,
       preview: null,
     },
   };
+}
+
+/** How far back a narrower run's history is followed for an earlier assessment. */
+const MAX_PRIOR_DEPTH = 8;
+
+/**
+ * The complexity assessment that applies to the pull request.
+ *
+ * A narrower later run (incremental, interdiff, unchanged) only saw part of
+ * the change, so it follows its prior runs and a high assessment anywhere
+ * along the chain stands; otherwise easy commits after a complex one would
+ * earn the whole change an approval. A full run stands alone. The first high
+ * run found supplies the reasons, and null means none recorded an assessment.
+ */
+function pullRequestComplexity(run: RunDetail, loadRun: (id: string) => RunDetail | null): ComplexityAssessment | null {
+  let found: ComplexityAssessment | null = run.complexity;
+  if (found?.level === 'high') return found;
+
+  const seen = new Set<string>([run.reviewRunId]);
+  let current: RunDetail = run;
+  for (let depth = 0; depth < MAX_PRIOR_DEPTH; depth += 1) {
+    if (current.scope === null || current.scope.kind === 'full') break;
+    const priorId = current.scope.priorRunId;
+    if (priorId === null || seen.has(priorId)) break;
+    seen.add(priorId);
+    const prior = loadRun(priorId);
+    if (prior === null) break;
+    if (prior.complexity?.level === 'high') return prior.complexity;
+    found = found ?? prior.complexity;
+    current = prior;
+  }
+  return found;
 }
 
 /** Picks the recorded run and checks it is the review on stdin, for this head. */
@@ -147,13 +183,19 @@ export async function computeVerdict(
   const headMoved = actual !== head;
   const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? []);
 
+  const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
+  const needsHuman = complexity?.level === 'high';
+
   const decision = decide({
     mapped: planned.mapped,
     headMoved,
     ci: ci?.state ?? null,
     recheck: options.recheck === true,
     heldBackApproval: planned.heldBackApproval,
+    needsHuman,
   });
+  // Only a missing assessment is worth saying: a normal one changes nothing.
+  if (complexity === null) decision.reasons.push('no complexity assessment was recorded for this run');
 
   let payload: ReviewPayload | null = null;
   let preview: string | null = null;
@@ -164,7 +206,14 @@ export async function computeVerdict(
       head,
       event: decision.event,
       planned,
-      cappedBy: decision.cappedByCi ? 'ci' : planned.heldBackApproval ? 'held' : null,
+      cappedBy: decision.cappedByCi
+        ? 'ci'
+        : planned.heldBackApproval
+          ? 'held'
+          : needsHuman && planned.mapped === 'APPROVE'
+            ? 'complexity'
+            : null,
+      humanReviewNote: humanReviewNote(complexity),
     });
     // Keyed on the whole review, so the same review is refused a second time
     // even once its comments are all on the pull request.
@@ -195,6 +244,7 @@ export async function computeVerdict(
       ci,
       run: run.reviewRunId,
       held: planned.held,
+      complexity,
       payload,
       alreadyInline,
       key,

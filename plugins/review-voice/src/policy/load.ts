@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { PolicyLayer, ScopeType } from './schema.ts';
 import type { GateCheck } from '../publish/ci.ts';
+import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
@@ -33,6 +34,8 @@ export interface LoadedConfig {
      */
     blockPresent: boolean;
   };
+  /** When a change is raised for a human's approval; see docs/adr/0012. */
+  humanReview: HumanReviewConfig;
   layers: PolicyLayer[];
   /** Repository-supplied layers awaiting owner approval. */
   unapproved: { source: string; contentHash: string }[];
@@ -51,6 +54,31 @@ function asStringArray(value: unknown): string[] {
 
 function positiveInt(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * A limit that is not a whole number above zero would make every change high
+ * or none of them, so it falls back to the default and says so.
+ */
+function readHumanReview(block: Record<string, unknown> | null, result: LoadedConfig): void {
+  if (block === null) return;
+  const limit = (key: string): number | undefined => {
+    if (block[key] === undefined) return undefined;
+    const value = block[key];
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
+    result.warnings.push(`review.human_review.${key} must be a whole number above zero; using the default.`);
+    return undefined;
+  };
+  result.humanReview.maxDecisionPoints = limit('max_decision_points') ?? result.humanReview.maxDecisionPoints;
+  result.humanReview.maxHunkDecisionPoints = limit('max_hunk_decision_points') ?? result.humanReview.maxHunkDecisionPoints;
+  const paths = block['sensitive_paths'];
+  if (paths === undefined) return;
+  if (Array.isArray(paths)) {
+    // An empty list is a choice, and it turns the signal off.
+    result.humanReview.sensitivePaths = asStringArray(paths);
+  } else {
+    result.warnings.push('review.human_review.sensitive_paths must be a list; using the default.');
+  }
 }
 
 function contentHash(text: string): string {
@@ -103,6 +131,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
     verification: { enabled: false, command: '', blockPresent: false },
+    humanReview: { ...DEFAULT_HUMAN_REVIEW, sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths] },
     layers: [],
     unapproved: [],
     warnings: [],
@@ -178,6 +207,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
         const review = asRecord(doc['review']);
         if (review !== null) {
           // The user's own config is trusted: they wrote it, in their checkout.
+          readHumanReview(asRecord(review['human_review']), result);
           result.layers.push({
             scope: { type: 'repository', key: repositoryRoot },
             source: '.review-voice/config.yaml',

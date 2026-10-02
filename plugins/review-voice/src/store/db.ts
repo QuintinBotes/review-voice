@@ -207,6 +207,15 @@ const MIGRATIONS: string[] = [
   ALTER TABLE review_runs ADD COLUMN scope_json TEXT;
   CREATE INDEX idx_review_runs_pull ON review_runs (repository, pull_number, created_at DESC);
   `,
+
+  // v9 - complexity assessment.
+  //
+  // Stored with the run, like the scope, so the verdict reads what the review
+  // was assessed as rather than re-deriving it from a diff it no longer has.
+  // Null on older rows, which means unknown rather than normal.
+  `
+  ALTER TABLE review_runs ADD COLUMN complexity_json TEXT;
+  `,
 ];
 
 function migrate(db: Database): void {

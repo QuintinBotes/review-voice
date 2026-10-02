@@ -112,6 +112,12 @@ as `truncationNote` is printed.** This includes an output of exactly
 the newly added commits. A full scope has `scopeNote: null` and prints nothing
 extra.
 
+**If `humanReviewNote` is not null, print it on its own line after the
+findings, the same way, including after `No actionable findings.`.** It is
+computed by `diff` from the diff and is not part of the validated text. It
+means the change was raised for a human: `verdict` and `post` will comment
+rather than approve, and the note is also in the posted body.
+
 A very large change is worth naming even when nothing was truncated. Each entry
 in `files` carries its own `additions` and `deletions`, so sum the reviewed
 ones. Above roughly 150 changed files, or 5,000 changed lines, say so in one
@@ -431,6 +437,10 @@ stray directory and another project's notes took the reviewed count from 11 to
   rather than estimating it. A review measured once took about twenty-five
   minutes against a sweep that runs every ten, and whether that holds is a
   distribution nobody has yet.
+
+  **`--files` is what carries the complexity assessment to `verdict`.** Without
+  it the run records no assessment, and a high-complexity change would then be
+  approvable; `verdict` says when none was recorded.
 
   **`--diff-file` is the patch step 1 wrote.** Without it the run records the
   hash of the empty string, every run collides with every other, and

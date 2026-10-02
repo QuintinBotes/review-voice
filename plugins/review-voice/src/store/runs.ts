@@ -3,6 +3,7 @@ import type { Database } from './db.ts';
 import { recordAudit } from './audit.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
+import { parseComplexity, type ComplexityAssessment } from '../diff/complexity.ts';
 import { matchCarried, type CarriedFinding } from '../diff/carry.ts';
 
 export interface StoredFinding {
@@ -80,6 +81,8 @@ export interface RecordRunInput {
   pullNumber?: number | undefined;
   /** The full or incremental boundary that produced this run. */
   scope?: ReviewScope | undefined;
+  /** Whether the change was assessed as needing a human's approval; see docs/adr/0012. */
+  complexity?: ComplexityAssessment | null | undefined;
   diff: string;
   output: string;
   candidates?: CandidateHint[] | undefined;
@@ -213,8 +216,8 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
        review_run_id, repository, base_ref, head_ref, diff_hash,
        active_policy_versions_json, retrieved_precedents_json,
        candidates_json, output_json, created_at, stages_json,
-       pull_number, scope_json
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       pull_number, scope_json, complexity_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     reviewRunId,
     input.repository,
@@ -235,6 +238,7 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
     JSON.stringify(input.stages ?? []),
     input.pullNumber ?? null,
     input.scope === undefined ? null : JSON.stringify(input.scope),
+    input.complexity === undefined || input.complexity === null ? null : JSON.stringify(input.complexity),
   );
 
   recordAudit(db, 'review_run_recorded', { type: 'review_run', id: reviewRunId }, {
@@ -253,6 +257,8 @@ export interface RunDetail {
   pullNumber: number | null;
   /** Null is expected for rows recorded before pull-request scopes existed. */
   scope: ReviewScope | null;
+  /** Null for rows recorded before the assessment existed, or without a manifest. */
+  complexity: ComplexityAssessment | null;
   /** The commit reviewed. Null for runs recorded without `--head`. */
   headRef: string | null;
   createdAt: string;
@@ -263,6 +269,15 @@ export interface RunDetail {
   verdicts: unknown;
   /** Empty for runs recorded before held findings were kept. */
   held: HeldFinding[];
+}
+
+function storedComplexity(raw: unknown): ComplexityAssessment | null {
+  if (typeof raw !== 'string') return null;
+  try {
+    return parseComplexity(JSON.parse(raw));
+  } catch {
+    return null;
+  }
 }
 
 function storedScope(raw: unknown): ReviewScope | null {
@@ -302,6 +317,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     repository: row['repository'] as string | null,
     pullNumber: Number.isInteger(row['pull_number']) ? (row['pull_number'] as number) : null,
     scope: storedScope(row['scope_json']),
+    complexity: storedComplexity(row['complexity_json']),
     headRef: typeof row['head_ref'] === 'string' ? row['head_ref'] : null,
     createdAt: row['created_at'] as string,
     output: parsed.output,

@@ -16,7 +16,8 @@ import { runDoctor } from './doctor.ts';
 import { validateOutput } from './contract/validate.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
 import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
-import { acquireDiff, GitError } from './diff/acquire.ts';
+import { acquireDiff, GitError, type ChangedFile } from './diff/acquire.ts';
+import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAssessment } from './diff/complexity.ts';
 import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
 import { classifyAnchor, parseHunks, reason, type FileHunks } from './diff/hunks.ts';
@@ -454,12 +455,15 @@ interface EmittedDiff {
   reviewedFileCount: number;
   hunkFileCount: number;
   excludedFileCount: number;
-  files?: { path: string; handEditSuspected?: boolean }[];
+  files?: ChangedFile[];
   pullNumber?: number;
   scope?: ReviewScope;
   scopeNote?: string | null;
   truncated?: boolean;
   truncationNote?: string | null;
+  /** Added by `emitDiff`; see docs/adr/0012. */
+  complexity?: ComplexityAssessment;
+  humanReviewNote?: string | null;
   refs?: {
     base: { sha: string; available: boolean };
     head: { sha: string; available: boolean };
@@ -475,6 +479,8 @@ function diffSummary(result: EmittedDiff): {
   pullNumber: number | null;
   scope: { kind: ReviewScope['kind']; cause: string | null; since: string | null; mergeBase: string | null } | null;
   scopeNote: string | null;
+  complexity: ComplexityAssessment | null;
+  humanReviewNote: string | null;
   truncated: boolean;
   truncationNote: string | null;
   reviewedFileCount: number;
@@ -505,6 +511,8 @@ function diffSummary(result: EmittedDiff): {
     pullNumber: result.pullNumber ?? null,
     scope,
     scopeNote: result.scopeNote ?? null,
+    complexity: result.complexity ?? null,
+    humanReviewNote: result.humanReviewNote ?? null,
     truncated: result.truncated ?? false,
     truncationNote: result.truncationNote ?? null,
     reviewedFileCount: result.reviewedFileCount,
@@ -519,7 +527,12 @@ function diffSummary(result: EmittedDiff): {
   };
 }
 
-function emitDiff(result: EmittedDiff, outDir: string | null): number {
+function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
+  // Assessed here, from the diff the analyst will read, so the manifest and
+  // the summary say the same thing and `record --files` carries it forward.
+  const complexity = assessComplexity(acquired.diff, acquired.files ?? [], repositoryConfig()?.humanReview);
+  const result: EmittedDiff = { ...acquired, complexity, humanReviewNote: humanReviewNote(complexity) };
+
   if (outDir === null) {
     console.log(JSON.stringify(result, null, 2));
     return 0;
@@ -1654,6 +1667,7 @@ function recordCommand(argv: string[]): number {
   const filesFile = flag(argv, '--files');
   let pullNumber: number | undefined;
   let scope: ReviewScope | undefined;
+  let complexity: ComplexityAssessment | null = null;
   if (filesFile !== null) {
     try {
       const manifest = JSON.parse(readFileSync(filesFile, 'utf8')) as Record<string, unknown>;
@@ -1661,6 +1675,10 @@ function recordCommand(argv: string[]): number {
         pullNumber = manifest.pullNumber as number;
       }
       scope = reviewScopeFromManifest(manifest.scope);
+      if (manifest.complexity !== undefined && manifest.complexity !== null) {
+        complexity = parseComplexity(manifest.complexity);
+        if (complexity === null) console.error(`The complexity assessment in ${filesFile} is malformed; recording without it.`);
+      }
     } catch {
       // The review text and patch remain enough to record a useful run. Losing
       // metadata must not turn that record into a failed command.
@@ -1772,6 +1790,7 @@ function recordCommand(argv: string[]): number {
       headRef: flag(argv, '--head'),
       pullNumber,
       scope,
+      complexity,
       diff,
       output,
       candidates,
@@ -1915,6 +1934,13 @@ function explainCommand(argv: string[]): number {
     if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
     const recordedScope = describeReviewScope(detail.scope);
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
+    if (detail.complexity !== null) {
+      console.log(
+        detail.complexity.level === 'high'
+          ? `Complexity high - ${detail.complexity.reasons.join('; ')}`
+          : 'Complexity normal',
+      );
+    }
     console.log('');
 
     const shown = wanted === undefined ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);

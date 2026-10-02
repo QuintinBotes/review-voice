@@ -640,147 +640,6 @@ function acquireDiff(options) {
   };
 }
 
-// plugins/review-voice/src/diff/pull-request.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
-
-// plugins/review-voice/src/github/auth.ts
-import { execFileSync as execFileSync3 } from "node:child_process";
-var AuthError = class extends Error {
-};
-function githubToken(env = process.env) {
-  const fromEnv = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
-  if (fromEnv !== void 0 && fromEnv.length > 0) return fromEnv;
-  try {
-    const token = execFileSync3("gh", ["auth", "token"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
-    }).trim();
-    if (token.length > 0) return token;
-  } catch {
-  }
-  throw new AuthError(
-    "No GitHub credential. Run `gh auth login`, or set GITHUB_TOKEN. Review Voice needs read access only."
-  );
-}
-
-// plugins/review-voice/src/github/client.ts
-var ReadOnlyViolation = class extends Error {
-};
-var NotAllowlisted = class extends Error {
-};
-var GitHubError = class extends Error {
-  // Written out rather than declared as a parameter property: Node strips
-  // types to run TypeScript directly, and parameter properties are syntax it
-  // cannot strip. Keeping the source loadable without a build step means tests
-  // can import it directly.
-  status;
-  constructor(message, status) {
-    super(message);
-    this.status = status;
-  }
-};
-var REPO_PATH = /^\/repos\/([^/]+\/[^/]+)(\/|$)/;
-var GitHubClient = class {
-  allowlist;
-  baseUrl;
-  doFetch;
-  sleep;
-  token;
-  constructor(options) {
-    this.allowlist = new Set(options.allowlist.map((name) => name.toLowerCase()));
-    this.baseUrl = options.baseUrl ?? "https://api.github.com";
-    this.doFetch = options.fetchImpl ?? fetch;
-    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-    this.token = options.token ?? null;
-  }
-  authorization() {
-    this.token ??= githubToken();
-    return `Bearer ${this.token}`;
-  }
-  assertAllowed(path) {
-    const match = REPO_PATH.exec(path);
-    if (match === null) return;
-    const repository = match[1].toLowerCase();
-    if (!this.allowlist.has(repository)) {
-      throw new NotAllowlisted(
-        `${match[1]} is not in the allowlist. Add it with /review-voice:init before reading it.`
-      );
-    }
-  }
-  async get(path, init = {}) {
-    if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
-      throw new ReadOnlyViolation(
-        `Review Voice is read-only; refused a ${init.method} to ${path}.`
-      );
-    }
-    this.assertAllowed(path);
-    const url = path.startsWith("http") ? path : `${this.baseUrl}${path}`;
-    for (let attempt = 0; ; attempt += 1) {
-      const response = await this.doFetch(url, {
-        method: "GET",
-        headers: {
-          accept: "application/vnd.github+json",
-          authorization: this.authorization(),
-          "x-github-api-version": "2022-11-28",
-          "user-agent": "review-voice"
-        }
-      });
-      if (response.status === 403 || response.status === 429) {
-        const retryAfter = Number(response.headers.get("retry-after") ?? "0");
-        const remaining = response.headers.get("x-ratelimit-remaining");
-        if ((remaining === "0" || retryAfter > 0) && attempt < 4) {
-          const waitMs = retryAfter > 0 ? retryAfter * 1e3 : 2 ** attempt * 1e3;
-          await this.sleep(waitMs);
-          continue;
-        }
-      }
-      if (!response.ok) {
-        throw new GitHubError(
-          `GitHub returned ${response.status} for ${path}: ${(await response.text()).slice(0, 200)}`,
-          response.status
-        );
-      }
-      const link = response.headers.get("link");
-      const next = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
-      return { data: await response.json(), linkNext: next };
-    }
-  }
-  /** Follows pagination up to `limit` items, so a huge repository cannot run away. */
-  async paginate(path, limit) {
-    const items = [];
-    let next = path;
-    while (next !== null && items.length < limit) {
-      const page = await this.get(next);
-      if (!Array.isArray(page.data)) break;
-      items.push(...page.data);
-      next = page.linkNext;
-    }
-    return items.slice(0, limit);
-  }
-  /**
-   * Pagination for endpoints that wrap each page as `{ total_count, <key>: [] }`
-   * rather than returning an array, such as check runs and combined statuses.
-   * `paginate` stops at the first page of those, because the page is not an
-   * array, which is how a pull request with more than 100 check runs read as
-   * having only its first 100.
-   */
-  async paginateWrapped(path, key, limit) {
-    const items = [];
-    let next = path;
-    while (next !== null && items.length < limit) {
-      const page = await this.get(next);
-      const list = page.data?.[key];
-      if (!Array.isArray(list)) break;
-      items.push(...list);
-      next = page.linkNext;
-    }
-    return items.slice(0, limit);
-  }
-};
-
-// plugins/review-voice/src/diff/incremental.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
-
 // plugins/review-voice/src/diff/hunks.ts
 function normalisePath(path) {
   return path.replaceAll("\\", "/").replace(/^\.\/+/, "");
@@ -836,9 +695,9 @@ function hunkHeader(line) {
   if (match === null) return null;
   const oldCount = match[1] === void 0 ? 1 : Number(match[1]);
   const start = Number(match[2]);
-  const count = match[3] === void 0 ? 1 : Number(match[3]);
-  if (!Number.isSafeInteger(oldCount) || !Number.isSafeInteger(start) || !Number.isSafeInteger(count) || oldCount < 0 || start < 0 || count < 0) return null;
-  return { oldCount, start, count };
+  const count2 = match[3] === void 0 ? 1 : Number(match[3]);
+  if (!Number.isSafeInteger(oldCount) || !Number.isSafeInteger(start) || !Number.isSafeInteger(count2) || oldCount < 0 || start < 0 || count2 < 0) return null;
+  return { oldCount, start, count: count2 };
 }
 function settleDeletion(hunk, nextRightLine) {
   if (!hunk.deleting) return;
@@ -993,7 +852,399 @@ function reason(anchor) {
   return `${rendered}.`;
 }
 
+// plugins/review-voice/src/conventions/globs.ts
+function frontmatterPaths(content) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
+  if (match === null) return [];
+  const block = match[1] ?? "";
+  const paths = [];
+  let inPaths = false;
+  for (const raw of block.split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    if (/^paths\s*:/.test(line)) {
+      inPaths = true;
+      const inline = line.slice(line.indexOf(":") + 1).trim();
+      if (inline.startsWith("[")) {
+        for (const item of inline.slice(1, -1).split(",")) paths.push(unquote(item));
+        inPaths = false;
+      }
+      continue;
+    }
+    if (!inPaths) continue;
+    if (/^\s*-\s+/.test(line)) {
+      paths.push(unquote(line.replace(/^\s*-\s+/, "")));
+      continue;
+    }
+    if (/^\S/.test(line)) inPaths = false;
+  }
+  return paths.filter((glob) => glob.length > 0);
+}
+function unquote(value) {
+  return value.trim().replace(/^["']|["']$/g, "").trim();
+}
+function globToRegExp(glob) {
+  let source = "";
+  for (let i = 0; i < glob.length; i += 1) {
+    const char = glob[i];
+    if (char === "*") {
+      if (glob[i + 1] === "*") {
+        if (glob[i + 2] === "/") {
+          source += "(?:.*/)?";
+          i += 2;
+        } else {
+          source += ".*";
+          i += 1;
+        }
+        continue;
+      }
+      source += "[^/]*";
+      continue;
+    }
+    if (char === "?") {
+      source += "[^/]";
+      continue;
+    }
+    source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${source}$`);
+}
+function governsCount(globs, changedPaths) {
+  if (globs.length === 0 || changedPaths.length === 0) return 0;
+  const normalised = changedPaths.map((path) => path.split("\\").join("/"));
+  const compiled = globs.flatMap((glob) => {
+    try {
+      const exact = globToRegExp(glob);
+      return glob.includes("/") ? [exact] : [exact, globToRegExp(`**/${glob}`)];
+    } catch {
+      return [];
+    }
+  });
+  return normalised.filter((path) => compiled.some((pattern) => pattern.test(path))).length;
+}
+function governsAny(globs, changedPaths) {
+  if (globs.length === 0 || changedPaths.length === 0) return false;
+  const normalised = changedPaths.map((path) => path.split("\\").join("/"));
+  return globs.some((glob) => {
+    let pattern;
+    try {
+      pattern = globToRegExp(glob);
+    } catch {
+      return false;
+    }
+    const loose = glob.includes("/") ? null : globToRegExp(`**/${glob}`);
+    return normalised.some((path) => pattern.test(path) || loose !== null && loose.test(path));
+  });
+}
+function pointerTargets(content) {
+  const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---/, "").trim();
+  if (body.length === 0) return [];
+  const targets = [];
+  for (const raw of body.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.length === 0 || line.startsWith("<!--") || line.startsWith("#")) continue;
+    const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(line);
+    if (match?.[1] === void 0) return [];
+    targets.push(match[1]);
+  }
+  return targets;
+}
+
+// plugins/review-voice/src/diff/complexity.ts
+var DEFAULT_SENSITIVE_PATHS = [".github/workflows/**", "**/migrations/**", "**/auth/**", "**/security/**"];
+var DEFAULT_HUMAN_REVIEW = {
+  maxDecisionPoints: 40,
+  maxHunkDecisionPoints: 15,
+  sensitivePaths: DEFAULT_SENSITIVE_PATHS
+};
+var MAX_SENSITIVE_LISTED = 20;
+var KEYWORDS = /\b(?:if|elif|for|foreach|while|case|catch|except|when)\b/g;
+var TERNARY = / \? /g;
+var COMMENT_START = /^(?:\/\/|#|\*|\/\*|--)/;
+var HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+function count(text, pattern) {
+  return text.match(pattern)?.length ?? 0;
+}
+function decisionPointsIn(text) {
+  const trimmed = text.trim();
+  if (trimmed.length === 0 || COMMENT_START.test(trimmed)) return 0;
+  return count(trimmed, KEYWORDS) + count(trimmed, /&&/g) + count(trimmed, /\|\|/g) + count(trimmed, TERNARY);
+}
+function headerPath2(raw) {
+  const text = raw.replace(/\t.*$/, "");
+  if (text === "/dev/null") return null;
+  const unquoted = unquoteGitPath(text);
+  return unquoted.startsWith("b/") ? unquoted.slice(2) : unquoted;
+}
+function countHunks(diff, counted) {
+  const hunks = [];
+  let path = null;
+  let current = null;
+  let remainingOld = 0;
+  let remainingNew = 0;
+  for (const raw of diff.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (current !== null && (remainingOld > 0 || remainingNew > 0)) {
+      if (line.startsWith("+")) {
+        current.decisionPoints += decisionPointsIn(line.slice(1));
+        remainingNew -= 1;
+        continue;
+      }
+      if (line.startsWith("-")) {
+        remainingOld -= 1;
+        continue;
+      }
+      if (line.startsWith(" ") || line === "") {
+        remainingOld -= 1;
+        remainingNew -= 1;
+        continue;
+      }
+      if (line.startsWith("\\")) continue;
+    }
+    if (line.startsWith("diff --git ")) {
+      path = null;
+      current = null;
+      remainingOld = 0;
+      remainingNew = 0;
+      continue;
+    }
+    if (line.startsWith("+++ ")) {
+      path = headerPath2(line.slice(4));
+      continue;
+    }
+    const header = HUNK_HEADER.exec(line);
+    if (header !== null && path !== null) {
+      remainingOld = header[1] === void 0 ? 1 : Number(header[1]);
+      remainingNew = header[3] === void 0 ? 1 : Number(header[3]);
+      current = { path, line: Number(header[2]), decisionPoints: 0 };
+      if (counted.has(path)) hunks.push(current);
+    }
+  }
+  return hunks;
+}
+function config(partial) {
+  return {
+    maxDecisionPoints: partial?.maxDecisionPoints ?? DEFAULT_HUMAN_REVIEW.maxDecisionPoints,
+    maxHunkDecisionPoints: partial?.maxHunkDecisionPoints ?? DEFAULT_HUMAN_REVIEW.maxHunkDecisionPoints,
+    sensitivePaths: partial?.sensitivePaths ?? DEFAULT_HUMAN_REVIEW.sensitivePaths
+  };
+}
+function assessComplexity(diff, files, partial) {
+  const limits = config(partial);
+  const counted = new Set(files.filter((file) => file.class === "source" && file.reviewed).map((file) => file.path));
+  const hunks = countHunks(diff, counted);
+  const decisionPoints = hunks.reduce((sum, hunk) => sum + hunk.decisionPoints, 0);
+  const densest = hunks.reduce(
+    (best, hunk) => hunk.decisionPoints > 0 && (best === null || hunk.decisionPoints > best.decisionPoints) ? hunk : best,
+    null
+  );
+  const matchers = limits.sensitivePaths.map((glob) => globToRegExp(glob));
+  const changed = /* @__PURE__ */ new Set();
+  for (const file of files) {
+    changed.add(file.path);
+    if (file.previousPath !== void 0) changed.add(file.previousPath);
+  }
+  const sensitive = [...changed].filter((path) => matchers.some((matcher) => matcher.test(path))).sort();
+  const listed = sensitive.slice(0, MAX_SENSITIVE_LISTED);
+  const reasons = [];
+  if (decisionPoints > limits.maxDecisionPoints) {
+    reasons.push(`${decisionPoints} decision points added (limit ${limits.maxDecisionPoints})`);
+  }
+  if (densest !== null && densest.decisionPoints > limits.maxHunkDecisionPoints) {
+    reasons.push(
+      `${densest.decisionPoints} decision points in one hunk at ${densest.path}:${densest.line} (limit ${limits.maxHunkDecisionPoints})`
+    );
+  }
+  if (sensitive.length > 0) {
+    const shown = listed.slice(0, 3).join(", ");
+    const more = sensitive.length - Math.min(3, listed.length);
+    reasons.push(`touches sensitive paths (${shown}${more > 0 ? `, +${more} more` : ""})`);
+  }
+  return {
+    level: reasons.length > 0 ? "high" : "normal",
+    reasons,
+    decisionPoints,
+    densestHunk: densest === null ? null : { path: densest.path, line: densest.line, decisionPoints: densest.decisionPoints },
+    sensitivePaths: listed,
+    limits: { ...limits }
+  };
+}
+function humanReviewNote(assessment) {
+  if (assessment === null || assessment.level !== "high") return null;
+  return `Raised for human review: ${assessment.reasons.join("; ")}. Review Voice will not approve this change.`;
+}
+var isCount = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0;
+var isStrings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
+function parseComplexity(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const v = value;
+  if (v["level"] !== "normal" && v["level"] !== "high") return null;
+  if (!isStrings(v["reasons"]) || !isCount(v["decisionPoints"]) || !isStrings(v["sensitivePaths"])) return null;
+  let densestHunk = null;
+  if (v["densestHunk"] !== null) {
+    const h = v["densestHunk"];
+    if (typeof h !== "object" || h === null || typeof h["path"] !== "string" || !isCount(h["line"]) || !isCount(h["decisionPoints"])) {
+      return null;
+    }
+    densestHunk = { path: h["path"], line: h["line"], decisionPoints: h["decisionPoints"] };
+  }
+  const l = v["limits"];
+  if (typeof l !== "object" || l === null || !isCount(l["maxDecisionPoints"]) || !isCount(l["maxHunkDecisionPoints"]) || !isStrings(l["sensitivePaths"])) {
+    return null;
+  }
+  return {
+    level: v["level"],
+    reasons: v["reasons"],
+    decisionPoints: v["decisionPoints"],
+    densestHunk,
+    sensitivePaths: v["sensitivePaths"],
+    limits: {
+      maxDecisionPoints: l["maxDecisionPoints"],
+      maxHunkDecisionPoints: l["maxHunkDecisionPoints"],
+      sensitivePaths: l["sensitivePaths"]
+    }
+  };
+}
+
+// plugins/review-voice/src/diff/pull-request.ts
+import { execFileSync as execFileSync5 } from "node:child_process";
+
+// plugins/review-voice/src/github/auth.ts
+import { execFileSync as execFileSync3 } from "node:child_process";
+var AuthError = class extends Error {
+};
+function githubToken(env = process.env) {
+  const fromEnv = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
+  if (fromEnv !== void 0 && fromEnv.length > 0) return fromEnv;
+  try {
+    const token = execFileSync3("gh", ["auth", "token"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    if (token.length > 0) return token;
+  } catch {
+  }
+  throw new AuthError(
+    "No GitHub credential. Run `gh auth login`, or set GITHUB_TOKEN. Review Voice needs read access only."
+  );
+}
+
+// plugins/review-voice/src/github/client.ts
+var ReadOnlyViolation = class extends Error {
+};
+var NotAllowlisted = class extends Error {
+};
+var GitHubError = class extends Error {
+  // Written out rather than declared as a parameter property: Node strips
+  // types to run TypeScript directly, and parameter properties are syntax it
+  // cannot strip. Keeping the source loadable without a build step means tests
+  // can import it directly.
+  status;
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+};
+var REPO_PATH = /^\/repos\/([^/]+\/[^/]+)(\/|$)/;
+var GitHubClient = class {
+  allowlist;
+  baseUrl;
+  doFetch;
+  sleep;
+  token;
+  constructor(options) {
+    this.allowlist = new Set(options.allowlist.map((name) => name.toLowerCase()));
+    this.baseUrl = options.baseUrl ?? "https://api.github.com";
+    this.doFetch = options.fetchImpl ?? fetch;
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.token = options.token ?? null;
+  }
+  authorization() {
+    this.token ??= githubToken();
+    return `Bearer ${this.token}`;
+  }
+  assertAllowed(path) {
+    const match = REPO_PATH.exec(path);
+    if (match === null) return;
+    const repository = match[1].toLowerCase();
+    if (!this.allowlist.has(repository)) {
+      throw new NotAllowlisted(
+        `${match[1]} is not in the allowlist. Add it with /review-voice:init before reading it.`
+      );
+    }
+  }
+  async get(path, init = {}) {
+    if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
+      throw new ReadOnlyViolation(
+        `Review Voice is read-only; refused a ${init.method} to ${path}.`
+      );
+    }
+    this.assertAllowed(path);
+    const url = path.startsWith("http") ? path : `${this.baseUrl}${path}`;
+    for (let attempt = 0; ; attempt += 1) {
+      const response = await this.doFetch(url, {
+        method: "GET",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: this.authorization(),
+          "x-github-api-version": "2022-11-28",
+          "user-agent": "review-voice"
+        }
+      });
+      if (response.status === 403 || response.status === 429) {
+        const retryAfter = Number(response.headers.get("retry-after") ?? "0");
+        const remaining = response.headers.get("x-ratelimit-remaining");
+        if ((remaining === "0" || retryAfter > 0) && attempt < 4) {
+          const waitMs = retryAfter > 0 ? retryAfter * 1e3 : 2 ** attempt * 1e3;
+          await this.sleep(waitMs);
+          continue;
+        }
+      }
+      if (!response.ok) {
+        throw new GitHubError(
+          `GitHub returned ${response.status} for ${path}: ${(await response.text()).slice(0, 200)}`,
+          response.status
+        );
+      }
+      const link = response.headers.get("link");
+      const next = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
+      return { data: await response.json(), linkNext: next };
+    }
+  }
+  /** Follows pagination up to `limit` items, so a huge repository cannot run away. */
+  async paginate(path, limit) {
+    const items = [];
+    let next = path;
+    while (next !== null && items.length < limit) {
+      const page = await this.get(next);
+      if (!Array.isArray(page.data)) break;
+      items.push(...page.data);
+      next = page.linkNext;
+    }
+    return items.slice(0, limit);
+  }
+  /**
+   * Pagination for endpoints that wrap each page as `{ total_count, <key>: [] }`
+   * rather than returning an array, such as check runs and combined statuses.
+   * `paginate` stops at the first page of those, because the page is not an
+   * array, which is how a pull request with more than 100 check runs read as
+   * having only its first 100.
+   */
+  async paginateWrapped(path, key, limit) {
+    const items = [];
+    let next = path;
+    while (next !== null && items.length < limit) {
+      const page = await this.get(next);
+      const list = page.data?.[key];
+      if (!Array.isArray(list)) break;
+      items.push(...list);
+      next = page.linkNext;
+    }
+    return items.slice(0, limit);
+  }
+};
+
 // plugins/review-voice/src/diff/incremental.ts
+import { execFileSync as execFileSync4 } from "node:child_process";
 var nullableString = (value) => typeof value === "string" || value === null;
 var UNCHANGED_REASONS = /* @__PURE__ */ new Set(["base-merged", "history-rewritten", "base-sync-only"]);
 function parseReviewScope(value) {
@@ -1061,9 +1312,9 @@ var systemGit = {
     return runGit(["diff", "--name-only", "-z", since, head], cwd).split("\0").filter((path) => path.length > 0);
   },
   commitCount(since, head, cwd) {
-    const count = Number(runGit(["rev-list", "--count", `${since}..${head}`], cwd).trim());
-    if (!Number.isSafeInteger(count) || count < 0) throw new Error("git returned an invalid commit count");
-    return count;
+    const count2 = Number(runGit(["rev-list", "--count", `${since}..${head}`], cwd).trim());
+    if (!Number.isSafeInteger(count2) || count2 < 0) throw new Error("git returned an invalid commit count");
+    return count2;
   },
   mergeBase(left, right, cwd) {
     const base = runGit(["merge-base", left, right], cwd).trim();
@@ -2244,6 +2495,14 @@ var MIGRATIONS = [
   ALTER TABLE review_runs ADD COLUMN pull_number INTEGER;
   ALTER TABLE review_runs ADD COLUMN scope_json TEXT;
   CREATE INDEX idx_review_runs_pull ON review_runs (repository, pull_number, created_at DESC);
+  `,
+  // v9 - complexity assessment.
+  //
+  // Stored with the run, like the scope, so the verdict reads what the review
+  // was assessed as rather than re-deriving it from a diff it no longer has.
+  // Null on older rows, which means unknown rather than normal.
+  `
+  ALTER TABLE review_runs ADD COLUMN complexity_json TEXT;
   `
 ];
 function migrate(db) {
@@ -2485,8 +2744,8 @@ function recordRun(db, input) {
        review_run_id, repository, base_ref, head_ref, diff_hash,
        active_policy_versions_json, retrieved_precedents_json,
        candidates_json, output_json, created_at, stages_json,
-       pull_number, scope_json
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       pull_number, scope_json, complexity_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     reviewRunId,
     input.repository,
@@ -2506,13 +2765,22 @@ function recordRun(db, input) {
     (/* @__PURE__ */ new Date()).toISOString(),
     JSON.stringify(input.stages ?? []),
     input.pullNumber ?? null,
-    input.scope === void 0 ? null : JSON.stringify(input.scope)
+    input.scope === void 0 ? null : JSON.stringify(input.scope),
+    input.complexity === void 0 || input.complexity === null ? null : JSON.stringify(input.complexity)
   );
   recordAudit(db, "review_run_recorded", { type: "review_run", id: reviewRunId }, {
     repository: input.repository,
     findingCount: findings.length
   });
   return { reviewRunId, findings };
+}
+function storedComplexity(raw) {
+  if (typeof raw !== "string") return null;
+  try {
+    return parseComplexity(JSON.parse(raw));
+  } catch {
+    return null;
+  }
 }
 function storedScope(raw) {
   if (typeof raw !== "string") return null;
@@ -2531,6 +2799,7 @@ function runDetail(db, reviewRunId) {
     repository: row["repository"],
     pullNumber: Number.isInteger(row["pull_number"]) ? row["pull_number"] : null,
     scope: storedScope(row["scope_json"]),
+    complexity: storedComplexity(row["complexity_json"]),
     headRef: typeof row["head_ref"] === "string" ? row["head_ref"] : null,
     createdAt: row["created_at"],
     output: parsed.output,
@@ -3277,8 +3546,8 @@ var NodeBase = class {
     };
     const res = toJS(this, "", ctx);
     if (typeof onAnchor === "function")
-      for (const { count, res: res2 } of ctx.anchors.values())
-        onAnchor(res2, count);
+      for (const { count: count2, res: res2 } of ctx.anchors.values())
+        onAnchor(res2, count2);
     return typeof reviver === "function" ? applyReviver(reviver, { "": res }, "", res) : res;
   }
 };
@@ -3375,13 +3644,13 @@ function getAliasCount(doc, node, anchors) {
     const anchor = anchors && source && anchors.get(source);
     return anchor ? anchor.count * anchor.aliasCount : 0;
   } else if (isCollection(node)) {
-    let count = 0;
+    let count2 = 0;
     for (const item of node.items) {
       const c = getAliasCount(doc, item, anchors);
-      if (c > count)
-        count = c;
+      if (c > count2)
+        count2 = c;
     }
-    return count;
+    return count2;
   } else if (isPair(node)) {
     const kc = getAliasCount(doc, node.key, anchors);
     const vc = getAliasCount(doc, node.value, anchors);
@@ -5930,8 +6199,8 @@ var Document = class _Document {
     };
     const res = toJS(this.contents, jsonArg ?? "", ctx);
     if (typeof onAnchor === "function")
-      for (const { count, res: res2 } of ctx.anchors.values())
-        onAnchor(res2, count);
+      for (const { count: count2, res: res2 } of ctx.anchors.values())
+        onAnchor(res2, count2);
     return typeof reviver === "function" ? applyReviver(reviver, { "": res }, "", res) : res;
   }
   /**
@@ -6002,12 +6271,12 @@ var prettifyError = (src, lc) => (error) => {
     lineStr = prev + lineStr;
   }
   if (/[^ ]/.test(lineStr)) {
-    let count = 1;
+    let count2 = 1;
     const end = error.linePos[1];
     if (end?.line === line && end.col > col) {
-      count = Math.max(1, Math.min(end.col - col, 80 - ci));
+      count2 = Math.max(1, Math.min(end.col - col, 80 - ci));
     }
-    const pointer = " ".repeat(ci) + "^".repeat(count);
+    const pointer = " ".repeat(ci) + "^".repeat(count2);
     error.message += `:
 
 ${lineStr}
@@ -9056,6 +9325,25 @@ function asStringArray(value) {
 function positiveInt(value) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : void 0;
 }
+function readHumanReview(block, result) {
+  if (block === null) return;
+  const limit = (key) => {
+    if (block[key] === void 0) return void 0;
+    const value = block[key];
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+    result.warnings.push(`review.human_review.${key} must be a whole number above zero; using the default.`);
+    return void 0;
+  };
+  result.humanReview.maxDecisionPoints = limit("max_decision_points") ?? result.humanReview.maxDecisionPoints;
+  result.humanReview.maxHunkDecisionPoints = limit("max_hunk_decision_points") ?? result.humanReview.maxHunkDecisionPoints;
+  const paths = block["sensitive_paths"];
+  if (paths === void 0) return;
+  if (Array.isArray(paths)) {
+    result.humanReview.sensitivePaths = asStringArray(paths);
+  } else {
+    result.warnings.push("review.human_review.sensitive_paths must be a list; using the default.");
+  }
+}
 function contentHash(text) {
   return createHash3("sha256").update(text).digest("hex").slice(0, 16);
 }
@@ -9088,6 +9376,7 @@ function loadConfig(repositoryRoot2) {
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
     verification: { enabled: false, command: "", blockPresent: false },
+    humanReview: { ...DEFAULT_HUMAN_REVIEW, sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths] },
     layers: [],
     unapproved: [],
     warnings: []
@@ -9153,6 +9442,7 @@ function loadConfig(repositoryRoot2) {
         }
         const review = asRecord(doc["review"]);
         if (review !== null) {
+          readHumanReview(asRecord(review["human_review"]), result);
           result.layers.push({
             scope: { type: "repository", key: repositoryRoot2 },
             source: ".review-voice/config.yaml",
@@ -9408,9 +9698,9 @@ var spawnRunner = (command, input, timeoutMs, cwd) => {
     failed: result.error !== void 0 || result.status === null
   };
 };
-function verifyFindings(findings, config, options) {
-  const name = config.name ?? "external";
-  if (!config.enabled || config.command.trim().length === 0) {
+function verifyFindings(findings, config2, options) {
+  const name = config2.name ?? "external";
+  if (!config2.enabled || config2.command.trim().length === 0) {
     return {
       enabled: false,
       verifier: null,
@@ -9422,15 +9712,15 @@ function verifyFindings(findings, config, options) {
   if (findings.length === 0) {
     return { enabled: false, verifier: null, verdicts: [], didNotRun: [] };
   }
-  const dropThreshold = config.dropThreshold ?? DEFAULT_DROP_THRESHOLD;
+  const dropThreshold = config2.dropThreshold ?? DEFAULT_DROP_THRESHOLD;
   const verdicts = [];
   const didNotRun = [];
   const runner = options.runner ?? spawnRunner;
   for (const finding of findings) {
     const result = runner(
-      config.command,
+      config2.command,
       JSON.stringify({ ...finding, context: options.context ?? null }),
-      (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS2) * 1e3,
+      (config2.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS2) * 1e3,
       options.cwd
     );
     const unavailable = result.failed;
@@ -9718,22 +10008,22 @@ function selectEvents(events, options) {
   for (const event of sorted) {
     if (event.role === "owner") continue;
     if (selected.length >= options.target) break;
-    const count = perRepository[event.repository] ?? 0;
-    if (count >= cap) {
+    const count2 = perRepository[event.repository] ?? 0;
+    if (count2 >= cap) {
       deferred.push(event);
       continue;
     }
-    perRepository[event.repository] = count + 1;
+    perRepository[event.repository] = count2 + 1;
     selected.push(event);
   }
   const hardCap = Math.max(cap, Math.floor(options.target * Math.min(1, options.maxRepositoryShare * 1.5)));
   const overRepresented = /* @__PURE__ */ new Set();
   for (const event of deferred) {
     if (selected.length >= options.target) break;
-    const count = perRepository[event.repository] ?? 0;
-    if (count >= hardCap) continue;
-    if (count >= cap) overRepresented.add(event.repository);
-    perRepository[event.repository] = count + 1;
+    const count2 = perRepository[event.repository] ?? 0;
+    if (count2 >= hardCap) continue;
+    if (count2 >= cap) overRepresented.add(event.repository);
+    perRepository[event.repository] = count2 + 1;
     selected.push(event);
   }
   const shortfall = Math.max(0, options.target - selected.length);
@@ -9770,105 +10060,6 @@ function scaledRepositoryShare(repositoryCount) {
 // plugins/review-voice/src/conventions/discover.ts
 import { existsSync as existsSync2, readFileSync as readFileSync4, readdirSync, statSync } from "node:fs";
 import { dirname as dirname3, join as join5, sep } from "node:path";
-
-// plugins/review-voice/src/conventions/globs.ts
-function frontmatterPaths(content) {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
-  if (match === null) return [];
-  const block = match[1] ?? "";
-  const paths = [];
-  let inPaths = false;
-  for (const raw of block.split(/\r?\n/)) {
-    const line = raw.trimEnd();
-    if (/^paths\s*:/.test(line)) {
-      inPaths = true;
-      const inline = line.slice(line.indexOf(":") + 1).trim();
-      if (inline.startsWith("[")) {
-        for (const item of inline.slice(1, -1).split(",")) paths.push(unquote(item));
-        inPaths = false;
-      }
-      continue;
-    }
-    if (!inPaths) continue;
-    if (/^\s*-\s+/.test(line)) {
-      paths.push(unquote(line.replace(/^\s*-\s+/, "")));
-      continue;
-    }
-    if (/^\S/.test(line)) inPaths = false;
-  }
-  return paths.filter((glob) => glob.length > 0);
-}
-function unquote(value) {
-  return value.trim().replace(/^["']|["']$/g, "").trim();
-}
-function globToRegExp(glob) {
-  let source = "";
-  for (let i = 0; i < glob.length; i += 1) {
-    const char = glob[i];
-    if (char === "*") {
-      if (glob[i + 1] === "*") {
-        if (glob[i + 2] === "/") {
-          source += "(?:.*/)?";
-          i += 2;
-        } else {
-          source += ".*";
-          i += 1;
-        }
-        continue;
-      }
-      source += "[^/]*";
-      continue;
-    }
-    if (char === "?") {
-      source += "[^/]";
-      continue;
-    }
-    source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  }
-  return new RegExp(`^${source}$`);
-}
-function governsCount(globs, changedPaths) {
-  if (globs.length === 0 || changedPaths.length === 0) return 0;
-  const normalised = changedPaths.map((path) => path.split("\\").join("/"));
-  const compiled = globs.flatMap((glob) => {
-    try {
-      const exact = globToRegExp(glob);
-      return glob.includes("/") ? [exact] : [exact, globToRegExp(`**/${glob}`)];
-    } catch {
-      return [];
-    }
-  });
-  return normalised.filter((path) => compiled.some((pattern) => pattern.test(path))).length;
-}
-function governsAny(globs, changedPaths) {
-  if (globs.length === 0 || changedPaths.length === 0) return false;
-  const normalised = changedPaths.map((path) => path.split("\\").join("/"));
-  return globs.some((glob) => {
-    let pattern;
-    try {
-      pattern = globToRegExp(glob);
-    } catch {
-      return false;
-    }
-    const loose = glob.includes("/") ? null : globToRegExp(`**/${glob}`);
-    return normalised.some((path) => pattern.test(path) || loose !== null && loose.test(path));
-  });
-}
-function pointerTargets(content) {
-  const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---/, "").trim();
-  if (body.length === 0) return [];
-  const targets = [];
-  for (const raw of body.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (line.length === 0 || line.startsWith("<!--") || line.startsWith("#")) continue;
-    const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(line);
-    if (match?.[1] === void 0) return [];
-    targets.push(match[1]);
-  }
-  return targets;
-}
-
-// plugins/review-voice/src/conventions/discover.ts
 var REPOSITORY_FILES = [
   { path: "CLAUDE.md", kind: "claude" },
   { path: ".claude/CLAUDE.md", kind: "claude" },
@@ -10417,8 +10608,8 @@ function storeEvents(db, events) {
   }
   const redactionTotals = {};
   for (const event of events) {
-    for (const [label2, count] of Object.entries(event.redactionCounts)) {
-      redactionTotals[label2] = (redactionTotals[label2] ?? 0) + count;
+    for (const [label2, count2] of Object.entries(event.redactionCounts)) {
+      redactionTotals[label2] = (redactionTotals[label2] ?? 0) + count2;
     }
   }
   recordAudit(db, "corpus_ingested", null, {
@@ -10457,10 +10648,10 @@ function corpusCoverage(db, options = {}) {
   }
   const share = options.maxRepositoryShare;
   if (share !== void 0 && total > 0) {
-    for (const [repository, count] of Object.entries(byRepository)) {
-      if (count / total > share) {
+    for (const [repository, count2] of Object.entries(byRepository)) {
+      if (count2 / total > share) {
         warnings.push(
-          `${repository} is ${Math.round(count / total * 100)}% of the corpus, above the configured ${Math.round(share * 100)}% share. Policy compiled from it will mostly describe that repository.`
+          `${repository} is ${Math.round(count2 / total * 100)}% of the corpus, above the configured ${Math.round(share * 100)}% share. Policy compiled from it will mostly describe that repository.`
         );
       }
     }
@@ -12152,6 +12343,24 @@ function decide(input) {
       cappedByCi: false
     };
   }
+  if (input.needsHuman === true && input.mapped === "APPROVE") {
+    if (input.recheck) {
+      return {
+        event: "COMMENT",
+        action: "refuse",
+        reasons: [...reasons, "the change was raised for human review, so there is no approval to re-check"],
+        exitCode: 2,
+        cappedByCi: false
+      };
+    }
+    return {
+      event: "COMMENT",
+      action: "post",
+      reasons: [...reasons, "the change was raised for human review, so this comments rather than approves"],
+      exitCode: 0,
+      cappedByCi: false
+    };
+  }
   if (input.recheck) {
     if (input.mapped !== "APPROVE") {
       return {
@@ -12196,25 +12405,28 @@ function decide(input) {
   }
   return { event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false };
 }
-function plural(count, word) {
-  return `${count} ${word}${count === 1 ? "" : "s"}`;
+function plural(count2, word) {
+  return `${count2} ${word}${count2 === 1 ? "" : "s"}`;
 }
 function summaryLine(event, posted, cappedBy) {
-  const count = posted.length;
+  const count2 = posted.length;
   const highest = [...posted].map((finding) => finding.severity).sort((a, b) => RANK[a] - RANK[b])[0];
   if (cappedBy === "ci") {
-    return count === 0 ? "No problems found, but not approving while CI is red." : `${plural(count, "nit")}; not approving while CI is red.`;
+    return count2 === 0 ? "No problems found, but not approving while CI is red." : `${plural(count2, "nit")}; not approving while CI is red.`;
   }
   if (cappedBy === "held") {
-    return count === 0 ? "Not approving yet." : `${plural(count, "nit")}; not approving yet.`;
+    return count2 === 0 ? "Not approving yet." : `${plural(count2, "nit")}; not approving yet.`;
+  }
+  if (cappedBy === "complexity") {
+    return count2 === 0 ? "No problems found; leaving approval to a human reviewer." : `${plural(count2, "nit")}; leaving approval to a human reviewer.`;
   }
   if (event === "APPROVE") {
-    return count === 0 ? "No problems found." : `Approved, with ${plural(count, "nit")}.`;
+    return count2 === 0 ? "No problems found." : `Approved, with ${plural(count2, "nit")}.`;
   }
   if (event === "REQUEST_CHANGES") {
-    return `Changes requested: ${plural(count, "comment")}, the highest ${highest}.`;
+    return `Changes requested: ${plural(count2, "comment")}, the highest ${highest}.`;
   }
-  return `${plural(count, "comment")}, the highest ${highest}.`;
+  return `${plural(count2, "comment")}, the highest ${highest}.`;
 }
 function inlineComment(finding) {
   return {
@@ -12228,9 +12440,12 @@ function inlineComment(finding) {
 }
 function buildPayload(input) {
   const posted = [...input.planned.inline, ...input.planned.unanchored];
-  const body = [summaryLine(input.event, posted, input.cappedBy), ...input.planned.unanchored.map((finding) => finding.raw)].join(
-    "\n\n"
-  );
+  const note = input.humanReviewNote ?? null;
+  const body = [
+    summaryLine(input.event, posted, input.cappedBy),
+    ...note === null ? [] : [note],
+    ...input.planned.unanchored.map((finding) => finding.raw)
+  ].join("\n\n");
   return {
     commit_id: input.head,
     event: input.event,
@@ -12295,12 +12510,32 @@ function refusal(head, reason2) {
       ci: null,
       run: null,
       held: [],
+      complexity: null,
       payload: null,
       alreadyInline: 0,
       key: null,
       preview: null
     }
   };
+}
+var MAX_PRIOR_DEPTH = 8;
+function pullRequestComplexity(run, loadRun) {
+  let found = run.complexity;
+  if (found?.level === "high") return found;
+  const seen = /* @__PURE__ */ new Set([run.reviewRunId]);
+  let current = run;
+  for (let depth = 0; depth < MAX_PRIOR_DEPTH; depth += 1) {
+    if (current.scope === null || current.scope.kind === "full") break;
+    const priorId = current.scope.priorRunId;
+    if (priorId === null || seen.has(priorId)) break;
+    seen.add(priorId);
+    const prior = loadRun(priorId);
+    if (prior === null) break;
+    if (prior.complexity?.level === "high") return prior.complexity;
+    found = found ?? prior.complexity;
+    current = prior;
+  }
+  return found;
 }
 function recordedRun(options, head) {
   const runId = options.runId ?? latestRunForPull(options.db, options.repository, options.pullNumber)?.reviewRunId ?? null;
@@ -12340,13 +12575,17 @@ async function computeVerdict(options) {
   const actual = await readHead2(options.client, options.repository, options.pullNumber);
   const headMoved = actual !== head;
   const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? []);
+  const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
+  const needsHuman = complexity?.level === "high";
   const decision = decide({
     mapped: planned.mapped,
     headMoved,
     ci: ci?.state ?? null,
     recheck: options.recheck === true,
-    heldBackApproval: planned.heldBackApproval
+    heldBackApproval: planned.heldBackApproval,
+    needsHuman
   });
+  if (complexity === null) decision.reasons.push("no complexity assessment was recorded for this run");
   let payload = null;
   let preview = null;
   let key = null;
@@ -12356,7 +12595,8 @@ async function computeVerdict(options) {
       head,
       event: decision.event,
       planned,
-      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval ? "held" : null
+      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval ? "held" : needsHuman && planned.mapped === "APPROVE" ? "complexity" : null,
+      humanReviewNote: humanReviewNote(complexity)
     });
     key = idempotencyKey(options.repository, options.pullNumber, full2);
     const sent = sentInline(options.db, options.repository, options.pullNumber, head);
@@ -12382,6 +12622,7 @@ async function computeVerdict(options) {
       ci,
       run: run.reviewRunId,
       held: planned.held,
+      complexity,
       payload,
       alreadyInline,
       key,
@@ -12871,6 +13112,8 @@ function diffSummary(result) {
     pullNumber: result.pullNumber ?? null,
     scope,
     scopeNote: result.scopeNote ?? null,
+    complexity: result.complexity ?? null,
+    humanReviewNote: result.humanReviewNote ?? null,
     truncated: result.truncated ?? false,
     truncationNote: result.truncationNote ?? null,
     reviewedFileCount: result.reviewedFileCount,
@@ -12881,7 +13124,9 @@ function diffSummary(result) {
     prior: result.prior === void 0 ? null : { source: result.prior.source, head: result.prior.head, runId: result.prior.runId }
   };
 }
-function emitDiff(result, outDir) {
+function emitDiff(acquired, outDir) {
+  const complexity = assessComplexity(acquired.diff, acquired.files ?? [], repositoryConfig()?.humanReview);
+  const result = { ...acquired, complexity, humanReviewNote: humanReviewNote(complexity) };
   if (outDir === null) {
     console.log(JSON.stringify(result, null, 2));
     return 0;
@@ -12999,33 +13244,33 @@ function resolveOutPath(out, defaultName) {
 function contextCommand() {
   try {
     const root = repositoryRoot(process.cwd());
-    const config = loadConfig(root);
-    const policy = resolvePolicy(config.layers);
+    const config2 = loadConfig(root);
+    const policy = resolvePolicy(config2.layers);
     console.log(
       JSON.stringify(
         {
           repositoryRoot: root,
-          ownerReviewer: config.ownerReviewer,
-          allowlist: config.allowlist,
-          staticEvidence: config.staticEvidence,
+          ownerReviewer: config2.ownerReviewer,
+          allowlist: config2.allowlist,
+          staticEvidence: config2.staticEvidence,
           // Reported whether or not it is configured. A config written before
           // second-pass verification existed has no `verification:` block at
           // all, so an upgrading user silently got none of it and nothing in
           // any command said so.
           verification: {
-            enabled: config.verification.enabled,
-            verifier: config.verification.name ?? null,
-            configured: config.verification.blockPresent
+            enabled: config2.verification.enabled,
+            verifier: config2.verification.name ?? null,
+            configured: config2.verification.blockPresent
           },
           policy,
           // Repository-supplied policy is a proposal, never an activation:
           // see docs/adr/0006.
-          pendingApproval: config.unapproved,
+          pendingApproval: config2.unapproved,
           // Not raised on top of a parse failure: a config that did not parse
           // says nothing about whether it has a verification block, and the
           // parse error is the actionable item.
-          warnings: config.verification.blockPresent || config.warnings.length > 0 ? config.warnings : [
-            ...config.warnings,
+          warnings: config2.verification.blockPresent || config2.warnings.length > 0 ? config2.warnings : [
+            ...config2.warnings,
             "No verification block in .review-voice/config.yaml, so the second-pass verifier never runs. Configs written before it existed do not have one. See the second-pass verification section of the README."
           ]
         },
@@ -13051,13 +13296,13 @@ async function discoverCommand() {
 }
 function consentPlanCommand(argv) {
   const root = repositoryRoot(process.cwd());
-  const config = loadConfig(root);
-  const owner = flag(argv, "--owner") ?? config.ownerReviewer;
+  const config2 = loadConfig(root);
+  const owner = flag(argv, "--owner") ?? config2.ownerReviewer;
   if (owner === null) {
     console.error("No owner reviewer yet. Pass --owner <login>.");
     return 2;
   }
-  const repositories = argv.includes("--repo") ? argv.filter((_, index) => argv[index - 1] === "--repo") : config.allowlist;
+  const repositories = argv.includes("--repo") ? argv.filter((_, index) => argv[index - 1] === "--repo") : config2.allowlist;
   if (repositories.length === 0) {
     console.error("No repositories selected. Pass --repo <owner/repo>, or allowlist some first.");
     return 2;
@@ -13102,23 +13347,23 @@ function purgeCommand(argv) {
 }
 async function syncCommand(argv) {
   const root = repositoryRoot(process.cwd());
-  const config = loadConfig(root);
-  if (config.allowlist.length === 0) {
+  const config2 = loadConfig(root);
+  if (config2.allowlist.length === 0) {
     console.error("No repositories are allowlisted. Run /review-voice:init first.");
     return 2;
   }
-  if (config.ownerReviewer === null) {
+  if (config2.ownerReviewer === null) {
     console.error("No owner reviewer configured. Run /review-voice:init first.");
     return 2;
   }
-  const defaultTarget = scaledTarget(config.allowlist.length);
+  const defaultTarget = scaledTarget(config2.allowlist.length);
   const target = numericFlag(argv, "--target", defaultTarget) ?? defaultTarget;
   const maxPulls = numericFlag(argv, "--max-pulls", 60) ?? 60;
-  const repositoryShare = scaledRepositoryShare(config.allowlist.length);
+  const repositoryShare = scaledRepositoryShare(config2.allowlist.length);
   const dryRun = argv.includes("--dry-run");
-  const client = new GitHubClient({ allowlist: config.allowlist });
+  const client = new GitHubClient({ allowlist: config2.allowlist });
   const stateDb = openDatabase();
-  const syncRunId = beginSyncRun(stateDb, config.allowlist);
+  const syncRunId = beginSyncRun(stateDb, config2.allowlist);
   const stats = {
     pullRequestsScanned: 0,
     pullRequestsUnchanged: 0,
@@ -13130,14 +13375,14 @@ async function syncCommand(argv) {
   };
   const collected = [];
   const pendingWatermarks = [];
-  for (const [index, repository] of config.allowlist.entries()) {
-    console.error(`[${index + 1}/${config.allowlist.length}] reading ${repository} ...`);
+  for (const [index, repository] of config2.allowlist.entries()) {
+    console.error(`[${index + 1}/${config2.allowlist.length}] reading ${repository} ...`);
     const watermarks = dryRun ? void 0 : loadWatermarks(stateDb, repository);
     const result = await collectRepository(
       client,
       {
         repository,
-        ownerLogin: config.ownerReviewer,
+        ownerLogin: config2.ownerReviewer,
         maxPullRequests: maxPulls,
         maxCommentsPerPull: 200,
         includeForks: false,
@@ -13211,10 +13456,10 @@ function draftCommand(argv) {
 }
 function postCheckCommand() {
   const root = repositoryRoot(process.cwd());
-  const config = loadConfig(root);
+  const config2 = loadConfig(root);
   const db = openDatabase();
   try {
-    const gate = evaluatePostingGate(db, config.postingEnabled);
+    const gate = evaluatePostingGate(db, config2.postingEnabled);
     console.log(JSON.stringify(gate, null, 2));
     return 0;
   } finally {
@@ -13266,7 +13511,7 @@ async function postCommand(argv) {
     console.error(target);
     return 2;
   }
-  const config = repositoryConfig();
+  const config2 = repositoryConfig();
   const db = openDatabase();
   try {
     const { exitCode, output } = await postReview({
@@ -13277,8 +13522,8 @@ async function postCommand(argv) {
       writerFor: (allowlist) => new ReviewWriter({ allowlist }),
       confirm: argv.includes("--confirm"),
       event: flag(argv, "--event")?.toUpperCase(),
-      postingEnabled: config?.postingEnabled ?? false,
-      gateChecks: config?.ciGateChecks ?? []
+      postingEnabled: config2?.postingEnabled ?? false,
+      gateChecks: config2?.ciGateChecks ?? []
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -13700,10 +13945,10 @@ function verifyCommand(argv) {
   }
   try {
     const root = repositoryRoot(process.cwd());
-    const config = loadConfig(root);
+    const config2 = loadConfig(root);
     const base = flag(argv, "--base");
     const head = flag(argv, "--head");
-    const report = verifyFindings(findings, config.verification, {
+    const report = verifyFindings(findings, config2.verification, {
       cwd: root,
       context: {
         repository: flag(argv, "--repository") ?? inferRepository(root),
@@ -13728,10 +13973,10 @@ function verifyCommand(argv) {
 function evidenceCommand() {
   try {
     const root = repositoryRoot(process.cwd());
-    const config = loadConfig(root);
-    const report = collectEvidence(config.staticEvidence.commands, {
+    const config2 = loadConfig(root);
+    const report = collectEvidence(config2.staticEvidence.commands, {
       cwd: root,
-      enabled: config.staticEvidence.enabled
+      enabled: config2.staticEvidence.enabled
     });
     console.log(JSON.stringify(report, null, 2));
     return 0;
@@ -13772,6 +14017,7 @@ function recordCommand(argv) {
   const filesFile = flag(argv, "--files");
   let pullNumber;
   let scope;
+  let complexity = null;
   if (filesFile !== null) {
     try {
       const manifest = JSON.parse(readFileSync5(filesFile, "utf8"));
@@ -13779,6 +14025,10 @@ function recordCommand(argv) {
         pullNumber = manifest.pullNumber;
       }
       scope = reviewScopeFromManifest(manifest.scope);
+      if (manifest.complexity !== void 0 && manifest.complexity !== null) {
+        complexity = parseComplexity(manifest.complexity);
+        if (complexity === null) console.error(`The complexity assessment in ${filesFile} is malformed; recording without it.`);
+      }
     } catch {
       console.error(`Cannot read ${filesFile}; recording without pull-request scope.`);
     }
@@ -13871,6 +14121,7 @@ function recordCommand(argv) {
       headRef: flag(argv, "--head"),
       pullNumber,
       scope,
+      complexity,
       diff,
       output,
       candidates,
@@ -13971,6 +14222,11 @@ function explainCommand(argv) {
     if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
     const recordedScope = describeReviewScope(detail.scope);
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
+    if (detail.complexity !== null) {
+      console.log(
+        detail.complexity.level === "high" ? `Complexity high - ${detail.complexity.reasons.join("; ")}` : "Complexity normal"
+      );
+    }
     console.log("");
     const shown = wanted === void 0 ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
     if (shown.length === 0) {
@@ -14207,8 +14463,8 @@ function statusCommand() {
     let allowlist = [];
     let maxRepositoryShare;
     try {
-      const config = loadConfig(repositoryRoot(process.cwd()));
-      allowlist = config.allowlist;
+      const config2 = loadConfig(repositoryRoot(process.cwd()));
+      allowlist = config2.allowlist;
       maxRepositoryShare = scaledRepositoryShare(allowlist.length);
     } catch {
     }

@@ -39,6 +39,18 @@ review:
   final_score_threshold: 0.78
   no_findings_response: "No actionable findings."
   suppress_hedge_phrases: true
+  # A change over any of these is raised for a human and never approved by
+  # Review Voice (docs/adr/0012). The review still runs and posts its findings.
+  # Defaults are shown; a limit must be a whole number above zero.
+  human_review:
+    max_decision_points: 40         # branches added across the whole change
+    max_hunk_decision_points: 15    # branches added in the densest hunk
+    # A list here replaces the defaults; an empty list turns the signal off.
+    sensitive_paths:
+      - ".github/workflows/**"
+      - "**/migrations/**"
+      - "**/auth/**"
+      - "**/security/**"
 
 static_evidence:
   # Commands are opt-in. Review Voice will suggest what it detects but never
