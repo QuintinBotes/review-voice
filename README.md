@@ -128,6 +128,12 @@ lines, sent only with `--confirm` for that post, and an approval only while the
 head is unchanged and CI is green (see
 [ADR 0010](docs/adr/0010-review-verdict-posting.md)). It never merges, dismisses
 reviews, resolves threads or sets a status.
+`RV verdict` computes the full decision as JSON - event, action, reasons, CI,
+complexity cap, held findings and payload preview - and never posts, so a loop
+that drives reviews should call it instead of re-implementing the rules. Its
+exit codes: 0 ready, 2 nothing to post, 3 head moved, 4 CI still running, 5 CI
+red on a re-check, 6 CI needs a rerun
+([ADR 0013](docs/adr/0013-ci-needs-rerun.md)).
 Full detail in [PRIVACY.md](PRIVACY.md) and
 [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 

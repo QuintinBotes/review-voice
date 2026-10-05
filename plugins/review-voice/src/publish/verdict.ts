@@ -3,7 +3,7 @@ import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { SEVERITIES, type Severity } from '../contract/limits.ts';
 import type { RunDetail } from '../store/runs.ts';
 import type { ReviewComment, ReviewEvent, ReviewPayload } from '../github/writer.ts';
-import type { CiState } from './ci.ts';
+import type { CiEntry, CiState } from './ci.ts';
 
 export type { ReviewEvent, ReviewPayload };
 
@@ -75,12 +75,34 @@ export function reviewFindings(output: string): ReviewFinding[] {
 
 export type RunLoader = (runId: string) => RunDetail | null;
 
-interface ScoreLike {
+export interface ScoreLike {
   path?: unknown;
   line?: unknown;
   confidenceSource?: unknown;
   eligible?: unknown;
   severity?: { severity?: unknown } | null;
+  anchor?: unknown;
+  anchorCheck?: { kind?: unknown } | null;
+}
+
+/**
+ * Whether a score is for a finding about unchanged code the change made
+ * wrong. Read from either field, so a score taken without `--diff-file` still
+ * says so.
+ */
+function isStaleConsumer(score: ScoreLike): boolean {
+  return score.anchor === 'stale-consumer' || score.anchorCheck?.kind === 'stale-consumer';
+}
+
+/**
+ * The scores recorded at a location. Shared by the post-time matcher and the
+ * render-time severity check so the two cannot disagree about what "the score
+ * for this finding" means. A null line matches any line in the file.
+ */
+export function scoresAtLocation(scores: readonly unknown[], path: string, line: number | null): ScoreLike[] {
+  return (scores as ScoreLike[]).filter(
+    (score) => typeof score === 'object' && score !== null && score.path === path && (line === null || score.line === line),
+  );
 }
 
 /** How far a carried finding's history is followed back. Carries do not chain deeper in practice. */
@@ -106,7 +128,7 @@ export function verification(
   run: RunDetail,
   loadRun: RunLoader,
   used: Set<object> = new Set(),
-): { verified: boolean; reason: string; runId: string } {
+): { verified: boolean; reason: string; runId: string; staleConsumer?: boolean } {
   if (finding.path === null || finding.severity === null) {
     return { verified: false, reason: 'it names no file, so no score can be matched to it', runId: run.reviewRunId };
   }
@@ -118,15 +140,18 @@ export function verification(
   let reason = 'no score was recorded for it';
 
   for (let depth = 0; depth <= MAX_CARRY_DEPTH; depth += 1) {
-    const scores = (Array.isArray(current.scores) ? current.scores : []) as ScoreLike[];
-    const here = scores.filter(
-      (score) => typeof score === 'object' && score !== null && score.path === path && (line === null || score.line === line),
-    );
+    const scores = Array.isArray(current.scores) ? current.scores : [];
+    const here = scoresAtLocation(scores, path, line);
     const same = here.filter((score) => score.severity?.severity === severity && !used.has(score));
     const backing = same.find((score) => score.confidenceSource === 'verifier' && score.eligible === true);
     if (backing !== undefined) {
       used.add(backing);
-      return { verified: true, reason: 'established by the verifier', runId: current.reviewRunId };
+      return {
+        verified: true,
+        reason: 'established by the verifier',
+        runId: current.reviewRunId,
+        ...(isStaleConsumer(backing) ? { staleConsumer: true } : {}),
+      };
     }
     if (same.some((score) => score.confidenceSource === 'verifier')) {
       reason = 'the verifier scored it, but it did not clear the gates';
@@ -167,7 +192,10 @@ export interface HeldBack {
 export interface PlannedFindings {
   /** Verified and anchored: each becomes an inline comment. */
   inline: ReviewFinding[];
-  /** Verified but with no line: the only findings that go in the body. */
+  /**
+   * Verified but with no line to comment on: a finding that names none, or a
+   * stale consumer, whose line is unchanged code GitHub cannot anchor on.
+   */
   unanchored: ReviewFinding[];
   held: HeldBack[];
   /** The event the posted findings call for, before CI is considered. */
@@ -222,7 +250,10 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
       heldSeverities.push(finding.severity ?? 'minor');
       continue;
     }
-    (finding.path !== null && finding.line !== null ? inline : unanchored).push(finding);
+    // A stale consumer keeps its `path:line` in the body text: the reader still
+    // needs to know where, and an inline comment there would be refused.
+    const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true;
+    (anchorable ? inline : unanchored).push(finding);
   }
 
   const posted = [...inline, ...unanchored].map((finding) => finding.severity as Severity);
@@ -236,10 +267,14 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
 export type Action = 'post' | 'wait' | 'refuse';
 
 export interface Decision {
-  event: ReviewEvent;
+  /** Null when no event may be sent at all until CI is rerun. */
+  event: ReviewEvent | null;
   action: Action;
   reasons: string[];
-  /** 0 ready, 2 nothing to recheck, 3 head moved, 4 CI still running, 5 CI red on a recheck. */
+  /**
+   * 0 ready, 2 nothing to recheck, 3 head moved, 4 CI still running, 5 CI red
+   * on a recheck, 6 CI needs a rerun.
+   */
   exitCode: number;
   cappedByCi: boolean;
 }
@@ -256,6 +291,8 @@ export function decide(input: {
   mapped: ReviewEvent;
   headMoved: boolean;
   ci: CiState['state'] | null;
+  /** The checks behind a needs-rerun state, named in the reasons. */
+  rerun?: readonly CiEntry[] | undefined;
   recheck: boolean;
   heldBackApproval?: boolean;
   /** The change was assessed high-complexity, so a person, not this tool, approves it. */
@@ -271,6 +308,21 @@ export function decide(input: {
       action: 'refuse',
       reasons: [...reasons, 'the pull request head moved since the review read it; review the new head'],
       exitCode: 3,
+      cappedByCi: false,
+    };
+  }
+
+  // A check CI never finished says nothing about the change, so no event is
+  // fair: an approval would skip it and a comment or request for changes
+  // would be posted on a head nobody has tested. Before every other guard, so
+  // it holds for every mapped event and for a re-check (docs/adr/0013).
+  if (input.ci === 'needs-rerun') {
+    const named = (input.rerun ?? []).map((entry) => `${entry.name} (${entry.detail})`);
+    return {
+      event: null,
+      action: 'wait',
+      reasons: [...reasons, `CI needs a rerun${named.length > 0 ? `: ${named.join(', ')}` : ''}`],
+      exitCode: 6,
       cappedByCi: false,
     };
   }
@@ -393,7 +445,8 @@ function inlineComment(finding: ReviewFinding): ReviewComment {
 /**
  * The create-review request body. Every anchored finding is an inline comment
  * on its line; the body is the one-line verdict plus only the findings with no
- * line to sit on. Never one global block of findings.
+ * line to sit on, which includes a stale consumer on unchanged code. Never one
+ * global block of findings.
  */
 export function buildPayload(input: {
   head: string;

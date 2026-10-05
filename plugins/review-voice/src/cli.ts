@@ -7,7 +7,7 @@
  * (candidate generation, verification, wording) live in the plugin's agents.
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
-import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
+import { readFileSync, readSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
@@ -15,12 +15,13 @@ import { pluginVersion } from './version.ts';
 import { runDoctor } from './doctor.ts';
 import { validateOutput } from './contract/validate.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
+import { checkSeverityAgainstScores, scoredEntries } from './contract/severity-check.ts';
 import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
 import { acquireDiff, GitError, type ChangedFile } from './diff/acquire.ts';
 import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAssessment } from './diff/complexity.ts';
 import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
-import { classifyAnchor, parseHunks, reason, type FileHunks } from './diff/hunks.ts';
+import { classifyAnchor, classifyStaleConsumer, parseHunks, reason, type AnchorCheck, type FileHunks } from './diff/hunks.ts';
 import { readThread, type ThreadComment } from './diff/thread.ts';
 import { collectSymbolContext } from './diff/symbols.ts';
 import { openDatabase } from './store/db.ts';
@@ -36,7 +37,7 @@ import {
   type StageTiming,
 } from './store/runs.ts';
 import { carryFindings, CarryError, type CarriedFinding } from './diff/carry.ts';
-import { latestOwnReview, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
+import { fetchPriorHead, latestOwnReview, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
   recordFeedback,
   normaliseAction,
@@ -67,12 +68,17 @@ import {
   applyQuestionCap,
   alreadySaidOnThread,
   possiblySaidOnThread,
+  possiblyRepeatsDescription,
   normaliseCandidate,
   isFixVerdict,
   editorFix,
   assertUniqueCandidateIds,
   MalformedCandidate,
   DEFAULT_THRESHOLDS,
+  DUPLICATE_OVERLAP,
+  EVIDENCE_QUALITIES,
+  overlap,
+  significantWords,
   type Candidate,
   type RawCandidate,
   type ScoreBreakdown,
@@ -152,7 +158,9 @@ symbols flags:
 
 check-candidates:
   --diff-file <path>     Require anchors on changed lines
-  --thread <path>        Drop candidates the thread already states
+  --thread <path>        Drop candidates the thread already states; flag
+                         description overlaps for the verifier
+  --held-from <run-id>   Drop repeats of that run's held findings (--head)
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -249,6 +257,11 @@ const STDIN_INPUT: Record<string, string> = {
   post: 'the validated review',
 };
 
+/** A run with no findings still has to be recorded; say what to pipe for it. */
+function noFindingsHint(): string {
+  return `A run with no findings pipes exactly ${DEFAULT_LIMITS.noFindingsResponse}, e.g. echo '${DEFAULT_LIMITS.noFindingsResponse}' | RV record ...`;
+}
+
 function readStdin(): string {
   // Run from a terminal with nothing piped, a read blocks forever and looks
   // like a hang. Say what to pipe and stop at once; piped input is untouched.
@@ -256,13 +269,32 @@ function readStdin(): string {
     const command = process.argv[2] ?? 'command';
     const what = STDIN_INPUT[command] ?? 'its input';
     console.error(`${command} reads ${what} on stdin; pipe it in, e.g. cat input | RV ${command}`);
+    if (command === 'record') console.error(noFindingsHint());
     process.exit(2);
   }
-  try {
-    return readFileSync(0, 'utf8');
-  } catch {
-    return '';
+  // readFileSync(0) gives up on EAGAIN, which a non-blocking pipe returns
+  // while the writer is still filling it. Under load that read the candidates
+  // as an empty string and refused valid input, so wait and read again.
+  const chunks: Buffer[] = [];
+  const buffer = Buffer.alloc(64 * 1024);
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    let read: number;
+    try {
+      read = readSync(0, buffer, 0, buffer.length, null);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EAGAIN') {
+        Atomics.wait(pause, 0, 0, 5);
+        continue;
+      }
+      if (code === 'EOF') break;
+      return chunks.length === 0 ? '' : Buffer.concat(chunks).toString('utf8');
+    }
+    if (read === 0) break;
+    chunks.push(Buffer.from(buffer.subarray(0, read)));
   }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 function numericFlag(argv: string[], name: string, fallback: number): number | null {
@@ -294,7 +326,27 @@ function validateOutputCommand(argv: string[]): number {
     maxTotalWords: Math.max(scaledTotal, maxTotal === DEFAULT_LIMITS.maxTotalWords ? scaledTotal : maxTotal),
   };
 
-  const result = validateOutput(readStdin(), limits);
+  const output = readStdin();
+  const result = validateOutput(output, limits);
+
+  // A tag that disagrees with its score is otherwise held silently at post
+  // time, after the editor can no longer retry.
+  const scoresFlag = flag(argv, '--scores');
+  if (argv.includes('--scores') && scoresFlag === null) {
+    console.error('--scores needs the JSON file that `RV score` printed.');
+    return 2;
+  }
+  if (scoresFlag !== null) {
+    let entries: unknown[];
+    try {
+      entries = scoredEntries(JSON.parse(readFileSync(scoresFlag, 'utf8')));
+    } catch (error) {
+      console.error(`Cannot read ${scoresFlag}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    result.violations.push(...checkSeverityAgainstScores(output, entries));
+    result.valid = result.violations.length === 0;
+  }
 
   if (argv.includes('--json')) {
     console.log(JSON.stringify(result, null, 2));
@@ -430,10 +482,17 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
       truncated: result.truncated,
       forceFull: argv.includes('--full'),
       base: result.refs.base.available && result.base !== null ? result.base : undefined,
+      fetchPriorHead: (sha) => fetchPriorHead(sha, repository, process.cwd()),
     });
-  } catch {
+  } catch (error) {
     planned = {
-      scope: { kind: 'full', cause: 'compare-unavailable', since: prior?.headRef ?? null, priorRunId: prior?.reviewRunId ?? null },
+      scope: {
+        kind: 'full',
+        cause: 'compare-unavailable',
+        since: prior?.headRef ?? null,
+        priorRunId: prior?.reviewRunId ?? null,
+        detail: `planning the scope failed: ${(error instanceof Error ? error.message : String(error)).split('\n')[0]}`,
+      },
       interdiffPatch: null,
     };
   }
@@ -477,7 +536,14 @@ function diffSummary(result: EmittedDiff): {
   base: string | null;
   head: string;
   pullNumber: number | null;
-  scope: { kind: ReviewScope['kind']; cause: string | null; since: string | null; mergeBase: string | null } | null;
+  scope: {
+    kind: ReviewScope['kind'];
+    cause: string | null;
+    /** Which condition sent a full read, and which git command failed, when one did. */
+    detail: string | null;
+    since: string | null;
+    mergeBase: string | null;
+  } | null;
   scopeNote: string | null;
   complexity: ComplexityAssessment | null;
   humanReviewNote: string | null;
@@ -500,6 +566,7 @@ function diffSummary(result: EmittedDiff): {
             : result.scope.kind === 'unchanged'
               ? result.scope.reason
               : null,
+        detail: result.scope.kind === 'full' ? (result.scope.detail ?? null) : null,
         since: result.scope.since,
         mergeBase:
           result.scope.kind === 'unchanged' || result.scope.kind === 'interdiff' ? result.scope.mergeBase : null,
@@ -983,7 +1050,8 @@ function repositoryConfig(): ReturnType<typeof loadConfig> | null {
 /**
  * The review event, head guard and CI guard, computed and printed. Reads only;
  * see docs/adr/0010. Exit 3 means the head moved, 4 that CI is still running
- * on an approval, 5 that a re-check found CI red.
+ * on an approval, 5 that a re-check found CI red, 6 that CI needs a rerun
+ * before any event is sent (docs/adr/0013).
  */
 async function verdictCommand(argv: string[]): Promise<number> {
   const target = reviewTarget(argv, 'verdict');
@@ -1077,6 +1145,9 @@ function evaluateCommand(argv: string[]): number {
 /** The most entries a serialised path list carries; counts keep the rest honest. */
 const LIST_CAP = 20;
 const EXCERPT_CAP = 300;
+/** Any other string: fix text, evidence, reasons. The editor needs sentences, not transcripts. */
+const TEXT_CAP = 600;
+const CLAIM_CAP = 1000;
 
 /**
  * Caps long string lists and precedent excerpts in score output.
@@ -1085,12 +1156,17 @@ const EXCERPT_CAP = 300;
  * 137 KB report. Only the serialised copy is cut, so computeReach still
  * returns the full lists. A cut list gets `<name>Total` and `truncated`.
  */
-function boundLists(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(boundLists);
+function boundLists(value: unknown, limit: number = TEXT_CAP): unknown {
+  if (typeof value === 'string') return value.length > limit ? `${value.slice(0, limit)}...` : value;
+  if (Array.isArray(value)) return value.map((entry) => boundLists(entry, limit));
   if (value === null || typeof value !== 'object') return value;
   const out: Record<string, unknown> = {};
   let cut = false;
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    // Repeats the ids already carried by `precedents`, once per candidate.
+    if (key === 'precedentIds') {
+      continue;
+    }
     if (Array.isArray(item) && item.length > LIST_CAP && item.every((entry) => typeof entry === 'string')) {
       out[key] = item.slice(0, LIST_CAP);
       out[`${key}Total`] = item.length;
@@ -1098,11 +1174,39 @@ function boundLists(value: unknown): unknown {
     } else if (key === 'excerpt' && typeof item === 'string' && item.length > EXCERPT_CAP) {
       out[key] = `${item.slice(0, EXCERPT_CAP)}...`;
     } else {
-      out[key] = boundLists(item);
+      const childLimit = key === 'claim' || key === 'failureMode' ? CLAIM_CAP : TEXT_CAP;
+      const bounded = boundLists(item, childLimit);
+      if (JSON.stringify(bounded) !== JSON.stringify(item)) cut = cut || containsCut(item, bounded);
+      out[key] = bounded;
     }
   }
   if (cut) out['truncated'] = true;
   return out;
+}
+
+/** True when bounding shortened a string somewhere inside, not just dropped a key. */
+function containsCut(before: unknown, after: unknown): boolean {
+  if (typeof before === 'string') return typeof after === 'string' && after.length < before.length;
+  if (Array.isArray(before) && Array.isArray(after)) {
+    return before.some((entry, i) => containsCut(entry, after[i]));
+  }
+  if (before !== null && typeof before === 'object' && after !== null && typeof after === 'object') {
+    const afterObject = after as Record<string, unknown>;
+    return Object.entries(before as Record<string, unknown>).some(
+      ([key, entry]) => key in afterObject && containsCut(entry, afterObject[key]),
+    );
+  }
+  return false;
+}
+
+/**
+ * The anchor check for one candidate. A stale consumer is judged by its cause,
+ * since its own line is meant to be on unchanged code.
+ */
+function anchorFor(hunks: Map<string, FileHunks>, candidate: Candidate): AnchorCheck {
+  return candidate.anchor === 'stale-consumer'
+    ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null)
+    : classifyAnchor(hunks, candidate.path, candidate.line);
 }
 
 function scoreCommand(argv: string[]): number {
@@ -1141,9 +1245,14 @@ function scoreCommand(argv: string[]): number {
     try {
       const parsed = JSON.parse(readFileSync(verificationFlag, 'utf8')) as unknown;
       const list = verdictList(parsed);
+      const problem = verificationProblem(list);
+      if (problem !== null) {
+        console.error(`Malformed verification - ${problem}`);
+        console.error('Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.');
+        return 2;
+      }
       for (const raw of list) {
-        const id = (raw['candidate_id'] ?? raw['candidateId']) as string | undefined;
-        if (typeof id !== 'string') continue;
+        const id = (raw['candidate_id'] ?? raw['candidateId']) as string;
         const fixVerdict = raw['fix_verdict'] ?? raw['fixVerdict'];
         const fixConfidence = raw['fix_confidence'] ?? raw['fixConfidence'];
         const fixReason = raw['fix_reason'] ?? raw['fixReason'];
@@ -1187,6 +1296,22 @@ function scoreCommand(argv: string[]): number {
           'Refusing to score on the analyst self-report while a verification file was supplied.',
       );
       return 2;
+    }
+
+    // Both are warnings: an id the verifier invented scores nothing, and a
+    // candidate it skipped falls back to the analyst's confidence, which the
+    // gate already reports as confidenceSource 'analyst'.
+    const known = new Set(candidates.map((candidate) => candidate.candidateId));
+    const unknown = [...verifications.keys()].filter((id) => !known.has(id));
+    if (unknown.length > 0) {
+      console.error(`Warning: ${verificationFlag} verifies unknown candidate id(s): ${unknown.join(', ')}. Ignored.`);
+    }
+    const unverified = candidates.filter((candidate) => !verifications.has(candidate.candidateId));
+    if (unverified.length > 0) {
+      console.error(
+        `Warning: no verification for ${unverified.map((candidate) => candidate.candidateId).join(', ')}; ` +
+          "they are scored on the analyst's own confidence.",
+      );
     }
   }
 
@@ -1347,7 +1472,7 @@ function scoreCommand(argv: string[]): number {
       // A candidate can only become a review comment where the reviewed diff
       // changed code. A nearby removed guard is valid at its right-side site;
       // an unchanged context line is not silently moved there for the analyst.
-      const anchorCheck = anchorHunks === null ? null : classifyAnchor(anchorHunks, candidate.path, candidate.line);
+      const anchorCheck = anchorHunks === null ? null : anchorFor(anchorHunks, candidate);
       // The anchor reason leads even when something else rejected the
       // candidate first: it is the one an analyst can act on, and leaving it
       // behind a score threshold hides why re-anchoring was needed.
@@ -1384,6 +1509,30 @@ function scoreCommand(argv: string[]): number {
     // before the distribution below so `cleared` counts what actually ships.
     applyQuestionCap(results);
 
+    // Verified, past the confidence gate, and stopped only by the final score:
+    // real by the verifier's account, but not what the owner would choose to
+    // say. Shown locally so it is not lost, and never posted. A rejection
+    // from any other gate leads its reason, so the prefix tells them apart.
+    const belowGate = results
+      .filter(
+        (r) =>
+          r.confidenceSource === 'verifier' &&
+          !r.eligible &&
+          Number.isFinite(r.finalScore) &&
+          (r.rejectedBecause ?? '').startsWith('score '),
+      )
+      .map((r) =>
+        boundLists({
+          candidateId: r.candidateId,
+          path: r.path,
+          line: r.line,
+          severity: r.severity.severity,
+          claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? '',
+          finalScore: r.finalScore,
+          threshold: thresholds.finalScore,
+        }),
+      );
+
     const finals = results
       .map((r) => r.finalScore)
       .filter((v) => Number.isFinite(v))
@@ -1419,10 +1568,12 @@ function scoreCommand(argv: string[]): number {
           // Severity is the derived tier, not the requested one. Ordering is
           // severity-first, and asking produced `minor` at confidence 0.90 and
           // `important` at 0.85 for the same finding on an identical diff.
+          // The editor states the fix text verbatim, so it is never cut: a
+          // repair ending in `...` would be posted as a broken sentence.
           eligible: kept.map((c) => {
             const scored = results.find((r) => r.candidateId === c.candidateId);
             const derived = scored?.severity;
-            return {
+            const bounded = boundLists({
               candidateId: c.candidateId,
               path: c.path,
               line: c.line,
@@ -1438,12 +1589,16 @@ function scoreCommand(argv: string[]): number {
               // Only the repair text the editor may state. A refuted repair is
               // left out rather than handed over with an instruction not to use
               // it; the full decision stays in `scores` for `explain`.
-              fix:
-                scored === undefined
-                  ? { render: 'none' as const, text: null }
-                  : editorFix(scored.fix),
+            }) as Record<string, unknown>;
+            return {
+              ...bounded,
+              fix: scored === undefined ? { render: 'none' as const, text: null } : editorFix(scored.fix),
+              // The editor names the cause in the prose, since the consumer's
+              // line is what the finding's location shows.
+              ...(c.anchor === 'stale-consumer' ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {}),
             };
           }),
+          belowGate,
         },
         null,
         2,
@@ -1638,6 +1793,7 @@ function recordCommand(argv: string[]): number {
   const output = readStdin();
   if (output.trim().length === 0) {
     console.error('Nothing on stdin. Pipe the validated review in.');
+    console.error(noFindingsHint());
     return 2;
   }
 
@@ -1914,6 +2070,7 @@ function explainCommand(argv: string[]): number {
       rejectedBecause?: string | null;
       duplicateOfPrecedent?: string | null;
       precedentIds?: string[];
+      precedents?: { eventId?: string }[];
       fix?: {
         suggested?: string | null;
         verdict?: 'verified' | 'partial' | 'refuted' | 'absent' | null;
@@ -1944,7 +2101,12 @@ function explainCommand(argv: string[]): number {
     console.log('');
 
     const shown = wanted === undefined ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
-    if (shown.length === 0) {
+    // A run that posted nothing can still have held findings - below-gate
+    // ones especially - and they are the only account of what it found.
+    if (shown.length === 0 && wanted === undefined) {
+      console.log('No findings were recorded.');
+      console.log('');
+    } else if (shown.length === 0) {
       console.log(`No finding ${wanted}. Available: ${detail.findings.map((f) => f.findingId).join(', ') || 'none'}.`);
       return 1;
     }
@@ -1969,8 +2131,12 @@ function explainCommand(argv: string[]): number {
       if (score?.novelty !== undefined) {
         console.log(`  novelty           ${score.novelty.toFixed(2)}`);
       }
-      if (score?.precedentIds !== undefined && score.precedentIds.length > 0) {
-        console.log(`  precedents        ${score.precedentIds.join(', ')}`);
+      // Stored scores no longer carry `precedentIds`; the ids ride on `precedents`.
+      const precedentIds =
+        score?.precedentIds ??
+        (score?.precedents ?? []).flatMap((p) => (typeof p.eventId === 'string' ? [p.eventId] : []));
+      if (precedentIds.length > 0) {
+        console.log(`  precedents        ${precedentIds.join(', ')}`);
       }
       if (score?.duplicateOfPrecedent != null) {
         console.log(`  already stated in ${score.duplicateOfPrecedent}`);
@@ -2106,6 +2272,39 @@ function refExists(ref: string, cwd: string): boolean {
 
 const VERDICT_KEYS = ['results', 'verifications', 'verdicts', 'candidates'] as const;
 
+/**
+ * The first thing wrong with a verifier's entries, or null when they are sound.
+ *
+ * Hand-written to match schemas/verification.schema.json, because the plugin
+ * has no runtime dependencies. Every entry is checked before any is scored: a
+ * confidence of "0.9" or an unknown quality tier would otherwise be read as
+ * absent and the gate would fall back to the analyst, silently.
+ */
+export function verificationProblem(list: Record<string, unknown>[]): string | null {
+  for (const [index, raw] of list.entries()) {
+    const entry = typeof raw === 'object' && raw !== null ? raw : {};
+    const id = entry['candidate_id'] ?? entry['candidateId'];
+    const who = `entry ${index} (${typeof id === 'string' ? id : 'no candidate id'})`;
+    if (typeof id !== 'string' || id === '') return `${who}: candidate_id must be a non-empty string.`;
+    const quality = entry['evidence_quality'] ?? entry['evidenceQuality'];
+    if (quality !== undefined && !(EVIDENCE_QUALITIES as readonly unknown[]).includes(quality)) {
+      return `${who}: evidence_quality must be one of ${EVIDENCE_QUALITIES.join(', ')}.`;
+    }
+    const confidence = entry['technical_confidence'] ?? entry['technicalConfidence'];
+    if (
+      confidence !== undefined &&
+      !(typeof confidence === 'number' && Number.isFinite(confidence) && confidence >= 0 && confidence <= 1)
+    ) {
+      return `${who}: technical_confidence must be a number from 0 to 1.`;
+    }
+    const missing = entry['required_context_missing'] ?? entry['requiredContextMissing'];
+    if (missing !== undefined && !(Array.isArray(missing) && missing.every((item) => typeof item === 'string'))) {
+      return `${who}: required_context_missing must be an array of strings.`;
+    }
+  }
+  return null;
+}
+
 function verdictList(parsed: unknown): Record<string, unknown>[] {
   if (Array.isArray(parsed)) return parsed as Record<string, unknown>[];
   if (typeof parsed !== 'object' || parsed === null) return [];
@@ -2114,6 +2313,71 @@ function verdictList(parsed: unknown): Record<string, unknown>[] {
     if (Array.isArray(record[key])) return record[key] as Record<string, unknown>[];
   }
   return [];
+}
+
+/** A held finding of an earlier run, at its line in the head now being reviewed. */
+interface CarriedHeld {
+  path: string;
+  line: number;
+  verdict: string;
+  reason: string;
+  text?: string | undefined;
+}
+
+/**
+ * The earlier run's held findings that are still on unchanged code.
+ *
+ * `unverified` entries are left out because nothing was concluded about them.
+ * One that does not carry sits on code that changed, so its candidate deserves
+ * a fresh look. An unusable run never fails the review: it only means the held
+ * findings were not consulted, which the caller is told on stderr.
+ */
+function carriedHeldFindings(runId: string, head: string): CarriedHeld[] {
+  const db = openDatabase();
+  try {
+    const detail = runDetail(db, runId);
+    if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
+    if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head.`);
+    // Only a conclusion holds a candidate back. `unverified` reached none, and
+    // any later kind of held entry has to opt in here rather than suppress by default.
+    // `below-gate` stays out: the verifier confirmed it, so it argues for the
+    // candidate, not against it.
+    const entries = detail.held.filter((h) => h.verdict === 'refuted' || h.verdict === 'partly' || h.verdict === 'repeat');
+    const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: '' }));
+    const result = carryFindings(inputs, detail.headRef, head, process.cwd());
+    return result.carried.map((c) => {
+      const entry = entries[Number(c.findingId)] as HeldFinding;
+      return { path: c.path, line: c.line, verdict: entry.verdict, reason: entry.reason, text: entry.text };
+    });
+  } catch (error) {
+    if (error instanceof CarryError) {
+      console.error(`Held findings were not consulted: ${error.message}`);
+      return [];
+    }
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * The held finding a candidate may repeat, and whether its wording settles it.
+ *
+ * A held entry on the same line says something was concluded about code that
+ * has not changed since. When the wording matches, the candidate is the same
+ * point again. When it does not, the line may carry a new defect, so the
+ * candidate stays and the verifier decides.
+ */
+function matchHeld(candidate: Candidate, held: CarriedHeld[]): { entry: CarriedHeld; drop: boolean } | null {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  let found: { entry: CarriedHeld; drop: boolean } | null = null;
+  for (const entry of held) {
+    if (entry.path !== candidate.path || Math.abs(entry.line - candidate.line) > 2) continue;
+    const drop = entry.text !== undefined && overlap(mine, significantWords(entry.text)) >= DUPLICATE_OVERLAP;
+    if (drop) return { entry, drop };
+    found ??= { entry, drop };
+  }
+  return found;
 }
 
 /**
@@ -2161,7 +2425,7 @@ function checkCandidatesCommand(argv: string[]): number {
     }
 
     const anchorFailures = candidates
-      .map((candidate) => ({ candidate, anchor: classifyAnchor(hunks, candidate.path, candidate.line) }))
+      .map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) }))
       .filter(({ anchor }) => !anchor.ok)
       .map(({ candidate, anchor }) => ({
         candidateId: candidate.candidateId,
@@ -2170,6 +2434,7 @@ function checkCandidatesCommand(argv: string[]): number {
         kind: anchor.kind,
         reason: reason(anchor),
         nearest: anchor.nearest,
+        ...(anchor.causedBy === undefined ? {} : { causedBy: anchor.causedBy }),
       }));
 
     if (anchorFailures.length > 0) {
@@ -2178,30 +2443,48 @@ function checkCandidatesCommand(argv: string[]): number {
       return 1;
     }
 
-    if (!argv.includes('--thread')) {
+    const heldFrom = flag(argv, '--held-from');
+    if (argv.includes('--held-from') && heldFrom === null) {
+      console.error('--held-from needs a run id.');
+      return 2;
+    }
+    const headSha = flag(argv, '--head');
+    if (heldFrom !== null && headSha === null) {
+      console.error('--held-from needs --head <sha>, the head being reviewed.');
+      return 2;
+    }
+
+    if (!argv.includes('--thread') && heldFrom === null) {
       console.log(JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length } }, null, 2));
       return 0;
     }
 
     // A repeat is removed here, before the verifier spends a pass on it. The
-    // same check still runs inside `score` as the second line of defence.
-    const threadFile = flag(argv, '--thread');
-    if (threadFile === null) {
-      console.error('--thread needs a thread JSON path.');
-      return 2;
+    // same check still runs inside `score` as the second line of defence. The
+    // description is the exception: a match against it is passed on with
+    // `possibleRepeatOf` rather than removed.
+    let thread: ThreadComment[] = [];
+    if (argv.includes('--thread')) {
+      const threadFile = flag(argv, '--thread');
+      if (threadFile === null) {
+        console.error('--thread needs a thread JSON path.');
+        return 2;
+      }
+      try {
+        const parsed = JSON.parse(readFileSync(threadFile, 'utf8')) as { comments?: ThreadComment[] } | ThreadComment[];
+        thread = Array.isArray(parsed) ? parsed : (parsed.comments ?? []);
+        if (!Array.isArray(thread)) throw new Error('comments is not a list');
+      } catch (error) {
+        console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
+        return 2;
+      }
     }
-    let thread: ThreadComment[];
-    try {
-      const parsed = JSON.parse(readFileSync(threadFile, 'utf8')) as { comments?: ThreadComment[] } | ThreadComment[];
-      thread = Array.isArray(parsed) ? parsed : (parsed.comments ?? []);
-      if (!Array.isArray(thread)) throw new Error('comments is not a list');
-    } catch (error) {
-      console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
-      return 2;
-    }
+
+    const held = heldFrom === null || headSha === null ? [] : carriedHeldFindings(heldFrom, headSha);
 
     const kept: unknown[] = [];
     const droppedAsRepeat: unknown[] = [];
+    const droppedAsHeld: unknown[] = [];
     candidates.forEach((candidate, index) => {
       const repeat = alreadySaidOnThread(candidate, thread);
       if (repeat !== null) {
@@ -2216,24 +2499,66 @@ function checkCandidatesCommand(argv: string[]): number {
         });
         return;
       }
-      const possible = possiblySaidOnThread(candidate, thread);
       const original = raw[index] as Record<string, unknown>;
+      const heldMatch = matchHeld(candidate, held);
+      if (heldMatch !== null && heldMatch.drop) {
+        droppedAsHeld.push({
+          candidateId: candidate.candidateId,
+          path: candidate.path,
+          line: candidate.line,
+          heldVerdict: heldMatch.entry.verdict,
+          heldReason: heldMatch.entry.reason,
+          priorRunId: heldFrom,
+        });
+        return;
+      }
+      // The thread is the stronger lead, so a held match only fills the gap
+      // when neither thread check found anything.
+      const heldMark =
+        heldMatch === null
+          ? null
+          : {
+              kind: 'held',
+              verdict: heldMatch.entry.verdict,
+              reason: heldMatch.entry.reason,
+              excerpt: (heldMatch.entry.text ?? '').slice(0, 200),
+            };
+      // A nearby anchored comment is the stronger lead, so it wins when both
+      // match. A description match is never dropped here: wording cannot tell
+      // a restatement from a contradiction, so the verifier decides.
+      const possible = possiblySaidOnThread(candidate, thread);
+      if (possible !== null) {
+        kept.push({
+          ...original,
+          possibleRepeatOf: {
+            author: possible.author,
+            path: possible.path,
+            line: possible.line,
+            excerpt: possible.body.slice(0, 200),
+          },
+        });
+        return;
+      }
+      const described = possiblyRepeatsDescription(candidate, thread);
       kept.push(
-        possible === null
-          ? original
+        described === null
+          ? heldMark === null
+            ? original
+            : { ...original, possibleRepeatOf: heldMark }
           : {
               ...original,
               possibleRepeatOf: {
-                author: possible.author,
-                path: possible.path,
-                line: possible.line,
-                excerpt: possible.body.slice(0, 200),
+                kind: 'description',
+                author: described.comment.author,
+                path: null,
+                line: null,
+                excerpt: described.excerpt,
               },
             },
       );
     });
 
-    console.log(JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat }, null, 2));
+    console.log(JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld }, null, 2));
     return 0;
   } catch (error) {
     if (error instanceof MalformedCandidate) {

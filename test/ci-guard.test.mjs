@@ -107,8 +107,8 @@ test('an unfinished or cancelled run is replaced only by a later completed run o
   assert.equal(summariseCi([late, early], []).state, 'pending');
 });
 
-test('a cancelled run with nothing later is pending; stale, skipped and neutral do not count', () => {
-  assert.equal(summariseCi([run('deploy', 'completed', 'cancelled')], []).state, 'pending');
+test('a cancelled run with nothing later needs a rerun; stale, skipped and neutral do not count', () => {
+  assert.equal(summariseCi([run('deploy', 'completed', 'cancelled')], []).state, 'needs-rerun');
   const ci = summariseCi(
     ['stale', 'skipped', 'neutral'].map((c) => run(`job ${c}`, 'completed', c)).concat(run('build', 'completed', 'success')),
     [],
@@ -142,12 +142,13 @@ test('a reading that reached its cap is not green', async () => {
   assert.ok(ci.pending.some((p) => /more than 1000/.test(p.name)));
 });
 
-test('running checks are pending; failing ones are red, and red wins', () => {
+test('running checks are pending; failing ones are red, infrastructure failures need a rerun, and red wins', () => {
   for (const status of ['queued', 'in_progress', 'waiting', 'requested', 'pending']) {
     assert.equal(classifyCheckRun({ status }).result, 'pending', status);
   }
-  for (const conclusion of ['failure', 'timed_out', 'action_required', 'startup_failure']) {
-    assert.equal(classifyCheckRun({ status: 'completed', conclusion }).result, 'failed', conclusion);
+  assert.equal(classifyCheckRun({ status: 'completed', conclusion: 'failure' }).result, 'failed');
+  for (const conclusion of ['timed_out', 'action_required', 'startup_failure']) {
+    assert.equal(classifyCheckRun({ status: 'completed', conclusion }).result, 'rerun', conclusion);
   }
   // A conclusion nobody has classified is not a pass.
   assert.equal(classifyCheckRun({ status: 'completed', conclusion: 'something_new' }).result, 'failed');

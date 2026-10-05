@@ -24,7 +24,13 @@ export interface RawCandidate {
   fixConfidence?: number;
   technical_confidence?: number;
   technicalConfidence?: number;
+  anchor?: string;
+  caused_by?: { path?: unknown; line?: unknown } | null;
+  causedBy?: { path?: unknown; line?: unknown } | null;
 }
+
+/** The one anchor a candidate may declare; see `classifyStaleConsumer`. */
+export const STALE_CONSUMER = 'stale-consumer';
 
 export interface Candidate {
   candidateId: string;
@@ -39,6 +45,12 @@ export interface Candidate {
   suggestedFix: string | null;
   fixConfidence: number | null;
   technicalConfidence: number;
+  /**
+   * Present only on a finding about unchanged code the change made wrong. Its
+   * own path and line are the consumer; `causedBy` is the changed line.
+   */
+  anchor?: typeof STALE_CONSUMER | undefined;
+  causedBy?: { path: string; line: number } | null | undefined;
 }
 
 export const FIX_VERDICTS = ['verified', 'partial', 'refuted', 'absent'] as const;
@@ -47,6 +59,9 @@ export type FixVerdict = (typeof FIX_VERDICTS)[number];
 export function isFixVerdict(value: unknown): value is FixVerdict {
   return typeof value === 'string' && (FIX_VERDICTS as readonly string[]).includes(value);
 }
+
+export const EVIDENCE_QUALITIES = ['high', 'medium', 'low'] as const;
+export type EvidenceQuality = (typeof EVIDENCE_QUALITIES)[number];
 
 /**
  * What the `evidence-verifier` concluded, when it ran.
@@ -57,7 +72,7 @@ export function isFixVerdict(value: unknown): value is FixVerdict {
  */
 export interface Verification {
   candidateId: string;
-  evidenceQuality?: 'high' | 'medium' | 'low' | undefined;
+  evidenceQuality?: EvidenceQuality | undefined;
   technicalConfidence?: number | undefined;
   fixVerdict?: FixVerdict | undefined;
   fixConfidence?: number | undefined;
@@ -244,6 +259,9 @@ export interface ScoreBreakdown {
    */
   duplicateOfPrecedent: string | null;
   precedentIds: string[];
+  /** Only on a stale-consumer finding, so publishing can keep it out of inline comments. */
+  anchor?: typeof STALE_CONSUMER | undefined;
+  causedBy?: { path: string; line: number } | null | undefined;
 }
 
 export interface Thresholds {
@@ -353,6 +371,8 @@ export interface ThreadComment {
   line: number | null;
   author: string;
   body: string;
+  /** Optional so a thread file written before the field existed still reads. */
+  kind?: 'review-comment' | 'review-body' | 'conversation' | 'description';
 }
 
 /**
@@ -372,6 +392,12 @@ export interface ThreadComment {
  *
  * An unanchored comment is compared on wording alone, since a review body or a
  * conversation comment can make a point about a line without citing it.
+ *
+ * The description is never matched here. Wording alone cannot tell a finding
+ * that restates the description from one that contradicts it - "X is unsafe
+ * because Y" shares nearly every word with "X is safe because Y" - and the
+ * field showed a verified finding dropped for exactly that. A description match
+ * goes to the verifier instead, through `possiblyRepeatsDescription`.
  */
 export function alreadySaidOnThread(
   candidate: Candidate,
@@ -381,6 +407,7 @@ export function alreadySaidOnThread(
   if (mine.size === 0) return null;
 
   for (const comment of thread) {
+    if (comment.kind === 'description') continue;
     const anchored = comment.path !== null && comment.line !== null;
     if (anchored) {
       if (comment.path !== candidate.path) continue;
@@ -421,6 +448,73 @@ export function possiblySaidOnThread(
   }
 
   return null;
+}
+
+/** Roughly what a verifier needs to judge a repeat without the whole body. */
+const DESCRIPTION_EXCERPT_CHARS = 400;
+
+/**
+ * The description, when it shares enough of this candidate's wording that it
+ * would once have dropped it, with the part of it that does.
+ *
+ * The bar is the unanchored one `alreadySaidOnThread` used to apply to the
+ * description, so the same candidates are caught; only what happens to them
+ * changes. The verifier decides whether the finding repeats the description or
+ * contradicts it, and it needs the overlapping sentences for that - the first
+ * lines of a description are usually a summary that says neither.
+ */
+export function possiblyRepeatsDescription(
+  candidate: Candidate,
+  thread: ThreadComment[],
+): { comment: ThreadComment; excerpt: string } | null {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+
+  for (const comment of thread) {
+    if (comment.kind !== 'description') continue;
+    if (overlap(mine, significantWords(comment.body)) < UNANCHORED_DUPLICATE_OVERLAP) continue;
+    return { comment, excerpt: overlappingExcerpt(mine, comment.body) };
+  }
+
+  return null;
+}
+
+/**
+ * The sentences of `body` that share the most words with `mine`, in their
+ * original order and within the excerpt budget.
+ */
+function overlappingExcerpt(mine: Set<string>, body: string): string {
+  const sentences = body
+    .split(/(?<=[.!?])\s+|\n+/u)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length > 0);
+  const ranked = sentences
+    .map((text, index) => ({ text, index, shared: [...significantWords(text)].filter((word) => mine.has(word)).length }))
+    .filter((sentence) => sentence.shared > 0)
+    .sort((a, b) => b.shared - a.shared || a.index - b.index);
+
+  const [best, ...rest] = ranked;
+  if (best === undefined) return clip(body.trim());
+
+  // The best sentence always goes in, clipped if it alone is too long; the
+  // rest are added best first while they fit.
+  const chosen = [best];
+  let length = Math.min(best.text.length, DESCRIPTION_EXCERPT_CHARS);
+  for (const sentence of rest) {
+    if (length + 1 + sentence.text.length > DESCRIPTION_EXCERPT_CHARS) continue;
+    chosen.push(sentence);
+    length += 1 + sentence.text.length;
+  }
+
+  if (chosen.length === 1) return clip(best.text);
+  return chosen
+    .sort((a, b) => a.index - b.index)
+    .map((sentence) => sentence.text)
+    .join(' ');
+}
+
+function clip(text: string): string {
+  return text.length <= DESCRIPTION_EXCERPT_CHARS ? text : `${text.slice(0, DESCRIPTION_EXCERPT_CHARS - 1)}…`;
 }
 
 export class MalformedCandidate extends Error {}
@@ -480,6 +574,25 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
   ) {
     throw new MalformedCandidate(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
   }
+  if (raw.anchor !== undefined && raw.anchor !== STALE_CONSUMER) {
+    throw new MalformedCandidate(`${candidateId}: anchor must be "${STALE_CONSUMER}" when supplied`);
+  }
+  // A missing cause is not a shape error: the anchor check names it, with the
+  // rest of what the analyst has to fix. A cause in the wrong shape is.
+  const rawCause = raw.caused_by !== undefined ? raw.caused_by : raw.causedBy;
+  let causedBy: { path: string; line: number } | null = null;
+  if (raw.anchor === STALE_CONSUMER && rawCause !== undefined && rawCause !== null) {
+    if (
+      typeof rawCause !== 'object' ||
+      typeof rawCause.path !== 'string' ||
+      rawCause.path.length === 0 ||
+      !Number.isInteger(rawCause.line) ||
+      (rawCause.line as number) < 1
+    ) {
+      throw new MalformedCandidate(`${candidateId}: caused_by must be {"path": string, "line": positive integer}`);
+    }
+    causedBy = { path: rawCause.path, line: rawCause.line as number };
+  }
 
   return {
     candidateId,
@@ -496,17 +609,19 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     suggestedFix: suggestedFix ?? null,
     fixConfidence: fixConfidence ?? null,
     technicalConfidence: confidence as number,
+    // Spread only when declared, so an ordinary candidate keeps its shape.
+    ...(raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {}),
   };
 }
 
 const WORDS = /[^\p{L}\p{N}]+/u;
 
-function significantWords(text: string): Set<string> {
+export function significantWords(text: string): Set<string> {
   return new Set(text.toLowerCase().split(WORDS).filter((word) => word.length > 3));
 }
 
 /** Share of `mine` that also appears in `theirs`, 0..1. */
-function overlap(mine: Set<string>, theirs: Set<string>): number {
+export function overlap(mine: Set<string>, theirs: Set<string>): number {
   if (mine.size === 0) return 0;
   return [...mine].filter((word) => theirs.has(word)).length / mine.size;
 }
@@ -526,7 +641,7 @@ const DUPLICATE_LINE_WINDOW = 2;
  * of the candidate or the least bad of several poor matches. Relative rank
  * cannot answer an absolute question.
  */
-const DUPLICATE_OVERLAP = 0.4;
+export const DUPLICATE_OVERLAP = 0.4;
 
 /**
  * The bar for a comment that names no line.
@@ -991,6 +1106,19 @@ export function scoreCandidate(
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
 
+  // A stale consumer sits on code the diff did not touch, so nothing in the
+  // diff shows it breaking. Only the verifier following it back to its cause
+  // does. Checked after the chain so a question cannot skip it, and it leads
+  // over a score rejection because it is the one the analyst can act on.
+  const staleConsumer = candidate.anchor === STALE_CONSUMER;
+  if (staleConsumer && verification?.impactTraced !== true) {
+    const untraced =
+      'a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause ' +
+      '(impact_traced: true)';
+    if (rejectedBecause === null) rejectedBecause = untraced;
+    else if (rejectedBecause.startsWith('score ')) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
+  }
+
   const fix = renderFix(candidate, verification, thresholds);
 
   return {
@@ -1023,5 +1151,6 @@ export function scoreCandidate(
     rejectedBecause,
     duplicateOfPrecedent: alreadySaid?.eventId ?? null,
     precedentIds: precedents.map((p) => p.eventId),
+    ...(staleConsumer ? { anchor: STALE_CONSUMER, causedBy: candidate.causedBy ?? null } : {}),
   };
 }

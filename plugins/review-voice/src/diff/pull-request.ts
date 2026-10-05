@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { GitHubClient } from '../github/client.ts';
 import { classify, findHandEdited, isReviewable, languageOf } from './classify.ts';
 import type { ChangedFile, DiffResult } from './acquire.ts';
-import { topPathspecs, type ReviewScope } from './incremental.ts';
+import { gitFailure, topPathspecs, type ReviewScope } from './incremental.ts';
 import { parseHunks } from './hunks.ts';
 
 interface RawFile {
@@ -171,6 +171,20 @@ function ensureRefs(options: {
   }
 
   present = check();
+
+  // `pull/<n>/head` brings the base only while it is still an ancestor of the
+  // head. Once the base branch moves on, the sha GitHub reports is reachable
+  // from no pull ref, and anything that reads the base (`score --base`) fails.
+  // Ask for that one commit by sha; it is not fatal for the same reason.
+  if (!present.base) {
+    try {
+      git(['fetch', '--no-tags', '--quiet', 'origin', options.base], options.cwd);
+    } catch {
+      // The server may refuse a fetch by sha. The note below says so.
+    }
+    present = check();
+  }
+
   if (present.base && present.head) {
     return result(true, null);
   }
@@ -257,18 +271,31 @@ export function applyReviewScope(
   scope: ReviewScope,
   cwd: string,
   readIncrementalDiff: (since: string, head: string, files: string[], cwd: string) => string =
-    (since, head, files, root) =>
-      git(['diff', '--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', since, head, '--', ...topPathspecs(files)], root),
+    (since, head, files, root) => {
+      const args = ['diff', '--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', since, head, '--', ...topPathspecs(files)];
+      try {
+        return execFileSync('git', args, {
+          cwd: root,
+          encoding: 'utf8',
+          maxBuffer: 64 * 1024 * 1024,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: 60_000,
+        });
+      } catch (error) {
+        throw new Error(gitFailure(args, error));
+      }
+    },
   interdiffPatch: string | null = null,
 ): ScopedPullRequestDiff {
   if (scope.kind === 'full') return fullScopeResult(result, pullNumber, scope);
 
-  const fallBack = (): ScopedPullRequestDiff =>
+  const fallBack = (detail: string): ScopedPullRequestDiff =>
     fullScopeResult(result, pullNumber, {
       kind: 'full',
       cause: 'compare-unavailable',
       since: scope.since,
       priorRunId: scope.priorRunId,
+      detail,
     });
 
   let diff: string;
@@ -279,17 +306,17 @@ export function applyReviewScope(
   } else if (scope.kind === 'interdiff') {
     // Only the planner can produce this patch; without it there is nothing
     // narrower that is known to be safe.
-    if (interdiffPatch === null) return fallBack();
+    if (interdiffPatch === null) return fallBack('an interdiff scope came with no interdiff patch');
     diff = interdiffPatch;
     included = new Set(scope.files);
   } else {
     try {
       diff = readIncrementalDiff(scope.since, result.head, scope.files, cwd);
-    } catch {
+    } catch (error) {
       // The planner's probes passed, but the final range read can still lose a
       // race with local object cleanup. Do not present an incomplete patch as a
       // narrowed review; retain the API patch and name the uncertainty instead.
-      return fallBack();
+      return fallBack(`reading the incremental diff failed: ${(error instanceof Error ? error.message : String(error)).split('\n')[0]}`);
     }
     included = new Set(scope.files);
   }

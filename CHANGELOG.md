@@ -5,6 +5,99 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `check-candidates --held-from <run-id> --head <sha>` carries an earlier run's
+  held findings to the new head and drops a candidate that restates one on
+  unchanged code, so a finding the verifier refuted is not raised again. A
+  same-line candidate with different wording is kept and marked
+  `possibleRepeatOf` of `kind: held`.
+- A new CI state, `needs-rerun` (ADR 0013), for checks that failed for
+  infrastructure reasons or are stuck. `verdict` and `post` exit 6 on it with
+  the checks named, and nothing is approved or posted, whatever the event.
+- A candidate can declare `anchor: "stale-consumer"` with `caused_by: {path,
+  line}` for unchanged code the change made wrong (a caller, a document, a
+  config elsewhere). `check-candidates` and `score` check the cause, which must
+  be an added line or deletion site, and say so when it is missing or
+  unchanged. `score` makes it eligible only when the verifier set
+  `impact_traced`, and it is posted in the review body with its `path:line`,
+  never as an inline comment.
+- `score` lists `belowGate`: candidates the verifier confirmed that were
+  stopped only by the final score. The review prints them locally after the
+  validated review under `Below the gate (not posted)` and records them with
+  `record --held` as the new verdict `below-gate`. They are never posted, and
+  a later review's `--held-from` does not drop candidates on account of them.
+
+### Fixed
+
+- `diff --pr` also fetches the base commit by sha when the base branch has
+  moved past the merge base, so `score --base <sha>` no longer exits 2 on a
+  base the pull ref does not reach. The fetch is still not fatal.
+- `record` with nothing on stdin, or on a terminal, now says a run with no
+  findings pipes exactly `No actionable findings.`.
+- Commands that read stdin wait for the end of a slow pipe. A non-blocking
+  pipe that was still being filled read as empty, so `score` refused valid
+  candidates with `Expected {"candidates": [...]}` under load.
+- A follow-up commit that edits the line next to a reviewed hunk is read as
+  its new hunk instead of sending the whole pull request back for review. The
+  reviewed edit must still be whole in the new hunk, so a revert beside such an
+  edit is still read in full.
+- `diff --pr` fetches a previous head this clone lacks (after a force-push, for
+  example) by sha from `origin`, only when `origin` is the repository under
+  review, before deciding the comparison is unavailable. The fetch is not
+  fatal.
+
+### Changed
+
+- An absence claim whose names are found nowhere tracked is reported
+  `inconclusive`, with a reason, when the repository tracks localisation or
+  resource sources (`*.resx`, `*.resw`, `*.po`, `*.xlf`, `*.xliff`, `*.arb`,
+  `locales/`, `i18n/`) or a name is shaped like a generated accessor, since
+  such a name may be written at build time. The analyst and verifier prompts
+  say to check the generator source first, and to file a question when they
+  cannot.
+- CI checks that timed out, failed to start or need someone's action no longer
+  count as red, and a cancelled run with nothing after it, or a check queued or
+  running for more than an hour, is no longer pending. All of them now need a
+  rerun.
+- A candidate whose wording overlaps the pull request description is no longer
+  dropped as a repeat. Wording alone cannot tell a finding that restates the
+  description from one that contradicts it, and a verified finding was lost
+  that way. `check-candidates --thread` keeps it with `possibleRepeatOf` of
+  `kind: description`, carrying the description sentences that overlap most
+  (up to about 400 characters), and `score --thread` no longer rejects it as
+  already said. The evidence verifier rejects it as a repeat only when the
+  description already states the same defect or risk. Inline comments, review
+  bodies and conversation comments are still dropped as before, and a nearby
+  anchored comment still takes precedence in `possibleRepeatOf`.
+- The diff analyst and evidence verifier treat behaviour the description calls
+  intentional as grounds to reject or downgrade a finding, unless the finding
+  shows the intent itself is wrong or causes harm the description does not
+  account for.
+- A full-read scope carries `detail`: which condition sent the follow-up
+  back to a full read, and for a failed git command which command and the
+  first line git printed. It is in `files.json`, the `diff --out` summary and
+  `explain`; the `cause` codes are unchanged.
+- `score --verification` validates every verifier entry before scoring. A
+  missing `candidate_id`, an `evidence_quality` outside high/medium/low, a
+  `technical_confidence` that is not a number from 0 to 1 (a string such as
+  "0.9" included) or a `required_context_missing` that is not an array of
+  strings exits 2 naming the entry and field. Unknown candidate ids and
+  candidates with no entry are warned about on stderr. The shape is published
+  as `schemas/verification.schema.json`.
+- `validate-output --scores <file>` checks each rendered severity tag against
+  the severity the score derived at that `path:line`, and reports a mismatch or
+  a finding with no scored candidate as a violation (exit 1), so the editor
+  retry in `/review-voice:review` catches what posting would otherwise hold
+  silently.
+- `score` output is bounded: `precedentIds` is no longer serialised (the ids
+  are on `precedents`, and `explain` reads them from there), and any string
+  over 600 characters (1000 for `claim` and `failureMode`) is cut with `...`
+  and marked `truncated: true`. This covers `eligible`, except the fix text
+  the editor states verbatim, which is never cut.
+
 ## [1.9.0] - 2026-10-02
 
 ### Added

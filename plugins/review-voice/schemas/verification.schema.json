@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/QuintinBotes/review-voice/schemas/verification.schema.json",
+  "title": "Verification entry",
+  "description": "One entry of the evidence-verifier agent's output. The CLI also accepts the camelCase spelling of every field name (candidateId, evidenceQuality, technicalConfidence, fixVerdict, fixConfidence, fixReason, fixDirection, impactTraced, requiredContextMissing). Keep the checks in `verificationProblem` in src/cli.ts in step with this file.",
+  "type": "object",
+  "required": [
+    "candidate_id"
+  ],
+  "properties": {
+    "candidate_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_quality": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ]
+    },
+    "technical_confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "fix_verdict": {
+      "enum": [
+        "verified",
+        "partial",
+        "refuted",
+        "absent"
+      ]
+    },
+    "fix_confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "fix_reason": {
+      "type": "string"
+    },
+    "fix_direction": {
+      "type": "string"
+    },
+    "impact_traced": {
+      "type": "boolean"
+    },
+    "required_context_missing": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

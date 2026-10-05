@@ -58,6 +58,12 @@ export type ReviewScope =
       cause: FullReviewCause;
       since: string | null;
       priorRunId: string | null;
+      /**
+       * Which condition fired, and for a failed git command which one and what
+       * it said. A cause alone left a run that fell back to a full read with
+       * nothing to go on; this is what to look at first.
+       */
+      detail?: string;
     };
 
 const nullableString = (value: unknown): boolean => typeof value === 'string' || value === null;
@@ -86,7 +92,13 @@ export function parseReviewScope(value: unknown): ReviewScope | null {
   if (scope.kind === 'interdiff' && prior && typeof scope.mergeBase === 'string' && strings(scope.files) && Number.isInteger(scope.hunks)) {
     return scope as unknown as ReviewScope;
   }
-  if (scope.kind === 'full' && typeof scope.cause === 'string' && nullableString(scope.since) && nullableString(scope.priorRunId)) {
+  if (
+    scope.kind === 'full' &&
+    typeof scope.cause === 'string' &&
+    nullableString(scope.since) &&
+    nullableString(scope.priorRunId) &&
+    (scope.detail === undefined || typeof scope.detail === 'string')
+  ) {
     return scope as unknown as ReviewScope;
   }
   return null;
@@ -103,7 +115,7 @@ export function describeScope(scope: ReviewScope | null): string | null {
     case 'interdiff':
       return `interdiff since ${scope.since.slice(0, 7)} (${scope.hunks} hunk${scope.hunks === 1 ? '' : 's'} in ${scope.files.length} file${scope.files.length === 1 ? '' : 's'})`;
     case 'full':
-      return `full (${scope.cause})`;
+      return scope.detail === undefined ? `full (${scope.cause})` : `full (${scope.cause}: ${scope.detail})`;
   }
 }
 
@@ -154,6 +166,14 @@ export interface PlanIncrementalScopeOptions {
    */
   base?: string | undefined;
   git?: IncrementalGit | undefined;
+  /**
+   * Called once when the previous head is not in this clone, to fetch it. The
+   * caller knows which repository is under review and whether `origin` is it;
+   * the planner does not. Returns why the commit could not be fetched, or null
+   * when a fetch ran, and never throws. Whether the commit is now readable is
+   * asked of git again afterwards, not taken from the answer.
+   */
+  fetchPriorHead?: ((sha: string) => string | null) | undefined;
 }
 
 /** A planned scope, and the patch an `interdiff` scope reviews. */
@@ -162,13 +182,43 @@ export interface PlannedScope {
   interdiffPatch: string | null;
 }
 
+/**
+ * One line naming a failed git command and what git said about it.
+ *
+ * Commit ids are shortened and pathspecs dropped, so the line stays readable
+ * in a summary; the first line of stderr is usually git's own `fatal:` reason.
+ */
+export function gitFailure(args: string[], error: unknown): string {
+  const end = args.indexOf('--');
+  const command = (end === -1 ? args : args.slice(0, end))
+    .map((arg) => (/^[0-9a-f]{40,64}$/.test(arg) ? arg.slice(0, 7) : arg))
+    .join(' ');
+  const failure = error as { stderr?: unknown; status?: unknown; message?: unknown };
+  const stderr = typeof failure.stderr === 'string' ? failure.stderr : Buffer.isBuffer(failure.stderr) ? failure.stderr.toString('utf8') : '';
+  const said =
+    stderr.split('\n').map((line) => line.trim()).find((line) => line.length > 0) ??
+    (typeof failure.status === 'number' ? `exit status ${failure.status}` : String(failure.message ?? 'unknown error').split('\n')[0]);
+  return `${command} failed: ${said}`;
+}
+
+/** The first line of a thrown value, for a detail that must stay one line. */
+function firstLine(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? '';
+}
+
 function runGit(args: string[], cwd: string): string {
-  return execFileSync('git', args, {
-    cwd,
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'ignore'],
-  });
+  try {
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    // Rethrown with the command named, so a full read can say which git step
+    // failed; `status` is kept because `isAncestor` reads exit 1 as an answer.
+    throw Object.assign(new Error(gitFailure(args, error)), { status: (error as { status?: unknown }).status });
+  }
 }
 
 const systemGit: IncrementalGit = {
@@ -232,12 +282,13 @@ export function topPathspecs(paths: string[]): string[] {
   return paths.map((path) => `:(top,literal)${path}`);
 }
 
-function full(cause: FullReviewCause, priorRun: PriorPullReview | null): ReviewScope {
+function full(cause: FullReviewCause, priorRun: PriorPullReview | null, detail?: string): ReviewScope {
   return {
     kind: 'full',
     cause,
     since: priorRun?.headRef ?? null,
     priorRunId: priorRun?.reviewRunId ?? null,
+    ...(detail === undefined ? {} : { detail }),
   };
 }
 
@@ -276,6 +327,12 @@ interface OwnHunk {
    * keeps all of them; a revert of part of it, or a move, does not.
    */
   site: Set<string>;
+  /** The site's base lines by their text, whether kept as context or removed. */
+  siteText: Set<string>;
+  /** Its `-`, `+` and `\` lines: exactly what the author's edit is. */
+  changes: string[];
+  /** The `@@` line, to say which hunk a full read was about. */
+  header: string;
   text: string;
 }
 
@@ -299,6 +356,15 @@ function hunkKey(body: string[]): string {
     if (index + 1 < body.length && body[index + 1]!.startsWith(' ')) keep.add(index + 1);
   });
   return [...keep].sort((x, y) => x - y).map((index) => body[index]).join('\n');
+}
+
+function hunkChanges(body: string[]): string[] {
+  return body.filter((line) => line.startsWith('+') || line.startsWith('-') || line.startsWith('\\'));
+}
+
+/** A site line is a context or removed line; both are base text after the prefix. */
+function siteText(site: Set<string>): Set<string> {
+  return new Set([...site].map((line) => line.slice(1)));
 }
 
 function hunkSite(body: string[]): Set<string> {
@@ -335,7 +401,16 @@ export function ownDiffFiles(patch: string): Map<string, OwnFile> {
     // The patch's final newline leaves an empty line that is not part of it.
     while (hunk !== null && hunk.length > 1 && hunk.at(-1) === '') hunk.pop();
     if (file !== null && hunk !== null) {
-      file.hunks.push({ key: hunkKey(hunk.slice(1)), site: hunkSite(hunk.slice(1)), text: hunk.join('\n') });
+      const body = hunk.slice(1);
+      const site = hunkSite(body);
+      file.hunks.push({
+        key: hunkKey(body),
+        site,
+        siteText: siteText(site),
+        changes: hunkChanges(body),
+        header: /^@@ [^@]* @@/.exec(hunk[0] ?? '')?.[0] ?? (hunk[0] ?? ''),
+        text: hunk.join('\n'),
+      });
     }
     hunk = null;
   };
@@ -377,6 +452,31 @@ interface OwnComparison {
   added: Map<string, OwnHunk[]>;
   /** True when something changed that new head hunks cannot show. */
   unrepresentable: boolean;
+  /** The first thing that made it so, naming the file. */
+  reason: string | null;
+}
+
+/**
+ * Whether a new hunk is the reviewed one with a neighbouring line edited.
+ *
+ * A follow-up that edits the line next to a reviewed hunk merges the two into
+ * one hunk, and the reviewed hunk's context line there now shows as removed:
+ * ` b` becomes `-b`. The exact site no longer matches, though the edit sits
+ * where it did. Matching the site on line text alone would also accept a
+ * revert of the reviewed edit next to that new edit, so the reviewed hunk's
+ * own `-`, `+` and `\` lines must all still be in the new hunk, counted:
+ * nothing the review saw was withdrawn, and the new hunk shows the rest.
+ */
+function keepsReviewedEdit(gone: OwnHunk, candidate: OwnHunk): boolean {
+  if (![...gone.siteText].every((line) => candidate.siteText.has(line))) return false;
+  const left = new Map<string, number>();
+  for (const line of candidate.changes) left.set(line, (left.get(line) ?? 0) + 1);
+  for (const line of gone.changes) {
+    const count = left.get(line) ?? 0;
+    if (count === 0) return false;
+    left.set(line, count - 1);
+  }
+  return true;
 }
 
 /**
@@ -390,12 +490,17 @@ interface OwnComparison {
  */
 function compareOwnDiffs(before: Map<string, OwnFile>, after: Map<string, OwnFile>): OwnComparison {
   const added = new Map<string, OwnHunk[]>();
-  let unrepresentable = false;
+  let reason: string | null = null;
+  const because = (why: string) => {
+    reason ??= why;
+  };
 
   for (const path of new Set([...before.keys(), ...after.keys()])) {
     const earlier = before.get(path);
     const later = after.get(path);
-    if ((earlier?.metadata ?? '') !== (later?.metadata ?? '')) unrepresentable = true;
+    if ((earlier?.metadata ?? '') !== (later?.metadata ?? '')) {
+      because(`${path}: its rename, mode, new or deleted marker changed`);
+    }
 
     const remaining = new Map<string, OwnHunk[]>();
     for (const hunk of earlier?.hunks ?? []) remaining.set(hunk.key, [...(remaining.get(hunk.key) ?? []), hunk]);
@@ -411,19 +516,24 @@ function compareOwnDiffs(before: Map<string, OwnFile>, after: Map<string, OwnFil
     // A gone hunk is replaced only by a new hunk whose site holds all of its
     // own, and each new hunk replaces at most one: two reviewed additions after
     // the same closing brace must not both be accounted for by one rewrite, or
-    // the other's revert goes unread.
+    // the other's revert goes unread. An exact site match is a rewrite in
+    // place; otherwise the new hunk must keep the reviewed edit whole, with
+    // only a neighbouring line edited (see `keepsReviewedEdit`).
     const unused = [...fresh];
     for (const hunk of [...remaining.values()].flat()) {
-      const index = unused.findIndex((candidate) => [...hunk.site].every((line) => candidate.site.has(line)));
-      if (index === -1) unrepresentable = true;
+      let index = unused.findIndex((candidate) => [...hunk.site].every((line) => candidate.site.has(line)));
+      if (index === -1) index = unused.findIndex((candidate) => keepsReviewedEdit(hunk, candidate));
+      if (index === -1) because(`${path}: the reviewed hunk ${hunk.header} was reverted or moved`);
       else unused.splice(index, 1);
     }
     // A file on one side only, with no hunk to carry it (an empty new file).
-    if ((earlier === undefined) !== (later === undefined) && fresh.length === 0) unrepresentable = true;
+    if ((earlier === undefined) !== (later === undefined) && fresh.length === 0) {
+      because(`${path}: on one side only, with no hunk to show it`);
+    }
     if (fresh.length > 0) added.set(path, fresh);
   }
 
-  return { added, unrepresentable };
+  return { added, unrepresentable: reason !== null, reason };
 }
 
 /**
@@ -450,8 +560,18 @@ export function planScope(options: PlanIncrementalScopeOptions): PlannedScope {
 
   try {
     const git = options.git ?? systemGit;
-    if (!options.headAvailable || !git.hasCommit(prior.headRef, options.cwd)) {
-      return only(full('compare-unavailable', prior));
+    if (!options.headAvailable) {
+      return only(full('compare-unavailable', prior, `the head ${options.head.slice(0, 7)} is not in this clone`));
+    }
+    if (!git.hasCommit(prior.headRef, options.cwd)) {
+      // A force-push leaves the reviewed head reachable from no ref this clone
+      // fetched, though origin usually still has it. Ask for it by sha before
+      // giving up on a narrower read.
+      const why = options.fetchPriorHead?.(prior.headRef) ?? null;
+      if (!git.hasCommit(prior.headRef, options.cwd)) {
+        const missing = `the previous head ${prior.headRef.slice(0, 7)} is not in this clone`;
+        return only(full('compare-unavailable', prior, why === null ? missing : `${missing}; ${why}`));
+      }
     }
 
     const ancestor = git.isAncestor(prior.headRef, options.head, options.cwd);
@@ -477,10 +597,10 @@ export function planScope(options: PlanIncrementalScopeOptions): PlannedScope {
     if (files.length === 0) return only(full('base-sync-only', prior));
 
     return only(incremental(options, prior, git, files));
-  } catch {
+  } catch (error) {
     // Narrowing on partial information is worse than re-reading a change. The
     // caller still receives a usable full diff and an honest explanation.
-    return only(full('compare-unavailable', prior));
+    return only(full('compare-unavailable', prior, firstLine(error)));
   }
 }
 
@@ -515,8 +635,11 @@ function ownDiffScope(
   merged: boolean,
 ): PlannedScope {
   const base = options.base as string;
-  if (git.mergeBase === undefined || git.diffText === undefined || !git.hasCommit(base, options.cwd)) {
-    return { scope: full('compare-unavailable', prior), interdiffPatch: null };
+  if (git.mergeBase === undefined || git.diffText === undefined) {
+    return { scope: full('compare-unavailable', prior, 'this git surface cannot read an own diff'), interdiffPatch: null };
+  }
+  if (!git.hasCommit(base, options.cwd)) {
+    return { scope: full('compare-unavailable', prior, `the base ${base.slice(0, 7)} is not in this clone`), interdiffPatch: null };
   }
 
   const paths = [
@@ -527,9 +650,11 @@ function ownDiffScope(
   const mergeBase = git.mergeBase(base, options.head, options.cwd);
   const before = ownDiffFiles(git.diffText(git.mergeBase(base, prior.headRef, options.cwd), prior.headRef, paths, options.cwd));
   const after = ownDiffFiles(git.diffText(mergeBase, options.head, paths, options.cwd));
-  const { added, unrepresentable } = compareOwnDiffs(before, after);
+  const { added, unrepresentable, reason } = compareOwnDiffs(before, after);
 
-  if (unrepresentable) return { scope: full('own-diff-unrepresentable', prior), interdiffPatch: null };
+  if (unrepresentable) {
+    return { scope: full('own-diff-unrepresentable', prior, reason ?? undefined), interdiffPatch: null };
+  }
 
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
 
@@ -551,7 +676,9 @@ function ownDiffScope(
     const shown = reviewed.get(path);
     // Every path compared came from the reviewed list, so this cannot miss;
     // if it ever did, narrowing past it would be the silent skip to avoid.
-    if (shown === undefined) return { scope: full('compare-unavailable', prior), interdiffPatch: null };
+    if (shown === undefined) {
+      return { scope: full('compare-unavailable', prior, `${path} changed but is not a reviewed file`), interdiffPatch: null };
+    }
     files.add(shown);
     hunks += fresh.length;
     parts.push([...(after.get(path)?.header ?? []), ...fresh.map((hunk) => hunk.text)].join('\n'));

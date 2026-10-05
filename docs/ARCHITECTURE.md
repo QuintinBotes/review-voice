@@ -360,6 +360,15 @@ returned `found: []`, which reads as corroboration, and at the head ref it found
 the symbol the diff itself adds and deleted the finding with a sentence that was
 false about the claim.
 
+A name can be missing from every tracked file and still exist, because a build
+step writes it: a localisation key behind a `.resx` designer class, Android's
+`R`, a Flutter `l10n` accessor. When nothing is found and the repository tracks
+resource sources (`*.resx`, `*.resw`, `*.po`, `*.xlf`, `*.xliff`, `*.arb`, a
+`locales/` or `i18n/` directory), or the name is shaped like a generated
+accessor, the check returns `inconclusive: true` with a `reason` saying the name
+may be generated, rather than corroborating the absence. Finding the sources
+costs one `git ls-files`, and only when the search found nothing.
+
 ### A score belongs to the batch, not to the candidate
 
 Novelty is measured against what has already been kept in the same review, which
@@ -722,6 +731,13 @@ cannot double-post while a re-review after a force-push is correctly a
 different post.
 
 The posting call itself is not implemented. The gate has never opened.
+
+`RV verdict` computes the full posting decision as JSON - event, action,
+reasons, CI state, the complexity cap, held findings and the payload preview -
+and never posts. An external loop should call it instead of re-implementing
+these rules. Exit codes: 0 ready, 2 nothing to post or re-check, 3 head moved,
+4 CI still running on an approval, 5 CI red on a re-check, 6 CI needs a rerun
+(an infrastructure failure or a stuck check, ADR 0013; no event is sent).
 
 ## Trust boundary
 

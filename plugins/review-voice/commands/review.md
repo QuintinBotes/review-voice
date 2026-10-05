@@ -74,7 +74,8 @@ recorded. The scope is one of:
   with base-branch churn excluded and head-side line numbers kept.
 - `incremental` - only the commits after the previous head (used only when
   the base commit is not readable locally).
-- `full` - the whole pull request, with `cause` saying why.
+- `full` - the whole pull request, with `cause` saying why and, where it
+  helps, `detail` naming the condition or the git command that failed.
 
 Do not make a claim about earlier changes from an `interdiff` or `incremental`
 patch. If the user asks for a complete review, pass `--full` to `RV diff`.
@@ -240,12 +241,28 @@ including each reported `reason`, and ask it to re-anchor or withdraw each one.
 Run the same check again. Drop candidates that still fail and say the dropped
 count once after the findings. Never correct an anchor by hand.
 
+A candidate with `anchor: "stale-consumer"` sits on unchanged code the change
+made wrong, and is checked by its `caused_by`, which must be an added line or
+deletion site. A missing or unchanged cause fails like any other anchor.
+
 **On a `--pr` run, add `--thread <tmpdir>/thread.json`** to that command. It
 removes candidates that repeat a comment already on the pull request, so the
 verifier does not spend a pass on them, and flags a near match with
-`possibleRepeatOf`. Send only `kept` to step 3. Keep `droppedAsRepeat` for
+`possibleRepeatOf`. A candidate that overlaps the pull request description is
+not dropped: wording cannot tell a restatement from a contradiction, so it is
+kept with `possibleRepeatOf` of `kind: description` and the verifier decides.
+Send only `kept` to step 3. Keep `droppedAsRepeat` for
 step 6 (`record --held`); until then, do not pass them to `--verdicts`. An
 unreadable thread file exits 2: fix the path rather than skipping the check.
+
+**When step 1 reported a prior run, also add `--held-from <prior.runId> --head <sha>`.**
+It carries that run's held findings (`refuted`, `partly`, `repeat`) to the
+current head and drops a candidate that restates one on unchanged code, so a
+finding the verifier already refuted is not raised again. List `droppedAsHeld`
+with the other drops and keep it for step 6. A candidate on the same line with
+different wording is kept with `possibleRepeatOf` of `kind: held` for the
+verifier. If the prior run cannot be read the command says so on stderr and
+keeps every candidate.
 
 If there are no candidates, output exactly `No actionable findings.` and stop.
 
@@ -315,7 +332,9 @@ a question-framed claim at minor; boundary categories are exempt.
 With `--diff-file`, `score` also rejects a candidate that is not anchored on an
 added line or a deletion site. Keep the `anchorCheck` and its
 `rejectedBecause` reason with the score output; re-anchor or withdraw a rejected
-candidate instead of moving it by hand.
+candidate instead of moving it by hand. A stale consumer is anchored by its
+cause, and is eligible only when the verifier set `impact_traced`; it is posted
+in the review body, never inline.
 
 `score` also checks that each candidate's cited path exists at the reviewed ref.
 The path is the one field no other stage verifies, and a wrong one sends the
@@ -355,6 +374,9 @@ Keep only candidates where `eligible` is true. For the rest, `rejectedBecause`
 says why, and `confidenceSource` says whose confidence the gate read: the
 `verifier` where it ran, the `analyst` where it did not, or `unverifiable-cap`
 where the claim itself says it could not be checked.
+
+`belowGate` lists the verified candidates stopped only by the final score. Keep
+it for step 6. They are never posted and are not part of the validated output.
 
 Then order by severity: `blocking`, `important`, `minor`, `nit`, `question`.
 Within a tier, prefer the higher final score.
@@ -407,7 +429,10 @@ manual paste of eight findings.
 ## Step 6 - Validate, and retry once
 
 Pipe the editor's output through
-`RV validate-output --scale-to-files <hunkFileCount>`, adding
+`RV validate-output --scale-to-files <hunkFileCount> --scores <file>`, where
+`<file>` is the JSON `RV score` printed. A severity tag that disagrees with the
+score at that `path:line` is otherwise held silently at post time, when the
+editor can no longer retry. Add
 `--max-words-per-finding <n>` or `--max-findings <n>` only when the resolved
 policy sets them.
 
@@ -421,8 +446,11 @@ is, and a file contributing nothing legitimately does not. On a live run a
 stray directory and another project's notes took the reviewed count from 11 to
 17 and bought word budget with nothing in them.
 
-- Exit 0: display the output verbatim, then record it. Write the scored
-  candidates to a temporary file and pass it:
+- Exit 0: display the output verbatim. When `belowGate` from step 4 is not
+  empty, print after it a line `Below the gate (not posted)` and then one line
+  per entry: `[severity] path:line - claim`. They are verified but scored below
+  the gate, are never posted, and are not part of the validated output. Then
+  record it. Write the scored candidates to a temporary file and pass it:
   `RV record --repository <owner/repo> --base <ref> --head <sha> --candidates <file>
   --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --stages <file>` with the validated output on
   stdin.
@@ -452,9 +480,11 @@ stray directory and another project's notes took the reviewed count from 11 to
   feedback on that finding can never become a policy rule.
 
   Pass every candidate that was held back rather than reported with
-  `--held <file>` (an array of `{path, line, verdict, source, reason}`, verdict
-  one of `partly`, `refuted`, `unverified`, `repeat`): the `droppedAsRepeat` from
-  step 2 as `repeat`, and any cross-check result of PARTLY or REFUTED. Malformed
+  `--held <file>` (an array of `{path, line, verdict, source, reason, text}`, verdict
+  one of `partly`, `refuted`, `unverified`, `repeat`, `below-gate`): the
+  `droppedAsRepeat` from step 2 as `repeat`, any cross-check result of PARTLY or
+  REFUTED, and each `belowGate` entry from step 4 as `below-gate`. Give each
+  entry `text`, the candidate's claim, so the next review can match on wording. Malformed
   entries exit 2. `/review-voice:explain` lists them under "Held back".
 
   Pass the score breakdowns with `--scores <file>` and, if verification ran,
@@ -479,7 +509,8 @@ defeats the measurement.
 
 No greeting. No summary. No praise. No description of the process or of how
 many files you looked at. No markdown headings. No commentary after the
-findings. If you have nothing that clears the bar, the entire output is:
+findings, except the `Below the gate (not posted)` list from step 6 when it is
+not empty. If you have nothing that clears the bar, the entire output is:
 
 ```
 No actionable findings.
