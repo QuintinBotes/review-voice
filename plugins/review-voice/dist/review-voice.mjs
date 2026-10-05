@@ -1653,7 +1653,7 @@ function parseReviewScope(value) {
   if (scope.kind === "unchanged" && prior && typeof scope.mergeBase === "string" && UNCHANGED_REASONS.has(scope.reason)) {
     return scope;
   }
-  if (scope.kind === "interdiff" && prior && typeof scope.mergeBase === "string" && strings(scope.files) && Number.isInteger(scope.hunks)) {
+  if (scope.kind === "interdiff" && prior && typeof scope.mergeBase === "string" && strings(scope.files) && Number.isInteger(scope.hunks) && (scope.detail === void 0 || typeof scope.detail === "string")) {
     return scope;
   }
   if (scope.kind === "full" && typeof scope.cause === "string" && nullableString(scope.since) && nullableString(scope.priorRunId) && (scope.detail === void 0 || typeof scope.detail === "string")) {
@@ -1668,12 +1668,15 @@ function describeScope(scope) {
       return `incremental since ${scope.since.slice(0, 7)} (${scope.commits} commit${scope.commits === 1 ? "" : "s"})`;
     case "unchanged":
       return `unchanged since ${scope.since.slice(0, 7)} (${scope.reason})`;
-    case "interdiff":
-      return `interdiff since ${scope.since.slice(0, 7)} (${scope.hunks} hunk${scope.hunks === 1 ? "" : "s"} in ${scope.files.length} file${scope.files.length === 1 ? "" : "s"})`;
+    case "interdiff": {
+      const counts = `${scope.hunks} hunk${scope.hunks === 1 ? "" : "s"} in ${scope.files.length} file${scope.files.length === 1 ? "" : "s"}`;
+      return `interdiff since ${scope.since.slice(0, 7)} (${scope.detail === void 0 ? counts : `${counts}; ${scope.detail}`})`;
+    }
     case "full":
       return scope.detail === void 0 ? `full (${scope.cause})` : `full (${scope.cause}: ${scope.detail})`;
   }
 }
+var REPLAY_GIT = [2, 40];
 function gitFailure(args, error) {
   const end = args.indexOf("--");
   const command = (end === -1 ? args : args.slice(0, end)).map((arg) => /^[0-9a-f]{40,64}$/.test(arg) ? arg.slice(0, 7) : arg).join(" ");
@@ -1719,7 +1722,7 @@ var systemGit = {
     return runGit(["rev-list", "--merges", `${since}..${head}`], cwd).split("\n").filter((sha) => sha.length > 0);
   },
   changedPaths(since, head, cwd) {
-    return runGit(["diff", "--name-only", "-z", since, head], cwd).split("\0").filter((path) => path.length > 0);
+    return runGit(["diff", "--name-only", "--no-renames", "-z", since, head], cwd).split("\0").filter((path) => path.length > 0);
   },
   commitCount(since, head, cwd) {
     const count2 = Number(runGit(["rev-list", "--count", `${since}..${head}`], cwd).trim());
@@ -1736,6 +1739,29 @@ var systemGit = {
       ["diff", "--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", from, to, "--", ...topPathspecs(paths)],
       cwd
     );
+  },
+  replay(from, onto, head, cwd) {
+    const version = /(\d+)\.(\d+)/.exec(runGit(["version"], cwd));
+    const [major, minor] = [Number(version?.[1] ?? 0), Number(version?.[2] ?? 0)];
+    if (major < REPLAY_GIT[0] || major === REPLAY_GIT[0] && minor < REPLAY_GIT[1]) {
+      throw new Error(
+        `git ${version?.[0] ?? "(unknown version)"} cannot replay the reviewed head onto a new base; that needs git ${REPLAY_GIT.join(".")} or later`
+      );
+    }
+    const args = ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", "--merge-base", from, onto, head];
+    let output;
+    let conflicted = false;
+    try {
+      output = execFileSync4("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) {
+      const failure = error;
+      if (failure.status !== 1 || typeof failure.stdout !== "string") throw new Error(gitFailure(args, error));
+      output = failure.stdout;
+      conflicted = true;
+    }
+    const [tree, ...paths] = output.split("\0").filter((part) => part.length > 0);
+    if (tree === void 0 || !/^[0-9a-f]{40,64}$/.test(tree)) throw new Error("git merge-tree returned no tree");
+    return { tree, conflicts: conflicted ? [...new Set(paths)].sort() : [] };
   }
 };
 function topPathspecs(paths) {
@@ -1760,7 +1786,6 @@ function changedReviewedFiles(files, changedPaths) {
   }
   return [...selected].sort();
 }
-var METADATA = /^(?:old mode|new mode|deleted file mode|new file mode|similarity index|rename from|rename to|copy from|copy to|Binary files) /;
 function hunkKey(body) {
   const keep = /* @__PURE__ */ new Set();
   body.forEach((line, index) => {
@@ -1770,22 +1795,6 @@ function hunkKey(body) {
     if (index + 1 < body.length && body[index + 1].startsWith(" ")) keep.add(index + 1);
   });
   return [...keep].sort((x, y) => x - y).map((index) => body[index]).join("\n");
-}
-function hunkChanges(body) {
-  return body.filter((line) => line.startsWith("+") || line.startsWith("-") || line.startsWith("\\"));
-}
-function siteText(site) {
-  return new Set([...site].map((line) => line.slice(1)));
-}
-function hunkSite(body) {
-  const site = /* @__PURE__ */ new Set();
-  body.forEach((line, index) => {
-    if (line.startsWith("-")) site.add(line);
-    if (!line.startsWith("+") && !line.startsWith("-")) return;
-    if (index > 0 && body[index - 1].startsWith(" ")) site.add(body[index - 1]);
-    if (index + 1 < body.length && body[index + 1].startsWith(" ")) site.add(body[index + 1]);
-  });
-  return site;
 }
 function gitHeaderPath(line) {
   const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line);
@@ -1799,16 +1808,7 @@ function ownDiffFiles(patch) {
   const closeHunk = () => {
     while (hunk !== null && hunk.length > 1 && hunk.at(-1) === "") hunk.pop();
     if (file !== null && hunk !== null) {
-      const body = hunk.slice(1);
-      const site = hunkSite(body);
-      file.hunks.push({
-        key: hunkKey(body),
-        site,
-        siteText: siteText(site),
-        changes: hunkChanges(body),
-        header: /^@@ [^@]* @@/.exec(hunk[0] ?? "")?.[0] ?? (hunk[0] ?? ""),
-        text: hunk.join("\n")
-      });
+      file.hunks.push({ key: hunkKey(hunk.slice(1)) });
     }
     hunk = null;
   };
@@ -1817,7 +1817,7 @@ function ownDiffFiles(patch) {
     if (line.startsWith("diff --git ")) {
       closeHunk();
       const path = gitHeaderPath(line.endsWith("\r") ? line.slice(0, -1) : line);
-      file = { header: [line], metadata: "", hunks: [] };
+      file = { hunks: [] };
       if (path !== null) files.set(path, file);
       continue;
     }
@@ -1833,58 +1833,9 @@ function ownDiffFiles(patch) {
       }
       closeHunk();
     }
-    if (file === null) continue;
-    file.header.push(line);
-    if (METADATA.test(line)) file.metadata += `${line}
-`;
   }
   closeHunk();
   return files;
-}
-function keepsReviewedEdit(gone, candidate) {
-  if (![...gone.siteText].every((line) => candidate.siteText.has(line))) return false;
-  const left = /* @__PURE__ */ new Map();
-  for (const line of candidate.changes) left.set(line, (left.get(line) ?? 0) + 1);
-  for (const line of gone.changes) {
-    const count2 = left.get(line) ?? 0;
-    if (count2 === 0) return false;
-    left.set(line, count2 - 1);
-  }
-  return true;
-}
-function compareOwnDiffs(before, after) {
-  const added = /* @__PURE__ */ new Map();
-  let reason2 = null;
-  const because = (why) => {
-    reason2 ??= why;
-  };
-  for (const path of /* @__PURE__ */ new Set([...before.keys(), ...after.keys()])) {
-    const earlier = before.get(path);
-    const later2 = after.get(path);
-    if ((earlier?.metadata ?? "") !== (later2?.metadata ?? "")) {
-      because(`${path}: its rename, mode, new or deleted marker changed`);
-    }
-    const remaining = /* @__PURE__ */ new Map();
-    for (const hunk of earlier?.hunks ?? []) remaining.set(hunk.key, [...remaining.get(hunk.key) ?? [], hunk]);
-    const fresh = [];
-    for (const hunk of later2?.hunks ?? []) {
-      const left = remaining.get(hunk.key) ?? [];
-      if (left.length > 0) remaining.set(hunk.key, left.slice(1));
-      else fresh.push(hunk);
-    }
-    const unused = [...fresh];
-    for (const hunk of [...remaining.values()].flat()) {
-      let index = unused.findIndex((candidate) => [...hunk.site].every((line) => candidate.site.has(line)));
-      if (index === -1) index = unused.findIndex((candidate) => keepsReviewedEdit(hunk, candidate));
-      if (index === -1) because(`${path}: the reviewed hunk ${hunk.header} was reverted or moved`);
-      else unused.splice(index, 1);
-    }
-    if (earlier === void 0 !== (later2 === void 0) && fresh.length === 0) {
-      because(`${path}: on one side only, with no hunk to show it`);
-    }
-    if (fresh.length > 0) added.set(path, fresh);
-  }
-  return { added, unrepresentable: reason2 !== null, reason: reason2 };
 }
 function planScope(options) {
   const prior = options.priorRun;
@@ -1940,58 +1891,48 @@ function ownDiffScope(options, prior, git5, ancestor, merged) {
   if (!git5.hasCommit(base, options.cwd)) {
     return { scope: full("compare-unavailable", prior, `the base ${base.slice(0, 7)} is not in this clone`), interdiffPatch: null };
   }
-  const paths = [
-    ...new Set(
-      options.reviewedFiles.flatMap((file) => file.previousPath === void 0 ? [file.path] : [file.path, file.previousPath])
-    )
-  ];
   const mergeBase = git5.mergeBase(base, options.head, options.cwd);
   const priorMergeBase = git5.mergeBase(base, prior.headRef, options.cwd);
-  if (ancestor && priorMergeBase === mergeBase) {
-    return plainFollowUp(options, prior, git5, mergeBase, paths);
+  const paths = pullRequestPaths(options, prior, git5, priorMergeBase, mergeBase);
+  if (priorMergeBase === mergeBase) {
+    return interdiffFrom(options, prior, git5, prior.headRef, mergeBase, paths, ancestor ? "base-sync-only" : "history-rewritten");
   }
-  const before = ownDiffFiles(git5.diffText(priorMergeBase, prior.headRef, paths, options.cwd));
-  const after = ownDiffFiles(git5.diffText(mergeBase, options.head, paths, options.cwd));
-  const { added, unrepresentable, reason: reason2 } = compareOwnDiffs(before, after);
-  if (unrepresentable) {
-    return { scope: full("own-diff-unrepresentable", prior, reason2 ?? void 0), interdiffPatch: null };
+  if (git5.replay === void 0) {
+    return { scope: full("compare-unavailable", prior, "this git surface cannot replay the reviewed head"), interdiffPatch: null };
   }
-  const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
-  if (added.size === 0) {
-    const reason3 = !ancestor ? "history-rewritten" : merged ? "base-merged" : "base-sync-only";
-    return { scope: { kind: "unchanged", ...common, reason: reason3 }, interdiffPatch: null };
-  }
-  const reviewed = /* @__PURE__ */ new Map();
-  for (const file of options.reviewedFiles) {
-    reviewed.set(file.path, file.path);
-    if (file.previousPath !== void 0) reviewed.set(file.previousPath, file.path);
-  }
-  const parts = [];
-  const files = /* @__PURE__ */ new Set();
-  let hunks = 0;
-  for (const [path, fresh] of added) {
-    const shown = reviewed.get(path);
-    if (shown === void 0) {
-      return { scope: full("compare-unavailable", prior, `${path} changed but is not a reviewed file`), interdiffPatch: null };
-    }
-    files.add(shown);
-    hunks += fresh.length;
-    parts.push([...after.get(path)?.header ?? [], ...fresh.map((hunk) => hunk.text)].join("\n"));
-  }
-  return {
-    scope: { kind: "interdiff", ...common, files: [...files].sort(), hunks },
-    interdiffPatch: `${parts.join("\n")}
-`
-  };
+  const replayed = git5.replay(priorMergeBase, mergeBase, prior.headRef, options.cwd);
+  return interdiffFrom(
+    options,
+    prior,
+    git5,
+    replayed.tree,
+    mergeBase,
+    paths,
+    !ancestor ? "history-rewritten" : merged ? "base-merged" : "base-sync-only",
+    replayed.conflicts
+  );
 }
-function plainFollowUp(options, prior, git5, mergeBase, reviewedPaths) {
-  const diffText = git5.diffText;
+function pullRequestPaths(options, prior, git5, priorMergeBase, mergeBase) {
+  const reviewed = options.reviewedFiles.flatMap(
+    (file) => file.previousPath === void 0 ? [file.path] : [file.path, file.previousPath]
+  );
   const current = new Set(git5.changedPaths(mergeBase, options.head, options.cwd));
-  const withdrawn = git5.changedPaths(mergeBase, prior.headRef, options.cwd).filter((path) => !current.has(path));
-  const patch = diffText(prior.headRef, options.head, [.../* @__PURE__ */ new Set([...reviewedPaths, ...withdrawn])], options.cwd);
+  const withdrawn = git5.changedPaths(priorMergeBase, prior.headRef, options.cwd).filter((path) => !current.has(path));
+  return [.../* @__PURE__ */ new Set([...reviewed, ...options.deletedFiles ?? [], ...withdrawn])];
+}
+function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedReason, conflicts = []) {
+  const diffText = git5.diffText;
+  const read = (left, list) => list.length === 0 ? "" : diffText(left, options.head, list, options.cwd);
+  const wanted = new Set(paths);
+  const conflicted = conflicts.filter((path) => wanted.has(path));
+  const whole = read(mergeBase, conflicted);
+  const readWhole = new Set(ownDiffFiles(whole).keys());
+  const rest = paths.filter((path) => !readWhole.has(path));
+  const patch = [read(from, rest), whole].filter((part) => part.length > 0).join("");
+  const detail = readWhole.size === 0 ? {} : { detail: `read whole after a conflicting replay: ${[...readWhole].sort().join(", ")}` };
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
   if (patch.trim().length === 0) {
-    return { scope: { kind: "unchanged", ...common, reason: "base-sync-only" }, interdiffPatch: null };
+    return { scope: { kind: "unchanged", ...common, reason: unchangedReason }, interdiffPatch: null };
   }
   const reviewed = /* @__PURE__ */ new Map();
   for (const file of options.reviewedFiles) {
@@ -2005,7 +1946,7 @@ function plainFollowUp(options, prior, git5, mergeBase, reviewedPaths) {
     hunks += file.hunks.length;
   }
   return {
-    scope: { kind: "interdiff", ...common, files: [...files].sort(), hunks },
+    scope: { kind: "interdiff", ...common, files: [...files].sort(), hunks, ...detail },
     interdiffPatch: patch
   };
 }
@@ -2167,9 +2108,14 @@ function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = 
     included = new Set(scope.files);
   }
   const excludedBecause = `unchanged since the last review (${scope.since.slice(0, 7)})`;
-  const files = result.files.map(
-    (file) => file.reviewed && !included.has(file.path) ? { ...file, reviewed: false, excludedBecause } : file
-  );
+  const files = result.files.map((file) => {
+    if (file.reviewed && !included.has(file.path)) return { ...file, reviewed: false, excludedBecause };
+    if (scope.kind === "interdiff" && file.status === "deleted" && included.has(file.path)) {
+      const { excludedBecause: _skipped, ...rest } = file;
+      return { ...rest, reviewed: true };
+    }
+    return file;
+  });
   const hunkPaths = pathsWithHunks(diff);
   const reviewedFileCount = files.filter((file) => file.reviewed).length;
   return {
@@ -13482,6 +13428,9 @@ async function pullRequestDiffCommand(argv) {
       head: result.head,
       headAvailable: result.refs.head.available,
       reviewedFiles: result.files.filter((file) => file.reviewed),
+      // Deletions are never reviewed, but a follow-up must still show one. A
+      // deleted lock file or generated output stays out, as it would anyway.
+      deletedFiles: result.files.filter((file) => file.status === "deleted" && isReviewable(file.path, argv.includes("--include-generated"))).map((file) => file.path),
       cwd: process.cwd(),
       truncated: result.truncated,
       forceFull: argv.includes("--full"),

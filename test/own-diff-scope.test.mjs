@@ -226,8 +226,8 @@ test('a reverted author hunk is never unchanged', () => {
       r.commit('revert the reviewed change');
     });
     assert.notEqual(scope.kind, 'unchanged');
-    assert.equal(scope.kind, 'full');
-    assert.equal(scope.cause, 'own-diff-unrepresentable');
+    assert.equal(scope.kind, 'interdiff');
+    assert.match(plan(repository).interdiffPatch, /^-a 5 changed by the author$/m);
   });
 });
 

@@ -102,9 +102,18 @@ files all produce a full review with a named cause. The implementation can
 prove only a simple descendant range is safe; every other shape is cheaper to
 read again than to explain away after it omits author work.
 
-A merge always falls back. A range diff can show the merge's files, but cannot
-reliably separate base-branch updates from the author's changes, so presenting
-it as a narrow author review would claim more precision than the data has.
+A range diff across a merged base or a rebase cannot separate base-branch
+updates from the author's changes. When the base commit is readable, the
+reviewed head is instead replayed onto the new merge base with
+`git merge-tree`, giving what the reviewed pull request would look like had it
+branched there, and the head is read against that, over the pull request's
+files. Base changes are
+on both sides and cancel out; what remains is the author's new commits and any
+rewrite of their own code while resolving the merge. A file whose replay
+conflicts has only conflict markers to compare with, so it is read as the pull
+request's own diff of it on the new base: the author's resolution and the rest
+of their change there, with the base's changes still left out. Without the base
+commit, a merge or a rewritten history still falls back.
 
 The resulting scope is written beside the patch and printed after the findings
 when it is incremental. In particular, `No actionable findings.` then means no

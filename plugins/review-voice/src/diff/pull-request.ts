@@ -322,11 +322,17 @@ export function applyReviewScope(
   }
 
   const excludedBecause = `unchanged since the last review (${scope.since.slice(0, 7)})`;
-  const files = result.files.map((file) =>
-    file.reviewed && !included.has(file.path)
-      ? { ...file, reviewed: false, excludedBecause }
-      : file,
-  );
+  const files = result.files.map((file) => {
+    if (file.reviewed && !included.has(file.path)) return { ...file, reviewed: false, excludedBecause };
+    // A full read skips a deletion, but an interdiff that holds one is the
+    // change since the review: counted as unreviewed, a follow-up that only
+    // deletes a file would read as nothing to review.
+    if (scope.kind === 'interdiff' && file.status === 'deleted' && included.has(file.path)) {
+      const { excludedBecause: _skipped, ...rest } = file;
+      return { ...rest, reviewed: true };
+    }
+    return file;
+  });
   const hunkPaths = pathsWithHunks(diff);
   const reviewedFileCount = files.filter((file) => file.reviewed).length;
 

@@ -178,12 +178,12 @@ test('a follow-up whose merge base moved is not read as the commit range', () =>
     repository.commit('add a file');
 
     // The reviewed head is still an ancestor, but the merge base moved: the
-    // own-diff comparison decides, as before, and a new file's marker is
-    // something it cannot show as head hunks.
+    // reviewed head is replayed onto the new base, so the new file is read and
+    // the base's change, which the commit range would hold, is not.
     const { scope, interdiffPatch } = plan(repository, [{ path: 'src/a.ts' }, { path: 'src/new.ts' }]);
-    assert.equal(scope.kind, 'full');
-    assert.equal(scope.cause, 'own-diff-unrepresentable');
-    assert.equal(interdiffPatch, null);
+    assert.equal(scope.kind, 'interdiff');
+    assert.match(interdiffPatch, /^\+\+\+ b\/src\/new\.ts$/m);
+    assert.doesNotMatch(interdiffPatch, /moved on main/);
   });
 });
 

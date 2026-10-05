@@ -14,7 +14,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exactly the diff between the two heads, limited to the pull request's files.
   A new file, an edit inside a reviewed hunk, removed lines and code moved by a
   refactor no longer fall back to reading the whole pull request; removed lines
-  show as `-` lines. Merges and rebases keep the own-diff comparison.
+  show as `-` lines.
+- A follow-up after the base branch was merged in, or the pull request was
+  rebased, replays the reviewed head onto the new merge base (`git merge-tree`,
+  git 2.40 or later) and reads the head against it, over the pull request's
+  files. Only what the author changed since the review is read - new commits
+  and any rewrite of their own code while resolving the merge - and none of the
+  base's changes. A merge that brought in base changes only is `unchanged`. A
+  file whose replay conflicts is read as the pull request's own diff of it on
+  the new base, which shows the author's resolution, and the scope's `detail`
+  names it. An older git reads the whole pull request, with the version in
+  `detail`. A follow-up that only deletes a file counts that file as reviewed.
+  Hunk matching between the
+  own diffs before and after, which read a reverted, moved or re-neighboured
+  hunk as a full re-read, is gone; stored `own-diff-unrepresentable` scopes
+  still read back.
+- A follow-up's files include both paths of a renamed file, so undoing a rename
+  shows the old path coming back, and files the pull request now deletes, so a
+  deletion is in the patch. With no pull request files to read, the follow-up
+  is `unchanged` rather than the whole commit range.
 
 ## [1.10.1] - 2026-10-05
 

@@ -20,6 +20,7 @@ import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract
 import { acquireDiff, GitError, type ChangedFile } from './diff/acquire.ts';
 import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAssessment } from './diff/complexity.ts';
 import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
+import { isReviewable } from './diff/classify.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
 import { classifyAnchor, classifyStaleConsumer, parseHunks, reason, type AnchorCheck, type FileHunks } from './diff/hunks.ts';
 import { readThread, type ThreadComment } from './diff/thread.ts';
@@ -478,6 +479,11 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
       head: result.head,
       headAvailable: result.refs.head.available,
       reviewedFiles: result.files.filter((file) => file.reviewed),
+      // Deletions are never reviewed, but a follow-up must still show one. A
+      // deleted lock file or generated output stays out, as it would anyway.
+      deletedFiles: result.files
+        .filter((file) => file.status === 'deleted' && isReviewable(file.path, argv.includes('--include-generated')))
+        .map((file) => file.path),
       cwd: process.cwd(),
       truncated: result.truncated,
       forceFull: argv.includes('--full'),
