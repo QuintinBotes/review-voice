@@ -135,7 +135,7 @@ test('a missing or malformed thread file exits 2', () => {
   }
 });
 
-test('readThread returns the pull request body as a description, and a restating candidate is dropped', async () => {
+test('readThread returns the pull request body as a description, and a restating candidate is sent to the verifier', async () => {
   const description = `${CLAIM} ${FAILURE}`;
   const fetchImpl = async (url) => {
     const path = new URL(url).pathname;
@@ -155,8 +155,9 @@ test('readThread returns the pull request body as a description, and a restating
   const s = setup([candidate('c1', 'a.ts', 10)], comments);
   try {
     const out = JSON.parse(run(['check-candidates', '--diff-file', s.patch, '--thread', s.threadFile], s.input).stdout);
-    assert.equal(out.kept.length, 0);
-    assert.equal(out.droppedAsRepeat[0].author, 'acme-author');
+    assert.equal(out.kept.length, 1);
+    assert.deepEqual(out.droppedAsRepeat, []);
+    assert.equal(out.kept[0].possibleRepeatOf.kind, 'description');
   } finally {
     rmSync(s.dir, { recursive: true, force: true });
   }

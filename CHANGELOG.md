@@ -28,6 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A candidate whose wording overlaps the pull request description is no longer
+  dropped as a repeat. Wording alone cannot tell a finding that restates the
+  description from one that contradicts it, and a verified finding was lost
+  that way. `check-candidates --thread` keeps it with `possibleRepeatOf` of
+  `kind: description`, carrying the description sentences that overlap most
+  (up to about 400 characters), and `score --thread` no longer rejects it as
+  already said. The evidence verifier rejects it as a repeat only when the
+  description already states the same defect or risk. Inline comments, review
+  bodies and conversation comments are still dropped as before, and a nearby
+  anchored comment still takes precedence in `possibleRepeatOf`.
+- The diff analyst and evidence verifier treat behaviour the description calls
+  intentional as grounds to reject or downgrade a finding, unless the finding
+  shows the intent itself is wrong or causes harm the description does not
+  account for.
 - A full-read scope carries `detail`: which condition sent the follow-up
   back to a full read, and for a failed git command which command and the
   first line git printed. It is in `files.json`, the `diff --out` summary and

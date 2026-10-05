@@ -244,7 +244,10 @@ count once after the findings. Never correct an anchor by hand.
 **On a `--pr` run, add `--thread <tmpdir>/thread.json`** to that command. It
 removes candidates that repeat a comment already on the pull request, so the
 verifier does not spend a pass on them, and flags a near match with
-`possibleRepeatOf`. Send only `kept` to step 3. Keep `droppedAsRepeat` for
+`possibleRepeatOf`. A candidate that overlaps the pull request description is
+not dropped: wording cannot tell a restatement from a contradiction, so it is
+kept with `possibleRepeatOf` of `kind: description` and the verifier decides.
+Send only `kept` to step 3. Keep `droppedAsRepeat` for
 step 6 (`record --held`); until then, do not pass them to `--verdicts`. An
 unreadable thread file exits 2: fix the path rather than skipping the check.
 

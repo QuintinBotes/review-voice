@@ -356,6 +356,8 @@ export interface ThreadComment {
   line: number | null;
   author: string;
   body: string;
+  /** Optional so a thread file written before the field existed still reads. */
+  kind?: 'review-comment' | 'review-body' | 'conversation' | 'description';
 }
 
 /**
@@ -375,6 +377,12 @@ export interface ThreadComment {
  *
  * An unanchored comment is compared on wording alone, since a review body or a
  * conversation comment can make a point about a line without citing it.
+ *
+ * The description is never matched here. Wording alone cannot tell a finding
+ * that restates the description from one that contradicts it - "X is unsafe
+ * because Y" shares nearly every word with "X is safe because Y" - and the
+ * field showed a verified finding dropped for exactly that. A description match
+ * goes to the verifier instead, through `possiblyRepeatsDescription`.
  */
 export function alreadySaidOnThread(
   candidate: Candidate,
@@ -384,6 +392,7 @@ export function alreadySaidOnThread(
   if (mine.size === 0) return null;
 
   for (const comment of thread) {
+    if (comment.kind === 'description') continue;
     const anchored = comment.path !== null && comment.line !== null;
     if (anchored) {
       if (comment.path !== candidate.path) continue;
@@ -424,6 +433,73 @@ export function possiblySaidOnThread(
   }
 
   return null;
+}
+
+/** Roughly what a verifier needs to judge a repeat without the whole body. */
+const DESCRIPTION_EXCERPT_CHARS = 400;
+
+/**
+ * The description, when it shares enough of this candidate's wording that it
+ * would once have dropped it, with the part of it that does.
+ *
+ * The bar is the unanchored one `alreadySaidOnThread` used to apply to the
+ * description, so the same candidates are caught; only what happens to them
+ * changes. The verifier decides whether the finding repeats the description or
+ * contradicts it, and it needs the overlapping sentences for that - the first
+ * lines of a description are usually a summary that says neither.
+ */
+export function possiblyRepeatsDescription(
+  candidate: Candidate,
+  thread: ThreadComment[],
+): { comment: ThreadComment; excerpt: string } | null {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+
+  for (const comment of thread) {
+    if (comment.kind !== 'description') continue;
+    if (overlap(mine, significantWords(comment.body)) < UNANCHORED_DUPLICATE_OVERLAP) continue;
+    return { comment, excerpt: overlappingExcerpt(mine, comment.body) };
+  }
+
+  return null;
+}
+
+/**
+ * The sentences of `body` that share the most words with `mine`, in their
+ * original order and within the excerpt budget.
+ */
+function overlappingExcerpt(mine: Set<string>, body: string): string {
+  const sentences = body
+    .split(/(?<=[.!?])\s+|\n+/u)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length > 0);
+  const ranked = sentences
+    .map((text, index) => ({ text, index, shared: [...significantWords(text)].filter((word) => mine.has(word)).length }))
+    .filter((sentence) => sentence.shared > 0)
+    .sort((a, b) => b.shared - a.shared || a.index - b.index);
+
+  const [best, ...rest] = ranked;
+  if (best === undefined) return clip(body.trim());
+
+  // The best sentence always goes in, clipped if it alone is too long; the
+  // rest are added best first while they fit.
+  const chosen = [best];
+  let length = Math.min(best.text.length, DESCRIPTION_EXCERPT_CHARS);
+  for (const sentence of rest) {
+    if (length + 1 + sentence.text.length > DESCRIPTION_EXCERPT_CHARS) continue;
+    chosen.push(sentence);
+    length += 1 + sentence.text.length;
+  }
+
+  if (chosen.length === 1) return clip(best.text);
+  return chosen
+    .sort((a, b) => a.index - b.index)
+    .map((sentence) => sentence.text)
+    .join(' ');
+}
+
+function clip(text: string): string {
+  return text.length <= DESCRIPTION_EXCERPT_CHARS ? text : `${text.slice(0, DESCRIPTION_EXCERPT_CHARS - 1)}…`;
 }
 
 export class MalformedCandidate extends Error {}

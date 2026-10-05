@@ -68,6 +68,7 @@ import {
   applyQuestionCap,
   alreadySaidOnThread,
   possiblySaidOnThread,
+  possiblyRepeatsDescription,
   normaliseCandidate,
   isFixVerdict,
   editorFix,
@@ -154,7 +155,8 @@ symbols flags:
 
 check-candidates:
   --diff-file <path>     Require anchors on changed lines
-  --thread <path>        Drop candidates the thread already states
+  --thread <path>        Drop candidates the thread already states; flag
+                         description overlaps for the verifier
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -2333,7 +2335,9 @@ function checkCandidatesCommand(argv: string[]): number {
     }
 
     // A repeat is removed here, before the verifier spends a pass on it. The
-    // same check still runs inside `score` as the second line of defence.
+    // same check still runs inside `score` as the second line of defence. The
+    // description is the exception: a match against it is passed on with
+    // `possibleRepeatOf` rather than removed.
     const threadFile = flag(argv, '--thread');
     if (threadFile === null) {
       console.error('--thread needs a thread JSON path.');
@@ -2365,18 +2369,35 @@ function checkCandidatesCommand(argv: string[]): number {
         });
         return;
       }
-      const possible = possiblySaidOnThread(candidate, thread);
       const original = raw[index] as Record<string, unknown>;
+      // A nearby anchored comment is the stronger lead, so it wins when both
+      // match. A description match is never dropped here: wording cannot tell
+      // a restatement from a contradiction, so the verifier decides.
+      const possible = possiblySaidOnThread(candidate, thread);
+      if (possible !== null) {
+        kept.push({
+          ...original,
+          possibleRepeatOf: {
+            author: possible.author,
+            path: possible.path,
+            line: possible.line,
+            excerpt: possible.body.slice(0, 200),
+          },
+        });
+        return;
+      }
+      const described = possiblyRepeatsDescription(candidate, thread);
       kept.push(
-        possible === null
+        described === null
           ? original
           : {
               ...original,
               possibleRepeatOf: {
-                author: possible.author,
-                path: possible.path,
-                line: possible.line,
-                excerpt: possible.body.slice(0, 200),
+                kind: 'description',
+                author: described.comment.author,
+                path: null,
+                line: null,
+                excerpt: described.excerpt,
               },
             },
       );

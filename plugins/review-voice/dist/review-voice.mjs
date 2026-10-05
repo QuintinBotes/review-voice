@@ -11621,6 +11621,7 @@ function alreadySaidOnThread(candidate, thread) {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
   if (mine.size === 0) return null;
   for (const comment of thread) {
+    if (comment.kind === "description") continue;
     const anchored = comment.path !== null && comment.line !== null;
     if (anchored) {
       if (comment.path !== candidate.path) continue;
@@ -11644,6 +11645,35 @@ function possiblySaidOnThread(candidate, thread) {
     if (overlap(mine, significantWords(comment.body)) >= POSSIBLE_REPEAT_OVERLAP) return comment;
   }
   return null;
+}
+var DESCRIPTION_EXCERPT_CHARS = 400;
+function possiblyRepeatsDescription(candidate, thread) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+  for (const comment of thread) {
+    if (comment.kind !== "description") continue;
+    if (overlap(mine, significantWords(comment.body)) < UNANCHORED_DUPLICATE_OVERLAP) continue;
+    return { comment, excerpt: overlappingExcerpt(mine, comment.body) };
+  }
+  return null;
+}
+function overlappingExcerpt(mine, body) {
+  const sentences = body.split(/(?<=[.!?])\s+|\n+/u).map((sentence) => sentence.trim()).filter((sentence) => sentence.length > 0);
+  const ranked = sentences.map((text, index) => ({ text, index, shared: [...significantWords(text)].filter((word) => mine.has(word)).length })).filter((sentence) => sentence.shared > 0).sort((a, b) => b.shared - a.shared || a.index - b.index);
+  const [best, ...rest] = ranked;
+  if (best === void 0) return clip(body.trim());
+  const chosen = [best];
+  let length = Math.min(best.text.length, DESCRIPTION_EXCERPT_CHARS);
+  for (const sentence of rest) {
+    if (length + 1 + sentence.text.length > DESCRIPTION_EXCERPT_CHARS) continue;
+    chosen.push(sentence);
+    length += 1 + sentence.text.length;
+  }
+  if (chosen.length === 1) return clip(best.text);
+  return chosen.sort((a, b) => a.index - b.index).map((sentence) => sentence.text).join(" ");
+}
+function clip(text) {
+  return text.length <= DESCRIPTION_EXCERPT_CHARS ? text : `${text.slice(0, DESCRIPTION_EXCERPT_CHARS - 1)}\u2026`;
 }
 var MalformedCandidate = class extends Error {
 };
@@ -12997,7 +13027,8 @@ symbols flags:
 
 check-candidates:
   --diff-file <path>     Require anchors on changed lines
-  --thread <path>        Drop candidates the thread already states
+  --thread <path>        Drop candidates the thread already states; flag
+                         description overlaps for the verifier
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -14695,16 +14726,30 @@ function checkCandidatesCommand(argv) {
         });
         return;
       }
-      const possible = possiblySaidOnThread(candidate, thread);
       const original = raw[index];
-      kept.push(
-        possible === null ? original : {
+      const possible = possiblySaidOnThread(candidate, thread);
+      if (possible !== null) {
+        kept.push({
           ...original,
           possibleRepeatOf: {
             author: possible.author,
             path: possible.path,
             line: possible.line,
             excerpt: possible.body.slice(0, 200)
+          }
+        });
+        return;
+      }
+      const described = possiblyRepeatsDescription(candidate, thread);
+      kept.push(
+        described === null ? original : {
+          ...original,
+          possibleRepeatOf: {
+            kind: "description",
+            author: described.comment.author,
+            path: null,
+            line: null,
+            excerpt: described.excerpt
           }
         }
       );
