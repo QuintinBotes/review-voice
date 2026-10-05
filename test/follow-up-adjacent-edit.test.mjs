@@ -92,42 +92,42 @@ test('a follow-up that edits the line next to a reviewed removal reads only the 
 // new hunk still sits on the reviewed hunk's lines. The reviewed edit is gone,
 // so the follow-up must be read in full.
 
-test('a reverted addition next to an edited neighbour still reads in full', () => {
+test('a reverted addition next to an edited neighbour is read as its removal', () => {
   const next = replace(base, 11, 'line 11 edited after review');
   const { scope, interdiffPatch } = scenario(base, reviewed, next);
-  assert.equal(scope.kind, 'full');
-  assert.equal(scope.cause, 'own-diff-unrepresentable');
-  assert.equal(interdiffPatch, null);
+  assert.equal(scope.kind, 'interdiff');
+  assert.match(interdiffPatch, /^-added by the author$/m);
+  assert.match(interdiffPatch, /^\+line 11 edited after review$/m);
 });
 
-test('a reverted addition next to an edited line before it still reads in full', () => {
+test('a reverted addition next to an edited line before it is read as its removal', () => {
   const next = replace(base, 10, 'line 10 edited after review');
-  const { scope } = scenario(base, reviewed, next);
-  assert.equal(scope.kind, 'full');
-  assert.equal(scope.cause, 'own-diff-unrepresentable');
+  const { scope, interdiffPatch } = scenario(base, reviewed, next);
+  assert.equal(scope.kind, 'interdiff');
+  assert.match(interdiffPatch, /^-added by the author$/m);
 });
 
-test('a reverted replacement next to an edited neighbour still reads in full', () => {
+test('a reverted replacement next to an edited neighbour is read as its removal', () => {
   const replaced = replace(base, 5, 'line 5 changed by the author');
   const next = replace(base, 6, 'line 6 changed after review');
-  const { scope } = scenario(base, replaced, next);
-  assert.equal(scope.kind, 'full');
-  assert.equal(scope.cause, 'own-diff-unrepresentable');
+  const { scope, interdiffPatch } = scenario(base, replaced, next);
+  assert.equal(scope.kind, 'interdiff');
+  assert.match(interdiffPatch, /^-line 5 changed by the author$/m);
 });
 
-test('a restored removal next to an edited neighbour still reads in full', () => {
+test('a restored removal next to an edited neighbour is read as the restored line', () => {
   const removed = base.filter((line) => line !== 'line 8');
   const next = replace(base, 9, 'line 9 edited after review');
-  const { scope } = scenario(base, removed, next);
-  assert.equal(scope.kind, 'full');
-  assert.equal(scope.cause, 'own-diff-unrepresentable');
+  const { scope, interdiffPatch } = scenario(base, removed, next);
+  assert.equal(scope.kind, 'interdiff');
+  assert.match(interdiffPatch, /^\+line 8$/m);
 });
 
-test('one of two reviewed additions reverted beside an edit still reads in full', () => {
+test('one of two reviewed additions reverted beside an edit is read as its removal', () => {
   const twice = insertAfter(insertAfter(base, 10, 'first addition'), 12, 'second addition');
   // The second addition is withdrawn and the line between them edited.
   const next = replace(insertAfter(base, 10, 'first addition'), 12, 'line 11 edited after review');
-  const { scope } = scenario(base, twice, next);
-  assert.equal(scope.kind, 'full');
-  assert.equal(scope.cause, 'own-diff-unrepresentable');
+  const { scope, interdiffPatch } = scenario(base, twice, next);
+  assert.equal(scope.kind, 'interdiff');
+  assert.match(interdiffPatch, /^-second addition$/m);
 });

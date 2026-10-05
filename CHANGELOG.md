@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- A follow-up review on plain author commits - the reviewed head is an ancestor
+  of the new head and the merge base with the base branch did not move - reads
+  exactly the diff between the two heads, limited to the pull request's files.
+  A new file, an edit inside a reviewed hunk, removed lines and code moved by a
+  refactor no longer fall back to reading the whole pull request; removed lines
+  show as `-` lines. Merges and rebases keep the own-diff comparison.
+
 ## [1.10.1] - 2026-10-05
 
 ### Changed

@@ -577,12 +577,9 @@ export function planScope(options: PlanIncrementalScopeOptions): PlannedScope {
     const ancestor = git.isAncestor(prior.headRef, options.head, options.cwd);
     const merged = ancestor && git.mergeCommits(prior.headRef, options.head, options.cwd).length > 0;
 
-    // With the base known, the pull request's own diff is compared in every
-    // shape, plain commits included. The commit range answers "what changed
-    // since the reviewed head", which on a branch that restores code to its
-    // merge-base state shows the restored lines as newly added; the own diff
-    // answers what the author changes relative to the base, which is what a
-    // review of a pull request is about.
+    // With the base known, a plain follow-up is read as the commit range, and
+    // a merged base or a rewritten history compares the pull request's own
+    // diff before and after, so base-branch work never reaches the review.
     if (options.base !== undefined) {
       return ownDiffScope(options, prior, git, ancestor, merged);
     }
@@ -648,7 +645,17 @@ function ownDiffScope(
     ),
   ];
   const mergeBase = git.mergeBase(base, options.head, options.cwd);
-  const before = ownDiffFiles(git.diffText(git.mergeBase(base, prior.headRef, options.cwd), prior.headRef, paths, options.cwd));
+  const priorMergeBase = git.mergeBase(base, prior.headRef, options.cwd);
+
+  // A plain follow-up - commits on top of the reviewed head, against the same
+  // point on the base - holds nothing but author work between the two heads,
+  // so that range is the review. Matching hunks there turned every revert,
+  // move and new file into a full re-read of the pull request.
+  if (ancestor && priorMergeBase === mergeBase) {
+    return plainFollowUp(options, prior, git, mergeBase, paths);
+  }
+
+  const before = ownDiffFiles(git.diffText(priorMergeBase, prior.headRef, paths, options.cwd));
   const after = ownDiffFiles(git.diffText(mergeBase, options.head, paths, options.cwd));
   const { added, unrepresentable, reason } = compareOwnDiffs(before, after);
 
@@ -687,5 +694,47 @@ function ownDiffScope(
   return {
     scope: { kind: 'interdiff', ...common, files: [...files].sort(), hunks },
     interdiffPatch: `${parts.join('\n')}\n`,
+  };
+}
+
+/**
+ * Reads a plain follow-up as the diff from the reviewed head to the new head.
+ *
+ * Only the pull request's files are read: those the full read would review
+ * now, plus those the reviewed head changed that the new head no longer does,
+ * so withdrawing a file's changes still shows as its removed lines.
+ */
+function plainFollowUp(
+  options: PlanIncrementalScopeOptions,
+  prior: PriorPullReview,
+  git: IncrementalGit,
+  mergeBase: string,
+  reviewedPaths: string[],
+): PlannedScope {
+  const diffText = git.diffText as NonNullable<IncrementalGit['diffText']>;
+  const current = new Set(git.changedPaths(mergeBase, options.head, options.cwd));
+  const withdrawn = git.changedPaths(mergeBase, prior.headRef, options.cwd).filter((path) => !current.has(path));
+  const patch = diffText(prior.headRef, options.head, [...new Set([...reviewedPaths, ...withdrawn])], options.cwd);
+
+  const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
+  if (patch.trim().length === 0) {
+    return { scope: { kind: 'unchanged', ...common, reason: 'base-sync-only' }, interdiffPatch: null };
+  }
+
+  const reviewed = new Map<string, string>();
+  for (const file of options.reviewedFiles) {
+    reviewed.set(file.path, file.path);
+    if (file.previousPath !== undefined) reviewed.set(file.previousPath, file.path);
+  }
+  const files = new Set<string>();
+  let hunks = 0;
+  for (const [path, file] of ownDiffFiles(patch)) {
+    files.add(reviewed.get(path) ?? path);
+    hunks += file.hunks.length;
+  }
+
+  return {
+    scope: { kind: 'interdiff', ...common, files: [...files].sort(), hunks },
+    interdiffPatch: patch,
   };
 }

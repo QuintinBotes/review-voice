@@ -1946,7 +1946,11 @@ function ownDiffScope(options, prior, git5, ancestor, merged) {
     )
   ];
   const mergeBase = git5.mergeBase(base, options.head, options.cwd);
-  const before = ownDiffFiles(git5.diffText(git5.mergeBase(base, prior.headRef, options.cwd), prior.headRef, paths, options.cwd));
+  const priorMergeBase = git5.mergeBase(base, prior.headRef, options.cwd);
+  if (ancestor && priorMergeBase === mergeBase) {
+    return plainFollowUp(options, prior, git5, mergeBase, paths);
+  }
+  const before = ownDiffFiles(git5.diffText(priorMergeBase, prior.headRef, paths, options.cwd));
   const after = ownDiffFiles(git5.diffText(mergeBase, options.head, paths, options.cwd));
   const { added, unrepresentable, reason: reason2 } = compareOwnDiffs(before, after);
   if (unrepresentable) {
@@ -1978,6 +1982,31 @@ function ownDiffScope(options, prior, git5, ancestor, merged) {
     scope: { kind: "interdiff", ...common, files: [...files].sort(), hunks },
     interdiffPatch: `${parts.join("\n")}
 `
+  };
+}
+function plainFollowUp(options, prior, git5, mergeBase, reviewedPaths) {
+  const diffText = git5.diffText;
+  const current = new Set(git5.changedPaths(mergeBase, options.head, options.cwd));
+  const withdrawn = git5.changedPaths(mergeBase, prior.headRef, options.cwd).filter((path) => !current.has(path));
+  const patch = diffText(prior.headRef, options.head, [.../* @__PURE__ */ new Set([...reviewedPaths, ...withdrawn])], options.cwd);
+  const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
+  if (patch.trim().length === 0) {
+    return { scope: { kind: "unchanged", ...common, reason: "base-sync-only" }, interdiffPatch: null };
+  }
+  const reviewed = /* @__PURE__ */ new Map();
+  for (const file of options.reviewedFiles) {
+    reviewed.set(file.path, file.path);
+    if (file.previousPath !== void 0) reviewed.set(file.previousPath, file.path);
+  }
+  const files = /* @__PURE__ */ new Set();
+  let hunks = 0;
+  for (const [path, file] of ownDiffFiles(patch)) {
+    files.add(reviewed.get(path) ?? path);
+    hunks += file.hunks.length;
+  }
+  return {
+    scope: { kind: "interdiff", ...common, files: [...files].sort(), hunks },
+    interdiffPatch: patch
   };
 }
 
