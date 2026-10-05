@@ -17,9 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Commands that read stdin wait for the end of a slow pipe. A non-blocking
   pipe that was still being filled read as empty, so `score` refused valid
   candidates with `Expected {"candidates": [...]}` under load.
+- A follow-up commit that edits the line next to a reviewed hunk is read as
+  its new hunk instead of sending the whole pull request back for review. The
+  reviewed edit must still be whole in the new hunk, so a revert beside such an
+  edit is still read in full.
+- `diff --pr` fetches a previous head this clone lacks (after a force-push, for
+  example) by sha from `origin`, only when `origin` is the repository under
+  review, before deciding the comparison is unavailable. The fetch is not
+  fatal.
 
 ### Changed
 
+- A full-read scope carries `detail`: which condition sent the follow-up
+  back to a full read, and for a failed git command which command and the
+  first line git printed. It is in `files.json`, the `diff --out` summary and
+  `explain`; the `cause` codes are unchanged.
 - `score --verification` validates every verifier entry before scoring. A
   missing `candidate_id`, an `evidence_quality` outside high/medium/low, a
   `technical_confidence` that is not a number from 0 to 1 (a string such as

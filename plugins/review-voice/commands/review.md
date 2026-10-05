@@ -74,7 +74,8 @@ recorded. The scope is one of:
   with base-branch churn excluded and head-side line numbers kept.
 - `incremental` - only the commits after the previous head (used only when
   the base commit is not readable locally).
-- `full` - the whole pull request, with `cause` saying why.
+- `full` - the whole pull request, with `cause` saying why and, where it
+  helps, `detail` naming the condition or the git command that failed.
 
 Do not make a claim about earlier changes from an `interdiff` or `incremental`
 patch. If the user asks for a complete review, pass `--full` to `RV diff`.

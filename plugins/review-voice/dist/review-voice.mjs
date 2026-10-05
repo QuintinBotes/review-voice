@@ -1590,7 +1590,7 @@ function parseReviewScope(value) {
   if (scope.kind === "interdiff" && prior && typeof scope.mergeBase === "string" && strings(scope.files) && Number.isInteger(scope.hunks)) {
     return scope;
   }
-  if (scope.kind === "full" && typeof scope.cause === "string" && nullableString(scope.since) && nullableString(scope.priorRunId)) {
+  if (scope.kind === "full" && typeof scope.cause === "string" && nullableString(scope.since) && nullableString(scope.priorRunId) && (scope.detail === void 0 || typeof scope.detail === "string")) {
     return scope;
   }
   return null;
@@ -1605,16 +1605,31 @@ function describeScope(scope) {
     case "interdiff":
       return `interdiff since ${scope.since.slice(0, 7)} (${scope.hunks} hunk${scope.hunks === 1 ? "" : "s"} in ${scope.files.length} file${scope.files.length === 1 ? "" : "s"})`;
     case "full":
-      return `full (${scope.cause})`;
+      return scope.detail === void 0 ? `full (${scope.cause})` : `full (${scope.cause}: ${scope.detail})`;
   }
 }
+function gitFailure(args, error) {
+  const end = args.indexOf("--");
+  const command = (end === -1 ? args : args.slice(0, end)).map((arg) => /^[0-9a-f]{40,64}$/.test(arg) ? arg.slice(0, 7) : arg).join(" ");
+  const failure = error;
+  const stderr = typeof failure.stderr === "string" ? failure.stderr : Buffer.isBuffer(failure.stderr) ? failure.stderr.toString("utf8") : "";
+  const said = stderr.split("\n").map((line) => line.trim()).find((line) => line.length > 0) ?? (typeof failure.status === "number" ? `exit status ${failure.status}` : String(failure.message ?? "unknown error").split("\n")[0]);
+  return `${command} failed: ${said}`;
+}
+function firstLine(error) {
+  return (error instanceof Error ? error.message : String(error)).split("\n")[0] ?? "";
+}
 function runGit(args, cwd) {
-  return execFileSync4("git", args, {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "ignore"]
-  });
+  try {
+    return execFileSync4("git", args, {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    throw Object.assign(new Error(gitFailure(args, error)), { status: error.status });
+  }
 }
 var systemGit = {
   hasCommit(sha, cwd) {
@@ -1660,12 +1675,13 @@ var systemGit = {
 function topPathspecs(paths) {
   return paths.map((path) => `:(top,literal)${path}`);
 }
-function full(cause, priorRun) {
+function full(cause, priorRun, detail) {
   return {
     kind: "full",
     cause,
     since: priorRun?.headRef ?? null,
-    priorRunId: priorRun?.reviewRunId ?? null
+    priorRunId: priorRun?.reviewRunId ?? null,
+    ...detail === void 0 ? {} : { detail }
   };
 }
 function changedReviewedFiles(files, changedPaths) {
@@ -1689,6 +1705,12 @@ function hunkKey(body) {
   });
   return [...keep].sort((x, y) => x - y).map((index) => body[index]).join("\n");
 }
+function hunkChanges(body) {
+  return body.filter((line) => line.startsWith("+") || line.startsWith("-") || line.startsWith("\\"));
+}
+function siteText(site) {
+  return new Set([...site].map((line) => line.slice(1)));
+}
 function hunkSite(body) {
   const site = /* @__PURE__ */ new Set();
   body.forEach((line, index) => {
@@ -1711,7 +1733,16 @@ function ownDiffFiles(patch) {
   const closeHunk = () => {
     while (hunk !== null && hunk.length > 1 && hunk.at(-1) === "") hunk.pop();
     if (file !== null && hunk !== null) {
-      file.hunks.push({ key: hunkKey(hunk.slice(1)), site: hunkSite(hunk.slice(1)), text: hunk.join("\n") });
+      const body = hunk.slice(1);
+      const site = hunkSite(body);
+      file.hunks.push({
+        key: hunkKey(body),
+        site,
+        siteText: siteText(site),
+        changes: hunkChanges(body),
+        header: /^@@ [^@]* @@/.exec(hunk[0] ?? "")?.[0] ?? (hunk[0] ?? ""),
+        text: hunk.join("\n")
+      });
     }
     hunk = null;
   };
@@ -1744,13 +1775,29 @@ function ownDiffFiles(patch) {
   closeHunk();
   return files;
 }
+function keepsReviewedEdit(gone, candidate) {
+  if (![...gone.siteText].every((line) => candidate.siteText.has(line))) return false;
+  const left = /* @__PURE__ */ new Map();
+  for (const line of candidate.changes) left.set(line, (left.get(line) ?? 0) + 1);
+  for (const line of gone.changes) {
+    const count2 = left.get(line) ?? 0;
+    if (count2 === 0) return false;
+    left.set(line, count2 - 1);
+  }
+  return true;
+}
 function compareOwnDiffs(before, after) {
   const added = /* @__PURE__ */ new Map();
-  let unrepresentable = false;
+  let reason2 = null;
+  const because = (why) => {
+    reason2 ??= why;
+  };
   for (const path of /* @__PURE__ */ new Set([...before.keys(), ...after.keys()])) {
     const earlier = before.get(path);
     const later2 = after.get(path);
-    if ((earlier?.metadata ?? "") !== (later2?.metadata ?? "")) unrepresentable = true;
+    if ((earlier?.metadata ?? "") !== (later2?.metadata ?? "")) {
+      because(`${path}: its rename, mode, new or deleted marker changed`);
+    }
     const remaining = /* @__PURE__ */ new Map();
     for (const hunk of earlier?.hunks ?? []) remaining.set(hunk.key, [...remaining.get(hunk.key) ?? [], hunk]);
     const fresh = [];
@@ -1761,14 +1808,17 @@ function compareOwnDiffs(before, after) {
     }
     const unused = [...fresh];
     for (const hunk of [...remaining.values()].flat()) {
-      const index = unused.findIndex((candidate) => [...hunk.site].every((line) => candidate.site.has(line)));
-      if (index === -1) unrepresentable = true;
+      let index = unused.findIndex((candidate) => [...hunk.site].every((line) => candidate.site.has(line)));
+      if (index === -1) index = unused.findIndex((candidate) => keepsReviewedEdit(hunk, candidate));
+      if (index === -1) because(`${path}: the reviewed hunk ${hunk.header} was reverted or moved`);
       else unused.splice(index, 1);
     }
-    if (earlier === void 0 !== (later2 === void 0) && fresh.length === 0) unrepresentable = true;
+    if (earlier === void 0 !== (later2 === void 0) && fresh.length === 0) {
+      because(`${path}: on one side only, with no hunk to show it`);
+    }
     if (fresh.length > 0) added.set(path, fresh);
   }
-  return { added, unrepresentable };
+  return { added, unrepresentable: reason2 !== null, reason: reason2 };
 }
 function planScope(options) {
   const prior = options.priorRun;
@@ -1779,8 +1829,15 @@ function planScope(options) {
   if (options.truncated) return only(full("truncated", prior));
   try {
     const git5 = options.git ?? systemGit;
-    if (!options.headAvailable || !git5.hasCommit(prior.headRef, options.cwd)) {
-      return only(full("compare-unavailable", prior));
+    if (!options.headAvailable) {
+      return only(full("compare-unavailable", prior, `the head ${options.head.slice(0, 7)} is not in this clone`));
+    }
+    if (!git5.hasCommit(prior.headRef, options.cwd)) {
+      const why = options.fetchPriorHead?.(prior.headRef) ?? null;
+      if (!git5.hasCommit(prior.headRef, options.cwd)) {
+        const missing = `the previous head ${prior.headRef.slice(0, 7)} is not in this clone`;
+        return only(full("compare-unavailable", prior, why === null ? missing : `${missing}; ${why}`));
+      }
     }
     const ancestor = git5.isAncestor(prior.headRef, options.head, options.cwd);
     const merged = ancestor && git5.mergeCommits(prior.headRef, options.head, options.cwd).length > 0;
@@ -1795,8 +1852,8 @@ function planScope(options) {
     );
     if (files.length === 0) return only(full("base-sync-only", prior));
     return only(incremental(options, prior, git5, files));
-  } catch {
-    return only(full("compare-unavailable", prior));
+  } catch (error) {
+    return only(full("compare-unavailable", prior, firstLine(error)));
   }
 }
 function incremental(options, prior, git5, files) {
@@ -1811,8 +1868,11 @@ function incremental(options, prior, git5, files) {
 }
 function ownDiffScope(options, prior, git5, ancestor, merged) {
   const base = options.base;
-  if (git5.mergeBase === void 0 || git5.diffText === void 0 || !git5.hasCommit(base, options.cwd)) {
-    return { scope: full("compare-unavailable", prior), interdiffPatch: null };
+  if (git5.mergeBase === void 0 || git5.diffText === void 0) {
+    return { scope: full("compare-unavailable", prior, "this git surface cannot read an own diff"), interdiffPatch: null };
+  }
+  if (!git5.hasCommit(base, options.cwd)) {
+    return { scope: full("compare-unavailable", prior, `the base ${base.slice(0, 7)} is not in this clone`), interdiffPatch: null };
   }
   const paths = [
     ...new Set(
@@ -1822,12 +1882,14 @@ function ownDiffScope(options, prior, git5, ancestor, merged) {
   const mergeBase = git5.mergeBase(base, options.head, options.cwd);
   const before = ownDiffFiles(git5.diffText(git5.mergeBase(base, prior.headRef, options.cwd), prior.headRef, paths, options.cwd));
   const after = ownDiffFiles(git5.diffText(mergeBase, options.head, paths, options.cwd));
-  const { added, unrepresentable } = compareOwnDiffs(before, after);
-  if (unrepresentable) return { scope: full("own-diff-unrepresentable", prior), interdiffPatch: null };
+  const { added, unrepresentable, reason: reason2 } = compareOwnDiffs(before, after);
+  if (unrepresentable) {
+    return { scope: full("own-diff-unrepresentable", prior, reason2 ?? void 0), interdiffPatch: null };
+  }
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
   if (added.size === 0) {
-    const reason2 = !ancestor ? "history-rewritten" : merged ? "base-merged" : "base-sync-only";
-    return { scope: { kind: "unchanged", ...common, reason: reason2 }, interdiffPatch: null };
+    const reason3 = !ancestor ? "history-rewritten" : merged ? "base-merged" : "base-sync-only";
+    return { scope: { kind: "unchanged", ...common, reason: reason3 }, interdiffPatch: null };
   }
   const reviewed = /* @__PURE__ */ new Map();
   for (const file of options.reviewedFiles) {
@@ -1839,7 +1901,9 @@ function ownDiffScope(options, prior, git5, ancestor, merged) {
   let hunks = 0;
   for (const [path, fresh] of added) {
     const shown = reviewed.get(path);
-    if (shown === void 0) return { scope: full("compare-unavailable", prior), interdiffPatch: null };
+    if (shown === void 0) {
+      return { scope: full("compare-unavailable", prior, `${path} changed but is not a reviewed file`), interdiffPatch: null };
+    }
     files.add(shown);
     hunks += fresh.length;
     parts.push([...after.get(path)?.header ?? [], ...fresh.map((hunk) => hunk.text)].join("\n"));
@@ -1968,13 +2032,27 @@ function pathsWithHunks(diff) {
 function fullScopeResult(result, pullNumber, scope) {
   return { ...result, pullNumber, scope, scopeNote: null };
 }
-function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = (since, head, files, root) => git2(["diff", "--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", since, head, "--", ...topPathspecs(files)], root), interdiffPatch = null) {
+function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = (since, head, files, root) => {
+  const args = ["diff", "--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", since, head, "--", ...topPathspecs(files)];
+  try {
+    return execFileSync5("git", args, {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 6e4
+    });
+  } catch (error) {
+    throw new Error(gitFailure(args, error));
+  }
+}, interdiffPatch = null) {
   if (scope.kind === "full") return fullScopeResult(result, pullNumber, scope);
-  const fallBack = () => fullScopeResult(result, pullNumber, {
+  const fallBack = (detail) => fullScopeResult(result, pullNumber, {
     kind: "full",
     cause: "compare-unavailable",
     since: scope.since,
-    priorRunId: scope.priorRunId
+    priorRunId: scope.priorRunId,
+    detail
   });
   let diff;
   let included;
@@ -1982,14 +2060,14 @@ function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = 
     diff = "";
     included = /* @__PURE__ */ new Set();
   } else if (scope.kind === "interdiff") {
-    if (interdiffPatch === null) return fallBack();
+    if (interdiffPatch === null) return fallBack("an interdiff scope came with no interdiff patch");
     diff = interdiffPatch;
     included = new Set(scope.files);
   } else {
     try {
       diff = readIncrementalDiff(scope.since, result.head, scope.files, cwd);
-    } catch {
-      return fallBack();
+    } catch (error) {
+      return fallBack(`reading the incremental diff failed: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
     }
     included = new Set(scope.files);
   }
@@ -3224,6 +3302,21 @@ function resolveSince(since, repository, cwd) {
     return null;
   }
   return resolveCommit(since, cwd);
+}
+function fetchPriorHead(sha, repository, cwd) {
+  if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha)) return "it is not a full commit id, so it was not fetched";
+  const origin = originRepository2(cwd);
+  if (origin === null) return "no origin remote on GitHub resolved, so it was not fetched";
+  if (origin.toLowerCase() !== repository.toLowerCase()) {
+    return `origin is ${origin}, not ${repository}, so it was not fetched`;
+  }
+  const args = ["fetch", "--no-tags", "--quiet", "origin", sha];
+  try {
+    execFileSync8("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
+    return null;
+  } catch (error) {
+    return gitFailure(args, error);
+  }
 }
 async function latestOwnReview(client, repository, pullNumber) {
   try {
@@ -13183,11 +13276,18 @@ async function pullRequestDiffCommand(argv) {
       cwd: process.cwd(),
       truncated: result.truncated,
       forceFull: argv.includes("--full"),
-      base: result.refs.base.available && result.base !== null ? result.base : void 0
+      base: result.refs.base.available && result.base !== null ? result.base : void 0,
+      fetchPriorHead: (sha) => fetchPriorHead(sha, repository, process.cwd())
     });
-  } catch {
+  } catch (error) {
     planned = {
-      scope: { kind: "full", cause: "compare-unavailable", since: prior?.headRef ?? null, priorRunId: prior?.reviewRunId ?? null },
+      scope: {
+        kind: "full",
+        cause: "compare-unavailable",
+        since: prior?.headRef ?? null,
+        priorRunId: prior?.reviewRunId ?? null,
+        detail: `planning the scope failed: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`
+      },
       interdiffPatch: null
     };
   }
@@ -13198,6 +13298,7 @@ function diffSummary(result) {
   const scope = result.scope === void 0 ? null : {
     kind: result.scope.kind,
     cause: result.scope.kind === "full" ? result.scope.cause : result.scope.kind === "unchanged" ? result.scope.reason : null,
+    detail: result.scope.kind === "full" ? result.scope.detail ?? null : null,
     since: result.scope.since,
     mergeBase: result.scope.kind === "unchanged" || result.scope.kind === "interdiff" ? result.scope.mergeBase : null
   };

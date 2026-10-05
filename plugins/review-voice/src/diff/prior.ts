@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import type { GitHubClient } from '../github/client.ts';
-import type { PriorPullReview } from './incremental.ts';
+import { gitFailure, type PriorPullReview } from './incremental.ts';
 
 /**
  * Where the previous head of a follow-up review comes from.
@@ -74,6 +74,32 @@ export function resolveSince(since: string, repository: string, cwd: string): st
     return null;
   }
   return resolveCommit(since, cwd);
+}
+
+/**
+ * Fetches a previous head that is not in this clone, by sha, when that is safe.
+ *
+ * A follow-up after a force-push names a head no ref here reaches, and without
+ * it every follow-up read the whole pull request. The guard is the one
+ * `--since` uses: only from an `origin` that is the repository under review.
+ * Never fatal. Returns why nothing was fetched, or null when a fetch ran; the
+ * caller asks git whether the commit is now there.
+ */
+export function fetchPriorHead(sha: string, repository: string, cwd: string): string | null {
+  // A full commit id only: anything else could be read by git as an option.
+  if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha)) return 'it is not a full commit id, so it was not fetched';
+  const origin = originRepository(cwd);
+  if (origin === null) return 'no origin remote on GitHub resolved, so it was not fetched';
+  if (origin.toLowerCase() !== repository.toLowerCase()) {
+    return `origin is ${origin}, not ${repository}, so it was not fetched`;
+  }
+  const args = ['fetch', '--no-tags', '--quiet', 'origin', sha];
+  try {
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 });
+    return null;
+  } catch (error) {
+    return gitFailure(args, error);
+  }
 }
 
 /**

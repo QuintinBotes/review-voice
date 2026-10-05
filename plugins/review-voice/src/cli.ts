@@ -37,7 +37,7 @@ import {
   type StageTiming,
 } from './store/runs.ts';
 import { carryFindings, CarryError, type CarriedFinding } from './diff/carry.ts';
-import { latestOwnReview, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
+import { fetchPriorHead, latestOwnReview, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
   recordFeedback,
   normaliseAction,
@@ -476,10 +476,17 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
       truncated: result.truncated,
       forceFull: argv.includes('--full'),
       base: result.refs.base.available && result.base !== null ? result.base : undefined,
+      fetchPriorHead: (sha) => fetchPriorHead(sha, repository, process.cwd()),
     });
-  } catch {
+  } catch (error) {
     planned = {
-      scope: { kind: 'full', cause: 'compare-unavailable', since: prior?.headRef ?? null, priorRunId: prior?.reviewRunId ?? null },
+      scope: {
+        kind: 'full',
+        cause: 'compare-unavailable',
+        since: prior?.headRef ?? null,
+        priorRunId: prior?.reviewRunId ?? null,
+        detail: `planning the scope failed: ${(error instanceof Error ? error.message : String(error)).split('\n')[0]}`,
+      },
       interdiffPatch: null,
     };
   }
@@ -523,7 +530,14 @@ function diffSummary(result: EmittedDiff): {
   base: string | null;
   head: string;
   pullNumber: number | null;
-  scope: { kind: ReviewScope['kind']; cause: string | null; since: string | null; mergeBase: string | null } | null;
+  scope: {
+    kind: ReviewScope['kind'];
+    cause: string | null;
+    /** Which condition sent a full read, and which git command failed, when one did. */
+    detail: string | null;
+    since: string | null;
+    mergeBase: string | null;
+  } | null;
   scopeNote: string | null;
   complexity: ComplexityAssessment | null;
   humanReviewNote: string | null;
@@ -546,6 +560,7 @@ function diffSummary(result: EmittedDiff): {
             : result.scope.kind === 'unchanged'
               ? result.scope.reason
               : null,
+        detail: result.scope.kind === 'full' ? (result.scope.detail ?? null) : null,
         since: result.scope.since,
         mergeBase:
           result.scope.kind === 'unchanged' || result.scope.kind === 'interdiff' ? result.scope.mergeBase : null,
