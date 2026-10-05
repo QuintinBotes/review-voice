@@ -407,7 +407,10 @@ manual paste of eight findings.
 ## Step 6 - Validate, and retry once
 
 Pipe the editor's output through
-`RV validate-output --scale-to-files <hunkFileCount>`, adding
+`RV validate-output --scale-to-files <hunkFileCount> --scores <file>`, where
+`<file>` is the JSON `RV score` printed. A severity tag that disagrees with the
+score at that `path:line` is otherwise held silently at post time, when the
+editor can no longer retry. Add
 `--max-words-per-finding <n>` or `--max-findings <n>` only when the resolved
 policy sets them.
 

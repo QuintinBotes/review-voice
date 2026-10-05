@@ -7,7 +7,7 @@
  * (candidate generation, verification, wording) live in the plugin's agents.
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
-import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
+import { readFileSync, readSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
@@ -15,6 +15,7 @@ import { pluginVersion } from './version.ts';
 import { runDoctor } from './doctor.ts';
 import { validateOutput } from './contract/validate.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
+import { checkSeverityAgainstScores, scoredEntries } from './contract/severity-check.ts';
 import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
 import { acquireDiff, GitError, type ChangedFile } from './diff/acquire.ts';
 import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAssessment } from './diff/complexity.ts';
@@ -73,6 +74,7 @@ import {
   assertUniqueCandidateIds,
   MalformedCandidate,
   DEFAULT_THRESHOLDS,
+  EVIDENCE_QUALITIES,
   type Candidate,
   type RawCandidate,
   type ScoreBreakdown,
@@ -249,6 +251,11 @@ const STDIN_INPUT: Record<string, string> = {
   post: 'the validated review',
 };
 
+/** A run with no findings still has to be recorded; say what to pipe for it. */
+function noFindingsHint(): string {
+  return `A run with no findings pipes exactly ${DEFAULT_LIMITS.noFindingsResponse}, e.g. echo '${DEFAULT_LIMITS.noFindingsResponse}' | RV record ...`;
+}
+
 function readStdin(): string {
   // Run from a terminal with nothing piped, a read blocks forever and looks
   // like a hang. Say what to pipe and stop at once; piped input is untouched.
@@ -256,13 +263,32 @@ function readStdin(): string {
     const command = process.argv[2] ?? 'command';
     const what = STDIN_INPUT[command] ?? 'its input';
     console.error(`${command} reads ${what} on stdin; pipe it in, e.g. cat input | RV ${command}`);
+    if (command === 'record') console.error(noFindingsHint());
     process.exit(2);
   }
-  try {
-    return readFileSync(0, 'utf8');
-  } catch {
-    return '';
+  // readFileSync(0) gives up on EAGAIN, which a non-blocking pipe returns
+  // while the writer is still filling it. Under load that read the candidates
+  // as an empty string and refused valid input, so wait and read again.
+  const chunks: Buffer[] = [];
+  const buffer = Buffer.alloc(64 * 1024);
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    let read: number;
+    try {
+      read = readSync(0, buffer, 0, buffer.length, null);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EAGAIN') {
+        Atomics.wait(pause, 0, 0, 5);
+        continue;
+      }
+      if (code === 'EOF') break;
+      return chunks.length === 0 ? '' : Buffer.concat(chunks).toString('utf8');
+    }
+    if (read === 0) break;
+    chunks.push(Buffer.from(buffer.subarray(0, read)));
   }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 function numericFlag(argv: string[], name: string, fallback: number): number | null {
@@ -294,7 +320,27 @@ function validateOutputCommand(argv: string[]): number {
     maxTotalWords: Math.max(scaledTotal, maxTotal === DEFAULT_LIMITS.maxTotalWords ? scaledTotal : maxTotal),
   };
 
-  const result = validateOutput(readStdin(), limits);
+  const output = readStdin();
+  const result = validateOutput(output, limits);
+
+  // A tag that disagrees with its score is otherwise held silently at post
+  // time, after the editor can no longer retry.
+  const scoresFlag = flag(argv, '--scores');
+  if (argv.includes('--scores') && scoresFlag === null) {
+    console.error('--scores needs the JSON file that `RV score` printed.');
+    return 2;
+  }
+  if (scoresFlag !== null) {
+    let entries: unknown[];
+    try {
+      entries = scoredEntries(JSON.parse(readFileSync(scoresFlag, 'utf8')));
+    } catch (error) {
+      console.error(`Cannot read ${scoresFlag}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    result.violations.push(...checkSeverityAgainstScores(output, entries));
+    result.valid = result.violations.length === 0;
+  }
 
   if (argv.includes('--json')) {
     console.log(JSON.stringify(result, null, 2));
@@ -1077,6 +1123,9 @@ function evaluateCommand(argv: string[]): number {
 /** The most entries a serialised path list carries; counts keep the rest honest. */
 const LIST_CAP = 20;
 const EXCERPT_CAP = 300;
+/** Any other string: fix text, evidence, reasons. The editor needs sentences, not transcripts. */
+const TEXT_CAP = 600;
+const CLAIM_CAP = 1000;
 
 /**
  * Caps long string lists and precedent excerpts in score output.
@@ -1085,12 +1134,17 @@ const EXCERPT_CAP = 300;
  * 137 KB report. Only the serialised copy is cut, so computeReach still
  * returns the full lists. A cut list gets `<name>Total` and `truncated`.
  */
-function boundLists(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(boundLists);
+function boundLists(value: unknown, limit: number = TEXT_CAP): unknown {
+  if (typeof value === 'string') return value.length > limit ? `${value.slice(0, limit)}...` : value;
+  if (Array.isArray(value)) return value.map((entry) => boundLists(entry, limit));
   if (value === null || typeof value !== 'object') return value;
   const out: Record<string, unknown> = {};
   let cut = false;
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    // Repeats the ids already carried by `precedents`, once per candidate.
+    if (key === 'precedentIds') {
+      continue;
+    }
     if (Array.isArray(item) && item.length > LIST_CAP && item.every((entry) => typeof entry === 'string')) {
       out[key] = item.slice(0, LIST_CAP);
       out[`${key}Total`] = item.length;
@@ -1098,11 +1152,29 @@ function boundLists(value: unknown): unknown {
     } else if (key === 'excerpt' && typeof item === 'string' && item.length > EXCERPT_CAP) {
       out[key] = `${item.slice(0, EXCERPT_CAP)}...`;
     } else {
-      out[key] = boundLists(item);
+      const childLimit = key === 'claim' || key === 'failureMode' ? CLAIM_CAP : TEXT_CAP;
+      const bounded = boundLists(item, childLimit);
+      if (JSON.stringify(bounded) !== JSON.stringify(item)) cut = cut || containsCut(item, bounded);
+      out[key] = bounded;
     }
   }
   if (cut) out['truncated'] = true;
   return out;
+}
+
+/** True when bounding shortened a string somewhere inside, not just dropped a key. */
+function containsCut(before: unknown, after: unknown): boolean {
+  if (typeof before === 'string') return typeof after === 'string' && after.length < before.length;
+  if (Array.isArray(before) && Array.isArray(after)) {
+    return before.some((entry, i) => containsCut(entry, after[i]));
+  }
+  if (before !== null && typeof before === 'object' && after !== null && typeof after === 'object') {
+    const afterObject = after as Record<string, unknown>;
+    return Object.entries(before as Record<string, unknown>).some(
+      ([key, entry]) => key in afterObject && containsCut(entry, afterObject[key]),
+    );
+  }
+  return false;
 }
 
 function scoreCommand(argv: string[]): number {
@@ -1141,9 +1213,14 @@ function scoreCommand(argv: string[]): number {
     try {
       const parsed = JSON.parse(readFileSync(verificationFlag, 'utf8')) as unknown;
       const list = verdictList(parsed);
+      const problem = verificationProblem(list);
+      if (problem !== null) {
+        console.error(`Malformed verification - ${problem}`);
+        console.error('Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.');
+        return 2;
+      }
       for (const raw of list) {
-        const id = (raw['candidate_id'] ?? raw['candidateId']) as string | undefined;
-        if (typeof id !== 'string') continue;
+        const id = (raw['candidate_id'] ?? raw['candidateId']) as string;
         const fixVerdict = raw['fix_verdict'] ?? raw['fixVerdict'];
         const fixConfidence = raw['fix_confidence'] ?? raw['fixConfidence'];
         const fixReason = raw['fix_reason'] ?? raw['fixReason'];
@@ -1187,6 +1264,22 @@ function scoreCommand(argv: string[]): number {
           'Refusing to score on the analyst self-report while a verification file was supplied.',
       );
       return 2;
+    }
+
+    // Both are warnings: an id the verifier invented scores nothing, and a
+    // candidate it skipped falls back to the analyst's confidence, which the
+    // gate already reports as confidenceSource 'analyst'.
+    const known = new Set(candidates.map((candidate) => candidate.candidateId));
+    const unknown = [...verifications.keys()].filter((id) => !known.has(id));
+    if (unknown.length > 0) {
+      console.error(`Warning: ${verificationFlag} verifies unknown candidate id(s): ${unknown.join(', ')}. Ignored.`);
+    }
+    const unverified = candidates.filter((candidate) => !verifications.has(candidate.candidateId));
+    if (unverified.length > 0) {
+      console.error(
+        `Warning: no verification for ${unverified.map((candidate) => candidate.candidateId).join(', ')}; ` +
+          "they are scored on the analyst's own confidence.",
+      );
     }
   }
 
@@ -1419,10 +1512,12 @@ function scoreCommand(argv: string[]): number {
           // Severity is the derived tier, not the requested one. Ordering is
           // severity-first, and asking produced `minor` at confidence 0.90 and
           // `important` at 0.85 for the same finding on an identical diff.
+          // The editor states the fix text verbatim, so it is never cut: a
+          // repair ending in `...` would be posted as a broken sentence.
           eligible: kept.map((c) => {
             const scored = results.find((r) => r.candidateId === c.candidateId);
             const derived = scored?.severity;
-            return {
+            const bounded = boundLists({
               candidateId: c.candidateId,
               path: c.path,
               line: c.line,
@@ -1438,10 +1533,10 @@ function scoreCommand(argv: string[]): number {
               // Only the repair text the editor may state. A refuted repair is
               // left out rather than handed over with an instruction not to use
               // it; the full decision stays in `scores` for `explain`.
-              fix:
-                scored === undefined
-                  ? { render: 'none' as const, text: null }
-                  : editorFix(scored.fix),
+            }) as Record<string, unknown>;
+            return {
+              ...bounded,
+              fix: scored === undefined ? { render: 'none' as const, text: null } : editorFix(scored.fix),
             };
           }),
         },
@@ -1638,6 +1733,7 @@ function recordCommand(argv: string[]): number {
   const output = readStdin();
   if (output.trim().length === 0) {
     console.error('Nothing on stdin. Pipe the validated review in.');
+    console.error(noFindingsHint());
     return 2;
   }
 
@@ -1914,6 +2010,7 @@ function explainCommand(argv: string[]): number {
       rejectedBecause?: string | null;
       duplicateOfPrecedent?: string | null;
       precedentIds?: string[];
+      precedents?: { eventId?: string }[];
       fix?: {
         suggested?: string | null;
         verdict?: 'verified' | 'partial' | 'refuted' | 'absent' | null;
@@ -1969,8 +2066,12 @@ function explainCommand(argv: string[]): number {
       if (score?.novelty !== undefined) {
         console.log(`  novelty           ${score.novelty.toFixed(2)}`);
       }
-      if (score?.precedentIds !== undefined && score.precedentIds.length > 0) {
-        console.log(`  precedents        ${score.precedentIds.join(', ')}`);
+      // Stored scores no longer carry `precedentIds`; the ids ride on `precedents`.
+      const precedentIds =
+        score?.precedentIds ??
+        (score?.precedents ?? []).flatMap((p) => (typeof p.eventId === 'string' ? [p.eventId] : []));
+      if (precedentIds.length > 0) {
+        console.log(`  precedents        ${precedentIds.join(', ')}`);
       }
       if (score?.duplicateOfPrecedent != null) {
         console.log(`  already stated in ${score.duplicateOfPrecedent}`);
@@ -2105,6 +2206,39 @@ function refExists(ref: string, cwd: string): boolean {
 }
 
 const VERDICT_KEYS = ['results', 'verifications', 'verdicts', 'candidates'] as const;
+
+/**
+ * The first thing wrong with a verifier's entries, or null when they are sound.
+ *
+ * Hand-written to match schemas/verification.schema.json, because the plugin
+ * has no runtime dependencies. Every entry is checked before any is scored: a
+ * confidence of "0.9" or an unknown quality tier would otherwise be read as
+ * absent and the gate would fall back to the analyst, silently.
+ */
+export function verificationProblem(list: Record<string, unknown>[]): string | null {
+  for (const [index, raw] of list.entries()) {
+    const entry = typeof raw === 'object' && raw !== null ? raw : {};
+    const id = entry['candidate_id'] ?? entry['candidateId'];
+    const who = `entry ${index} (${typeof id === 'string' ? id : 'no candidate id'})`;
+    if (typeof id !== 'string' || id === '') return `${who}: candidate_id must be a non-empty string.`;
+    const quality = entry['evidence_quality'] ?? entry['evidenceQuality'];
+    if (quality !== undefined && !(EVIDENCE_QUALITIES as readonly unknown[]).includes(quality)) {
+      return `${who}: evidence_quality must be one of ${EVIDENCE_QUALITIES.join(', ')}.`;
+    }
+    const confidence = entry['technical_confidence'] ?? entry['technicalConfidence'];
+    if (
+      confidence !== undefined &&
+      !(typeof confidence === 'number' && Number.isFinite(confidence) && confidence >= 0 && confidence <= 1)
+    ) {
+      return `${who}: technical_confidence must be a number from 0 to 1.`;
+    }
+    const missing = entry['required_context_missing'] ?? entry['requiredContextMissing'];
+    if (missing !== undefined && !(Array.isArray(missing) && missing.every((item) => typeof item === 'string'))) {
+      return `${who}: required_context_missing must be an array of strings.`;
+    }
+  }
+  return null;
+}
 
 function verdictList(parsed: unknown): Record<string, unknown>[] {
   if (Array.isArray(parsed)) return parsed as Record<string, unknown>[];

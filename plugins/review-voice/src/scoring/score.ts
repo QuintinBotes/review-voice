@@ -48,6 +48,9 @@ export function isFixVerdict(value: unknown): value is FixVerdict {
   return typeof value === 'string' && (FIX_VERDICTS as readonly string[]).includes(value);
 }
 
+export const EVIDENCE_QUALITIES = ['high', 'medium', 'low'] as const;
+export type EvidenceQuality = (typeof EVIDENCE_QUALITIES)[number];
+
 /**
  * What the `evidence-verifier` concluded, when it ran.
  *
@@ -57,7 +60,7 @@ export function isFixVerdict(value: unknown): value is FixVerdict {
  */
 export interface Verification {
   candidateId: string;
-  evidenceQuality?: 'high' | 'medium' | 'low' | undefined;
+  evidenceQuality?: EvidenceQuality | undefined;
   technicalConfidence?: number | undefined;
   fixVerdict?: FixVerdict | undefined;
   fixConfidence?: number | undefined;

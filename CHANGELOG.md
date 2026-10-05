@@ -5,6 +5,39 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `diff --pr` also fetches the base commit by sha when the base branch has
+  moved past the merge base, so `score --base <sha>` no longer exits 2 on a
+  base the pull ref does not reach. The fetch is still not fatal.
+- `record` with nothing on stdin, or on a terminal, now says a run with no
+  findings pipes exactly `No actionable findings.`.
+- Commands that read stdin wait for the end of a slow pipe. A non-blocking
+  pipe that was still being filled read as empty, so `score` refused valid
+  candidates with `Expected {"candidates": [...]}` under load.
+
+### Changed
+
+- `score --verification` validates every verifier entry before scoring. A
+  missing `candidate_id`, an `evidence_quality` outside high/medium/low, a
+  `technical_confidence` that is not a number from 0 to 1 (a string such as
+  "0.9" included) or a `required_context_missing` that is not an array of
+  strings exits 2 naming the entry and field. Unknown candidate ids and
+  candidates with no entry are warned about on stderr. The shape is published
+  as `schemas/verification.schema.json`.
+- `validate-output --scores <file>` checks each rendered severity tag against
+  the severity the score derived at that `path:line`, and reports a mismatch or
+  a finding with no scored candidate as a violation (exit 1), so the editor
+  retry in `/review-voice:review` catches what posting would otherwise hold
+  silently.
+- `score` output is bounded: `precedentIds` is no longer serialised (the ids
+  are on `precedents`, and `explain` reads them from there), and any string
+  over 600 characters (1000 for `claim` and `failureMode`) is cut with `...`
+  and marked `truncated: true`. This covers `eligible`, except the fix text
+  the editor states verbatim, which is never cut.
+
 ## [1.9.0] - 2026-10-02
 
 ### Added

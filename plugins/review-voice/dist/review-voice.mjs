@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync5, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2 } from "node:fs";
+import { readFileSync as readFileSync5, readSync, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2 } from "node:fs";
 import { dirname as dirname4, join as join6 } from "node:path";
 import { execFileSync as execFileSync10 } from "node:child_process";
 
@@ -301,6 +301,335 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
     });
   }
   return { valid: violations.length === 0, findingCount: findings.length, totalWords, violations };
+}
+
+// plugins/review-voice/src/publish/verdict.ts
+import { createHash } from "node:crypto";
+function eventFor(severities) {
+  if (severities.some((severity) => severity === "blocking" || severity === "important")) return "REQUEST_CHANGES";
+  if (severities.some((severity) => severity === "minor" || severity === "question")) return "COMMENT";
+  return "APPROVE";
+}
+var RANK = { blocking: 0, important: 1, minor: 2, question: 3, nit: 4 };
+var NO_LINE = /^\[([a-z_]+)\]\s+`([^`]+)`\s+-\s*([\s\S]*)$/i;
+function reviewFindings(output) {
+  let index = 0;
+  return splitFindings(output).map((block) => {
+    const finding = parseFinding(block.raw, block.startLine);
+    const numbered = finding.severity !== null && finding.path !== null;
+    if (numbered) index += 1;
+    if (finding.path === null) {
+      const match = NO_LINE.exec(block.raw.replace(/\s*\n\s*/g, " ").trim());
+      const severity = match?.[1]?.toLowerCase();
+      if (match !== null && SEVERITIES.includes(severity ?? "")) {
+        return {
+          findingId: null,
+          severity,
+          path: match[2],
+          line: null,
+          raw: finding.raw,
+          prose: (match[3] ?? "").trim()
+        };
+      }
+    }
+    return {
+      findingId: numbered ? `rv_${String(index).padStart(2, "0")}` : null,
+      severity: finding.severity,
+      path: finding.path,
+      line: finding.line,
+      raw: finding.raw,
+      prose: finding.prose
+    };
+  });
+}
+function scoresAtLocation(scores, path, line) {
+  return scores.filter(
+    (score) => typeof score === "object" && score !== null && score.path === path && (line === null || score.line === line)
+  );
+}
+var MAX_CARRY_DEPTH = 8;
+function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
+  if (finding.path === null || finding.severity === null) {
+    return { verified: false, reason: "it names no file, so no score can be matched to it", runId: run.reviewRunId };
+  }
+  let current = run;
+  let path = finding.path;
+  let line = finding.line;
+  const severity = finding.severity;
+  let reason2 = "no score was recorded for it";
+  for (let depth = 0; depth <= MAX_CARRY_DEPTH; depth += 1) {
+    const scores = Array.isArray(current.scores) ? current.scores : [];
+    const here = scoresAtLocation(scores, path, line);
+    const same = here.filter((score) => score.severity?.severity === severity && !used.has(score));
+    const backing = same.find((score) => score.confidenceSource === "verifier" && score.eligible === true);
+    if (backing !== void 0) {
+      used.add(backing);
+      return { verified: true, reason: "established by the verifier", runId: current.reviewRunId };
+    }
+    if (same.some((score) => score.confidenceSource === "verifier")) {
+      reason2 = "the verifier scored it, but it did not clear the gates";
+    } else if (same.length > 0) {
+      reason2 = "its confidence is the analyst's own, not the verifier's";
+    } else if (here.length > 0) {
+      reason2 = `no unused score at ${line === null ? path : `${path}:${line}`} was derived at ${severity}`;
+    }
+    if (line === null) break;
+    const stored = current.findings.find(
+      (candidate) => candidate.path === path && candidate.line === line && candidate.severity === severity
+    );
+    if (stored?.carriedFrom === void 0) break;
+    const from = stored.carriedFrom;
+    const source = loadRun(from.runId);
+    const origin = source?.findings.find((candidate) => candidate.findingId === from.findingId);
+    if (source === null || origin === void 0) {
+      reason2 = `it was carried from run ${from.runId}, which is no longer stored`;
+      break;
+    }
+    current = source;
+    path = origin.path;
+    line = origin.line;
+  }
+  return { verified: false, reason: reason2, runId: current.reviewRunId };
+}
+function planFindings(output, run, loadRun) {
+  const inline = [];
+  const unanchored = [];
+  const held = [];
+  const heldSeverities = [];
+  const loaded = /* @__PURE__ */ new Map([[run.reviewRunId, run]]);
+  const cachedLoad = (id) => {
+    if (!loaded.has(id)) loaded.set(id, loadRun(id));
+    return loaded.get(id) ?? null;
+  };
+  const used = /* @__PURE__ */ new Set();
+  const findings = reviewFindings(output);
+  const ordered = [...findings.filter((f) => f.line !== null), ...findings.filter((f) => f.line === null)];
+  const outcome = /* @__PURE__ */ new Map();
+  for (const finding of ordered) outcome.set(finding, verification(finding, run, cachedLoad, used));
+  for (const finding of findings) {
+    const result = outcome.get(finding);
+    if (!result.verified || finding.severity === null) {
+      held.push({
+        findingId: finding.findingId,
+        severity: finding.severity,
+        path: finding.path,
+        line: finding.line,
+        reason: result.reason
+      });
+      heldSeverities.push(finding.severity ?? "minor");
+      continue;
+    }
+    (finding.path !== null && finding.line !== null ? inline : unanchored).push(finding);
+  }
+  const posted = [...inline, ...unanchored].map((finding) => finding.severity);
+  let mapped = eventFor(posted);
+  const heldBackApproval = mapped === "APPROVE" && eventFor(heldSeverities) !== "APPROVE";
+  if (heldBackApproval) mapped = "COMMENT";
+  return { inline, unanchored, held, mapped, heldBackApproval };
+}
+function decide(input) {
+  const reasons = [];
+  if (input.heldBackApproval === true) {
+    reasons.push("an unverified finding above a nit was held back, so this comments rather than approves");
+  }
+  if (input.headMoved) {
+    return {
+      event: input.mapped,
+      action: "refuse",
+      reasons: [...reasons, "the pull request head moved since the review read it; review the new head"],
+      exitCode: 3,
+      cappedByCi: false
+    };
+  }
+  if (input.needsHuman === true && input.mapped === "APPROVE") {
+    if (input.recheck) {
+      return {
+        event: "COMMENT",
+        action: "refuse",
+        reasons: [...reasons, "the change was raised for human review, so there is no approval to re-check"],
+        exitCode: 2,
+        cappedByCi: false
+      };
+    }
+    return {
+      event: "COMMENT",
+      action: "post",
+      reasons: [...reasons, "the change was raised for human review, so this comments rather than approves"],
+      exitCode: 0,
+      cappedByCi: false
+    };
+  }
+  if (input.recheck) {
+    if (input.mapped !== "APPROVE") {
+      return {
+        event: input.mapped,
+        action: "refuse",
+        reasons: [...reasons, `the review maps to ${input.mapped}, so there is no approval to re-check`],
+        exitCode: 2,
+        cappedByCi: false
+      };
+    }
+    if (input.ci === "pending") {
+      return { event: "APPROVE", action: "wait", reasons: [...reasons, "CI is still running"], exitCode: 4, cappedByCi: false };
+    }
+    if (input.ci !== "green") {
+      return {
+        event: "COMMENT",
+        action: "refuse",
+        reasons: [...reasons, "CI is red, so there is no approval to send"],
+        exitCode: 5,
+        cappedByCi: true
+      };
+    }
+    return { event: "APPROVE", action: "post", reasons: [...reasons, "head unchanged and CI green"], exitCode: 0, cappedByCi: false };
+  }
+  if (input.mapped === "APPROVE" && input.ci === "red") {
+    return {
+      event: "COMMENT",
+      action: "post",
+      reasons: [...reasons, "CI is red, so the approval is capped at COMMENT"],
+      exitCode: 0,
+      cappedByCi: true
+    };
+  }
+  if (input.mapped === "APPROVE" && input.ci !== "green") {
+    return {
+      event: "APPROVE",
+      action: "wait",
+      reasons: [...reasons, "CI is still running; approve once it is green with verdict --recheck"],
+      exitCode: 4,
+      cappedByCi: false
+    };
+  }
+  return { event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false };
+}
+function plural(count2, word) {
+  return `${count2} ${word}${count2 === 1 ? "" : "s"}`;
+}
+function summaryLine(event, posted, cappedBy) {
+  const count2 = posted.length;
+  const highest = [...posted].map((finding) => finding.severity).sort((a, b) => RANK[a] - RANK[b])[0];
+  if (cappedBy === "ci") {
+    return count2 === 0 ? "No problems found, but not approving while CI is red." : `${plural(count2, "nit")}; not approving while CI is red.`;
+  }
+  if (cappedBy === "held") {
+    return count2 === 0 ? "Not approving yet." : `${plural(count2, "nit")}; not approving yet.`;
+  }
+  if (cappedBy === "complexity") {
+    return count2 === 0 ? "No problems found; leaving approval to a human reviewer." : `${plural(count2, "nit")}; leaving approval to a human reviewer.`;
+  }
+  if (event === "APPROVE") {
+    return count2 === 0 ? "No problems found." : `Approved, with ${plural(count2, "nit")}.`;
+  }
+  if (event === "REQUEST_CHANGES") {
+    return `Changes requested: ${plural(count2, "comment")}, the highest ${highest}.`;
+  }
+  return `${plural(count2, "comment")}, the highest ${highest}.`;
+}
+function inlineComment(finding) {
+  return {
+    path: finding.path,
+    line: finding.line,
+    side: "RIGHT",
+    // The same rendering `draft` uses. The location is the comment's anchor,
+    // so repeating it in the text would only be noise.
+    body: `**${finding.severity}** - ${finding.prose}`
+  };
+}
+function buildPayload(input) {
+  const posted = [...input.planned.inline, ...input.planned.unanchored];
+  const note = input.humanReviewNote ?? null;
+  const body = [
+    summaryLine(input.event, posted, input.cappedBy),
+    ...note === null ? [] : [note],
+    ...input.planned.unanchored.map((finding) => finding.raw)
+  ].join("\n\n");
+  return {
+    commit_id: input.head,
+    event: input.event,
+    body,
+    comments: input.planned.inline.map(inlineComment)
+  };
+}
+function renderPreview(input) {
+  const { payload } = input;
+  const lines = [
+    payload.event,
+    `Repository: ${input.repository}`,
+    `Pull request: #${input.pullNumber}`,
+    `Head: ${payload.commit_id}`,
+    `Body: ${payload.body}`,
+    `Comments: ${payload.comments.length}`,
+    ...payload.comments.map((comment) => `${comment.path}:${comment.line}
+  ${comment.body}`)
+  ];
+  if ((input.alreadyInline ?? 0) > 0) {
+    lines.push(`Already inline from an earlier post of this head, not sent again: ${input.alreadyInline}`);
+  }
+  if (input.held.length > 0) {
+    lines.push(`Held back, not verified: ${input.held.length}`);
+    for (const held of input.held) {
+      const where = held.path === null ? "no anchor" : `${held.path}:${held.line ?? "?"}`;
+      lines.push(`  ${held.findingId ?? "-"} ${where} (${held.reason})`);
+    }
+  }
+  return lines.join("\n");
+}
+function commentSignature(comment) {
+  return `${comment.path}:${comment.line}:${createHash("sha256").update(comment.body).digest("hex").slice(0, 32)}`;
+}
+function idempotencyKey(repository, pullNumber, payload) {
+  const digest = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+  return `${repository.toLowerCase()}#${pullNumber}@${payload.commit_id}:${digest}`;
+}
+
+// plugins/review-voice/src/contract/severity-check.ts
+function severityOf(score) {
+  const value = score.severity;
+  if (typeof value === "string") return value.toLowerCase();
+  if (typeof value === "object" && value !== null) {
+    const inner = value.severity;
+    if (typeof inner === "string") return inner.toLowerCase();
+  }
+  return null;
+}
+function scoredEntries(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (typeof parsed !== "object" || parsed === null) return [];
+  const record = parsed;
+  if (Array.isArray(record["eligible"])) return record["eligible"];
+  if (Array.isArray(record["scores"])) {
+    return record["scores"].filter(
+      (entry) => typeof entry === "object" && entry !== null && entry.eligible === true
+    );
+  }
+  return [];
+}
+function checkSeverityAgainstScores(output, scores) {
+  const violations = [];
+  for (const block of splitFindings(output)) {
+    const finding = parseFinding(block.raw, block.startLine);
+    if (finding.path === null || finding.line === null || finding.severity === null) continue;
+    const where = `${finding.path}:${finding.line}`;
+    const here = scoresAtLocation(scores, finding.path, finding.line);
+    if (here.length === 0) {
+      violations.push({
+        code: "severity_no_score",
+        line: finding.startLine,
+        message: `${where} is tagged ${finding.severity} but there is no scored candidate at that path:line.`
+      });
+      continue;
+    }
+    const derived = here.map(severityOf).filter((value) => value !== null);
+    if (!derived.includes(finding.severity)) {
+      violations.push({
+        code: "severity_mismatch",
+        line: finding.startLine,
+        message: `${where} is tagged ${finding.severity} but its score derived ${derived.join("/") || "no severity"}. Use the severity from the score, which is the one that can post.`
+      });
+    }
+  }
+  return violations;
 }
 
 // plugins/review-voice/src/diff/acquire.ts
@@ -1604,6 +1933,13 @@ function ensureRefs(options) {
   } catch {
   }
   present = check();
+  if (!present.base) {
+    try {
+      git2(["fetch", "--no-tags", "--quiet", "origin", options.base], options.cwd);
+    } catch {
+    }
+    present = check();
+  }
   if (present.base && present.head) {
     return result(true, null);
   }
@@ -1760,7 +2096,7 @@ async function acquirePullRequestDiff(options) {
 }
 
 // plugins/review-voice/src/redact/redact.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 
 // plugins/review-voice/src/redact/patterns.ts
 var SECRET_PATTERNS = [
@@ -1836,7 +2172,7 @@ var PLACEHOLDERS = /* @__PURE__ */ new Set([
 // plugins/review-voice/src/redact/redact.ts
 var REDACTION_VERSION = "1";
 function hash(value) {
-  return createHash("sha256").update(value).digest("hex").slice(0, 32);
+  return createHash2("sha256").update(value).digest("hex").slice(0, 32);
 }
 function isPlaceholder(value) {
   const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
@@ -2539,7 +2875,7 @@ function openDatabase(path = databasePath()) {
 }
 
 // plugins/review-voice/src/store/runs.ts
-import { randomUUID as randomUUID2, createHash as createHash2 } from "node:crypto";
+import { randomUUID as randomUUID2, createHash as createHash3 } from "node:crypto";
 
 // plugins/review-voice/src/store/audit.ts
 import { randomUUID } from "node:crypto";
@@ -2726,7 +3062,7 @@ function assignIds(output, hints) {
   });
 }
 function hashDiff(diff) {
-  return createHash2("sha256").update(diff).digest("hex").slice(0, 32);
+  return createHash3("sha256").update(diff).digest("hex").slice(0, 32);
 }
 function recordRun(db, input) {
   const reviewRunId = randomUUID2();
@@ -3042,7 +3378,7 @@ function feedbackTotals(db) {
 
 // plugins/review-voice/src/policy/load.ts
 import { readFileSync as readFileSync3, existsSync } from "node:fs";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { join as join4 } from "node:path";
 
 // node_modules/yaml/browser/dist/nodes/identity.js
@@ -9345,7 +9681,7 @@ function readHumanReview(block, result) {
   }
 }
 function contentHash(text) {
-  return createHash3("sha256").update(text).digest("hex").slice(0, 16);
+  return createHash4("sha256").update(text).digest("hex").slice(0, 16);
 }
 function layerFromPolicyFile(text, source, fallbackKey) {
   const doc = asRecord(parse(text));
@@ -9844,11 +10180,11 @@ function ineligibleReason(input) {
 }
 
 // plugins/review-voice/src/corpus/dedup.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 function contentKey(parts) {
   const normalised = parts.body.replace(/\s+/g, " ").trim().toLowerCase();
   const SEPARATOR = String.fromCharCode(31);
-  return createHash4("sha256").update(
+  return createHash5("sha256").update(
     [
       parts.repository.toLowerCase(),
       parts.reviewerLogin.toLowerCase(),
@@ -11121,6 +11457,7 @@ var FIX_VERDICTS = ["verified", "partial", "refuted", "absent"];
 function isFixVerdict(value) {
   return typeof value === "string" && FIX_VERDICTS.includes(value);
 }
+var EVIDENCE_QUALITIES = ["high", "medium", "low"];
 var QUALITY_CONFIDENCE = { high: 0.9, medium: 0.75, low: 0.5 };
 var TIER_ORDER = ["nit", "minor", "important", "blocking"];
 var BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
@@ -12208,283 +12545,6 @@ async function readCi(client, repository, sha, gates = []) {
   });
 }
 
-// plugins/review-voice/src/publish/verdict.ts
-import { createHash as createHash5 } from "node:crypto";
-function eventFor(severities) {
-  if (severities.some((severity) => severity === "blocking" || severity === "important")) return "REQUEST_CHANGES";
-  if (severities.some((severity) => severity === "minor" || severity === "question")) return "COMMENT";
-  return "APPROVE";
-}
-var RANK = { blocking: 0, important: 1, minor: 2, question: 3, nit: 4 };
-var NO_LINE = /^\[([a-z_]+)\]\s+`([^`]+)`\s+-\s*([\s\S]*)$/i;
-function reviewFindings(output) {
-  let index = 0;
-  return splitFindings(output).map((block) => {
-    const finding = parseFinding(block.raw, block.startLine);
-    const numbered = finding.severity !== null && finding.path !== null;
-    if (numbered) index += 1;
-    if (finding.path === null) {
-      const match = NO_LINE.exec(block.raw.replace(/\s*\n\s*/g, " ").trim());
-      const severity = match?.[1]?.toLowerCase();
-      if (match !== null && SEVERITIES.includes(severity ?? "")) {
-        return {
-          findingId: null,
-          severity,
-          path: match[2],
-          line: null,
-          raw: finding.raw,
-          prose: (match[3] ?? "").trim()
-        };
-      }
-    }
-    return {
-      findingId: numbered ? `rv_${String(index).padStart(2, "0")}` : null,
-      severity: finding.severity,
-      path: finding.path,
-      line: finding.line,
-      raw: finding.raw,
-      prose: finding.prose
-    };
-  });
-}
-var MAX_CARRY_DEPTH = 8;
-function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
-  if (finding.path === null || finding.severity === null) {
-    return { verified: false, reason: "it names no file, so no score can be matched to it", runId: run.reviewRunId };
-  }
-  let current = run;
-  let path = finding.path;
-  let line = finding.line;
-  const severity = finding.severity;
-  let reason2 = "no score was recorded for it";
-  for (let depth = 0; depth <= MAX_CARRY_DEPTH; depth += 1) {
-    const scores = Array.isArray(current.scores) ? current.scores : [];
-    const here = scores.filter(
-      (score) => typeof score === "object" && score !== null && score.path === path && (line === null || score.line === line)
-    );
-    const same = here.filter((score) => score.severity?.severity === severity && !used.has(score));
-    const backing = same.find((score) => score.confidenceSource === "verifier" && score.eligible === true);
-    if (backing !== void 0) {
-      used.add(backing);
-      return { verified: true, reason: "established by the verifier", runId: current.reviewRunId };
-    }
-    if (same.some((score) => score.confidenceSource === "verifier")) {
-      reason2 = "the verifier scored it, but it did not clear the gates";
-    } else if (same.length > 0) {
-      reason2 = "its confidence is the analyst's own, not the verifier's";
-    } else if (here.length > 0) {
-      reason2 = `no unused score at ${line === null ? path : `${path}:${line}`} was derived at ${severity}`;
-    }
-    if (line === null) break;
-    const stored = current.findings.find(
-      (candidate) => candidate.path === path && candidate.line === line && candidate.severity === severity
-    );
-    if (stored?.carriedFrom === void 0) break;
-    const from = stored.carriedFrom;
-    const source = loadRun(from.runId);
-    const origin = source?.findings.find((candidate) => candidate.findingId === from.findingId);
-    if (source === null || origin === void 0) {
-      reason2 = `it was carried from run ${from.runId}, which is no longer stored`;
-      break;
-    }
-    current = source;
-    path = origin.path;
-    line = origin.line;
-  }
-  return { verified: false, reason: reason2, runId: current.reviewRunId };
-}
-function planFindings(output, run, loadRun) {
-  const inline = [];
-  const unanchored = [];
-  const held = [];
-  const heldSeverities = [];
-  const loaded = /* @__PURE__ */ new Map([[run.reviewRunId, run]]);
-  const cachedLoad = (id) => {
-    if (!loaded.has(id)) loaded.set(id, loadRun(id));
-    return loaded.get(id) ?? null;
-  };
-  const used = /* @__PURE__ */ new Set();
-  const findings = reviewFindings(output);
-  const ordered = [...findings.filter((f) => f.line !== null), ...findings.filter((f) => f.line === null)];
-  const outcome = /* @__PURE__ */ new Map();
-  for (const finding of ordered) outcome.set(finding, verification(finding, run, cachedLoad, used));
-  for (const finding of findings) {
-    const result = outcome.get(finding);
-    if (!result.verified || finding.severity === null) {
-      held.push({
-        findingId: finding.findingId,
-        severity: finding.severity,
-        path: finding.path,
-        line: finding.line,
-        reason: result.reason
-      });
-      heldSeverities.push(finding.severity ?? "minor");
-      continue;
-    }
-    (finding.path !== null && finding.line !== null ? inline : unanchored).push(finding);
-  }
-  const posted = [...inline, ...unanchored].map((finding) => finding.severity);
-  let mapped = eventFor(posted);
-  const heldBackApproval = mapped === "APPROVE" && eventFor(heldSeverities) !== "APPROVE";
-  if (heldBackApproval) mapped = "COMMENT";
-  return { inline, unanchored, held, mapped, heldBackApproval };
-}
-function decide(input) {
-  const reasons = [];
-  if (input.heldBackApproval === true) {
-    reasons.push("an unverified finding above a nit was held back, so this comments rather than approves");
-  }
-  if (input.headMoved) {
-    return {
-      event: input.mapped,
-      action: "refuse",
-      reasons: [...reasons, "the pull request head moved since the review read it; review the new head"],
-      exitCode: 3,
-      cappedByCi: false
-    };
-  }
-  if (input.needsHuman === true && input.mapped === "APPROVE") {
-    if (input.recheck) {
-      return {
-        event: "COMMENT",
-        action: "refuse",
-        reasons: [...reasons, "the change was raised for human review, so there is no approval to re-check"],
-        exitCode: 2,
-        cappedByCi: false
-      };
-    }
-    return {
-      event: "COMMENT",
-      action: "post",
-      reasons: [...reasons, "the change was raised for human review, so this comments rather than approves"],
-      exitCode: 0,
-      cappedByCi: false
-    };
-  }
-  if (input.recheck) {
-    if (input.mapped !== "APPROVE") {
-      return {
-        event: input.mapped,
-        action: "refuse",
-        reasons: [...reasons, `the review maps to ${input.mapped}, so there is no approval to re-check`],
-        exitCode: 2,
-        cappedByCi: false
-      };
-    }
-    if (input.ci === "pending") {
-      return { event: "APPROVE", action: "wait", reasons: [...reasons, "CI is still running"], exitCode: 4, cappedByCi: false };
-    }
-    if (input.ci !== "green") {
-      return {
-        event: "COMMENT",
-        action: "refuse",
-        reasons: [...reasons, "CI is red, so there is no approval to send"],
-        exitCode: 5,
-        cappedByCi: true
-      };
-    }
-    return { event: "APPROVE", action: "post", reasons: [...reasons, "head unchanged and CI green"], exitCode: 0, cappedByCi: false };
-  }
-  if (input.mapped === "APPROVE" && input.ci === "red") {
-    return {
-      event: "COMMENT",
-      action: "post",
-      reasons: [...reasons, "CI is red, so the approval is capped at COMMENT"],
-      exitCode: 0,
-      cappedByCi: true
-    };
-  }
-  if (input.mapped === "APPROVE" && input.ci !== "green") {
-    return {
-      event: "APPROVE",
-      action: "wait",
-      reasons: [...reasons, "CI is still running; approve once it is green with verdict --recheck"],
-      exitCode: 4,
-      cappedByCi: false
-    };
-  }
-  return { event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false };
-}
-function plural(count2, word) {
-  return `${count2} ${word}${count2 === 1 ? "" : "s"}`;
-}
-function summaryLine(event, posted, cappedBy) {
-  const count2 = posted.length;
-  const highest = [...posted].map((finding) => finding.severity).sort((a, b) => RANK[a] - RANK[b])[0];
-  if (cappedBy === "ci") {
-    return count2 === 0 ? "No problems found, but not approving while CI is red." : `${plural(count2, "nit")}; not approving while CI is red.`;
-  }
-  if (cappedBy === "held") {
-    return count2 === 0 ? "Not approving yet." : `${plural(count2, "nit")}; not approving yet.`;
-  }
-  if (cappedBy === "complexity") {
-    return count2 === 0 ? "No problems found; leaving approval to a human reviewer." : `${plural(count2, "nit")}; leaving approval to a human reviewer.`;
-  }
-  if (event === "APPROVE") {
-    return count2 === 0 ? "No problems found." : `Approved, with ${plural(count2, "nit")}.`;
-  }
-  if (event === "REQUEST_CHANGES") {
-    return `Changes requested: ${plural(count2, "comment")}, the highest ${highest}.`;
-  }
-  return `${plural(count2, "comment")}, the highest ${highest}.`;
-}
-function inlineComment(finding) {
-  return {
-    path: finding.path,
-    line: finding.line,
-    side: "RIGHT",
-    // The same rendering `draft` uses. The location is the comment's anchor,
-    // so repeating it in the text would only be noise.
-    body: `**${finding.severity}** - ${finding.prose}`
-  };
-}
-function buildPayload(input) {
-  const posted = [...input.planned.inline, ...input.planned.unanchored];
-  const note = input.humanReviewNote ?? null;
-  const body = [
-    summaryLine(input.event, posted, input.cappedBy),
-    ...note === null ? [] : [note],
-    ...input.planned.unanchored.map((finding) => finding.raw)
-  ].join("\n\n");
-  return {
-    commit_id: input.head,
-    event: input.event,
-    body,
-    comments: input.planned.inline.map(inlineComment)
-  };
-}
-function renderPreview(input) {
-  const { payload } = input;
-  const lines = [
-    payload.event,
-    `Repository: ${input.repository}`,
-    `Pull request: #${input.pullNumber}`,
-    `Head: ${payload.commit_id}`,
-    `Body: ${payload.body}`,
-    `Comments: ${payload.comments.length}`,
-    ...payload.comments.map((comment) => `${comment.path}:${comment.line}
-  ${comment.body}`)
-  ];
-  if ((input.alreadyInline ?? 0) > 0) {
-    lines.push(`Already inline from an earlier post of this head, not sent again: ${input.alreadyInline}`);
-  }
-  if (input.held.length > 0) {
-    lines.push(`Held back, not verified: ${input.held.length}`);
-    for (const held of input.held) {
-      const where = held.path === null ? "no anchor" : `${held.path}:${held.line ?? "?"}`;
-      lines.push(`  ${held.findingId ?? "-"} ${where} (${held.reason})`);
-    }
-  }
-  return lines.join("\n");
-}
-function commentSignature(comment) {
-  return `${comment.path}:${comment.line}:${createHash5("sha256").update(comment.body).digest("hex").slice(0, 32)}`;
-}
-function idempotencyKey(repository, pullNumber, payload) {
-  const digest = createHash5("sha256").update(JSON.stringify(payload)).digest("hex");
-  return `${repository.toLowerCase()}#${pullNumber}@${payload.commit_id}:${digest}`;
-}
-
 // plugins/review-voice/src/publish/post.ts
 var SHA2 = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 function normalise2(text) {
@@ -12938,18 +12998,37 @@ var STDIN_INPUT = {
   verdict: "the validated review",
   post: "the validated review"
 };
+function noFindingsHint() {
+  return `A run with no findings pipes exactly ${DEFAULT_LIMITS.noFindingsResponse}, e.g. echo '${DEFAULT_LIMITS.noFindingsResponse}' | RV record ...`;
+}
 function readStdin() {
   if (process.stdin.isTTY === true) {
     const command = process.argv[2] ?? "command";
     const what = STDIN_INPUT[command] ?? "its input";
     console.error(`${command} reads ${what} on stdin; pipe it in, e.g. cat input | RV ${command}`);
+    if (command === "record") console.error(noFindingsHint());
     process.exit(2);
   }
-  try {
-    return readFileSync5(0, "utf8");
-  } catch {
-    return "";
+  const chunks = [];
+  const buffer = Buffer.alloc(64 * 1024);
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (; ; ) {
+    let read;
+    try {
+      read = readSync(0, buffer, 0, buffer.length, null);
+    } catch (error) {
+      const code = error.code;
+      if (code === "EAGAIN") {
+        Atomics.wait(pause, 0, 0, 5);
+        continue;
+      }
+      if (code === "EOF") break;
+      return chunks.length === 0 ? "" : Buffer.concat(chunks).toString("utf8");
+    }
+    if (read === 0) break;
+    chunks.push(Buffer.from(buffer.subarray(0, read)));
   }
+  return Buffer.concat(chunks).toString("utf8");
 }
 function numericFlag(argv, name, fallback) {
   const index = argv.indexOf(name);
@@ -12973,7 +13052,24 @@ function validateOutputCommand(argv) {
     maxWordsPerFinding: maxWords,
     maxTotalWords: Math.max(scaledTotal, maxTotal === DEFAULT_LIMITS.maxTotalWords ? scaledTotal : maxTotal)
   };
-  const result = validateOutput(readStdin(), limits);
+  const output = readStdin();
+  const result = validateOutput(output, limits);
+  const scoresFlag = flag(argv, "--scores");
+  if (argv.includes("--scores") && scoresFlag === null) {
+    console.error("--scores needs the JSON file that `RV score` printed.");
+    return 2;
+  }
+  if (scoresFlag !== null) {
+    let entries;
+    try {
+      entries = scoredEntries(JSON.parse(readFileSync5(scoresFlag, "utf8")));
+    } catch (error) {
+      console.error(`Cannot read ${scoresFlag}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    result.violations.push(...checkSeverityAgainstScores(output, entries));
+    result.valid = result.violations.length === 0;
+  }
   if (argv.includes("--json")) {
     console.log(JSON.stringify(result, null, 2));
     return result.valid ? 0 : 1;
@@ -13553,12 +13649,18 @@ function evaluateCommand(argv) {
 }
 var LIST_CAP = 20;
 var EXCERPT_CAP = 300;
-function boundLists(value) {
-  if (Array.isArray(value)) return value.map(boundLists);
+var TEXT_CAP = 600;
+var CLAIM_CAP = 1e3;
+function boundLists(value, limit = TEXT_CAP) {
+  if (typeof value === "string") return value.length > limit ? `${value.slice(0, limit)}...` : value;
+  if (Array.isArray(value)) return value.map((entry) => boundLists(entry, limit));
   if (value === null || typeof value !== "object") return value;
   const out = {};
   let cut = false;
   for (const [key, item] of Object.entries(value)) {
+    if (key === "precedentIds") {
+      continue;
+    }
     if (Array.isArray(item) && item.length > LIST_CAP && item.every((entry) => typeof entry === "string")) {
       out[key] = item.slice(0, LIST_CAP);
       out[`${key}Total`] = item.length;
@@ -13566,11 +13668,27 @@ function boundLists(value) {
     } else if (key === "excerpt" && typeof item === "string" && item.length > EXCERPT_CAP) {
       out[key] = `${item.slice(0, EXCERPT_CAP)}...`;
     } else {
-      out[key] = boundLists(item);
+      const childLimit = key === "claim" || key === "failureMode" ? CLAIM_CAP : TEXT_CAP;
+      const bounded = boundLists(item, childLimit);
+      if (JSON.stringify(bounded) !== JSON.stringify(item)) cut = cut || containsCut(item, bounded);
+      out[key] = bounded;
     }
   }
   if (cut) out["truncated"] = true;
   return out;
+}
+function containsCut(before, after) {
+  if (typeof before === "string") return typeof after === "string" && after.length < before.length;
+  if (Array.isArray(before) && Array.isArray(after)) {
+    return before.some((entry, i) => containsCut(entry, after[i]));
+  }
+  if (before !== null && typeof before === "object" && after !== null && typeof after === "object") {
+    const afterObject = after;
+    return Object.entries(before).some(
+      ([key, entry]) => key in afterObject && containsCut(entry, afterObject[key])
+    );
+  }
+  return false;
 }
 function scoreCommand(argv) {
   let candidates;
@@ -13601,9 +13719,14 @@ function scoreCommand(argv) {
     try {
       const parsed = JSON.parse(readFileSync5(verificationFlag, "utf8"));
       const list = verdictList(parsed);
+      const problem = verificationProblem(list);
+      if (problem !== null) {
+        console.error(`Malformed verification - ${problem}`);
+        console.error("Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.");
+        return 2;
+      }
       for (const raw of list) {
         const id = raw["candidate_id"] ?? raw["candidateId"];
-        if (typeof id !== "string") continue;
         const fixVerdict = raw["fix_verdict"] ?? raw["fixVerdict"];
         const fixConfidence = raw["fix_confidence"] ?? raw["fixConfidence"];
         const fixReason = raw["fix_reason"] ?? raw["fixReason"];
@@ -13633,6 +13756,17 @@ function scoreCommand(argv) {
         `${verificationFlag} contained no verifications. Expected an array, or an object with one of: ${VERDICT_KEYS.join(", ")}, each entry carrying candidate_id. Refusing to score on the analyst self-report while a verification file was supplied.`
       );
       return 2;
+    }
+    const known = new Set(candidates.map((candidate) => candidate.candidateId));
+    const unknown = [...verifications.keys()].filter((id) => !known.has(id));
+    if (unknown.length > 0) {
+      console.error(`Warning: ${verificationFlag} verifies unknown candidate id(s): ${unknown.join(", ")}. Ignored.`);
+    }
+    const unverified = candidates.filter((candidate) => !verifications.has(candidate.candidateId));
+    if (unverified.length > 0) {
+      console.error(
+        `Warning: no verification for ${unverified.map((candidate) => candidate.candidateId).join(", ")}; they are scored on the analyst's own confidence.`
+      );
     }
   }
   let searchRoot = null;
@@ -13802,10 +13936,12 @@ function scoreCommand(argv) {
           // Severity is the derived tier, not the requested one. Ordering is
           // severity-first, and asking produced `minor` at confidence 0.90 and
           // `important` at 0.85 for the same finding on an identical diff.
+          // The editor states the fix text verbatim, so it is never cut: a
+          // repair ending in `...` would be posted as a broken sentence.
           eligible: kept.map((c) => {
             const scored = results.find((r) => r.candidateId === c.candidateId);
             const derived = scored?.severity;
-            return {
+            const bounded = boundLists({
               candidateId: c.candidateId,
               path: c.path,
               line: c.line,
@@ -13817,10 +13953,13 @@ function scoreCommand(argv) {
               // may state has to be here, and nothing it may not.
               claim: c.claim,
               failureMode: c.failureMode,
-              evidence: c.evidence,
+              evidence: c.evidence
               // Only the repair text the editor may state. A refuted repair is
               // left out rather than handed over with an instruction not to use
               // it; the full decision stays in `scores` for `explain`.
+            });
+            return {
+              ...bounded,
               fix: scored === void 0 ? { render: "none", text: null } : editorFix(scored.fix)
             };
           })
@@ -13998,6 +14137,7 @@ function recordCommand(argv) {
   const output = readStdin();
   if (output.trim().length === 0) {
     console.error("Nothing on stdin. Pipe the validated review in.");
+    console.error(noFindingsHint());
     return 2;
   }
   const diffFile = flag(argv, "--diff-file");
@@ -14249,8 +14389,9 @@ function explainCommand(argv) {
       if (score?.novelty !== void 0) {
         console.log(`  novelty           ${score.novelty.toFixed(2)}`);
       }
-      if (score?.precedentIds !== void 0 && score.precedentIds.length > 0) {
-        console.log(`  precedents        ${score.precedentIds.join(", ")}`);
+      const precedentIds = score?.precedentIds ?? (score?.precedents ?? []).flatMap((p) => typeof p.eventId === "string" ? [p.eventId] : []);
+      if (precedentIds.length > 0) {
+        console.log(`  precedents        ${precedentIds.join(", ")}`);
       }
       if (score?.duplicateOfPrecedent != null) {
         console.log(`  already stated in ${score.duplicateOfPrecedent}`);
@@ -14348,6 +14489,27 @@ function refExists(ref, cwd) {
   }
 }
 var VERDICT_KEYS = ["results", "verifications", "verdicts", "candidates"];
+function verificationProblem(list) {
+  for (const [index, raw] of list.entries()) {
+    const entry = typeof raw === "object" && raw !== null ? raw : {};
+    const id = entry["candidate_id"] ?? entry["candidateId"];
+    const who = `entry ${index} (${typeof id === "string" ? id : "no candidate id"})`;
+    if (typeof id !== "string" || id === "") return `${who}: candidate_id must be a non-empty string.`;
+    const quality = entry["evidence_quality"] ?? entry["evidenceQuality"];
+    if (quality !== void 0 && !EVIDENCE_QUALITIES.includes(quality)) {
+      return `${who}: evidence_quality must be one of ${EVIDENCE_QUALITIES.join(", ")}.`;
+    }
+    const confidence = entry["technical_confidence"] ?? entry["technicalConfidence"];
+    if (confidence !== void 0 && !(typeof confidence === "number" && Number.isFinite(confidence) && confidence >= 0 && confidence <= 1)) {
+      return `${who}: technical_confidence must be a number from 0 to 1.`;
+    }
+    const missing = entry["required_context_missing"] ?? entry["requiredContextMissing"];
+    if (missing !== void 0 && !(Array.isArray(missing) && missing.every((item) => typeof item === "string"))) {
+      return `${who}: required_context_missing must be an array of strings.`;
+    }
+  }
+  return null;
+}
 function verdictList(parsed) {
   if (Array.isArray(parsed)) return parsed;
   if (typeof parsed !== "object" || parsed === null) return [];
@@ -14617,5 +14779,6 @@ try {
   }
 }
 export {
-  resolveOutPath
+  resolveOutPath,
+  verificationProblem
 };

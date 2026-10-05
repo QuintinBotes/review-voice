@@ -171,6 +171,20 @@ function ensureRefs(options: {
   }
 
   present = check();
+
+  // `pull/<n>/head` brings the base only while it is still an ancestor of the
+  // head. Once the base branch moves on, the sha GitHub reports is reachable
+  // from no pull ref, and anything that reads the base (`score --base`) fails.
+  // Ask for that one commit by sha; it is not fatal for the same reason.
+  if (!present.base) {
+    try {
+      git(['fetch', '--no-tags', '--quiet', 'origin', options.base], options.cwd);
+    } catch {
+      // The server may refuse a fetch by sha. The note below says so.
+    }
+    present = check();
+  }
+
   if (present.base && present.head) {
     return result(true, null);
   }

@@ -75,12 +75,23 @@ export function reviewFindings(output: string): ReviewFinding[] {
 
 export type RunLoader = (runId: string) => RunDetail | null;
 
-interface ScoreLike {
+export interface ScoreLike {
   path?: unknown;
   line?: unknown;
   confidenceSource?: unknown;
   eligible?: unknown;
   severity?: { severity?: unknown } | null;
+}
+
+/**
+ * The scores recorded at a location. Shared by the post-time matcher and the
+ * render-time severity check so the two cannot disagree about what "the score
+ * for this finding" means. A null line matches any line in the file.
+ */
+export function scoresAtLocation(scores: readonly unknown[], path: string, line: number | null): ScoreLike[] {
+  return (scores as ScoreLike[]).filter(
+    (score) => typeof score === 'object' && score !== null && score.path === path && (line === null || score.line === line),
+  );
 }
 
 /** How far a carried finding's history is followed back. Carries do not chain deeper in practice. */
@@ -118,10 +129,8 @@ export function verification(
   let reason = 'no score was recorded for it';
 
   for (let depth = 0; depth <= MAX_CARRY_DEPTH; depth += 1) {
-    const scores = (Array.isArray(current.scores) ? current.scores : []) as ScoreLike[];
-    const here = scores.filter(
-      (score) => typeof score === 'object' && score !== null && score.path === path && (line === null || score.line === line),
-    );
+    const scores = Array.isArray(current.scores) ? current.scores : [];
+    const here = scoresAtLocation(scores, path, line);
     const same = here.filter((score) => score.severity?.severity === severity && !used.has(score));
     const backing = same.find((score) => score.confidenceSource === 'verifier' && score.eligible === true);
     if (backing !== undefined) {
