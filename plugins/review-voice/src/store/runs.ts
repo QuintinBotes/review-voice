@@ -29,8 +29,14 @@ export interface StoredFinding {
   carriedFrom?: { runId: string; findingId: string } | undefined;
 }
 
-/** Why a candidate was held back rather than reported. */
-export type HeldVerdict = 'partly' | 'refuted' | 'unverified' | 'repeat';
+/**
+ * Why a candidate was held back rather than reported.
+ *
+ * `below-gate` is a verified finding whose score fell short of the gate. It
+ * says nothing against the finding, so the next review never treats it as a
+ * reason to drop the same candidate.
+ */
+export type HeldVerdict = 'partly' | 'refuted' | 'unverified' | 'repeat' | 'below-gate';
 
 export interface HeldFinding {
   path: string;
@@ -44,7 +50,7 @@ export interface HeldFinding {
   text?: string | undefined;
 }
 
-export const HELD_VERDICTS: readonly HeldVerdict[] = ['partly', 'refuted', 'unverified', 'repeat'];
+export const HELD_VERDICTS: readonly HeldVerdict[] = ['partly', 'refuted', 'unverified', 'repeat', 'below-gate'];
 
 /** Null when the entry is well formed, else what is wrong with it. */
 export function heldProblem(entry: unknown): string | null {

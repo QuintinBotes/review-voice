@@ -360,6 +360,15 @@ returned `found: []`, which reads as corroboration, and at the head ref it found
 the symbol the diff itself adds and deleted the finding with a sentence that was
 false about the claim.
 
+A name can be missing from every tracked file and still exist, because a build
+step writes it: a localisation key behind a `.resx` designer class, Android's
+`R`, a Flutter `l10n` accessor. When nothing is found and the repository tracks
+resource sources (`*.resx`, `*.resw`, `*.po`, `*.xlf`, `*.xliff`, `*.arb`, a
+`locales/` or `i18n/` directory), or the name is shaped like a generated
+accessor, the check returns `inconclusive: true` with a `reason` saying the name
+may be generated, rather than corroborating the absence. Finding the sources
+costs one `git ls-files`, and only when the search found nothing.
+
 ### A score belongs to the batch, not to the candidate
 
 Novelty is measured against what has already been kept in the same review, which

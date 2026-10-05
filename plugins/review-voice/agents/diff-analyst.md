@@ -223,6 +223,13 @@ The scorer runs `git grep` against every symbol such a claim names and rejects
 the candidate outright if the repository contains any of them, so an unchecked
 guess here costs the finding rather than buying it.
 
+**A name can be generated.** A localisation key, a resource accessor or other
+build-time output is often defined nowhere tracked. Before claiming a key,
+symbol or resource is missing, check its generator source: the resource file
+(`.resx`, `.po`, `.arb`, a `locales/` directory), the codegen config, or the
+`.gitignore`d output it writes. If you cannot check it, file a `question`, not
+a defect.
+
 ## Where defects actually live
 
 Control flow and error paths · authorization and trust boundaries · data
@@ -234,11 +241,24 @@ public API and user-visible behavior.
 
 `line` is the 1-based line number in the file at the head of the diff. Put it
 on a `+` line, or on the right-side line where removed code used to be. It is
-never a line number within `diff.patch`, and never an unchanged context line.
+never a line number within `diff.patch`, and never an unchanged context line -
+the one exception is a stale consumer, below.
 
-When a changed line breaks a consumer in a file the diff does not touch, anchor
-the finding on the changed line that breaks it. Name the consumer and its path
-in both `claim` and `evidence`; there is no off-diff exception.
+When a changed line breaks a consumer, anchor the finding on the changed line
+that breaks it whenever the point can be made there. Name the consumer and its
+path in both `claim` and `evidence`.
+
+**Stale consumer.** Use this only when the defect is the unchanged code itself -
+a caller, a document or a config elsewhere that the change has made wrong - and
+the point cannot be made on the changed line. Set `anchor` to
+`"stale-consumer"`, put the consumer's own `path` and `line` in those fields,
+and add `caused_by` with the `path` and `line` of the change that made it
+wrong. The cause must be an added line or a deletion site, by the same rule as
+any other anchor; a cause on context or outside the diff is rejected.
+`check-candidates` checks the cause, not the consumer. The verifier must trace
+the consumer back to the cause, or the finding is dropped, and it is posted in
+the review body rather than inline, because a comment cannot sit on an
+unchanged line.
 
 ## Output
 
@@ -247,7 +267,8 @@ commentary. Return `{"candidates": []}` when nothing qualifies - that is a
 correct and common answer, not a failure.
 
 Every candidate has these nine required fields. It may also have the optional
-`suggested_fix` and `fix_confidence` fields described above:
+`suggested_fix` and `fix_confidence` fields described above, and, only for a
+stale consumer, `anchor` and `caused_by`:
 
 ```json
 {

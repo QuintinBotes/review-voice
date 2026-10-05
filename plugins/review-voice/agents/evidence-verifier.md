@@ -82,6 +82,21 @@ Search for every symbol it names. A claim of absence that turns out to be false
 is the failure mode most likely to make the author change correct code, and it
 has arrived at confidence 0.90 and 0.93 on consecutive runs of one diff.
 
+A key, symbol or resource found nowhere tracked may be generated at build time:
+a localisation key, a resource accessor, codegen output that is `.gitignore`d.
+Check its generator source - the resource file, the codegen config - before
+accepting the absence. If you cannot check it, the claim is unverified: list
+the generator in `required_context_missing`, and do not verify it as a defect.
+
+## A stale consumer
+
+A candidate with `anchor: "stale-consumer"` is about unchanged code - a caller,
+a document, a config elsewhere - that the change made wrong. Its `path` and
+`line` are the consumer; `caused_by` is the changed line. Trace from the
+consumer to the cause: read the consumer, read the changed line, and confirm
+the change is what makes the consumer wrong. Set `impact_traced` to true only
+when you did. Without it the finding is dropped, whatever its confidence.
+
 ## Reject unless every condition holds
 
 - The path and line are changed by, or directly causally affected by, the diff.

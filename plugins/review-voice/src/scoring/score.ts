@@ -24,7 +24,13 @@ export interface RawCandidate {
   fixConfidence?: number;
   technical_confidence?: number;
   technicalConfidence?: number;
+  anchor?: string;
+  caused_by?: { path?: unknown; line?: unknown } | null;
+  causedBy?: { path?: unknown; line?: unknown } | null;
 }
+
+/** The one anchor a candidate may declare; see `classifyStaleConsumer`. */
+export const STALE_CONSUMER = 'stale-consumer';
 
 export interface Candidate {
   candidateId: string;
@@ -39,6 +45,12 @@ export interface Candidate {
   suggestedFix: string | null;
   fixConfidence: number | null;
   technicalConfidence: number;
+  /**
+   * Present only on a finding about unchanged code the change made wrong. Its
+   * own path and line are the consumer; `causedBy` is the changed line.
+   */
+  anchor?: typeof STALE_CONSUMER | undefined;
+  causedBy?: { path: string; line: number } | null | undefined;
 }
 
 export const FIX_VERDICTS = ['verified', 'partial', 'refuted', 'absent'] as const;
@@ -247,6 +259,9 @@ export interface ScoreBreakdown {
    */
   duplicateOfPrecedent: string | null;
   precedentIds: string[];
+  /** Only on a stale-consumer finding, so publishing can keep it out of inline comments. */
+  anchor?: typeof STALE_CONSUMER | undefined;
+  causedBy?: { path: string; line: number } | null | undefined;
 }
 
 export interface Thresholds {
@@ -559,6 +574,25 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
   ) {
     throw new MalformedCandidate(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
   }
+  if (raw.anchor !== undefined && raw.anchor !== STALE_CONSUMER) {
+    throw new MalformedCandidate(`${candidateId}: anchor must be "${STALE_CONSUMER}" when supplied`);
+  }
+  // A missing cause is not a shape error: the anchor check names it, with the
+  // rest of what the analyst has to fix. A cause in the wrong shape is.
+  const rawCause = raw.caused_by !== undefined ? raw.caused_by : raw.causedBy;
+  let causedBy: { path: string; line: number } | null = null;
+  if (raw.anchor === STALE_CONSUMER && rawCause !== undefined && rawCause !== null) {
+    if (
+      typeof rawCause !== 'object' ||
+      typeof rawCause.path !== 'string' ||
+      rawCause.path.length === 0 ||
+      !Number.isInteger(rawCause.line) ||
+      (rawCause.line as number) < 1
+    ) {
+      throw new MalformedCandidate(`${candidateId}: caused_by must be {"path": string, "line": positive integer}`);
+    }
+    causedBy = { path: rawCause.path, line: rawCause.line as number };
+  }
 
   return {
     candidateId,
@@ -575,6 +609,8 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     suggestedFix: suggestedFix ?? null,
     fixConfidence: fixConfidence ?? null,
     technicalConfidence: confidence as number,
+    // Spread only when declared, so an ordinary candidate keeps its shape.
+    ...(raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {}),
   };
 }
 
@@ -1070,6 +1106,19 @@ export function scoreCandidate(
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
 
+  // A stale consumer sits on code the diff did not touch, so nothing in the
+  // diff shows it breaking. Only the verifier following it back to its cause
+  // does. Checked after the chain so a question cannot skip it, and it leads
+  // over a score rejection because it is the one the analyst can act on.
+  const staleConsumer = candidate.anchor === STALE_CONSUMER;
+  if (staleConsumer && verification?.impactTraced !== true) {
+    const untraced =
+      'a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause ' +
+      '(impact_traced: true)';
+    if (rejectedBecause === null) rejectedBecause = untraced;
+    else if (rejectedBecause.startsWith('score ')) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
+  }
+
   const fix = renderFix(candidate, verification, thresholds);
 
   return {
@@ -1102,5 +1151,6 @@ export function scoreCandidate(
     rejectedBecause,
     duplicateOfPrecedent: alreadySaid?.eventId ?? null,
     precedentIds: precedents.map((p) => p.eventId),
+    ...(staleConsumer ? { anchor: STALE_CONSUMER, causedBy: candidate.causedBy ?? null } : {}),
   };
 }

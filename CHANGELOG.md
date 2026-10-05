@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A new CI state, `needs-rerun` (ADR 0013), for checks that failed for
   infrastructure reasons or are stuck. `verdict` and `post` exit 6 on it with
   the checks named, and nothing is approved or posted, whatever the event.
+- A candidate can declare `anchor: "stale-consumer"` with `caused_by: {path,
+  line}` for unchanged code the change made wrong (a caller, a document, a
+  config elsewhere). `check-candidates` and `score` check the cause, which must
+  be an added line or deletion site, and say so when it is missing or
+  unchanged. `score` makes it eligible only when the verifier set
+  `impact_traced`, and it is posted in the review body with its `path:line`,
+  never as an inline comment.
+- `score` lists `belowGate`: candidates the verifier confirmed that were
+  stopped only by the final score. The review prints them locally after the
+  validated review under `Below the gate (not posted)` and records them with
+  `record --held` as the new verdict `below-gate`. They are never posted, and
+  a later review's `--held-from` does not drop candidates on account of them.
 
 ### Fixed
 
@@ -39,6 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An absence claim whose names are found nowhere tracked is reported
+  `inconclusive`, with a reason, when the repository tracks localisation or
+  resource sources (`*.resx`, `*.resw`, `*.po`, `*.xlf`, `*.xliff`, `*.arb`,
+  `locales/`, `i18n/`) or a name is shaped like a generated accessor, since
+  such a name may be written at build time. The analyst and verifier prompts
+  say to check the generator source first, and to file a question when they
+  cannot.
 - CI checks that timed out, failed to start or need someone's action no longer
   count as red, and a cancelled run with nothing after it, or a check queued or
   running for more than an hour, is no longer pending. All of them now need a

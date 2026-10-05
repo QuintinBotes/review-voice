@@ -21,7 +21,7 @@ import { acquireDiff, GitError, type ChangedFile } from './diff/acquire.ts';
 import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAssessment } from './diff/complexity.ts';
 import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
-import { classifyAnchor, parseHunks, reason, type FileHunks } from './diff/hunks.ts';
+import { classifyAnchor, classifyStaleConsumer, parseHunks, reason, type AnchorCheck, type FileHunks } from './diff/hunks.ts';
 import { readThread, type ThreadComment } from './diff/thread.ts';
 import { collectSymbolContext } from './diff/symbols.ts';
 import { openDatabase } from './store/db.ts';
@@ -1199,6 +1199,16 @@ function containsCut(before: unknown, after: unknown): boolean {
   return false;
 }
 
+/**
+ * The anchor check for one candidate. A stale consumer is judged by its cause,
+ * since its own line is meant to be on unchanged code.
+ */
+function anchorFor(hunks: Map<string, FileHunks>, candidate: Candidate): AnchorCheck {
+  return candidate.anchor === 'stale-consumer'
+    ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null)
+    : classifyAnchor(hunks, candidate.path, candidate.line);
+}
+
 function scoreCommand(argv: string[]): number {
   let candidates: Candidate[];
   try {
@@ -1462,7 +1472,7 @@ function scoreCommand(argv: string[]): number {
       // A candidate can only become a review comment where the reviewed diff
       // changed code. A nearby removed guard is valid at its right-side site;
       // an unchanged context line is not silently moved there for the analyst.
-      const anchorCheck = anchorHunks === null ? null : classifyAnchor(anchorHunks, candidate.path, candidate.line);
+      const anchorCheck = anchorHunks === null ? null : anchorFor(anchorHunks, candidate);
       // The anchor reason leads even when something else rejected the
       // candidate first: it is the one an analyst can act on, and leaving it
       // behind a score threshold hides why re-anchoring was needed.
@@ -1498,6 +1508,30 @@ function scoreCommand(argv: string[]): number {
     // After every question has a score to rank by, not while scoring. Applied
     // before the distribution below so `cleared` counts what actually ships.
     applyQuestionCap(results);
+
+    // Verified, past the confidence gate, and stopped only by the final score:
+    // real by the verifier's account, but not what the owner would choose to
+    // say. Shown locally so it is not lost, and never posted. A rejection
+    // from any other gate leads its reason, so the prefix tells them apart.
+    const belowGate = results
+      .filter(
+        (r) =>
+          r.confidenceSource === 'verifier' &&
+          !r.eligible &&
+          Number.isFinite(r.finalScore) &&
+          (r.rejectedBecause ?? '').startsWith('score '),
+      )
+      .map((r) =>
+        boundLists({
+          candidateId: r.candidateId,
+          path: r.path,
+          line: r.line,
+          severity: r.severity.severity,
+          claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? '',
+          finalScore: r.finalScore,
+          threshold: thresholds.finalScore,
+        }),
+      );
 
     const finals = results
       .map((r) => r.finalScore)
@@ -1559,8 +1593,12 @@ function scoreCommand(argv: string[]): number {
             return {
               ...bounded,
               fix: scored === undefined ? { render: 'none' as const, text: null } : editorFix(scored.fix),
+              // The editor names the cause in the prose, since the consumer's
+              // line is what the finding's location shows.
+              ...(c.anchor === 'stale-consumer' ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {}),
             };
           }),
+          belowGate,
         },
         null,
         2,
@@ -2063,7 +2101,12 @@ function explainCommand(argv: string[]): number {
     console.log('');
 
     const shown = wanted === undefined ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
-    if (shown.length === 0) {
+    // A run that posted nothing can still have held findings - below-gate
+    // ones especially - and they are the only account of what it found.
+    if (shown.length === 0 && wanted === undefined) {
+      console.log('No findings were recorded.');
+      console.log('');
+    } else if (shown.length === 0) {
       console.log(`No finding ${wanted}. Available: ${detail.findings.map((f) => f.findingId).join(', ') || 'none'}.`);
       return 1;
     }
@@ -2297,6 +2340,8 @@ function carriedHeldFindings(runId: string, head: string): CarriedHeld[] {
     if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head.`);
     // Only a conclusion holds a candidate back. `unverified` reached none, and
     // any later kind of held entry has to opt in here rather than suppress by default.
+    // `below-gate` stays out: the verifier confirmed it, so it argues for the
+    // candidate, not against it.
     const entries = detail.held.filter((h) => h.verdict === 'refuted' || h.verdict === 'partly' || h.verdict === 'repeat');
     const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: '' }));
     const result = carryFindings(inputs, detail.headRef, head, process.cwd());
@@ -2380,7 +2425,7 @@ function checkCandidatesCommand(argv: string[]): number {
     }
 
     const anchorFailures = candidates
-      .map((candidate) => ({ candidate, anchor: classifyAnchor(hunks, candidate.path, candidate.line) }))
+      .map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) }))
       .filter(({ anchor }) => !anchor.ok)
       .map(({ candidate, anchor }) => ({
         candidateId: candidate.candidateId,
@@ -2389,6 +2434,7 @@ function checkCandidatesCommand(argv: string[]): number {
         kind: anchor.kind,
         reason: reason(anchor),
         nearest: anchor.nearest,
+        ...(anchor.causedBy === undefined ? {} : { causedBy: anchor.causedBy }),
       }));
 
     if (anchorFailures.length > 0) {

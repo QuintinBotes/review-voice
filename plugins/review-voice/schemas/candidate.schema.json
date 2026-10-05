@@ -86,6 +86,31 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1
+          },
+          "anchor": {
+            "enum": [
+              "stale-consumer"
+            ],
+            "description": "Only for unchanged code the change made wrong (a caller, a doc, a config elsewhere). path and line are then the consumer, and caused_by names the changed line. Posted in the review body, never inline."
+          },
+          "caused_by": {
+            "type": "object",
+            "required": [
+              "path",
+              "line"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "description": "With anchor stale-consumer: the added line or deletion site that made the consumer wrong."
           }
         }
       }

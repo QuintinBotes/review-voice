@@ -19,7 +19,21 @@ export interface FileHunks {
   patchLines: Map<number, number>;
 }
 
-export type AnchorKind = 'added' | 'deletion-site' | 'context' | 'outside-hunk' | 'file-not-in-diff';
+export type AnchorKind =
+  | 'added'
+  | 'deletion-site'
+  | 'context'
+  | 'outside-hunk'
+  | 'file-not-in-diff'
+  | 'stale-consumer';
+
+/** The changed line a stale-consumer finding says made its consumer wrong. */
+export interface AnchorCause {
+  path: string;
+  line: number;
+  /** How the cause itself classifies: only an added line or deletion site is a cause. */
+  kind: AnchorKind;
+}
 
 export interface AnchorCheck {
   /** The location classified, normalised, so a reason can name it. */
@@ -30,6 +44,11 @@ export interface AnchorCheck {
   nearest: number[];
   patchLine: { path: string; line: number } | null;
   beyondHunks: boolean;
+  /**
+   * Only on a stale-consumer anchor: the changed line named as the cause, or
+   * null when the candidate named none.
+   */
+  causedBy?: AnchorCause | null;
 }
 
 interface ActiveHunk {
@@ -316,9 +335,52 @@ export function classifyAnchor(hunks: Map<string, FileHunks>, path: string, line
   };
 }
 
+/**
+ * Classifies a finding about unchanged code the change made wrong.
+ *
+ * The consumer - a caller, a document, a config elsewhere - is on a line the
+ * diff did not touch, so it can never be an inline comment. What makes it a
+ * finding about this change is the cause, so the cause is what has to be an
+ * added line or a deletion site. The consumer's own line is reported, never
+ * judged: it is meant to be outside the diff.
+ */
+export function classifyStaleConsumer(
+  hunks: Map<string, FileHunks>,
+  path: string,
+  line: number,
+  causedBy: { path: string; line: number } | null,
+): AnchorCheck {
+  const consumer = path.replace(/^\.\/+/, '');
+  if (causedBy === null) {
+    return {
+      path: consumer,
+      line,
+      kind: 'stale-consumer',
+      ok: false,
+      nearest: [],
+      patchLine: null,
+      beyondHunks: false,
+      causedBy: null,
+    };
+  }
+  const cause = classifyAnchor(hunks, causedBy.path, causedBy.line);
+  return {
+    path: consumer,
+    line,
+    kind: 'stale-consumer',
+    ok: cause.ok,
+    nearest: cause.nearest,
+    patchLine: cause.patchLine,
+    beyondHunks: cause.beyondHunks,
+    causedBy: { path: cause.path, line: cause.line, kind: cause.kind },
+  };
+}
+
 /** Renders the correction a failed anchor needs without guessing a replacement. */
 export function reason(anchor: AnchorCheck): string {
   const { path, line } = anchor;
+
+  if (anchor.kind === 'stale-consumer') return staleConsumerReason(anchor);
 
   let detail: string;
   switch (anchor.kind) {
@@ -347,6 +409,36 @@ export function reason(anchor: AnchorCheck): string {
   }
   if (!anchor.ok && anchor.patchLine !== null) {
     return `${rendered}; line ${line} of diff.patch is ${anchor.patchLine.path}:${anchor.patchLine.line} - was that the line meant?`;
+  }
+  return `${rendered}.`;
+}
+
+
+/** The stale-consumer half of `reason`, which judges the cause rather than the consumer. */
+function staleConsumerReason(anchor: AnchorCheck): string {
+  const consumer = `${anchor.path}:${anchor.line}`;
+  const cause = anchor.causedBy ?? null;
+  if (cause === null) {
+    return (
+      `anchors on ${consumer} as a stale consumer but names no caused_by; ` +
+      'name the added line or deletion site that made it wrong.'
+    );
+  }
+  const at = `${cause.path}:${cause.line}`;
+  if (anchor.ok) {
+    return `anchors on ${consumer}, an unchanged consumer made wrong by the change at ${at}; it is posted in the review body.`;
+  }
+  let detail = 'not a changed line';
+  if (cause.kind === 'context') detail = 'an unchanged context line';
+  else if (cause.kind === 'outside-hunk') detail = 'outside every hunk in that file';
+  else if (cause.kind === 'file-not-in-diff') detail = 'in a file the diff does not touch';
+  let rendered =
+    `anchors on ${consumer} as a stale consumer, but its caused_by ${at} is ${detail}; ` +
+    'the cause must be an added line or deletion site';
+  if (anchor.nearest.length > 0) {
+    rendered += anchor.nearest.length === 1
+      ? `; the nearest changed line is ${anchor.nearest[0]}`
+      : `; the nearest changed lines are ${anchor.nearest.join(', ')}`;
   }
   return `${rendered}.`;
 }

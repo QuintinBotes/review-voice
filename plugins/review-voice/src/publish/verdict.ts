@@ -81,6 +81,17 @@ export interface ScoreLike {
   confidenceSource?: unknown;
   eligible?: unknown;
   severity?: { severity?: unknown } | null;
+  anchor?: unknown;
+  anchorCheck?: { kind?: unknown } | null;
+}
+
+/**
+ * Whether a score is for a finding about unchanged code the change made
+ * wrong. Read from either field, so a score taken without `--diff-file` still
+ * says so.
+ */
+function isStaleConsumer(score: ScoreLike): boolean {
+  return score.anchor === 'stale-consumer' || score.anchorCheck?.kind === 'stale-consumer';
 }
 
 /**
@@ -117,7 +128,7 @@ export function verification(
   run: RunDetail,
   loadRun: RunLoader,
   used: Set<object> = new Set(),
-): { verified: boolean; reason: string; runId: string } {
+): { verified: boolean; reason: string; runId: string; staleConsumer?: boolean } {
   if (finding.path === null || finding.severity === null) {
     return { verified: false, reason: 'it names no file, so no score can be matched to it', runId: run.reviewRunId };
   }
@@ -135,7 +146,12 @@ export function verification(
     const backing = same.find((score) => score.confidenceSource === 'verifier' && score.eligible === true);
     if (backing !== undefined) {
       used.add(backing);
-      return { verified: true, reason: 'established by the verifier', runId: current.reviewRunId };
+      return {
+        verified: true,
+        reason: 'established by the verifier',
+        runId: current.reviewRunId,
+        ...(isStaleConsumer(backing) ? { staleConsumer: true } : {}),
+      };
     }
     if (same.some((score) => score.confidenceSource === 'verifier')) {
       reason = 'the verifier scored it, but it did not clear the gates';
@@ -176,7 +192,10 @@ export interface HeldBack {
 export interface PlannedFindings {
   /** Verified and anchored: each becomes an inline comment. */
   inline: ReviewFinding[];
-  /** Verified but with no line: the only findings that go in the body. */
+  /**
+   * Verified but with no line to comment on: a finding that names none, or a
+   * stale consumer, whose line is unchanged code GitHub cannot anchor on.
+   */
   unanchored: ReviewFinding[];
   held: HeldBack[];
   /** The event the posted findings call for, before CI is considered. */
@@ -231,7 +250,10 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
       heldSeverities.push(finding.severity ?? 'minor');
       continue;
     }
-    (finding.path !== null && finding.line !== null ? inline : unanchored).push(finding);
+    // A stale consumer keeps its `path:line` in the body text: the reader still
+    // needs to know where, and an inline comment there would be refused.
+    const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true;
+    (anchorable ? inline : unanchored).push(finding);
   }
 
   const posted = [...inline, ...unanchored].map((finding) => finding.severity as Severity);
@@ -423,7 +445,8 @@ function inlineComment(finding: ReviewFinding): ReviewComment {
 /**
  * The create-review request body. Every anchored finding is an inline comment
  * on its line; the body is the one-line verdict plus only the findings with no
- * line to sit on. Never one global block of findings.
+ * line to sit on, which includes a stale consumer on unchanged code. Never one
+ * global block of findings.
  */
 export function buildPayload(input: {
   head: string;

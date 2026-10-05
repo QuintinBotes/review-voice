@@ -342,6 +342,9 @@ function reviewFindings(output) {
     };
   });
 }
+function isStaleConsumer(score) {
+  return score.anchor === "stale-consumer" || score.anchorCheck?.kind === "stale-consumer";
+}
 function scoresAtLocation(scores, path, line) {
   return scores.filter(
     (score) => typeof score === "object" && score !== null && score.path === path && (line === null || score.line === line)
@@ -364,7 +367,12 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
     const backing = same.find((score) => score.confidenceSource === "verifier" && score.eligible === true);
     if (backing !== void 0) {
       used.add(backing);
-      return { verified: true, reason: "established by the verifier", runId: current.reviewRunId };
+      return {
+        verified: true,
+        reason: "established by the verifier",
+        runId: current.reviewRunId,
+        ...isStaleConsumer(backing) ? { staleConsumer: true } : {}
+      };
     }
     if (same.some((score) => score.confidenceSource === "verifier")) {
       reason2 = "the verifier scored it, but it did not clear the gates";
@@ -419,7 +427,8 @@ function planFindings(output, run, loadRun) {
       heldSeverities.push(finding.severity ?? "minor");
       continue;
     }
-    (finding.path !== null && finding.line !== null ? inline : unanchored).push(finding);
+    const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true;
+    (anchorable ? inline : unanchored).push(finding);
   }
   const posted = [...inline, ...unanchored].map((finding) => finding.severity);
   let mapped = eventFor(posted);
@@ -1161,8 +1170,35 @@ function classifyAnchor(hunks, path, line) {
     beyondHunks: file.ranges.length > 0 && file.ranges.every((range) => line > range.end)
   };
 }
+function classifyStaleConsumer(hunks, path, line, causedBy) {
+  const consumer = path.replace(/^\.\/+/, "");
+  if (causedBy === null) {
+    return {
+      path: consumer,
+      line,
+      kind: "stale-consumer",
+      ok: false,
+      nearest: [],
+      patchLine: null,
+      beyondHunks: false,
+      causedBy: null
+    };
+  }
+  const cause = classifyAnchor(hunks, causedBy.path, causedBy.line);
+  return {
+    path: consumer,
+    line,
+    kind: "stale-consumer",
+    ok: cause.ok,
+    nearest: cause.nearest,
+    patchLine: cause.patchLine,
+    beyondHunks: cause.beyondHunks,
+    causedBy: { path: cause.path, line: cause.line, kind: cause.kind }
+  };
+}
 function reason(anchor) {
   const { path, line } = anchor;
+  if (anchor.kind === "stale-consumer") return staleConsumerReason(anchor);
   let detail;
   switch (anchor.kind) {
     case "added":
@@ -1187,6 +1223,26 @@ function reason(anchor) {
   }
   if (!anchor.ok && anchor.patchLine !== null) {
     return `${rendered}; line ${line} of diff.patch is ${anchor.patchLine.path}:${anchor.patchLine.line} - was that the line meant?`;
+  }
+  return `${rendered}.`;
+}
+function staleConsumerReason(anchor) {
+  const consumer = `${anchor.path}:${anchor.line}`;
+  const cause = anchor.causedBy ?? null;
+  if (cause === null) {
+    return `anchors on ${consumer} as a stale consumer but names no caused_by; name the added line or deletion site that made it wrong.`;
+  }
+  const at = `${cause.path}:${cause.line}`;
+  if (anchor.ok) {
+    return `anchors on ${consumer}, an unchanged consumer made wrong by the change at ${at}; it is posted in the review body.`;
+  }
+  let detail = "not a changed line";
+  if (cause.kind === "context") detail = "an unchanged context line";
+  else if (cause.kind === "outside-hunk") detail = "outside every hunk in that file";
+  else if (cause.kind === "file-not-in-diff") detail = "in a file the diff does not touch";
+  let rendered = `anchors on ${consumer} as a stale consumer, but its caused_by ${at} is ${detail}; the cause must be an added line or deletion site`;
+  if (anchor.nearest.length > 0) {
+    rendered += anchor.nearest.length === 1 ? `; the nearest changed line is ${anchor.nearest[0]}` : `; the nearest changed lines are ${anchor.nearest.join(", ")}`;
   }
   return `${rendered}.`;
 }
@@ -2432,7 +2488,41 @@ var gitGrepPaths = (symbol, cwd, ref) => {
     throw error;
   }
 };
-function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository = null) {
+var RESOURCE_PATHSPECS = [
+  ":(glob)**/*.resx",
+  ":(glob)**/*.resw",
+  ":(glob)**/*.po",
+  ":(glob)**/*.xlf",
+  ":(glob)**/*.xliff",
+  ":(glob)**/*.arb",
+  ":(glob)**/locales/**",
+  ":(glob)**/i18n/**"
+];
+var gitResourceSources = (cwd) => {
+  try {
+    const output = execFileSync6("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1e4,
+      maxBuffer: 16 * 1024 * 1024
+    });
+    return output.split("\0").filter((path) => path.length > 0);
+  } catch {
+    return [];
+  }
+};
+var GENERATED_ACCESSOR = [
+  /^R\.[a-z]+\.[a-z_]\w*$/,
+  /^(?:\w+\.)*\w*(?:Resources|Resource|Strings)\.[A-Z]\w*$/,
+  /^(?:S|AppLocalizations)\.of\([^)]*\)\.\w+$/,
+  /^(?:L10n|l10n)\.[A-Za-z_]\w*$/
+];
+var FILE_NAME = /\.(?:tsx?|jsx?|mjs|cjs|cs|py|go|rb|java|kt|rs|swift|dart|json|ya?ml|md|xml|resx|resw|po|xlf|xliff|arb)$/i;
+function generatedAccessor(symbol) {
+  return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
+}
+function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources) {
   const searchedRefLabel = ref ?? "working tree";
   if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text))) return null;
   const scope = absenceScope(text, repository);
@@ -2459,6 +2549,20 @@ function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository =
       if (search(symbol, cwd, ref)) found.push(symbol);
     } catch {
       return { found: [], checked, inconclusive: true, searchedRef };
+    }
+  }
+  if (found.length === 0) {
+    const accessor = checked.find(generatedAccessor);
+    const sources = accessor === void 0 ? resources(cwd) : [];
+    if (accessor !== void 0 || sources.length > 0) {
+      const why = accessor !== void 0 ? `\`${accessor}\` is shaped like a generated resource accessor` : `the repository tracks resource sources (${sources.slice(0, 3).join(", ")}${sources.length > 3 ? ", ..." : ""})`;
+      return {
+        found,
+        checked,
+        inconclusive: true,
+        searchedRef,
+        reason: `${why}, so the name may be generated at build time; finding it nowhere tracked does not show it is absent`
+      };
     }
   }
   return { found, checked, inconclusive: false, searchedRef };
@@ -3096,7 +3200,7 @@ function matchCarried(recorded, carried) {
 }
 
 // plugins/review-voice/src/store/runs.ts
-var HELD_VERDICTS = ["partly", "refuted", "unverified", "repeat"];
+var HELD_VERDICTS = ["partly", "refuted", "unverified", "repeat", "below-gate"];
 function heldProblem(entry) {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "not an object";
   const e = entry;
@@ -11556,6 +11660,7 @@ function deriveSeverity(category, requested, reach = null) {
 }
 
 // plugins/review-voice/src/scoring/score.ts
+var STALE_CONSUMER = "stale-consumer";
 var FIX_VERDICTS = ["verified", "partial", "refuted", "absent"];
 function isFixVerdict(value) {
   return typeof value === "string" && FIX_VERDICTS.includes(value);
@@ -11713,6 +11818,17 @@ function normaliseCandidate(raw, index) {
   if (fixConfidence !== void 0 && (!Number.isFinite(fixConfidence) || fixConfidence < 0 || fixConfidence > 1)) {
     throw new MalformedCandidate(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
   }
+  if (raw.anchor !== void 0 && raw.anchor !== STALE_CONSUMER) {
+    throw new MalformedCandidate(`${candidateId}: anchor must be "${STALE_CONSUMER}" when supplied`);
+  }
+  const rawCause = raw.caused_by !== void 0 ? raw.caused_by : raw.causedBy;
+  let causedBy = null;
+  if (raw.anchor === STALE_CONSUMER && rawCause !== void 0 && rawCause !== null) {
+    if (typeof rawCause !== "object" || typeof rawCause.path !== "string" || rawCause.path.length === 0 || !Number.isInteger(rawCause.line) || rawCause.line < 1) {
+      throw new MalformedCandidate(`${candidateId}: caused_by must be {"path": string, "line": positive integer}`);
+    }
+    causedBy = { path: rawCause.path, line: rawCause.line };
+  }
   return {
     candidateId,
     path: raw.path,
@@ -11727,7 +11843,9 @@ function normaliseCandidate(raw, index) {
     evidence: Array.isArray(raw.evidence) ? raw.evidence : [],
     suggestedFix: suggestedFix ?? null,
     fixConfidence: fixConfidence ?? null,
-    technicalConfidence: confidence
+    technicalConfidence: confidence,
+    // Spread only when declared, so an ordinary candidate keeps its shape.
+    ...raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {}
   };
 }
 var WORDS = /[^\p{L}\p{N}]+/u;
@@ -11929,6 +12047,12 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
+  const staleConsumer = candidate.anchor === STALE_CONSUMER;
+  if (staleConsumer && verification2?.impactTraced !== true) {
+    const untraced = "a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause (impact_traced: true)";
+    if (rejectedBecause === null) rejectedBecause = untraced;
+    else if (rejectedBecause.startsWith("score ")) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
+  }
   const fix = renderFix(candidate, verification2, thresholds);
   return {
     candidateId: candidate.candidateId,
@@ -11956,7 +12080,8 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     eligible: rejectedBecause === null,
     rejectedBecause,
     duplicateOfPrecedent: alreadySaid?.eventId ?? null,
-    precedentIds: precedents.map((p) => p.eventId)
+    precedentIds: precedents.map((p) => p.eventId),
+    ...staleConsumer ? { anchor: STALE_CONSUMER, causedBy: candidate.causedBy ?? null } : {}
   };
 }
 
@@ -13846,6 +13971,9 @@ function containsCut(before, after) {
   }
   return false;
 }
+function anchorFor(hunks, candidate) {
+  return candidate.anchor === "stale-consumer" ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null) : classifyAnchor(hunks, candidate.path, candidate.line);
+}
 function scoreCommand(argv) {
   let candidates;
   try {
@@ -14038,7 +14166,7 @@ function scoreCommand(argv) {
         breakdown.eligible = false;
         breakdown.rejectedBecause = `already said on this pull request by ${echoed.author}` + (echoed.path === null ? "" : ` at ${echoed.path}:${echoed.line ?? "?"}`);
       }
-      const anchorCheck = anchorHunks === null ? null : classifyAnchor(anchorHunks, candidate.path, candidate.line);
+      const anchorCheck = anchorHunks === null ? null : anchorFor(anchorHunks, candidate);
       if (anchorCheck !== null && !anchorCheck.ok) {
         const earlier = breakdown.rejectedBecause;
         breakdown.eligible = false;
@@ -14062,6 +14190,19 @@ function scoreCommand(argv) {
       });
     }
     applyQuestionCap(results);
+    const belowGate = results.filter(
+      (r) => r.confidenceSource === "verifier" && !r.eligible && Number.isFinite(r.finalScore) && (r.rejectedBecause ?? "").startsWith("score ")
+    ).map(
+      (r) => boundLists({
+        candidateId: r.candidateId,
+        path: r.path,
+        line: r.line,
+        severity: r.severity.severity,
+        claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? "",
+        finalScore: r.finalScore,
+        threshold: thresholds.finalScore
+      })
+    );
     const finals = results.map((r) => r.finalScore).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
     const at = (p) => finals.length === 0 ? null : finals[Math.min(finals.length - 1, Math.floor(p * finals.length))];
     console.log(
@@ -14116,9 +14257,13 @@ function scoreCommand(argv) {
             });
             return {
               ...bounded,
-              fix: scored === void 0 ? { render: "none", text: null } : editorFix(scored.fix)
+              fix: scored === void 0 ? { render: "none", text: null } : editorFix(scored.fix),
+              // The editor names the cause in the prose, since the consumer's
+              // line is what the finding's location shows.
+              ...c.anchor === "stale-consumer" ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {}
             };
-          })
+          }),
+          belowGate
         },
         null,
         2
@@ -14525,7 +14670,10 @@ function explainCommand(argv) {
     }
     console.log("");
     const shown = wanted === void 0 ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
-    if (shown.length === 0) {
+    if (shown.length === 0 && wanted === void 0) {
+      console.log("No findings were recorded.");
+      console.log("");
+    } else if (shown.length === 0) {
       console.log(`No finding ${wanted}. Available: ${detail.findings.map((f) => f.findingId).join(", ") || "none"}.`);
       return 1;
     }
@@ -14737,13 +14885,14 @@ function checkCandidatesCommand(argv) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
     }
-    const anchorFailures = candidates.map((candidate) => ({ candidate, anchor: classifyAnchor(hunks, candidate.path, candidate.line) })).filter(({ anchor }) => !anchor.ok).map(({ candidate, anchor }) => ({
+    const anchorFailures = candidates.map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) })).filter(({ anchor }) => !anchor.ok).map(({ candidate, anchor }) => ({
       candidateId: candidate.candidateId,
       path: candidate.path,
       line: candidate.line,
       kind: anchor.kind,
       reason: reason(anchor),
-      nearest: anchor.nearest
+      nearest: anchor.nearest,
+      ...anchor.causedBy === void 0 ? {} : { causedBy: anchor.causedBy }
     }));
     if (anchorFailures.length > 0) {
       console.log(JSON.stringify({ valid: false, anchorFailures }, null, 2));
