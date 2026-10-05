@@ -28,7 +28,7 @@ const ASSERTS_ABSENCE = [
  * Decided from the claim's grammar rather than from how a place is spelled. A
  * list of name shapes could not work: the same pattern that read "in acme-web"
  * as somewhere else, so a claim about this very repository went unchecked, also
- * left a bare path like `packages/commander/modules/eventing` unprotected, so a
+ * left a bare path like `packages/storefront/modules/catalog` unprotected, so a
  * true scoped claim was deleted. Hyphenation, backticks and capitalisation say
  * nothing about whether a claim is bounded.
  *

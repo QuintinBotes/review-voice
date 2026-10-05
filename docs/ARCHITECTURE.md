@@ -464,7 +464,7 @@ Selection is ordered by relevance before the budget applies: directory-scoped
 files nearest the change, then rules from the touched subtrees, then the
 repository files, then root rules whose own name appears in the changed paths,
 and only then the rest. Ordering alphabetically instead sent
-`add-image-asset` and `build-form` to every review and cut the one document the
+`asset-guide` and `blank-forms` to every review and cut the one document the
 change was actually about. Each document reports the `reason` it was selected.
 
 The trust boundary does not move. These documents are supplied as evidence
