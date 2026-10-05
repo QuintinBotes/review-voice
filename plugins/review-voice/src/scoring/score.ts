@@ -580,12 +580,12 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
 
 const WORDS = /[^\p{L}\p{N}]+/u;
 
-function significantWords(text: string): Set<string> {
+export function significantWords(text: string): Set<string> {
   return new Set(text.toLowerCase().split(WORDS).filter((word) => word.length > 3));
 }
 
 /** Share of `mine` that also appears in `theirs`, 0..1. */
-function overlap(mine: Set<string>, theirs: Set<string>): number {
+export function overlap(mine: Set<string>, theirs: Set<string>): number {
   if (mine.size === 0) return 0;
   return [...mine].filter((word) => theirs.has(word)).length / mine.size;
 }
@@ -605,7 +605,7 @@ const DUPLICATE_LINE_WINDOW = 2;
  * of the candidate or the least bad of several poor matches. Relative rank
  * cannot answer an absolute question.
  */
-const DUPLICATE_OVERLAP = 0.4;
+export const DUPLICATE_OVERLAP = 0.4;
 
 /**
  * The bar for a comment that names no line.

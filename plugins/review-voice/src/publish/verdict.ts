@@ -3,7 +3,7 @@ import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { SEVERITIES, type Severity } from '../contract/limits.ts';
 import type { RunDetail } from '../store/runs.ts';
 import type { ReviewComment, ReviewEvent, ReviewPayload } from '../github/writer.ts';
-import type { CiState } from './ci.ts';
+import type { CiEntry, CiState } from './ci.ts';
 
 export type { ReviewEvent, ReviewPayload };
 
@@ -245,10 +245,14 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
 export type Action = 'post' | 'wait' | 'refuse';
 
 export interface Decision {
-  event: ReviewEvent;
+  /** Null when no event may be sent at all until CI is rerun. */
+  event: ReviewEvent | null;
   action: Action;
   reasons: string[];
-  /** 0 ready, 2 nothing to recheck, 3 head moved, 4 CI still running, 5 CI red on a recheck. */
+  /**
+   * 0 ready, 2 nothing to recheck, 3 head moved, 4 CI still running, 5 CI red
+   * on a recheck, 6 CI needs a rerun.
+   */
   exitCode: number;
   cappedByCi: boolean;
 }
@@ -265,6 +269,8 @@ export function decide(input: {
   mapped: ReviewEvent;
   headMoved: boolean;
   ci: CiState['state'] | null;
+  /** The checks behind a needs-rerun state, named in the reasons. */
+  rerun?: readonly CiEntry[] | undefined;
   recheck: boolean;
   heldBackApproval?: boolean;
   /** The change was assessed high-complexity, so a person, not this tool, approves it. */
@@ -280,6 +286,21 @@ export function decide(input: {
       action: 'refuse',
       reasons: [...reasons, 'the pull request head moved since the review read it; review the new head'],
       exitCode: 3,
+      cappedByCi: false,
+    };
+  }
+
+  // A check CI never finished says nothing about the change, so no event is
+  // fair: an approval would skip it and a comment or request for changes
+  // would be posted on a head nobody has tested. Before every other guard, so
+  // it holds for every mapped event and for a re-check (docs/adr/0013).
+  if (input.ci === 'needs-rerun') {
+    const named = (input.rerun ?? []).map((entry) => `${entry.name} (${entry.detail})`);
+    return {
+      event: null,
+      action: 'wait',
+      reasons: [...reasons, `CI needs a rerun${named.length > 0 ? `: ${named.join(', ')}` : ''}`],
+      exitCode: 6,
       cappedByCi: false,
     };
   }

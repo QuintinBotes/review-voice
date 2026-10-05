@@ -35,6 +35,8 @@ export interface VerdictOptions {
   runId?: string | undefined;
   recheck?: boolean | undefined;
   gateChecks?: readonly GateCheck[] | undefined;
+  /** The time a stuck check is judged against, in epoch milliseconds; default now. */
+  now?: number | undefined;
 }
 
 export interface VerdictOutput {
@@ -181,7 +183,9 @@ export async function computeVerdict(
 
   const actual = await readHead(options.client, options.repository, options.pullNumber);
   const headMoved = actual !== head;
-  const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? []);
+  const ci = headMoved
+    ? null
+    : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now());
 
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === 'high';
@@ -190,6 +194,7 @@ export async function computeVerdict(
     mapped: planned.mapped,
     headMoved,
     ci: ci?.state ?? null,
+    rerun: ci?.rerun,
     recheck: options.recheck === true,
     heldBackApproval: planned.heldBackApproval,
     needsHuman,
@@ -201,7 +206,7 @@ export async function computeVerdict(
   let preview: string | null = null;
   let key: string | null = null;
   let alreadyInline = 0;
-  if (decision.action === 'post') {
+  if (decision.action === 'post' && decision.event !== null) {
     const full = buildPayload({
       head,
       event: decision.event,
@@ -416,7 +421,7 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
     try {
       reread = {
         head: await readHead(options.client, options.repository, options.pullNumber),
-        ci: await readCi(options.client, options.repository, payload.commit_id, options.gateChecks ?? []),
+        ci: await readCi(options.client, options.repository, payload.commit_id, options.gateChecks ?? [], options.now ?? Date.now()),
       };
     } catch (error) {
       return refuse(1, [`could not re-read head and CI before approving: ${error instanceof Error ? error.message : String(error)}`], verdict, key);
@@ -426,7 +431,7 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
     }
     if (reread.ci.state !== 'green') {
       return refuse(
-        reread.ci.state === 'pending' ? 4 : 5,
+        reread.ci.state === 'pending' ? 4 : reread.ci.state === 'needs-rerun' ? 6 : 5,
         [`CI turned ${reread.ci.state} before sending; not approving`],
         { ...verdict, ci: reread.ci },
         key,

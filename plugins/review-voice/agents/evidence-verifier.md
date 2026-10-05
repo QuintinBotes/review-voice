@@ -64,6 +64,11 @@ finding contradicts something the description asserts, or shows that the
 stated intent is wrong, keep it and judge it on its evidence like any other
 candidate.
 
+When `possibleRepeatOf` has `kind: held`, an earlier review held the same spot
+back with the given verdict and reason; that verdict is a prior, not a ruling,
+so reject the candidate only if it makes the same point that was refuted or
+held.
+
 **Stated intent.** Behaviour the author describes as intentional in the
 description is grounds to reject or downgrade a candidate that calls it a
 defect, unless the finding shows that the intent itself is wrong or causes harm

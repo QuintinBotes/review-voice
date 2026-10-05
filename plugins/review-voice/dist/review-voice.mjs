@@ -441,6 +441,16 @@ function decide(input) {
       cappedByCi: false
     };
   }
+  if (input.ci === "needs-rerun") {
+    const named = (input.rerun ?? []).map((entry) => `${entry.name} (${entry.detail})`);
+    return {
+      event: null,
+      action: "wait",
+      reasons: [...reasons, `CI needs a rerun${named.length > 0 ? `: ${named.join(", ")}` : ""}`],
+      exitCode: 6,
+      cappedByCi: false
+    };
+  }
   if (input.needsHuman === true && input.mapped === "APPROVE") {
     if (input.recheck) {
       return {
@@ -12556,17 +12566,26 @@ function assertPayload(payload) {
 // plugins/review-voice/src/publish/ci.ts
 var MAX_ENTRIES = 1e3;
 var IGNORED_CONCLUSIONS = /* @__PURE__ */ new Set(["stale", "skipped", "neutral"]);
-var FAILED_CONCLUSIONS = /* @__PURE__ */ new Set(["failure", "timed_out", "action_required", "startup_failure"]);
-function classifyCheckRun(run) {
+var RERUN_CONCLUSIONS = /* @__PURE__ */ new Set(["timed_out", "action_required", "startup_failure"]);
+var STUCK_AFTER_MINUTES = 60;
+function classifyCheckRun(run, now) {
   const status = (run.status ?? "").toLowerCase();
   if (status !== "completed") {
+    const started = run.started_at === null || run.started_at === void 0 ? NaN : Date.parse(run.started_at);
+    if (now !== void 0 && Number.isFinite(started)) {
+      const minutes = Math.floor((now - started) / 6e4);
+      if (minutes > STUCK_AFTER_MINUTES) {
+        return { result: "rerun", detail: `${status.length > 0 ? status : "unknown"} for ${minutes} min` };
+      }
+    }
     return { result: "pending", detail: status.length > 0 ? status : "unknown" };
   }
   const conclusion = (run.conclusion ?? "").toLowerCase();
   if (conclusion === "success") return { result: "passed", detail: conclusion };
   if (IGNORED_CONCLUSIONS.has(conclusion)) return { result: "ignored", detail: conclusion };
-  if (FAILED_CONCLUSIONS.has(conclusion)) return { result: "failed", detail: conclusion };
-  if (conclusion === "cancelled") return { result: "pending", detail: "cancelled, with no later run" };
+  if (conclusion === "failure") return { result: "failed", detail: conclusion };
+  if (RERUN_CONCLUSIONS.has(conclusion)) return { result: "rerun", detail: conclusion };
+  if (conclusion === "cancelled") return { result: "rerun", detail: "cancelled, with no later run" };
   if (conclusion.length === 0) return { result: "pending", detail: "completed without a conclusion" };
   return { result: "failed", detail: conclusion };
 }
@@ -12606,7 +12625,7 @@ function withoutSuperseded(runs) {
 function summariseCi(checkRuns, statuses, gates = [], reading = {}) {
   const entries = [];
   for (const run of withoutSuperseded(checkRuns)) {
-    const { result, detail } = classifyCheckRun(run);
+    const { result, detail } = classifyCheckRun(run, reading.now);
     const text = `${run.output?.title ?? ""}
 ${run.output?.summary ?? ""}`;
     entries.push({ entry: { name: run.name ?? "", source: "check-run", result, detail }, text });
@@ -12615,7 +12634,7 @@ ${run.output?.summary ?? ""}`;
     const { result, detail } = classifyStatus(status);
     entries.push({ entry: { name: status.context ?? "", source: "status", result, detail }, text: status.description ?? "" });
   }
-  const state = { state: "green", passed: 0, failed: [], pending: [], ignored: [], gates: [] };
+  const state = { state: "green", passed: 0, failed: [], rerun: [], pending: [], ignored: [], gates: [] };
   for (const { entry, text } of entries) {
     if (entry.result === "passed") {
       state.passed += 1;
@@ -12630,6 +12649,8 @@ ${run.output?.summary ?? ""}`;
       state.gates.push({ ...entry, gate: gate.name });
     } else if (entry.result === "failed") {
       state.failed.push(entry);
+    } else if (entry.result === "rerun") {
+      state.rerun.push(entry);
     } else {
       state.pending.push(entry);
     }
@@ -12643,10 +12664,10 @@ ${run.output?.summary ?? ""}`;
   if (reading.combined !== void 0 && reading.combined.totalCount > 0 && reading.combined.state?.toLowerCase() === "pending") {
     state.pending.push({ name: "combined status", source: "status", result: "pending", detail: "pending" });
   }
-  state.state = state.failed.length > 0 ? "red" : state.pending.length > 0 ? "pending" : "green";
+  state.state = state.failed.length > 0 ? "red" : state.rerun.length > 0 ? "needs-rerun" : state.pending.length > 0 ? "pending" : "green";
   return state;
 }
-async function readCi(client, repository, sha, gates = []) {
+async function readCi(client, repository, sha, gates = [], now = Date.now()) {
   const checkRuns = await client.paginateWrapped(
     `/repos/${repository}/commits/${sha}/check-runs?filter=latest&per_page=100`,
     "check_runs",
@@ -12664,7 +12685,8 @@ async function readCi(client, repository, sha, gates = []) {
       state: typeof first.data?.state === "string" ? first.data.state : null,
       totalCount: typeof first.data?.total_count === "number" ? first.data.total_count : statuses.length
     },
-    truncated: checkRuns.length > MAX_ENTRIES || statuses.length > MAX_ENTRIES
+    truncated: checkRuns.length > MAX_ENTRIES || statuses.length > MAX_ENTRIES,
+    now
   });
 }
 
@@ -12757,13 +12779,14 @@ async function computeVerdict(options) {
   const planned = planFindings(options.review, run, (id) => runDetail(options.db, id));
   const actual = await readHead2(options.client, options.repository, options.pullNumber);
   const headMoved = actual !== head;
-  const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? []);
+  const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now());
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === "high";
   const decision = decide({
     mapped: planned.mapped,
     headMoved,
     ci: ci?.state ?? null,
+    rerun: ci?.rerun,
     recheck: options.recheck === true,
     heldBackApproval: planned.heldBackApproval,
     needsHuman
@@ -12773,7 +12796,7 @@ async function computeVerdict(options) {
   let preview = null;
   let key = null;
   let alreadyInline = 0;
-  if (decision.action === "post") {
+  if (decision.action === "post" && decision.event !== null) {
     const full2 = buildPayload({
       head,
       event: decision.event,
@@ -12904,7 +12927,7 @@ async function postReview(options) {
     try {
       reread = {
         head: await readHead2(options.client, options.repository, options.pullNumber),
-        ci: await readCi(options.client, options.repository, payload.commit_id, options.gateChecks ?? [])
+        ci: await readCi(options.client, options.repository, payload.commit_id, options.gateChecks ?? [], options.now ?? Date.now())
       };
     } catch (error) {
       return refuse(1, [`could not re-read head and CI before approving: ${error instanceof Error ? error.message : String(error)}`], verdict, key);
@@ -12914,7 +12937,7 @@ async function postReview(options) {
     }
     if (reread.ci.state !== "green") {
       return refuse(
-        reread.ci.state === "pending" ? 4 : 5,
+        reread.ci.state === "pending" ? 4 : reread.ci.state === "needs-rerun" ? 6 : 5,
         [`CI turned ${reread.ci.state} before sending; not approving`],
         { ...verdict, ci: reread.ci },
         key
@@ -13029,6 +13052,7 @@ check-candidates:
   --diff-file <path>     Require anchors on changed lines
   --thread <path>        Drop candidates the thread already states; flag
                          description overlaps for the verifier
+  --held-from <run-id>   Drop repeats of that run's held findings (--head)
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -14651,6 +14675,40 @@ function verdictList(parsed) {
   }
   return [];
 }
+function carriedHeldFindings(runId, head) {
+  const db = openDatabase();
+  try {
+    const detail = runDetail(db, runId);
+    if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
+    if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head.`);
+    const entries = detail.held.filter((h) => h.verdict === "refuted" || h.verdict === "partly" || h.verdict === "repeat");
+    const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: "" }));
+    const result = carryFindings(inputs, detail.headRef, head, process.cwd());
+    return result.carried.map((c) => {
+      const entry = entries[Number(c.findingId)];
+      return { path: c.path, line: c.line, verdict: entry.verdict, reason: entry.reason, text: entry.text };
+    });
+  } catch (error) {
+    if (error instanceof CarryError) {
+      console.error(`Held findings were not consulted: ${error.message}`);
+      return [];
+    }
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+function matchHeld(candidate, held) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  let found = null;
+  for (const entry of held) {
+    if (entry.path !== candidate.path || Math.abs(entry.line - candidate.line) > 2) continue;
+    const drop = entry.text !== void 0 && overlap(mine, significantWords(entry.text)) >= DUPLICATE_OVERLAP;
+    if (drop) return { entry, drop };
+    found ??= { entry, drop };
+  }
+  return found;
+}
 function checkCandidatesCommand(argv) {
   let raw;
   try {
@@ -14692,26 +14750,40 @@ function checkCandidatesCommand(argv) {
       console.error(`${anchorFailures.length} candidate anchor failure${anchorFailures.length === 1 ? "" : "s"}.`);
       return 1;
     }
-    if (!argv.includes("--thread")) {
+    const heldFrom = flag(argv, "--held-from");
+    if (argv.includes("--held-from") && heldFrom === null) {
+      console.error("--held-from needs a run id.");
+      return 2;
+    }
+    const headSha = flag(argv, "--head");
+    if (heldFrom !== null && headSha === null) {
+      console.error("--held-from needs --head <sha>, the head being reviewed.");
+      return 2;
+    }
+    if (!argv.includes("--thread") && heldFrom === null) {
       console.log(JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length } }, null, 2));
       return 0;
     }
-    const threadFile = flag(argv, "--thread");
-    if (threadFile === null) {
-      console.error("--thread needs a thread JSON path.");
-      return 2;
+    let thread = [];
+    if (argv.includes("--thread")) {
+      const threadFile = flag(argv, "--thread");
+      if (threadFile === null) {
+        console.error("--thread needs a thread JSON path.");
+        return 2;
+      }
+      try {
+        const parsed = JSON.parse(readFileSync5(threadFile, "utf8"));
+        thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
+        if (!Array.isArray(thread)) throw new Error("comments is not a list");
+      } catch (error) {
+        console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
+        return 2;
+      }
     }
-    let thread;
-    try {
-      const parsed = JSON.parse(readFileSync5(threadFile, "utf8"));
-      thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
-      if (!Array.isArray(thread)) throw new Error("comments is not a list");
-    } catch (error) {
-      console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
-      return 2;
-    }
+    const held = heldFrom === null || headSha === null ? [] : carriedHeldFindings(heldFrom, headSha);
     const kept = [];
     const droppedAsRepeat = [];
+    const droppedAsHeld = [];
     candidates.forEach((candidate, index) => {
       const repeat = alreadySaidOnThread(candidate, thread);
       if (repeat !== null) {
@@ -14727,6 +14799,24 @@ function checkCandidatesCommand(argv) {
         return;
       }
       const original = raw[index];
+      const heldMatch = matchHeld(candidate, held);
+      if (heldMatch !== null && heldMatch.drop) {
+        droppedAsHeld.push({
+          candidateId: candidate.candidateId,
+          path: candidate.path,
+          line: candidate.line,
+          heldVerdict: heldMatch.entry.verdict,
+          heldReason: heldMatch.entry.reason,
+          priorRunId: heldFrom
+        });
+        return;
+      }
+      const heldMark = heldMatch === null ? null : {
+        kind: "held",
+        verdict: heldMatch.entry.verdict,
+        reason: heldMatch.entry.reason,
+        excerpt: (heldMatch.entry.text ?? "").slice(0, 200)
+      };
       const possible = possiblySaidOnThread(candidate, thread);
       if (possible !== null) {
         kept.push({
@@ -14742,7 +14832,7 @@ function checkCandidatesCommand(argv) {
       }
       const described = possiblyRepeatsDescription(candidate, thread);
       kept.push(
-        described === null ? original : {
+        described === null ? heldMark === null ? original : { ...original, possibleRepeatOf: heldMark } : {
           ...original,
           possibleRepeatOf: {
             kind: "description",
@@ -14754,7 +14844,7 @@ function checkCandidatesCommand(argv) {
         }
       );
     });
-    console.log(JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat }, null, 2));
+    console.log(JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld }, null, 2));
     return 0;
   } catch (error) {
     if (error instanceof MalformedCandidate) {

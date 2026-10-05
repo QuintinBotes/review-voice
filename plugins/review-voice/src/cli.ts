@@ -75,7 +75,10 @@ import {
   assertUniqueCandidateIds,
   MalformedCandidate,
   DEFAULT_THRESHOLDS,
+  DUPLICATE_OVERLAP,
   EVIDENCE_QUALITIES,
+  overlap,
+  significantWords,
   type Candidate,
   type RawCandidate,
   type ScoreBreakdown,
@@ -157,6 +160,7 @@ check-candidates:
   --diff-file <path>     Require anchors on changed lines
   --thread <path>        Drop candidates the thread already states; flag
                          description overlaps for the verifier
+  --held-from <run-id>   Drop repeats of that run's held findings (--head)
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -1046,7 +1050,8 @@ function repositoryConfig(): ReturnType<typeof loadConfig> | null {
 /**
  * The review event, head guard and CI guard, computed and printed. Reads only;
  * see docs/adr/0010. Exit 3 means the head moved, 4 that CI is still running
- * on an approval, 5 that a re-check found CI red.
+ * on an approval, 5 that a re-check found CI red, 6 that CI needs a rerun
+ * before any event is sent (docs/adr/0013).
  */
 async function verdictCommand(argv: string[]): Promise<number> {
   const target = reviewTarget(argv, 'verdict');
@@ -2267,6 +2272,69 @@ function verdictList(parsed: unknown): Record<string, unknown>[] {
   return [];
 }
 
+/** A held finding of an earlier run, at its line in the head now being reviewed. */
+interface CarriedHeld {
+  path: string;
+  line: number;
+  verdict: string;
+  reason: string;
+  text?: string | undefined;
+}
+
+/**
+ * The earlier run's held findings that are still on unchanged code.
+ *
+ * `unverified` entries are left out because nothing was concluded about them.
+ * One that does not carry sits on code that changed, so its candidate deserves
+ * a fresh look. An unusable run never fails the review: it only means the held
+ * findings were not consulted, which the caller is told on stderr.
+ */
+function carriedHeldFindings(runId: string, head: string): CarriedHeld[] {
+  const db = openDatabase();
+  try {
+    const detail = runDetail(db, runId);
+    if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
+    if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head.`);
+    // Only a conclusion holds a candidate back. `unverified` reached none, and
+    // any later kind of held entry has to opt in here rather than suppress by default.
+    const entries = detail.held.filter((h) => h.verdict === 'refuted' || h.verdict === 'partly' || h.verdict === 'repeat');
+    const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: '' }));
+    const result = carryFindings(inputs, detail.headRef, head, process.cwd());
+    return result.carried.map((c) => {
+      const entry = entries[Number(c.findingId)] as HeldFinding;
+      return { path: c.path, line: c.line, verdict: entry.verdict, reason: entry.reason, text: entry.text };
+    });
+  } catch (error) {
+    if (error instanceof CarryError) {
+      console.error(`Held findings were not consulted: ${error.message}`);
+      return [];
+    }
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * The held finding a candidate may repeat, and whether its wording settles it.
+ *
+ * A held entry on the same line says something was concluded about code that
+ * has not changed since. When the wording matches, the candidate is the same
+ * point again. When it does not, the line may carry a new defect, so the
+ * candidate stays and the verifier decides.
+ */
+function matchHeld(candidate: Candidate, held: CarriedHeld[]): { entry: CarriedHeld; drop: boolean } | null {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  let found: { entry: CarriedHeld; drop: boolean } | null = null;
+  for (const entry of held) {
+    if (entry.path !== candidate.path || Math.abs(entry.line - candidate.line) > 2) continue;
+    const drop = entry.text !== undefined && overlap(mine, significantWords(entry.text)) >= DUPLICATE_OVERLAP;
+    if (drop) return { entry, drop };
+    found ??= { entry, drop };
+  }
+  return found;
+}
+
 /**
  * Checks analyst output against the candidate schema, before anything expensive
  * reads it.
@@ -2329,7 +2397,18 @@ function checkCandidatesCommand(argv: string[]): number {
       return 1;
     }
 
-    if (!argv.includes('--thread')) {
+    const heldFrom = flag(argv, '--held-from');
+    if (argv.includes('--held-from') && heldFrom === null) {
+      console.error('--held-from needs a run id.');
+      return 2;
+    }
+    const headSha = flag(argv, '--head');
+    if (heldFrom !== null && headSha === null) {
+      console.error('--held-from needs --head <sha>, the head being reviewed.');
+      return 2;
+    }
+
+    if (!argv.includes('--thread') && heldFrom === null) {
       console.log(JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length } }, null, 2));
       return 0;
     }
@@ -2338,23 +2417,28 @@ function checkCandidatesCommand(argv: string[]): number {
     // same check still runs inside `score` as the second line of defence. The
     // description is the exception: a match against it is passed on with
     // `possibleRepeatOf` rather than removed.
-    const threadFile = flag(argv, '--thread');
-    if (threadFile === null) {
-      console.error('--thread needs a thread JSON path.');
-      return 2;
+    let thread: ThreadComment[] = [];
+    if (argv.includes('--thread')) {
+      const threadFile = flag(argv, '--thread');
+      if (threadFile === null) {
+        console.error('--thread needs a thread JSON path.');
+        return 2;
+      }
+      try {
+        const parsed = JSON.parse(readFileSync(threadFile, 'utf8')) as { comments?: ThreadComment[] } | ThreadComment[];
+        thread = Array.isArray(parsed) ? parsed : (parsed.comments ?? []);
+        if (!Array.isArray(thread)) throw new Error('comments is not a list');
+      } catch (error) {
+        console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
+        return 2;
+      }
     }
-    let thread: ThreadComment[];
-    try {
-      const parsed = JSON.parse(readFileSync(threadFile, 'utf8')) as { comments?: ThreadComment[] } | ThreadComment[];
-      thread = Array.isArray(parsed) ? parsed : (parsed.comments ?? []);
-      if (!Array.isArray(thread)) throw new Error('comments is not a list');
-    } catch (error) {
-      console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
-      return 2;
-    }
+
+    const held = heldFrom === null || headSha === null ? [] : carriedHeldFindings(heldFrom, headSha);
 
     const kept: unknown[] = [];
     const droppedAsRepeat: unknown[] = [];
+    const droppedAsHeld: unknown[] = [];
     candidates.forEach((candidate, index) => {
       const repeat = alreadySaidOnThread(candidate, thread);
       if (repeat !== null) {
@@ -2370,6 +2454,29 @@ function checkCandidatesCommand(argv: string[]): number {
         return;
       }
       const original = raw[index] as Record<string, unknown>;
+      const heldMatch = matchHeld(candidate, held);
+      if (heldMatch !== null && heldMatch.drop) {
+        droppedAsHeld.push({
+          candidateId: candidate.candidateId,
+          path: candidate.path,
+          line: candidate.line,
+          heldVerdict: heldMatch.entry.verdict,
+          heldReason: heldMatch.entry.reason,
+          priorRunId: heldFrom,
+        });
+        return;
+      }
+      // The thread is the stronger lead, so a held match only fills the gap
+      // when neither thread check found anything.
+      const heldMark =
+        heldMatch === null
+          ? null
+          : {
+              kind: 'held',
+              verdict: heldMatch.entry.verdict,
+              reason: heldMatch.entry.reason,
+              excerpt: (heldMatch.entry.text ?? '').slice(0, 200),
+            };
       // A nearby anchored comment is the stronger lead, so it wins when both
       // match. A description match is never dropped here: wording cannot tell
       // a restatement from a contradiction, so the verifier decides.
@@ -2389,7 +2496,9 @@ function checkCandidatesCommand(argv: string[]): number {
       const described = possiblyRepeatsDescription(candidate, thread);
       kept.push(
         described === null
-          ? original
+          ? heldMark === null
+            ? original
+            : { ...original, possibleRepeatOf: heldMark }
           : {
               ...original,
               possibleRepeatOf: {
@@ -2403,7 +2512,7 @@ function checkCandidatesCommand(argv: string[]): number {
       );
     });
 
-    console.log(JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat }, null, 2));
+    console.log(JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld }, null, 2));
     return 0;
   } catch (error) {
     if (error instanceof MalformedCandidate) {

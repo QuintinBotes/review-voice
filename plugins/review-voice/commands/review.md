@@ -251,6 +251,15 @@ Send only `kept` to step 3. Keep `droppedAsRepeat` for
 step 6 (`record --held`); until then, do not pass them to `--verdicts`. An
 unreadable thread file exits 2: fix the path rather than skipping the check.
 
+**When step 1 reported a prior run, also add `--held-from <prior.runId> --head <sha>`.**
+It carries that run's held findings (`refuted`, `partly`, `repeat`) to the
+current head and drops a candidate that restates one on unchanged code, so a
+finding the verifier already refuted is not raised again. List `droppedAsHeld`
+with the other drops and keep it for step 6. A candidate on the same line with
+different wording is kept with `possibleRepeatOf` of `kind: held` for the
+verifier. If the prior run cannot be read the command says so on stderr and
+keeps every candidate.
+
 If there are no candidates, output exactly `No actionable findings.` and stop.
 
 ## Step 3 - Verify
@@ -459,9 +468,10 @@ stray directory and another project's notes took the reviewed count from 11 to
   feedback on that finding can never become a policy rule.
 
   Pass every candidate that was held back rather than reported with
-  `--held <file>` (an array of `{path, line, verdict, source, reason}`, verdict
+  `--held <file>` (an array of `{path, line, verdict, source, reason, text}`, verdict
   one of `partly`, `refuted`, `unverified`, `repeat`): the `droppedAsRepeat` from
-  step 2 as `repeat`, and any cross-check result of PARTLY or REFUTED. Malformed
+  step 2 as `repeat`, and any cross-check result of PARTLY or REFUTED. Give each
+  entry `text`, the candidate's claim, so the next review can match on wording. Malformed
   entries exit 2. `/review-voice:explain` lists them under "Held back".
 
   Pass the score breakdowns with `--scores <file>` and, if verification ran,

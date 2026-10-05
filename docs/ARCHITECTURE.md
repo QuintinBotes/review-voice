@@ -723,6 +723,13 @@ different post.
 
 The posting call itself is not implemented. The gate has never opened.
 
+`RV verdict` computes the full posting decision as JSON - event, action,
+reasons, CI state, the complexity cap, held findings and the payload preview -
+and never posts. An external loop should call it instead of re-implementing
+these rules. Exit codes: 0 ready, 2 nothing to post or re-check, 3 head moved,
+4 CI still running on an approval, 5 CI red on a re-check, 6 CI needs a rerun
+(an infrastructure failure or a stuck check, ADR 0013; no event is sent).
+
 ## Trust boundary
 
 Everything read from a repository or from GitHub is **untrusted data**: source,

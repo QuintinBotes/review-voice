@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `check-candidates --held-from <run-id> --head <sha>` carries an earlier run's
+  held findings to the new head and drops a candidate that restates one on
+  unchanged code, so a finding the verifier refuted is not raised again. A
+  same-line candidate with different wording is kept and marked
+  `possibleRepeatOf` of `kind: held`.
+- A new CI state, `needs-rerun` (ADR 0013), for checks that failed for
+  infrastructure reasons or are stuck. `verdict` and `post` exit 6 on it with
+  the checks named, and nothing is approved or posted, whatever the event.
+
 ### Fixed
 
 - `diff --pr` also fetches the base commit by sha when the base branch has
@@ -28,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CI checks that timed out, failed to start or need someone's action no longer
+  count as red, and a cancelled run with nothing after it, or a check queued or
+  running for more than an hour, is no longer pending. All of them now need a
+  rerun.
 - A candidate whose wording overlaps the pull request description is no longer
   dropped as a repeat. Wording alone cannot tell a finding that restates the
   description from one that contradicts it, and a verified finding was lost
