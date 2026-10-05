@@ -13,8 +13,8 @@ import {
 
 test('the shapes a claim of absence takes are recognised', () => {
   for (const claim of [
-    'CompanyActionsCell does not exist anywhere in the repo',
-    'useBulkDeleteCompanies is not defined',
+    'ProductActionsCell does not exist anywhere in the repo',
+    'useBulkDeleteProducts is not defined',
     'There is no such component',
     'The constant cannot be found',
   ]) {
@@ -42,11 +42,11 @@ test('an ordinary finding is not mistaken for one', () => {
 
 test('symbols are taken from backticks, filenames and CamelCase', () => {
   const symbols = namedSymbols(
-    'The `useBulkDeleteCompanies` hook and CompanyActionsCell.tsx do not exist, nor does CompanyDataGrid.',
+    'The `useBulkDeleteProducts` hook and ProductActionsCell.tsx do not exist, nor does ProductDataGrid.',
   );
-  assert.ok(symbols.includes('useBulkDeleteCompanies'));
-  assert.ok(symbols.includes('CompanyActionsCell.tsx'));
-  assert.ok(symbols.includes('CompanyDataGrid'));
+  assert.ok(symbols.includes('useBulkDeleteProducts'));
+  assert.ok(symbols.includes('ProductActionsCell.tsx'));
+  assert.ok(symbols.includes('ProductDataGrid'));
 });
 
 test('short or generic words are not searched', () => {
@@ -56,14 +56,14 @@ test('short or generic words are not searched', () => {
 });
 
 test('a claim contradicted by the repository is reported', () => {
-  const present = new Set(['CompanyActionsCell', 'useBulkDeleteCompanies']);
+  const present = new Set(['ProductActionsCell', 'useBulkDeleteProducts']);
   const result = checkAbsenceClaim(
-    '`CompanyActionsCell` and `useBulkDeleteCompanies` do not exist anywhere in the repo',
+    '`ProductActionsCell` and `useBulkDeleteProducts` do not exist anywhere in the repo',
     '/repo',
     'origin/master',
     (symbol) => present.has(symbol),
   );
-  assert.deepEqual(result.found.sort(), ['CompanyActionsCell', 'useBulkDeleteCompanies']);
+  assert.deepEqual(result.found.sort(), ['ProductActionsCell', 'useBulkDeleteProducts']);
   assert.equal(result.inconclusive, false);
   assert.equal(result.searchedRef, 'origin/master');
 });
@@ -145,12 +145,12 @@ test('a claim scoped to a place is never checked against the whole repository', 
   // best ones.
   for (const claim of [
     'The `usePrivilegeCheck` hook is missing from `@scope/ui-kit`',
-    'The `canDelete` prop is not present in the CompanyDataGrid call site',
+    'The `canDelete` prop is not present in the ProductDataGrid call site',
     '`getDefaultMessage` is not declared in this module',
     'There is no such symbol as `useBulkDelete` in the profiles package',
     '`getDefaultMessage` is never exported',
     'The `actions` column id cannot be found in the exported constants',
-    'The handler is missing from the eventing module',
+    'The handler is missing from the catalog module',
   ]) {
     // Either not checked at all, or checked and inconclusive. What must never
     // happen is a rejection: a scoped claim is true precisely when the symbol
@@ -165,7 +165,7 @@ test('a claim scoped to a place is never checked against the whole repository', 
 
 test('a repo-wide claim is still checked', () => {
   for (const claim of [
-    '`CompanyActionsCell` and `useBulkDeleteCompanies` do not exist anywhere in the repo',
+    '`ProductActionsCell` and `useBulkDeleteProducts` do not exist anywhere in the repo',
     '`ZzQuuxThing` does not exist at all',
     '`SomeHelper` appears nowhere in the codebase',
   ]) {
@@ -176,10 +176,10 @@ test('a repo-wide claim is still checked', () => {
 test('repo-wide wording beats the scoping check, since it contains "in the"', () => {
   // "anywhere in the repo" trips the scoped pattern on "in the". Repo-wide has
   // to be decided first or the motivating case goes quiet.
-  const claim = '`CompanyActionsCell` does not exist anywhere in the repository';
+  const claim = '`ProductActionsCell` does not exist anywhere in the repository';
   const result = checkAbsenceClaim(claim, '/repo', 'main', () => true);
   assert.notEqual(result, null);
-  assert.deepEqual(result.found, ['CompanyActionsCell']);
+  assert.deepEqual(result.found, ['ProductActionsCell']);
 });
 
 // Scope is read from the claim's grammar, not from how a place is spelled
@@ -206,8 +206,8 @@ test('an assertion with no place named is a claim about everywhere', () => {
 test('a bare path is as bounded as a backticked one', () => {
   // The difference used to be a pair of backticks, and a true claim about a
   // subtree was deleted for being written the way paths are written.
-  const bare = '`CompanyActionsCell` is missing from packages/commander/modules/eventing.';
-  const quoted = '`CompanyActionsCell` is missing from `packages/commander/modules/eventing`.';
+  const bare = '`ProductActionsCell` is missing from packages/storefront/modules/catalog.';
+  const quoted = '`ProductActionsCell` is missing from `packages/storefront/modules/catalog`.';
   assert.equal(absenceScope(bare, REPO), 'bounded');
   assert.equal(absenceScope(quoted, REPO), 'bounded');
   assert.equal(checkAbsenceClaim(bare, '/repo', 'main', () => true, REPO), null);

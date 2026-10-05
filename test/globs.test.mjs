@@ -50,7 +50,7 @@ test('globs compile to the right shapes', () => {
 
 test('a rule governs a change when any glob matches', () => {
   const globs = frontmatterPaths(POINTER);
-  assert.equal(governsAny(globs, ['packages/commander/src/Grid.tsx']), true);
+  assert.equal(governsAny(globs, ['packages/storefront/src/Grid.tsx']), true);
   assert.equal(governsAny(globs, ['docs/readme.md']), false);
   assert.equal(governsAny([], ['a.tsx']), false);
   assert.equal(governsAny(globs, []), false);
