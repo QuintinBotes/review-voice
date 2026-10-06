@@ -188,7 +188,7 @@ function mergeResolving(repository, resolved) {
   repository.commit('merge main');
 }
 
-test('(e) a merge whose conflict the author resolves by rewriting their own line reads that file whole', () => {
+test('(e) a merge whose conflict the author resolves by rewriting their own line reads that resolution', () => {
   withPullRequest((repository) => {
     baseEditsLine5(repository);
     mergeResolving(repository, lines(40, 'a').replace('a 5\n', 'a 5 resolved by the author\n').replace('a 13\n', 'a 13 by the author\n'));
@@ -196,7 +196,7 @@ test('(e) a merge whose conflict the author resolves by rewriting their own line
     const { scope, interdiffPatch } = plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.deepEqual(scope.files, ['src/a.ts']);
-    assert.match(scope.detail, /read whole after a conflicting replay: src\/a\.ts/);
+    assert.match(scope.detail, /narrowed to the merge resolution after a conflicting replay: src\/a\.ts/);
     assert.match(interdiffPatch, /^\+a 5 resolved by the author$/m);
     // No conflict markers: the conflicted file is read against the new base.
     assert.doesNotMatch(interdiffPatch, /<<<<<<<|>>>>>>>/);

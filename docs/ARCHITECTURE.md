@@ -112,9 +112,14 @@ files. Base changes are
 on both sides and cancel out; what remains is the author's new commits and any
 rewrite of their own code while resolving the merge. A file whose replay
 conflicts has only conflict markers to compare with, so it is read as the pull
-request's own diff of it on the new base: the author's resolution and the rest
-of their change there, with the base's changes still left out. Without the base
-commit, a merge or a rewritten history still falls back.
+request's own diff of it on the new base, cut to the hunks that meet a place
+where the head differs from the marked-up replay: the author's resolution, with
+the base's changes still left out. When some part of the resolution meets no
+own-diff hunk, as when the author took the base's side, the whole own diff of
+that file is read instead, and the scope note says so. A file the reviewed head
+changed that the base now changes the same way drops out of the pull request;
+it is listed as `absorbedByBase` and printed after the findings. Without the
+base commit, a merge or a rewritten history still falls back.
 
 The resulting scope is written beside the patch and printed after the findings
 when it is incremental. In particular, `No actionable findings.` then means no
@@ -548,7 +553,8 @@ verification:
 
 The command reads one finding as JSON on stdin and writes a verdict to stdout,
 read-only. A verifier that cannot run never confirms a finding, and verification
-may only weaken a severity, never raise one.
+may only weaken a severity on its own; a stronger tier it traced is a proposal
+the tie-break settles.
 
 It is opt-in, and a config written before it existed has no block for it at all,
 so `RV context` reports whether yours does.
@@ -561,8 +567,13 @@ Three rules keep it from becoming a worse version of the problem it solves:
 
 - **A confident rejection drops; an unsure one downgrades.** An unsure verifier
   should not be able to delete evidence.
-- **A verifier may weaken a severity, never strengthen one.** Its job is to
-  doubt, not to escalate.
+- **A verifier may weaken a severity, never strengthen one by itself.** Its
+  job is to doubt, not to escalate. A worse impact it traced, with the lines
+  that show it, goes to the tie-break below, and the tier rises only when that
+  upholds it with traced impact at the escalation confidence.
+- **A verdict counts only when its fields agree with its label.** A `kept`
+  that was rejected, a `downgraded` that does not lower the tier, or a
+  proposal with no decisive lines is refused, not applied.
 - **A verifier that could not run has not agreed.** Missing or unparseable
   output leaves the finding exactly as it was, and is reported as `didNotRun`.
 
@@ -576,7 +587,10 @@ by hand. When the evidence-verifier traced a finding's impact at 0.85 or more
 and the second pass downgraded or dropped it, the two disagree about a fact in
 the code, and one `tie-breaker` run on just that point settles it: upheld, the
 evidence-verifier's finding stands; not upheld, the second pass's outcome does.
-See [ADR 0014](adr/0014-verifier-tie-break.md).
+A second pass that proposed a stronger tier is settled by the same run, and the
+second pass's decisive lines go to the tie-breaker as places to look. See
+[ADR 0014](adr/0014-verifier-tie-break.md) and
+[ADR 0019](adr/0019-cross-check-may-raise-through-tie-break.md).
 
 ### Scoring and activation
 

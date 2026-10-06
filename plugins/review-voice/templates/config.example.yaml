@@ -124,7 +124,13 @@ verification:
   #   {"verdict": "confirmed" | "rejected" | "uncertain",
   #    "confidence": 0.0-1.0,
   #    "reason": "...",
-  #    "suggested_severity": "minor"}      # optional, may only weaken
+  #    "suggested_severity": "minor",      # optional; see below
+  #    "decisive_evidence": [               # optional: the lines it turns on
+  #      {"path": "src/a.ts", "line": 12, "why": "..."}]}
+  #
+  # A weaker suggested_severity applies. A stronger one, on a confirmed
+  # verdict with decisive_evidence, is only proposed: the tie-break settles it
+  # (docs/adr/0019). Any other verdict label counts as no verdict.
   #
   # Narration around the JSON is fine; the last JSON object wins.
   enabled: false

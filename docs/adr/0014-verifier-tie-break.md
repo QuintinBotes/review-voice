@@ -74,6 +74,14 @@ claim posts. It costs one extra agent run, and only on disagreement.**
   list, and the editor states its consequence where the changed code produces
   it, leaving out the wider impact the tie-break did not uphold. The tier rule
   above is unchanged.
+- **The other direction goes through the same tie-break**, by
+  [0019](0019-cross-check-may-raise-through-tie-break.md). A second pass that
+  traced a worse impact proposes a stronger tier, listed as an `upgrade`
+  dispute; the tier rises only on an upheld ruling that traced the impact at
+  0.85 or more, recorded with `applied` and `raised`. Every dispute now carries
+  the second pass's `decisiveEvidence` to the tie-breaker, and a second-pass
+  verdict whose fields contradict its label is refused. The last consequence
+  below no longer holds.
 
 ## Consequences
 

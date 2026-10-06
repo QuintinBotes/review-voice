@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { isReviewable } from './classify.ts';
 import { unquoteGitPath } from './hunks.ts';
 
 /** Every reason a pull request must be read in full rather than narrowed. */
@@ -42,6 +43,8 @@ export type ReviewScope =
       /** The head's merge base with the base branch: what the own diff is against. */
       mergeBase: string;
       reason: UnchangedReason;
+      /** See the `interdiff` kind. */
+      absorbedByBase?: string[];
     }
   | {
       kind: 'interdiff';
@@ -51,8 +54,18 @@ export type ReviewScope =
       mergeBase: string;
       files: string[];
       hunks: number;
-      /** Which files were read whole, and why, when some were. */
+      /**
+       * Which conflicted files were narrowed to their resolution, and which
+       * were read whole and why, when there were any.
+       */
       detail?: string;
+      /**
+       * Files the reviewed head changed that the pull request no longer does,
+       * because the new base already makes the same change. Nothing in them is
+       * left to review, so they are not in the patch; they are listed so that
+       * their absence is not silent.
+       */
+      absorbedByBase?: string[];
     }
   | {
       kind: 'full';
@@ -87,7 +100,14 @@ export function parseReviewScope(value: unknown): ReviewScope | null {
   if (scope.kind === 'incremental' && prior && Number.isInteger(scope.commits) && strings(scope.files)) {
     return scope as unknown as ReviewScope;
   }
-  if (scope.kind === 'unchanged' && prior && typeof scope.mergeBase === 'string' && UNCHANGED_REASONS.has(scope.reason as string)) {
+  const absorbed = scope.absorbedByBase === undefined || strings(scope.absorbedByBase);
+  if (
+    scope.kind === 'unchanged' &&
+    prior &&
+    typeof scope.mergeBase === 'string' &&
+    UNCHANGED_REASONS.has(scope.reason as string) &&
+    absorbed
+  ) {
     return scope as unknown as ReviewScope;
   }
   if (
@@ -96,7 +116,8 @@ export function parseReviewScope(value: unknown): ReviewScope | null {
     typeof scope.mergeBase === 'string' &&
     strings(scope.files) &&
     Number.isInteger(scope.hunks) &&
-    (scope.detail === undefined || typeof scope.detail === 'string')
+    (scope.detail === undefined || typeof scope.detail === 'string') &&
+    absorbed
   ) {
     return scope as unknown as ReviewScope;
   }
@@ -209,6 +230,12 @@ export interface PlanIncrementalScopeOptions {
    * asked of git again afterwards, not taken from the answer.
    */
   fetchPriorHead?: ((sha: string) => string | null) | undefined;
+  /**
+   * Whether lock files, generated and vendored output count as reviewed, as
+   * `--include-generated` makes them. Only `absorbedByBase` reads it: a file
+   * no review would have read is not one whose absence needs saying.
+   */
+  includeGenerated?: boolean | undefined;
 }
 
 /** A planned scope, and the patch an `interdiff` scope reviews. */
@@ -578,7 +605,7 @@ function ownDiffScope(
   // kept the merge base needs no replay either: the reviewed head is already
   // the pull request on this base.
   if (priorMergeBase === mergeBase) {
-    return interdiffFrom(options, prior, git, prior.headRef, mergeBase, paths, ancestor ? 'base-sync-only' : 'history-rewritten');
+    return interdiffFrom(options, prior, git, prior.headRef, mergeBase, paths.all, ancestor ? 'base-sync-only' : 'history-rewritten');
   }
 
   if (git.replay === undefined) {
@@ -591,9 +618,10 @@ function ownDiffScope(
     git,
     replayed.tree,
     mergeBase,
-    paths,
+    paths.all,
     !ancestor ? 'history-rewritten' : merged ? 'base-merged' : 'base-sync-only',
     replayed.conflicts,
+    paths.withdrawn,
   );
 }
 
@@ -603,6 +631,8 @@ function ownDiffScope(
  * Those the full read would review now under both names of a rename, those it
  * deletes now, and those the reviewed head changed that the head no longer
  * does, so withdrawing a file's changes still shows as its removed lines.
+ * The last are also returned alone: after a replay, one whose replay matches
+ * the head is a change the new base already makes.
  */
 function pullRequestPaths(
   options: PlanIncrementalScopeOptions,
@@ -610,13 +640,82 @@ function pullRequestPaths(
   git: IncrementalGit,
   priorMergeBase: string,
   mergeBase: string,
-): string[] {
+): { all: string[]; withdrawn: string[] } {
   const reviewed = options.reviewedFiles.flatMap((file) =>
     file.previousPath === undefined ? [file.path] : [file.path, file.previousPath],
   );
   const current = new Set(git.changedPaths(mergeBase, options.head, options.cwd));
   const withdrawn = git.changedPaths(priorMergeBase, prior.headRef, options.cwd).filter((path) => !current.has(path));
-  return [...new Set([...reviewed, ...(options.deletedFiles ?? []), ...withdrawn])];
+  return { all: [...new Set([...reviewed, ...(options.deletedFiles ?? []), ...withdrawn])], withdrawn };
+}
+
+/** A patch cut at its `diff --git` lines, keyed by each file's head-side path. */
+function patchSections(patch: string): Map<string, string> {
+  const sections = new Map<string, string>();
+  const starts = [...patch.matchAll(/^diff --git .*$/gm)];
+  starts.forEach((match, index) => {
+    const end = starts[index + 1]?.index ?? patch.length;
+    const header = match[0].endsWith('\r') ? match[0].slice(0, -1) : match[0];
+    const path = gitHeaderPath(header);
+    if (path !== null) sections.set(path, patch.slice(match.index, end));
+  });
+  return sections;
+}
+
+/** One hunk of a file's section: its text, and the head-side lines it spans. */
+interface SpannedHunk {
+  text: string;
+  first: number;
+  last: number;
+}
+
+/**
+ * A file section's header and hunks. Null when a hunk header cannot be read,
+ * so nothing is narrowed on a guess.
+ */
+function sectionHunks(section: string): { header: string; hunks: SpannedHunk[] } | null {
+  const parts = section.split(/^(?=@@ )/m);
+  const header = parts[0]!.startsWith('@@ ') ? '' : parts.shift()!;
+  const hunks: SpannedHunk[] = [];
+  for (const text of parts) {
+    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text);
+    if (numbers === null) return null;
+    const start = Number(numbers[1]);
+    const count = numbers[2] === undefined ? 1 : Number(numbers[2]);
+    // A hunk that adds no head line sits between `start` and the line after
+    // it; spanning both keeps it touching whatever is on either side.
+    hunks.push({ text, first: start, last: count === 0 ? start + 1 : start + count - 1 });
+  }
+  return { header, hunks };
+}
+
+/**
+ * The pull request's own diff of a conflicted file, cut to the hunks its
+ * merge resolution touched. Null when that cannot be told hunk by hunk.
+ *
+ * `resolution` is the head against the replay, whose file holds conflict
+ * markers: every hunk of it is a place where the head is not simply the
+ * reviewed change replayed - a resolved conflict, or an edit made while
+ * resolving. Both sides are numbered by head lines, so an own-diff hunk is
+ * kept when its lines, context included, meet any of them. Anything the
+ * resolution did that meets no own-diff hunk - a conflict resolved by taking
+ * the base's side, which leaves no own diff there - cannot be shown this way,
+ * so the whole file is read instead, as before.
+ */
+export function narrowToResolution(own: string, resolution: string | undefined): string | null {
+  if (resolution === undefined) return null;
+  const ownHunks = sectionHunks(own);
+  const touched = sectionHunks(resolution);
+  if (ownHunks === null || touched === null || ownHunks.hunks.length === 0 || touched.hunks.length === 0) return null;
+
+  const meets = (left: SpannedHunk, right: SpannedHunk): boolean => left.first <= right.last && right.first <= left.last;
+  const kept = new Set<SpannedHunk>();
+  for (const change of touched.hunks) {
+    const hits = ownHunks.hunks.filter((hunk) => meets(hunk, change));
+    if (hits.length === 0) return null;
+    for (const hit of hits) kept.add(hit);
+  }
+  return ownHunks.header + ownHunks.hunks.filter((hunk) => kept.has(hunk)).map((hunk) => hunk.text).join('');
 }
 
 /**
@@ -624,11 +723,12 @@ function pullRequestPaths(
  * new base - over the pull request's files only.
  *
  * A file whose replay conflicted has only markers to compare with, so it is
- * read whole: the pull request's own diff of it on the new base, which shows
- * the author's resolution and everything else the pull request does there,
- * and none of the base's changes. If that own diff is empty the author
- * resolved by dropping their change, and the marker diff is the only place
- * the withdrawal shows, so that file keeps it.
+ * read as the pull request's own diff of it on the new base, cut to the hunks
+ * the resolution touched; when those cannot be matched up, the whole of that
+ * own diff, which shows the author's resolution and everything else the pull
+ * request does there, and none of the base's changes. If that own diff is
+ * empty the author resolved by dropping their change, and the marker diff is
+ * the only place the withdrawal shows, so that file keeps it.
  */
 function interdiffFrom(
   options: PlanIncrementalScopeOptions,
@@ -639,6 +739,7 @@ function interdiffFrom(
   paths: string[],
   unchangedReason: UnchangedReason,
   conflicts: string[] = [],
+  withdrawn: string[] = [],
 ): PlannedScope {
   const diffText = git.diffText as NonNullable<IncrementalGit['diffText']>;
   // No pathspec means the whole range to git: with no pull request files, the
@@ -649,16 +750,43 @@ function interdiffFrom(
   // without the conflict.
   const wanted = new Set(paths);
   const conflicted = conflicts.filter((path) => wanted.has(path));
-  const whole = read(mergeBase, conflicted);
-  const readWhole = new Set(ownDiffFiles(whole).keys());
-  const rest = paths.filter((path) => !readWhole.has(path));
-  const patch = [read(from, rest), whole].filter((part) => part.length > 0).join('');
-  const detail =
-    readWhole.size === 0 ? {} : { detail: `read whole after a conflicting replay: ${[...readWhole].sort().join(', ')}` };
+  const own = patchSections(read(mergeBase, conflicted));
+  const resolutions = patchSections(read(from, [...own.keys()]));
+  const narrowed: string[] = [];
+  const whole: string[] = [];
+  const resolved = [...own].map(([path, section]) => {
+    const cut = narrowToResolution(section, resolutions.get(path));
+    (cut === null ? whole : narrowed).push(path);
+    return cut ?? section;
+  });
+  const rest = paths.filter((path) => !own.has(path));
+  const outside = read(from, rest);
+  const patch = [outside, ...resolved].filter((part) => part.length > 0).join('');
+
+  const notes = [
+    narrowed.length === 0 ? null : `narrowed to the merge resolution after a conflicting replay: ${narrowed.sort().join(', ')}`,
+    whole.length === 0
+      ? null
+      : `read whole after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(', ')}`,
+  ].filter((note): note is string => note !== null);
+  const detail = notes.length === 0 ? {} : { detail: notes.join('; ') };
+
+  // After a replay, a file the pull request no longer changes whose replay
+  // equals the head is one the new base changed the same way. Without a
+  // replay the reviewed head is read directly, and a withdrawal always shows.
+  // Asked of git without rename detection, so a file renamed since the review
+  // counts as changed under its old path too, never as absorbed.
+  let absorbedList: string[] = [];
+  const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true));
+  if (from !== prior.headRef && candidates.length > 0) {
+    const differs = new Set(git.changedPaths(from, options.head, options.cwd));
+    absorbedList = candidates.filter((path) => !differs.has(path)).sort();
+  }
+  const absorbed = absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList };
 
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
   if (patch.trim().length === 0) {
-    return { scope: { kind: 'unchanged', ...common, reason: unchangedReason }, interdiffPatch: null };
+    return { scope: { kind: 'unchanged', ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null };
   }
 
   const reviewed = new Map<string, string>();
@@ -674,7 +802,7 @@ function interdiffFrom(
   }
 
   return {
-    scope: { kind: 'interdiff', ...common, files: [...files].sort(), hunks, ...detail },
+    scope: { kind: 'interdiff', ...common, files: [...files].sort(), hunks, ...detail, ...absorbed },
     interdiffPatch: patch,
   };
 }
