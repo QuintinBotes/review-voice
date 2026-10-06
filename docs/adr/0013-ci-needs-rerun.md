@@ -72,6 +72,39 @@ GitHub beyond the one 0010 allows.
 
 ## Amendment - 2026-10-06
 
+### Infrastructure failures that conclude `failure`
+
+Most infrastructure failures do not conclude `timed_out` or
+`startup_failure`. A lost agent, a runner that stopped answering, a throttled
+cloud API and a dropped connection to a package registry all finished as
+`failure`, so they were red and capped an approval for reasons that had
+nothing to do with the change.
+
+- **What counts.** A check run concluding `failure` whose output title,
+  summary or text, or whose failure-level annotations, contain one of the
+  rerun signatures, ignoring case, needs a rerun. Warning and notice
+  annotations do not count. Any other conclusion is classified as before.
+- **The signatures.** A short built-in list of whole phrases: `We stopped
+  hearing from agent`, `lost communication with the server`, `The runner has
+  received a shutdown signal`, `has exceeded the maximum execution time`, `No
+  space left on device`, `ECONNRESET`, `other side closed`, `429 Too Many
+  Requests` and `503 Service Unavailable`. Bare status codes are not on it:
+  "503" also appears in "503 tests passed". `ci.rerun_signatures` adds phrases
+  for a repository, and `ci.builtin_rerun_signatures: false` drops the
+  built-in ones.
+- **Reading the text.** The check-run list already carries the output. A
+  failed run whose output matched nothing and that has annotations gets one
+  more GET, `/check-runs/{id}/annotations`, for up to 50 failed runs. A read
+  that fails leaves the run red. Job logs are not read. No write is added.
+- **Precedence.** Unchanged: a real failure beside one is still red, and the
+  reasons name the phrase, for example `CI needs a rerun: deploy (failure,
+  matched "ECONNRESET")`.
+
+A signature is evidence about the runner, not proof. A change that breaks a
+service its own tests call can print `ECONNRESET` too, and a rerun will fail
+the same way; whoever drives the loop should treat a second `needs-rerun` on
+the same signature as red, or drop the phrase for that repository.
+
 ### The stuck threshold is configurable
 
 A fixed 60 minutes held every review on a repository whose integration suite

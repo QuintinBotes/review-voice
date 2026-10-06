@@ -49,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A failed check whose output or failure annotations name an infrastructure
+  cause - a lost runner or agent, the platform's time limit, a full disk,
+  ECONNRESET, "other side closed", a 429 or 503 - needs a rerun instead of
+  counting as red, and the reasons name the matched phrase. The annotations are
+  read by GET; `ci.rerun_signatures` adds phrases and
+  `ci.builtin_rerun_signatures: false` drops the built-in ones. (#21)
 - The stuck-check threshold is configurable: `ci.stuck_after_minutes` replaces
   the 60-minute default, and `ci.stuck_after_overrides` sets it per check-name
   glob, so a long healthy suite no longer reads as needing a rerun. (#22)

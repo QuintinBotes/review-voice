@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { PolicyLayer, ScopeType } from './schema.ts';
-import type { CiRules, GateCheck } from '../publish/ci.ts';
+import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publish/ci.ts';
 import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
 
 export interface LoadedConfig {
@@ -15,7 +15,7 @@ export interface LoadedConfig {
    * reported as gates rather than as red CI. None are built in.
    */
   ciGateChecks: GateCheck[];
-  /** Stuck thresholds from `ci:`; empty means the built-in defaults (docs/adr/0013). */
+  /** Stuck thresholds and rerun signatures from `ci:`; empty means the built-in defaults (docs/adr/0013). */
   ciRules: CiRules;
   allowlist: string[];
   staticEvidence: { enabled: boolean; commands: { name: string; run: string; timeoutSeconds?: number }[] };
@@ -84,8 +84,9 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
 }
 
 /**
- * A stuck threshold that is not a whole number above zero would take every
- * running check as stuck, or none, so it is skipped and the default kept.
+ * Stuck thresholds and rerun signatures. A threshold that is not a whole
+ * number above zero would take every running check as stuck, or none, so it
+ * is skipped and the default kept.
  */
 function readCiRules(block: Record<string, unknown> | null, result: LoadedConfig): void {
   if (block === null) return;
@@ -102,23 +103,37 @@ function readCiRules(block: Record<string, unknown> | null, result: LoadedConfig
   }
 
   const overrides = block['stuck_after_overrides'];
-  if (overrides === undefined) return;
-  if (!Array.isArray(overrides)) {
+  if (overrides !== undefined && !Array.isArray(overrides)) {
     result.warnings.push('ci.stuck_after_overrides must be a list; ignoring it.');
-    return;
-  }
-  const stuckAfter: { name: string; minutes: number }[] = [];
-  for (const entry of overrides) {
-    const override = asRecord(entry);
-    const name = override?.['name'];
-    const value = minutes(override?.['minutes']);
-    if (typeof name !== 'string' || name.length === 0 || value === undefined) {
-      result.warnings.push('a ci.stuck_after_overrides entry needs a name and minutes above zero; skipping it.');
-      continue;
+  } else if (overrides !== undefined) {
+    const stuckAfter: { name: string; minutes: number }[] = [];
+    for (const entry of overrides) {
+      const override = asRecord(entry);
+      const name = override?.['name'];
+      const value = minutes(override?.['minutes']);
+      if (typeof name !== 'string' || name.length === 0 || value === undefined) {
+        result.warnings.push('a ci.stuck_after_overrides entry needs a name and minutes above zero; skipping it.');
+        continue;
+      }
+      stuckAfter.push({ name, minutes: value });
     }
-    stuckAfter.push({ name, minutes: value });
+    if (stuckAfter.length > 0) result.ciRules.stuckAfter = stuckAfter;
   }
-  if (stuckAfter.length > 0) result.ciRules.stuckAfter = stuckAfter;
+
+  // Configured signatures add to the built-in ones; `builtin_rerun_signatures:
+  // false` drops those, for a repository whose real failures print one.
+  const extra = block['rerun_signatures'];
+  if (extra !== undefined && !Array.isArray(extra)) {
+    result.warnings.push('ci.rerun_signatures must be a list; ignoring it.');
+  }
+  const added = Array.isArray(extra) ? asStringArray(extra).filter((signature) => signature.trim().length > 0) : [];
+  const builtin = block['builtin_rerun_signatures'];
+  if (builtin !== undefined && typeof builtin !== 'boolean') {
+    result.warnings.push('ci.builtin_rerun_signatures must be true or false; keeping the built-in signatures.');
+  }
+  if (added.length > 0 || builtin === false) {
+    result.ciRules.rerunSignatures = [...(builtin === false ? [] : BUILTIN_RERUN_SIGNATURES), ...added];
+  }
 }
 
 function contentHash(text: string): string {

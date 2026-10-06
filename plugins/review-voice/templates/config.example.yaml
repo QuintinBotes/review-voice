@@ -64,6 +64,14 @@ ci:
   # Example:
   #   - name: "backend / integration*"
   #     minutes: 150
+  # A failed check whose output or failure annotations contain one of these
+  # phrases (ignoring case) needs a rerun rather than counting as red. They add
+  # to a short built-in list: a lost runner or agent, the platform's time
+  # limit, a full disk, ECONNRESET, "other side closed", "429 Too Many
+  # Requests" and "503 Service Unavailable".
+  rerun_signatures: []
+  # Set to false to use only the phrases listed above.
+  builtin_rerun_signatures: true
 
 static_evidence:
   # Commands are opt-in. Review Voice will suggest what it detects but never
