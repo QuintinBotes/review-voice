@@ -1783,6 +1783,35 @@ var GitHubError = class extends Error {
   }
 };
 var REPO_PATH = /^\/repos\/([^/]+\/[^/]+)(\/|$)/;
+var GRAPHQL_FORBIDDEN = /\b(?:mutation|subscription)\b/i;
+var REVIEW_THREADS_QUERY = `query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          isResolved
+          isOutdated
+          resolvedBy { login }
+          comments(first: 100) { nodes { databaseId path line } }
+        }
+      }
+    }
+  }
+}`;
+var KNOWN_QUERIES = /* @__PURE__ */ new Map([
+  [
+    REVIEW_THREADS_QUERY,
+    {
+      number: (value) => Number.isInteger(value) && value > 0,
+      cursor: (value) => value === null || typeof value === "string"
+    }
+  ]
+]);
+function graphqlUrl(baseUrl) {
+  const root = baseUrl.replace(/\/+$/, "");
+  return /\/api\/v3$/.test(root) ? root.replace(/\/v3$/, "/graphql") : `${root}/graphql`;
+}
 var GitHubClient = class {
   allowlist;
   baseUrl;
@@ -1851,6 +1880,70 @@ var GitHubClient = class {
       const next = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
       return { data: await response.json(), linkNext: next };
     }
+  }
+  /**
+   * One known GraphQL query about one allowlisted repository (docs/adr/0018).
+   *
+   * The only request this client sends that is not a GET. GraphQL has no GET
+   * form on GitHub, and some state - whether a review thread is resolved -
+   * has no REST endpoint at all. So the read-only promise moves from the HTTP
+   * method to the document, and is checked here before anything is sent:
+   *
+   *   - the document must be, character for character, one of
+   *     `KNOWN_QUERIES`, none of which is a mutation or subscription;
+   *   - its variables must be ones that query declares, with values of the
+   *     declared shape; `owner` and `name` may not be passed at all and are
+   *     set from `repository`, which must be allowlisted.
+   *
+   * It never retries. Every caller can do without the answer, and waiting out
+   * a rate limit for an optional read only spends the user's quota.
+   */
+  async graphql(repository, document, variables = {}) {
+    const declared = KNOWN_QUERIES.get(document);
+    if (declared === void 0 || GRAPHQL_FORBIDDEN.test(document)) {
+      throw new ReadOnlyViolation("Review Voice is read-only; refused a GraphQL document that is not one of its known queries.");
+    }
+    for (const [key, value] of Object.entries(variables)) {
+      const check = declared[key];
+      if (check === void 0 || !check(value)) {
+        throw new ReadOnlyViolation(`Refused GraphQL variable ${key}: not one this query declares, or not of its shape.`);
+      }
+    }
+    const [owner, name, ...rest] = repository.split("/");
+    if (owner === void 0 || name === void 0 || rest.length > 0 || owner.length === 0 || name.length === 0) {
+      throw new NotAllowlisted(`${repository} is not an owner/repo name.`);
+    }
+    this.assertAllowed(`/repos/${owner}/${name}`);
+    const response = await this.doFetch(graphqlUrl(this.baseUrl), {
+      method: "POST",
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: this.authorization(),
+        "content-type": "application/json",
+        "user-agent": "review-voice"
+      },
+      body: JSON.stringify({ query: document, variables: { ...variables, owner, name } })
+    });
+    if (!response.ok) {
+      throw new GitHubError(
+        `GitHub GraphQL returned ${response.status}: ${(await response.text()).slice(0, 200)}`,
+        response.status
+      );
+    }
+    const body = await response.json();
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      throw new GitHubError("GitHub GraphQL returned no data.", response.status);
+    }
+    if (Array.isArray(body.errors) && body.errors.length > 0) {
+      throw new GitHubError(
+        `GitHub GraphQL returned errors: ${body.errors.map((e) => e?.message ?? "unknown").join("; ").slice(0, 200)}`,
+        response.status
+      );
+    }
+    if (body.data === void 0 || body.data === null) {
+      throw new GitHubError("GitHub GraphQL returned no data.", response.status);
+    }
+    return body.data;
   }
   /** Follows pagination up to `limit` items, so a huge repository cannot run away. */
   async paginate(path, limit) {
@@ -2655,17 +2748,33 @@ async function readThread(options) {
     `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,
     MAX_COMMENTS
   );
+  const warnings = [];
+  let states = /* @__PURE__ */ new Map();
+  if (inline.length > 0) {
+    try {
+      states = await readThreadStates(client, options.repository, options.pullNumber);
+    } catch (error) {
+      warnings.push(
+        `Could not read which review threads are resolved (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing with the REST data, so no comment is marked resolved.`
+      );
+    }
+  }
   for (const raw of inline) {
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
-    const outdated = (raw.line ?? null) === null && (raw.original_line ?? null) !== null;
+    const state = typeof raw.id === "number" ? states.get(raw.id) : void 0;
+    const outdated = (raw.line ?? null) === null && (raw.original_line ?? null) !== null || state?.outdated === true;
     comments.push({
       path: raw.path ?? null,
       line: raw.line ?? raw.original_line ?? null,
       author: kept.author,
       body: kept.body,
       kind: "review-comment",
-      ...outdated ? { outdated: true } : {}
+      ...outdated ? { outdated: true } : {},
+      ...typeof raw.id === "number" ? { id: raw.id } : {},
+      ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
+      ...state?.resolved === true ? { resolved: true } : {},
+      ...state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {}
     });
   }
   const reviews = await client.paginate(
@@ -2687,9 +2796,908 @@ async function readThread(options) {
     comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: "conversation" });
   }
   return {
+    repository: options.repository,
+    pullNumber: options.pullNumber,
     comments,
-    truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS
+    truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
+    ...warnings.length > 0 ? { warnings } : {}
   };
+}
+async function readThreadStates(client, repository, pullNumber) {
+  const states = /* @__PURE__ */ new Map();
+  let cursor = null;
+  for (let read = 0; read < MAX_COMMENTS; read += 100) {
+    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
+    const threads = data?.repository?.pullRequest?.reviewThreads;
+    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
+    for (const thread of threads.nodes) {
+      const state = {
+        resolved: thread?.isResolved === true,
+        outdated: thread?.isOutdated === true,
+        resolvedBy: typeof thread?.resolvedBy?.login === "string" ? thread.resolvedBy.login : null
+      };
+      for (const comment of thread?.comments?.nodes ?? []) {
+        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
+      }
+    }
+    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
+    cursor = threads.pageInfo.endCursor;
+  }
+  return states;
+}
+
+// plugins/review-voice/src/scoring/severity.ts
+var LEGACY_BY_CATEGORY = {
+  // Reserved for categories that are severe by their nature rather than by
+  // circumstance. The confidence gate already keeps anything under 0.8 out.
+  security: "blocking",
+  trust_boundary: "blocking",
+  authorization: "blocking",
+  authentication: "blocking",
+  data_integrity: "blocking",
+  // Wide blast radius follows from the kind of defect.
+  concurrency: "important",
+  persistence: "important",
+  migration: "important",
+  api_contract: "important",
+  release: "important",
+  // Real defects whose reach depends on circumstances the scorer cannot see.
+  // The quieter tier is the right default for a reviewer whose whole purpose
+  // is not to overstate; the wording carries the consequence either way.
+  correctness: "minor",
+  error_handling: "minor",
+  reliability: "minor",
+  user_visible_behavior: "minor",
+  ci: "minor",
+  packaging: "minor",
+  dependency: "minor",
+  performance: "minor",
+  observability: "nit",
+  test_coverage: "nit",
+  maintainability: "nit",
+  style: "nit"
+};
+var atEveryReach = (severity) => ({
+  local: severity,
+  component: severity,
+  repository: severity
+});
+var BY_CATEGORY_AND_REACH = {
+  // The boundary categories. These four, and no others.
+  security: atEveryReach("blocking"),
+  trust_boundary: atEveryReach("blocking"),
+  authorization: atEveryReach("blocking"),
+  authentication: atEveryReach("blocking"),
+  data_integrity: { local: "important", component: "blocking", repository: "blocking" },
+  api_contract: { local: "important", component: "important", repository: "blocking" },
+  // A deployment that cannot succeed stops every consumer of the release, and
+  // the evidence was a build already red at the head that derived `important`.
+  release: { local: "important", component: "important", repository: "blocking" },
+  // Not yet a counterexample, and the same shape as the three above: a
+  // consequence whose extent the reach search can establish.
+  concurrency: { local: "important", component: "important", repository: "blocking" },
+  persistence: { local: "important", component: "important", repository: "blocking" },
+  migration: { local: "important", component: "important", repository: "blocking" },
+  correctness: { local: "minor", component: "important", repository: "important" },
+  error_handling: { local: "minor", component: "important", repository: "important" },
+  reliability: { local: "minor", component: "important", repository: "important" },
+  user_visible_behavior: { local: "minor", component: "important", repository: "important" },
+  ci: { local: "nit", component: "important", repository: "blocking" },
+  packaging: { local: "minor", component: "important", repository: "blocking" },
+  dependency: { local: "minor", component: "important", repository: "blocking" },
+  performance: { local: "minor", component: "minor", repository: "important" },
+  // Fixed on purpose: see the note above.
+  observability: atEveryReach("nit"),
+  test_coverage: atEveryReach("nit"),
+  maintainability: atEveryReach("nit"),
+  style: atEveryReach("nit")
+};
+var ALIASES = {
+  testing: "test_coverage",
+  tests: "test_coverage",
+  test: "test_coverage",
+  coverage: "test_coverage",
+  documentation: "maintainability",
+  docs: "maintainability",
+  comments: "maintainability",
+  naming: "maintainability",
+  readability: "maintainability",
+  perf: "performance",
+  logging: "observability",
+  formatting: "style",
+  authz: "authorization",
+  authn: "authentication",
+  secrets: "security",
+  vulnerability: "security",
+  race: "concurrency",
+  idempotency: "concurrency",
+  database: "persistence",
+  schema: "migration",
+  api: "api_contract",
+  build: "ci",
+  deployment: "release",
+  dependencies: "dependency",
+  bug: "correctness",
+  logic: "correctness"
+};
+var MAX_TIER_MOVEMENT = 1;
+function boundToRequest(derived, requested, reach, reason2) {
+  const asked = SEVERITIES.indexOf(requested);
+  const got = SEVERITIES.indexOf(derived);
+  if (asked === -1 || got === -1) {
+    return { severity: derived, requested, reach, reason: reason2 };
+  }
+  const distance = got - asked;
+  if (Math.abs(distance) <= MAX_TIER_MOVEMENT) {
+    return { severity: derived, requested, reach, reason: reason2 };
+  }
+  const bounded = SEVERITIES[asked + Math.sign(distance) * MAX_TIER_MOVEMENT];
+  return {
+    severity: bounded,
+    requested,
+    reach,
+    reason: `${reason2}, bounded to ${bounded} because the analyst asked for ${requested} and derivation may move a tier by one`
+  };
+}
+function deriveSeverity(category, requested, reach = null) {
+  if (requested === "question") {
+    return {
+      severity: "question",
+      requested,
+      reach: reach ?? null,
+      reason: "a question is a kind of finding, not a tier, whatever its reach"
+    };
+  }
+  const resolvedReach = reach?.reach;
+  const hasReach = resolvedReach === "local" || resolvedReach === "component" || resolvedReach === "repository";
+  if (category === null || category === void 0 || category === "") {
+    if (!hasReach && requested === "question") {
+      return {
+        severity: "question",
+        requested,
+        reach: reach ?? null,
+        reason: "a question is a kind of finding, not a tier"
+      };
+    }
+    return {
+      severity: "minor",
+      requested,
+      reach: reach ?? null,
+      reason: "no category was supplied, so the middle tier is used rather than a guess"
+    };
+  }
+  const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const alias = ALIASES[normalised];
+  const resolved = LEGACY_BY_CATEGORY[normalised] !== void 0 ? normalised : alias ?? normalised;
+  const legacy = LEGACY_BY_CATEGORY[resolved];
+  if (legacy === void 0) {
+    return {
+      severity: "minor",
+      requested,
+      reach: reach ?? null,
+      reason: `category ${category} has no mapping, so the middle tier is used rather than a guess`
+    };
+  }
+  if (!hasReach) {
+    if (requested === "question") {
+      return {
+        severity: "question",
+        requested,
+        reach: reach ?? null,
+        reason: "a question is a kind of finding, not a tier"
+      };
+    }
+    return {
+      severity: legacy,
+      requested,
+      reach: reach ?? null,
+      reason: resolved === normalised ? `${resolved} carries ${legacy}` : `${category} read as ${resolved}, which carries ${legacy}`
+    };
+  }
+  const tiers = BY_CATEGORY_AND_REACH[resolved];
+  const severity = tiers?.[resolvedReach];
+  if (severity === void 0) {
+    return {
+      severity: legacy,
+      requested,
+      reach: reach ?? null,
+      reason: `${resolved} has no reach mapping, so its legacy ${legacy} tier is used`
+    };
+  }
+  const varies = new Set(Object.values(tiers ?? {})).size > 1;
+  const describe = resolved === normalised ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
+  if (!varies) {
+    return { severity, requested, reach: reach ?? null, reason: describe };
+  }
+  return boundToRequest(
+    severity,
+    requested,
+    reach ?? null,
+    describe
+  );
+}
+
+// plugins/review-voice/src/scoring/confidence.ts
+var QUALITY_CONFIDENCE = { high: 0.9, medium: 0.75, low: 0.5 };
+var ESCALATION_CONFIDENCE = 0.85;
+function verifierConfidence(technicalConfidence, evidenceQuality2) {
+  if (typeof technicalConfidence === "number" && Number.isFinite(technicalConfidence)) return technicalConfidence;
+  if (typeof evidenceQuality2 !== "string" || !Object.hasOwn(QUALITY_CONFIDENCE, evidenceQuality2)) return null;
+  return QUALITY_CONFIDENCE[evidenceQuality2] ?? null;
+}
+
+// plugins/review-voice/src/scoring/score.ts
+var STALE_CONSUMER = "stale-consumer";
+var DOCUMENTATION_PATH = /\.(?:md|rst|adoc)$/i;
+function isDocumentationPath(path) {
+  return DOCUMENTATION_PATH.test(path);
+}
+var FIX_VERDICTS = ["verified", "partial", "refuted", "absent"];
+function isFixVerdict(value) {
+  return typeof value === "string" && FIX_VERDICTS.includes(value);
+}
+var EVIDENCE_QUALITIES = ["high", "medium", "low"];
+var CONTEXT_KINDS = ["blocking", "cosmetic"];
+function blockingContext(entries) {
+  return (entries ?? []).filter((entry) => typeof entry === "string" || entry.kind !== "cosmetic").map((entry) => typeof entry === "string" ? entry : entry.context);
+}
+var TIER_ORDER = ["nit", "minor", "important", "blocking"];
+var BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
+  "security",
+  "trust_boundary",
+  "authorization",
+  "authentication"
+]);
+var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
+function isInterrogativeClaim(claim) {
+  const text = claim.trim();
+  if (text.endsWith("?")) return true;
+  return text.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
+}
+function boundSeverityByEvidence(derived, candidate, verification2) {
+  if (BOUNDARY_CATEGORIES.has(candidate.category)) return derived;
+  if (candidate.severity === "question" || derived.severity === "question") return derived;
+  let result = derived;
+  if ((result.severity === "important" || result.severity === "blocking") && isInterrogativeClaim(candidate.claim)) {
+    result = {
+      ...result,
+      severity: "minor",
+      reason: `${result.reason}, capped at minor because the claim is framed as a question`
+    };
+  }
+  const asked = TIER_ORDER.indexOf(candidate.severity);
+  const got = TIER_ORDER.indexOf(result.severity);
+  if (asked === -1 || got === -1 || got <= asked) return result;
+  const confidence = verifierConfidence(verification2?.technicalConfidence, verification2?.evidenceQuality);
+  if (candidate.impactDisputed === true) {
+    return {
+      ...result,
+      severity: TIER_ORDER[asked],
+      reason: `${result.reason}, held at ${candidate.severity} because the second pass disputed the traced impact and no tie-break upheld it`
+    };
+  }
+  if (verification2?.impactTraced === true && confidence !== null && confidence >= ESCALATION_CONFIDENCE) {
+    return result;
+  }
+  return {
+    ...result,
+    severity: TIER_ORDER[asked],
+    reason: `${result.reason}, held at ${candidate.severity} because escalation needs the verifier to trace impact beyond the changed code`
+  };
+}
+var UNVERIFIABLE_CONFIDENCE = 0.6;
+var UNVERIFIABLE_REJECTION = "the claim states it could not be verified, so it cannot ship whatever it scores";
+var ADMITS_UNVERIFIABLE = [
+  /\b(?:cannot|can not|could not|couldn't|unable to)\s+(?:be\s+)?(?:verif|confirm|check|establish|determin)/i,
+  /\bnot\s+verifiable\b/i,
+  /\bwithout\s+access\s+to\b/i,
+  /\bno\s+way\s+to\s+(?:verify|confirm|check)\b/i
+];
+function admitsUnverifiable(candidate) {
+  return candidate.evidence.some((item) => ADMITS_UNVERIFIABLE.some((pattern) => pattern.test(item)));
+}
+var DEFAULT_THRESHOLDS = {
+  technicalConfidence: 0.8,
+  analystOnlyConfidence: 0.7,
+  finalScore: 0.68
+};
+var MAX_QUESTIONS = 2;
+function applyQuestionCap(breakdowns, limit = MAX_QUESTIONS) {
+  const questions = breakdowns.filter((b) => b.eligible && b.severity.severity === "question");
+  if (questions.length <= limit) return;
+  const ranked = [...questions].sort(
+    (a, b) => b.finalScore - a.finalScore || a.candidateId.localeCompare(b.candidateId)
+  );
+  for (const dropped of ranked.slice(limit)) {
+    dropped.eligible = false;
+    dropped.rejectedBecause = `this review already asks ${limit} better-evidenced question${limit === 1 ? "" : "s"}, and a review that ends in a list of questions has stopped being a review`;
+  }
+}
+function alreadySaidOnThread(candidate, thread) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+  for (const comment of thread) {
+    if (comment.kind === "description") continue;
+    const anchored = comment.path !== null && comment.line !== null;
+    if (anchored) {
+      if (comment.path !== candidate.path) continue;
+      if (Math.abs(comment.line - candidate.line) > DUPLICATE_LINE_WINDOW) continue;
+      if (overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
+      continue;
+    }
+    if (overlap(mine, significantWords(comment.body)) >= UNANCHORED_DUPLICATE_OVERLAP) return comment;
+  }
+  return null;
+}
+var POSSIBLE_REPEAT_OVERLAP = 0.25;
+var POSSIBLE_REPEAT_LINE_WINDOW = 5;
+function possiblySaidOnThread(candidate, thread, preferred = () => false) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+  let best = null;
+  for (const comment of thread) {
+    if (comment.path === null || comment.line === null) continue;
+    if (comment.path !== candidate.path) continue;
+    const distance = Math.abs(comment.line - candidate.line);
+    if (distance > POSSIBLE_REPEAT_LINE_WINDOW) continue;
+    const share = overlap(mine, significantWords(comment.body));
+    if (share < POSSIBLE_REPEAT_OVERLAP) continue;
+    const rank2 = [preferred(comment) ? 1 : 0, share, -distance];
+    if (best === null || compareRank(rank2, best.rank) > 0) best = { comment, rank: rank2 };
+  }
+  return best?.comment ?? null;
+}
+function compareRank(a, b) {
+  for (let i = 0; i < a.length; i += 1) {
+    const d = a[i] - b[i];
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+var SAME_FILE_REPEAT_OVERLAP = 0.4;
+function possiblyRaisedInFile(candidate, thread, accept = () => true) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+  let best = null;
+  for (const comment of thread) {
+    if (comment.path === null || comment.line === null) continue;
+    if (comment.path !== candidate.path || !accept(comment)) continue;
+    const share = overlap(mine, significantWords(comment.body));
+    if (share < SAME_FILE_REPEAT_OVERLAP) continue;
+    const distance = Math.abs(comment.line - candidate.line);
+    if (best === null || share > best.share || share === best.share && distance < best.distance) {
+      best = { comment, share, distance };
+    }
+  }
+  return best?.comment ?? null;
+}
+var DESCRIPTION_EXCERPT_CHARS = 400;
+function possiblyRepeatsDescription(candidate, thread) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+  for (const comment of thread) {
+    if (comment.kind !== "description") continue;
+    if (overlap(mine, significantWords(comment.body)) < UNANCHORED_DUPLICATE_OVERLAP) continue;
+    return { comment, excerpt: overlappingExcerpt(mine, comment.body) };
+  }
+  return null;
+}
+function overlappingExcerpt(mine, body) {
+  const sentences = body.split(/(?<=[.!?])\s+|\n+/u).map((sentence) => sentence.trim()).filter((sentence) => sentence.length > 0);
+  const ranked = sentences.map((text, index) => ({ text, index, shared: [...significantWords(text)].filter((word) => mine.has(word)).length })).filter((sentence) => sentence.shared > 0).sort((a, b) => b.shared - a.shared || a.index - b.index);
+  const [best, ...rest] = ranked;
+  if (best === void 0) return clip(body.trim());
+  const chosen = [best];
+  let length = Math.min(best.text.length, DESCRIPTION_EXCERPT_CHARS);
+  for (const sentence of rest) {
+    if (length + 1 + sentence.text.length > DESCRIPTION_EXCERPT_CHARS) continue;
+    chosen.push(sentence);
+    length += 1 + sentence.text.length;
+  }
+  if (chosen.length === 1) return clip(best.text);
+  return chosen.sort((a, b) => a.index - b.index).map((sentence) => sentence.text).join(" ");
+}
+function clip(text) {
+  return text.length <= DESCRIPTION_EXCERPT_CHARS ? text : `${text.slice(0, DESCRIPTION_EXCERPT_CHARS - 1)}\u2026`;
+}
+var MalformedCandidate = class extends Error {
+};
+var FOREIGN_KEYS = ["title", "location", "suggested_direction", "suggestion", "description", "summary"];
+function normaliseCandidate(raw, index) {
+  const candidateId = raw.candidate_id ?? raw.candidateId ?? `cand_${String(index + 1).padStart(3, "0")}`;
+  const confidence = raw.technical_confidence ?? raw.technicalConfidence;
+  const suggestedFix = raw.suggested_fix !== void 0 ? raw.suggested_fix : raw.suggestedFix;
+  const fixConfidence = raw.fix_confidence !== void 0 ? raw.fix_confidence : raw.fixConfidence;
+  if (typeof raw.path !== "string" || raw.path.length === 0) {
+    const foreign = FOREIGN_KEYS.filter((key) => key in raw);
+    throw new MalformedCandidate(
+      foreign.length > 0 ? `${candidateId}: has ${foreign.join(", ")} but no path. This is not the candidate schema. Expected candidate_id, path, line, category, severity, claim, failure_mode, evidence, technical_confidence, per schemas/candidate.schema.json.` : `${candidateId}: missing path`
+    );
+  }
+  if (!Number.isFinite(raw.line)) {
+    throw new MalformedCandidate(`${candidateId}: missing or non-numeric line`);
+  }
+  if (!Number.isFinite(confidence)) {
+    throw new MalformedCandidate(
+      `${candidateId}: missing or non-numeric technical_confidence - a score cannot be computed, and a candidate that cannot be scored must not be treated as eligible`
+    );
+  }
+  if (suggestedFix !== void 0 && typeof suggestedFix !== "string") {
+    throw new MalformedCandidate(`${candidateId}: suggested_fix must be a string when supplied`);
+  }
+  if (fixConfidence !== void 0 && (!Number.isFinite(fixConfidence) || fixConfidence < 0 || fixConfidence > 1)) {
+    throw new MalformedCandidate(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
+  }
+  if (raw.anchor !== void 0 && raw.anchor !== STALE_CONSUMER) {
+    throw new MalformedCandidate(`${candidateId}: anchor must be "${STALE_CONSUMER}" when supplied`);
+  }
+  const rawCause = raw.caused_by !== void 0 ? raw.caused_by : raw.causedBy;
+  let causedBy = null;
+  if (raw.anchor === STALE_CONSUMER && rawCause !== void 0 && rawCause !== null) {
+    if (typeof rawCause !== "object" || typeof rawCause.path !== "string" || rawCause.path.length === 0 || !Number.isInteger(rawCause.line) || rawCause.line < 1) {
+      throw new MalformedCandidate(`${candidateId}: caused_by must be {"path": string, "line": positive integer}`);
+    }
+    causedBy = { path: rawCause.path, line: rawCause.line };
+  }
+  const ownComment = ownCommentOf(raw.possibleRepeatOf);
+  const impactDisputed = raw.impact_disputed !== void 0 ? raw.impact_disputed : raw.impactDisputed;
+  if (impactDisputed !== void 0 && typeof impactDisputed !== "boolean") {
+    throw new MalformedCandidate(`${candidateId}: impact_disputed must be true or false when supplied`);
+  }
+  return {
+    candidateId,
+    path: raw.path,
+    line: raw.line,
+    // Deliberately not defaulted. `correctness` used to stand in for a missing
+    // category, which gave an unlabelled finding a real tier and recorded
+    // nothing about the substitution.
+    category: raw.category ?? "",
+    severity: raw.severity ?? "minor",
+    claim: raw.claim ?? "",
+    failureMode: raw.failure_mode ?? raw.failureMode ?? "",
+    evidence: Array.isArray(raw.evidence) ? raw.evidence : [],
+    suggestedFix: suggestedFix ?? null,
+    fixConfidence: fixConfidence ?? null,
+    technicalConfidence: confidence,
+    // Spread only when declared, so an ordinary candidate keeps its shape.
+    ...raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {},
+    ...impactDisputed === true ? { impactDisputed: true } : {},
+    ...ownComment === null ? {} : { ownComment }
+  };
+}
+function ownCommentOf(value) {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value;
+  if (v["kind"] !== "own-comment") return null;
+  if (typeof v["author"] !== "string" || v["author"].length === 0) return null;
+  if (typeof v["path"] !== "string" || v["path"].length === 0) return null;
+  if (!Number.isInteger(v["line"]) || v["line"] < 1) return null;
+  return {
+    author: v["author"],
+    path: v["path"],
+    line: v["line"],
+    ...Number.isInteger(v["commentId"]) ? { commentId: v["commentId"] } : {}
+  };
+}
+function partlyAddressedProblem(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return 'must be {"remaining": [...], "addressed": [...]}';
+  }
+  const v = value;
+  for (const key of ["remaining", "addressed"]) {
+    const list = v[key];
+    if (!Array.isArray(list) || list.length === 0 || !list.every((item) => typeof item === "string" && item.trim().length > 0)) {
+      return `${key} must be a non-empty array of non-empty strings`;
+    }
+  }
+  return null;
+}
+function followUpOf(candidate, verification2, thread, owner) {
+  const prior = candidate.ownComment;
+  const partly = verification2?.partlyAddressed;
+  if (prior === void 0 || partly === void 0) return null;
+  if (owner === null || prior.author.toLowerCase() !== owner.toLowerCase()) return null;
+  const onThread = thread.some(
+    (comment) => comment.author === prior.author && comment.path === prior.path && comment.line === prior.line
+  );
+  return onThread ? { ...prior, remaining: partly.remaining, addressed: partly.addressed } : null;
+}
+var WORDS = /[^\p{L}\p{N}]+/u;
+function significantWords(text) {
+  return new Set(text.toLowerCase().split(WORDS).filter((word) => word.length > 3));
+}
+function overlap(mine, theirs) {
+  if (mine.size === 0) return 0;
+  return [...mine].filter((word) => theirs.has(word)).length / mine.size;
+}
+var DUPLICATE_LINE_WINDOW = 2;
+var DUPLICATE_OVERLAP = 0.4;
+var UNANCHORED_DUPLICATE_OVERLAP = 0.7;
+function sameLocation(candidate, precedent) {
+  if (precedent.filePath === null || precedent.lineStart === null) return false;
+  if (precedent.filePath !== candidate.path) return false;
+  return Math.abs(precedent.lineStart - candidate.line) <= DUPLICATE_LINE_WINDOW;
+}
+function duplicatePrecedent(candidate, precedents) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  for (const precedent of precedents) {
+    if (!sameLocation(candidate, precedent)) continue;
+    if (overlap(mine, significantWords(precedent.excerpt)) >= DUPLICATE_OVERLAP) return precedent;
+  }
+  return null;
+}
+function isAnchored(precedent) {
+  return precedent.filePath !== null;
+}
+var NEUTRAL_ALIGNMENT = 0.5;
+function alignmentFrom(precedents) {
+  if (precedents.length === 0) return NEUTRAL_ALIGNMENT;
+  const total = precedents.reduce((sum, p) => sum + p.weight * (p.matchStrength ?? 1), 0);
+  return 1 / (1 + Math.exp(-total));
+}
+function anchoredAlignmentFrom(precedents) {
+  return alignmentFrom(precedents.filter(isAnchored));
+}
+var ANCHORED = [
+  /\bline\s+\d+/i,
+  /:\d+\b/,
+  /`[^`]+`/,
+  /\b[\w$]+\.(?:ts|tsx|js|jsx|cs|py|go|rb|java|kt|rs|sql|ya?ml|json)\b/i,
+  /\b[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*\b/,
+  /\b[A-Z][A-Z0-9]+_[A-Z0-9_]+\b/
+];
+function evidenceQuality(candidate) {
+  const items = candidate.evidence.filter((item) => item.trim().length > 0);
+  if (items.length === 0) return 0;
+  const specific = items.filter((item) => ANCHORED.some((pattern) => pattern.test(item))).length;
+  const breadth = Math.min(1, items.length / 3);
+  const depth = specific / items.length;
+  return 0.4 * breadth + 0.6 * depth;
+}
+var CROSS_FILE_DUPLICATE = 0.8;
+function novelty(candidate, kept, precedents) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  let worst = 1;
+  for (const other of kept) {
+    if (other.path === candidate.path && other.line === candidate.line) return 0;
+    const theirs = significantWords(`${other.claim} ${other.failureMode}`);
+    const shared = overlap(mine, theirs);
+    if (other.path === candidate.path) {
+      worst = Math.min(worst, 1 - shared);
+    } else if (shared >= CROSS_FILE_DUPLICATE) {
+      worst = Math.min(worst, 1 - shared);
+    }
+  }
+  for (const precedent of precedents) {
+    if (precedent.filePath !== candidate.path) continue;
+    if (overlap(mine, significantWords(precedent.excerpt)) < 0.7) continue;
+    worst = Math.min(worst, 0.5);
+  }
+  return worst;
+}
+var MAX_DIRECTION_LENGTH = 120;
+function isBareDirection(direction) {
+  if (direction === null) return false;
+  const text = direction.trim();
+  if (text.length === 0 || text.length > MAX_DIRECTION_LENGTH) return false;
+  if (/[\r\n`]/.test(text)) return false;
+  return !/[.!?]\s+\S/.test(text);
+}
+function editorFix(fix) {
+  if (fix.render === "fix") return { render: "fix", text: fix.suggested };
+  if (fix.render === "direction") return { render: "direction", text: fix.direction };
+  return { render: "none", text: null };
+}
+function assertUniqueCandidateIds(candidates) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const candidate of candidates) {
+    if (seen.has(candidate.candidateId)) {
+      throw new MalformedCandidate(
+        `${candidate.candidateId}: appears more than once. Candidate ids must be unique, because verification is matched to candidates by id.`
+      );
+    }
+    seen.add(candidate.candidateId);
+  }
+}
+function renderFix(candidate, verification2, thresholds) {
+  const suggested = candidate.suggestedFix ?? null;
+  const rawVerdict = verification2?.fixVerdict;
+  const verdict = isFixVerdict(rawVerdict) ? rawVerdict : null;
+  const rawConfidence = verification2?.fixConfidence;
+  const confidence = typeof rawConfidence === "number" && Number.isFinite(rawConfidence) && rawConfidence >= 0 && rawConfidence <= 1 ? rawConfidence : null;
+  const rawDirection = verification2?.fixDirection;
+  const direction = typeof rawDirection === "string" ? rawDirection : null;
+  const verifierReason = verification2?.fixReason?.trim().length ? verification2.fixReason : null;
+  const hasSuggested = suggested !== null && suggested.trim().length > 0;
+  const analystConfidence = candidate.fixConfidence ?? null;
+  const hasDirection = direction !== null && direction.trim().length > 0;
+  if (hasSuggested && verdict === "verified" && confidence !== null && confidence >= thresholds.technicalConfidence) {
+    return {
+      suggested,
+      analystConfidence,
+      verdict,
+      confidence,
+      direction,
+      render: "fix",
+      reason: verifierReason ?? `verified fix confidence ${confidence.toFixed(2)} meets the ${thresholds.technicalConfidence} threshold`
+    };
+  }
+  if (verdict === "partial" && hasSuggested && hasDirection && isBareDirection(direction)) {
+    return {
+      suggested,
+      analystConfidence,
+      verdict,
+      confidence,
+      direction,
+      render: "direction",
+      reason: verifierReason ?? "the verifier could confirm only the repair direction"
+    };
+  }
+  let reason2 = "the suggested fix was not verified";
+  if (!hasSuggested) {
+    reason2 = "no fix was proposed";
+  } else if (verdict === "verified" && confidence !== null) {
+    reason2 = `verified fix confidence ${confidence.toFixed(2)} is below the ${thresholds.technicalConfidence} threshold`;
+  } else if (verdict === "partial" && hasDirection) {
+    reason2 = "the direction is not one short sentence without code, so it is withheld";
+  } else if (verdict === "partial") {
+    reason2 = "the verifier gave a partial fix verdict without a direction";
+  } else if (verdict === "refuted") {
+    reason2 = "the verifier refuted the suggested fix";
+  } else if (verdict === "absent") {
+    reason2 = "the verifier reports no suggested fix";
+  }
+  return {
+    suggested,
+    analystConfidence,
+    verdict,
+    confidence,
+    direction,
+    render: "none",
+    reason: verifierReason ?? reason2
+  };
+}
+function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2) {
+  const analystConfidence = candidate.technicalConfidence;
+  const verifiedConfidence = verification2 === void 0 ? null : verifierConfidence(verification2.technicalConfidence, verification2.evidenceQuality);
+  let confidence = verifiedConfidence ?? analystConfidence;
+  let confidenceSource = verifiedConfidence === null ? "analyst" : "verifier";
+  const missingContext = blockingContext(verification2?.requiredContextMissing).length > 0;
+  const admitted = admitsUnverifiable(candidate);
+  const verifierEngaged = verification2?.technicalConfidence !== void 0;
+  if ((missingContext || admitted && !verifierEngaged) && confidence > UNVERIFIABLE_CONFIDENCE) {
+    confidence = UNVERIFIABLE_CONFIDENCE;
+    confidenceSource = "unverifiable-cap";
+  }
+  const confidenceFloor = confidenceSource === "verifier" ? thresholds.technicalConfidence : thresholds.analystOnlyConfidence;
+  const alreadySaid = duplicatePrecedent(candidate, precedents);
+  const forAlignment = alreadySaid === null ? precedents : precedents.filter((p) => !sameLocation(candidate, p));
+  const ownerPrecedents = forAlignment.filter((p) => p.role === "owner");
+  const repositoryPrecedents = forAlignment.filter((p) => p.role !== "owner");
+  const ownerAlignment = alignmentFrom(ownerPrecedents);
+  const repositoryAlignment = alignmentFrom(repositoryPrecedents);
+  const anchoredOwnerAlignment = anchoredAlignmentFrom(ownerPrecedents);
+  const anchoredRepositoryAlignment = anchoredAlignmentFrom(repositoryPrecedents);
+  const quality = evidenceQuality(candidate);
+  const novel = alreadySaid === null ? novelty(candidate, kept, precedents) : 0;
+  const score = (owner, repository) => 0.35 * confidence + 0.25 * owner + 0.15 * repository + 0.15 * quality + 0.1 * novel;
+  const finalScore = score(ownerAlignment, repositoryAlignment);
+  const anchoredFinalScore = score(anchoredOwnerAlignment, anchoredRepositoryAlignment);
+  const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification2?.reach);
+  const isQuestion = derivedSeverity.severity === "question";
+  let rejectedBecause = null;
+  if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
+    rejectedBecause = "score could not be computed from this candidate";
+  } else if (alreadySaid !== null) {
+    rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
+  } else if (isQuestion && verification2?.premisesVerified === false) {
+    rejectedBecause = "the verifier could not verify the premises this question rests on (premises_verified: false)";
+  } else if (isQuestion) {
+    if (ownerAlignment < NEUTRAL_ALIGNMENT) {
+      rejectedBecause = `owner precedent is against asking this (${ownerAlignment.toFixed(2)} alignment), and a question the owner has dismissed the like of before is noise the second time`;
+    }
+  } else if (confidenceSource === "unverifiable-cap") {
+    rejectedBecause = UNVERIFIABLE_REJECTION;
+  } else if (verification2?.verified === false) {
+    rejectedBecause = "the verifier did not verify this claim (verified: false)";
+  } else if (confidence < confidenceFloor) {
+    rejectedBecause = `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` + (confidenceSource === "analyst" ? ". No verification was supplied, so this is the analyst's opinion of its own output." : "");
+  } else if (finalScore < thresholds.finalScore) {
+    rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
+  }
+  const severity = boundSeverityByEvidence(derivedSeverity, candidate, verification2);
+  const staleConsumer = candidate.anchor === STALE_CONSUMER;
+  const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit" && confidenceSource === "verifier";
+  if (staleConsumer && verification2?.impactTraced !== true && !untracedDocumentNit) {
+    const untraced = "a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause (impact_traced: true)" + (isDocumentationPath(candidate.path) ? `; a documentation consumer may go untraced only at nit and on the verifier's confidence, and this one is ${severity.severity}` + (confidenceSource === "analyst" ? " on the analyst's confidence alone" : confidenceSource === "unverifiable-cap" ? " with context the verifier could not obtain" : "") : "");
+    if (rejectedBecause === null) rejectedBecause = untraced;
+    else if (rejectedBecause.startsWith("score ")) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
+    else rejectedBecause = `${rejectedBecause}. Also: ${untraced}`;
+  }
+  const fix = renderFix(candidate, verification2, thresholds);
+  return {
+    candidateId: candidate.candidateId,
+    path: candidate.path,
+    line: candidate.line,
+    technicalConfidence: confidence,
+    severity,
+    analystConfidence,
+    verifiedConfidence,
+    confidenceSource,
+    ownerAlignment,
+    repositoryAlignment,
+    evidenceQuality: quality,
+    novelty: novel,
+    finalScore,
+    fix,
+    anchored: {
+      ownerAlignment: anchoredOwnerAlignment,
+      repositoryAlignment: anchoredRepositoryAlignment,
+      finalScore: anchoredFinalScore,
+      // Only the score gate can flip here: every other rejection reason is
+      // independent of alignment.
+      wouldChangeEligibility: rejectedBecause === null ? anchoredFinalScore < thresholds.finalScore : rejectedBecause.startsWith("score ") && anchoredFinalScore >= thresholds.finalScore
+    },
+    eligible: rejectedBecause === null,
+    rejectedBecause,
+    duplicateOfPrecedent: alreadySaid?.eventId ?? null,
+    precedentIds: precedents.map((p) => p.eventId),
+    ...staleConsumer ? { anchor: STALE_CONSUMER, causedBy: candidate.causedBy ?? null } : {}
+  };
+}
+
+// plugins/review-voice/src/store/follow-ups.ts
+var FollowUpRulingError = class extends Error {
+};
+function runsForPull(db, repository, pullNumber) {
+  const rows = db.prepare(
+    `SELECT review_run_id, output_json, created_at
+       FROM review_runs
+       WHERE LOWER(repository) = LOWER(?) AND pull_number = ?
+       ORDER BY created_at ASC, rowid ASC`
+  ).all(repository, pullNumber);
+  return rows.map((row) => {
+    let parsed = {};
+    try {
+      parsed = JSON.parse(row.output_json);
+    } catch {
+    }
+    return {
+      runId: row.review_run_id,
+      createdAt: row.created_at,
+      findings: Array.isArray(parsed.findings) ? parsed.findings : [],
+      followUps: Array.isArray(parsed.followUps) ? parsed.followUps : []
+    };
+  });
+}
+function followUpHistory(db, repository, pullNumber) {
+  const history = /* @__PURE__ */ new Map();
+  for (const run of runsForPull(db, repository, pullNumber)) {
+    for (const finding of run.findings) {
+      const partly = finding.partlyAddressed;
+      if (partly === void 0) continue;
+      const id = `${run.runId}:${finding.findingId}`;
+      history.set(id, {
+        followUp: {
+          id,
+          runId: run.runId,
+          findingId: finding.findingId,
+          path: finding.path,
+          line: finding.line,
+          prior: partly.prior,
+          remaining: partly.remaining,
+          text: finding.text,
+          recordedAt: run.createdAt
+        },
+        state: null,
+        stateRunId: null
+      });
+    }
+    for (const state of run.followUps) {
+      const entry = history.get(state.id);
+      if (entry === void 0 || entry.state?.status === "resolved") continue;
+      entry.state = state;
+      entry.stateRunId = run.runId;
+      if (state.status === "open" && Array.isArray(state.remaining) && state.remaining.length > 0) {
+        entry.followUp = { ...entry.followUp, remaining: state.remaining };
+      }
+    }
+  }
+  return history;
+}
+function openFollowUps(db, repository, pullNumber) {
+  return [...followUpHistory(db, repository, pullNumber).values()].filter((entry) => entry.state?.status !== "resolved").map((entry) => entry.followUp);
+}
+function parseFollowUpRulings(parsed) {
+  const list = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null ? parsed["follow_ups"] ?? parsed["followUps"] : void 0;
+  if (!Array.isArray(list)) throw new FollowUpRulingError("expected an array, or an object with follow_ups");
+  const strings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string" && item.trim().length > 0);
+  return list.map((entry, index) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new FollowUpRulingError(`entry ${index}: not an object`);
+    }
+    const e = entry;
+    if (typeof e["id"] !== "string" || e["id"].length === 0) throw new FollowUpRulingError(`entry ${index}: id must be a non-empty string`);
+    if (!strings(e["remaining"]) || !strings(e["addressed"])) {
+      throw new FollowUpRulingError(`entry ${index}: remaining and addressed must be lists of points`);
+    }
+    if (e["remaining"].length === 0 && e["addressed"].length === 0) {
+      throw new FollowUpRulingError(`entry ${index}: remaining and addressed cannot both be empty`);
+    }
+    if (e["reason"] !== void 0 && typeof e["reason"] !== "string") {
+      throw new FollowUpRulingError(`entry ${index}: reason must be a string when present`);
+    }
+    return {
+      id: e["id"],
+      remaining: e["remaining"],
+      addressed: e["addressed"],
+      ...typeof e["reason"] === "string" ? { reason: e["reason"] } : {}
+    };
+  });
+}
+function postedComment(followUp, thread) {
+  const author = followUp.prior.author.toLowerCase();
+  const finding = parseFinding(followUp.text, 1);
+  if (finding.severity === null || finding.prose.length === 0) return [];
+  const opening = `**${finding.severity}** - `;
+  const prose = significantWords(finding.prose);
+  const points = significantWords(followUp.remaining.join(" "));
+  const recordedAt = Date.parse(followUp.recordedAt);
+  if (Number.isNaN(recordedAt)) return [];
+  return thread.filter((comment) => {
+    if (comment.kind !== void 0 && comment.kind !== "review-comment") return false;
+    if (comment.path !== followUp.path || comment.author.toLowerCase() !== author) return false;
+    if (!comment.body.startsWith(opening)) return false;
+    if (followUp.prior.commentId !== void 0 && comment.id === followUp.prior.commentId) return false;
+    const written = typeof comment.createdAt === "string" ? Date.parse(comment.createdAt) : Number.NaN;
+    if (Number.isNaN(written) || written <= recordedAt) return false;
+    const words = significantWords(comment.body);
+    return overlap(prose, words) >= DUPLICATE_OVERLAP && overlap(points, words) >= DUPLICATE_OVERLAP;
+  });
+}
+function settleFollowUps(open, evidence) {
+  const rulings = new Map(evidence.rulings.map((ruling) => [ruling.id, ruling]));
+  const states = open.map((followUp) => {
+    const base = { id: followUp.id, runId: followUp.runId, findingId: followUp.findingId, path: followUp.path, line: followUp.line };
+    const posted = evidence.thread === null ? [] : postedComment(followUp, evidence.thread);
+    const owner = followUp.prior.author.toLowerCase();
+    if (posted.some((comment) => comment.resolved === true && comment.resolvedBy?.toLowerCase() === owner)) {
+      return {
+        ...base,
+        status: "resolved",
+        resolvedBy: "thread",
+        remaining: followUp.remaining,
+        reason: "the owner resolved its comment thread on the pull request"
+      };
+    }
+    const ruling = rulings.get(followUp.id);
+    if (ruling !== void 0 && ruling.remaining.length === 0) {
+      return {
+        ...base,
+        status: "resolved",
+        resolvedBy: "verifier",
+        remaining: followUp.remaining,
+        reason: `the verifier found every remaining point addressed${ruling.reason === void 0 ? "" : `: ${ruling.reason}`}`
+      };
+    }
+    if (ruling !== void 0) {
+      return {
+        ...base,
+        status: "open",
+        remaining: ruling.remaining,
+        reason: `the verifier found ${ruling.remaining.length} point${ruling.remaining.length === 1 ? "" : "s"} still open`
+      };
+    }
+    const outOfScope = evidence.scopeFiles !== null && !evidence.scopeFiles.includes(followUp.path);
+    return {
+      ...base,
+      status: "open",
+      remaining: followUp.remaining,
+      reason: outOfScope ? "its file was not in this review, which is no sign it was addressed" : "nothing in this review settled it"
+    };
+  });
+  const known = new Set(open.map((followUp) => followUp.id));
+  return { states, unmatched: evidence.rulings.map((ruling) => ruling.id).filter((id) => !known.has(id)) };
 }
 
 // plugins/review-voice/src/scoring/existence.ts
@@ -3686,7 +4694,12 @@ function partlyAddressedOf(value) {
   if (typeof v["author"] !== "string" || typeof v["path"] !== "string" || !Number.isInteger(v["line"])) return void 0;
   return {
     status: "partly-addressed",
-    prior: { author: v["author"], path: v["path"], line: v["line"] },
+    prior: {
+      author: v["author"],
+      path: v["path"],
+      line: v["line"],
+      ...Number.isInteger(v["commentId"]) ? { commentId: v["commentId"] } : {}
+    },
     remaining,
     addressed
   };
@@ -3799,7 +4812,8 @@ function recordRun(db, input) {
       verdicts: input.verdicts ?? [],
       tieBreaks: input.tieBreaks ?? [],
       held: input.held ?? [],
-      ...input.carry === void 0 ? {} : { carry: input.carry }
+      ...input.carry === void 0 ? {} : { carry: input.carry },
+      ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps }
     }),
     (/* @__PURE__ */ new Date()).toISOString(),
     JSON.stringify(input.stages ?? []),
@@ -3848,6 +4862,7 @@ function runDetail(db, reviewRunId) {
     tieBreaks: Array.isArray(parsed.tieBreaks) ? parsed.tieBreaks : [],
     held: Array.isArray(parsed.held) ? parsed.held : [],
     carry: parseCarryMarker(parsed.carry),
+    followUps: Array.isArray(parsed.followUps) ? parsed.followUps : [],
     // Older rows predate the column, so absence is normal rather than an error.
     stages: (() => {
       const raw = row["stages_json"];
@@ -11149,15 +12164,6 @@ ${result.stderr}`);
   return { enabled: true, verifier: name, verdicts, didNotRun: [...new Set(didNotRun)] };
 }
 
-// plugins/review-voice/src/scoring/confidence.ts
-var QUALITY_CONFIDENCE = { high: 0.9, medium: 0.75, low: 0.5 };
-var ESCALATION_CONFIDENCE = 0.85;
-function verifierConfidence(technicalConfidence, evidenceQuality2) {
-  if (typeof technicalConfidence === "number" && Number.isFinite(technicalConfidence)) return technicalConfidence;
-  if (typeof evidenceQuality2 !== "string" || !Object.hasOwn(QUALITY_CONFIDENCE, evidenceQuality2)) return null;
-  return QUALITY_CONFIDENCE[evidenceQuality2] ?? null;
-}
-
 // plugins/review-voice/src/verify/reconcile.ts
 var DISPUTE_CONFIDENCE = ESCALATION_CONFIDENCE;
 var ReconcileInputError = class extends Error {
@@ -12595,712 +13601,6 @@ function retrievePrecedents(db, query) {
   return [...negative, ...positive];
 }
 
-// plugins/review-voice/src/scoring/severity.ts
-var LEGACY_BY_CATEGORY = {
-  // Reserved for categories that are severe by their nature rather than by
-  // circumstance. The confidence gate already keeps anything under 0.8 out.
-  security: "blocking",
-  trust_boundary: "blocking",
-  authorization: "blocking",
-  authentication: "blocking",
-  data_integrity: "blocking",
-  // Wide blast radius follows from the kind of defect.
-  concurrency: "important",
-  persistence: "important",
-  migration: "important",
-  api_contract: "important",
-  release: "important",
-  // Real defects whose reach depends on circumstances the scorer cannot see.
-  // The quieter tier is the right default for a reviewer whose whole purpose
-  // is not to overstate; the wording carries the consequence either way.
-  correctness: "minor",
-  error_handling: "minor",
-  reliability: "minor",
-  user_visible_behavior: "minor",
-  ci: "minor",
-  packaging: "minor",
-  dependency: "minor",
-  performance: "minor",
-  observability: "nit",
-  test_coverage: "nit",
-  maintainability: "nit",
-  style: "nit"
-};
-var atEveryReach = (severity) => ({
-  local: severity,
-  component: severity,
-  repository: severity
-});
-var BY_CATEGORY_AND_REACH = {
-  // The boundary categories. These four, and no others.
-  security: atEveryReach("blocking"),
-  trust_boundary: atEveryReach("blocking"),
-  authorization: atEveryReach("blocking"),
-  authentication: atEveryReach("blocking"),
-  data_integrity: { local: "important", component: "blocking", repository: "blocking" },
-  api_contract: { local: "important", component: "important", repository: "blocking" },
-  // A deployment that cannot succeed stops every consumer of the release, and
-  // the evidence was a build already red at the head that derived `important`.
-  release: { local: "important", component: "important", repository: "blocking" },
-  // Not yet a counterexample, and the same shape as the three above: a
-  // consequence whose extent the reach search can establish.
-  concurrency: { local: "important", component: "important", repository: "blocking" },
-  persistence: { local: "important", component: "important", repository: "blocking" },
-  migration: { local: "important", component: "important", repository: "blocking" },
-  correctness: { local: "minor", component: "important", repository: "important" },
-  error_handling: { local: "minor", component: "important", repository: "important" },
-  reliability: { local: "minor", component: "important", repository: "important" },
-  user_visible_behavior: { local: "minor", component: "important", repository: "important" },
-  ci: { local: "nit", component: "important", repository: "blocking" },
-  packaging: { local: "minor", component: "important", repository: "blocking" },
-  dependency: { local: "minor", component: "important", repository: "blocking" },
-  performance: { local: "minor", component: "minor", repository: "important" },
-  // Fixed on purpose: see the note above.
-  observability: atEveryReach("nit"),
-  test_coverage: atEveryReach("nit"),
-  maintainability: atEveryReach("nit"),
-  style: atEveryReach("nit")
-};
-var ALIASES = {
-  testing: "test_coverage",
-  tests: "test_coverage",
-  test: "test_coverage",
-  coverage: "test_coverage",
-  documentation: "maintainability",
-  docs: "maintainability",
-  comments: "maintainability",
-  naming: "maintainability",
-  readability: "maintainability",
-  perf: "performance",
-  logging: "observability",
-  formatting: "style",
-  authz: "authorization",
-  authn: "authentication",
-  secrets: "security",
-  vulnerability: "security",
-  race: "concurrency",
-  idempotency: "concurrency",
-  database: "persistence",
-  schema: "migration",
-  api: "api_contract",
-  build: "ci",
-  deployment: "release",
-  dependencies: "dependency",
-  bug: "correctness",
-  logic: "correctness"
-};
-var MAX_TIER_MOVEMENT = 1;
-function boundToRequest(derived, requested, reach, reason2) {
-  const asked = SEVERITIES.indexOf(requested);
-  const got = SEVERITIES.indexOf(derived);
-  if (asked === -1 || got === -1) {
-    return { severity: derived, requested, reach, reason: reason2 };
-  }
-  const distance = got - asked;
-  if (Math.abs(distance) <= MAX_TIER_MOVEMENT) {
-    return { severity: derived, requested, reach, reason: reason2 };
-  }
-  const bounded = SEVERITIES[asked + Math.sign(distance) * MAX_TIER_MOVEMENT];
-  return {
-    severity: bounded,
-    requested,
-    reach,
-    reason: `${reason2}, bounded to ${bounded} because the analyst asked for ${requested} and derivation may move a tier by one`
-  };
-}
-function deriveSeverity(category, requested, reach = null) {
-  if (requested === "question") {
-    return {
-      severity: "question",
-      requested,
-      reach: reach ?? null,
-      reason: "a question is a kind of finding, not a tier, whatever its reach"
-    };
-  }
-  const resolvedReach = reach?.reach;
-  const hasReach = resolvedReach === "local" || resolvedReach === "component" || resolvedReach === "repository";
-  if (category === null || category === void 0 || category === "") {
-    if (!hasReach && requested === "question") {
-      return {
-        severity: "question",
-        requested,
-        reach: reach ?? null,
-        reason: "a question is a kind of finding, not a tier"
-      };
-    }
-    return {
-      severity: "minor",
-      requested,
-      reach: reach ?? null,
-      reason: "no category was supplied, so the middle tier is used rather than a guess"
-    };
-  }
-  const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
-  const alias = ALIASES[normalised];
-  const resolved = LEGACY_BY_CATEGORY[normalised] !== void 0 ? normalised : alias ?? normalised;
-  const legacy = LEGACY_BY_CATEGORY[resolved];
-  if (legacy === void 0) {
-    return {
-      severity: "minor",
-      requested,
-      reach: reach ?? null,
-      reason: `category ${category} has no mapping, so the middle tier is used rather than a guess`
-    };
-  }
-  if (!hasReach) {
-    if (requested === "question") {
-      return {
-        severity: "question",
-        requested,
-        reach: reach ?? null,
-        reason: "a question is a kind of finding, not a tier"
-      };
-    }
-    return {
-      severity: legacy,
-      requested,
-      reach: reach ?? null,
-      reason: resolved === normalised ? `${resolved} carries ${legacy}` : `${category} read as ${resolved}, which carries ${legacy}`
-    };
-  }
-  const tiers = BY_CATEGORY_AND_REACH[resolved];
-  const severity = tiers?.[resolvedReach];
-  if (severity === void 0) {
-    return {
-      severity: legacy,
-      requested,
-      reach: reach ?? null,
-      reason: `${resolved} has no reach mapping, so its legacy ${legacy} tier is used`
-    };
-  }
-  const varies = new Set(Object.values(tiers ?? {})).size > 1;
-  const describe = resolved === normalised ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
-  if (!varies) {
-    return { severity, requested, reach: reach ?? null, reason: describe };
-  }
-  return boundToRequest(
-    severity,
-    requested,
-    reach ?? null,
-    describe
-  );
-}
-
-// plugins/review-voice/src/scoring/score.ts
-var STALE_CONSUMER = "stale-consumer";
-var DOCUMENTATION_PATH = /\.(?:md|rst|adoc)$/i;
-function isDocumentationPath(path) {
-  return DOCUMENTATION_PATH.test(path);
-}
-var FIX_VERDICTS = ["verified", "partial", "refuted", "absent"];
-function isFixVerdict(value) {
-  return typeof value === "string" && FIX_VERDICTS.includes(value);
-}
-var EVIDENCE_QUALITIES = ["high", "medium", "low"];
-var CONTEXT_KINDS = ["blocking", "cosmetic"];
-function blockingContext(entries) {
-  return (entries ?? []).filter((entry) => typeof entry === "string" || entry.kind !== "cosmetic").map((entry) => typeof entry === "string" ? entry : entry.context);
-}
-var TIER_ORDER = ["nit", "minor", "important", "blocking"];
-var BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
-  "security",
-  "trust_boundary",
-  "authorization",
-  "authentication"
-]);
-var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
-function isInterrogativeClaim(claim) {
-  const text = claim.trim();
-  if (text.endsWith("?")) return true;
-  return text.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
-}
-function boundSeverityByEvidence(derived, candidate, verification2) {
-  if (BOUNDARY_CATEGORIES.has(candidate.category)) return derived;
-  if (candidate.severity === "question" || derived.severity === "question") return derived;
-  let result = derived;
-  if ((result.severity === "important" || result.severity === "blocking") && isInterrogativeClaim(candidate.claim)) {
-    result = {
-      ...result,
-      severity: "minor",
-      reason: `${result.reason}, capped at minor because the claim is framed as a question`
-    };
-  }
-  const asked = TIER_ORDER.indexOf(candidate.severity);
-  const got = TIER_ORDER.indexOf(result.severity);
-  if (asked === -1 || got === -1 || got <= asked) return result;
-  const confidence = verifierConfidence(verification2?.technicalConfidence, verification2?.evidenceQuality);
-  if (candidate.impactDisputed === true) {
-    return {
-      ...result,
-      severity: TIER_ORDER[asked],
-      reason: `${result.reason}, held at ${candidate.severity} because the second pass disputed the traced impact and no tie-break upheld it`
-    };
-  }
-  if (verification2?.impactTraced === true && confidence !== null && confidence >= ESCALATION_CONFIDENCE) {
-    return result;
-  }
-  return {
-    ...result,
-    severity: TIER_ORDER[asked],
-    reason: `${result.reason}, held at ${candidate.severity} because escalation needs the verifier to trace impact beyond the changed code`
-  };
-}
-var UNVERIFIABLE_CONFIDENCE = 0.6;
-var UNVERIFIABLE_REJECTION = "the claim states it could not be verified, so it cannot ship whatever it scores";
-var ADMITS_UNVERIFIABLE = [
-  /\b(?:cannot|can not|could not|couldn't|unable to)\s+(?:be\s+)?(?:verif|confirm|check|establish|determin)/i,
-  /\bnot\s+verifiable\b/i,
-  /\bwithout\s+access\s+to\b/i,
-  /\bno\s+way\s+to\s+(?:verify|confirm|check)\b/i
-];
-function admitsUnverifiable(candidate) {
-  return candidate.evidence.some((item) => ADMITS_UNVERIFIABLE.some((pattern) => pattern.test(item)));
-}
-var DEFAULT_THRESHOLDS = {
-  technicalConfidence: 0.8,
-  analystOnlyConfidence: 0.7,
-  finalScore: 0.68
-};
-var MAX_QUESTIONS = 2;
-function applyQuestionCap(breakdowns, limit = MAX_QUESTIONS) {
-  const questions = breakdowns.filter((b) => b.eligible && b.severity.severity === "question");
-  if (questions.length <= limit) return;
-  const ranked = [...questions].sort(
-    (a, b) => b.finalScore - a.finalScore || a.candidateId.localeCompare(b.candidateId)
-  );
-  for (const dropped of ranked.slice(limit)) {
-    dropped.eligible = false;
-    dropped.rejectedBecause = `this review already asks ${limit} better-evidenced question${limit === 1 ? "" : "s"}, and a review that ends in a list of questions has stopped being a review`;
-  }
-}
-function alreadySaidOnThread(candidate, thread) {
-  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  if (mine.size === 0) return null;
-  for (const comment of thread) {
-    if (comment.kind === "description") continue;
-    const anchored = comment.path !== null && comment.line !== null;
-    if (anchored) {
-      if (comment.path !== candidate.path) continue;
-      if (Math.abs(comment.line - candidate.line) > DUPLICATE_LINE_WINDOW) continue;
-      if (overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
-      continue;
-    }
-    if (overlap(mine, significantWords(comment.body)) >= UNANCHORED_DUPLICATE_OVERLAP) return comment;
-  }
-  return null;
-}
-var POSSIBLE_REPEAT_OVERLAP = 0.25;
-var POSSIBLE_REPEAT_LINE_WINDOW = 5;
-function possiblySaidOnThread(candidate, thread, preferred = () => false) {
-  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  if (mine.size === 0) return null;
-  let best = null;
-  for (const comment of thread) {
-    if (comment.path === null || comment.line === null) continue;
-    if (comment.path !== candidate.path) continue;
-    const distance = Math.abs(comment.line - candidate.line);
-    if (distance > POSSIBLE_REPEAT_LINE_WINDOW) continue;
-    const share = overlap(mine, significantWords(comment.body));
-    if (share < POSSIBLE_REPEAT_OVERLAP) continue;
-    const rank2 = [preferred(comment) ? 1 : 0, share, -distance];
-    if (best === null || compareRank(rank2, best.rank) > 0) best = { comment, rank: rank2 };
-  }
-  return best?.comment ?? null;
-}
-function compareRank(a, b) {
-  for (let i = 0; i < a.length; i += 1) {
-    const d = a[i] - b[i];
-    if (d !== 0) return d;
-  }
-  return 0;
-}
-var SAME_FILE_REPEAT_OVERLAP = 0.4;
-function possiblyRaisedInFile(candidate, thread, accept = () => true) {
-  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  if (mine.size === 0) return null;
-  let best = null;
-  for (const comment of thread) {
-    if (comment.path === null || comment.line === null) continue;
-    if (comment.path !== candidate.path || !accept(comment)) continue;
-    const share = overlap(mine, significantWords(comment.body));
-    if (share < SAME_FILE_REPEAT_OVERLAP) continue;
-    const distance = Math.abs(comment.line - candidate.line);
-    if (best === null || share > best.share || share === best.share && distance < best.distance) {
-      best = { comment, share, distance };
-    }
-  }
-  return best?.comment ?? null;
-}
-var DESCRIPTION_EXCERPT_CHARS = 400;
-function possiblyRepeatsDescription(candidate, thread) {
-  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  if (mine.size === 0) return null;
-  for (const comment of thread) {
-    if (comment.kind !== "description") continue;
-    if (overlap(mine, significantWords(comment.body)) < UNANCHORED_DUPLICATE_OVERLAP) continue;
-    return { comment, excerpt: overlappingExcerpt(mine, comment.body) };
-  }
-  return null;
-}
-function overlappingExcerpt(mine, body) {
-  const sentences = body.split(/(?<=[.!?])\s+|\n+/u).map((sentence) => sentence.trim()).filter((sentence) => sentence.length > 0);
-  const ranked = sentences.map((text, index) => ({ text, index, shared: [...significantWords(text)].filter((word) => mine.has(word)).length })).filter((sentence) => sentence.shared > 0).sort((a, b) => b.shared - a.shared || a.index - b.index);
-  const [best, ...rest] = ranked;
-  if (best === void 0) return clip(body.trim());
-  const chosen = [best];
-  let length = Math.min(best.text.length, DESCRIPTION_EXCERPT_CHARS);
-  for (const sentence of rest) {
-    if (length + 1 + sentence.text.length > DESCRIPTION_EXCERPT_CHARS) continue;
-    chosen.push(sentence);
-    length += 1 + sentence.text.length;
-  }
-  if (chosen.length === 1) return clip(best.text);
-  return chosen.sort((a, b) => a.index - b.index).map((sentence) => sentence.text).join(" ");
-}
-function clip(text) {
-  return text.length <= DESCRIPTION_EXCERPT_CHARS ? text : `${text.slice(0, DESCRIPTION_EXCERPT_CHARS - 1)}\u2026`;
-}
-var MalformedCandidate = class extends Error {
-};
-var FOREIGN_KEYS = ["title", "location", "suggested_direction", "suggestion", "description", "summary"];
-function normaliseCandidate(raw, index) {
-  const candidateId = raw.candidate_id ?? raw.candidateId ?? `cand_${String(index + 1).padStart(3, "0")}`;
-  const confidence = raw.technical_confidence ?? raw.technicalConfidence;
-  const suggestedFix = raw.suggested_fix !== void 0 ? raw.suggested_fix : raw.suggestedFix;
-  const fixConfidence = raw.fix_confidence !== void 0 ? raw.fix_confidence : raw.fixConfidence;
-  if (typeof raw.path !== "string" || raw.path.length === 0) {
-    const foreign = FOREIGN_KEYS.filter((key) => key in raw);
-    throw new MalformedCandidate(
-      foreign.length > 0 ? `${candidateId}: has ${foreign.join(", ")} but no path. This is not the candidate schema. Expected candidate_id, path, line, category, severity, claim, failure_mode, evidence, technical_confidence, per schemas/candidate.schema.json.` : `${candidateId}: missing path`
-    );
-  }
-  if (!Number.isFinite(raw.line)) {
-    throw new MalformedCandidate(`${candidateId}: missing or non-numeric line`);
-  }
-  if (!Number.isFinite(confidence)) {
-    throw new MalformedCandidate(
-      `${candidateId}: missing or non-numeric technical_confidence - a score cannot be computed, and a candidate that cannot be scored must not be treated as eligible`
-    );
-  }
-  if (suggestedFix !== void 0 && typeof suggestedFix !== "string") {
-    throw new MalformedCandidate(`${candidateId}: suggested_fix must be a string when supplied`);
-  }
-  if (fixConfidence !== void 0 && (!Number.isFinite(fixConfidence) || fixConfidence < 0 || fixConfidence > 1)) {
-    throw new MalformedCandidate(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
-  }
-  if (raw.anchor !== void 0 && raw.anchor !== STALE_CONSUMER) {
-    throw new MalformedCandidate(`${candidateId}: anchor must be "${STALE_CONSUMER}" when supplied`);
-  }
-  const rawCause = raw.caused_by !== void 0 ? raw.caused_by : raw.causedBy;
-  let causedBy = null;
-  if (raw.anchor === STALE_CONSUMER && rawCause !== void 0 && rawCause !== null) {
-    if (typeof rawCause !== "object" || typeof rawCause.path !== "string" || rawCause.path.length === 0 || !Number.isInteger(rawCause.line) || rawCause.line < 1) {
-      throw new MalformedCandidate(`${candidateId}: caused_by must be {"path": string, "line": positive integer}`);
-    }
-    causedBy = { path: rawCause.path, line: rawCause.line };
-  }
-  const ownComment = ownCommentOf(raw.possibleRepeatOf);
-  const impactDisputed = raw.impact_disputed !== void 0 ? raw.impact_disputed : raw.impactDisputed;
-  if (impactDisputed !== void 0 && typeof impactDisputed !== "boolean") {
-    throw new MalformedCandidate(`${candidateId}: impact_disputed must be true or false when supplied`);
-  }
-  return {
-    candidateId,
-    path: raw.path,
-    line: raw.line,
-    // Deliberately not defaulted. `correctness` used to stand in for a missing
-    // category, which gave an unlabelled finding a real tier and recorded
-    // nothing about the substitution.
-    category: raw.category ?? "",
-    severity: raw.severity ?? "minor",
-    claim: raw.claim ?? "",
-    failureMode: raw.failure_mode ?? raw.failureMode ?? "",
-    evidence: Array.isArray(raw.evidence) ? raw.evidence : [],
-    suggestedFix: suggestedFix ?? null,
-    fixConfidence: fixConfidence ?? null,
-    technicalConfidence: confidence,
-    // Spread only when declared, so an ordinary candidate keeps its shape.
-    ...raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {},
-    ...impactDisputed === true ? { impactDisputed: true } : {},
-    ...ownComment === null ? {} : { ownComment }
-  };
-}
-function ownCommentOf(value) {
-  if (typeof value !== "object" || value === null) return null;
-  const v = value;
-  if (v["kind"] !== "own-comment") return null;
-  if (typeof v["author"] !== "string" || v["author"].length === 0) return null;
-  if (typeof v["path"] !== "string" || v["path"].length === 0) return null;
-  if (!Number.isInteger(v["line"]) || v["line"] < 1) return null;
-  return { author: v["author"], path: v["path"], line: v["line"] };
-}
-function partlyAddressedProblem(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return 'must be {"remaining": [...], "addressed": [...]}';
-  }
-  const v = value;
-  for (const key of ["remaining", "addressed"]) {
-    const list = v[key];
-    if (!Array.isArray(list) || list.length === 0 || !list.every((item) => typeof item === "string" && item.trim().length > 0)) {
-      return `${key} must be a non-empty array of non-empty strings`;
-    }
-  }
-  return null;
-}
-function followUpOf(candidate, verification2, thread, owner) {
-  const prior = candidate.ownComment;
-  const partly = verification2?.partlyAddressed;
-  if (prior === void 0 || partly === void 0) return null;
-  if (owner === null || prior.author.toLowerCase() !== owner.toLowerCase()) return null;
-  const onThread = thread.some(
-    (comment) => comment.author === prior.author && comment.path === prior.path && comment.line === prior.line
-  );
-  return onThread ? { ...prior, remaining: partly.remaining, addressed: partly.addressed } : null;
-}
-var WORDS = /[^\p{L}\p{N}]+/u;
-function significantWords(text) {
-  return new Set(text.toLowerCase().split(WORDS).filter((word) => word.length > 3));
-}
-function overlap(mine, theirs) {
-  if (mine.size === 0) return 0;
-  return [...mine].filter((word) => theirs.has(word)).length / mine.size;
-}
-var DUPLICATE_LINE_WINDOW = 2;
-var DUPLICATE_OVERLAP = 0.4;
-var UNANCHORED_DUPLICATE_OVERLAP = 0.7;
-function sameLocation(candidate, precedent) {
-  if (precedent.filePath === null || precedent.lineStart === null) return false;
-  if (precedent.filePath !== candidate.path) return false;
-  return Math.abs(precedent.lineStart - candidate.line) <= DUPLICATE_LINE_WINDOW;
-}
-function duplicatePrecedent(candidate, precedents) {
-  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  for (const precedent of precedents) {
-    if (!sameLocation(candidate, precedent)) continue;
-    if (overlap(mine, significantWords(precedent.excerpt)) >= DUPLICATE_OVERLAP) return precedent;
-  }
-  return null;
-}
-function isAnchored(precedent) {
-  return precedent.filePath !== null;
-}
-var NEUTRAL_ALIGNMENT = 0.5;
-function alignmentFrom(precedents) {
-  if (precedents.length === 0) return NEUTRAL_ALIGNMENT;
-  const total = precedents.reduce((sum, p) => sum + p.weight * (p.matchStrength ?? 1), 0);
-  return 1 / (1 + Math.exp(-total));
-}
-function anchoredAlignmentFrom(precedents) {
-  return alignmentFrom(precedents.filter(isAnchored));
-}
-var ANCHORED = [
-  /\bline\s+\d+/i,
-  /:\d+\b/,
-  /`[^`]+`/,
-  /\b[\w$]+\.(?:ts|tsx|js|jsx|cs|py|go|rb|java|kt|rs|sql|ya?ml|json)\b/i,
-  /\b[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*\b/,
-  /\b[A-Z][A-Z0-9]+_[A-Z0-9_]+\b/
-];
-function evidenceQuality(candidate) {
-  const items = candidate.evidence.filter((item) => item.trim().length > 0);
-  if (items.length === 0) return 0;
-  const specific = items.filter((item) => ANCHORED.some((pattern) => pattern.test(item))).length;
-  const breadth = Math.min(1, items.length / 3);
-  const depth = specific / items.length;
-  return 0.4 * breadth + 0.6 * depth;
-}
-var CROSS_FILE_DUPLICATE = 0.8;
-function novelty(candidate, kept, precedents) {
-  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  let worst = 1;
-  for (const other of kept) {
-    if (other.path === candidate.path && other.line === candidate.line) return 0;
-    const theirs = significantWords(`${other.claim} ${other.failureMode}`);
-    const shared = overlap(mine, theirs);
-    if (other.path === candidate.path) {
-      worst = Math.min(worst, 1 - shared);
-    } else if (shared >= CROSS_FILE_DUPLICATE) {
-      worst = Math.min(worst, 1 - shared);
-    }
-  }
-  for (const precedent of precedents) {
-    if (precedent.filePath !== candidate.path) continue;
-    if (overlap(mine, significantWords(precedent.excerpt)) < 0.7) continue;
-    worst = Math.min(worst, 0.5);
-  }
-  return worst;
-}
-var MAX_DIRECTION_LENGTH = 120;
-function isBareDirection(direction) {
-  if (direction === null) return false;
-  const text = direction.trim();
-  if (text.length === 0 || text.length > MAX_DIRECTION_LENGTH) return false;
-  if (/[\r\n`]/.test(text)) return false;
-  return !/[.!?]\s+\S/.test(text);
-}
-function editorFix(fix) {
-  if (fix.render === "fix") return { render: "fix", text: fix.suggested };
-  if (fix.render === "direction") return { render: "direction", text: fix.direction };
-  return { render: "none", text: null };
-}
-function assertUniqueCandidateIds(candidates) {
-  const seen = /* @__PURE__ */ new Set();
-  for (const candidate of candidates) {
-    if (seen.has(candidate.candidateId)) {
-      throw new MalformedCandidate(
-        `${candidate.candidateId}: appears more than once. Candidate ids must be unique, because verification is matched to candidates by id.`
-      );
-    }
-    seen.add(candidate.candidateId);
-  }
-}
-function renderFix(candidate, verification2, thresholds) {
-  const suggested = candidate.suggestedFix ?? null;
-  const rawVerdict = verification2?.fixVerdict;
-  const verdict = isFixVerdict(rawVerdict) ? rawVerdict : null;
-  const rawConfidence = verification2?.fixConfidence;
-  const confidence = typeof rawConfidence === "number" && Number.isFinite(rawConfidence) && rawConfidence >= 0 && rawConfidence <= 1 ? rawConfidence : null;
-  const rawDirection = verification2?.fixDirection;
-  const direction = typeof rawDirection === "string" ? rawDirection : null;
-  const verifierReason = verification2?.fixReason?.trim().length ? verification2.fixReason : null;
-  const hasSuggested = suggested !== null && suggested.trim().length > 0;
-  const analystConfidence = candidate.fixConfidence ?? null;
-  const hasDirection = direction !== null && direction.trim().length > 0;
-  if (hasSuggested && verdict === "verified" && confidence !== null && confidence >= thresholds.technicalConfidence) {
-    return {
-      suggested,
-      analystConfidence,
-      verdict,
-      confidence,
-      direction,
-      render: "fix",
-      reason: verifierReason ?? `verified fix confidence ${confidence.toFixed(2)} meets the ${thresholds.technicalConfidence} threshold`
-    };
-  }
-  if (verdict === "partial" && hasSuggested && hasDirection && isBareDirection(direction)) {
-    return {
-      suggested,
-      analystConfidence,
-      verdict,
-      confidence,
-      direction,
-      render: "direction",
-      reason: verifierReason ?? "the verifier could confirm only the repair direction"
-    };
-  }
-  let reason2 = "the suggested fix was not verified";
-  if (!hasSuggested) {
-    reason2 = "no fix was proposed";
-  } else if (verdict === "verified" && confidence !== null) {
-    reason2 = `verified fix confidence ${confidence.toFixed(2)} is below the ${thresholds.technicalConfidence} threshold`;
-  } else if (verdict === "partial" && hasDirection) {
-    reason2 = "the direction is not one short sentence without code, so it is withheld";
-  } else if (verdict === "partial") {
-    reason2 = "the verifier gave a partial fix verdict without a direction";
-  } else if (verdict === "refuted") {
-    reason2 = "the verifier refuted the suggested fix";
-  } else if (verdict === "absent") {
-    reason2 = "the verifier reports no suggested fix";
-  }
-  return {
-    suggested,
-    analystConfidence,
-    verdict,
-    confidence,
-    direction,
-    render: "none",
-    reason: verifierReason ?? reason2
-  };
-}
-function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2) {
-  const analystConfidence = candidate.technicalConfidence;
-  const verifiedConfidence = verification2 === void 0 ? null : verifierConfidence(verification2.technicalConfidence, verification2.evidenceQuality);
-  let confidence = verifiedConfidence ?? analystConfidence;
-  let confidenceSource = verifiedConfidence === null ? "analyst" : "verifier";
-  const missingContext = blockingContext(verification2?.requiredContextMissing).length > 0;
-  const admitted = admitsUnverifiable(candidate);
-  const verifierEngaged = verification2?.technicalConfidence !== void 0;
-  if ((missingContext || admitted && !verifierEngaged) && confidence > UNVERIFIABLE_CONFIDENCE) {
-    confidence = UNVERIFIABLE_CONFIDENCE;
-    confidenceSource = "unverifiable-cap";
-  }
-  const confidenceFloor = confidenceSource === "verifier" ? thresholds.technicalConfidence : thresholds.analystOnlyConfidence;
-  const alreadySaid = duplicatePrecedent(candidate, precedents);
-  const forAlignment = alreadySaid === null ? precedents : precedents.filter((p) => !sameLocation(candidate, p));
-  const ownerPrecedents = forAlignment.filter((p) => p.role === "owner");
-  const repositoryPrecedents = forAlignment.filter((p) => p.role !== "owner");
-  const ownerAlignment = alignmentFrom(ownerPrecedents);
-  const repositoryAlignment = alignmentFrom(repositoryPrecedents);
-  const anchoredOwnerAlignment = anchoredAlignmentFrom(ownerPrecedents);
-  const anchoredRepositoryAlignment = anchoredAlignmentFrom(repositoryPrecedents);
-  const quality = evidenceQuality(candidate);
-  const novel = alreadySaid === null ? novelty(candidate, kept, precedents) : 0;
-  const score = (owner, repository) => 0.35 * confidence + 0.25 * owner + 0.15 * repository + 0.15 * quality + 0.1 * novel;
-  const finalScore = score(ownerAlignment, repositoryAlignment);
-  const anchoredFinalScore = score(anchoredOwnerAlignment, anchoredRepositoryAlignment);
-  const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification2?.reach);
-  const isQuestion = derivedSeverity.severity === "question";
-  let rejectedBecause = null;
-  if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
-    rejectedBecause = "score could not be computed from this candidate";
-  } else if (alreadySaid !== null) {
-    rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
-  } else if (isQuestion && verification2?.premisesVerified === false) {
-    rejectedBecause = "the verifier could not verify the premises this question rests on (premises_verified: false)";
-  } else if (isQuestion) {
-    if (ownerAlignment < NEUTRAL_ALIGNMENT) {
-      rejectedBecause = `owner precedent is against asking this (${ownerAlignment.toFixed(2)} alignment), and a question the owner has dismissed the like of before is noise the second time`;
-    }
-  } else if (confidenceSource === "unverifiable-cap") {
-    rejectedBecause = UNVERIFIABLE_REJECTION;
-  } else if (verification2?.verified === false) {
-    rejectedBecause = "the verifier did not verify this claim (verified: false)";
-  } else if (confidence < confidenceFloor) {
-    rejectedBecause = `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` + (confidenceSource === "analyst" ? ". No verification was supplied, so this is the analyst's opinion of its own output." : "");
-  } else if (finalScore < thresholds.finalScore) {
-    rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
-  }
-  const severity = boundSeverityByEvidence(derivedSeverity, candidate, verification2);
-  const staleConsumer = candidate.anchor === STALE_CONSUMER;
-  const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit" && confidenceSource === "verifier";
-  if (staleConsumer && verification2?.impactTraced !== true && !untracedDocumentNit) {
-    const untraced = "a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause (impact_traced: true)" + (isDocumentationPath(candidate.path) ? `; a documentation consumer may go untraced only at nit and on the verifier's confidence, and this one is ${severity.severity}` + (confidenceSource === "analyst" ? " on the analyst's confidence alone" : confidenceSource === "unverifiable-cap" ? " with context the verifier could not obtain" : "") : "");
-    if (rejectedBecause === null) rejectedBecause = untraced;
-    else if (rejectedBecause.startsWith("score ")) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
-    else rejectedBecause = `${rejectedBecause}. Also: ${untraced}`;
-  }
-  const fix = renderFix(candidate, verification2, thresholds);
-  return {
-    candidateId: candidate.candidateId,
-    path: candidate.path,
-    line: candidate.line,
-    technicalConfidence: confidence,
-    severity,
-    analystConfidence,
-    verifiedConfidence,
-    confidenceSource,
-    ownerAlignment,
-    repositoryAlignment,
-    evidenceQuality: quality,
-    novelty: novel,
-    finalScore,
-    fix,
-    anchored: {
-      ownerAlignment: anchoredOwnerAlignment,
-      repositoryAlignment: anchoredRepositoryAlignment,
-      finalScore: anchoredFinalScore,
-      // Only the score gate can flip here: every other rejection reason is
-      // independent of alignment.
-      wouldChangeEligibility: rejectedBecause === null ? anchoredFinalScore < thresholds.finalScore : rejectedBecause.startsWith("score ") && anchoredFinalScore >= thresholds.finalScore
-    },
-    eligible: rejectedBecause === null,
-    rejectedBecause,
-    duplicateOfPrecedent: alreadySaid?.eventId ?? null,
-    precedentIds: precedents.map((p) => p.eventId),
-    ...staleConsumer ? { anchor: STALE_CONSUMER, causedBy: candidate.causedBy ?? null } : {}
-  };
-}
-
 // plugins/review-voice/src/policy/compile.ts
 var MIN_CORROBORATING = 3;
 function canActivate(evidence) {
@@ -14341,6 +14641,7 @@ Commands:
   verdict           Review event under the head and CI guards (reads only)
   post              Submit the review; needs --confirm --event <EVENT>
   record            Store a validated review from stdin and assign finding ids
+  follow-ups        Partly-addressed follow-ups of a pull request still open
   feedback          Record feedback on a finding
   status            Show what is stored locally
   carry             Carry an earlier run's untouched findings to a new head
@@ -14361,6 +14662,10 @@ thread flags:
   --pr <number>          Pull request whose existing comments to read
   --repository <name>    owner/repo; inferred from the git remote if absent
   --out <path>           Write <path> or <dir>/thread.json instead of stdout
+
+follow-ups flags:
+  --pr <number>          Pull request whose open follow-ups to list (local store)
+  --repository <name>    owner/repo; inferred from the git remote if absent
 
 diff flags:
   --base <ref>           Review against a base ref (e.g. origin/main)
@@ -14398,6 +14703,8 @@ record flags:
   --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
   --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
   --carry <path>         carry.json of carry-candidates (needs --head)
+  --thread <path>        thread.json; a follow-up whose comment thread is resolved is settled
+  --follow-ups <path>    The verifier's follow_ups rulings on the open follow-ups
   --stages <path>        Per-stage timings as
                          [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean
                          result from a shallow analyst pass is warned about
@@ -14600,6 +14907,7 @@ async function threadCommand(argv) {
     return 2;
   }
   const result = await readThread({ repository, pullNumber });
+  for (const warning of result.warnings ?? []) console.error(`Warning: ${warning}`);
   const out = flag(argv, "--out");
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
@@ -14608,13 +14916,44 @@ async function threadCommand(argv) {
   try {
     const path = resolveOutPath(out, "thread.json");
     writeFileSync(path, JSON.stringify(result, null, 2), "utf8");
-    console.log(JSON.stringify({ path, comments: result.comments.length, truncated: result.truncated }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          path,
+          comments: result.comments.length,
+          truncated: result.truncated,
+          ...result.warnings === void 0 ? {} : { warnings: result.warnings }
+        },
+        null,
+        2
+      )
+    );
     return 0;
   } catch (error) {
     console.error(
       `Cannot write ${out}: expected a file path or a directory; ${error instanceof Error ? error.message : String(error)}`
     );
     return 2;
+  }
+}
+function followUpsCommand(argv) {
+  const pullNumber = Number(flag(argv, "--pr"));
+  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+    console.error("--pr needs a pull request number.");
+    return 2;
+  }
+  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
+  if (repository === null) {
+    console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
+    return 2;
+  }
+  const db = openDatabase();
+  try {
+    const followUps = openFollowUps(db, repository, pullNumber).map(({ text: _text, recordedAt: _at, ...followUp }) => followUp);
+    console.log(JSON.stringify({ followUps }, null, 2));
+    return 0;
+  } finally {
+    db.close();
   }
 }
 async function pullRequestDiffCommand(argv) {
@@ -16003,6 +16342,40 @@ function recordCommand(argv) {
       return 2;
     }
   }
+  const followUpThreadFile = flag(argv, "--thread");
+  let followUpThread = null;
+  let followUpThreadFor = null;
+  if (argv.includes("--thread")) {
+    if (followUpThreadFile === null) {
+      console.error("--thread needs a thread JSON path.");
+      return 2;
+    }
+    try {
+      const parsed = JSON.parse(readFileSync5(followUpThreadFile, "utf8"));
+      const list = Array.isArray(parsed) ? parsed : parsed.comments;
+      if (!Array.isArray(list)) throw new Error("comments is not a list");
+      followUpThread = list;
+      followUpThreadFor = Array.isArray(parsed) ? { repository: void 0, pullNumber: void 0 } : { repository: parsed.repository, pullNumber: parsed.pullNumber };
+    } catch (error) {
+      console.error(`Cannot read ${followUpThreadFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
+  const rulingsFile = flag(argv, "--follow-ups");
+  let rulings = [];
+  if (argv.includes("--follow-ups")) {
+    if (rulingsFile === null) {
+      console.error("--follow-ups needs the verifier output with follow_ups.");
+      return 2;
+    }
+    try {
+      rulings = parseFollowUpRulings(JSON.parse(readFileSync5(rulingsFile, "utf8")));
+    } catch (error) {
+      const why = error instanceof FollowUpRulingError ? error.message : `cannot read it (${error.message})`;
+      console.error(`Cannot read follow-up rulings from ${rulingsFile}: ${why}.`);
+      return 2;
+    }
+  }
   const db = openDatabase();
   try {
     let carried;
@@ -16062,8 +16435,30 @@ function recordCommand(argv) {
       }
       if (carry === void 0 || marker.covered === false) carry = marker;
     }
+    const repository = flag(argv, "--repository");
+    if (followUpThreadFor !== null) {
+      const sameRepository = typeof followUpThreadFor.repository === "string" && repository !== null && followUpThreadFor.repository.toLowerCase() === repository.toLowerCase();
+      if (!sameRepository || pullNumber === void 0 || followUpThreadFor.pullNumber !== pullNumber) {
+        console.error(
+          `${followUpThreadFile} is not the thread of this run's pull request (${repository ?? "no --repository"}#${pullNumber ?? "? (no pull request in --files)"}). Pass the thread.json that \`RV thread\` wrote for it.`
+        );
+        return 2;
+      }
+    }
+    let followUps = [];
+    if (repository !== null && pullNumber !== void 0) {
+      const open = openFollowUps(db, repository, pullNumber);
+      const scopeFiles = scope !== void 0 && "files" in scope ? scope.files : null;
+      const settled = settleFollowUps(open, { thread: followUpThread, rulings, scopeFiles });
+      followUps = settled.states;
+      for (const id of settled.unmatched) {
+        console.error(`Warning: the follow-up ruling for ${id} names no open follow-up of this pull request; ignored.`);
+      }
+    } else if (rulings.length > 0 || followUpThread !== null) {
+      console.error("Warning: --thread and --follow-ups need --repository and a pull request in --files; ignored.");
+    }
     const { reviewRunId, findings } = recordRun(db, {
-      repository: flag(argv, "--repository"),
+      repository,
       baseRef: flag(argv, "--base"),
       headRef: flag(argv, "--head"),
       pullNumber,
@@ -16078,10 +16473,22 @@ function recordCommand(argv) {
       held,
       carried,
       ...carry === void 0 ? {} : { carry },
+      followUps,
       stages
     });
     const warning = shallowPassWarning(stages, findings.length);
-    console.log(JSON.stringify({ reviewRunId, findings, ...warning === null ? {} : { warnings: [warning] } }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          reviewRunId,
+          findings,
+          ...followUps.length === 0 ? {} : { followUps },
+          ...warning === null ? {} : { warnings: [warning] }
+        },
+        null,
+        2
+      )
+    );
     return 0;
   } catch (error) {
     if (error instanceof CarryMismatch) {
@@ -16506,6 +16913,7 @@ function explainCommand(argv) {
       );
     }
     console.log("");
+    const history = detail.repository !== null && detail.pullNumber !== null ? followUpHistory(db, detail.repository, detail.pullNumber) : null;
     const shown = wanted === void 0 ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
     if (shown.length === 0 && wanted === void 0) {
       console.log("No findings were recorded.");
@@ -16525,6 +16933,14 @@ function explainCommand(argv) {
         console.log(
           `  partly addressed  ${prior.author} at ${prior.path}:${prior.line}; ${remaining.length} of ${remaining.length + addressed.length} still open: ${remaining.join("; ")}`
         );
+        const later2 = history?.get(`${detail.reviewRunId}:${finding.findingId}`);
+        if (later2?.state?.status === "resolved") {
+          console.log(`  follow-up         resolved in run ${later2.stateRunId} - ${later2.state.reason}`);
+        } else if (later2?.state?.status === "open") {
+          console.log(`  follow-up         open as of run ${later2.stateRunId}: ${later2.state.remaining.join("; ")}`);
+        } else {
+          console.log("  follow-up         open");
+        }
       }
       console.log(`  category          ${finding.category ?? "not recorded"}`);
       if (score?.technicalConfidence !== void 0) {
@@ -16574,6 +16990,14 @@ function explainCommand(argv) {
             `  tie-break         ${ruling.upheld ? "upheld" : "not upheld"}${ruling.applied === false ? " (not applied)" : ""}${ruling.raised === void 0 ? "" : ` (raised to ${ruling.raised})`} - ${ruling.reason}`
           );
         }
+      }
+      console.log("");
+    }
+    if (detail.followUps.length > 0 && wanted === void 0) {
+      console.log(`Follow-ups from earlier runs (${detail.followUps.length}):`);
+      for (const f of detail.followUps) {
+        console.log(`  [${f.status}] ${f.findingId} of run ${f.runId}  ${f.path}:${f.line} - ${f.reason}`);
+        if (f.status === "open") console.log(`      still open: ${f.remaining.join("; ")}`);
       }
       console.log("");
     }
@@ -16896,6 +17320,9 @@ function checkCandidatesCommand(argv) {
             path: possible.path,
             line: possible.line,
             ...possible.outdated === true ? { outdated: true } : {},
+            ...possible.resolved === true ? { resolved: true } : {},
+            ...possible.resolved === true && typeof possible.resolvedBy === "string" ? { resolvedBy: possible.resolvedBy } : {},
+            ...typeof possible.id === "number" ? { commentId: possible.id } : {},
             excerpt: possible.body.slice(0, 200)
           }
         });
@@ -17007,6 +17434,8 @@ async function main(argv) {
       return anchorsCommand(argv.slice(1));
     case "thread":
       return await threadCommand(argv.slice(1));
+    case "follow-ups":
+      return followUpsCommand(argv.slice(1));
     case "context":
       return contextCommand();
     case "redact":

@@ -6,6 +6,8 @@ and makes its measured-precision gate advisory for verified findings.
 Decisions 1, 2, 3 and 5 of 0007 stand.
 **Amends:** [0002](0002-github-auth-model.md) - one write, through a separate
 client. The read-only client and its test are untouched.
+**Amended:** 2026-10-06 by [0018](0018-read-only-graphql-thread-state.md) - the
+read-only client also sends GraphQL queries; see the end.
 
 ## Context
 
@@ -148,3 +150,12 @@ printed with every post.
 **Approve automatically once CI goes green.** Rejected. 0007's objection still
 holds: a threshold is a number, and a review on someone's pull request is a
 social act. `--recheck` prepares the approval and a person sends it.
+
+## Amendment - 2026-10-06
+
+"The existing `GitHubClient` keeps rejecting every non-GET request" now reads:
+it keeps rejecting every non-GET REST request, and sends one kind of POST, a
+GraphQL query from a fixed set, checked in code by its exact text
+([ADR 0018](0018-read-only-graphql-thread-state.md)). It reads whether review
+threads are resolved. The writer above is still the only write, and resolving
+a thread is still never done.

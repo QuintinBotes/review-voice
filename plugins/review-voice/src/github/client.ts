@@ -27,13 +27,62 @@ export interface ClientOptions {
 
 const REPO_PATH = /^\/repos\/([^/]+\/[^/]+)(\/|$)/;
 
+/** Either word anywhere refuses the document; a field or comment is no excuse. */
+const GRAPHQL_FORBIDDEN = /\b(?:mutation|subscription)\b/i;
+
+/**
+ * Each review thread of one pull request: whether it is resolved, by whom, and
+ * whether it is outdated, with its comments' ids. The comments' `databaseId`
+ * is the REST comment `id`, which is how `diff/thread.ts` joins the two reads.
+ */
+export const REVIEW_THREADS_QUERY = `query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          isResolved
+          isOutdated
+          resolvedBy { login }
+          comments(first: 100) { nodes { databaseId path line } }
+        }
+      }
+    }
+  }
+}`;
+
+/**
+ * The only GraphQL documents this client sends, each with the variables it
+ * may be given besides `owner` and `name`, which always come from the
+ * allowlisted repository. Matched on the exact text: a document outside this
+ * set is refused, however harmless it looks, because a query is what can
+ * reach another repository - through `search`, `node`, `viewer` or a
+ * repository named in a variable - and only a fixed text rules that out.
+ */
+const KNOWN_QUERIES = new Map<string, Record<string, (value: unknown) => boolean>>([
+  [
+    REVIEW_THREADS_QUERY,
+    {
+      number: (value) => Number.isInteger(value) && (value as number) > 0,
+      cursor: (value) => value === null || typeof value === 'string',
+    },
+  ],
+]);
+
+/** `https://api.github.com/graphql`, or `<host>/api/graphql` on a server whose REST root is `<host>/api/v3`. */
+function graphqlUrl(baseUrl: string): string {
+  const root = baseUrl.replace(/\/+$/, '');
+  return /\/api\/v3$/.test(root) ? root.replace(/\/v3$/, '/graphql') : `${root}/graphql`;
+}
+
 /**
  * A read-only GitHub client.
  *
  * Two constraints are enforced here rather than documented, because v1
  * promises both and a promise a caller can bypass is not a promise:
  *
- *   1. Only GET requests are ever issued.
+ *   1. Only GET requests are ever issued, apart from the GraphQL queries in
+ *      a fixed set, checked by exact text before they are sent (`graphql`).
  *   2. Only allowlisted repositories are ever addressed.
  *
  * The second matters more than it looks. The credential comes from `gh` and
@@ -134,6 +183,74 @@ export class GitHubClient {
       const next = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
       return { data: (await response.json()) as T, linkNext: next };
     }
+  }
+
+  /**
+   * One known GraphQL query about one allowlisted repository (docs/adr/0018).
+   *
+   * The only request this client sends that is not a GET. GraphQL has no GET
+   * form on GitHub, and some state - whether a review thread is resolved -
+   * has no REST endpoint at all. So the read-only promise moves from the HTTP
+   * method to the document, and is checked here before anything is sent:
+   *
+   *   - the document must be, character for character, one of
+   *     `KNOWN_QUERIES`, none of which is a mutation or subscription;
+   *   - its variables must be ones that query declares, with values of the
+   *     declared shape; `owner` and `name` may not be passed at all and are
+   *     set from `repository`, which must be allowlisted.
+   *
+   * It never retries. Every caller can do without the answer, and waiting out
+   * a rate limit for an optional read only spends the user's quota.
+   */
+  async graphql<T>(repository: string, document: string, variables: Record<string, unknown> = {}): Promise<T> {
+    const declared = KNOWN_QUERIES.get(document);
+    if (declared === undefined || GRAPHQL_FORBIDDEN.test(document)) {
+      throw new ReadOnlyViolation('Review Voice is read-only; refused a GraphQL document that is not one of its known queries.');
+    }
+    for (const [key, value] of Object.entries(variables)) {
+      const check = declared[key];
+      if (check === undefined || !check(value)) {
+        throw new ReadOnlyViolation(`Refused GraphQL variable ${key}: not one this query declares, or not of its shape.`);
+      }
+    }
+    const [owner, name, ...rest] = repository.split('/');
+    if (owner === undefined || name === undefined || rest.length > 0 || owner.length === 0 || name.length === 0) {
+      throw new NotAllowlisted(`${repository} is not an owner/repo name.`);
+    }
+    this.assertAllowed(`/repos/${owner}/${name}`);
+
+    const response = await this.doFetch(graphqlUrl(this.baseUrl), {
+      method: 'POST',
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: this.authorization(),
+        'content-type': 'application/json',
+        'user-agent': 'review-voice',
+      },
+      body: JSON.stringify({ query: document, variables: { ...variables, owner, name } }),
+    });
+    if (!response.ok) {
+      throw new GitHubError(
+        `GitHub GraphQL returned ${response.status}: ${(await response.text()).slice(0, 200)}`,
+        response.status,
+      );
+    }
+    const body = (await response.json()) as { data?: T; errors?: { message?: string }[] } | null;
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      throw new GitHubError('GitHub GraphQL returned no data.', response.status);
+    }
+    // A partial answer is still an error: half-read thread state reads as
+    // "not resolved" for the half that is missing.
+    if (Array.isArray(body.errors) && body.errors.length > 0) {
+      throw new GitHubError(
+        `GitHub GraphQL returned errors: ${body.errors.map((e) => e?.message ?? 'unknown').join('; ').slice(0, 200)}`,
+        response.status,
+      );
+    }
+    if (body.data === undefined || body.data === null) {
+      throw new GitHubError('GitHub GraphQL returned no data.', response.status);
+    }
+    return body.data;
   }
 
   /** Follows pagination up to `limit` items, so a huge repository cannot run away. */

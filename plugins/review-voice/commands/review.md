@@ -170,6 +170,18 @@ running on those repositories, or already fixed by the author. That removed more
 than every other stage combined. A repository with an existing bot reviewer will
 otherwise receive duplicates, and nothing else in this pipeline can see that.
 
+Whether each inline comment's thread is resolved comes from one read-only
+GraphQL query, the only place GitHub exposes it. If that read fails - a token
+without the permission, a rate limit - `thread` prints a warning on stderr and
+writes the comments without it. Show the warning to the person, never post it,
+and carry on: the review does not depend on it.
+
+Then `RV follow-ups --pr <number>` (with the same `--repository`, if you gave
+one). It lists, from the local store, each partly-addressed follow-up an
+earlier run of this pull request recorded and no run has yet seen resolved,
+with its `id`, location and `remaining` points. Keep the list for step 3; an
+empty list needs nothing more.
+
 Skip it when not reviewing a pull request; there is no thread to read.
 
 ## Step 1b - Resolve context
@@ -299,7 +311,8 @@ whoever wrote it: a comment's line moves when the author inserts code above it,
 and one concern can cover several places in a file. Its `kind` is `own-comment`
 for the owner's own comment, which is preferred, and `thread` for anyone
 else's; `outdated: true` means the code under the comment has changed since,
-often because it was addressed. The owner is `identity.owner_reviewer` from the
+often because it was addressed, and `resolved: true` that its thread was
+marked resolved, which the verifier treats as a likely addressed point. The owner is `identity.owner_reviewer` from the
 configuration, or `--owner <login>`. The owner's own inline comments are never
 a reason to drop here, however closely a candidate repeats one: it may be what
 the author left open of that comment, which only the verifier can tell.
@@ -342,6 +355,13 @@ the owner's own comment (`possibleRepeatOf` of `kind: own-comment`), the
 verifier may verify it for what is still open and add `partly_addressed`, with
 `remaining` and `addressed` points. Keep that in `verification.json` and keep
 the candidate's `possibleRepeatOf` when you pipe it on: `score` needs both.
+
+**Open follow-ups.** When `RV follow-ups` listed any in step 1a, give them to
+the verifier as `followUps`. It checks each one's `remaining` points against
+the code at the head, whatever this run's diff covers, and returns
+`{"verifications": [...], "follow_ups": [{"id", "remaining", "addressed",
+"reason"}]}`. A ruling with `remaining` empty settles the follow-up in step 6;
+it is local and never posted.
 
 **Write its full output to `<tmpdir>/verification.json`.** It is not only a
 pass list: step 4 gates on the confidence it reports, because the verifier is
@@ -648,9 +668,17 @@ stray directory and another project's notes took the reviewed count from 11 to
   They also carry the partly-addressed state. A finding written from such an
   entry is stored as `partlyAddressed`, with the earlier comment and what was
   still open at this run, and `/review-voice:explain` shows it. The state is
-  local and per run; nothing later marks it resolved. Do not record a
-  partly-addressed follow-up under `--held` as a `repeat`, which would read as
-  closed.
+  local. On a `--pr` run, also pass `--thread <tmpdir>/thread.json` and, when
+  the verifier ruled on open follow-ups, `--follow-ups <tmpdir>/verification.json`.
+  `record` then settles each follow-up an earlier run of the pull request left
+  open: resolved when the owner resolved its own posted comment's thread, or
+  when the verifier found every remaining point addressed; otherwise open,
+  including when someone else resolved it or its file was not in this review.
+  It refuses a thread file of another pull request. It prints them as
+  `followUps`, and
+  `/review-voice:explain` shows each as open or resolved. Nothing about them is
+  posted. Do not record a partly-addressed follow-up under `--held` as a
+  `repeat`, which would read as closed.
 
   Pass every candidate that was held back rather than reported with
   `--held <file>` (an array of `{path, line, verdict, source, reason, text}`, verdict

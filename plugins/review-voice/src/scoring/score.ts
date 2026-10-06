@@ -90,6 +90,8 @@ export interface PriorComment {
   author: string;
   path: string;
   line: number;
+  /** GitHub's id for the comment, when the thread file carried it. */
+  commentId?: number;
 }
 
 /**
@@ -473,6 +475,13 @@ export interface ThreadComment {
   kind?: 'review-comment' | 'review-body' | 'conversation' | 'description';
   /** The code under an inline comment changed since it was written. */
   outdated?: boolean;
+  /** The inline comment's thread is marked resolved on the pull request. */
+  resolved?: boolean;
+  /** Who resolved it, when GitHub said. */
+  resolvedBy?: string;
+  /** GitHub's id for an inline comment, and when it was written. */
+  id?: number;
+  createdAt?: string;
 }
 
 /**
@@ -796,7 +805,12 @@ function ownCommentOf(value: unknown): PriorComment | null {
   if (typeof v['author'] !== 'string' || v['author'].length === 0) return null;
   if (typeof v['path'] !== 'string' || v['path'].length === 0) return null;
   if (!Number.isInteger(v['line']) || (v['line'] as number) < 1) return null;
-  return { author: v['author'], path: v['path'], line: v['line'] as number };
+  return {
+    author: v['author'],
+    path: v['path'],
+    line: v['line'] as number,
+    ...(Number.isInteger(v['commentId']) ? { commentId: v['commentId'] as number } : {}),
+  };
 }
 
 /** Null when the verifier's `partly_addressed` is well formed, else what is wrong. */
