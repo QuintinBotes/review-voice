@@ -86,6 +86,31 @@ export const EVIDENCE_QUALITIES = ['high', 'medium', 'low'] as const;
 export type EvidenceQuality = (typeof EVIDENCE_QUALITIES)[number];
 
 /**
+ * Whether the claim depends on a piece of missing context. `cosmetic` context
+ * would only sharpen the wording - the exact text behind a localisation key,
+ * say - and the claim holds without it.
+ */
+export const CONTEXT_KINDS = ['blocking', 'cosmetic'] as const;
+export type ContextKind = (typeof CONTEXT_KINDS)[number];
+
+/** A plain string is blocking, which is what every entry meant before kinds existed. */
+export type MissingContext = string | { context: string; kind?: ContextKind | undefined };
+
+/**
+ * The missing context a claim depends on: every entry not marked cosmetic.
+ *
+ * The cap used to fire on any entry. A verified behavioural finding was
+ * rejected because the only thing missing was the display text of a key it
+ * quoted; the defect, the wrong branch being shown, did not depend on that
+ * wording, and with the text fetched the same finding was eligible.
+ */
+export function blockingContext(entries: readonly MissingContext[] | undefined): string[] {
+  return (entries ?? [])
+    .filter((entry) => typeof entry === 'string' || entry.kind !== 'cosmetic')
+    .map((entry) => (typeof entry === 'string' ? entry : entry.context));
+}
+
+/**
  * What the `evidence-verifier` concluded, when it ran.
  *
  * The verifier is the only stage that actually checks a claim against the
@@ -100,8 +125,8 @@ export interface Verification {
   fixConfidence?: number | undefined;
   fixReason?: string | undefined;
   fixDirection?: string | undefined;
-  /** Context the verifier needed and could not obtain. */
-  requiredContextMissing?: string[] | undefined;
+  /** Context the verifier needed and could not obtain; see `blockingContext`. */
+  requiredContextMissing?: MissingContext[] | undefined;
   /** Deterministic CLI evidence; it is never read from verifier output. */
   reach?: ReachCheck | undefined;
   /**
@@ -1035,7 +1060,8 @@ export function scoreCandidate(
 
   // Context the verifier itself could not obtain is binding: that is the
   // verifier reporting on its own reach, not a guess about someone else's.
-  const missingContext = (verification?.requiredContextMissing ?? []).length > 0;
+  // Only context the claim depends on; cosmetic context leaves it standing.
+  const missingContext = blockingContext(verification?.requiredContextMissing).length > 0;
 
   // The analyst's admission is a prior, not a ceiling. It used to outrank the
   // verifier absolutely, which inverted the whole point of letting the

@@ -128,14 +128,22 @@ could not.
 List in `required_context_missing` anything you needed and could not obtain: a
 sibling repository, a generated file, a service you cannot reach.
 
+Mark each entry by whether the claim depends on it. A plain string is
+`blocking`: the claim stands or falls on it. Write
+`{"context": "...", "kind": "cosmetic"}` only when the claim holds without it
+and it would merely sharpen the wording - the exact display text behind a
+localisation key a finding quotes, when the defect is which message is shown,
+not what it says. A cosmetic entry does not hold the claim back, so the claim
+must not state that wording as fact. When in doubt, it is blocking.
+
 **A commit that is not in this clone belongs here.** If reading a ref fails -
 `fatal: bad object`, or the review told you `refs.head.available` is false -
 say so in `required_context_missing` rather than falling back to the patch and
 reporting a confidence as though you had checked the code. Working from
 base-side evidence alone is not the same as verifying, and only you can report
 that you were limited. A candidate
-with entries here cannot ship, whatever its confidence, because a claim nobody
-in the pipeline can check is how a review comment gets retracted.
+with a blocking entry here cannot ship, whatever its confidence, because a
+claim nobody in the pipeline can check is how a review comment gets retracted.
 
 Never report high confidence on a claim whose own evidence says it could not be
 verified. Resolve the gap or record it.
@@ -176,8 +184,8 @@ JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `evidence_quality` is exactly one of `high`, `medium` or `low`. No other word
 is accepted: `strong`, `weak`, `moderate` and the like are refused, and the
 whole file with them. `technical_confidence` and `fix_confidence` are JSON
-numbers from 0 to 1, not strings. `required_context_missing` is an array, empty
-when nothing was missing. `check-verification` checks this shape straight
+numbers from 0 to 1, not strings. `required_context_missing` is an array of
+strings or `{"context", "kind"}` objects, empty when nothing was missing. `check-verification` checks this shape straight
 after you return, and names the entry and field it refuses.
 
 `impact_traced` is a boolean: true only when you followed the failure to a

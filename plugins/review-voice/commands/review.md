@@ -399,14 +399,16 @@ arithmetic, and a threshold you can talk your way past is not a threshold.
 Keep only candidates where `eligible` is true. For the rest, `rejectedBecause`
 says why, and `confidenceSource` says whose confidence the gate read: the
 `verifier` where it ran, the `analyst` where it did not, or `unverifiable-cap`
-where the claim itself says it could not be checked.
+where the claim itself says it could not be checked. A `required_context_missing`
+entry the verifier marked `cosmetic` - context that would only sharpen the
+wording - does not trigger the cap; every other entry does.
 
 `belowGate` lists the verified candidates stopped only by the final score. Keep
 it for step 6. They are never posted and are not part of the validated output.
 
 `unverified` lists the candidates rejected only because the verifier listed
-context it could not obtain in `required_context_missing`, each with the
-verifier's confidence and those entries. The claim may be right; nobody in the
+blocking context it could not obtain in `required_context_missing`, each with
+the verifier's confidence and those entries. The claim may be right; nobody in the
 pipeline could check it. Keep it for step 6. Like `belowGate`, it is never
 posted and is not part of the validated output.
 

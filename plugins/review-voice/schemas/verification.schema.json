@@ -48,8 +48,32 @@
     },
     "required_context_missing": {
       "type": "array",
+      "description": "Context the verifier needed and could not obtain. A string, or an object without `kind`, is blocking: the claim depends on it and cannot ship. `cosmetic` context would only sharpen the wording, and does not hold the claim back.",
       "items": {
-        "type": "string"
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "required": [
+              "context"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "blocking",
+                  "cosmetic"
+                ]
+              }
+            }
+          }
+        ]
       }
     }
   }

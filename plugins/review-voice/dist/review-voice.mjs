@@ -11801,6 +11801,10 @@ function isFixVerdict(value) {
   return typeof value === "string" && FIX_VERDICTS.includes(value);
 }
 var EVIDENCE_QUALITIES = ["high", "medium", "low"];
+var CONTEXT_KINDS = ["blocking", "cosmetic"];
+function blockingContext(entries) {
+  return (entries ?? []).filter((entry) => typeof entry === "string" || entry.kind !== "cosmetic").map((entry) => typeof entry === "string" ? entry : entry.context);
+}
 var QUALITY_CONFIDENCE = { high: 0.9, medium: 0.75, low: 0.5 };
 var TIER_ORDER = ["nit", "minor", "important", "blocking"];
 var BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
@@ -12156,7 +12160,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const verifiedConfidence = verification2 === void 0 ? null : verification2.technicalConfidence ?? (verification2.evidenceQuality === void 0 ? null : QUALITY_CONFIDENCE[verification2.evidenceQuality] ?? null);
   let confidence = verifiedConfidence ?? analystConfidence;
   let confidenceSource = verifiedConfidence === null ? "analyst" : "verifier";
-  const missingContext = (verification2?.requiredContextMissing ?? []).length > 0;
+  const missingContext = blockingContext(verification2?.requiredContextMissing).length > 0;
   const admitted = admitsUnverifiable(candidate);
   const verifierEngaged = verification2?.technicalConfidence !== void 0;
   if ((missingContext || admitted && !verifierEngaged) && confidence > UNVERIFIABLE_CONFIDENCE) {
@@ -14367,7 +14371,7 @@ function scoreCommand(argv) {
       })
     );
     const unverified = results.filter((r) => r.confidenceSource === "unverifiable-cap" && r.rejectedBecause === UNVERIFIABLE_REJECTION).flatMap((r) => {
-      const missing = verifications.get(r.candidateId)?.requiredContextMissing ?? [];
+      const missing = blockingContext(verifications.get(r.candidateId)?.requiredContextMissing);
       if (missing.length === 0) return [];
       return [
         boundLists({
@@ -15078,8 +15082,8 @@ function verificationProblem(list) {
       return `${who}: technical_confidence must be a number from 0 to 1.`;
     }
     const missing = entry["required_context_missing"] ?? entry["requiredContextMissing"];
-    if (missing !== void 0 && !(Array.isArray(missing) && missing.every((item) => typeof item === "string"))) {
-      return `${who}: required_context_missing must be an array of strings.`;
+    if (missing !== void 0 && !(Array.isArray(missing) && missing.every(isMissingContext))) {
+      return `${who}: required_context_missing must be an array of strings, or of {"context": string, "kind": ${CONTEXT_KINDS.map((kind) => `"${kind}"`).join(" | ")}}.`;
     }
   }
   return null;
@@ -15107,6 +15111,14 @@ function checkVerificationCommand() {
   }
   console.log(JSON.stringify({ valid: true, verifications: list.length }, null, 2));
   return 0;
+}
+function isMissingContext(item) {
+  if (typeof item === "string") return true;
+  if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
+  const entry = item;
+  if (Object.keys(entry).some((key) => key !== "context" && key !== "kind")) return false;
+  if (typeof entry["context"] !== "string" || entry["context"].length === 0) return false;
+  return entry["kind"] === void 0 || CONTEXT_KINDS.includes(entry["kind"]);
 }
 function verdictList(parsed) {
   if (Array.isArray(parsed)) return parsed;

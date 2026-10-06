@@ -79,12 +79,15 @@ import {
   DEFAULT_THRESHOLDS,
   DUPLICATE_OVERLAP,
   EVIDENCE_QUALITIES,
+  CONTEXT_KINDS,
   UNVERIFIABLE_REJECTION,
+  blockingContext,
   overlap,
   significantWords,
   type Candidate,
   type RawCandidate,
   type ScoreBreakdown,
+  type MissingContext,
   type Verification,
 } from './scoring/score.ts';
 import { compileProposals } from './policy/compile.ts';
@@ -1295,7 +1298,7 @@ function scoreCommand(argv: string[]): number {
           // Only a real boolean counts; a string "true" is not evidence.
           impactTraced: typeof impactTraced === 'boolean' ? impactTraced : undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
-            raw['requiredContextMissing']) as string[] | undefined,
+            raw['requiredContextMissing']) as MissingContext[] | undefined,
         });
       }
     } catch (error) {
@@ -1558,7 +1561,7 @@ function scoreCommand(argv: string[]): number {
     const unverified = results
       .filter((r) => r.confidenceSource === 'unverifiable-cap' && r.rejectedBecause === UNVERIFIABLE_REJECTION)
       .flatMap((r) => {
-        const missing = verifications.get(r.candidateId)?.requiredContextMissing ?? [];
+        const missing = blockingContext(verifications.get(r.candidateId)?.requiredContextMissing);
         if (missing.length === 0) return [];
         return [
           boundLists({
@@ -2454,8 +2457,11 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
       return `${who}: technical_confidence must be a number from 0 to 1.`;
     }
     const missing = entry['required_context_missing'] ?? entry['requiredContextMissing'];
-    if (missing !== undefined && !(Array.isArray(missing) && missing.every((item) => typeof item === 'string'))) {
-      return `${who}: required_context_missing must be an array of strings.`;
+    if (missing !== undefined && !(Array.isArray(missing) && missing.every(isMissingContext))) {
+      return (
+        `${who}: required_context_missing must be an array of strings, or of ` +
+        `{"context": string, "kind": ${CONTEXT_KINDS.map((kind) => `"${kind}"`).join(' | ')}}.`
+      );
     }
   }
   return null;
@@ -2494,6 +2500,16 @@ function checkVerificationCommand(): number {
   }
   console.log(JSON.stringify({ valid: true, verifications: list.length }, null, 2));
   return 0;
+}
+
+/** A string, or `{context, kind?}` with a non-empty context and a known kind. */
+function isMissingContext(item: unknown): boolean {
+  if (typeof item === 'string') return true;
+  if (typeof item !== 'object' || item === null || Array.isArray(item)) return false;
+  const entry = item as Record<string, unknown>;
+  if (Object.keys(entry).some((key) => key !== 'context' && key !== 'kind')) return false;
+  if (typeof entry['context'] !== 'string' || entry['context'].length === 0) return false;
+  return entry['kind'] === undefined || (CONTEXT_KINDS as readonly unknown[]).includes(entry['kind']);
 }
 
 function verdictList(parsed: unknown): Record<string, unknown>[] {
