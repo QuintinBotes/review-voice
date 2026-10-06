@@ -28,8 +28,18 @@ export interface SymbolContextFile {
   symbols: SymbolContext[];
   /** Distinctive symbols present in the hunk but omitted by the symbol cap. */
   moreSymbols?: number;
-  /** A grep failed, so this file's partial evidence must not read as complete. */
+  /** A grep failed or the time budget ran out, so this file's evidence is partial. */
   inconclusive?: true;
+  /** Why, when the budget is the cause; a failed grep carries no reason. */
+  reason?: 'time-budget';
+}
+
+/** What the time budget did to this collection. */
+export interface SymbolBudget {
+  maxMs: number;
+  elapsedMs: number;
+  /** True when at least one file was left unfinished for want of time. */
+  exhausted: boolean;
 }
 
 export interface SymbolContextReport {
@@ -38,6 +48,7 @@ export interface SymbolContextReport {
   files: SymbolContextFile[];
   /** Untouched code paths that reference at least one reported changed symbol. */
   downstreamFiles: number;
+  budget: SymbolBudget;
 }
 
 export interface CollectSymbolContextOptions {
@@ -46,7 +57,13 @@ export interface CollectSymbolContextOptions {
   ref: string | null;
   /** Injectable because search failure is evidence too, and needs a cheap test. */
   search?: PathSearcher;
+  /** Time budget for the whole collection, enforced between and within searches. */
+  maxMs?: number;
+  /** Injectable clock, so a budget needs no real waiting to test. */
+  now?: () => number;
 }
+
+export const DEFAULT_MAX_MS = 60_000;
 
 const MAX_SYMBOLS_PER_FILE = 12;
 const MAX_REFERENCES_PER_SYMBOL = 8;
@@ -113,6 +130,7 @@ function reportFile(
   cwd: string,
   ref: string | null,
   search: PathSearcher,
+  remaining: () => number,
 ): { file: SymbolContextFile; references: Set<string> } {
   const allSymbols = symbolsFromHunks(diff, path);
   const omitted = Math.max(0, allSymbols.length - MAX_SYMBOLS_PER_FILE);
@@ -120,17 +138,21 @@ function reportFile(
   const references = new Set<string>();
   const normalisedPath = normalisePath(path);
 
-  const file = (inconclusive: boolean): SymbolContextFile => ({
+  const file = (inconclusive: boolean, reason?: 'time-budget'): SymbolContextFile => ({
     path,
     symbols,
     ...(omitted === 0 ? {} : { moreSymbols: omitted }),
     ...(inconclusive ? { inconclusive: true } : {}),
+    ...(reason === undefined ? {} : { reason }),
   });
 
   for (const symbol of allSymbols.slice(0, MAX_SYMBOLS_PER_FILE)) {
+    // Checked before every search: a search is the only slow step, and the
+    // budget has to hold however many symbols and files precede this one.
+    if (remaining() <= 0) return { file: file(true, 'time-budget'), references };
     let found: string[];
     try {
-      found = search(symbol, cwd, ref);
+      found = search(symbol, cwd, ref, remaining());
     } catch {
       // A failed grep is not an empty grep. Leave the symbol that failed out
       // altogether, retain evidence from earlier successful searches, and
@@ -171,8 +193,18 @@ function reportFile(
  */
 export function collectSymbolContext(options: CollectSymbolContextOptions): SymbolContextReport {
   const search = options.search ?? gitGrepPaths;
+  const now = options.now ?? Date.now;
+  const maxMs = options.maxMs ?? DEFAULT_MAX_MS;
+  const started = now();
+  const remaining = () => maxMs - (now() - started);
   const paths = pathsWithHunks(options.diff);
-  const records = paths.map((path) => reportFile(options.diff, path, options.cwd, options.ref, search));
+  // Files the budget never reached are still listed: a missing file reads as
+  // "nothing to find", and an unfinished one is not that.
+  const records = paths.map((path) =>
+    remaining() <= 0
+      ? { file: { path, symbols: [], inconclusive: true, reason: 'time-budget' } as SymbolContextFile, references: new Set<string>() }
+      : reportFile(options.diff, path, options.cwd, options.ref, search, remaining),
+  );
   const changed = new Set(paths.map(normalisePath));
   const downstream = new Set<string>();
 
@@ -194,5 +226,10 @@ export function collectSymbolContext(options: CollectSymbolContextOptions): Symb
     searchedRef: options.ref ?? 'working tree',
     files: records.map((record) => record.file),
     downstreamFiles: downstream.size,
+    budget: {
+      maxMs,
+      elapsedMs: Math.max(0, now() - started),
+      exhausted: records.some((record) => record.file.reason === 'time-budget'),
+    },
   };
 }

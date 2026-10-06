@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `base`, which stays the base branch tip. Once that branch moves on,
   `git diff base head` shows its own changes; `record`, `symbols` and `score`
   take the merge base as `--base`. (#36)
+- `symbols` stops itself after `--max-ms` (default 60000) instead of running on
+  a large diff. Files it had not finished are listed as `inconclusive` with
+  `reason: "time-budget"`, the finished ones are still written, and the report
+  carries a `budget`. (#33)
 
 ## [1.10.1] - 2026-10-05
 

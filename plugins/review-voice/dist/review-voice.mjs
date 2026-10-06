@@ -2460,10 +2460,10 @@ var gitGrep = (symbol, cwd, ref) => {
     throw error;
   }
 };
-var gitGrepPaths = (symbol, cwd, ref) => {
+var gitGrepPaths = (symbol, cwd, ref, timeoutMs) => {
   const args = ref === null ? ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol] : ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol, ref];
   try {
-    const output = execFileSync6("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 1e4 });
+    const output = execFileSync6("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
     const prefix = ref === null ? "" : `${ref}:`;
     return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
   } catch (error) {
@@ -2692,6 +2692,7 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
 }
 
 // plugins/review-voice/src/diff/symbols.ts
+var DEFAULT_MAX_MS = 6e4;
 var MAX_SYMBOLS_PER_FILE = 12;
 var MAX_REFERENCES_PER_SYMBOL = 8;
 function normalisePath3(path) {
@@ -2730,22 +2731,24 @@ function pathsWithHunks2(diff) {
   keepCurrent();
   return paths;
 }
-function reportFile(diff, path, cwd, ref, search) {
+function reportFile(diff, path, cwd, ref, search, remaining) {
   const allSymbols = symbolsFromHunks(diff, path);
   const omitted = Math.max(0, allSymbols.length - MAX_SYMBOLS_PER_FILE);
   const symbols = [];
   const references = /* @__PURE__ */ new Set();
   const normalisedPath = normalisePath3(path);
-  const file = (inconclusive) => ({
+  const file = (inconclusive, reason2) => ({
     path,
     symbols,
     ...omitted === 0 ? {} : { moreSymbols: omitted },
-    ...inconclusive ? { inconclusive: true } : {}
+    ...inconclusive ? { inconclusive: true } : {},
+    ...reason2 === void 0 ? {} : { reason: reason2 }
   });
   for (const symbol of allSymbols.slice(0, MAX_SYMBOLS_PER_FILE)) {
+    if (remaining() <= 0) return { file: file(true, "time-budget"), references };
     let found;
     try {
-      found = search(symbol, cwd, ref);
+      found = search(symbol, cwd, ref, remaining());
     } catch {
       return { file: file(true), references };
     }
@@ -2767,8 +2770,14 @@ function reportFile(diff, path, cwd, ref, search) {
 }
 function collectSymbolContext(options) {
   const search = options.search ?? gitGrepPaths;
+  const now = options.now ?? Date.now;
+  const maxMs = options.maxMs ?? DEFAULT_MAX_MS;
+  const started = now();
+  const remaining = () => maxMs - (now() - started);
   const paths = pathsWithHunks2(options.diff);
-  const records = paths.map((path) => reportFile(options.diff, path, options.cwd, options.ref, search));
+  const records = paths.map(
+    (path) => remaining() <= 0 ? { file: { path, symbols: [], inconclusive: true, reason: "time-budget" }, references: /* @__PURE__ */ new Set() } : reportFile(options.diff, path, options.cwd, options.ref, search, remaining)
+  );
   const changed = new Set(paths.map(normalisePath3));
   const downstream = /* @__PURE__ */ new Set();
   for (const record of records) {
@@ -2782,7 +2791,12 @@ function collectSymbolContext(options) {
   return {
     searchedRef: options.ref ?? "working tree",
     files: records.map((record) => record.file),
-    downstreamFiles: downstream.size
+    downstreamFiles: downstream.size,
+    budget: {
+      maxMs,
+      elapsedMs: Math.max(0, now() - started),
+      exhausted: records.some((record) => record.file.reason === "time-budget")
+    }
   };
 }
 
@@ -13318,6 +13332,7 @@ symbols flags:
   --diff-file <path>     Unified diff whose changed symbols to inspect
   --base <ref>           Search this committed tree, not the working tree
                          (on --pr: refs.mergeBase)
+  --max-ms <n>           Time budget; unfinished files are inconclusive (default 60000)
   --out <path>           Write <path> or <dir>/symbols.json instead of stdout
 
 check-candidates:
@@ -13725,7 +13740,16 @@ function symbolsCommand(argv) {
     console.error(`--base ${base} does not resolve in this repository. Fetch it before collecting symbol context.`);
     return 2;
   }
-  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base });
+  let maxMs = DEFAULT_MAX_MS;
+  if (argv.includes("--max-ms")) {
+    const wanted = flag(argv, "--max-ms");
+    maxMs = wanted !== null && /^\d+$/.test(wanted) ? Number(wanted) : Number.NaN;
+    if (!Number.isSafeInteger(maxMs) || maxMs < 1) {
+      console.error("--max-ms needs a positive number of milliseconds, for example: --max-ms 60000");
+      return 2;
+    }
+  }
+  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, maxMs });
   const out = flag(argv, "--out");
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
@@ -13734,7 +13758,19 @@ function symbolsCommand(argv) {
   try {
     const path = resolveOutPath(out, "symbols.json");
     writeFileSync(path, JSON.stringify(result, null, 2), "utf8");
-    console.log(JSON.stringify({ path, files: result.files.length, downstreamFiles: result.downstreamFiles }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          path,
+          files: result.files.length,
+          downstreamFiles: result.downstreamFiles,
+          inconclusiveFiles: result.files.filter((file) => file.inconclusive === true).length,
+          budgetExhausted: result.budget.exhausted
+        },
+        null,
+        2
+      )
+    );
     return 0;
   } catch (error) {
     console.error(

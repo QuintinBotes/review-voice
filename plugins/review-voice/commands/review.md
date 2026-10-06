@@ -218,7 +218,10 @@ be current.
 Pass `symbols.json` to the `diff-analyst` in step 2 and the
 `evidence-verifier` in step 3. If any file is `inconclusive`, tell both agents
 that the changed-symbol context is incomplete; a failed search is not a report
-of zero consumers.
+of zero consumers. `symbols` stops itself after `--max-ms` (default 60000):
+files it had not finished are `inconclusive` with `reason: "time-budget"`, the
+finished ones are still written, and `budget.exhausted` says it happened. Never
+wrap it in a kill timer; a hung step is reported, not worked around.
 
 ## Step 2 - Generate candidates
 

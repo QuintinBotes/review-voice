@@ -135,6 +135,13 @@ made-up parser; it is a reading hint, never proof of a call site. A failed grep
 marks that file inconclusive rather than empty, because a search that did not
 answer cannot establish that a changed symbol has no consumers.
 
+The collection has a time budget (`--max-ms`, default 60 seconds) that the
+process enforces itself: it is checked before every search, and each search is
+capped to what is left. It sits on the critical path before the analyst, so a
+large diff must not stall the review. A file the budget did not reach is listed
+as inconclusive with `reason: "time-budget"`, and the files finished so far are
+still written.
+
 ### Retrieval
 
 No embedding model ships with the plugin. A downloaded model would break

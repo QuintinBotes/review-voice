@@ -24,7 +24,7 @@ import { isReviewable } from './diff/classify.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
 import { classifyAnchor, classifyStaleConsumer, parseHunks, reason, type AnchorCheck, type FileHunks } from './diff/hunks.ts';
 import { readThread, type ThreadComment } from './diff/thread.ts';
-import { collectSymbolContext } from './diff/symbols.ts';
+import { collectSymbolContext, DEFAULT_MAX_MS } from './diff/symbols.ts';
 import { openDatabase } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
 import {
@@ -152,6 +152,7 @@ symbols flags:
   --diff-file <path>     Unified diff whose changed symbols to inspect
   --base <ref>           Search this committed tree, not the working tree
                          (on --pr: refs.mergeBase)
+  --max-ms <n>           Time budget; unfinished files are inconclusive (default 60000)
   --out <path>           Write <path> or <dir>/symbols.json instead of stdout
 
 check-candidates:
@@ -701,7 +702,17 @@ function symbolsCommand(argv: string[]): number {
     return 2;
   }
 
-  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base });
+  let maxMs = DEFAULT_MAX_MS;
+  if (argv.includes('--max-ms')) {
+    const wanted = flag(argv, '--max-ms');
+    maxMs = wanted !== null && /^\d+$/.test(wanted) ? Number(wanted) : Number.NaN;
+    if (!Number.isSafeInteger(maxMs) || maxMs < 1) {
+      console.error('--max-ms needs a positive number of milliseconds, for example: --max-ms 60000');
+      return 2;
+    }
+  }
+
+  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, maxMs });
   const out = flag(argv, '--out');
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
@@ -711,7 +722,19 @@ function symbolsCommand(argv: string[]): number {
   try {
     const path = resolveOutPath(out, 'symbols.json');
     writeFileSync(path, JSON.stringify(result, null, 2), 'utf8');
-    console.log(JSON.stringify({ path, files: result.files.length, downstreamFiles: result.downstreamFiles }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          path,
+          files: result.files.length,
+          downstreamFiles: result.downstreamFiles,
+          inconclusiveFiles: result.files.filter((file) => file.inconclusive === true).length,
+          budgetExhausted: result.budget.exhausted,
+        },
+        null,
+        2,
+      ),
+    );
     return 0;
   } catch (error) {
     console.error(
