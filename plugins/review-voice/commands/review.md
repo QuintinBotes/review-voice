@@ -156,6 +156,14 @@ same way:** `Not reviewed again, as the base branch now makes the same change:
 pull request no longer does, because the merged base already holds that
 change. Do not review them or comment on them.
 
+**If `noLongerChanged` is not empty, print one line after the findings, the
+same way:** `No longer changed by this pull request after a conflicting
+replay, so not reviewed again: <paths, comma-separated>.` The author withdrew
+their change there, or the branch under the pull request was rewritten; the
+patch leaves them out rather than show the replay's conflict markers. Do not
+call either a bad merge resolution. Findings of the earlier review in those
+files no longer carry.
+
 **If `humanReviewNote` is not null, print it on its own line after the
 findings, the same way, including after `No actionable findings.`.** It is
 computed by `diff` from the diff and is not part of the validated text. It

@@ -45,6 +45,8 @@ export type ReviewScope =
       reason: UnchangedReason;
       /** See the `interdiff` kind. */
       absorbedByBase?: string[];
+      /** See the `interdiff` kind. */
+      noLongerChanged?: string[];
     }
   | {
       kind: 'interdiff';
@@ -66,6 +68,13 @@ export type ReviewScope =
        * their absence is not silent.
        */
       absorbedByBase?: string[];
+      /**
+       * Files whose replay conflicted that the pull request no longer changes:
+       * the author withdrew their change there, or the branch under it was
+       * rewritten. Only the replay's conflict markers could show them, so they
+       * are not in the patch (#73); listed so their absence is not silent.
+       */
+      noLongerChanged?: string[];
     }
   | {
       kind: 'full';
@@ -100,7 +109,9 @@ export function parseReviewScope(value: unknown): ReviewScope | null {
   if (scope.kind === 'incremental' && prior && Number.isInteger(scope.commits) && strings(scope.files)) {
     return scope as unknown as ReviewScope;
   }
-  const absorbed = scope.absorbedByBase === undefined || strings(scope.absorbedByBase);
+  const absorbed =
+    (scope.absorbedByBase === undefined || strings(scope.absorbedByBase)) &&
+    (scope.noLongerChanged === undefined || strings(scope.noLongerChanged));
   if (
     scope.kind === 'unchanged' &&
     prior &&
@@ -731,6 +742,14 @@ function changedSince(own: string, delta: string): string | null {
 }
 
 /**
+ * True when a file's section removes a replay's conflict block: an opening
+ * and a closing marker line, which git writes and no author does.
+ */
+function hasReplayMarkers(section: string): boolean {
+  return /^-<{7} /m.test(section) && /^->{7} /m.test(section);
+}
+
+/**
  * Reads the head against `from` - the reviewed head, or its replay onto the
  * new base - over the pull request's files only.
  *
@@ -743,7 +762,8 @@ function changedSince(own: string, delta: string): string | null {
  * same at both heads is left out, so a base merge that conflicted but left the
  * author's code as reviewed reads as unchanged. If that own diff is empty the
  * author resolved by dropping their change, and the marker diff is the only
- * place the withdrawal shows, so that file keeps it.
+ * place the withdrawal would show; but it shows it through the replay's
+ * conflict markers, so such a file is left out and listed instead (#73).
  */
 function interdiffFrom(
   options: PlanIncrementalScopeOptions,
@@ -796,7 +816,25 @@ function interdiffFrom(
     return [fresh];
   });
   const rest = paths.filter((path) => !own.has(path));
-  const outside = read(from, rest);
+  // A replay's conflict markers are never the author's lines, yet a file read
+  // against a conflicted replay shows them as removed code, and an analyst
+  // took them for a bad resolution (#73). Such a file is read as the pull
+  // request's own diff of it on the new base instead; when that is empty, the
+  // pull request no longer changes the file - its change there was withdrawn,
+  // or the branch under it was rewritten - and it is left out and listed.
+  const leaked: string[] = [];
+  const dropped: string[] = [];
+  const outsideSections = [...patchSections(read(from, rest))].map(([path, section]) => {
+    if (!hasReplayMarkers(section)) return section;
+    const ownSection = patchSections(read(mergeBase, [path])).get(path);
+    if (ownSection === undefined) {
+      dropped.push(path);
+      return '';
+    }
+    leaked.push(path);
+    return ownSection;
+  });
+  const outside = outsideSections.join('');
   const patch = [outside, ...resolved].filter((part) => part.length > 0).join('');
 
   const notes = [
@@ -804,6 +842,9 @@ function interdiffFrom(
     whole.length === 0
       ? null
       : `read whole after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(', ')}`,
+    leaked.length === 0
+      ? null
+      : `read as the pull request's own diff after a conflicting replay, so no conflict marker is shown: ${leaked.sort().join(', ')}`,
   ].filter((note): note is string => note !== null);
   const detail = notes.length === 0 ? {} : { detail: notes.join('; ') };
 
@@ -818,7 +859,10 @@ function interdiffFrom(
     const differs = new Set(git.changedPaths(from, options.head, options.cwd));
     absorbedList = candidates.filter((path) => !differs.has(path)).sort();
   }
-  const absorbed = absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList };
+  const absorbed = {
+    ...(absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList }),
+    ...(dropped.length === 0 ? {} : { noLongerChanged: dropped.sort() }),
+  };
 
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
   if (patch.trim().length === 0) {

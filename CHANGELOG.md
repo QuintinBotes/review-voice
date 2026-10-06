@@ -5,6 +5,18 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `diff --pr` after a conflicting replay no longer puts the replay's conflict
+  markers in `diff.patch`. A conflicted file the pull request no longer
+  changes - the author withdrew their change there, or the branch under it was
+  rewritten - is left out of the patch and listed as `noLongerChanged` in the
+  scope and the diff summary, which `review.md` prints after the findings. On
+  a stacked pull request whose parent was rewritten, the markers had been read
+  as the author dropping a feature in a bad merge. (#73)
+
 ## [1.13.0] - 2026-10-06
 
 ### Added
