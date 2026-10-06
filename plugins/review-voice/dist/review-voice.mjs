@@ -11844,6 +11844,7 @@ function boundSeverityByEvidence(derived, candidate, verification2) {
   };
 }
 var UNVERIFIABLE_CONFIDENCE = 0.6;
+var UNVERIFIABLE_REJECTION = "the claim states it could not be verified, so it cannot ship whatever it scores";
 var ADMITS_UNVERIFIABLE = [
   /\b(?:cannot|can not|could not|couldn't|unable to)\s+(?:be\s+)?(?:verif|confirm|check|establish|determin)/i,
   /\bnot\s+verifiable\b/i,
@@ -12184,7 +12185,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
       rejectedBecause = `owner precedent is against asking this (${ownerAlignment.toFixed(2)} alignment), and a question the owner has dismissed the like of before is noise the second time`;
     }
   } else if (confidenceSource === "unverifiable-cap") {
-    rejectedBecause = `the claim states it could not be verified, so it cannot ship whatever it scores`;
+    rejectedBecause = UNVERIFIABLE_REJECTION;
   } else if (confidence < confidenceFloor) {
     rejectedBecause = `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` + (confidenceSource === "analyst" ? ". No verification was supplied, so this is the analyst's opinion of its own output." : "");
   } else if (finalScore < thresholds.finalScore) {
@@ -14359,6 +14360,21 @@ function scoreCommand(argv) {
         threshold: thresholds.finalScore
       })
     );
+    const unverified = results.filter((r) => r.confidenceSource === "unverifiable-cap" && r.rejectedBecause === UNVERIFIABLE_REJECTION).flatMap((r) => {
+      const missing = verifications.get(r.candidateId)?.requiredContextMissing ?? [];
+      if (missing.length === 0) return [];
+      return [
+        boundLists({
+          candidateId: r.candidateId,
+          path: r.path,
+          line: r.line,
+          severity: r.severity.severity,
+          claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? "",
+          verifierConfidence: r.verifiedConfidence,
+          requiredContextMissing: missing
+        })
+      ];
+    });
     const finals = results.map((r) => r.finalScore).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
     const at = (p) => finals.length === 0 ? null : finals[Math.min(finals.length - 1, Math.floor(p * finals.length))];
     console.log(
@@ -14419,7 +14435,8 @@ function scoreCommand(argv) {
               ...c.anchor === "stale-consumer" ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {}
             };
           }),
-          belowGate
+          belowGate,
+          unverified
         },
         null,
         2

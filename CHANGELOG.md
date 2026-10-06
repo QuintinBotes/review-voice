@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it runs, with the checks `score --verification` applies, and names the entry,
   field and refused value. The verifier prompt now states that
   `evidence_quality` is exactly `high`, `medium` or `low`. (#37)
+- `score` lists `unverified`: candidates rejected only because the verifier
+  listed context it could not obtain, with the verifier's confidence and the
+  missing context. The review prints them locally under
+  `Unverified (not posted)` and records them with `record --held` as
+  `unverified`. They are never posted. (#20)
 
 ### Changed
 

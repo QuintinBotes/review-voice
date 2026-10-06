@@ -79,6 +79,7 @@ import {
   DEFAULT_THRESHOLDS,
   DUPLICATE_OVERLAP,
   EVIDENCE_QUALITIES,
+  UNVERIFIABLE_REJECTION,
   overlap,
   significantWords,
   type Candidate,
@@ -1550,6 +1551,28 @@ function scoreCommand(argv: string[]): number {
         }),
       );
 
+    // Held back by the verifier's own report of context it could not obtain,
+    // and by nothing else. The claim may well be right - one was later
+    // confirmed end to end and was the most useful point of its review - so
+    // the owner sees it locally, with what was missing. Never posted.
+    const unverified = results
+      .filter((r) => r.confidenceSource === 'unverifiable-cap' && r.rejectedBecause === UNVERIFIABLE_REJECTION)
+      .flatMap((r) => {
+        const missing = verifications.get(r.candidateId)?.requiredContextMissing ?? [];
+        if (missing.length === 0) return [];
+        return [
+          boundLists({
+            candidateId: r.candidateId,
+            path: r.path,
+            line: r.line,
+            severity: r.severity.severity,
+            claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? '',
+            verifierConfidence: r.verifiedConfidence,
+            requiredContextMissing: missing,
+          }),
+        ];
+      });
+
     const finals = results
       .map((r) => r.finalScore)
       .filter((v) => Number.isFinite(v))
@@ -1616,6 +1639,7 @@ function scoreCommand(argv: string[]): number {
             };
           }),
           belowGate,
+          unverified,
         },
         null,
         2,

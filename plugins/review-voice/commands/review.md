@@ -402,6 +402,12 @@ where the claim itself says it could not be checked.
 `belowGate` lists the verified candidates stopped only by the final score. Keep
 it for step 6. They are never posted and are not part of the validated output.
 
+`unverified` lists the candidates rejected only because the verifier listed
+context it could not obtain in `required_context_missing`, each with the
+verifier's confidence and those entries. The claim may be right; nobody in the
+pipeline could check it. Keep it for step 6. Like `belowGate`, it is never
+posted and is not part of the validated output.
+
 Then order by severity: `blocking`, `important`, `minor`, `nit`, `question`.
 Within a tier, prefer the higher final score.
 
@@ -473,7 +479,11 @@ stray directory and another project's notes took the reviewed count from 11 to
 - Exit 0: display the output verbatim. When `belowGate` from step 4 is not
   empty, print after it a line `Below the gate (not posted)` and then one line
   per entry: `[severity] path:line - claim`. They are verified but scored below
-  the gate, are never posted, and are not part of the validated output. Then
+  the gate, are never posted, and are not part of the validated output. When
+  `unverified` from step 4 is not empty, print after that a line
+  `Unverified (not posted)` and then one line per entry:
+  `[severity] path:line - claim (could not check: <required_context_missing>)`.
+  The verifier could not check them; they are never posted either. Then
   record it. Write the scored candidates to a temporary file and pass it:
   `RV record --repository <owner/repo> --base <ref> --head <sha> --candidates <file>
   --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --stages <file>` with the validated output on
@@ -507,7 +517,8 @@ stray directory and another project's notes took the reviewed count from 11 to
   `--held <file>` (an array of `{path, line, verdict, source, reason, text}`, verdict
   one of `partly`, `refuted`, `unverified`, `repeat`, `below-gate`): the
   `droppedAsRepeat` from step 2 as `repeat`, any cross-check result of PARTLY or
-  REFUTED, and each `belowGate` entry from step 4 as `below-gate`. Give each
+  REFUTED, each `belowGate` entry from step 4 as `below-gate`, and each
+  `unverified` entry from step 4 as `unverified`. Give each
   entry `text`, the candidate's claim, so the next review can match on wording. Malformed
   entries exit 2. `/review-voice:explain` lists them under "Held back".
 
@@ -534,8 +545,9 @@ defeats the measurement.
 
 No greeting. No summary. No praise. No description of the process or of how
 many files you looked at. No markdown headings. No commentary after the
-findings, except the `Below the gate (not posted)` list from step 6 when it is
-not empty. If you have nothing that clears the bar, the entire output is:
+findings, except the `Below the gate (not posted)` and `Unverified (not posted)`
+lists from step 6 when they are not empty. If you have nothing that clears the
+bar, the entire output is:
 
 ```
 No actionable findings.

@@ -204,6 +204,9 @@ export function boundSeverityByEvidence(
  */
 export const UNVERIFIABLE_CONFIDENCE = 0.6;
 
+/** The rejection the unverifiable cap gives, so a caller can tell it from the others. */
+export const UNVERIFIABLE_REJECTION = 'the claim states it could not be verified, so it cannot ship whatever it scores';
+
 /**
  * An admission, in the candidate's own evidence, that the claim could not be
  * checked. Observed verbatim as "No local key catalogue exists in the repo, so
@@ -1118,7 +1121,7 @@ export function scoreCandidate(
     // Stated as its own rejection rather than left to the numeric comparison.
     // It used to depend on the cap sitting below the floor, which quietly tied
     // it to a number that has since moved.
-    rejectedBecause = `the claim states it could not be verified, so it cannot ship whatever it scores`;
+    rejectedBecause = UNVERIFIABLE_REJECTION;
   } else if (confidence < confidenceFloor) {
     rejectedBecause =
       `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` +
