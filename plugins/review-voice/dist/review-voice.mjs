@@ -9864,6 +9864,36 @@ function readHumanReview(block, result) {
     result.warnings.push("review.human_review.sensitive_paths must be a list; using the default.");
   }
 }
+function readCiRules(block, result) {
+  if (block === null) return;
+  const minutes = (value) => typeof value === "number" && Number.isInteger(value) && value > 0 ? value : void 0;
+  if (block["stuck_after_minutes"] !== void 0) {
+    const value = minutes(block["stuck_after_minutes"]);
+    if (value === void 0) {
+      result.warnings.push("ci.stuck_after_minutes must be a whole number above zero; using 60.");
+    } else {
+      result.ciRules.stuckAfterMinutes = value;
+    }
+  }
+  const overrides = block["stuck_after_overrides"];
+  if (overrides === void 0) return;
+  if (!Array.isArray(overrides)) {
+    result.warnings.push("ci.stuck_after_overrides must be a list; ignoring it.");
+    return;
+  }
+  const stuckAfter = [];
+  for (const entry of overrides) {
+    const override = asRecord(entry);
+    const name = override?.["name"];
+    const value = minutes(override?.["minutes"]);
+    if (typeof name !== "string" || name.length === 0 || value === void 0) {
+      result.warnings.push("a ci.stuck_after_overrides entry needs a name and minutes above zero; skipping it.");
+      continue;
+    }
+    stuckAfter.push({ name, minutes: value });
+  }
+  if (stuckAfter.length > 0) result.ciRules.stuckAfter = stuckAfter;
+}
 function contentHash(text) {
   return createHash4("sha256").update(text).digest("hex").slice(0, 16);
 }
@@ -9893,6 +9923,7 @@ function loadConfig(repositoryRoot2) {
     ownerReviewer: null,
     postingEnabled: false,
     ciGateChecks: [],
+    ciRules: {},
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
     verification: { enabled: false, command: "", blockPresent: false },
@@ -9948,6 +9979,7 @@ function loadConfig(repositoryRoot2) {
             ...typeof summary === "string" && summary.length > 0 ? { summary } : {}
           });
         }
+        readCiRules(ci, result);
         const verification2 = asRecord(doc["verification"]);
         if (verification2 !== null) {
           const command = verification2["command"];
@@ -12836,13 +12868,13 @@ var MAX_ENTRIES = 1e3;
 var IGNORED_CONCLUSIONS = /* @__PURE__ */ new Set(["stale", "skipped", "neutral"]);
 var RERUN_CONCLUSIONS = /* @__PURE__ */ new Set(["timed_out", "action_required", "startup_failure"]);
 var STUCK_AFTER_MINUTES = 60;
-function classifyCheckRun(run, now) {
+function classifyCheckRun(run, now, stuckAfterMinutes = STUCK_AFTER_MINUTES) {
   const status = (run.status ?? "").toLowerCase();
   if (status !== "completed") {
     const started = run.started_at === null || run.started_at === void 0 ? NaN : Date.parse(run.started_at);
     if (now !== void 0 && Number.isFinite(started)) {
       const minutes = Math.floor((now - started) / 6e4);
-      if (minutes > STUCK_AFTER_MINUTES) {
+      if (minutes > stuckAfterMinutes) {
         return { result: "rerun", detail: `${status.length > 0 ? status : "unknown"} for ${minutes} min` };
       }
     }
@@ -12875,6 +12907,10 @@ function matchingGate(name, text, gates) {
   }
   return null;
 }
+function stuckAfterFor(name, rules = {}) {
+  const override = (rules.stuckAfter ?? []).find((entry) => nameGlob(entry.name).test(name));
+  return override?.minutes ?? rules.stuckAfterMinutes ?? STUCK_AFTER_MINUTES;
+}
 var identity = (run) => `${run.app?.id ?? run.app?.slug ?? ""}\0${run.name ?? ""}`;
 function later(a, b) {
   if (typeof a.id === "number" && typeof b.id === "number") return a.id > b.id;
@@ -12890,10 +12926,10 @@ function withoutSuperseded(runs) {
     );
   });
 }
-function summariseCi(checkRuns, statuses, gates = [], reading = {}) {
+function summariseCi(checkRuns, statuses, gates = [], reading = {}, rules = {}) {
   const entries = [];
   for (const run of withoutSuperseded(checkRuns)) {
-    const { result, detail } = classifyCheckRun(run, reading.now);
+    const { result, detail } = classifyCheckRun(run, reading.now, stuckAfterFor(run.name ?? "", rules));
     const text = `${run.output?.title ?? ""}
 ${run.output?.summary ?? ""}`;
     entries.push({ entry: { name: run.name ?? "", source: "check-run", result, detail }, text });
@@ -12935,7 +12971,7 @@ ${run.output?.summary ?? ""}`;
   state.state = state.failed.length > 0 ? "red" : state.rerun.length > 0 ? "needs-rerun" : state.pending.length > 0 ? "pending" : "green";
   return state;
 }
-async function readCi(client, repository, sha, gates = [], now = Date.now()) {
+async function readCi(client, repository, sha, gates = [], now = Date.now(), rules = {}) {
   const checkRuns = await client.paginateWrapped(
     `/repos/${repository}/commits/${sha}/check-runs?filter=latest&per_page=100`,
     "check_runs",
@@ -12955,7 +12991,7 @@ async function readCi(client, repository, sha, gates = [], now = Date.now()) {
     },
     truncated: checkRuns.length > MAX_ENTRIES || statuses.length > MAX_ENTRIES,
     now
-  });
+  }, rules);
 }
 
 // plugins/review-voice/src/publish/post.ts
@@ -13047,7 +13083,7 @@ async function computeVerdict(options) {
   const planned = planFindings(options.review, run, (id) => runDetail(options.db, id));
   const actual = await readHead2(options.client, options.repository, options.pullNumber);
   const headMoved = actual !== head;
-  const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now());
+  const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {});
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === "high";
   const decision = decide({
@@ -13195,7 +13231,7 @@ async function postReview(options) {
     try {
       reread = {
         head: await readHead2(options.client, options.repository, options.pullNumber),
-        ci: await readCi(options.client, options.repository, payload.commit_id, options.gateChecks ?? [], options.now ?? Date.now())
+        ci: await readCi(options.client, options.repository, payload.commit_id, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {})
       };
     } catch (error) {
       return refuse(1, [`could not re-read head and CI before approving: ${error instanceof Error ? error.message : String(error)}`], verdict, key);
@@ -14015,6 +14051,7 @@ async function verdictCommand(argv) {
     console.error(target);
     return 2;
   }
+  const config2 = repositoryConfig();
   const db = openDatabase();
   try {
     const { exitCode, output } = await computeVerdict({
@@ -14022,7 +14059,8 @@ async function verdictCommand(argv) {
       db,
       client: new GitHubClient({ allowlist: [target.repository] }),
       recheck: argv.includes("--recheck"),
-      gateChecks: repositoryConfig()?.ciGateChecks ?? []
+      gateChecks: config2?.ciGateChecks ?? [],
+      ciRules: config2?.ciRules ?? {}
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -14048,7 +14086,8 @@ async function postCommand(argv) {
       confirm: argv.includes("--confirm"),
       event: flag(argv, "--event")?.toUpperCase(),
       postingEnabled: config2?.postingEnabled ?? false,
-      gateChecks: config2?.ciGateChecks ?? []
+      gateChecks: config2?.ciGateChecks ?? [],
+      ciRules: config2?.ciRules ?? {}
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;

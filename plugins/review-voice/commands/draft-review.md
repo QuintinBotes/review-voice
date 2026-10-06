@@ -64,7 +64,8 @@ needs a rerun.
   COMMENT and REQUEST_CHANGES never wait for CI.
 - **CI that needs a rerun** (docs/adr/0013). A check that `timed_out`, hit a
   `startup_failure` or `action_required`, a cancelled run with nothing after
-  it, or a check queued or running for more than 60 minutes: `event` is null,
+  it, or a check queued or running for more than 60 minutes (`ci.stuck_after_minutes`,
+  with per-name globs under `ci.stuck_after_overrides`): `event` is null,
   `action` is `wait`, exit 6, with no payload, whatever the mapped event, and
   `reasons` name each check. A real failure beside one is still red. Rerun CI,
   then compute the verdict again.

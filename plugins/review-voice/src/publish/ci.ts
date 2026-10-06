@@ -72,12 +72,29 @@ const IGNORED_CONCLUSIONS = new Set(['stale', 'skipped', 'neutral']);
  */
 const RERUN_CONCLUSIONS = new Set(['timed_out', 'action_required', 'startup_failure']);
 
-/** How long a check may sit queued or running before it is taken as stuck rather than coming. */
+/** How long a check may sit queued or running before it is taken as stuck rather than coming, by default. */
 export const STUCK_AFTER_MINUTES = 60;
+
+/** A longer or shorter stuck threshold for the checks whose names match `name`. */
+export interface StuckThreshold {
+  /** Glob over the check name, as for gate checks. */
+  name: string;
+  /** A whole number above zero. */
+  minutes: number;
+}
+
+/** Per-repository CI settings beyond gate checks, from `ci:` in the config (docs/adr/0013). */
+export interface CiRules {
+  /** Replaces the 60-minute default. */
+  stuckAfterMinutes?: number | undefined;
+  /** Per check name; the first match wins over `stuckAfterMinutes`. */
+  stuckAfter?: readonly StuckThreshold[] | undefined;
+}
 
 export function classifyCheckRun(
   run: { status?: string | undefined; conclusion?: string | null | undefined; started_at?: string | null | undefined },
   now?: number | undefined,
+  stuckAfterMinutes: number = STUCK_AFTER_MINUTES,
 ): {
   result: CiResult;
   detail: string;
@@ -89,7 +106,7 @@ export function classifyCheckRun(
     const started = run.started_at === null || run.started_at === undefined ? NaN : Date.parse(run.started_at);
     if (now !== undefined && Number.isFinite(started)) {
       const minutes = Math.floor((now - started) / 60_000);
-      if (minutes > STUCK_AFTER_MINUTES) {
+      if (minutes > stuckAfterMinutes) {
         return { result: 'rerun', detail: `${status.length > 0 ? status : 'unknown'} for ${minutes} min` };
       }
     }
@@ -131,6 +148,12 @@ function matchingGate(name: string, text: string, gates: readonly GateCheck[]): 
     return gate;
   }
   return null;
+}
+
+/** The stuck threshold for one check: its first matching override, else the repository's, else 60 minutes. */
+export function stuckAfterFor(name: string, rules: CiRules = {}): number {
+  const override = (rules.stuckAfter ?? []).find((entry) => nameGlob(entry.name).test(name));
+  return override?.minutes ?? rules.stuckAfterMinutes ?? STUCK_AFTER_MINUTES;
 }
 
 const identity = (run: RawCheckRun): string => `${run.app?.id ?? run.app?.slug ?? ''}\u0000${run.name ?? ''}`;
@@ -185,11 +208,12 @@ export function summariseCi(
   statuses: RawStatus[],
   gates: readonly GateCheck[] = [],
   reading: CiReading = {},
+  rules: CiRules = {},
 ): CiState {
   const entries: { entry: CiEntry; text: string }[] = [];
 
   for (const run of withoutSuperseded(checkRuns)) {
-    const { result, detail } = classifyCheckRun(run, reading.now);
+    const { result, detail } = classifyCheckRun(run, reading.now, stuckAfterFor(run.name ?? '', rules));
     const text = `${run.output?.title ?? ''}\n${run.output?.summary ?? ''}`;
     entries.push({ entry: { name: run.name ?? '', source: 'check-run', result, detail }, text });
   }
@@ -264,6 +288,7 @@ export async function readCi(
   sha: string,
   gates: readonly GateCheck[] = [],
   now: number = Date.now(),
+  rules: CiRules = {},
 ): Promise<CiState> {
   const checkRuns = await client.paginateWrapped<RawCheckRun>(
     `/repos/${repository}/commits/${sha}/check-runs?filter=latest&per_page=100`,
@@ -286,5 +311,5 @@ export async function readCi(
     },
     truncated: checkRuns.length > MAX_ENTRIES || statuses.length > MAX_ENTRIES,
     now,
-  });
+  }, rules);
 }

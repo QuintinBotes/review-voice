@@ -5,7 +5,7 @@ import { humanReviewNote, type ComplexityAssessment } from '../diff/complexity.t
 import { AuthError } from '../github/auth.ts';
 import { GitHubError, NotAllowlisted, type GitHubClient } from '../github/client.ts';
 import { REVIEW_EVENTS, WriteViolation, type ReviewWriter } from '../github/writer.ts';
-import { readCi, type CiState, type GateCheck } from './ci.ts';
+import { readCi, type CiRules, type CiState, type GateCheck } from './ci.ts';
 import { evaluatePostingGate, type GateResult } from './gate.ts';
 import {
   buildPayload,
@@ -35,6 +35,8 @@ export interface VerdictOptions {
   runId?: string | undefined;
   recheck?: boolean | undefined;
   gateChecks?: readonly GateCheck[] | undefined;
+  /** Stuck thresholds and the like from `ci:` in the repository config. */
+  ciRules?: CiRules | undefined;
   /** The time a stuck check is judged against, in epoch milliseconds; default now. */
   now?: number | undefined;
 }
@@ -185,7 +187,7 @@ export async function computeVerdict(
   const headMoved = actual !== head;
   const ci = headMoved
     ? null
-    : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now());
+    : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {});
 
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === 'high';
@@ -421,7 +423,7 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
     try {
       reread = {
         head: await readHead(options.client, options.repository, options.pullNumber),
-        ci: await readCi(options.client, options.repository, payload.commit_id, options.gateChecks ?? [], options.now ?? Date.now()),
+        ci: await readCi(options.client, options.repository, payload.commit_id, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {}),
       };
     } catch (error) {
       return refuse(1, [`could not re-read head and CI before approving: ${error instanceof Error ? error.message : String(error)}`], verdict, key);

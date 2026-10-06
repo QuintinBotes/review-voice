@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deletion is in the patch. With no pull request files to read, the follow-up
   is `unchanged` rather than the whole commit range.
 
+### Fixed
+
+- The stuck-check threshold is configurable: `ci.stuck_after_minutes` replaces
+  the 60-minute default, and `ci.stuck_after_overrides` sets it per check-name
+  glob, so a long healthy suite no longer reads as needing a rerun. (#22)
+
 ## [1.10.1] - 2026-10-05
 
 ### Changed

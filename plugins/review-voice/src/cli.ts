@@ -1068,6 +1068,7 @@ async function verdictCommand(argv: string[]): Promise<number> {
     console.error(target);
     return 2;
   }
+  const config = repositoryConfig();
   const db = openDatabase();
   try {
     const { exitCode, output } = await computeVerdict({
@@ -1075,7 +1076,8 @@ async function verdictCommand(argv: string[]): Promise<number> {
       db,
       client: new GitHubClient({ allowlist: [target.repository] }),
       recheck: argv.includes('--recheck'),
-      gateChecks: repositoryConfig()?.ciGateChecks ?? [],
+      gateChecks: config?.ciGateChecks ?? [],
+      ciRules: config?.ciRules ?? {},
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -1107,6 +1109,7 @@ async function postCommand(argv: string[]): Promise<number> {
       event: flag(argv, '--event')?.toUpperCase(),
       postingEnabled: config?.postingEnabled ?? false,
       gateChecks: config?.ciGateChecks ?? [],
+      ciRules: config?.ciRules ?? {},
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;

@@ -1,6 +1,6 @@
 # 0013 - CI that needs a rerun holds every event
 
-**Status:** Accepted · **Date:** 2026-10-02
+**Status:** Accepted, amended 2026-10-06 · **Date:** 2026-10-02
 **Amends:** [0010](0010-review-verdict-posting.md) - the CI guard gains one
 state. No GitHub write is added or changed; this only adds a case in which the
 one write is not made.
@@ -69,3 +69,24 @@ head.
 
 **Rerun the checks automatically.** Fixes the cause, but it is a write to
 GitHub beyond the one 0010 allows.
+
+## Amendment - 2026-10-06
+
+### The stuck threshold is configurable
+
+A fixed 60 minutes held every review on a repository whose integration suite
+routinely runs about an hour: a healthy run read as stuck, and `verdict` and
+`post` exited 6. Listing such a check under `ci.gate_checks` was the only way
+out, and it also hid the check's real failures.
+
+- `ci.stuck_after_minutes` replaces the default for the repository.
+- `ci.stuck_after_overrides` is a list of `{ name, minutes }`, `name` a glob
+  over the check name as for gate checks. The first matching entry wins over
+  the repository threshold.
+- A value that is not a whole number above zero is skipped with a warning and
+  the default kept. With nothing configured the threshold is 60 minutes, as
+  before.
+
+A threshold derived from the check's own recent durations was considered. It
+needs the history of green runs, which is more reads per verdict, and it gives
+no answer for a new check; a stated number is easier to reason about.
