@@ -83,6 +83,26 @@ export function classify(path: string): FileClass {
   return 'source';
 }
 
+/**
+ * Prose and plain-text data: reviewed like any other file, but not code, so
+ * its words are not branches. A Markdown hunk once read as 26 decision points
+ * because prose is full of `if`, `when` and `or` (docs/adr/0012).
+ */
+const DOCUMENTATION_EXTENSIONS = new Set([
+  'md', 'markdown', 'mdown', 'mkd', 'mdx', 'rst', 'adoc', 'asciidoc',
+  'txt', 'text', 'org', 'rtf', 'tex', 'csv', 'tsv',
+]);
+
+const DOCUMENTATION_NAMES = new Set([
+  'readme', 'license', 'licence', 'changelog', 'changes', 'notice', 'authors', 'contributors', 'copying',
+]);
+
+export function isDocumentation(path: string): boolean {
+  const extension = extensionOf(path);
+  if (DOCUMENTATION_EXTENSIONS.has(extension)) return true;
+  return extension === '' && DOCUMENTATION_NAMES.has((path.split('/').pop() ?? '').toLowerCase());
+}
+
 /** Everything but `source` is noise unless the user asked for it. */
 export function isReviewable(path: string, includeGenerated: boolean): boolean {
   return includeGenerated || classify(path) === 'source';

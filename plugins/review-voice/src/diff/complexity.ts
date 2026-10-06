@@ -1,6 +1,7 @@
 import type { ChangedFile } from './acquire.ts';
 import { unquoteGitPath } from './hunks.ts';
 import { globToRegExp } from '../conventions/globs.ts';
+import { isDocumentation } from './classify.ts';
 
 /**
  * Whether a change is complex enough that a person, not this tool, should
@@ -27,6 +28,11 @@ export interface ComplexityAssessment {
   reasons: string[];
   decisionPoints: number;
   densestHunk: { path: string; line: number; decisionPoints: number } | null;
+  /**
+   * Reviewed files whose decision points are not counted, because they are
+   * not production source. Sensitive paths still apply to every one of them.
+   */
+  excluded: { documentationFiles: number };
   /** Matched changed paths, at most 20, sorted. */
   sensitivePaths: string[];
   limits: { maxDecisionPoints: number; maxHunkDecisionPoints: number; sensitivePaths: string[] };
@@ -70,11 +76,11 @@ function headerPath(raw: string): string | null {
 }
 
 /**
- * Decision points per hunk, for the files that count. The header's line
+ * Decision points per hunk, for the files asked about. The header's line
  * counts say where a hunk ends, so an added line whose text starts with `++ `
  * is still a line of the hunk rather than a file header.
  */
-function countHunks(diff: string, counted: ReadonlySet<string>): HunkCount[] {
+function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount[] {
   const hunks: HunkCount[] = [];
   let path: string | null = null;
   let current: HunkCount | null = null;
@@ -118,7 +124,7 @@ function countHunks(diff: string, counted: ReadonlySet<string>): HunkCount[] {
       remainingOld = header[1] === undefined ? 1 : Number(header[1]);
       remainingNew = header[3] === undefined ? 1 : Number(header[3]);
       current = { path, line: Number(header[2]), decisionPoints: 0 };
-      if (counted.has(path)) hunks.push(current);
+      if (wanted.has(path)) hunks.push(current);
     }
   }
   return hunks;
@@ -139,7 +145,14 @@ export function assessComplexity(
 ): ComplexityAssessment {
   const limits = config(partial);
 
-  const counted = new Set(files.filter((file) => file.class === 'source' && file.reviewed).map((file) => file.path));
+  // Decision points count only in production source (amended 2026-10-06).
+  // Everything else the review reads is left out of the count, and counted
+  // as left out, so the assessment can say what it did not measure.
+  const reviewed = files.filter((file) => file.reviewed);
+  const documentation = reviewed.filter((file) => file.class === 'source' && isDocumentation(file.path));
+  const counted = new Set(
+    reviewed.filter((file) => file.class === 'source' && !isDocumentation(file.path)).map((file) => file.path),
+  );
   const hunks = countHunks(diff, counted);
   const decisionPoints = hunks.reduce((sum, hunk) => sum + hunk.decisionPoints, 0);
   // The first of equally dense hunks wins, so the report is stable.
@@ -179,19 +192,47 @@ export function assessComplexity(
     reasons,
     decisionPoints,
     densestHunk: densest === null ? null : { path: densest.path, line: densest.line, decisionPoints: densest.decisionPoints },
+    excluded: { documentationFiles: documentation.length },
     sensitivePaths: listed,
     limits: { ...limits },
   };
 }
 
+const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;
+
+/** What the count left out, as a sentence, or an empty string when nothing was. */
+function notCounted(excluded: ComplexityAssessment['excluded']): string {
+  const parts: string[] = [];
+  if (excluded.documentationFiles > 0) parts.push(plural(excluded.documentationFiles, 'documentation file'));
+  return parts.length === 0 ? '' : ` Left out of the decision-point count: ${parts.join(', ')}.`;
+}
+
 /** The one line for the agent and the user; never posted to the pull request. Null unless the change is high-complexity. */
 export function humanReviewNote(assessment: ComplexityAssessment | null): string | null {
   if (assessment === null || assessment.level !== 'high') return null;
-  return `Needs a human reviewer: ${assessment.reasons.join('; ')}. Review Voice will not approve this change; this is not posted to the pull request.`;
+  return `Needs a human reviewer: ${assessment.reasons.join('; ')}.${notCounted(assessment.excluded)} Review Voice will not approve this change; this is not posted to the pull request.`;
 }
 
 const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0;
 const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+/**
+ * An assessment recorded before exclusions were reported excluded nothing,
+ * so a missing block reads as zeros; a present but malformed one is rejected.
+ */
+function parseExcluded(value: unknown): ComplexityAssessment['excluded'] | null {
+  if (value === undefined) return { documentationFiles: 0 };
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const e = value as Record<string, unknown>;
+  const read = (key: string): number | null => {
+    const count = e[key];
+    if (count === undefined) return 0;
+    return isCount(count) ? count : null;
+  };
+  const documentationFiles = read('documentationFiles');
+  if (documentationFiles === null) return null;
+  return { documentationFiles };
+}
 
 /** Reads a stored or manifest value back; null on anything malformed, since unknown is not high. */
 export function parseComplexity(value: unknown): ComplexityAssessment | null {
@@ -209,6 +250,9 @@ export function parseComplexity(value: unknown): ComplexityAssessment | null {
     densestHunk = { path: h['path'], line: h['line'], decisionPoints: h['decisionPoints'] };
   }
 
+  const excluded = parseExcluded(v['excluded']);
+  if (excluded === null) return null;
+
   const l = v['limits'] as Record<string, unknown> | null | undefined;
   if (
     typeof l !== 'object' ||
@@ -225,6 +269,7 @@ export function parseComplexity(value: unknown): ComplexityAssessment | null {
     reasons: v['reasons'],
     decisionPoints: v['decisionPoints'],
     densestHunk,
+    excluded,
     sensitivePaths: v['sensitivePaths'],
     limits: {
       maxDecisionPoints: l['maxDecisionPoints'],

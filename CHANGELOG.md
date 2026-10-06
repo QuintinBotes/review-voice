@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `verdict` and `post` output for the agent to tell the user, not in the pull
   request.
 
+### Fixed
+
+- The complexity assessment no longer counts decision points in Markdown and
+  other documentation. Prose words such as `if` and `or` had been read as
+  branches; the assessment now reports how many files it left out, and
+  sensitive paths still match them (#23).
+
 ## [1.10.1] - 2026-10-05
 
 ### Changed

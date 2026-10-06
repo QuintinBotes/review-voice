@@ -27,7 +27,8 @@ review says so, and why, so a human picks it up.**
   enough:
   - *Added decision points*: a lexical count of branches (`if`, loops, `case`,
     `catch`, `&&`, `||`, ternaries) on lines added to reviewed source files,
-    for the change as a whole and for its densest hunk. Lexical, like
+    for the change as a whole and for its densest hunk. (Amended 2026-10-06:
+    production source only; see the second amendment below.) Lexical, like
     changed-symbol context: no parser, no language left out, and a count that
     is wrong by a few on comments or strings is still the right order.
   - *Sensitive paths*: any changed path matching a configured glob, whether or
@@ -91,3 +92,25 @@ change is high-complexity), and the commands tell the agent to print it and
 tell the user the change needs a human reviewer, without adding it to the pull
 request. The decision `reasons` still explain the cap locally. The APPROVE cap,
 the `--recheck` refusal and the sticky assessment are unchanged.
+
+## Amendment - 2026-10-06: decision points count in production source only
+
+The count ran over every reviewed file the classifier called source, and that
+included prose. A Markdown hunk read as 26 decision points, because prose is
+full of `if`, `when` and `or`, and was named as the densest hunk of a change
+whose source alone was over the limit: the verdict was right and the reason
+was wrong.
+
+Decision points now count only in production source. Reviewed files of these
+kinds are left out of the count, not down-weighted:
+
+- *Documentation and other non-code text*: Markdown, reStructuredText,
+  AsciiDoc, plain text, CSV and the conventional extensionless names (`README`,
+  `LICENSE`, `CHANGELOG` and the like). Configuration such as YAML stays
+  counted: a workflow condition is a real branch.
+
+The assessment carries `excluded`, a count of the files left out, so the agent
+can say what the number did not measure; when the change is high, the note
+names them. Sensitive-path matching is unchanged and still applies to every
+changed path, excluded or not. An assessment recorded before this amendment
+has no `excluded` block and reads as excluding nothing.

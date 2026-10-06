@@ -800,6 +800,39 @@ function classify(path) {
   if (GENERATED_PATTERNS.some((pattern) => pattern.test(path))) return "generated";
   return "source";
 }
+var DOCUMENTATION_EXTENSIONS = /* @__PURE__ */ new Set([
+  "md",
+  "markdown",
+  "mdown",
+  "mkd",
+  "mdx",
+  "rst",
+  "adoc",
+  "asciidoc",
+  "txt",
+  "text",
+  "org",
+  "rtf",
+  "tex",
+  "csv",
+  "tsv"
+]);
+var DOCUMENTATION_NAMES = /* @__PURE__ */ new Set([
+  "readme",
+  "license",
+  "licence",
+  "changelog",
+  "changes",
+  "notice",
+  "authors",
+  "contributors",
+  "copying"
+]);
+function isDocumentation(path) {
+  const extension = extensionOf(path);
+  if (DOCUMENTATION_EXTENSIONS.has(extension)) return true;
+  return extension === "" && DOCUMENTATION_NAMES.has((path.split("/").pop() ?? "").toLowerCase());
+}
 function isReviewable(path, includeGenerated) {
   return includeGenerated || classify(path) === "source";
 }
@@ -1368,7 +1401,7 @@ function headerPath2(raw) {
   const unquoted = unquoteGitPath(text);
   return unquoted.startsWith("b/") ? unquoted.slice(2) : unquoted;
 }
-function countHunks(diff, counted) {
+function countHunks(diff, wanted) {
   const hunks = [];
   let path = null;
   let current = null;
@@ -1409,7 +1442,7 @@ function countHunks(diff, counted) {
       remainingOld = header[1] === void 0 ? 1 : Number(header[1]);
       remainingNew = header[3] === void 0 ? 1 : Number(header[3]);
       current = { path, line: Number(header[2]), decisionPoints: 0 };
-      if (counted.has(path)) hunks.push(current);
+      if (wanted.has(path)) hunks.push(current);
     }
   }
   return hunks;
@@ -1423,7 +1456,11 @@ function config(partial) {
 }
 function assessComplexity(diff, files, partial) {
   const limits = config(partial);
-  const counted = new Set(files.filter((file) => file.class === "source" && file.reviewed).map((file) => file.path));
+  const reviewed = files.filter((file) => file.reviewed);
+  const documentation = reviewed.filter((file) => file.class === "source" && isDocumentation(file.path));
+  const counted = new Set(
+    reviewed.filter((file) => file.class === "source" && !isDocumentation(file.path)).map((file) => file.path)
+  );
   const hunks = countHunks(diff, counted);
   const decisionPoints = hunks.reduce((sum, hunk) => sum + hunk.decisionPoints, 0);
   const densest = hunks.reduce(
@@ -1457,16 +1494,36 @@ function assessComplexity(diff, files, partial) {
     reasons,
     decisionPoints,
     densestHunk: densest === null ? null : { path: densest.path, line: densest.line, decisionPoints: densest.decisionPoints },
+    excluded: { documentationFiles: documentation.length },
     sensitivePaths: listed,
     limits: { ...limits }
   };
 }
+var plural2 = (count2, noun) => `${count2} ${noun}${count2 === 1 ? "" : "s"}`;
+function notCounted(excluded) {
+  const parts = [];
+  if (excluded.documentationFiles > 0) parts.push(plural2(excluded.documentationFiles, "documentation file"));
+  return parts.length === 0 ? "" : ` Left out of the decision-point count: ${parts.join(", ")}.`;
+}
 function humanReviewNote(assessment) {
   if (assessment === null || assessment.level !== "high") return null;
-  return `Needs a human reviewer: ${assessment.reasons.join("; ")}. Review Voice will not approve this change; this is not posted to the pull request.`;
+  return `Needs a human reviewer: ${assessment.reasons.join("; ")}.${notCounted(assessment.excluded)} Review Voice will not approve this change; this is not posted to the pull request.`;
 }
 var isCount = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0;
 var isStrings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
+function parseExcluded(value) {
+  if (value === void 0) return { documentationFiles: 0 };
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const e = value;
+  const read = (key) => {
+    const count2 = e[key];
+    if (count2 === void 0) return 0;
+    return isCount(count2) ? count2 : null;
+  };
+  const documentationFiles = read("documentationFiles");
+  if (documentationFiles === null) return null;
+  return { documentationFiles };
+}
 function parseComplexity(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const v = value;
@@ -1480,6 +1537,8 @@ function parseComplexity(value) {
     }
     densestHunk = { path: h["path"], line: h["line"], decisionPoints: h["decisionPoints"] };
   }
+  const excluded = parseExcluded(v["excluded"]);
+  if (excluded === null) return null;
   const l = v["limits"];
   if (typeof l !== "object" || l === null || !isCount(l["maxDecisionPoints"]) || !isCount(l["maxHunkDecisionPoints"]) || !isStrings(l["sensitivePaths"])) {
     return null;
@@ -1489,6 +1548,7 @@ function parseComplexity(value) {
     reasons: v["reasons"],
     decisionPoints: v["decisionPoints"],
     densestHunk,
+    excluded,
     sensitivePaths: v["sensitivePaths"],
     limits: {
       maxDecisionPoints: l["maxDecisionPoints"],
