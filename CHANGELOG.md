@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the disputed trace. `record --tie-breaks` keeps the rulings and `explain`
   shows them. The second pass's verdicts now carry the candidate id whichever
   spelling the analyst used. See ADR 0014.
+- `RV check-verification` checks the evidence-verifier's output straight after
+  it runs, with the checks `score --verification` applies, and names the entry,
+  field and refused value. The verifier prompt now states that
+  `evidence_quality` is exactly `high`, `medium` or `low`. (#37)
 
 ### Changed
 

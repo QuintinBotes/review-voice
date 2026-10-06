@@ -13262,6 +13262,8 @@ Commands:
   diff              Acquire the diff under review as structured JSON
   symbols           Collect changed symbols and their lexical reference paths
   check-candidates  Validate analyst output against the candidate schema
+  check-verification
+                    Validate evidence-verifier output against its schema
   context           Resolve config and the active policy stack as JSON
   conventions       Collect the repository's own convention documents
   evidence          Run the configured static checks and emit structured signals
@@ -13322,6 +13324,11 @@ check-candidates:
   --thread <path>        Drop candidates the thread already states; flag
                          description overlaps for the verifier
   --held-from <run-id>   Drop repeats of that run's held findings (--head)
+
+check-verification:
+  Reads the evidence-verifier output on stdin and runs the checks \`score
+  --verification\` runs, naming the entry and field that fail. Exit 2 when
+  malformed.
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -13405,6 +13412,7 @@ Review Voice is normally driven by its Claude Code commands
 (/review-voice:review, /review-voice:init) rather than invoked directly.`;
 var STDIN_INPUT = {
   "check-candidates": "candidates JSON",
+  "check-verification": "the evidence-verifier output",
   score: "candidates JSON",
   record: "the validated review",
   "validate-output": "the review text",
@@ -15040,7 +15048,7 @@ function verificationProblem(list) {
     if (typeof id !== "string" || id === "") return `${who}: candidate_id must be a non-empty string.`;
     const quality = entry["evidence_quality"] ?? entry["evidenceQuality"];
     if (quality !== void 0 && !EVIDENCE_QUALITIES.includes(quality)) {
-      return `${who}: evidence_quality must be one of ${EVIDENCE_QUALITIES.join(", ")}.`;
+      return `${who}: evidence_quality must be one of ${EVIDENCE_QUALITIES.join(", ")}, not ${JSON.stringify(quality)}.`;
     }
     const confidence = entry["technical_confidence"] ?? entry["technicalConfidence"];
     if (confidence !== void 0 && !(typeof confidence === "number" && Number.isFinite(confidence) && confidence >= 0 && confidence <= 1)) {
@@ -15052,6 +15060,30 @@ function verificationProblem(list) {
     }
   }
   return null;
+}
+function checkVerificationCommand() {
+  let parsed;
+  try {
+    parsed = JSON.parse(readStdin());
+  } catch {
+    console.error("Expected the evidence-verifier output as JSON on stdin.");
+    return 2;
+  }
+  const list = verdictList(parsed);
+  if (list.length === 0) {
+    console.error(
+      `No verifications found. Expected an array, or an object with one of: ${VERDICT_KEYS.join(", ")}, each entry carrying candidate_id.`
+    );
+    return 2;
+  }
+  const problem = verificationProblem(list);
+  if (problem !== null) {
+    console.error(`Malformed verification - ${problem}`);
+    console.error("Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.");
+    return 2;
+  }
+  console.log(JSON.stringify({ valid: true, verifications: list.length }, null, 2));
+  return 0;
 }
 function verdictList(parsed) {
   if (Array.isArray(parsed)) return parsed;
@@ -15354,6 +15386,8 @@ async function main(argv) {
       return policyCommand(argv.slice(1));
     case "check-candidates":
       return checkCandidatesCommand(argv.slice(1));
+    case "check-verification":
+      return checkVerificationCommand();
     case "conventions":
       return conventionsCommand(argv.slice(1));
     case "evidence":

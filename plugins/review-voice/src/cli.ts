@@ -104,6 +104,8 @@ Commands:
   diff              Acquire the diff under review as structured JSON
   symbols           Collect changed symbols and their lexical reference paths
   check-candidates  Validate analyst output against the candidate schema
+  check-verification
+                    Validate evidence-verifier output against its schema
   context           Resolve config and the active policy stack as JSON
   conventions       Collect the repository's own convention documents
   evidence          Run the configured static checks and emit structured signals
@@ -164,6 +166,11 @@ check-candidates:
   --thread <path>        Drop candidates the thread already states; flag
                          description overlaps for the verifier
   --held-from <run-id>   Drop repeats of that run's held findings (--head)
+
+check-verification:
+  Reads the evidence-verifier output on stdin and runs the checks \`score
+  --verification\` runs, naming the entry and field that fail. Exit 2 when
+  malformed.
 
 record flags:
   --repository <name>    Repository the review belongs to
@@ -249,6 +256,7 @@ Review Voice is normally driven by its Claude Code commands
 /** What each stdin-reading command expects, for the message a terminal gets. */
 const STDIN_INPUT: Record<string, string> = {
   'check-candidates': 'candidates JSON',
+  'check-verification': 'the evidence-verifier output',
   score: 'candidates JSON',
   record: 'the validated review',
   'validate-output': 'the review text',
@@ -2412,7 +2420,7 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     if (typeof id !== 'string' || id === '') return `${who}: candidate_id must be a non-empty string.`;
     const quality = entry['evidence_quality'] ?? entry['evidenceQuality'];
     if (quality !== undefined && !(EVIDENCE_QUALITIES as readonly unknown[]).includes(quality)) {
-      return `${who}: evidence_quality must be one of ${EVIDENCE_QUALITIES.join(', ')}.`;
+      return `${who}: evidence_quality must be one of ${EVIDENCE_QUALITIES.join(', ')}, not ${JSON.stringify(quality)}.`;
     }
     const confidence = entry['technical_confidence'] ?? entry['technicalConfidence'];
     if (
@@ -2427,6 +2435,41 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     }
   }
   return null;
+}
+
+/**
+ * Checks evidence-verifier output against the verification schema, straight
+ * after the verifier runs.
+ *
+ * `score` runs the same checks, but it is the stage after verification. A
+ * verifier that wrote `evidence_quality: "strong"` was refused there with
+ * every earlier stage already spent, and relaunching it then meant a cold
+ * start. Failing here costs one re-run of one agent while its context is warm.
+ */
+function checkVerificationCommand(): number {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readStdin()) as unknown;
+  } catch {
+    console.error('Expected the evidence-verifier output as JSON on stdin.');
+    return 2;
+  }
+  const list = verdictList(parsed);
+  if (list.length === 0) {
+    console.error(
+      `No verifications found. Expected an array, or an object with one of: ${VERDICT_KEYS.join(', ')}, ` +
+        'each entry carrying candidate_id.',
+    );
+    return 2;
+  }
+  const problem = verificationProblem(list);
+  if (problem !== null) {
+    console.error(`Malformed verification - ${problem}`);
+    console.error('Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.');
+    return 2;
+  }
+  console.log(JSON.stringify({ valid: true, verifications: list.length }, null, 2));
+  return 0;
 }
 
 function verdictList(parsed: unknown): Record<string, unknown>[] {
@@ -2854,6 +2897,9 @@ async function main(argv: string[]): Promise<number> {
 
     case 'check-candidates':
       return checkCandidatesCommand(argv.slice(1));
+
+    case 'check-verification':
+      return checkVerificationCommand();
 
     case 'conventions':
       return conventionsCommand(argv.slice(1));

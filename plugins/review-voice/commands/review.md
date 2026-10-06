@@ -280,6 +280,13 @@ pass list: step 4 gates on the confidence it reports, because the verifier is
 the only stage that checked the claim against the repository. Without the file,
 scoring falls back to the analyst's opinion of its own work.
 
+**Check its shape at once:** pipe the file into `RV check-verification`. It
+runs the checks `score` runs on the same file and names the entry and field it
+refuses, such as an `evidence_quality` outside `high`, `medium` and `low`. If it
+exits 2, **relaunch the verifier once with the schema restated**, while its
+context is still warm, and do not translate its output by hand. If the second
+attempt is also malformed, say so and stop.
+
 Keep `fix_verdict`, `fix_confidence`, `fix_reason` and `fix_direction` in
 `verification.json` with every other verifier field. They verify a suggested
 repair separately from the defect and must not be derived or filled in later.

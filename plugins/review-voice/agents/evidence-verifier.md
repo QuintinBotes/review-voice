@@ -167,6 +167,13 @@ JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`,
 `impact_traced`.
 
+`evidence_quality` is exactly one of `high`, `medium` or `low`. No other word
+is accepted: `strong`, `weak`, `moderate` and the like are refused, and the
+whole file with them. `technical_confidence` and `fix_confidence` are JSON
+numbers from 0 to 1, not strings. `required_context_missing` is an array, empty
+when nothing was missing. `check-verification` checks this shape straight
+after you return, and names the entry and field it refuses.
+
 `impact_traced` is a boolean: true only when you followed the failure to a
 caller, consumer or data path outside the changed function or component and saw
 it break there. Otherwise false. It does not report reach, and how many places
