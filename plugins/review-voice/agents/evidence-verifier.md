@@ -86,6 +86,16 @@ it is a plain repeat, and with nothing open it is addressed - reject it as a
 repeat either way. Use it only for the owner's own comment; scoring ignores it
 anywhere else.
 
+**Open follow-ups.** You may also be given `followUps`: earlier findings that
+followed up an owner's comment the author only partly addressed, each with an
+`id`, a location and its `remaining` points. Check each point against the code
+at the head - read the file, whether or not this diff touches it; a file this
+diff leaves alone is not evidence of anything. Return one ruling per follow-up
+in `follow_ups`: `{"id", "remaining": [...], "addressed": [...], "reason"}`,
+each point a phrase from its `remaining`. Put a point in `addressed` only when
+you saw the code that addresses it; when you could not tell, it stays in
+`remaining`. These rulings are local and never posted.
+
 When `possibleRepeatOf` has `kind: held`, an earlier review held the same spot
 back with the given verdict and reason; that verdict is a prior, not a ruling,
 so reject the candidate only if it makes the same point that was refuted or
@@ -212,7 +222,9 @@ JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `technical_confidence`, `contradictions`, `required_context_missing`, `reason`,
 `fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`,
 `impact_traced`, `premises_verified` for a question, and `partly_addressed`
-only when it applies.
+only when it applies. When you were given `followUps`, return an object
+`{"verifications": [<the entries>], "follow_ups": [<one ruling each>]}`
+instead of a bare array.
 
 `evidence_quality` is exactly one of `high`, `medium` or `low`. No other word
 is accepted: `strong`, `weak`, `moderate` and the like are refused, and the

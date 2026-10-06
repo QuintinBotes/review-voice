@@ -17,15 +17,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mutation` or `subscription`; every REST call stays GET-only. If the query
   fails, `thread` warns locally and goes on with the REST data. See ADR 0018.
   (#43)
+- A partly-addressed follow-up is tracked to resolution. `RV follow-ups --pr
+  <n>` lists those an earlier run of the pull request left open, for the
+  verifier to check at the new head (`follow_ups` rulings). `record --thread
+  --follow-ups` on a later run of the same pull request marks each resolved
+  when its posted comment's thread is resolved or the verifier found every
+  remaining point addressed, and open otherwise, including when its file was
+  not in that review; `explain` shows open or resolved. Local only; nothing is
+  posted. (#30)
 - A prior comment of the owner's that the author only partly addressed gets a
   local partly-addressed state. The verifier may mark a candidate linked to
   that comment with `partly_addressed` (`remaining`, `addressed`); `score`
   then no longer rejects it for repeating that one comment, after checking its
   author is the owner (`--owner`, or the configured owner); the editor states
   only what remains, and `record` stores the finding as `partlyAddressed` with
-  what was still open at that run, shown by `explain`. Nothing marks it
-  resolved later. What remains is posted as an ordinary inline comment in the
-  normal review, never as a thread reply. `check-candidates` no longer drops a
+  what was still open at that run, shown by `explain`. What remains is posted
+  as an ordinary inline comment in the normal review, never as a thread reply. `check-candidates` no longer drops a
   candidate for repeating the owner's own inline comment; it flags it for the
   verifier, and `score` still rejects a plain repeat. (#30)
 - `RV reanchor --candidate <id> --line <n>` moves one eligible scored candidate

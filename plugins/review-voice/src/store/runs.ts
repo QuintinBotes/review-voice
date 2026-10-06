@@ -6,6 +6,7 @@ import { parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
 import { parseComplexity, type ComplexityAssessment } from '../diff/complexity.ts';
 import { matchCarried, type CarriedFinding } from '../diff/carry.ts';
 import type { TieBreak } from '../verify/reconcile.ts';
+import type { FollowUpState } from './follow-ups.ts';
 
 export interface StoredFinding {
   findingId: string;
@@ -30,9 +31,10 @@ export interface StoredFinding {
   carriedFrom?: { runId: string; findingId: string } | undefined;
   /**
    * This finding follows up the owner's earlier comment, which the author only
-   * partly addressed, and records what was still open at this run. Nothing
-   * marks it resolved later: a later review links to the comment on the thread
-   * again. The follow-up is posted as an ordinary inline comment.
+   * partly addressed, and records what was still open at this run. It stays as
+   * recorded; a later run of the same pull request records whether it is still
+   * open or resolved, in its `followUps` (see `store/follow-ups.ts`). The
+   * follow-up is posted as an ordinary inline comment.
    */
   partlyAddressed?: PartlyAddressedFinding | undefined;
 }
@@ -194,6 +196,8 @@ export interface RecordRunInput {
   carried?: { runId: string; findings: CarriedFinding[] } | undefined;
   /** Present when the run was built from candidates carried to this head. */
   carry?: CarryMarker | undefined;
+  /** Earlier runs' partly-addressed follow-ups, as this run found them: open or resolved. */
+  followUps?: FollowUpState[] | undefined;
   /**
    * How long each stage took, and what it cost.
    *
@@ -332,6 +336,7 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
       tieBreaks: input.tieBreaks ?? [],
       held: input.held ?? [],
       ...(input.carry === undefined ? {} : { carry: input.carry }),
+      ...(input.followUps === undefined || input.followUps.length === 0 ? {} : { followUps: input.followUps }),
     }),
     new Date().toISOString(),
     JSON.stringify(input.stages ?? []),
@@ -372,6 +377,8 @@ export interface RunDetail {
   held: HeldFinding[];
   /** Null unless the run was built from carried candidates. */
   carry: CarryMarker | null;
+  /** Empty unless an earlier run of the pull request left a follow-up open. */
+  followUps: FollowUpState[];
 }
 
 function storedComplexity(raw: unknown): ComplexityAssessment | null {
@@ -415,6 +422,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     tieBreaks?: unknown;
     held?: unknown;
     carry?: unknown;
+    followUps?: unknown;
   };
 
   return {
@@ -432,6 +440,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     tieBreaks: Array.isArray(parsed.tieBreaks) ? (parsed.tieBreaks as TieBreak[]) : [],
     held: Array.isArray(parsed.held) ? (parsed.held as HeldFinding[]) : [],
     carry: parseCarryMarker(parsed.carry),
+    followUps: Array.isArray(parsed.followUps) ? (parsed.followUps as FollowUpState[]) : [],
     // Older rows predate the column, so absence is normal rather than an error.
     stages: ((): StageTiming[] => {
       const raw = row['stages_json'];

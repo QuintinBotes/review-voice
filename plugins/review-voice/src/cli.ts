@@ -32,6 +32,15 @@ import {
   type FileHunks,
 } from './diff/hunks.ts';
 import { readThread, type ThreadComment } from './diff/thread.ts';
+import {
+  followUpHistory,
+  FollowUpRulingError,
+  openFollowUps,
+  parseFollowUpRulings,
+  settleFollowUps,
+  type FollowUpRuling,
+  type FollowUpState,
+} from './store/follow-ups.ts';
 import { collectSymbolContext, DEFAULT_MAX_MS } from './diff/symbols.ts';
 import { openDatabase } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
@@ -145,6 +154,7 @@ Commands:
   verdict           Review event under the head and CI guards (reads only)
   post              Submit the review; needs --confirm --event <EVENT>
   record            Store a validated review from stdin and assign finding ids
+  follow-ups        Partly-addressed follow-ups of a pull request still open
   feedback          Record feedback on a finding
   status            Show what is stored locally
   carry             Carry an earlier run's untouched findings to a new head
@@ -163,6 +173,10 @@ thread flags:
   --pr <number>          Pull request whose existing comments to read
   --repository <name>    owner/repo; inferred from the git remote if absent
   --out <path>           Write <path> or <dir>/thread.json instead of stdout
+
+follow-ups flags:
+  --pr <number>          Pull request whose open follow-ups to list (local store)
+  --repository <name>    owner/repo; inferred from the git remote if absent
 
 diff flags:
   --base <ref>           Review against a base ref (e.g. origin/main)
@@ -200,6 +214,8 @@ record flags:
   --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
   --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
   --carry <path>         carry.json of carry-candidates (needs --head)
+  --thread <path>        thread.json; a follow-up whose comment thread is resolved is settled
+  --follow-ups <path>    The verifier's follow_ups rulings on the open follow-ups
   --stages <path>        Per-stage timings as
                          [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean
                          result from a shallow analyst pass is warned about
@@ -461,6 +477,32 @@ async function threadCommand(argv: string[]): Promise<number> {
         `${error instanceof Error ? error.message : String(error)}`,
     );
     return 2;
+  }
+}
+
+/**
+ * The partly-addressed follow-ups of a pull request that no recorded run has
+ * seen resolved, for the verifier to check at the new head. Reads only the
+ * local store.
+ */
+function followUpsCommand(argv: string[]): number {
+  const pullNumber = Number(flag(argv, '--pr'));
+  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+    console.error('--pr needs a pull request number.');
+    return 2;
+  }
+  const repository = flag(argv, '--repository') ?? inferRepository(process.cwd());
+  if (repository === null) {
+    console.error('Cannot tell which repository. Pass --repository <owner/repo>.');
+    return 2;
+  }
+  const db = openDatabase();
+  try {
+    const followUps = openFollowUps(db, repository, pullNumber).map(({ text: _text, ...followUp }) => followUp);
+    console.log(JSON.stringify({ followUps }, null, 2));
+    return 0;
+  } finally {
+    db.close();
   }
 }
 
@@ -2278,6 +2320,41 @@ function recordCommand(argv: string[]): number {
     }
   }
 
+  // What settles an earlier run's partly-addressed follow-up: its comment
+  // thread resolved on the thread this run read, or the verifier's ruling.
+  const followUpThreadFile = flag(argv, '--thread');
+  let followUpThread: ThreadComment[] | null = null;
+  if (argv.includes('--thread')) {
+    if (followUpThreadFile === null) {
+      console.error('--thread needs a thread JSON path.');
+      return 2;
+    }
+    try {
+      const parsed = JSON.parse(readFileSync(followUpThreadFile, 'utf8')) as { comments?: ThreadComment[] } | ThreadComment[];
+      const list = Array.isArray(parsed) ? parsed : parsed.comments;
+      if (!Array.isArray(list)) throw new Error('comments is not a list');
+      followUpThread = list;
+    } catch (error) {
+      console.error(`Cannot read ${followUpThreadFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
+  const rulingsFile = flag(argv, '--follow-ups');
+  let rulings: FollowUpRuling[] = [];
+  if (argv.includes('--follow-ups')) {
+    if (rulingsFile === null) {
+      console.error('--follow-ups needs the verifier output with follow_ups.');
+      return 2;
+    }
+    try {
+      rulings = parseFollowUpRulings(JSON.parse(readFileSync(rulingsFile, 'utf8')) as unknown);
+    } catch (error) {
+      const why = error instanceof FollowUpRulingError ? error.message : `cannot read it (${(error as Error).message})`;
+      console.error(`Cannot read follow-up rulings from ${rulingsFile}: ${why}.`);
+      return 2;
+    }
+  }
+
   const db = openDatabase();
   try {
     let carried: { runId: string; findings: CarriedFinding[] } | undefined;
@@ -2345,8 +2422,22 @@ function recordCommand(argv: string[]): number {
       if (carry === undefined || marker.covered === false) carry = marker;
     }
 
+    const repository = flag(argv, '--repository');
+    let followUps: FollowUpState[] = [];
+    if (repository !== null && pullNumber !== undefined) {
+      const open = openFollowUps(db, repository, pullNumber);
+      const scopeFiles = scope !== undefined && 'files' in scope ? scope.files : null;
+      const settled = settleFollowUps(open, { thread: followUpThread, rulings, scopeFiles });
+      followUps = settled.states;
+      for (const id of settled.unmatched) {
+        console.error(`Warning: the follow-up ruling for ${id} names no open follow-up of this pull request; ignored.`);
+      }
+    } else if (rulings.length > 0 || followUpThread !== null) {
+      console.error('Warning: --thread and --follow-ups need --repository and a pull request in --files; ignored.');
+    }
+
     const { reviewRunId, findings } = recordRun(db, {
-      repository: flag(argv, '--repository'),
+      repository,
       baseRef: flag(argv, '--base'),
       headRef: flag(argv, '--head'),
       pullNumber,
@@ -2361,11 +2452,23 @@ function recordCommand(argv: string[]): number {
       held,
       carried,
       ...(carry === undefined ? {} : { carry }),
+      followUps,
       stages,
     });
     // Local only: printed here and by `explain`, never part of what is posted.
     const warning = shallowPassWarning(stages, findings.length);
-    console.log(JSON.stringify({ reviewRunId, findings, ...(warning === null ? {} : { warnings: [warning] }) }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          reviewRunId,
+          findings,
+          ...(followUps.length === 0 ? {} : { followUps }),
+          ...(warning === null ? {} : { warnings: [warning] }),
+        },
+        null,
+        2,
+      ),
+    );
     return 0;
   } catch (error) {
     if (error instanceof CarryMismatch) {
@@ -2915,6 +3018,10 @@ function explainCommand(argv: string[]): number {
     }
     console.log('');
 
+    const history =
+      detail.repository !== null && detail.pullNumber !== null
+        ? followUpHistory(db, detail.repository, detail.pullNumber)
+        : null;
     const shown = wanted === undefined ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
     // A run that posted nothing can still have held findings - below-gate
     // ones especially - and they are the only account of what it found.
@@ -2942,6 +3049,15 @@ function explainCommand(argv: string[]): number {
           `  partly addressed  ${prior.author} at ${prior.path}:${prior.line}; ` +
             `${remaining.length} of ${remaining.length + addressed.length} still open: ${remaining.join('; ')}`,
         );
+        // The state as later runs of the pull request found it; local only.
+        const later = history?.get(`${detail.reviewRunId}:${finding.findingId}`);
+        if (later?.state?.status === 'resolved') {
+          console.log(`  follow-up         resolved in run ${later.stateRunId} - ${later.state.reason}`);
+        } else if (later?.state?.status === 'open') {
+          console.log(`  follow-up         open as of run ${later.stateRunId}: ${later.state.remaining.join('; ')}`);
+        } else {
+          console.log('  follow-up         open');
+        }
       }
       console.log(`  category          ${finding.category ?? 'not recorded'}`);
       if (score?.technicalConfidence !== undefined) {
@@ -3001,6 +3117,16 @@ function explainCommand(argv: string[]): number {
               `${ruling.applied === false ? ' (not applied)' : ''} - ${ruling.reason}`,
           );
         }
+      }
+      console.log('');
+    }
+
+    // Earlier runs' partly-addressed follow-ups, as this run found them.
+    if (detail.followUps.length > 0 && wanted === undefined) {
+      console.log(`Follow-ups from earlier runs (${detail.followUps.length}):`);
+      for (const f of detail.followUps) {
+        console.log(`  [${f.status}] ${f.findingId} of run ${f.runId}  ${f.path}:${f.line} - ${f.reason}`);
+        if (f.status === 'open') console.log(`      still open: ${f.remaining.join('; ')}`);
       }
       console.log('');
     }
@@ -3636,6 +3762,9 @@ async function main(argv: string[]): Promise<number> {
 
     case 'thread':
       return await threadCommand(argv.slice(1));
+
+    case 'follow-ups':
+      return followUpsCommand(argv.slice(1));
 
     case 'context':
       return contextCommand();
