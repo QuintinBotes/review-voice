@@ -134,7 +134,7 @@ test('sensitive paths match unreviewed and renamed files, at the root and nested
     'migrations/001.sql',
     'src/auth/billing.ts',
   ]);
-  assert.match(result.reasons[0], /^touches sensitive paths \(.github\/workflows\/ci\.yml, db\/migrations\/002\.sql, migrations\/001\.sql, \+1 more\)$/);
+  assert.match(result.reasons[0], /^touches sensitive paths \(.github\/workflows\/ci\.yml matched \.github\/workflows\/\*\*, db\/migrations\/002\.sql matched \*\*\/migrations\/\*\*, migrations\/001\.sql matched \*\*\/migrations\/\*\*, \+1 more\)$/);
 });
 
 test('an empty configured list disables the signal, a configured list replaces the defaults', () => {
@@ -151,7 +151,7 @@ test('the note is null unless high, and is one line naming the reasons', () => {
   const note = humanReviewNote(assessComplexity('', [file('src/auth/a.ts')]));
   assert.equal(
     note,
-    'Needs a human reviewer: touches sensitive paths (src/auth/a.ts). Review Voice will not approve this change; this is not posted to the pull request.',
+    'Needs a human reviewer: touches sensitive paths (src/auth/a.ts matched **/auth/**). Review Voice will not approve this change; this is not posted to the pull request.',
   );
 });
 
@@ -182,6 +182,7 @@ test('human_review defaults when absent and reads each key when present', () => 
     maxDecisionPoints: 40,
     maxHunkDecisionPoints: 15,
     sensitivePaths: ['.github/workflows/**', '**/migrations/**', '**/auth/**', '**/security/**', '.review-voice/**'],
+    sensitiveExemptPaths: [],
     testPaths: DEFAULT_TEST_PATHS,
     generatedPaths: [],
   });
@@ -249,7 +250,7 @@ test('diff --out writes the assessment to files.json and the summary', () => {
     const manifest = JSON.parse(readFileSync(join(out, 'files.json'), 'utf8'));
     assert.equal(summary.complexity.level, 'high');
     assert.deepEqual(summary.complexity.sensitivePaths, ['src/auth/login.ts']);
-    assert.match(summary.humanReviewNote, /^Needs a human reviewer: touches sensitive paths \(src\/auth\/login\.ts\)/);
+    assert.match(summary.humanReviewNote, /^Needs a human reviewer: touches sensitive paths \(src\/auth\/login\.ts matched \*\*\/auth\/\*\*\)/);
     assert.deepEqual(manifest.complexity, summary.complexity);
     assert.equal(manifest.humanReviewNote, summary.humanReviewNote);
 

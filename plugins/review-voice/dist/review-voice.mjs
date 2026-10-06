@@ -1466,6 +1466,7 @@ var DEFAULT_SENSITIVE_PATHS = [
   "**/security/**",
   ".review-voice/**"
 ];
+var SENSITIVE_NEVER_EXEMPT = [".review-voice/**", ".github/workflows/**"];
 var DEFAULT_TEST_PATHS = [
   "**/test/**",
   "**/tests/**",
@@ -1486,6 +1487,7 @@ var DEFAULT_HUMAN_REVIEW = {
   maxDecisionPoints: 40,
   maxHunkDecisionPoints: 15,
   sensitivePaths: DEFAULT_SENSITIVE_PATHS,
+  sensitiveExemptPaths: [],
   testPaths: DEFAULT_TEST_PATHS,
   generatedPaths: []
 };
@@ -1566,6 +1568,7 @@ function config(partial) {
     maxDecisionPoints: partial?.maxDecisionPoints ?? DEFAULT_HUMAN_REVIEW.maxDecisionPoints,
     maxHunkDecisionPoints: partial?.maxHunkDecisionPoints ?? DEFAULT_HUMAN_REVIEW.maxHunkDecisionPoints,
     sensitivePaths: partial?.sensitivePaths ?? DEFAULT_HUMAN_REVIEW.sensitivePaths,
+    sensitiveExemptPaths: partial?.sensitiveExemptPaths ?? DEFAULT_HUMAN_REVIEW.sensitiveExemptPaths,
     testPaths: partial?.testPaths ?? DEFAULT_HUMAN_REVIEW.testPaths,
     generatedPaths: partial?.generatedPaths ?? DEFAULT_HUMAN_REVIEW.generatedPaths
   };
@@ -1626,13 +1629,23 @@ function assessComplexity(diff, files, partial, markedGenerated2 = /* @__PURE__ 
     null
   );
   const sensitiveMatchers = limits.sensitivePaths.map((glob) => globToRegExp(glob));
+  const neverExempt = SENSITIVE_NEVER_EXEMPT.map((glob) => globToRegExp(glob));
   const changed = /* @__PURE__ */ new Set();
   for (const file of files) {
     changed.add(file.path);
     if (file.previousPath !== void 0) changed.add(file.previousPath);
   }
-  const sensitive = [...changed].filter((path) => matchesAny(sensitiveMatchers, path)).sort();
+  const matched = [...changed].filter((path) => matchesAny(sensitiveMatchers, path)).sort();
+  const exemptible = matched.filter((path) => !matchesAny(neverExempt, path));
+  const exemptions = exclusionMatchers("sensitive_exempt_paths", limits.sensitiveExemptPaths, exemptible, reasons);
+  const exempted = exemptible.filter((path) => matchesAny(exemptions, path));
+  const sensitive = matched.filter((path) => !exempted.includes(path));
   const listed = sensitive.slice(0, MAX_SENSITIVE_LISTED);
+  const globOf = (path) => limits.sensitivePaths[sensitiveMatchers.findIndex((matcher) => matcher.test(path))];
+  const matches = listed.map((path) => ({ path, glob: globOf(path) }));
+  for (const path of matched.filter((path2) => matchesAny(neverExempt, path2) && matchesAny(exemptions, path2))) {
+    reasons.push(`sensitive_exempt_paths does not apply to ${path}, which is review configuration or a workflow`);
+  }
   if (decisionPoints > limits.maxDecisionPoints) {
     reasons.push(`${decisionPoints} decision points added (limit ${limits.maxDecisionPoints})`);
   }
@@ -1642,7 +1655,7 @@ function assessComplexity(diff, files, partial, markedGenerated2 = /* @__PURE__ 
     );
   }
   if (sensitive.length > 0) {
-    const shown = listed.slice(0, 3).join(", ");
+    const shown = matches.slice(0, 3).map((match) => `${match.path} matched ${match.glob}`).join(", ");
     const more = sensitive.length - Math.min(3, listed.length);
     reasons.push(`touches sensitive paths (${shown}${more > 0 ? `, +${more} more` : ""})`);
   }
@@ -1659,6 +1672,8 @@ function assessComplexity(diff, files, partial, markedGenerated2 = /* @__PURE__ 
       generatedDecisionPoints: pointsOf("generated")
     },
     sensitivePaths: listed,
+    sensitiveMatches: matches,
+    sensitiveExempted: exempted.slice(0, MAX_SENSITIVE_LISTED),
     limits: { ...limits }
   };
 }
@@ -1676,9 +1691,14 @@ function notCounted(excluded) {
   if (excluded.documentationFiles > 0) parts.push(plural2(excluded.documentationFiles, "documentation file"));
   return parts.length === 0 ? "" : ` Left out of the decision-point count: ${parts.join(", ")}.`;
 }
+function exemptedClause(exempted) {
+  if (exempted.length === 0) return "";
+  const more = exempted.length - Math.min(3, exempted.length);
+  return ` Exempted by sensitive_exempt_paths: ${exempted.slice(0, 3).join(", ")}${more > 0 ? `, +${more} more` : ""}.`;
+}
 function humanReviewNote(assessment) {
   if (assessment === null || assessment.level !== "high") return null;
-  return `Needs a human reviewer: ${assessment.reasons.join("; ")}.${notCounted(assessment.excluded)} Review Voice will not approve this change; this is not posted to the pull request.`;
+  return `Needs a human reviewer: ${assessment.reasons.join("; ")}.${exemptedClause(assessment.sensitiveExempted)}${notCounted(assessment.excluded)} Review Voice will not approve this change; this is not posted to the pull request.`;
 }
 var isCount = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0;
 var isStrings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
@@ -1699,6 +1719,18 @@ function parseExcluded(value) {
   }
   return parsed;
 }
+function parseMatches(value) {
+  if (value === void 0) return [];
+  if (!Array.isArray(value)) return null;
+  const parsed = [];
+  for (const item of value) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) return null;
+    const m = item;
+    if (typeof m["path"] !== "string" || typeof m["glob"] !== "string") return null;
+    parsed.push({ path: m["path"], glob: m["glob"] });
+  }
+  return parsed;
+}
 function parseComplexity(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const v = value;
@@ -1712,6 +1744,10 @@ function parseComplexity(value) {
     }
     densestHunk = { path: h["path"], line: h["line"], decisionPoints: h["decisionPoints"] };
   }
+  const sensitiveExempted = v["sensitiveExempted"] === void 0 ? [] : v["sensitiveExempted"];
+  if (!isStrings(sensitiveExempted)) return null;
+  const sensitiveMatches = parseMatches(v["sensitiveMatches"]);
+  if (sensitiveMatches === null) return null;
   const excluded = parseExcluded(v["excluded"]);
   if (excluded === null) return null;
   const l = v["limits"];
@@ -1723,9 +1759,10 @@ function parseComplexity(value) {
     if (globs === void 0) return [];
     return isStrings(globs) ? globs : null;
   };
+  const sensitiveExemptPaths = optionalGlobs("sensitiveExemptPaths");
   const testPaths = optionalGlobs("testPaths");
   const generatedPaths = optionalGlobs("generatedPaths");
-  if (testPaths === null || generatedPaths === null) return null;
+  if (sensitiveExemptPaths === null || testPaths === null || generatedPaths === null) return null;
   return {
     level: v["level"],
     reasons: v["reasons"],
@@ -1733,10 +1770,13 @@ function parseComplexity(value) {
     densestHunk,
     excluded,
     sensitivePaths: v["sensitivePaths"],
+    sensitiveMatches,
+    sensitiveExempted,
     limits: {
       maxDecisionPoints: l["maxDecisionPoints"],
       maxHunkDecisionPoints: l["maxHunkDecisionPoints"],
       sensitivePaths: l["sensitivePaths"],
+      sensitiveExemptPaths,
       testPaths,
       generatedPaths
     }
@@ -11802,6 +11842,7 @@ function readHumanReview(block, result) {
     return void 0;
   };
   result.humanReview.sensitivePaths = globs("sensitive_paths") ?? result.humanReview.sensitivePaths;
+  result.humanReview.sensitiveExemptPaths = globs("sensitive_exempt_paths") ?? result.humanReview.sensitiveExemptPaths;
   result.humanReview.testPaths = globs("test_paths") ?? result.humanReview.testPaths;
   result.humanReview.generatedPaths = globs("generated_paths") ?? result.humanReview.generatedPaths;
 }
@@ -11932,6 +11973,7 @@ function loadConfig(repositoryRoot2) {
     humanReview: {
       ...DEFAULT_HUMAN_REVIEW,
       sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths],
+      sensitiveExemptPaths: [...DEFAULT_HUMAN_REVIEW.sensitiveExemptPaths],
       testPaths: [...DEFAULT_HUMAN_REVIEW.testPaths],
       generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths]
     },
