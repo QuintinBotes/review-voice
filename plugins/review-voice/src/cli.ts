@@ -535,6 +535,7 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
       forceFull: argv.includes('--full'),
       base: result.refs.base.available && result.base !== null ? result.base : undefined,
       fetchPriorHead: (sha) => fetchPriorHead(sha, repository, process.cwd()),
+      includeGenerated: argv.includes('--include-generated'),
     });
   } catch (error) {
     planned = {

@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { isReviewable } from './classify.ts';
 import { unquoteGitPath } from './hunks.ts';
 
 /** Every reason a pull request must be read in full rather than narrowed. */
@@ -229,6 +230,12 @@ export interface PlanIncrementalScopeOptions {
    * asked of git again afterwards, not taken from the answer.
    */
   fetchPriorHead?: ((sha: string) => string | null) | undefined;
+  /**
+   * Whether lock files, generated and vendored output count as reviewed, as
+   * `--include-generated` makes them. Only `absorbedByBase` reads it: a file
+   * no review would have read is not one whose absence needs saying.
+   */
+  includeGenerated?: boolean | undefined;
 }
 
 /** A planned scope, and the patch an `interdiff` scope reviews. */
@@ -767,8 +774,14 @@ function interdiffFrom(
   // After a replay, a file the pull request no longer changes whose replay
   // equals the head is one the new base changed the same way. Without a
   // replay the reviewed head is read directly, and a withdrawal always shows.
-  const inPatch = new Set(ownDiffFiles(outside).keys());
-  const absorbedList = from === prior.headRef ? [] : withdrawn.filter((path) => !inPatch.has(path) && !own.has(path)).sort();
+  // Asked of git without rename detection, so a file renamed since the review
+  // counts as changed under its old path too, never as absorbed.
+  let absorbedList: string[] = [];
+  const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true));
+  if (from !== prior.headRef && candidates.length > 0) {
+    const differs = new Set(git.changedPaths(from, options.head, options.cwd));
+    absorbedList = candidates.filter((path) => !differs.has(path)).sort();
+  }
   const absorbed = absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList };
 
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };

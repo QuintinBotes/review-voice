@@ -2229,8 +2229,12 @@ function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedRe
     whole.length === 0 ? null : `read whole after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(", ")}`
   ].filter((note) => note !== null);
   const detail = notes.length === 0 ? {} : { detail: notes.join("; ") };
-  const inPatch = new Set(ownDiffFiles(outside).keys());
-  const absorbedList = from === prior.headRef ? [] : withdrawn.filter((path) => !inPatch.has(path) && !own.has(path)).sort();
+  let absorbedList = [];
+  const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true));
+  if (from !== prior.headRef && candidates.length > 0) {
+    const differs = new Set(git5.changedPaths(from, options.head, options.cwd));
+    absorbedList = candidates.filter((path) => !differs.has(path)).sort();
+  }
   const absorbed = absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList };
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
   if (patch.trim().length === 0) {
@@ -11036,8 +11040,9 @@ function parseVerdict(stdout) {
   for (const candidate of jsonCandidates(stdout).reverse()) {
     try {
       const parsed = JSON.parse(candidate);
-      const label2 = typeof parsed.verdict === "string" ? parsed.verdict.toLowerCase() : null;
-      if (label2 !== null && VERDICTS.includes(label2)) return { ...parsed, verdict: label2 };
+      if (typeof parsed.verdict !== "string") continue;
+      const label2 = parsed.verdict.toLowerCase();
+      return VERDICTS.includes(label2) ? { ...parsed, verdict: label2 } : null;
     } catch {
       continue;
     }
@@ -11105,7 +11110,7 @@ ${result.stderr}`);
     }
     const verdict = raw.verdict;
     const confidence = typeof raw.confidence === "number" ? Math.min(1, Math.max(0, raw.confidence)) : 0.5;
-    const reason2 = raw.reason ?? "";
+    const reason2 = typeof raw.reason === "string" ? raw.reason : "";
     const decisive = decisiveEvidence(raw);
     let outcome = "kept";
     let finalSeverity = finding.severity;
@@ -14658,7 +14663,8 @@ async function pullRequestDiffCommand(argv) {
       truncated: result.truncated,
       forceFull: argv.includes("--full"),
       base: result.refs.base.available && result.base !== null ? result.base : void 0,
-      fetchPriorHead: (sha) => fetchPriorHead(sha, repository, process.cwd())
+      fetchPriorHead: (sha) => fetchPriorHead(sha, repository, process.cwd()),
+      includeGenerated: argv.includes("--include-generated")
     });
   } catch (error) {
     planned = {

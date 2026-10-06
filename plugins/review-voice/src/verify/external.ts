@@ -142,10 +142,13 @@ function parseVerdict(stdout: string): RawVerdict | null {
   for (const candidate of jsonCandidates(stdout).reverse()) {
     try {
       const parsed = JSON.parse(candidate) as RawVerdict;
-      // A label outside the three, such as "REFUTED", is no verdict: read as
-      // a confirmation it would keep a finding the verifier meant to reject.
-      const label = typeof parsed.verdict === 'string' ? parsed.verdict.toLowerCase() : null;
-      if (label !== null && VERDICTS.includes(label)) return { ...parsed, verdict: label as Verdict };
+      if (typeof parsed.verdict !== 'string') continue;
+      // The last verdict is the answer. A label outside the three, such as
+      // "REFUTED", is no verdict: read as a confirmation it would keep a
+      // finding the verifier meant to reject, and skipping it would apply an
+      // earlier draft the verifier had revised.
+      const label = parsed.verdict.toLowerCase();
+      return VERDICTS.includes(label) ? { ...parsed, verdict: label as Verdict } : null;
     } catch {
       continue;
     }
@@ -251,7 +254,8 @@ export function verifyFindings(
 
     const verdict: Verdict = raw.verdict;
     const confidence = typeof raw.confidence === 'number' ? Math.min(1, Math.max(0, raw.confidence)) : 0.5;
-    const reason = raw.reason ?? '';
+    // The command's output is untrusted: a reason that is not text is none.
+    const reason = typeof raw.reason === 'string' ? raw.reason : '';
     const decisive = decisiveEvidence(raw);
 
     let outcome: FindingVerdict['outcome'] = 'kept';

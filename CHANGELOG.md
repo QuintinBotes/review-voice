@@ -103,7 +103,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   diff; when a part of the resolution meets no own-diff hunk, the whole own
   diff is read and the scope note names the file. A file the pull request no
   longer changes because the merged base makes the same change is listed as
-  `absorbedByBase` in the `diff` summary and printed after the findings. (#26)
+  `absorbedByBase` in the `diff` summary and printed after the findings; a
+  file renamed since the review, or one no review would read, such as a lock
+  file, is never listed. (#26)
 - The posted review no longer says anything about human review. A change
   assessed as high-complexity is still capped at COMMENT (ADR 0012), but the
   summary line is the ordinary one and `humanReviewNote` is carried in the
@@ -188,8 +190,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contradict its label: a `kept` that was not confirmed or moved the tier, a
   `dropped` that was not rejected, a `downgraded` whose `finalSeverity` is not
   lower, or a proposal with no decisive evidence. `verify` reads a verdict
-  label other than confirmed, rejected or uncertain as no verdict instead of a
-  confirmation, and no longer turns a doubted question into a nit. (#31)
+  label other than confirmed, rejected or uncertain on its last verdict as no
+  verdict, instead of a confirmation or an earlier draft, reads a reason that
+  is not text as none, and no longer turns a doubted question into a nit. (#31)
 - `record` checks stdin against the output contract `validate-output` enforces
   and exits 2, naming each problem and storing nothing, when it is not a
   review. (#34)
