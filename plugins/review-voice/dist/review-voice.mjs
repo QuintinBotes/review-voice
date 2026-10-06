@@ -1567,6 +1567,10 @@ var GitHubClient = class {
       );
     }
   }
+  /**
+   * `retryRateLimits: false` fails at once on a rate limit instead of waiting
+   * it out, for a read the caller can do without.
+   */
   async get(path, init = {}) {
     if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
       throw new ReadOnlyViolation(
@@ -1588,7 +1592,7 @@ var GitHubClient = class {
       if (response.status === 403 || response.status === 429) {
         const retryAfter = Number(response.headers.get("retry-after") ?? "0");
         const remaining = response.headers.get("x-ratelimit-remaining");
-        if ((remaining === "0" || retryAfter > 0) && attempt < 4) {
+        if (init.retryRateLimits !== false && (remaining === "0" || retryAfter > 0) && attempt < 4) {
           const waitMs = retryAfter > 0 ? retryAfter * 1e3 : 2 ** attempt * 1e3;
           await this.sleep(waitMs);
           continue;
@@ -9896,15 +9900,26 @@ function stuckAfterFor(name, rules = {}) {
   const override = (rules.stuckAfter ?? []).find((entry) => nameGlob(entry.name).test(name));
   return override?.minutes ?? rules.stuckAfterMinutes ?? STUCK_AFTER_MINUTES;
 }
+function fromRunner(annotation) {
+  const path = (annotation.path ?? "").trim();
+  return path === "" || path === ".github";
+}
 function infrastructureSignature(run, signatures) {
-  const texts = [run.output?.title, run.output?.summary, run.output?.text];
+  const find = (...texts) => {
+    const haystack = texts.filter((text) => typeof text === "string").join("\n").toLowerCase();
+    if (haystack.length === 0) return null;
+    return signatures.find((signature) => signature.length > 0 && haystack.includes(signature.toLowerCase())) ?? null;
+  };
+  let matched = find(run.output?.title, run.output?.summary);
   for (const annotation of run.annotations ?? []) {
     if ((annotation.annotation_level ?? "").toLowerCase() !== "failure") continue;
-    texts.push(annotation.title, annotation.message, annotation.raw_details);
+    const hit = fromRunner(annotation) ? find(annotation.title, annotation.message) : null;
+    if (hit === null) return null;
+    matched ??= hit;
   }
-  const haystack = texts.filter((text) => typeof text === "string").join("\n").toLowerCase();
-  if (haystack.length === 0) return null;
-  return signatures.find((signature) => signature.length > 0 && haystack.includes(signature.toLowerCase())) ?? null;
+  const counted = run.output?.annotations_count ?? 0;
+  if (counted > 0 && (run.annotations?.length ?? 0) < counted) return null;
+  return matched;
 }
 var isFailure = (run) => (run.status ?? "").toLowerCase() === "completed" && (run.conclusion ?? "").toLowerCase() === "failure";
 var identity = (run) => `${run.app?.id ?? run.app?.slug ?? ""}\0${run.name ?? ""}`;
@@ -9978,16 +9993,18 @@ ${run.output?.summary ?? ""}`;
 async function attachAnnotations(client, repository, runs, signatures) {
   if (signatures.length === 0) return;
   const candidates = runs.filter(
-    (run) => isFailure(run) && typeof run.id === "number" && (run.output?.annotations_count ?? 0) > 0 && infrastructureSignature(run, signatures) === null
+    (run) => isFailure(run) && typeof run.id === "number" && (run.output?.annotations_count ?? 0) > 0
   ).slice(0, MAX_ANNOTATION_READS);
   for (const run of candidates) {
     try {
       const page = await client.get(
-        `/repos/${repository}/check-runs/${run.id}/annotations?per_page=${ANNOTATIONS_PER_RUN}`
+        `/repos/${repository}/check-runs/${run.id}/annotations?per_page=${ANNOTATIONS_PER_RUN}`,
+        { retryRateLimits: false }
       );
       if (Array.isArray(page.data)) run.annotations = page.data;
     } catch (error) {
       if (!(error instanceof GitHubError)) throw error;
+      if (error.status === 403 || error.status === 429) return;
     }
   }
 }
@@ -10044,6 +10061,42 @@ function readHumanReview(block, result) {
     result.warnings.push("review.human_review.sensitive_paths must be a list; using the default.");
   }
 }
+var GENERIC_SIGNATURE_WORDS = /* @__PURE__ */ new Set([
+  "error",
+  "errors",
+  "failed",
+  "failure",
+  "failures",
+  "failing",
+  "fatal",
+  "exception",
+  "exceptions",
+  "timeout",
+  "timed out",
+  "cancelled",
+  "canceled",
+  "aborted",
+  "killed",
+  "crashed",
+  "panic",
+  "unavailable",
+  "refused",
+  "denied",
+  "forbidden",
+  "unauthorized",
+  "warning",
+  "retrying",
+  "connection",
+  "network",
+  "internal",
+  "exit code",
+  "traceback",
+  "stacktrace"
+]);
+function specificSignature(signature) {
+  if (signature.length < 8) return false;
+  return !GENERIC_SIGNATURE_WORDS.has(signature.toLowerCase().replace(/[^a-z ]+/g, " ").trim());
+}
 function readCiRules(block, result) {
   if (block === null) return;
   const minutes = (value) => typeof value === "number" && Number.isInteger(value) && value > 0 ? value : void 0;
@@ -10076,7 +10129,21 @@ function readCiRules(block, result) {
   if (extra !== void 0 && !Array.isArray(extra)) {
     result.warnings.push("ci.rerun_signatures must be a list; ignoring it.");
   }
-  const added = Array.isArray(extra) ? asStringArray(extra).filter((signature) => signature.trim().length > 0) : [];
+  const added = [];
+  for (const entry of Array.isArray(extra) ? extra : []) {
+    if (typeof entry !== "string") {
+      result.warnings.push(`ci.rerun_signatures: ${JSON.stringify(entry)} is not text; skipping it.`);
+      continue;
+    }
+    const signature = entry.trim();
+    if (!specificSignature(signature)) {
+      result.warnings.push(
+        `ci.rerun_signatures: "${signature}" is too short or too generic and would match real failures; skipping it.`
+      );
+      continue;
+    }
+    added.push(signature);
+  }
   const builtin = block["builtin_rerun_signatures"];
   if (builtin !== void 0 && typeof builtin !== "boolean") {
     result.warnings.push("ci.builtin_rerun_signatures must be true or false; keeping the built-in signatures.");

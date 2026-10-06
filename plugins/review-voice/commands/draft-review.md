@@ -63,8 +63,9 @@ needs a rerun.
   Pending CI turns an approval into `action: "wait"`, exit 4, with no payload.
   COMMENT and REQUEST_CHANGES never wait for CI.
 - **CI that needs a rerun** (docs/adr/0013). A check that `timed_out`, hit a
-  `startup_failure` or `action_required`, a failure whose output or failure
-  annotations contain an infrastructure signature (a lost runner, the
+  `startup_failure` or `action_required`, a failure whose output title or
+  summary, or runner annotations, contain an infrastructure signature, with no
+  other failure annotation left unmatched (a lost runner, the
   platform's time limit, a full disk, a dropped connection, a throttled or
   unavailable service; more under `ci.rerun_signatures`, with the matched
   phrase in `reasons`), a cancelled run with nothing after

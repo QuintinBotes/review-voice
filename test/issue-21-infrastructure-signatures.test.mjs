@@ -33,7 +33,7 @@ const failed = (name, output = {}, extra = {}) => ({
   conclusion: 'failure',
   started_at: '2026-10-06T11:00:00Z',
   completed_at: '2026-10-06T11:10:00Z',
-  output: { title: null, summary: null, text: null, annotations_count: 0, ...output },
+  output: { title: null, summary: null, annotations_count: 0, ...output },
   ...extra,
 });
 const passed = (name) => ({ id: nextId++, name, status: 'completed', conclusion: 'success' });
@@ -70,7 +70,7 @@ test('a failure whose output names an infrastructure cause needs a rerun, with t
     ['deploy', 'failure, matched "We stopped hearing from agent"'],
   ]);
 
-  const text = summariseCi([failed('plan', { text: 'Error: 429 TOO MANY REQUESTS after 3 retries' })], []);
+  const text = summariseCi([failed('plan', { summary: 'Error: 429 TOO MANY REQUESTS after 3 retries' })], []);
   assert.equal(text.state, 'needs-rerun');
   assert.equal(text.rerun[0].detail, 'failure, matched "429 Too Many Requests"');
 });
@@ -84,7 +84,7 @@ test('a failure with no signature, and a bare status code, stay red', () => {
 });
 
 test('a real failure beside an infrastructure one keeps CI red', () => {
-  const ci = summariseCi([failed('unit', { summary: 'assertion failed' }), failed('install', { text: 'npm ERR! ECONNRESET' })], []);
+  const ci = summariseCi([failed('unit', { summary: 'assertion failed' }), failed('install', { summary: 'npm ERR! ECONNRESET' })], []);
   assert.equal(ci.state, 'red');
   assert.deepEqual(ci.failed.map((entry) => entry.name), ['unit']);
   assert.deepEqual(ci.rerun.map((entry) => entry.name), ['install']);
@@ -92,12 +92,12 @@ test('a real failure beside an infrastructure one keeps CI red', () => {
 
 test('only failure-level annotations count', () => {
   const lost = failed('build', {}, {
-    annotations: [{ annotation_level: 'failure', message: 'The self-hosted runner: r1 lost communication with the server.' }],
+    annotations: [{ path: '.github', annotation_level: 'failure', message: 'The self-hosted runner: r1 lost communication with the server.' }],
   });
   assert.equal(infrastructureSignature(lost, BUILTIN_RERUN_SIGNATURES), 'lost communication with the server');
 
   const warned = failed('build', {}, {
-    annotations: [{ annotation_level: 'warning', message: 'No space left on device' }],
+    annotations: [{ path: '.github', annotation_level: 'warning', message: 'No space left on device' }],
   });
   assert.equal(infrastructureSignature(warned, BUILTIN_RERUN_SIGNATURES), null);
   assert.equal(summariseCi([warned], []).state, 'red');
@@ -117,15 +117,15 @@ test('the live read fetches annotations of failed runs only, by GET, and matches
   const build = failed('build', { annotations_count: 2 });
   const lint = failed('lint', { annotations_count: 1 });
   const quiet = failed('docs', { summary: 'link check failed' });
-  const already = failed('install', { summary: 'ECONNRESET', annotations_count: 4 });
+  const already = failed('install', { summary: 'ECONNRESET' });
   const impl = fakeGitHub({
     runs: [build, lint, quiet, already, passed('format')],
     annotations: {
       [build.id]: [
-        { annotation_level: 'failure', message: 'Process completed with exit code 1.' },
-        { annotation_level: 'failure', message: 'The job running on runner r2 has exceeded the maximum execution time of 60 minutes.' },
+        { path: '.github', annotation_level: 'warning', message: 'Node.js 16 actions are deprecated.' },
+        { path: '.github', annotation_level: 'failure', message: 'The job running on runner r2 has exceeded the maximum execution time of 60 minutes.' },
       ],
-      [lint.id]: [{ annotation_level: 'failure', message: 'Unexpected any. Specify a different type.' }],
+      [lint.id]: [{ path: 'src/basket.ts', annotation_level: 'failure', message: 'Unexpected any. Specify a different type.' }],
     },
   });
   const ci = await readCi(client(impl), REPO, HEAD, [], NOW);
@@ -137,7 +137,7 @@ test('the live read fetches annotations of failed runs only, by GET, and matches
   ]);
   assert.ok(impl.calls.every((call) => call.method === 'GET'));
   const annotationReads = impl.calls.filter((call) => call.path.endsWith('/annotations')).map((call) => call.path);
-  // Not for a run with no annotations, nor one whose output already matched.
+  // Not for a run with no annotations.
   assert.deepEqual(annotationReads, [
     `/repos/${REPO}/check-runs/${build.id}/annotations`,
     `/repos/${REPO}/check-runs/${lint.id}/annotations`,
@@ -163,7 +163,7 @@ test('verdict holds every event with exit 6 and prints the matched signature', a
   try {
     const review = 'No actionable findings.';
     recordRun(db, { repository: REPO, baseRef: null, headRef: HEAD, pullNumber: PR, diff: 'diff', output: review, scores: [] });
-    const impl = fakeGitHub({ runs: [failed('plan', { text: 'other side closed' }), passed('lint')] });
+    const impl = fakeGitHub({ runs: [failed('plan', { summary: 'other side closed' }), passed('lint')] });
     const { exitCode, output } = await computeVerdict({
       db,
       client: client(impl),
@@ -200,7 +200,7 @@ function withConfig(lines, body) {
 test('ci.rerun_signatures adds to the built-in list; builtin_rerun_signatures: false drops it', () => {
   withConfig(['ci:', '  rerun_signatures:', '    - "HttpError: 403"', '    - ""'], (config) => {
     assert.deepEqual(config.ciRules.rerunSignatures, [...BUILTIN_RERUN_SIGNATURES, 'HttpError: 403']);
-    assert.deepEqual(config.warnings, []);
+    assert.equal(config.warnings.length, 1);
   });
   withConfig(['ci:', '  builtin_rerun_signatures: false', '  rerun_signatures: ["socket hang up"]'], (config) => {
     assert.deepEqual(config.ciRules.rerunSignatures, ['socket hang up']);

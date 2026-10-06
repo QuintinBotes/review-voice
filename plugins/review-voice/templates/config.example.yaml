@@ -64,9 +64,11 @@ ci:
   # Example:
   #   - name: "backend / integration*"
   #     minutes: 150
-  # A failed check whose output or failure annotations contain one of these
-  # phrases (ignoring case) needs a rerun rather than counting as red. They add
-  # to a short built-in list: a lost runner or agent, the platform's time
+  # A failed check whose output title or summary, or whose runner annotations,
+  # contain one of these phrases (ignoring case) needs a rerun rather than
+  # counting as red, unless another failure annotation matches none. At least
+  # 8 characters, and not one generic word like "error". They add to a short
+  # built-in list: a lost runner or agent, the platform's time
   # limit, a full disk, ECONNRESET, "other side closed", "429 Too Many
   # Requests" and "503 Service Unavailable".
   rerun_signatures: []

@@ -54,7 +54,6 @@ interface RawCheckRun {
   output?: {
     title?: string | null;
     summary?: string | null;
-    text?: string | null;
     annotations_count?: number | null;
   } | null;
   /** The run's annotations, when `readCi` fetched them; never part of GitHub's list response. */
@@ -62,10 +61,10 @@ interface RawCheckRun {
 }
 
 interface RawAnnotation {
+  path?: string | null;
   annotation_level?: string | null;
   title?: string | null;
   message?: string | null;
-  raw_details?: string | null;
 }
 
 interface RawStatus {
@@ -201,19 +200,41 @@ export function stuckAfterFor(name: string, rules: CiRules = {}): number {
 }
 
 /**
- * The first signature found in a failed run's output or its failure-level
- * annotations, or null. Warnings and notices do not count: a runner that
- * warns about disk space can still fail on a real test.
+ * A runner or platform annotation, rather than one on a file of the change:
+ * GitHub puts those on `.github` or on no path. A test name or a compiler
+ * diagnostic that quotes "429 Too Many Requests" sits on a source file.
+ */
+function fromRunner(annotation: RawAnnotation): boolean {
+  const path = (annotation.path ?? '').trim();
+  return path === '' || path === '.github';
+}
+
+/**
+ * The signature that shows a failed run failed on infrastructure, or null.
+ *
+ * It must appear in the output's title or summary, or in a failure-level
+ * annotation from the runner; the output's free text and annotations' raw
+ * details carry test and compiler output, so they are not read. And every
+ * failure-level annotation must match one: an unmatched one may be a real
+ * failure beside the infrastructure one, and so may an annotation GitHub
+ * counted but that was not read. Warnings and notices do not count either way.
  */
 export function infrastructureSignature(run: RawCheckRun, signatures: readonly string[]): string | null {
-  const texts = [run.output?.title, run.output?.summary, run.output?.text];
+  const find = (...texts: (string | null | undefined)[]): string | null => {
+    const haystack = texts.filter((text): text is string => typeof text === 'string').join('\n').toLowerCase();
+    if (haystack.length === 0) return null;
+    return signatures.find((signature) => signature.length > 0 && haystack.includes(signature.toLowerCase())) ?? null;
+  };
+  let matched = find(run.output?.title, run.output?.summary);
   for (const annotation of run.annotations ?? []) {
     if ((annotation.annotation_level ?? '').toLowerCase() !== 'failure') continue;
-    texts.push(annotation.title, annotation.message, annotation.raw_details);
+    const hit = fromRunner(annotation) ? find(annotation.title, annotation.message) : null;
+    if (hit === null) return null;
+    matched ??= hit;
   }
-  const haystack = texts.filter((text): text is string => typeof text === 'string').join('\n').toLowerCase();
-  if (haystack.length === 0) return null;
-  return signatures.find((signature) => signature.length > 0 && haystack.includes(signature.toLowerCase())) ?? null;
+  const counted = run.output?.annotations_count ?? 0;
+  if (counted > 0 && (run.annotations?.length ?? 0) < counted) return null;
+  return matched;
 }
 
 const isFailure = (run: RawCheckRun): boolean =>
@@ -349,9 +370,14 @@ export function summariseCi(
 }
 
 /**
- * Reads the annotations of failed runs whose own output matched no signature,
- * since a runner reports a lost connection or a time limit as an annotation.
- * GET only. A read that fails leaves the run without them, so it stays red.
+ * Reads the annotations of failed runs, since a runner reports a lost
+ * connection or a time limit as an annotation, and a real failure beside it
+ * must keep the run red. GET only, one page per run. A run whose annotations
+ * were not read stays red.
+ *
+ * These reads are optional, so they never wait out a rate limit: the first
+ * 403 or 429 stops them, and the runs not yet read stay red rather than
+ * holding the verdict for as long as the limit lasts.
  */
 async function attachAnnotations(
   client: GitHubClient,
@@ -365,18 +391,19 @@ async function attachAnnotations(
       (run) =>
         isFailure(run) &&
         typeof run.id === 'number' &&
-        (run.output?.annotations_count ?? 0) > 0 &&
-        infrastructureSignature(run, signatures) === null,
+        (run.output?.annotations_count ?? 0) > 0,
     )
     .slice(0, MAX_ANNOTATION_READS);
   for (const run of candidates) {
     try {
       const page = await client.get<unknown>(
         `/repos/${repository}/check-runs/${run.id}/annotations?per_page=${ANNOTATIONS_PER_RUN}`,
+        { retryRateLimits: false },
       );
       if (Array.isArray(page.data)) run.annotations = page.data as RawAnnotation[];
     } catch (error) {
       if (!(error instanceof GitHubError)) throw error;
+      if (error.status === 403 || error.status === 429) return;
     }
   }
 }

@@ -83,6 +83,23 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
   }
 }
 
+/** Words that appear in nearly every failure, so alone they would turn every failure into a rerun. */
+const GENERIC_SIGNATURE_WORDS = new Set([
+  'error', 'errors', 'failed', 'failure', 'failures', 'failing', 'fatal', 'exception', 'exceptions',
+  'timeout', 'timed out', 'cancelled', 'canceled', 'aborted', 'killed', 'crashed', 'panic', 'unavailable',
+  'refused', 'denied', 'forbidden', 'unauthorized', 'warning', 'retrying', 'connection', 'network', 'internal',
+  'exit code', 'traceback', 'stacktrace',
+]);
+
+/**
+ * A rerun signature has to be specific enough not to match a real failure:
+ * at least 8 characters, and not one generic word such as "error".
+ */
+function specificSignature(signature: string): boolean {
+  if (signature.length < 8) return false;
+  return !GENERIC_SIGNATURE_WORDS.has(signature.toLowerCase().replace(/[^a-z ]+/g, ' ').trim());
+}
+
 /**
  * Stuck thresholds and rerun signatures. A threshold that is not a whole
  * number above zero would take every running check as stuck, or none, so it
@@ -126,7 +143,21 @@ function readCiRules(block: Record<string, unknown> | null, result: LoadedConfig
   if (extra !== undefined && !Array.isArray(extra)) {
     result.warnings.push('ci.rerun_signatures must be a list; ignoring it.');
   }
-  const added = Array.isArray(extra) ? asStringArray(extra).filter((signature) => signature.trim().length > 0) : [];
+  const added: string[] = [];
+  for (const entry of Array.isArray(extra) ? extra : []) {
+    if (typeof entry !== 'string') {
+      result.warnings.push(`ci.rerun_signatures: ${JSON.stringify(entry)} is not text; skipping it.`);
+      continue;
+    }
+    const signature = entry.trim();
+    if (!specificSignature(signature)) {
+      result.warnings.push(
+        `ci.rerun_signatures: "${signature}" is too short or too generic and would match real failures; skipping it.`,
+      );
+      continue;
+    }
+    added.push(signature);
+  }
   const builtin = block['builtin_rerun_signatures'];
   if (builtin !== undefined && typeof builtin !== 'boolean') {
     result.warnings.push('ci.builtin_rerun_signatures must be true or false; keeping the built-in signatures.');

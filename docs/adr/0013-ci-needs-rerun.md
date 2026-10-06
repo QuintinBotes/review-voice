@@ -80,10 +80,19 @@ cloud API and a dropped connection to a package registry all finished as
 `failure`, so they were red and capped an approval for reasons that had
 nothing to do with the change.
 
-- **What counts.** A check run concluding `failure` whose output title,
-  summary or text, or whose failure-level annotations, contain one of the
-  rerun signatures, ignoring case, needs a rerun. Warning and notice
-  annotations do not count. Any other conclusion is classified as before.
+- **What counts.** A check run concluding `failure` whose output title or
+  summary, or a failure-level annotation from the runner itself (on `.github`
+  or on no path), contains one of the rerun signatures, ignoring case, needs a
+  rerun. The output's free text, annotations on a file of the repository and
+  annotations' raw details are not read: they carry test names and compiler
+  diagnostics, which can quote "429 Too Many Requests" or `ECONNRESET`.
+  Warning and notice annotations do not count. Any other conclusion is
+  classified as before.
+- **A mixed run stays red.** A run needs a rerun only if every one of its
+  failure-level annotations matched a signature. One unmatched failure
+  annotation - a failed test on a file, or a runner's "Process completed with
+  exit code 1" - may be a real failure beside the infrastructure one, so the
+  run stays red. So does a run with annotations that were not read.
 - **The signatures.** A short built-in list of whole phrases: `We stopped
   hearing from agent`, `lost communication with the server`, `The runner has
   received a shutdown signal`, `has exceeded the maximum execution time`, `No
@@ -91,11 +100,15 @@ nothing to do with the change.
   Requests` and `503 Service Unavailable`. Bare status codes are not on it:
   "503" also appears in "503 tests passed". `ci.rerun_signatures` adds phrases
   for a repository, and `ci.builtin_rerun_signatures: false` drops the
-  built-in ones.
+  built-in ones. A configured phrase shorter than 8 characters, or one
+  generic word such as `error` or `failed`, is skipped with a warning, since
+  it would turn nearly every failure into a rerun.
 - **Reading the text.** The check-run list already carries the output. A
-  failed run whose output matched nothing and that has annotations gets one
-  more GET, `/check-runs/{id}/annotations`, for up to 50 failed runs. A read
-  that fails leaves the run red. Job logs are not read. No write is added.
+  failed run with annotations gets one more GET, `/check-runs/{id}/annotations`
+  (one page), for up to 50 failed runs. These reads are optional and never
+  wait out a rate limit: the first 403 or 429 stops them and the runs not yet
+  read stay red. Any other failed read leaves that run red. Job logs are not
+  read. No write is added.
 - **Precedence.** Unchanged: a real failure beside one is still red, and the
   reasons name the phrase, for example `CI needs a rerun: deploy (failure,
   matched "ECONNRESET")`.
