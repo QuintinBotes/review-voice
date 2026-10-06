@@ -36,6 +36,12 @@ The fix sentence is present only when `fix.render` is not `none`.
 - `direction`: state `fix.text` as the direction it is.
 - `none`: stop after the consequence. There is no fix text to state.
 
+A finding with `impactDisputed: true` had its reach contested: a second
+verifier disputed how far the failure goes, and no tie-break upheld the wider
+claim. State the consequence where the changed code produces it, and leave out
+any claim that it reaches other callers, consumers or data. That is omission,
+not a new claim, and it is within your authority.
+
 Severity is one of `blocking`, `important`, `minor`, `nit`, `question`.
 
 **Order findings by severity, most serious first, in exactly that order:

@@ -1650,6 +1650,10 @@ function scoreCommand(argv: string[]): number {
               // The editor names the cause in the prose, since the consumer's
               // line is what the finding's location shows.
               ...(c.anchor === 'stale-consumer' ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {}),
+              // A contested point is marked so the editor leaves it out: the
+              // second pass disputed how far the failure reaches and no
+              // tie-break upheld the wider claim.
+              ...(c.impactDisputed === true ? { impactDisputed: true } : {}),
             };
           }),
           belowGate,

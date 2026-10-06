@@ -68,6 +68,11 @@ claim posts. It costs one extra agent run, and only on disagreement.**
   candidate nobody disputed is ignored, as before, and its drop is still
   listed as suppressed; a ruling recorded straight from the tie-breaker is not
   taken as applied.
+- **The editor is told what is contested.** A candidate marked
+  `impact_disputed` carries `impactDisputed: true` into `score`'s `eligible`
+  list, and the editor states its consequence where the changed code produces
+  it, leaving out the wider impact the tie-break did not uphold. The tier rule
+  above is unchanged.
 
 ## Consequences
 

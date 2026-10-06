@@ -471,7 +471,9 @@ derived `severity` - and a `fix` object. It returns the rendered review and
 nothing else.
 
 `fix` holds only what may be stated: `render` is `fix` or `direction` with the
-text to state, or `none` with no text. The editor does not decide or invent a
+text to state, or `none` with no text. An entry marked `impactDisputed` had its
+wider impact disputed in step 3c with no tie-break upholding it; the editor
+leaves that wider impact out. The editor does not decide or invent a
 correction, and a withheld repair never reaches it. The full fix decision stays
 in `scores` for `/review-voice:explain`.
 

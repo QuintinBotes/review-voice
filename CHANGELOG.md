@@ -84,6 +84,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ignored. `reconcile` marks each ruling `applied` under `tieBreaks`, and the
   review records that output with `record --tie-breaks`; only an applied,
   upheld ruling overturns a drop. (#31)
+- A finding whose wider impact was disputed and not upheld carries
+  `impactDisputed: true` to the editor, which then leaves that impact out of
+  the comment. (#31)
 
 ## [1.10.1] - 2026-10-05
 
