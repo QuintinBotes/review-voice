@@ -1196,6 +1196,22 @@ const CLAIM_CAP = 1000;
  * 137 KB report. Only the serialised copy is cut, so computeReach still
  * returns the full lists. A cut list gets `<name>Total` and `truncated`.
  */
+/**
+ * The entry with `candidate_id` beside `candidateId`. Candidates, verification
+ * and `check-candidates` spell it `candidate_id`, and a pipeline joining score
+ * entries back to them on that key got null for every one. Both are written
+ * while `candidateId` is deprecated, so neither kind of reader breaks.
+ */
+function withSnakeCaseId(entry: unknown): unknown {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(entry as Record<string, unknown>)) {
+    out[key] = value;
+    if (key === 'candidateId') out['candidate_id'] = value;
+  }
+  return out;
+}
+
 function boundLists(value: unknown, limit: number = TEXT_CAP): unknown {
   if (typeof value === 'string') return value.length > limit ? `${value.slice(0, limit)}...` : value;
   if (Array.isArray(value)) return value.map((entry) => boundLists(entry, limit));
@@ -1662,7 +1678,7 @@ function scoreCommand(argv: string[]): number {
     console.log(
       JSON.stringify(
         {
-          scores: boundLists(results),
+          scores: (boundLists(results) as unknown[]).map(withSnakeCaseId),
           // Reported every run so the threshold stops being a constant nobody
           // can check. A gate sitting above the whole distribution is not
           // selective, it is miscalibrated, and that is only visible here.
@@ -1710,7 +1726,7 @@ function scoreCommand(argv: string[]): number {
               // it; the full decision stays in `scores` for `explain`.
             }) as Record<string, unknown>;
             return {
-              ...bounded,
+              ...(withSnakeCaseId(bounded) as Record<string, unknown>),
               fix: scored === undefined ? { render: 'none' as const, text: null } : editorFix(scored.fix),
               // The editor names the cause in the prose, since the consumer's
               // line is what the finding's location shows.
@@ -1726,8 +1742,8 @@ function scoreCommand(argv: string[]): number {
               ...(c.impactDisputed === true ? { impactDisputed: true } : {}),
             };
           }),
-          belowGate,
-          unverified,
+          belowGate: belowGate.map(withSnakeCaseId),
+          unverified: unverified.map(withSnakeCaseId),
         },
         null,
         2,

@@ -15043,7 +15043,9 @@ var COMMAND_HELP = {
       "  --repository <name>       Prefer precedents from this repository",
       "  --owner <login>           Owner whose precedents count; default from config",
       "Reads: candidates JSON on stdin.",
-      "Writes: JSON scores on stdout.",
+      "Writes: JSON scores on stdout. Every entry names its candidate as candidate_id,",
+      "  like candidates and verification; candidateId is still written beside it",
+      "  but is deprecated.",
       "Exit codes: 0 ok, 2 malformed candidates or bad invocation."
     )
   },
@@ -16124,6 +16126,15 @@ var LIST_CAP = 20;
 var EXCERPT_CAP = 300;
 var TEXT_CAP = 600;
 var CLAIM_CAP = 1e3;
+function withSnakeCaseId(entry) {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
+  const out = {};
+  for (const [key, value] of Object.entries(entry)) {
+    out[key] = value;
+    if (key === "candidateId") out["candidate_id"] = value;
+  }
+  return out;
+}
 function boundLists(value, limit = TEXT_CAP) {
   if (typeof value === "string") return value.length > limit ? `${value.slice(0, limit)}...` : value;
   if (Array.isArray(value)) return value.map((entry) => boundLists(entry, limit));
@@ -16451,7 +16462,7 @@ function scoreCommand(argv) {
     console.log(
       JSON.stringify(
         {
-          scores: boundLists(results),
+          scores: boundLists(results).map(withSnakeCaseId),
           // Reported every run so the threshold stops being a constant nobody
           // can check. A gate sitting above the whole distribution is not
           // selective, it is miscalibrated, and that is only visible here.
@@ -16499,7 +16510,7 @@ function scoreCommand(argv) {
               // it; the full decision stays in `scores` for `explain`.
             });
             return {
-              ...bounded,
+              ...withSnakeCaseId(bounded),
               fix: scored === void 0 ? { render: "none", text: null } : editorFix(scored.fix),
               // The editor names the cause in the prose, since the consumer's
               // line is what the finding's location shows.
@@ -16513,8 +16524,8 @@ function scoreCommand(argv) {
               ...c.impactDisputed === true ? { impactDisputed: true } : {}
             };
           }),
-          belowGate,
-          unverified
+          belowGate: belowGate.map(withSnakeCaseId),
+          unverified: unverified.map(withSnakeCaseId)
         },
         null,
         2

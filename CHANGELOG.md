@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--thread`. Without `--thread`, `carry` on a pull request run says it did not
   check. (#57)
 
+- `score` output names each candidate `candidate_id` in `scores`, `eligible`,
+  `belowGate` and `unverified`, the spelling candidates, verification and
+  `check-candidates` use, so a pipeline joining them on one key no longer gets
+  `null` for every score entry. (#59)
+
+### Deprecated
+
+- `candidateId` in `score` output. It is still written beside `candidate_id`
+  and will be removed in a later release; read `candidate_id`. (#59)
+
 ## [1.11.1] - 2026-10-06
 
 ### Fixed
