@@ -740,7 +740,9 @@ change first:
 
 1. `RV diff --pr <number> --full --out <newtmpdir>`, for the whole pull request
    at the new head. This is the diff the carried candidates are checked
-   against and scored on.
+   against and scored on. It has to be `--full`: a candidate in a file the
+   interdiff leaves out would be refused, so `carry-candidates` refuses the
+   interdiff's `diff.patch` as `--diff-file`.
 2. `RV diff --pr <number> --since <old sha> --out <interdir>`, for the commits
    since the old head. Run steps 2 to 3c on `<interdir>/diff.patch` exactly as
    for any review, and write the surviving candidates and the verifier's output
