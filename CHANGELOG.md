@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A second pass that traced a worse impact than a finding's tier can raise it,
+  only through the tie-break: a confirmed verdict whose `suggested_severity`
+  is stronger, with `decisive_evidence`, is kept with `proposedSeverity`;
+  `reconcile` lists it as an `upgrade` dispute, and the tier rises only when
+  the tie-breaker upholds it with `impact_traced: true` at confidence 0.85 or
+  more, recorded under `tieBreaks` with `applied` and `raised` (ADR 0019).
+  Second-pass verdicts may carry `decisiveEvidence: [{path, line, why}]`,
+  which every dispute hands to the tie-breaker. (#31)
 - A prior comment of the owner's that the author only partly addressed gets a
   local partly-addressed state. The verifier may mark a candidate linked to
   that comment with `partly_addressed` (`remaining`, `addressed`); `score`
@@ -90,6 +98,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows the old path coming back, and files the pull request now deletes, so a
   deletion is in the patch. With no pull request files to read, the follow-up
   is `unchanged` rather than the whole commit range.
+- A follow-up whose merge conflicted reads a conflicted file as only the
+  hunks of its own diff that the resolution touched, instead of the whole own
+  diff; when a part of the resolution meets no own-diff hunk, the whole own
+  diff is read and the scope note names the file. A file the pull request no
+  longer changes because the merged base makes the same change is listed as
+  `absorbedByBase` in the `diff` summary and printed after the findings; a
+  file renamed since the review, or one no review would read, such as a lock
+  file, is never listed. (#26)
 - The posted review no longer says anything about human review. A change
   assessed as high-complexity is still capped at COMMENT (ADR 0012), but the
   summary line is the ordinary one and `humanReviewNote` is carried in the
@@ -173,6 +189,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A finding whose wider impact was disputed and not upheld carries
   `impactDisputed: true` to the editor, which then leaves that impact out of
   the comment. (#31)
+- `reconcile` refuses, exiting 2, a second-pass verdict whose fields
+  contradict its label: a `kept` that was not confirmed or moved the tier, a
+  `dropped` that was not rejected, a `downgraded` whose `finalSeverity` is not
+  lower, or a proposal with no decisive evidence. `verify` reads a verdict
+  label other than confirmed, rejected or uncertain on its last verdict as no
+  verdict, instead of a confirmation or an earlier draft, reads a reason that
+  is not text as none, and no longer turns a doubted question into a nit. (#31)
 - `record` checks stdin against the output contract `validate-output` enforces
   and exits 2, naming each problem and storing nothing, when it is not a
   review. (#34)

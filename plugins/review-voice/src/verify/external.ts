@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import type { FindingVerdict, RawVerdict, VerificationReport, Verdict } from './types.ts';
+import type { DecisiveEvidence, FindingVerdict, RawVerdict, VerificationReport, Verdict } from './types.ts';
 
 export interface VerifiableFinding {
   candidateId: string;
@@ -60,9 +60,35 @@ export const HOW_TO_ENABLE =
 const TIERS = ['blocking', 'important', 'minor', 'nit', 'question'];
 
 function downgrade(severity: string): string {
+  // A question is weaker than a nit already: turning it into one would make
+  // a doubting verdict assert what the analyst only asked.
+  if (severity === 'question') return 'question';
   const index = TIERS.indexOf(severity);
   if (index === -1 || index >= TIERS.length - 2) return 'nit';
   return TIERS[index + 1] ?? 'nit';
+}
+
+/** At most this many decisive lines are kept: they are places to look, not a review. */
+const MAX_DECISIVE_EVIDENCE = 10;
+
+/**
+ * The verifier's decisive lines, keeping only well-formed entries. The
+ * command's output is untrusted, and a malformed entry is no place to look.
+ */
+function decisiveEvidence(raw: RawVerdict): DecisiveEvidence[] {
+  const list = raw.decisive_evidence ?? raw.decisiveEvidence;
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((entry): entry is DecisiveEvidence => {
+      const e = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+      return (
+        typeof e['path'] === 'string' && e['path'].length > 0 &&
+        Number.isInteger(e['line']) && (e['line'] as number) > 0 &&
+        typeof e['why'] === 'string' && e['why'].trim().length > 0
+      );
+    })
+    .slice(0, MAX_DECISIVE_EVIDENCE)
+    .map((entry) => ({ path: entry.path, line: entry.line, why: entry.why }));
 }
 
 /**
@@ -108,13 +134,21 @@ function jsonCandidates(text: string): string[] {
   return found;
 }
 
+const VERDICTS: readonly string[] = ['confirmed', 'rejected', 'uncertain'];
+
 function parseVerdict(stdout: string): RawVerdict | null {
   // Verifiers are chatty, and may revise themselves. The last well-formed
   // verdict wins rather than requiring the command to emit nothing else.
   for (const candidate of jsonCandidates(stdout).reverse()) {
     try {
       const parsed = JSON.parse(candidate) as RawVerdict;
-      if (typeof parsed.verdict === 'string') return parsed;
+      if (typeof parsed.verdict !== 'string') continue;
+      // The last verdict is the answer. A label outside the three, such as
+      // "REFUTED", is no verdict: read as a confirmation it would keep a
+      // finding the verifier meant to reject, and skipping it would apply an
+      // earlier draft the verifier had revised.
+      const label = parsed.verdict.toLowerCase();
+      return VERDICTS.includes(label) ? { ...parsed, verdict: label as Verdict } : null;
     } catch {
       continue;
     }
@@ -220,10 +254,13 @@ export function verifyFindings(
 
     const verdict: Verdict = raw.verdict;
     const confidence = typeof raw.confidence === 'number' ? Math.min(1, Math.max(0, raw.confidence)) : 0.5;
-    const reason = raw.reason ?? '';
+    // The command's output is untrusted: a reason that is not text is none.
+    const reason = typeof raw.reason === 'string' ? raw.reason : '';
+    const decisive = decisiveEvidence(raw);
 
     let outcome: FindingVerdict['outcome'] = 'kept';
     let finalSeverity = finding.severity;
+    let proposedSeverity: string | undefined;
 
     if (verdict === 'rejected') {
       if (confidence >= dropThreshold) {
@@ -245,6 +282,19 @@ export function verifyFindings(
       // verifier's job is to doubt, not to escalate.
       outcome = 'downgraded';
       finalSeverity = raw.suggested_severity;
+    } else if (
+      raw.suggested_severity !== undefined &&
+      raw.suggested_severity !== 'question' &&
+      TIERS.includes(raw.suggested_severity) &&
+      TIERS.indexOf(finding.severity) !== -1 &&
+      TIERS.indexOf(raw.suggested_severity) < TIERS.indexOf(finding.severity) &&
+      decisive.length > 0 &&
+      reason.trim().length > 0
+    ) {
+      // A worse impact the verifier traced is a proposal, not a change: the
+      // tier stays, and `reconcile` hands it to the tie-break. Without lines
+      // to check it there is nothing to settle, and it is ignored as before.
+      proposedSeverity = raw.suggested_severity;
     }
 
     verdicts.push({
@@ -258,6 +308,8 @@ export function verifyFindings(
       originalSeverity: finding.severity,
       finalSeverity,
       verifier: name,
+      ...(decisive.length > 0 ? { decisiveEvidence: decisive } : {}),
+      ...(proposedSeverity === undefined ? {} : { proposedSeverity }),
     });
   }
 
