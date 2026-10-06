@@ -255,9 +255,11 @@ function scopeNote(scope: Exclude<ReviewScope, { kind: 'full' }>): string {
         `${earlierReview(scope)} still applies.`
       );
     case 'interdiff':
+      // The detail says which conflicted files were cut to their resolution
+      // and which were read whole, so a reader knows what the review covered.
       return (
         `Reviewed changes to this pull request's own diff since ${scope.since.slice(0, 7)}; ` +
-        'base-branch changes merged in were not reviewed.'
+        `base-branch changes merged in were not reviewed${scope.detail === undefined ? '' : `; ${scope.detail}`}.`
       );
   }
 }

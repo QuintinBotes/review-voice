@@ -584,7 +584,7 @@ interface EmittedDiff {
 }
 
 /** The compact metadata a command runner needs after `diff --out`. */
-function diffSummary(result: EmittedDiff): {
+export function diffSummary(result: EmittedDiff): {
   mode: EmittedDiff['mode'];
   base: string | null;
   /** On `--pr`, where the branch left the base; see `refs.mergeBase`. */
@@ -594,12 +594,20 @@ function diffSummary(result: EmittedDiff): {
   scope: {
     kind: ReviewScope['kind'];
     cause: string | null;
-    /** Which condition sent a full read, and which git command failed, when one did. */
+    /**
+     * Which condition sent a full read, and which git command failed, when one
+     * did; on an interdiff, which conflicted files were narrowed or read whole.
+     */
     detail: string | null;
     since: string | null;
     mergeBase: string | null;
   } | null;
   scopeNote: string | null;
+  /**
+   * Files the pull request no longer changes because the new base already
+   * makes the same change; review.md prints them after the findings.
+   */
+  absorbedByBase: string[];
   complexity: ComplexityAssessment | null;
   humanReviewNote: string | null;
   truncated: boolean;
@@ -625,7 +633,8 @@ function diffSummary(result: EmittedDiff): {
             : result.scope.kind === 'unchanged'
               ? result.scope.reason
               : null,
-        detail: result.scope.kind === 'full' ? (result.scope.detail ?? null) : null,
+        detail:
+          result.scope.kind === 'full' || result.scope.kind === 'interdiff' ? (result.scope.detail ?? null) : null,
         since: result.scope.since,
         mergeBase:
           result.scope.kind === 'unchanged' || result.scope.kind === 'interdiff' ? result.scope.mergeBase : null,
@@ -638,6 +647,10 @@ function diffSummary(result: EmittedDiff): {
     pullNumber: result.pullNumber ?? null,
     scope,
     scopeNote: result.scopeNote ?? null,
+    absorbedByBase:
+      result.scope !== undefined && (result.scope.kind === 'unchanged' || result.scope.kind === 'interdiff')
+        ? (result.scope.absorbedByBase ?? [])
+        : [],
     complexity: result.complexity ?? null,
     humanReviewNote: result.humanReviewNote ?? null,
     truncated: result.truncated ?? false,

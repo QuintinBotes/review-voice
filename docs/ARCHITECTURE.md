@@ -112,9 +112,14 @@ files. Base changes are
 on both sides and cancel out; what remains is the author's new commits and any
 rewrite of their own code while resolving the merge. A file whose replay
 conflicts has only conflict markers to compare with, so it is read as the pull
-request's own diff of it on the new base: the author's resolution and the rest
-of their change there, with the base's changes still left out. Without the base
-commit, a merge or a rewritten history still falls back.
+request's own diff of it on the new base, cut to the hunks that meet a place
+where the head differs from the marked-up replay: the author's resolution, with
+the base's changes still left out. When some part of the resolution meets no
+own-diff hunk, as when the author took the base's side, the whole own diff of
+that file is read instead, and the scope note says so. A file the reviewed head
+changed that the base now changes the same way drops out of the pull request;
+it is listed as `absorbedByBase` and printed after the findings. Without the
+base commit, a merge or a rewritten history still falls back.
 
 The resulting scope is written beside the patch and printed after the findings
 when it is incremental. In particular, `No actionable findings.` then means no

@@ -90,6 +90,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows the old path coming back, and files the pull request now deletes, so a
   deletion is in the patch. With no pull request files to read, the follow-up
   is `unchanged` rather than the whole commit range.
+- A follow-up whose merge conflicted reads a conflicted file as only the
+  hunks of its own diff that the resolution touched, instead of the whole own
+  diff; when a part of the resolution meets no own-diff hunk, the whole own
+  diff is read and the scope note names the file. A file the pull request no
+  longer changes because the merged base makes the same change is listed as
+  `absorbedByBase` in the `diff` summary and printed after the findings. (#26)
 - The posted review no longer says anything about human review. A change
   assessed as high-complexity is still capped at COMMENT (ADR 0012), but the
   summary line is the ordinary one and `humanReviewNote` is carried in the

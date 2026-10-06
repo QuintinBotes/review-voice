@@ -1897,10 +1897,11 @@ function parseReviewScope(value) {
   if (scope.kind === "incremental" && prior && Number.isInteger(scope.commits) && strings(scope.files)) {
     return scope;
   }
-  if (scope.kind === "unchanged" && prior && typeof scope.mergeBase === "string" && UNCHANGED_REASONS.has(scope.reason)) {
+  const absorbed = scope.absorbedByBase === void 0 || strings(scope.absorbedByBase);
+  if (scope.kind === "unchanged" && prior && typeof scope.mergeBase === "string" && UNCHANGED_REASONS.has(scope.reason) && absorbed) {
     return scope;
   }
-  if (scope.kind === "interdiff" && prior && typeof scope.mergeBase === "string" && strings(scope.files) && Number.isInteger(scope.hunks) && (scope.detail === void 0 || typeof scope.detail === "string")) {
+  if (scope.kind === "interdiff" && prior && typeof scope.mergeBase === "string" && strings(scope.files) && Number.isInteger(scope.hunks) && (scope.detail === void 0 || typeof scope.detail === "string") && absorbed) {
     return scope;
   }
   if (scope.kind === "full" && typeof scope.cause === "string" && nullableString(scope.since) && nullableString(scope.priorRunId) && (scope.detail === void 0 || typeof scope.detail === "string")) {
@@ -2142,7 +2143,7 @@ function ownDiffScope(options, prior, git5, ancestor, merged) {
   const priorMergeBase = git5.mergeBase(base, prior.headRef, options.cwd);
   const paths = pullRequestPaths(options, prior, git5, priorMergeBase, mergeBase);
   if (priorMergeBase === mergeBase) {
-    return interdiffFrom(options, prior, git5, prior.headRef, mergeBase, paths, ancestor ? "base-sync-only" : "history-rewritten");
+    return interdiffFrom(options, prior, git5, prior.headRef, mergeBase, paths.all, ancestor ? "base-sync-only" : "history-rewritten");
   }
   if (git5.replay === void 0) {
     return { scope: full("compare-unavailable", prior, "this git surface cannot replay the reviewed head"), interdiffPatch: null };
@@ -2154,9 +2155,10 @@ function ownDiffScope(options, prior, git5, ancestor, merged) {
     git5,
     replayed.tree,
     mergeBase,
-    paths,
+    paths.all,
     !ancestor ? "history-rewritten" : merged ? "base-merged" : "base-sync-only",
-    replayed.conflicts
+    replayed.conflicts,
+    paths.withdrawn
   );
 }
 function pullRequestPaths(options, prior, git5, priorMergeBase, mergeBase) {
@@ -2165,21 +2167,74 @@ function pullRequestPaths(options, prior, git5, priorMergeBase, mergeBase) {
   );
   const current = new Set(git5.changedPaths(mergeBase, options.head, options.cwd));
   const withdrawn = git5.changedPaths(priorMergeBase, prior.headRef, options.cwd).filter((path) => !current.has(path));
-  return [.../* @__PURE__ */ new Set([...reviewed, ...options.deletedFiles ?? [], ...withdrawn])];
+  return { all: [.../* @__PURE__ */ new Set([...reviewed, ...options.deletedFiles ?? [], ...withdrawn])], withdrawn };
 }
-function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedReason, conflicts = []) {
+function patchSections(patch) {
+  const sections2 = /* @__PURE__ */ new Map();
+  const starts = [...patch.matchAll(/^diff --git .*$/gm)];
+  starts.forEach((match, index) => {
+    const end = starts[index + 1]?.index ?? patch.length;
+    const header = match[0].endsWith("\r") ? match[0].slice(0, -1) : match[0];
+    const path = gitHeaderPath(header);
+    if (path !== null) sections2.set(path, patch.slice(match.index, end));
+  });
+  return sections2;
+}
+function sectionHunks(section) {
+  const parts = section.split(/^(?=@@ )/m);
+  const header = parts[0].startsWith("@@ ") ? "" : parts.shift();
+  const hunks = [];
+  for (const text of parts) {
+    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text);
+    if (numbers === null) return null;
+    const start = Number(numbers[1]);
+    const count3 = numbers[2] === void 0 ? 1 : Number(numbers[2]);
+    hunks.push({ text, first: start, last: count3 === 0 ? start + 1 : start + count3 - 1 });
+  }
+  return { header, hunks };
+}
+function narrowToResolution(own, resolution) {
+  if (resolution === void 0) return null;
+  const ownHunks = sectionHunks(own);
+  const touched = sectionHunks(resolution);
+  if (ownHunks === null || touched === null || ownHunks.hunks.length === 0 || touched.hunks.length === 0) return null;
+  const meets = (left, right) => left.first <= right.last && right.first <= left.last;
+  const kept = /* @__PURE__ */ new Set();
+  for (const change of touched.hunks) {
+    const hits = ownHunks.hunks.filter((hunk) => meets(hunk, change));
+    if (hits.length === 0) return null;
+    for (const hit of hits) kept.add(hit);
+  }
+  return ownHunks.header + ownHunks.hunks.filter((hunk) => kept.has(hunk)).map((hunk) => hunk.text).join("");
+}
+function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedReason, conflicts = [], withdrawn = []) {
   const diffText = git5.diffText;
   const read = (left, list) => list.length === 0 ? "" : diffText(left, options.head, list, options.cwd);
   const wanted = new Set(paths);
   const conflicted = conflicts.filter((path) => wanted.has(path));
-  const whole = read(mergeBase, conflicted);
-  const readWhole = new Set(ownDiffFiles(whole).keys());
-  const rest = paths.filter((path) => !readWhole.has(path));
-  const patch = [read(from, rest), whole].filter((part) => part.length > 0).join("");
-  const detail = readWhole.size === 0 ? {} : { detail: `read whole after a conflicting replay: ${[...readWhole].sort().join(", ")}` };
+  const own = patchSections(read(mergeBase, conflicted));
+  const resolutions = patchSections(read(from, [...own.keys()]));
+  const narrowed = [];
+  const whole = [];
+  const resolved = [...own].map(([path, section]) => {
+    const cut = narrowToResolution(section, resolutions.get(path));
+    (cut === null ? whole : narrowed).push(path);
+    return cut ?? section;
+  });
+  const rest = paths.filter((path) => !own.has(path));
+  const outside = read(from, rest);
+  const patch = [outside, ...resolved].filter((part) => part.length > 0).join("");
+  const notes = [
+    narrowed.length === 0 ? null : `narrowed to the merge resolution after a conflicting replay: ${narrowed.sort().join(", ")}`,
+    whole.length === 0 ? null : `read whole after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(", ")}`
+  ].filter((note) => note !== null);
+  const detail = notes.length === 0 ? {} : { detail: notes.join("; ") };
+  const inPatch = new Set(ownDiffFiles(outside).keys());
+  const absorbedList = from === prior.headRef ? [] : withdrawn.filter((path) => !inPatch.has(path) && !own.has(path)).sort();
+  const absorbed = absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList };
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
   if (patch.trim().length === 0) {
-    return { scope: { kind: "unchanged", ...common, reason: unchangedReason }, interdiffPatch: null };
+    return { scope: { kind: "unchanged", ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null };
   }
   const reviewed = /* @__PURE__ */ new Map();
   for (const file of options.reviewedFiles) {
@@ -2193,7 +2248,7 @@ function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedRe
     hunks += file.hunks.length;
   }
   return {
-    scope: { kind: "interdiff", ...common, files: [...files].sort(), hunks, ...detail },
+    scope: { kind: "interdiff", ...common, files: [...files].sort(), hunks, ...detail, ...absorbed },
     interdiffPatch: patch
   };
 }
@@ -2314,7 +2369,7 @@ function scopeNote(scope) {
     case "unchanged":
       return `No change to this pull request's own diff since ${scope.since.slice(0, 7)}; ${earlierReview(scope)} still applies.`;
     case "interdiff":
-      return `Reviewed changes to this pull request's own diff since ${scope.since.slice(0, 7)}; base-branch changes merged in were not reviewed.`;
+      return `Reviewed changes to this pull request's own diff since ${scope.since.slice(0, 7)}; base-branch changes merged in were not reviewed${scope.detail === void 0 ? "" : `; ${scope.detail}`}.`;
   }
 }
 function pathsWithHunks(diff) {
@@ -14483,7 +14538,7 @@ function diffSummary(result) {
   const scope = result.scope === void 0 ? null : {
     kind: result.scope.kind,
     cause: result.scope.kind === "full" ? result.scope.cause : result.scope.kind === "unchanged" ? result.scope.reason : null,
-    detail: result.scope.kind === "full" ? result.scope.detail ?? null : null,
+    detail: result.scope.kind === "full" || result.scope.kind === "interdiff" ? result.scope.detail ?? null : null,
     since: result.scope.since,
     mergeBase: result.scope.kind === "unchanged" || result.scope.kind === "interdiff" ? result.scope.mergeBase : null
   };
@@ -14495,6 +14550,7 @@ function diffSummary(result) {
     pullNumber: result.pullNumber ?? null,
     scope,
     scopeNote: result.scopeNote ?? null,
+    absorbedByBase: result.scope !== void 0 && (result.scope.kind === "unchanged" || result.scope.kind === "interdiff") ? result.scope.absorbedByBase ?? [] : [],
     complexity: result.complexity ?? null,
     humanReviewNote: result.humanReviewNote ?? null,
     truncated: result.truncated ?? false,
@@ -16846,6 +16902,7 @@ try {
   }
 }
 export {
+  diffSummary,
   resolveOutPath,
   verificationProblem
 };

@@ -88,7 +88,10 @@ recorded. The scope is one of:
   `--text`, `carry` prints JSON, which is not a review: never pipe it into
   `validate-output` or `record`.
 - `interdiff` - only the author's hunks that are new since the previous head,
-  with base-branch churn excluded and head-side line numbers kept.
+  with base-branch churn excluded and head-side line numbers kept. A file
+  whose merge conflicted holds only the hunks its resolution touched, or its
+  whole own diff when those could not be matched; `detail` and `scopeNote`
+  say which.
 - `incremental` - only the commits after the previous head (used only when
   the base commit is not readable locally).
 - `full` - the whole pull request, with `cause` saying why and, where it
@@ -129,6 +132,12 @@ as `truncationNote` is printed.** This includes an output of exactly
 `No actionable findings.`: in an incremental run, that sentence only applies to
 the newly added commits. A full scope has `scopeNote: null` and prints nothing
 extra.
+
+**If `absorbedByBase` is not empty, print one line after the findings, the
+same way:** `Not reviewed again, as the base branch now makes the same change:
+<paths, comma-separated>.` These are files the previous head changed that the
+pull request no longer does, because the merged base already holds that
+change. Do not review them or comment on them.
 
 **If `humanReviewNote` is not null, print it on its own line after the
 findings, the same way, including after `No actionable findings.`.** It is
