@@ -255,10 +255,20 @@ the point cannot be made on the changed line. Set `anchor` to
 and add `caused_by` with the `path` and `line` of the change that made it
 wrong. The cause must be an added line or a deletion site, by the same rule as
 any other anchor; a cause on context or outside the diff is rejected.
-`check-candidates` checks the cause, not the consumer. The verifier must trace
+`check-candidates` checks the cause, not the consumer.
+
+Both the cause and the consumer are judged against the diff you were given and
+nothing else. On a follow-up review that is the interdiff - only what changed
+since the last review - not the pull request's whole diff, and `check-candidates`
+and `score` read that same patch. If the consumer's own line is an added line
+or a deletion site in your diff, it is not a stale consumer: file it as an
+ordinary finding on that line, without `anchor` and `caused_by`. The verifier must trace
 the consumer back to the cause, or the finding is dropped, and it is posted in
 the review body rather than inline, because a comment cannot sit on an
-unchanged line.
+unchanged line. A document the change made wrong - a guide or skill that still
+describes the old way - has no runtime break to trace. File it in category
+`maintainability` at `nit`: untraced, that is the only tier it can be reported
+at.
 
 ## Output
 

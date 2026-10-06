@@ -22,7 +22,15 @@ import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAsse
 import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
 import { isReviewable } from './diff/classify.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
-import { classifyAnchor, classifyStaleConsumer, parseHunks, reason, type AnchorCheck, type FileHunks } from './diff/hunks.ts';
+import {
+  classifyAnchor,
+  classifyStaleConsumer,
+  ordinaryFindingHint,
+  parseHunks,
+  reason,
+  type AnchorCheck,
+  type FileHunks,
+} from './diff/hunks.ts';
 import { readThread, type ThreadComment } from './diff/thread.ts';
 import { collectSymbolContext, DEFAULT_MAX_MS } from './diff/symbols.ts';
 import { openDatabase } from './store/db.ts';
@@ -83,11 +91,15 @@ import {
   DEFAULT_THRESHOLDS,
   DUPLICATE_OVERLAP,
   EVIDENCE_QUALITIES,
+  CONTEXT_KINDS,
+  UNVERIFIABLE_REJECTION,
+  blockingContext,
   overlap,
   significantWords,
   type Candidate,
   type RawCandidate,
   type ScoreBreakdown,
+  type MissingContext,
   type Verification,
 } from './scoring/score.ts';
 import { compileProposals } from './policy/compile.ts';
@@ -109,6 +121,7 @@ Commands:
   diff              Acquire the diff under review as structured JSON
   symbols           Collect changed symbols and their lexical reference paths
   check-candidates  Validate analyst output against the candidate schema
+  check-verification  Validate verifier output from stdin, as score would
   context           Resolve config and the active policy stack as JSON
   conventions       Collect the repository's own convention documents
   evidence          Run the configured static checks and emit structured signals
@@ -175,6 +188,7 @@ record flags:
   --candidates <path>    Scored candidates, so findings carry their category
   --scores <path>        Score breakdowns, so explain can show its working
   --verdicts <path>      Verification verdicts, including findings that were dropped
+  --tie-breaks <path>    reconcile's output, with the rulings it applied
   --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
   --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
   --stages <path>        Per-stage timings as
@@ -249,6 +263,7 @@ Normally driven by the /review-voice:* commands, not invoked directly.`;
 /** What each stdin-reading command expects, for the message a terminal gets. */
 const STDIN_INPUT: Record<string, string> = {
   'check-candidates': 'candidates JSON',
+  'check-verification': 'the evidence-verifier output',
   score: 'candidates JSON',
   record: 'the validated review',
   'validate-output': 'the review text',
@@ -1303,6 +1318,8 @@ function scoreCommand(argv: string[]): number {
         const fixReason = raw['fix_reason'] ?? raw['fixReason'];
         const fixDirection = raw['fix_direction'] ?? raw['fixDirection'];
         const impactTraced = raw['impact_traced'] ?? raw['impactTraced'];
+        const premisesVerified = raw['premises_verified'] ?? raw['premisesVerified'];
+        const verified = raw['verified'];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: (raw['evidence_quality'] ?? raw['evidenceQuality']) as Verification['evidenceQuality'],
@@ -1321,8 +1338,10 @@ function scoreCommand(argv: string[]): number {
           fixDirection: typeof fixDirection === 'string' ? fixDirection : undefined,
           // Only a real boolean counts; a string "true" is not evidence.
           impactTraced: typeof impactTraced === 'boolean' ? impactTraced : undefined,
+          premisesVerified: typeof premisesVerified === 'boolean' ? premisesVerified : undefined,
+          verified: typeof verified === 'boolean' ? verified : undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
-            raw['requiredContextMissing']) as string[] | undefined,
+            raw['requiredContextMissing']) as MissingContext[] | undefined,
           // Already checked by `verificationProblem`.
           partlyAddressed: (raw['partly_addressed'] ?? raw['partlyAddressed']) as Verification['partlyAddressed'],
         });
@@ -1534,12 +1553,26 @@ function scoreCommand(argv: string[]): number {
               (comment) =>
                 !(comment.author === followUp.author && comment.path === followUp.path && comment.line === followUp.line),
             );
-      const echoed = breakdown.eligible ? alreadySaidOnThread(candidate, echoThread) : null;
+
+      // A candidate one local gate stopped is still checked against the rules
+      // below, so `belowGate` and `unverified` list only what that gate alone
+      // stopped. A failure here is appended rather than replacing the reason.
+      const listable = !breakdown.eligible && locallyListable(breakdown.rejectedBecause);
+      const alsoRejected = (because: string): void => {
+        breakdown.rejectedBecause = `${breakdown.rejectedBecause ?? ''}. Also: ${because}`;
+      };
+
+      const echoed = breakdown.eligible || listable ? alreadySaidOnThread(candidate, echoThread) : null;
       if (echoed !== null) {
-        breakdown.eligible = false;
-        breakdown.rejectedBecause =
+        const because =
           `already said on this pull request by ${echoed.author}` +
           (echoed.path === null ? '' : ` at ${echoed.path}:${echoed.line ?? '?'}`);
+        if (breakdown.eligible) {
+          breakdown.eligible = false;
+          breakdown.rejectedBecause = because;
+        } else {
+          alsoRejected(because);
+        }
       }
 
       // A candidate can only become a review comment where the reviewed diff
@@ -1558,13 +1591,19 @@ function scoreCommand(argv: string[]): number {
       // The path is the one field nothing checked, and a wrong one sends the
       // author to a file that does not exist.
       let citation = null;
-      if (breakdown.eligible && searchRoot !== null) {
+      const stillListable = !breakdown.eligible && listable && locallyListable(breakdown.rejectedBecause);
+      if ((breakdown.eligible || stillListable) && searchRoot !== null) {
         citation = checkCitation(candidate.path, searchRoot, baseRef, reachDiff);
         if (!citation.resolves && !citation.inconclusive) {
-          breakdown.eligible = false;
-          breakdown.rejectedBecause =
+          const because =
             `cites ${candidate.path}, which does not exist at the reviewed ref` +
             (citation.suggestion === null ? '' : `; did it mean ${citation.suggestion}?`);
+          if (breakdown.eligible) {
+            breakdown.eligible = false;
+            breakdown.rejectedBecause = because;
+          } else {
+            alsoRejected(because);
+          }
         }
       }
 
@@ -1582,29 +1621,56 @@ function scoreCommand(argv: string[]): number {
     // before the distribution below so `cleared` counts what actually ships.
     applyQuestionCap(results);
 
-    // Verified, past the confidence gate, and stopped only by the final score:
-    // real by the verifier's account, but not what the owner would choose to
-    // say. Shown locally so it is not lost, and never posted. A rejection
-    // from any other gate leads its reason, so the prefix tells them apart.
+    // Confirmed by the verifier and stopped by one numeric gate alone: the
+    // final score, which is preference, or the floor on the verifier's own
+    // confidence. Real by the verifier's account, but not shipped. Shown
+    // locally so it is not lost, and never posted. A rejection from any other
+    // gate leads its reason or is appended after "Also:", so the prefix tells
+    // them apart; `gate` says which one stopped it.
     const belowGate = results
       .filter(
         (r) =>
           r.confidenceSource === 'verifier' &&
           !r.eligible &&
           Number.isFinite(r.finalScore) &&
-          (r.rejectedBecause ?? '').startsWith('score '),
+          gateOf(r.rejectedBecause) !== null,
       )
-      .map((r) =>
-        boundLists({
+      .map((r) => {
+        const gate = gateOf(r.rejectedBecause);
+        return boundLists({
           candidateId: r.candidateId,
           path: r.path,
           line: r.line,
           severity: r.severity.severity,
           claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? '',
-          finalScore: r.finalScore,
-          threshold: thresholds.finalScore,
-        }),
-      );
+          gate,
+          ...(gate === 'score'
+            ? { finalScore: r.finalScore, threshold: thresholds.finalScore }
+            : { technicalConfidence: r.technicalConfidence, threshold: thresholds.technicalConfidence }),
+        });
+      });
+
+    // Held back by the verifier's own report of context it could not obtain,
+    // and by nothing else. The claim may well be right - one was later
+    // confirmed end to end and was the most useful point of its review - so
+    // the owner sees it locally, with what was missing. Never posted.
+    const unverified = results
+      .filter((r) => r.confidenceSource === 'unverifiable-cap' && r.rejectedBecause === UNVERIFIABLE_REJECTION)
+      .flatMap((r) => {
+        const missing = blockingContext(verifications.get(r.candidateId)?.requiredContextMissing);
+        if (missing.length === 0) return [];
+        return [
+          boundLists({
+            candidateId: r.candidateId,
+            path: r.path,
+            line: r.line,
+            severity: r.severity.severity,
+            claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? '',
+            verifierConfidence: r.verifiedConfidence,
+            requiredContextMissing: missing,
+          }),
+        ];
+      });
 
     const finals = results
       .map((r) => r.finalScore)
@@ -1674,9 +1740,14 @@ function scoreCommand(argv: string[]): number {
               ...(followUps.has(c.candidateId)
                 ? { possibleRepeatOf: { kind: 'own-comment', status: 'partly-addressed', ...followUps.get(c.candidateId) } }
                 : {}),
+              // A contested point is marked so the editor leaves it out: the
+              // second pass disputed how far the failure reaches and no
+              // tie-break upheld the wider claim.
+              ...(c.impactDisputed === true ? { impactDisputed: true } : {}),
             };
           }),
           belowGate,
+          unverified,
         },
         null,
         2,
@@ -1686,6 +1757,24 @@ function scoreCommand(argv: string[]): number {
   } finally {
     db.close();
   }
+}
+
+/**
+ * Whether a rejection came from one of the gates whose candidates are listed
+ * locally - the unverifiable cap, the confidence floor or the final score -
+ * and from nothing else yet.
+ */
+function locallyListable(rejectedBecause: string | null): boolean {
+  if (rejectedBecause === null) return false;
+  return rejectedBecause === UNVERIFIABLE_REJECTION || gateOf(rejectedBecause) !== null;
+}
+
+/** The numeric gate that alone stopped a candidate, or null. */
+function gateOf(rejectedBecause: string | null): 'score' | 'confidence' | null {
+  if (rejectedBecause === null || rejectedBecause.includes(' Also: ')) return null;
+  if (rejectedBecause.startsWith('score ')) return 'score';
+  if (rejectedBecause.startsWith('technical confidence ')) return 'confidence';
+  return null;
 }
 
 function calibrateCommand(): number {
@@ -1916,7 +2005,11 @@ function reconcileCommand(argv: string[]): number {
     const result = reconcile(candidates, verifications, secondPass, tieBreaks);
     for (const note of result.notes) console.error(note);
     console.log(
-      JSON.stringify({ candidates: result.candidates, disputes: result.disputes, applied: result.applied }, null, 2),
+      JSON.stringify(
+        { candidates: result.candidates, disputes: result.disputes, applied: result.applied, tieBreaks: result.tieBreaks },
+        null,
+        2,
+      ),
     );
     return 0;
   } catch (error) {
@@ -2371,7 +2464,10 @@ function explainCommand(argv: string[]): number {
         if (verdict.reason.length > 0) console.log(`                    ${verdict.reason}`);
         const ruling = detail.tieBreaks.find((t) => t.candidateId === verdict.candidateId);
         if (ruling !== undefined) {
-          console.log(`  tie-break         ${ruling.upheld ? 'upheld' : 'not upheld'} - ${ruling.reason}`);
+          console.log(
+            `  tie-break         ${ruling.upheld ? 'upheld' : 'not upheld'}` +
+              `${ruling.applied === false ? ' (not applied)' : ''} - ${ruling.reason}`,
+          );
         }
       }
       console.log('');
@@ -2388,11 +2484,17 @@ function explainCommand(argv: string[]): number {
     // Findings the verifier removed leave no other trace. Showing them is what
     // makes a bad verifier visible rather than indistinguishable from a clean
     // diff.
-    // A drop an upheld tie-break overturned was not a suppression.
+    // A drop an upheld tie-break overturned was not a suppression. A ruling
+    // reconcile marked not applied overturned nothing: it was on a candidate
+    // nobody disputed, and hiding the drop on its account would hide a real
+    // suppression. A ruling with no mark, as runs recorded before reconcile
+    // marked them have, reads as it always did.
     const dropped = verdicts.filter(
       (v) =>
         v.outcome === 'dropped' &&
-        !detail.tieBreaks.some((t) => t.upheld && v.candidateId !== undefined && t.candidateId === v.candidateId),
+        !detail.tieBreaks.some(
+          (t) => t.upheld && t.applied !== false && v.candidateId !== undefined && t.candidateId === v.candidateId,
+        ),
     );
     if (dropped.length > 0 && wanted === undefined) {
       console.log(`Suppressed by verification (${dropped.length}):`);
@@ -2400,7 +2502,11 @@ function explainCommand(argv: string[]): number {
         console.log(`  [${v.originalSeverity}] ${v.path}:${v.line}  ${v.verifier} @ ${v.confidence.toFixed(2)}`);
         if (v.reason.length > 0) console.log(`      ${v.reason}`);
         const ruling = detail.tieBreaks.find((t) => v.candidateId !== undefined && t.candidateId === v.candidateId);
-        if (ruling !== undefined) console.log(`      tie-break not upheld - ${ruling.reason}`);
+        if (ruling !== undefined) {
+          const state =
+            ruling.applied === false ? `${ruling.upheld ? 'upheld' : 'not upheld'} but not applied` : 'not upheld';
+          console.log(`      tie-break ${state} - ${ruling.reason}`);
+        }
       }
       console.log('');
     }
@@ -2496,7 +2602,7 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     if (typeof id !== 'string' || id === '') return `${who}: candidate_id must be a non-empty string.`;
     const quality = entry['evidence_quality'] ?? entry['evidenceQuality'];
     if (quality !== undefined && !(EVIDENCE_QUALITIES as readonly unknown[]).includes(quality)) {
-      return `${who}: evidence_quality must be one of ${EVIDENCE_QUALITIES.join(', ')}.`;
+      return `${who}: evidence_quality must be one of ${EVIDENCE_QUALITIES.join(', ')}, not ${JSON.stringify(quality)}.`;
     }
     const confidence = entry['technical_confidence'] ?? entry['technicalConfidence'];
     if (
@@ -2505,15 +2611,72 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     ) {
       return `${who}: technical_confidence must be a number from 0 to 1.`;
     }
+    // Refused rather than ignored: a premise reported as "false" in a string
+    // would otherwise read as absent, and a question would ship on it.
+    if (entry['verified'] !== undefined && typeof entry['verified'] !== 'boolean') {
+      return `${who}: verified must be true or false.`;
+    }
+    const premises = entry['premises_verified'] ?? entry['premisesVerified'];
+    if (premises !== undefined && typeof premises !== 'boolean') {
+      return `${who}: premises_verified must be true or false.`;
+    }
     const missing = entry['required_context_missing'] ?? entry['requiredContextMissing'];
-    if (missing !== undefined && !(Array.isArray(missing) && missing.every((item) => typeof item === 'string'))) {
-      return `${who}: required_context_missing must be an array of strings.`;
+    if (missing !== undefined && !(Array.isArray(missing) && missing.every(isMissingContext))) {
+      return (
+        `${who}: required_context_missing must be an array of strings, or of ` +
+        `{"context": string, "kind": ${CONTEXT_KINDS.map((kind) => `"${kind}"`).join(' | ')}}.`
+      );
     }
     const partly = entry['partly_addressed'] ?? entry['partlyAddressed'];
     const partlyProblem = partly === undefined ? null : partlyAddressedProblem(partly);
     if (partlyProblem !== null) return `${who}: partly_addressed ${partlyProblem}.`;
   }
   return null;
+}
+
+/**
+ * Checks evidence-verifier output against the verification schema, straight
+ * after the verifier runs.
+ *
+ * `score` runs the same checks, but it is the stage after verification. A
+ * verifier that wrote `evidence_quality: "strong"` was refused there with
+ * every earlier stage already spent, and relaunching it then meant a cold
+ * start. Failing here costs one re-run of one agent while its context is warm.
+ */
+function checkVerificationCommand(): number {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readStdin()) as unknown;
+  } catch {
+    console.error('Expected the evidence-verifier output as JSON on stdin.');
+    return 2;
+  }
+  const list = verdictList(parsed);
+  if (list.length === 0) {
+    console.error(
+      `No verifications found. Expected an array, or an object with one of: ${VERDICT_KEYS.join(', ')}, ` +
+        'each entry carrying candidate_id.',
+    );
+    return 2;
+  }
+  const problem = verificationProblem(list);
+  if (problem !== null) {
+    console.error(`Malformed verification - ${problem}`);
+    console.error('Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.');
+    return 2;
+  }
+  console.log(JSON.stringify({ valid: true, verifications: list.length }, null, 2));
+  return 0;
+}
+
+/** A string, or `{context, kind?}` with a non-empty context and a known kind. */
+function isMissingContext(item: unknown): boolean {
+  if (typeof item === 'string') return true;
+  if (typeof item !== 'object' || item === null || Array.isArray(item)) return false;
+  const entry = item as Record<string, unknown>;
+  if (Object.keys(entry).some((key) => key !== 'context' && key !== 'kind')) return false;
+  if (typeof entry['context'] !== 'string' || entry['context'].length === 0) return false;
+  return entry['kind'] === undefined || (CONTEXT_KINDS as readonly unknown[]).includes(entry['kind']);
 }
 
 function verdictList(parsed: unknown): Record<string, unknown>[] {
@@ -2644,8 +2807,20 @@ function checkCandidatesCommand(argv: string[]): number {
       return 2;
     }
 
-    const anchorFailures = candidates
-      .map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) }))
+    const anchors = candidates.map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) }));
+    // A stale consumer that passes but sits on a line this diff changed. Not a
+    // failure: the finding is sound, it is only posted in the body when it
+    // could be inline.
+    const suggestions = anchors
+      .filter(({ anchor }) => anchor.ok && ordinaryFindingHint(anchor) !== null)
+      .map(({ candidate, anchor }) => ({
+        candidateId: candidate.candidateId,
+        path: candidate.path,
+        line: candidate.line,
+        suggestion: ordinaryFindingHint(anchor),
+      }));
+    const extra = suggestions.length > 0 ? { suggestions } : {};
+    const anchorFailures = anchors
       .filter(({ anchor }) => !anchor.ok)
       .map(({ candidate, anchor }) => ({
         candidateId: candidate.candidateId,
@@ -2675,7 +2850,9 @@ function checkCandidatesCommand(argv: string[]): number {
     }
 
     if (!argv.includes('--thread') && heldFrom === null) {
-      console.log(JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length } }, null, 2));
+      console.log(
+        JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length }, ...extra }, null, 2),
+      );
       return 0;
     }
 
@@ -2800,7 +2977,9 @@ function checkCandidatesCommand(argv: string[]): number {
       );
     });
 
-    console.log(JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld }, null, 2));
+    console.log(
+      JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld, ...extra }, null, 2),
+    );
     return 0;
   } catch (error) {
     if (error instanceof MalformedCandidate) {
@@ -2972,6 +3151,9 @@ async function main(argv: string[]): Promise<number> {
 
     case 'check-candidates':
       return checkCandidatesCommand(argv.slice(1));
+
+    case 'check-verification':
+      return checkVerificationCommand();
 
     case 'conventions':
       return conventionsCommand(argv.slice(1));

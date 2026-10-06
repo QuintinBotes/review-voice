@@ -1,6 +1,7 @@
 import type { Precedent } from '../retrieval/retrieve.ts';
 import type { ReachCheck } from './reach.ts';
 import { deriveSeverity, type DerivedSeverity } from './severity.ts';
+import { ESCALATION_CONFIDENCE, verifierConfidence } from './confidence.ts';
 
 /**
  * A candidate as the schema publishes it. `schemas/candidate.schema.json` is
@@ -36,6 +37,21 @@ export interface RawCandidate {
 
 /** The one anchor a candidate may declare; see `classifyStaleConsumer`. */
 export const STALE_CONSUMER = 'stale-consumer';
+
+const DOCUMENTATION_PATH = /\.(?:md|rst|adoc)$/i;
+
+/**
+ * Whether a path is a document rather than code: a guide, a skill, a README.
+ *
+ * Judged on the extension alone, so the list holds only extensions that are
+ * never read by a build. `.txt` is also `CMakeLists.txt` and
+ * `requirements.txt`, and `.mdx` compiles to components; both keep the strict
+ * rule. A comment inside a source file is also prose, but it sits beside code
+ * a stale-consumer finding could break, so it keeps the strict rule too.
+ */
+export function isDocumentationPath(path: string): boolean {
+  return DOCUMENTATION_PATH.test(path);
+}
 
 export interface Candidate {
   candidateId: string;
@@ -96,6 +112,31 @@ export const EVIDENCE_QUALITIES = ['high', 'medium', 'low'] as const;
 export type EvidenceQuality = (typeof EVIDENCE_QUALITIES)[number];
 
 /**
+ * Whether the claim depends on a piece of missing context. `cosmetic` context
+ * would only sharpen the wording - the exact text behind a localisation key,
+ * say - and the claim holds without it.
+ */
+export const CONTEXT_KINDS = ['blocking', 'cosmetic'] as const;
+export type ContextKind = (typeof CONTEXT_KINDS)[number];
+
+/** A plain string is blocking, which is what every entry meant before kinds existed. */
+export type MissingContext = string | { context: string; kind?: ContextKind | undefined };
+
+/**
+ * The missing context a claim depends on: every entry not marked cosmetic.
+ *
+ * The cap used to fire on any entry. A verified behavioural finding was
+ * rejected because the only thing missing was the display text of a key it
+ * quoted; the defect, the wrong branch being shown, did not depend on that
+ * wording, and with the text fetched the same finding was eligible.
+ */
+export function blockingContext(entries: readonly MissingContext[] | undefined): string[] {
+  return (entries ?? [])
+    .filter((entry) => typeof entry === 'string' || entry.kind !== 'cosmetic')
+    .map((entry) => (typeof entry === 'string' ? entry : entry.context));
+}
+
+/**
  * What the `evidence-verifier` concluded, when it ran.
  *
  * The verifier is the only stage that actually checks a claim against the
@@ -110,8 +151,8 @@ export interface Verification {
   fixConfidence?: number | undefined;
   fixReason?: string | undefined;
   fixDirection?: string | undefined;
-  /** Context the verifier needed and could not obtain. */
-  requiredContextMissing?: string[] | undefined;
+  /** Context the verifier needed and could not obtain; see `blockingContext`. */
+  requiredContextMissing?: MissingContext[] | undefined;
   /** Deterministic CLI evidence; it is never read from verifier output. */
   reach?: ReachCheck | undefined;
   /**
@@ -125,10 +166,19 @@ export interface Verification {
    * still open. Honoured only for a candidate linked to that comment.
    */
   partlyAddressed?: PartlyAddressed | undefined;
+  /**
+   * For a question: whether the facts it rests on hold. A question is eligible
+   * without its answer being verified - that is what makes it a question - but
+   * not when the verifier found a premise false or could not check one.
+   */
+  premisesVerified?: boolean | undefined;
+  /**
+   * The verifier's overall verdict on the claim. `false` rejects anything but
+   * a question. A candidate the verifier rejected reaches scoring only to be
+   * listed locally, when what stopped it was context it could not obtain.
+   */
+  verified?: boolean | undefined;
 }
-
-/** Used when the verifier reports a tier rather than a number. */
-const QUALITY_CONFIDENCE: Record<string, number> = { high: 0.9, medium: 0.75, low: 0.5 };
 
 /** Weakest to strongest, the order a tier can be escalated along. */
 const TIER_ORDER = ['nit', 'minor', 'important', 'blocking'] as const;
@@ -141,8 +191,7 @@ const BOUNDARY_CATEGORIES: ReadonlySet<string> = new Set([
   'authentication',
 ]);
 
-/** The verifier confidence an escalation above the requested tier must clear. */
-export const ESCALATION_CONFIDENCE = 0.85;
+export { ESCALATION_CONFIDENCE, verifierConfidence };
 
 const INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
 
@@ -197,9 +246,7 @@ export function boundSeverityByEvidence(
   const got = TIER_ORDER.indexOf(result.severity as (typeof TIER_ORDER)[number]);
   if (asked === -1 || got === -1 || got <= asked) return result;
 
-  const confidence =
-    verification?.technicalConfidence ??
-    (verification?.evidenceQuality === undefined ? null : (QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null));
+  const confidence = verifierConfidence(verification?.technicalConfidence, verification?.evidenceQuality);
   // Without this, a tier the second pass lowered came straight back: the
   // trace it disputed still cleared the bar below.
   if (candidate.impactDisputed === true) {
@@ -231,6 +278,9 @@ export function boundSeverityByEvidence(
  * claim anyway is the failure that produces a retracted comment.
  */
 export const UNVERIFIABLE_CONFIDENCE = 0.6;
+
+/** The rejection the unverifiable cap gives, so a caller can tell it from the others. */
+export const UNVERIFIABLE_REJECTION = 'the claim states it could not be verified, so it cannot ship whatever it scores';
 
 /**
  * An admission, in the candidate's own evidence, that the claim could not be
@@ -1157,10 +1207,7 @@ export function scoreCandidate(
   const verifiedConfidence =
     verification === undefined
       ? null
-      : (verification.technicalConfidence ??
-        (verification.evidenceQuality === undefined
-          ? null
-          : (QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null)));
+      : verifierConfidence(verification.technicalConfidence, verification.evidenceQuality);
 
   // The verifier is the only stage that checks the claim against the
   // repository, so where the two disagree it is the one with evidence.
@@ -1169,7 +1216,8 @@ export function scoreCandidate(
 
   // Context the verifier itself could not obtain is binding: that is the
   // verifier reporting on its own reach, not a guess about someone else's.
-  const missingContext = (verification?.requiredContextMissing ?? []).length > 0;
+  // Only context the claim depends on; cosmetic context leaves it standing.
+  const missingContext = blockingContext(verification?.requiredContextMissing).length > 0;
 
   // The analyst's admission is a prior, not a ceiling. It used to outrank the
   // verifier absolutely, which inverted the whole point of letting the
@@ -1243,6 +1291,11 @@ export function scoreCandidate(
     // confident candidate with strong evidence still clears the threshold
     // while repeating a comment already published on that line.
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
+  } else if (isQuestion && verification?.premisesVerified === false) {
+    // Eligible without a verified answer, which is the point of a question,
+    // but not on a premise the verifier found false or could not check: the
+    // facts a question rests on are assertions like any other.
+    rejectedBecause = 'the verifier could not verify the premises this question rests on (premises_verified: false)';
   } else if (isQuestion) {
     // A question skips the confidence gates below, which measure belief in an
     // assertion it does not make. It does not skip precedent.
@@ -1268,7 +1321,11 @@ export function scoreCandidate(
     // Stated as its own rejection rather than left to the numeric comparison.
     // It used to depend on the cap sitting below the floor, which quietly tied
     // it to a number that has since moved.
-    rejectedBecause = `the claim states it could not be verified, so it cannot ship whatever it scores`;
+    rejectedBecause = UNVERIFIABLE_REJECTION;
+  } else if (verification?.verified === false) {
+    // Not left to the confidence floor: a verifier can reject a claim and
+    // still report a number above it for what it could check.
+    rejectedBecause = 'the verifier did not verify this claim (verified: false)';
   } else if (confidence < confidenceFloor) {
     rejectedBecause =
       `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` +
@@ -1281,17 +1338,41 @@ export function scoreCandidate(
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
 
+  const severity = boundSeverityByEvidence(derivedSeverity, candidate, verification);
+
   // A stale consumer sits on code the diff did not touch, so nothing in the
   // diff shows it breaking. Only the verifier following it back to its cause
   // does. Checked after the chain so a question cannot skip it, and it leads
   // over a score rejection because it is the one the analyst can act on.
+  //
+  // A document is the exception at nit. A guide that still tells authors to do
+  // what the change replaced is wrong without any runtime break to trace, so
+  // the verifier rightly leaves `impact_traced` false, and requiring it made
+  // the most common stale consumer impossible to report. A nit costs the
+  // author nothing to decline; anything louder still needs the trace.
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
-  if (staleConsumer && verification?.impactTraced !== true) {
+  // Only on the verifier's own confirmation: with no verification the
+  // analyst's opinion of its own finding would be the whole case for it.
+  const untracedDocumentNit =
+    isDocumentationPath(candidate.path) && severity.severity === 'nit' && confidenceSource === 'verifier';
+  if (staleConsumer && verification?.impactTraced !== true && !untracedDocumentNit) {
     const untraced =
       'a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause ' +
-      '(impact_traced: true)';
+      '(impact_traced: true)' +
+      (isDocumentationPath(candidate.path)
+        ? '; a documentation consumer may go untraced only at nit and on the verifier\'s confidence, ' +
+          `and this one is ${severity.severity}` +
+          (confidenceSource === 'analyst'
+            ? " on the analyst's confidence alone"
+            : confidenceSource === 'unverifiable-cap'
+              ? ' with context the verifier could not obtain'
+              : '')
+        : '');
     if (rejectedBecause === null) rejectedBecause = untraced;
     else if (rejectedBecause.startsWith('score ')) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
+    // Appended, so a local list that shows candidates stopped by one gate
+    // alone can see this one was also stopped here.
+    else rejectedBecause = `${rejectedBecause}. Also: ${untraced}`;
   }
 
   const fix = renderFix(candidate, verification, thresholds);
@@ -1301,7 +1382,7 @@ export function scoreCandidate(
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
-    severity: boundSeverityByEvidence(derivedSeverity, candidate, verification),
+    severity,
     analystConfidence,
     verifiedConfidence,
     confidenceSource,

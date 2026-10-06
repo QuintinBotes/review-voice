@@ -31,6 +31,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the disputed trace. `record --tie-breaks` keeps the rulings and `explain`
   shows them. The second pass's verdicts now carry the candidate id whichever
   spelling the analyst used. See ADR 0014.
+- `RV check-verification` checks the evidence-verifier's output straight after
+  it runs, with the checks `score --verification` applies, and names the entry,
+  field and refused value. The verifier prompt now states that
+  `evidence_quality` is exactly `high`, `medium` or `low`. (#37)
+- `score` lists `unverified`: candidates rejected only because the verifier
+  listed context it could not obtain, with the verifier's confidence and the
+  missing context. The review prints them locally under
+  `Unverified (not posted)` and records them with `record --held` as
+  `unverified`. They are never posted. The review sets such a candidate aside
+  in step 3 instead of discarding it, so it reaches `score`, and `score`
+  rejects any non-question whose verification says `verified: false`. (#20)
+- `belowGate` also lists a candidate the verifier confirmed below its own
+  confidence floor, with `gate: confidence`; final-score entries carry
+  `gate: score`. Both lists hold only candidates that one gate alone stopped:
+  a thread repeat, a missing citation or an untraced stale consumer is now
+  appended to the reason and keeps the candidate off them. (#20)
 
 ### Changed
 
@@ -101,6 +117,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved is not read: that needs GraphQL, and the client is read-only REST.
   Every anchored thread match now carries its `kind`, and the nearby match is
   the best one, the owner's own first, rather than the first found. (#43)
+- A `stale-consumer` finding on documentation (`.md`, `.rst`, `.adoc`) that the
+  verifier confirmed is eligible at `nit` without `impact_traced`; above `nit`,
+  without a verifier entry, or on code (`CMakeLists.txt`, `requirements.txt`
+  and `.mdx` included) it still needs the trace, and the rejection says which.
+  See ADR 0015. (#27)
+- The unverifiable cap no longer fires on context the claim does not depend
+  on. The verifier can mark a `required_context_missing` entry as
+  `{"context": "...", "kind": "cosmetic"}`; only blocking entries cap, and a
+  plain string or an entry without `kind` is blocking. See ADR 0016. (#38)
+- A `stale-consumer` cause is judged against the diff the analyst read, the
+  interdiff on a follow-up: the analyst prompt and the review command now say
+  so, and `check-candidates` and `score` must be given that same patch. When
+  the consumer's own line is changed in that diff, the anchor reason says to
+  file it as an ordinary finding, and `check-candidates` lists a passing one
+  under `suggestions`. (#28)
+- The rule that a `question` is eligible when its premises are verified, even
+  if its answer is not, is now stated in the review command, the architecture
+  notes and ADR 0016. The verifier may report `premises_verified` for a
+  question, and `false` keeps it from being asked. The editor contract states
+  that a `question` comes after every `nit`. (#40)
+- `reconcile` reads the evidence-verifier's confidence as `score` does,
+  falling back to the `evidence_quality` tier when there is no number, so a
+  trace reported by tier alone can be disputed and a second-pass downgrade of
+  it holds. (#31)
+- `explain` no longer hides a dropped finding behind a tie-break `reconcile`
+  ignored. `reconcile` marks each ruling `applied` under `tieBreaks`, and the
+  review records that output with `record --tie-breaks`; an upheld ruling
+  marked not applied no longer hides a drop. Runs recorded before the mark
+  explain as they did. (#31)
+- A finding whose wider impact was disputed and not upheld carries
+  `impactDisputed: true` to the editor, which then leaves that impact out of
+  the comment. (#31)
 
 ## [1.10.1] - 2026-10-05
 

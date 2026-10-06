@@ -49,6 +49,11 @@ export interface AnchorCheck {
    * null when the candidate named none.
    */
   causedBy?: AnchorCause | null;
+  /**
+   * Only on a stale-consumer anchor: how the consumer's own line sits in the
+   * diff. An added line or deletion site means it was never a stale consumer.
+   */
+  consumerKind?: AnchorKind;
 }
 
 interface ActiveHunk {
@@ -351,6 +356,10 @@ export function classifyStaleConsumer(
   causedBy: { path: string; line: number } | null,
 ): AnchorCheck {
   const consumer = path.replace(/^\.\/+/, '');
+  // Judged against the same diff as the cause, which is the diff the analyst
+  // read: on a follow-up, the interdiff. A consumer that diff changed is an
+  // ordinary finding, and saying so is the correction the analyst can act on.
+  const consumerKind = classifyAnchor(hunks, path, line).kind;
   if (causedBy === null) {
     return {
       path: consumer,
@@ -361,6 +370,7 @@ export function classifyStaleConsumer(
       patchLine: null,
       beyondHunks: false,
       causedBy: null,
+      consumerKind,
     };
   }
   const cause = classifyAnchor(hunks, causedBy.path, causedBy.line);
@@ -373,6 +383,7 @@ export function classifyStaleConsumer(
     patchLine: cause.patchLine,
     beyondHunks: cause.beyondHunks,
     causedBy: { path: cause.path, line: cause.line, kind: cause.kind },
+    consumerKind,
   };
 }
 
@@ -414,8 +425,31 @@ export function reason(anchor: AnchorCheck): string {
 }
 
 
+/**
+ * The correction for a stale consumer the diff itself changed, or null.
+ *
+ * Seen on a follow-up that reverted the pull request's own earlier change: the
+ * consumer, a comment, was an added line all along, and anchored as one it
+ * scored eligible.
+ */
+export function ordinaryFindingHint(anchor: AnchorCheck): string | null {
+  if (anchor.kind !== 'stale-consumer') return null;
+  if (anchor.consumerKind !== 'added' && anchor.consumerKind !== 'deletion-site') return null;
+  const where = anchor.consumerKind === 'added' ? 'an added line' : 'a deletion site';
+  return (
+    `${anchor.path}:${anchor.line} is itself ${where} in this diff, so it is an ordinary finding: ` +
+    'drop anchor and caused_by and keep the path and line.'
+  );
+}
+
 /** The stale-consumer half of `reason`, which judges the cause rather than the consumer. */
 function staleConsumerReason(anchor: AnchorCheck): string {
+  const hint = ordinaryFindingHint(anchor);
+  const body = staleConsumerBody(anchor);
+  return hint === null ? body : `${body} ${hint}`;
+}
+
+function staleConsumerBody(anchor: AnchorCheck): string {
   const consumer = `${anchor.path}:${anchor.line}`;
   const cause = anchor.causedBy ?? null;
   if (cause === null) {

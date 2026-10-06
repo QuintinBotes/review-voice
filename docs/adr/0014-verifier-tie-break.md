@@ -54,6 +54,27 @@ claim posts. It costs one extra agent run, and only on disagreement.**
 - **Audit.** `record --tie-breaks` stores the rulings and `explain` shows them;
   a drop an upheld ruling overturned is not listed as suppressed.
 
+## Amendment - 2026-10-06
+
+- **Confidence is read as scoring reads it.** "Confidence of at least 0.85" is
+  the evidence-verifier's `technical_confidence`, or, when it gave none, the
+  confidence its `evidence_quality` tier stands for (`high` is 0.9). Reading
+  only the number left a trace reported by tier alone undisputed while scoring
+  still escalated on it, so a second-pass downgrade did not hold.
+- **The audit records what reconcile applied.** `reconcile` prints every
+  ruling it was given under `tieBreaks`, each marked `applied` when it settled
+  a dispute. `record --tie-breaks` takes that output, and `explain` treats a
+  drop as overturned only behind an applied, upheld ruling. A ruling on a
+  candidate nobody disputed is ignored, as before, and its drop is still
+  listed as suppressed. A ruling with no `applied` mark - every run recorded
+  before this amendment - reads as it always did, so explain does not change
+  its account of past runs.
+- **The editor is told what is contested.** A candidate marked
+  `impact_disputed` carries `impactDisputed: true` into `score`'s `eligible`
+  list, and the editor states its consequence where the changed code produces
+  it, leaving out the wider impact the tie-break did not uphold. The tier rule
+  above is unchanged.
+
 ## Consequences
 
 - A review with the second pass on makes one more agent run per dispute, and

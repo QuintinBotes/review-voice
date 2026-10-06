@@ -1,3 +1,4 @@
+import { ESCALATION_CONFIDENCE, verifierConfidence } from '../scoring/confidence.ts';
 import type { FindingVerdict } from './types.ts';
 
 /**
@@ -12,8 +13,11 @@ import type { FindingVerdict } from './types.ts';
  * the code. See docs/adr/0014-verifier-tie-break.md.
  */
 
-/** The evidence-verifier confidence a traced impact needs to be worth defending. */
-export const DISPUTE_CONFIDENCE = 0.85;
+/**
+ * The evidence-verifier confidence a traced impact needs to be worth defending:
+ * the bar at which scoring would escalate on it.
+ */
+export const DISPUTE_CONFIDENCE = ESCALATION_CONFIDENCE;
 
 export type RawCandidate = Record<string, unknown>;
 
@@ -21,6 +25,14 @@ export interface TieBreak {
   candidateId: string;
   upheld: boolean;
   reason: string;
+  /**
+   * Set by `reconcile`: whether this ruling settled a dispute. A ruling on a
+   * candidate nobody disputed is ignored there, and `explain` must not treat
+   * it as having restored anything. Absent on a ruling read straight from the
+   * tie-breaker and on runs recorded before the mark existed; `explain` reads
+   * those as it always did.
+   */
+  applied?: boolean | undefined;
 }
 
 export interface Dispute {
@@ -56,6 +68,8 @@ export interface ReconcileResult {
   candidates: RawCandidate[];
   disputes: Dispute[];
   applied: Applied[];
+  /** Every ruling supplied, marked with whether it settled a dispute. */
+  tieBreaks: TieBreak[];
   /** Things the caller should see on stderr; none of them changes the output. */
   notes: string[];
 }
@@ -127,7 +141,15 @@ export function parseTieBreaks(parsed: unknown): TieBreak[] {
     // Two rulings on one point leave the decision to whichever is read last.
     if (seen.has(id)) throw new ReconcileInputError(`${who}: a second tie-break for the same candidate`);
     seen.add(id);
-    return { candidateId: id, upheld: e['upheld'], reason: e['reason'] };
+    if (e['applied'] !== undefined && typeof e['applied'] !== 'boolean') {
+      throw new ReconcileInputError(`${who}: applied must be true or false when supplied`);
+    }
+    return {
+      candidateId: id,
+      upheld: e['upheld'],
+      reason: e['reason'],
+      ...(typeof e['applied'] === 'boolean' ? { applied: e['applied'] } : {}),
+    };
   });
 }
 
@@ -135,8 +157,13 @@ export function parseTieBreaks(parsed: unknown): TieBreak[] {
 function tracedConfidently(verification: Record<string, unknown> | undefined): boolean {
   if (verification === undefined) return false;
   const traced = verification['impact_traced'] ?? verification['impactTraced'];
-  const confidence = verification['technical_confidence'] ?? verification['technicalConfidence'];
-  return traced === true && typeof confidence === 'number' && confidence >= DISPUTE_CONFIDENCE;
+  // Read exactly as scoring reads it, quality-tier fallback included, so a
+  // trace scoring would escalate on is always one a second pass can dispute.
+  const confidence = verifierConfidence(
+    verification['technical_confidence'] ?? verification['technicalConfidence'],
+    verification['evidence_quality'] ?? verification['evidenceQuality'],
+  );
+  return traced === true && confidence !== null && confidence >= DISPUTE_CONFIDENCE;
 }
 
 export function reconcile(
@@ -261,5 +288,9 @@ export function reconcile(
     }
   }
 
-  return { candidates: out, disputes, applied, notes };
+  // Recomputed here, whatever the input said: only reconcile knows which
+  // rulings settled a dispute.
+  const marked = (tieBreaks ?? []).map((tieBreak) => ({ ...tieBreak, applied: rulings.has(tieBreak.candidateId) }));
+
+  return { candidates: out, disputes, applied, tieBreaks: marked, notes };
 }

@@ -444,7 +444,17 @@ claims: context the verifier needed and could not obtain, and an admission in
 the candidate's own evidence that the claim could not be checked. The second
 was observed verbatim - "No local key catalogue exists in the repo, so the
 keys' existence cannot be verified here", filed at 0.8 - and is exactly how a
-review comment ends up retracted.
+review comment ends up retracted. Only context the claim depends on caps it:
+the verifier can mark an entry `cosmetic` when it would only sharpen the
+wording, and a candidate the cap held back is listed locally as `unverified`
+rather than lost (ADR 0016).
+
+A `question` is the one candidate that can be eligible without a verified
+claim. It is eligible when its premises are verified, even if its answer is
+not: it skips the confidence gates, since low confidence in an answer is what a
+question is, and is stopped instead by `premises_verified: false` from the
+verifier, by owner precedent against asking it, or by the cap of two questions
+per review.
 
 `evidenceQuality` scored specificity as "names a line **or** is longer than 40
 characters". Analyst evidence is always longer than 40 characters, so the term
