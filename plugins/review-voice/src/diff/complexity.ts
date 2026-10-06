@@ -27,12 +27,19 @@ export const DEFAULT_SENSITIVE_PATHS = ['.github/workflows/**', '**/migrations/*
  * Common test and fixture layouts. Counting them made the cap shape how tests
  * were written: an author split one spec into five files to get a hunk under
  * the limit, and the change stayed high anyway.
+ *
+ * Narrow on purpose: a production file matched here goes uncounted. Name
+ * patterns are used only where the language makes them mean a test (`.test.`
+ * and `.spec.`, Go's `_test.go`, Ruby's `_spec.rb`); elsewhere a test
+ * directory is required, so `ab_test.py`, `LoadTest.java` and a Go `spec/`
+ * package still count.
  */
 export const DEFAULT_TEST_PATHS = [
-  '**/test/**', '**/tests/**', '**/__tests__/**', '**/spec/**',
+  '**/test/**', '**/tests/**', '**/__tests__/**',
   '**/fixtures/**', '**/__fixtures__/**', '**/testdata/**',
-  '**/*.test.*', '**/*.spec.*', '**/*_test.*', '**/*_spec.rb', '**/test_*.py',
-  '**/*Test.java', '**/*Tests.java', '**/*Test.kt', '**/*Test.cs', '**/*Tests.cs',
+  '**/*.test.*', '**/*.spec.*', '**/*_test.go',
+  '**/spec/**/*.rb', '**/*_spec.rb',
+  '**/*.Tests/**', '**/*.UnitTests/**', '**/*.IntegrationTests/**',
 ];
 
 export const DEFAULT_HUMAN_REVIEW: HumanReviewConfig = {

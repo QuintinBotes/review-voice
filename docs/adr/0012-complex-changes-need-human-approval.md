@@ -111,11 +111,15 @@ kinds are left out of the count, not down-weighted:
 - *Tests and fixtures*: paths matching `review.human_review.test_paths`.
   Counting them made the cap shape how tests were written - an author split
   one spec into several files to get a hunk under the limit, and the change
-  stayed high anyway. The defaults cover the common layouts (`**/test/**`,
-  `**/tests/**`, `**/__tests__/**`, `**/spec/**`, `**/fixtures/**`,
-  `**/*.test.*`, `**/*.spec.*`, `**/*_test.*` and the usual Java, Kotlin, C#,
-  Python and Ruby names); a configured list replaces them, and an empty list
-  counts tests again.
+  stayed high anyway. The defaults cover the common layouts: test and fixture
+  directories (`**/test/**`, `**/tests/**`, `**/__tests__/**`,
+  `**/fixtures/**`, `**/testdata/**`, .NET `*.Tests/` projects), and only the
+  file names that mean a test in their language (`*.test.*`, `*.spec.*`, Go's
+  `*_test.go`, Ruby's `spec/**/*.rb` and `*_spec.rb`). They are narrow on
+  purpose, because a production file matched here goes uncounted: names such
+  as `ab_test.py`, `LoadTest.java` or a Go `spec/` package stay counted unless
+  they sit in a test directory. A configured list replaces the defaults, and
+  an empty list counts tests again.
 - *Generated output*: a reviewed file the classifier does not call source (a
   hand-edited generated file, or anything read under `--include-generated`), a
   path `.gitattributes` marks `linguist-generated`, and paths matching

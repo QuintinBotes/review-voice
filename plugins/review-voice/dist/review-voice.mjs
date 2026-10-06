@@ -1423,20 +1423,17 @@ var DEFAULT_TEST_PATHS = [
   "**/test/**",
   "**/tests/**",
   "**/__tests__/**",
-  "**/spec/**",
   "**/fixtures/**",
   "**/__fixtures__/**",
   "**/testdata/**",
   "**/*.test.*",
   "**/*.spec.*",
-  "**/*_test.*",
+  "**/*_test.go",
+  "**/spec/**/*.rb",
   "**/*_spec.rb",
-  "**/test_*.py",
-  "**/*Test.java",
-  "**/*Tests.java",
-  "**/*Test.kt",
-  "**/*Test.cs",
-  "**/*Tests.cs"
+  "**/*.Tests/**",
+  "**/*.UnitTests/**",
+  "**/*.IntegrationTests/**"
 ];
 var DEFAULT_HUMAN_REVIEW = {
   maxDecisionPoints: 40,
