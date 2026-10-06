@@ -2030,7 +2030,7 @@ function parseReviewScope(value) {
   if (scope.kind === "incremental" && prior && Number.isInteger(scope.commits) && strings(scope.files)) {
     return scope;
   }
-  const absorbed = scope.absorbedByBase === void 0 || strings(scope.absorbedByBase);
+  const absorbed = (scope.absorbedByBase === void 0 || strings(scope.absorbedByBase)) && (scope.noLongerChanged === void 0 || strings(scope.noLongerChanged));
   if (scope.kind === "unchanged" && prior && typeof scope.mergeBase === "string" && UNCHANGED_REASONS.has(scope.reason) && absorbed) {
     return scope;
   }
@@ -2347,6 +2347,9 @@ function changedSince(own, delta) {
   const kept = ownHunks.hunks.filter((hunk) => changes.hunks.some((change) => hunk.first <= change.last && change.first <= hunk.last));
   return kept.length === 0 ? "" : ownHunks.header + kept.map((hunk) => hunk.text).join("");
 }
+function hasReplayMarkers(section) {
+  return /^-<{7} /m.test(section) && /^->{7} /m.test(section);
+}
 function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedReason, conflicts = [], withdrawn = []) {
   const diffText = git5.diffText;
   const read = (left, list) => list.length === 0 ? "" : diffText(left, options.head, list, options.cwd);
@@ -2375,11 +2378,24 @@ function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedRe
     return [fresh];
   });
   const rest = paths.filter((path) => !own.has(path));
-  const outside = read(from, rest);
+  const leaked = [];
+  const dropped = [];
+  const outsideSections = [...patchSections(read(from, rest))].map(([path, section]) => {
+    if (!hasReplayMarkers(section)) return section;
+    const ownSection = patchSections(read(mergeBase, [path])).get(path);
+    if (ownSection === void 0) {
+      dropped.push(path);
+      return "";
+    }
+    leaked.push(path);
+    return ownSection;
+  });
+  const outside = outsideSections.join("");
   const patch = [outside, ...resolved].filter((part) => part.length > 0).join("");
   const notes = [
     narrowed.length === 0 ? null : `narrowed to the merge resolution after a conflicting replay: ${narrowed.sort().join(", ")}`,
-    whole.length === 0 ? null : `read whole after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(", ")}`
+    whole.length === 0 ? null : `read whole after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(", ")}`,
+    leaked.length === 0 ? null : `read as the pull request's own diff after a conflicting replay, so no conflict marker is shown: ${leaked.sort().join(", ")}`
   ].filter((note) => note !== null);
   const detail = notes.length === 0 ? {} : { detail: notes.join("; ") };
   let absorbedList = [];
@@ -2388,7 +2404,10 @@ function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedRe
     const differs = new Set(git5.changedPaths(from, options.head, options.cwd));
     absorbedList = candidates.filter((path) => !differs.has(path)).sort();
   }
-  const absorbed = absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList };
+  const absorbed = {
+    ...absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList },
+    ...dropped.length === 0 ? {} : { noLongerChanged: dropped.sort() }
+  };
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
   if (patch.trim().length === 0) {
     return { scope: { kind: "unchanged", ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null };
@@ -15734,6 +15753,7 @@ function diffSummary(result) {
     scope,
     scopeNote: result.scopeNote ?? null,
     absorbedByBase: result.scope !== void 0 && (result.scope.kind === "unchanged" || result.scope.kind === "interdiff") ? result.scope.absorbedByBase ?? [] : [],
+    noLongerChanged: result.scope !== void 0 && (result.scope.kind === "unchanged" || result.scope.kind === "interdiff") ? result.scope.noLongerChanged ?? [] : [],
     complexity: result.complexity ?? null,
     humanReviewNote: result.humanReviewNote ?? null,
     truncated: result.truncated ?? false,

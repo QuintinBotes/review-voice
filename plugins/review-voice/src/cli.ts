@@ -526,6 +526,11 @@ export function diffSummary(result: EmittedDiff): {
    * makes the same change; review.md prints them after the findings.
    */
   absorbedByBase: string[];
+  /**
+   * Files whose replay conflicted that the pull request no longer changes;
+   * review.md prints them after the findings.
+   */
+  noLongerChanged: string[];
   complexity: ComplexityAssessment | null;
   humanReviewNote: string | null;
   truncated: boolean;
@@ -570,6 +575,10 @@ export function diffSummary(result: EmittedDiff): {
     absorbedByBase:
       result.scope !== undefined && (result.scope.kind === 'unchanged' || result.scope.kind === 'interdiff')
         ? (result.scope.absorbedByBase ?? [])
+        : [],
+    noLongerChanged:
+      result.scope !== undefined && (result.scope.kind === 'unchanged' || result.scope.kind === 'interdiff')
+        ? (result.scope.noLongerChanged ?? [])
         : [],
     complexity: result.complexity ?? null,
     humanReviewNote: result.humanReviewNote ?? null,

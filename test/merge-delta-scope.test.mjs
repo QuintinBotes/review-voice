@@ -205,19 +205,18 @@ test('(e) a merge whose conflict the author resolves by rewriting their own line
   });
 });
 
-test('(e) a conflicted file the author resolves by dropping all their changes still shows them going', () => {
+test('(e) a conflicted file the author resolves by dropping all their changes is listed, never read through conflict markers', () => {
   withPullRequest((repository) => {
     baseEditsLine5(repository);
     mergeResolving(repository, lines(40, 'a').replace('a 5\n', 'a 5 changed on main\n'));
 
     // The pull request no longer changes src/a.ts, so its own diff there is
-    // empty; the withdrawal is read from the replay instead.
+    // empty. The replay's marker diff was the only other place it showed, and
+    // markers read as a bad resolution (#73): it is listed instead.
     const { scope, interdiffPatch } = plan(repository, { reviewedFiles: [{ path: 'src/b.ts' }] });
-    assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
-    assert.deepEqual(scope.files, ['src/a.ts']);
-    assert.match(interdiffPatch, /^-a 5 by the author$/m);
-    assert.match(interdiffPatch, /^-a 13 by the author$/m);
-    assert.doesNotMatch(interdiffPatch, /base-only|moved on main/);
+    assert.equal(scope.kind, 'unchanged', JSON.stringify(scope));
+    assert.deepEqual(scope.noLongerChanged, ['src/a.ts']);
+    assert.equal(interdiffPatch, null);
   });
 });
 
