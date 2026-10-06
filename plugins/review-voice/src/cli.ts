@@ -2998,7 +2998,8 @@ function explainCommand(argv: string[]): number {
         if (ruling !== undefined) {
           console.log(
             `  tie-break         ${ruling.upheld ? 'upheld' : 'not upheld'}` +
-              `${ruling.applied === false ? ' (not applied)' : ''} - ${ruling.reason}`,
+              `${ruling.applied === false ? ' (not applied)' : ''}` +
+              `${ruling.raised === undefined ? '' : ` (raised to ${ruling.raised})`} - ${ruling.reason}`,
           );
         }
       }

@@ -10987,9 +10987,19 @@ var DEFAULT_DROP_THRESHOLD = 0.8;
 var HOW_TO_ENABLE = "Add a `verification:` block to .review-voice/config.yaml with `enabled: true` and a `command` that runs a different model on the candidates JSON from stdin (optional: name, timeout_seconds, drop_threshold). See templates/config.example.yaml.";
 var TIERS = ["blocking", "important", "minor", "nit", "question"];
 function downgrade(severity) {
+  if (severity === "question") return "question";
   const index = TIERS.indexOf(severity);
   if (index === -1 || index >= TIERS.length - 2) return "nit";
   return TIERS[index + 1] ?? "nit";
+}
+var MAX_DECISIVE_EVIDENCE = 10;
+function decisiveEvidence(raw) {
+  const list = raw.decisive_evidence ?? raw.decisiveEvidence;
+  if (!Array.isArray(list)) return [];
+  return list.filter((entry) => {
+    const e = typeof entry === "object" && entry !== null ? entry : {};
+    return typeof e["path"] === "string" && e["path"].length > 0 && Number.isInteger(e["line"]) && e["line"] > 0 && typeof e["why"] === "string" && e["why"].trim().length > 0;
+  }).slice(0, MAX_DECISIVE_EVIDENCE).map((entry) => ({ path: entry.path, line: entry.line, why: entry.why }));
 }
 function jsonCandidates(text) {
   const found = [];
@@ -11021,11 +11031,13 @@ function jsonCandidates(text) {
   }
   return found;
 }
+var VERDICTS = ["confirmed", "rejected", "uncertain"];
 function parseVerdict(stdout) {
   for (const candidate of jsonCandidates(stdout).reverse()) {
     try {
       const parsed = JSON.parse(candidate);
-      if (typeof parsed.verdict === "string") return parsed;
+      const label2 = typeof parsed.verdict === "string" ? parsed.verdict.toLowerCase() : null;
+      if (label2 !== null && VERDICTS.includes(label2)) return { ...parsed, verdict: label2 };
     } catch {
       continue;
     }
@@ -11094,8 +11106,10 @@ ${result.stderr}`);
     const verdict = raw.verdict;
     const confidence = typeof raw.confidence === "number" ? Math.min(1, Math.max(0, raw.confidence)) : 0.5;
     const reason2 = raw.reason ?? "";
+    const decisive = decisiveEvidence(raw);
     let outcome = "kept";
     let finalSeverity = finding.severity;
+    let proposedSeverity;
     if (verdict === "rejected") {
       if (confidence >= dropThreshold) {
         outcome = "dropped";
@@ -11109,6 +11123,8 @@ ${result.stderr}`);
     } else if (raw.suggested_severity !== void 0 && TIERS.includes(raw.suggested_severity) && TIERS.indexOf(raw.suggested_severity) > TIERS.indexOf(finding.severity)) {
       outcome = "downgraded";
       finalSeverity = raw.suggested_severity;
+    } else if (raw.suggested_severity !== void 0 && raw.suggested_severity !== "question" && TIERS.includes(raw.suggested_severity) && TIERS.indexOf(finding.severity) !== -1 && TIERS.indexOf(raw.suggested_severity) < TIERS.indexOf(finding.severity) && decisive.length > 0 && reason2.trim().length > 0) {
+      proposedSeverity = raw.suggested_severity;
     }
     verdicts.push({
       candidateId: finding.candidateId,
@@ -11120,7 +11136,9 @@ ${result.stderr}`);
       outcome,
       originalSeverity: finding.severity,
       finalSeverity,
-      verifier: name
+      verifier: name,
+      ...decisive.length > 0 ? { decisiveEvidence: decisive } : {},
+      ...proposedSeverity === void 0 ? {} : { proposedSeverity }
     });
   }
   return { enabled: true, verifier: name, verdicts, didNotRun: [...new Set(didNotRun)] };
@@ -11144,6 +11162,62 @@ function candidateIdOf(raw) {
   return typeof id === "string" && id.length > 0 ? id : null;
 }
 var OUTCOMES = ["kept", "downgraded", "dropped", "unverified"];
+var VERDICTS2 = ["confirmed", "rejected", "uncertain"];
+var OUTCOME_VERDICT = {
+  kept: "confirmed",
+  dropped: "rejected",
+  unverified: "uncertain"
+};
+var SEVERITY_RANK = { blocking: 4, important: 3, minor: 2, nit: 1, question: 0 };
+function rank(severity) {
+  return typeof severity === "string" && Object.hasOwn(SEVERITY_RANK, severity) ? SEVERITY_RANK[severity] ?? null : null;
+}
+function decisiveEvidenceProblem(value) {
+  if (!Array.isArray(value)) return "decisiveEvidence must be an array";
+  for (const [index, entry] of value.entries()) {
+    const e = typeof entry === "object" && entry !== null ? entry : {};
+    if (typeof e["path"] !== "string" || e["path"] === "") return `decisiveEvidence ${index} needs a path`;
+    if (!Number.isInteger(e["line"]) || e["line"] < 1) return `decisiveEvidence ${index} needs a positive line`;
+    if (typeof e["why"] !== "string" || e["why"].trim() === "") return `decisiveEvidence ${index} needs a why`;
+  }
+  return null;
+}
+function contradiction(e) {
+  const outcome = e["outcome"];
+  const expected = OUTCOME_VERDICT[outcome];
+  if (expected !== void 0 && e["verdict"] !== expected) {
+    return `a ${outcome} verdict must be ${expected}, not ${String(e["verdict"])}`;
+  }
+  const original = rank(e["originalSeverity"]);
+  const final = rank(e["finalSeverity"]);
+  if (outcome === "downgraded") {
+    if (final === null) return "a downgraded verdict needs finalSeverity, a known tier";
+    const floor = e["originalSeverity"] === "nit" || e["originalSeverity"] === "question";
+    if (original !== null && !(final < original || floor && final === original)) {
+      return `a downgraded verdict needs a finalSeverity below ${String(e["originalSeverity"])}, not ${String(e["finalSeverity"])}`;
+    }
+  }
+  if (outcome === "kept" && original !== null && final !== null && final !== original) {
+    return `a kept verdict leaves the severity at ${String(e["originalSeverity"])}, not ${String(e["finalSeverity"])}`;
+  }
+  if (e["decisiveEvidence"] !== void 0) {
+    const problem = decisiveEvidenceProblem(e["decisiveEvidence"]);
+    if (problem !== null) return problem;
+  }
+  if (e["proposedSeverity"] !== void 0) {
+    const proposed = rank(e["proposedSeverity"]);
+    if (outcome !== "kept") return "only a kept verdict may propose a stronger severity";
+    if (proposed === null || e["proposedSeverity"] === "question") return "proposedSeverity must be a tier";
+    if (original === null || proposed <= original) {
+      return `proposedSeverity ${String(e["proposedSeverity"])} is not above ${String(e["originalSeverity"])}`;
+    }
+    if (!Array.isArray(e["decisiveEvidence"]) || e["decisiveEvidence"].length === 0) {
+      return "a proposed stronger severity needs decisiveEvidence to trace";
+    }
+    if (typeof e["reason"] !== "string" || e["reason"].trim() === "") return "a proposed stronger severity needs a reason";
+  }
+  return null;
+}
 function parseSecondPass(parsed) {
   const list = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null ? parsed.verdicts : void 0;
   if (!Array.isArray(list)) throw new ReconcileInputError('expected the verify report, {"verdicts": [...]}, or an array');
@@ -11156,6 +11230,11 @@ function parseSecondPass(parsed) {
     if (e["outcome"] === "downgraded" && (typeof e["finalSeverity"] !== "string" || e["finalSeverity"] === "")) {
       throw new ReconcileInputError(`${who}: a downgraded verdict needs finalSeverity`);
     }
+    if (!VERDICTS2.includes(e["verdict"])) {
+      throw new ReconcileInputError(`${who}: verdict must be one of ${VERDICTS2.join(", ")}`);
+    }
+    const problem = contradiction(e);
+    if (problem !== null) throw new ReconcileInputError(`${who}: ${problem}`);
     const hasId = typeof e["candidateId"] === "string" && e["candidateId"] !== "";
     if (!hasId && !(typeof e["path"] === "string" && Number.isInteger(e["line"]))) {
       throw new ReconcileInputError(`${who}: needs candidateId, or path and line`);
@@ -11181,11 +11260,30 @@ function parseTieBreaks(parsed) {
     if (e["applied"] !== void 0 && typeof e["applied"] !== "boolean") {
       throw new ReconcileInputError(`${who}: applied must be true or false when supplied`);
     }
+    const impactTraced = e["impact_traced"] ?? e["impactTraced"];
+    if (impactTraced !== void 0 && typeof impactTraced !== "boolean") {
+      throw new ReconcileInputError(`${who}: impact_traced must be true or false when supplied`);
+    }
+    const confidence = e["confidence"];
+    if (confidence !== void 0 && (typeof confidence !== "number" || !(confidence >= 0 && confidence <= 1))) {
+      throw new ReconcileInputError(`${who}: confidence must be a number from 0 to 1 when supplied`);
+    }
+    const quality = e["evidence_quality"] ?? e["evidenceQuality"];
+    if (quality !== void 0 && typeof quality !== "string") {
+      throw new ReconcileInputError(`${who}: evidence_quality must be a string when supplied`);
+    }
+    if (e["raised"] !== void 0 && rank(e["raised"]) === null) {
+      throw new ReconcileInputError(`${who}: raised must be a severity when supplied`);
+    }
     return {
       candidateId: id,
       upheld: e["upheld"],
       reason: e["reason"],
-      ...typeof e["applied"] === "boolean" ? { applied: e["applied"] } : {}
+      ...typeof e["applied"] === "boolean" ? { applied: e["applied"] } : {},
+      ...typeof impactTraced === "boolean" ? { impactTraced } : {},
+      ...typeof confidence === "number" ? { confidence } : {},
+      ...typeof quality === "string" ? { evidenceQuality: quality } : {},
+      ...typeof e["raised"] === "string" ? { raised: e["raised"] } : {}
     };
   });
 }
@@ -11238,18 +11336,32 @@ function reconcile(candidates, verifications, secondPass, tieBreaks) {
     const id = ids[index];
     const verdict = verdictById.get(id);
     if (verdict === void 0) continue;
-    if (verdict.outcome !== "downgraded" && verdict.outcome !== "dropped") continue;
     const verification2 = verificationById.get(id);
-    if (!tracedConfidently(verification2)) continue;
+    let kind;
+    if (verdict.outcome === "downgraded" || verdict.outcome === "dropped") {
+      if (!tracedConfidently(verification2)) continue;
+      kind = "downgrade";
+    } else if (verdict.outcome === "kept" && verdict.proposedSeverity !== void 0) {
+      const held = rank(candidate["severity"]);
+      const proposed = rank(verdict.proposedSeverity);
+      if (held === null || proposed === null || proposed <= held || candidate["severity"] === "question") {
+        notes.push(`Note: ${id}'s proposed ${verdict.proposedSeverity} is not above its ${String(candidate["severity"])}, so it is not disputed.`);
+        continue;
+      }
+      kind = "upgrade";
+    } else {
+      continue;
+    }
     disputes.push({
       candidateId: id,
+      kind,
       path: candidate["path"],
       line: candidate["line"],
       severity: candidate["severity"],
       claim: candidate["claim"],
       failureMode: candidate["failure_mode"] ?? candidate["failureMode"],
       evidence: candidate["evidence"],
-      verification: verification2,
+      verification: verification2 ?? {},
       secondPass: {
         verdict: verdict.verdict,
         confidence: verdict.confidence,
@@ -11257,11 +11369,14 @@ function reconcile(candidates, verifications, secondPass, tieBreaks) {
         outcome: verdict.outcome,
         originalSeverity: verdict.originalSeverity,
         finalSeverity: verdict.finalSeverity,
-        verifier: verdict.verifier
+        verifier: verdict.verifier,
+        proposedSeverity: kind === "upgrade" ? verdict.proposedSeverity : null,
+        decisiveEvidence: verdict.decisiveEvidence ?? []
       }
     });
   }
-  const disputed = new Set(disputes.map((d) => d.candidateId));
+  const kinds = new Map(disputes.map((d) => [d.candidateId, d.kind]));
+  const disputed = new Set(kinds.keys());
   const rulings = /* @__PURE__ */ new Map();
   for (const tieBreak of tieBreaks ?? []) {
     if (!ids.includes(tieBreak.candidateId)) {
@@ -11274,10 +11389,31 @@ function reconcile(candidates, verifications, secondPass, tieBreaks) {
   }
   const out = [];
   const applied = [];
+  const raisedTo = /* @__PURE__ */ new Map();
   for (const [index, candidate] of candidates.entries()) {
     const id = ids[index];
     const verdict = verdictById.get(id);
     const ruling = rulings.get(id);
+    const kind = kinds.get(id);
+    if (kind === "upgrade") {
+      const sure = verifierConfidence(ruling?.confidence, ruling?.evidenceQuality);
+      const raise = ruling?.upheld === true && ruling.impactTraced === true && sure !== null && sure >= ESCALATION_CONFIDENCE;
+      const proposed = verdict?.proposedSeverity;
+      const result2 = raise ? { ...candidate, severity: proposed } : candidate;
+      if (raise) raisedTo.set(id, proposed);
+      else if (ruling?.upheld === true) {
+        notes.push(`Note: ${id}'s upheld ruling did not trace the worse impact at ${ESCALATION_CONFIDENCE} or more, so its tier stays.`);
+      }
+      out.push(result2);
+      applied.push({
+        candidateId: id,
+        kind,
+        result: ruling === void 0 ? "no tie-break supplied" : raise ? "upheld" : ruling.upheld ? "upheld without traced impact" : "not upheld",
+        severity: typeof result2["severity"] === "string" ? result2["severity"] : null,
+        reason: ruling?.reason ?? null
+      });
+      continue;
+    }
     const secondPassStands = ruling === void 0 || !ruling.upheld;
     let result = candidate;
     if (secondPassStands && verdict !== void 0) {
@@ -11291,13 +11427,18 @@ function reconcile(candidates, verifications, secondPass, tieBreaks) {
     if (disputed.has(id)) {
       applied.push({
         candidateId: id,
+        kind: "downgrade",
         result: ruling === void 0 ? "no tie-break supplied" : ruling.upheld ? "upheld" : "not upheld",
         severity: result === null ? null : typeof result["severity"] === "string" ? result["severity"] : null,
         reason: ruling?.reason ?? null
       });
     }
   }
-  const marked = (tieBreaks ?? []).map((tieBreak) => ({ ...tieBreak, applied: rulings.has(tieBreak.candidateId) }));
+  const marked = (tieBreaks ?? []).map((tieBreak) => {
+    const { raised: _input, ...rest } = tieBreak;
+    const raised = raisedTo.get(tieBreak.candidateId);
+    return { ...rest, applied: rulings.has(tieBreak.candidateId), ...raised === void 0 ? {} : { raised } };
+  });
   return { candidates: out, disputes, applied, tieBreaks: marked, notes };
 }
 
@@ -12443,9 +12584,9 @@ function retrievePrecedents(db, query) {
   for (const precedent of scored) {
     precedent.matchStrength = Math.max(0, Math.min(1, precedent.relevance / best));
   }
-  const rank = (a, b) => Math.abs(b.weight) * b.matchStrength - Math.abs(a.weight) * a.matchStrength;
-  const positive = scored.filter((p) => p.weight > 0).sort(rank).slice(0, query.maxPositive);
-  const negative = scored.filter((p) => p.weight < 0).sort(rank).slice(0, query.maxNegative);
+  const rank2 = (a, b) => Math.abs(b.weight) * b.matchStrength - Math.abs(a.weight) * a.matchStrength;
+  const positive = scored.filter((p) => p.weight > 0).sort(rank2).slice(0, query.maxPositive);
+  const negative = scored.filter((p) => p.weight < 0).sort(rank2).slice(0, query.maxNegative);
   return [...negative, ...positive];
 }
 
@@ -12756,8 +12897,8 @@ function possiblySaidOnThread(candidate, thread, preferred = () => false) {
     if (distance > POSSIBLE_REPEAT_LINE_WINDOW) continue;
     const share = overlap(mine, significantWords(comment.body));
     if (share < POSSIBLE_REPEAT_OVERLAP) continue;
-    const rank = [preferred(comment) ? 1 : 0, share, -distance];
-    if (best === null || compareRank(rank, best.rank) > 0) best = { comment, rank };
+    const rank2 = [preferred(comment) ? 1 : 0, share, -distance];
+    if (best === null || compareRank(rank2, best.rank) > 0) best = { comment, rank: rank2 };
   }
   return best?.comment ?? null;
 }
@@ -13175,8 +13316,8 @@ function confidenceFrom(evidence) {
   if (supporting === 0) return 0;
   const corroboration = Math.min(1, supporting / 6);
   const ownerShare = Math.min(1, evidence.ownerSignals / Math.max(1, supporting));
-  const contradiction = evidence.contradictingSignals / (supporting + evidence.contradictingSignals);
-  return Math.max(0, corroboration * 0.5 + ownerShare * 0.5 - contradiction);
+  const contradiction2 = evidence.contradictingSignals / (supporting + evidence.contradictingSignals);
+  return Math.max(0, corroboration * 0.5 + ownerShare * 0.5 - contradiction2);
 }
 function label(row) {
   try {
@@ -16377,7 +16518,7 @@ function explainCommand(argv) {
         const ruling = detail.tieBreaks.find((t) => t.candidateId === verdict.candidateId);
         if (ruling !== void 0) {
           console.log(
-            `  tie-break         ${ruling.upheld ? "upheld" : "not upheld"}${ruling.applied === false ? " (not applied)" : ""} - ${ruling.reason}`
+            `  tie-break         ${ruling.upheld ? "upheld" : "not upheld"}${ruling.applied === false ? " (not applied)" : ""}${ruling.raised === void 0 ? "" : ` (raised to ${ruling.raised})`} - ${ruling.reason}`
           );
         }
       }

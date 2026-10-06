@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A second pass that traced a worse impact than a finding's tier can raise it,
+  only through the tie-break: a confirmed verdict whose `suggested_severity`
+  is stronger, with `decisive_evidence`, is kept with `proposedSeverity`;
+  `reconcile` lists it as an `upgrade` dispute, and the tier rises only when
+  the tie-breaker upholds it with `impact_traced: true` at confidence 0.85 or
+  more, recorded under `tieBreaks` with `applied` and `raised` (ADR 0018).
+  Second-pass verdicts may carry `decisiveEvidence: [{path, line, why}]`,
+  which every dispute hands to the tie-breaker. (#31)
 - A prior comment of the owner's that the author only partly addressed gets a
   local partly-addressed state. The verifier may mark a candidate linked to
   that comment with `partly_addressed` (`remaining`, `addressed`); `score`
@@ -176,6 +184,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A finding whose wider impact was disputed and not upheld carries
   `impactDisputed: true` to the editor, which then leaves that impact out of
   the comment. (#31)
+- `reconcile` refuses, exiting 2, a second-pass verdict whose fields
+  contradict its label: a `kept` that was not confirmed or moved the tier, a
+  `dropped` that was not rejected, a `downgraded` whose `finalSeverity` is not
+  lower, or a proposal with no decisive evidence. `verify` reads a verdict
+  label other than confirmed, rejected or uncertain as no verdict instead of a
+  confirmation, and no longer turns a doubted question into a nit. (#31)
 - `record` checks stdin against the output contract `validate-output` enforces
   and exits 2, naming each problem and storing nothing, when it is not a
   review. (#34)

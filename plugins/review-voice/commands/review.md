@@ -382,7 +382,11 @@ and agrees with a plausible-sounding defect more often than it should.
 Write the report to `<tmpdir>/second-pass.json`. Do not apply its verdicts by
 hand: `reconcile` in step 3c applies them - `downgraded` takes `finalSeverity`,
 `dropped` removes the finding, and `kept` and `unverified` leave it exactly as
-it is, since a verifier that did not answer has not agreed.
+it is, since a verifier that did not answer has not agreed. A `kept` verdict
+may carry `proposedSeverity`, a worse impact the second pass traced; it
+changes nothing until step 3c settles it. `decisiveEvidence` lists the lines a
+verdict turns on. A verdict whose fields contradict its label makes
+`reconcile` exit 2: report it, and do not edit the report to get past it.
 
 Pass the whole report to `RV record --verdicts <file>` in step 6, including the
 dropped entries. A suppressed finding leaves no other trace, and
@@ -395,21 +399,27 @@ Skip this step when step 3b was skipped.
 
 Pipe the candidates as they were before step 3b, `{"candidates": [...]}`, into
 `RV reconcile --verification <tmpdir>/verification.json --second-pass <tmpdir>/second-pass.json`.
-A candidate is disputed when the evidence-verifier traced its impact
-(`impact_traced`, confidence at least 0.85) and the second pass downgraded or
-dropped it. If `disputes` is empty, its `candidates` are the input to step 4.
+A candidate is disputed, `kind: "downgrade"`, when the evidence-verifier
+traced its impact (`impact_traced`, confidence at least 0.85) and the second
+pass downgraded or dropped it; or, `kind: "upgrade"`, when the second pass
+kept it and proposed a stronger tier (`secondPass.proposedSeverity`). If
+`disputes` is empty, its `candidates` are the input to step 4.
 
 Otherwise launch the `tie-breaker` agent **once per dispute**, with that
-dispute entry as it is and the same diff. Do not add your own view of who is
-right. Write the results, one `{candidate_id, upheld, reason}` each, as an
-array to `<tmpdir>/tie-breaks.json`, then run the same command again with
-`--tie-breaks <tmpdir>/tie-breaks.json`. Its `candidates` are the input to step
-4: an upheld dispute keeps the evidence-verifier's finding, a dropped one
-included, and one not upheld keeps the second pass's outcome. A malformed
-tie-break file exits 2; re-run the tie-breaker rather than editing its output.
+dispute entry as it is, its `secondPass.decisiveEvidence` included, and the
+same diff. Do not add your own view of who is right. Write the results, one
+`{candidate_id, upheld, reason}` each, plus `impact_traced` and `confidence` on
+an upgrade, as an array to `<tmpdir>/tie-breaks.json`, then run the same
+command again with `--tie-breaks <tmpdir>/tie-breaks.json`. Its `candidates`
+are the input to step 4: an upheld downgrade dispute keeps the
+evidence-verifier's finding, a dropped one included, and one not upheld keeps
+the second pass's outcome; an upgrade raises the tier only when upheld with
+`impact_traced: true` at confidence 0.85 or more, and otherwise leaves it. A
+malformed tie-break file exits 2; re-run the tie-breaker rather than editing
+its output.
 Write that second output to `<tmpdir>/reconciled.json` and keep it for step 6:
-its `tieBreaks` mark which rulings settled a dispute, and a ruling on a
-candidate nobody disputed is ignored.
+its `tieBreaks` mark which rulings settled a dispute, and `raised` the tier an
+upgrade raised to, and a ruling on a candidate nobody disputed is ignored.
 
 ## Step 4 - Score against precedent
 
