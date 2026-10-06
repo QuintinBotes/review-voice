@@ -14661,6 +14661,21 @@ function recordCommand(argv) {
     console.error(noFindingsHint());
     return 2;
   }
+  const contract = validateOutput(output, {
+    ...DEFAULT_LIMITS,
+    maxFindings: null,
+    maxWordsPerFinding: Number.MAX_SAFE_INTEGER,
+    maxTotalWords: Number.MAX_SAFE_INTEGER
+  });
+  if (!contract.valid) {
+    for (const violation of contract.violations) {
+      const where = violation.line === void 0 ? "" : `line ${violation.line}: `;
+      console.error(`[${violation.code}] ${where}${violation.message}`);
+    }
+    console.error("stdin is not a validated review, so nothing was recorded. Pipe what `validate-output` passed.");
+    if (contract.findingCount === 0) console.error(noFindingsHint());
+    return 2;
+  }
   const diffFile = flag(argv, "--diff-file");
   let diff = "";
   if (diffFile !== null) {

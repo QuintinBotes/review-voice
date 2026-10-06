@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deletion is in the patch. With no pull request files to read, the follow-up
   is `unchanged` rather than the whole commit range.
 
+### Fixed
+
+- `record` checks stdin against the output contract `validate-output` enforces
+  and exits 2, naming each problem and storing nothing, when it is not a
+  review. (#34)
+
 ## [1.10.1] - 2026-10-05
 
 ### Changed

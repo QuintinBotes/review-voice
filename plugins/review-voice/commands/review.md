@@ -512,6 +512,9 @@ stray directory and another project's notes took the reviewed count from 11 to
 
   This also assigns the positional ids `/review-voice:feedback` needs. Do not
   print the ids.
+
+  `record` checks stdin against the same contract and exits 2, recording
+  nothing, when it is not a validated review. Pipe exactly what passed.
 - Exit 1: it printed one violation per line. Send **all** of them back to the
   `concise-editor` with its previous output and have it produce a corrected
   version. Validate that too.

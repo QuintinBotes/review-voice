@@ -1895,6 +1895,26 @@ function recordCommand(argv: string[]): number {
     return 2;
   }
 
+  // The same contract `validate-output` enforces, so a JSON blob or a draft
+  // cannot land in the store and be read back by `explain` and `status` as a
+  // review. Size limits are left to `validate-output`, which is given the
+  // policy's figures; this checks only that the text is review output.
+  const contract = validateOutput(output, {
+    ...DEFAULT_LIMITS,
+    maxFindings: null,
+    maxWordsPerFinding: Number.MAX_SAFE_INTEGER,
+    maxTotalWords: Number.MAX_SAFE_INTEGER,
+  });
+  if (!contract.valid) {
+    for (const violation of contract.violations) {
+      const where = violation.line === undefined ? '' : `line ${violation.line}: `;
+      console.error(`[${violation.code}] ${where}${violation.message}`);
+    }
+    console.error('stdin is not a validated review, so nothing was recorded. Pipe what `validate-output` passed.');
+    if (contract.findingCount === 0) console.error(noFindingsHint());
+    return 2;
+  }
+
   const diffFile = flag(argv, '--diff-file');
   let diff = '';
   if (diffFile !== null) {
