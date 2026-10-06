@@ -168,6 +168,8 @@ Commands:
 
 anchors:
   One inline anchor per finding of the review on stdin, read from its text.
+  --diff-file <path>     Unified diff; a line outside its hunks is unanchorable
+  --scores <path>        Scores; a stale-consumer finding is unanchorable
 
 thread flags:
   --pr <number>          Pull request whose existing comments to read
@@ -590,6 +592,7 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
       forceFull: argv.includes('--full'),
       base: result.refs.base.available && result.base !== null ? result.base : undefined,
       fetchPriorHead: (sha) => fetchPriorHead(sha, repository, process.cwd()),
+      includeGenerated: argv.includes('--include-generated'),
     });
   } catch (error) {
     planned = {
@@ -639,7 +642,7 @@ interface EmittedDiff {
 }
 
 /** The compact metadata a command runner needs after `diff --out`. */
-function diffSummary(result: EmittedDiff): {
+export function diffSummary(result: EmittedDiff): {
   mode: EmittedDiff['mode'];
   base: string | null;
   /** On `--pr`, where the branch left the base; see `refs.mergeBase`. */
@@ -649,12 +652,20 @@ function diffSummary(result: EmittedDiff): {
   scope: {
     kind: ReviewScope['kind'];
     cause: string | null;
-    /** Which condition sent a full read, and which git command failed, when one did. */
+    /**
+     * Which condition sent a full read, and which git command failed, when one
+     * did; on an interdiff, which conflicted files were narrowed or read whole.
+     */
     detail: string | null;
     since: string | null;
     mergeBase: string | null;
   } | null;
   scopeNote: string | null;
+  /**
+   * Files the pull request no longer changes because the new base already
+   * makes the same change; review.md prints them after the findings.
+   */
+  absorbedByBase: string[];
   complexity: ComplexityAssessment | null;
   humanReviewNote: string | null;
   truncated: boolean;
@@ -680,7 +691,8 @@ function diffSummary(result: EmittedDiff): {
             : result.scope.kind === 'unchanged'
               ? result.scope.reason
               : null,
-        detail: result.scope.kind === 'full' ? (result.scope.detail ?? null) : null,
+        detail:
+          result.scope.kind === 'full' || result.scope.kind === 'interdiff' ? (result.scope.detail ?? null) : null,
         since: result.scope.since,
         mergeBase:
           result.scope.kind === 'unchanged' || result.scope.kind === 'interdiff' ? result.scope.mergeBase : null,
@@ -693,6 +705,10 @@ function diffSummary(result: EmittedDiff): {
     pullNumber: result.pullNumber ?? null,
     scope,
     scopeNote: result.scopeNote ?? null,
+    absorbedByBase:
+      result.scope !== undefined && (result.scope.kind === 'unchanged' || result.scope.kind === 'interdiff')
+        ? (result.scope.absorbedByBase ?? [])
+        : [],
     complexity: result.complexity ?? null,
     humanReviewNote: result.humanReviewNote ?? null,
     truncated: result.truncated ?? false,
@@ -1975,8 +1991,37 @@ function retrieveCommand(argv: string[]): number {
 }
 
 /** Inline anchors from the validated review; see publish/anchors.ts for why. */
-function anchorsCommand(): number {
-  console.log(JSON.stringify(extractAnchors(readStdin()), null, 2));
+function anchorsCommand(argv: string[]): number {
+  const diffFile = flag(argv, '--diff-file');
+  const scoresFile = flag(argv, '--scores');
+  for (const name of ['--diff-file', '--scores']) {
+    if (argv.includes(name) && flag(argv, name) === null) {
+      console.error(`${name} needs a file path.`);
+      return 2;
+    }
+  }
+  let hunks: Map<string, FileHunks> | null = null;
+  let scores: unknown[] = [];
+  try {
+    if (diffFile !== null) hunks = parseHunks(readFileSync(diffFile, 'utf8'));
+    if (scoresFile !== null) {
+      const parsed = JSON.parse(readFileSync(scoresFile, 'utf8')) as { scores?: unknown };
+      const list = Array.isArray(parsed) ? parsed : parsed.scores;
+      scores = Array.isArray(list) ? list : [];
+    }
+  } catch (error) {
+    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const result = extractAnchors(readStdin(), { hunks, scores });
+  if (hunks === null) {
+    console.error('No --diff-file, so hunk ranges were not checked; only stale-consumer findings (from --scores) were routed to the body.');
+  }
+  // Without either input the output is what it always was.
+  const plain = diffFile === null && scoresFile === null;
+  console.log(
+    JSON.stringify(plain ? { anchors: result.anchors, unanchorable: result.unanchorable } : result, null, 2),
+  );
   return 0;
 }
 
@@ -3136,7 +3181,8 @@ function explainCommand(argv: string[]): number {
         if (ruling !== undefined) {
           console.log(
             `  tie-break         ${ruling.upheld ? 'upheld' : 'not upheld'}` +
-              `${ruling.applied === false ? ' (not applied)' : ''} - ${ruling.reason}`,
+              `${ruling.applied === false ? ' (not applied)' : ''}` +
+              `${ruling.raised === undefined ? '' : ` (raised to ${ruling.raised})`} - ${ruling.reason}`,
           );
         }
       }
@@ -3782,7 +3828,7 @@ async function main(argv: string[]): Promise<number> {
       return symbolsCommand(argv.slice(1));
 
     case 'anchors':
-      return anchorsCommand();
+      return anchorsCommand(argv.slice(1));
 
     case 'thread':
       return await threadCommand(argv.slice(1));

@@ -1990,10 +1990,11 @@ function parseReviewScope(value) {
   if (scope.kind === "incremental" && prior && Number.isInteger(scope.commits) && strings(scope.files)) {
     return scope;
   }
-  if (scope.kind === "unchanged" && prior && typeof scope.mergeBase === "string" && UNCHANGED_REASONS.has(scope.reason)) {
+  const absorbed = scope.absorbedByBase === void 0 || strings(scope.absorbedByBase);
+  if (scope.kind === "unchanged" && prior && typeof scope.mergeBase === "string" && UNCHANGED_REASONS.has(scope.reason) && absorbed) {
     return scope;
   }
-  if (scope.kind === "interdiff" && prior && typeof scope.mergeBase === "string" && strings(scope.files) && Number.isInteger(scope.hunks) && (scope.detail === void 0 || typeof scope.detail === "string")) {
+  if (scope.kind === "interdiff" && prior && typeof scope.mergeBase === "string" && strings(scope.files) && Number.isInteger(scope.hunks) && (scope.detail === void 0 || typeof scope.detail === "string") && absorbed) {
     return scope;
   }
   if (scope.kind === "full" && typeof scope.cause === "string" && nullableString(scope.since) && nullableString(scope.priorRunId) && (scope.detail === void 0 || typeof scope.detail === "string")) {
@@ -2235,7 +2236,7 @@ function ownDiffScope(options, prior, git5, ancestor, merged) {
   const priorMergeBase = git5.mergeBase(base, prior.headRef, options.cwd);
   const paths = pullRequestPaths(options, prior, git5, priorMergeBase, mergeBase);
   if (priorMergeBase === mergeBase) {
-    return interdiffFrom(options, prior, git5, prior.headRef, mergeBase, paths, ancestor ? "base-sync-only" : "history-rewritten");
+    return interdiffFrom(options, prior, git5, prior.headRef, mergeBase, paths.all, ancestor ? "base-sync-only" : "history-rewritten");
   }
   if (git5.replay === void 0) {
     return { scope: full("compare-unavailable", prior, "this git surface cannot replay the reviewed head"), interdiffPatch: null };
@@ -2247,9 +2248,10 @@ function ownDiffScope(options, prior, git5, ancestor, merged) {
     git5,
     replayed.tree,
     mergeBase,
-    paths,
+    paths.all,
     !ancestor ? "history-rewritten" : merged ? "base-merged" : "base-sync-only",
-    replayed.conflicts
+    replayed.conflicts,
+    paths.withdrawn
   );
 }
 function pullRequestPaths(options, prior, git5, priorMergeBase, mergeBase) {
@@ -2258,21 +2260,78 @@ function pullRequestPaths(options, prior, git5, priorMergeBase, mergeBase) {
   );
   const current = new Set(git5.changedPaths(mergeBase, options.head, options.cwd));
   const withdrawn = git5.changedPaths(priorMergeBase, prior.headRef, options.cwd).filter((path) => !current.has(path));
-  return [.../* @__PURE__ */ new Set([...reviewed, ...options.deletedFiles ?? [], ...withdrawn])];
+  return { all: [.../* @__PURE__ */ new Set([...reviewed, ...options.deletedFiles ?? [], ...withdrawn])], withdrawn };
 }
-function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedReason, conflicts = []) {
+function patchSections(patch) {
+  const sections2 = /* @__PURE__ */ new Map();
+  const starts = [...patch.matchAll(/^diff --git .*$/gm)];
+  starts.forEach((match, index) => {
+    const end = starts[index + 1]?.index ?? patch.length;
+    const header = match[0].endsWith("\r") ? match[0].slice(0, -1) : match[0];
+    const path = gitHeaderPath(header);
+    if (path !== null) sections2.set(path, patch.slice(match.index, end));
+  });
+  return sections2;
+}
+function sectionHunks(section) {
+  const parts = section.split(/^(?=@@ )/m);
+  const header = parts[0].startsWith("@@ ") ? "" : parts.shift();
+  const hunks = [];
+  for (const text of parts) {
+    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text);
+    if (numbers === null) return null;
+    const start = Number(numbers[1]);
+    const count3 = numbers[2] === void 0 ? 1 : Number(numbers[2]);
+    hunks.push({ text, first: start, last: count3 === 0 ? start + 1 : start + count3 - 1 });
+  }
+  return { header, hunks };
+}
+function narrowToResolution(own, resolution) {
+  if (resolution === void 0) return null;
+  const ownHunks = sectionHunks(own);
+  const touched = sectionHunks(resolution);
+  if (ownHunks === null || touched === null || ownHunks.hunks.length === 0 || touched.hunks.length === 0) return null;
+  const meets = (left, right) => left.first <= right.last && right.first <= left.last;
+  const kept = /* @__PURE__ */ new Set();
+  for (const change of touched.hunks) {
+    const hits = ownHunks.hunks.filter((hunk) => meets(hunk, change));
+    if (hits.length === 0) return null;
+    for (const hit of hits) kept.add(hit);
+  }
+  return ownHunks.header + ownHunks.hunks.filter((hunk) => kept.has(hunk)).map((hunk) => hunk.text).join("");
+}
+function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedReason, conflicts = [], withdrawn = []) {
   const diffText = git5.diffText;
   const read = (left, list) => list.length === 0 ? "" : diffText(left, options.head, list, options.cwd);
   const wanted = new Set(paths);
   const conflicted = conflicts.filter((path) => wanted.has(path));
-  const whole = read(mergeBase, conflicted);
-  const readWhole = new Set(ownDiffFiles(whole).keys());
-  const rest = paths.filter((path) => !readWhole.has(path));
-  const patch = [read(from, rest), whole].filter((part) => part.length > 0).join("");
-  const detail = readWhole.size === 0 ? {} : { detail: `read whole after a conflicting replay: ${[...readWhole].sort().join(", ")}` };
+  const own = patchSections(read(mergeBase, conflicted));
+  const resolutions = patchSections(read(from, [...own.keys()]));
+  const narrowed = [];
+  const whole = [];
+  const resolved = [...own].map(([path, section]) => {
+    const cut = narrowToResolution(section, resolutions.get(path));
+    (cut === null ? whole : narrowed).push(path);
+    return cut ?? section;
+  });
+  const rest = paths.filter((path) => !own.has(path));
+  const outside = read(from, rest);
+  const patch = [outside, ...resolved].filter((part) => part.length > 0).join("");
+  const notes = [
+    narrowed.length === 0 ? null : `narrowed to the merge resolution after a conflicting replay: ${narrowed.sort().join(", ")}`,
+    whole.length === 0 ? null : `read whole after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(", ")}`
+  ].filter((note) => note !== null);
+  const detail = notes.length === 0 ? {} : { detail: notes.join("; ") };
+  let absorbedList = [];
+  const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true));
+  if (from !== prior.headRef && candidates.length > 0) {
+    const differs = new Set(git5.changedPaths(from, options.head, options.cwd));
+    absorbedList = candidates.filter((path) => !differs.has(path)).sort();
+  }
+  const absorbed = absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList };
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
   if (patch.trim().length === 0) {
-    return { scope: { kind: "unchanged", ...common, reason: unchangedReason }, interdiffPatch: null };
+    return { scope: { kind: "unchanged", ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null };
   }
   const reviewed = /* @__PURE__ */ new Map();
   for (const file of options.reviewedFiles) {
@@ -2286,7 +2345,7 @@ function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedRe
     hunks += file.hunks.length;
   }
   return {
-    scope: { kind: "interdiff", ...common, files: [...files].sort(), hunks, ...detail },
+    scope: { kind: "interdiff", ...common, files: [...files].sort(), hunks, ...detail, ...absorbed },
     interdiffPatch: patch
   };
 }
@@ -2407,7 +2466,7 @@ function scopeNote(scope) {
     case "unchanged":
       return `No change to this pull request's own diff since ${scope.since.slice(0, 7)}; ${earlierReview(scope)} still applies.`;
     case "interdiff":
-      return `Reviewed changes to this pull request's own diff since ${scope.since.slice(0, 7)}; base-branch changes merged in were not reviewed.`;
+      return `Reviewed changes to this pull request's own diff since ${scope.since.slice(0, 7)}; base-branch changes merged in were not reviewed${scope.detail === void 0 ? "" : `; ${scope.detail}`}.`;
   }
 }
 function pathsWithHunks(diff) {
@@ -3083,8 +3142,8 @@ function possiblySaidOnThread(candidate, thread, preferred = () => false) {
     if (distance > POSSIBLE_REPEAT_LINE_WINDOW) continue;
     const share = overlap(mine, significantWords(comment.body));
     if (share < POSSIBLE_REPEAT_OVERLAP) continue;
-    const rank = [preferred(comment) ? 1 : 0, share, -distance];
-    if (best === null || compareRank(rank, best.rank) > 0) best = { comment, rank };
+    const rank2 = [preferred(comment) ? 1 : 0, share, -distance];
+    if (best === null || compareRank(rank2, best.rank) > 0) best = { comment, rank: rank2 };
   }
   return best?.comment ?? null;
 }
@@ -11947,9 +12006,19 @@ var DEFAULT_DROP_THRESHOLD = 0.8;
 var HOW_TO_ENABLE = "Add a `verification:` block to .review-voice/config.yaml with `enabled: true` and a `command` that runs a different model on the candidates JSON from stdin (optional: name, timeout_seconds, drop_threshold). See templates/config.example.yaml.";
 var TIERS = ["blocking", "important", "minor", "nit", "question"];
 function downgrade(severity) {
+  if (severity === "question") return "question";
   const index = TIERS.indexOf(severity);
   if (index === -1 || index >= TIERS.length - 2) return "nit";
   return TIERS[index + 1] ?? "nit";
+}
+var MAX_DECISIVE_EVIDENCE = 10;
+function decisiveEvidence(raw) {
+  const list = raw.decisive_evidence ?? raw.decisiveEvidence;
+  if (!Array.isArray(list)) return [];
+  return list.filter((entry) => {
+    const e = typeof entry === "object" && entry !== null ? entry : {};
+    return typeof e["path"] === "string" && e["path"].length > 0 && Number.isInteger(e["line"]) && e["line"] > 0 && typeof e["why"] === "string" && e["why"].trim().length > 0;
+  }).slice(0, MAX_DECISIVE_EVIDENCE).map((entry) => ({ path: entry.path, line: entry.line, why: entry.why }));
 }
 function jsonCandidates(text) {
   const found = [];
@@ -11981,11 +12050,14 @@ function jsonCandidates(text) {
   }
   return found;
 }
+var VERDICTS = ["confirmed", "rejected", "uncertain"];
 function parseVerdict(stdout) {
   for (const candidate of jsonCandidates(stdout).reverse()) {
     try {
       const parsed = JSON.parse(candidate);
-      if (typeof parsed.verdict === "string") return parsed;
+      if (typeof parsed.verdict !== "string") continue;
+      const label2 = parsed.verdict.toLowerCase();
+      return VERDICTS.includes(label2) ? { ...parsed, verdict: label2 } : null;
     } catch {
       continue;
     }
@@ -12053,9 +12125,11 @@ ${result.stderr}`);
     }
     const verdict = raw.verdict;
     const confidence = typeof raw.confidence === "number" ? Math.min(1, Math.max(0, raw.confidence)) : 0.5;
-    const reason2 = raw.reason ?? "";
+    const reason2 = typeof raw.reason === "string" ? raw.reason : "";
+    const decisive = decisiveEvidence(raw);
     let outcome = "kept";
     let finalSeverity = finding.severity;
+    let proposedSeverity;
     if (verdict === "rejected") {
       if (confidence >= dropThreshold) {
         outcome = "dropped";
@@ -12069,6 +12143,8 @@ ${result.stderr}`);
     } else if (raw.suggested_severity !== void 0 && TIERS.includes(raw.suggested_severity) && TIERS.indexOf(raw.suggested_severity) > TIERS.indexOf(finding.severity)) {
       outcome = "downgraded";
       finalSeverity = raw.suggested_severity;
+    } else if (raw.suggested_severity !== void 0 && raw.suggested_severity !== "question" && TIERS.includes(raw.suggested_severity) && TIERS.indexOf(finding.severity) !== -1 && TIERS.indexOf(raw.suggested_severity) < TIERS.indexOf(finding.severity) && decisive.length > 0 && reason2.trim().length > 0) {
+      proposedSeverity = raw.suggested_severity;
     }
     verdicts.push({
       candidateId: finding.candidateId,
@@ -12080,7 +12156,9 @@ ${result.stderr}`);
       outcome,
       originalSeverity: finding.severity,
       finalSeverity,
-      verifier: name
+      verifier: name,
+      ...decisive.length > 0 ? { decisiveEvidence: decisive } : {},
+      ...proposedSeverity === void 0 ? {} : { proposedSeverity }
     });
   }
   return { enabled: true, verifier: name, verdicts, didNotRun: [...new Set(didNotRun)] };
@@ -12095,6 +12173,62 @@ function candidateIdOf(raw) {
   return typeof id === "string" && id.length > 0 ? id : null;
 }
 var OUTCOMES = ["kept", "downgraded", "dropped", "unverified"];
+var VERDICTS2 = ["confirmed", "rejected", "uncertain"];
+var OUTCOME_VERDICT = {
+  kept: "confirmed",
+  dropped: "rejected",
+  unverified: "uncertain"
+};
+var SEVERITY_RANK = { blocking: 4, important: 3, minor: 2, nit: 1, question: 0 };
+function rank(severity) {
+  return typeof severity === "string" && Object.hasOwn(SEVERITY_RANK, severity) ? SEVERITY_RANK[severity] ?? null : null;
+}
+function decisiveEvidenceProblem(value) {
+  if (!Array.isArray(value)) return "decisiveEvidence must be an array";
+  for (const [index, entry] of value.entries()) {
+    const e = typeof entry === "object" && entry !== null ? entry : {};
+    if (typeof e["path"] !== "string" || e["path"] === "") return `decisiveEvidence ${index} needs a path`;
+    if (!Number.isInteger(e["line"]) || e["line"] < 1) return `decisiveEvidence ${index} needs a positive line`;
+    if (typeof e["why"] !== "string" || e["why"].trim() === "") return `decisiveEvidence ${index} needs a why`;
+  }
+  return null;
+}
+function contradiction(e) {
+  const outcome = e["outcome"];
+  const expected = OUTCOME_VERDICT[outcome];
+  if (expected !== void 0 && e["verdict"] !== expected) {
+    return `a ${outcome} verdict must be ${expected}, not ${String(e["verdict"])}`;
+  }
+  const original = rank(e["originalSeverity"]);
+  const final = rank(e["finalSeverity"]);
+  if (outcome === "downgraded") {
+    if (final === null) return "a downgraded verdict needs finalSeverity, a known tier";
+    const floor = e["originalSeverity"] === "nit" || e["originalSeverity"] === "question";
+    if (original !== null && !(final < original || floor && final === original)) {
+      return `a downgraded verdict needs a finalSeverity below ${String(e["originalSeverity"])}, not ${String(e["finalSeverity"])}`;
+    }
+  }
+  if (outcome === "kept" && original !== null && final !== null && final !== original) {
+    return `a kept verdict leaves the severity at ${String(e["originalSeverity"])}, not ${String(e["finalSeverity"])}`;
+  }
+  if (e["decisiveEvidence"] !== void 0) {
+    const problem = decisiveEvidenceProblem(e["decisiveEvidence"]);
+    if (problem !== null) return problem;
+  }
+  if (e["proposedSeverity"] !== void 0) {
+    const proposed = rank(e["proposedSeverity"]);
+    if (outcome !== "kept") return "only a kept verdict may propose a stronger severity";
+    if (proposed === null || e["proposedSeverity"] === "question") return "proposedSeverity must be a tier";
+    if (original === null || proposed <= original) {
+      return `proposedSeverity ${String(e["proposedSeverity"])} is not above ${String(e["originalSeverity"])}`;
+    }
+    if (!Array.isArray(e["decisiveEvidence"]) || e["decisiveEvidence"].length === 0) {
+      return "a proposed stronger severity needs decisiveEvidence to trace";
+    }
+    if (typeof e["reason"] !== "string" || e["reason"].trim() === "") return "a proposed stronger severity needs a reason";
+  }
+  return null;
+}
 function parseSecondPass(parsed) {
   const list = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null ? parsed.verdicts : void 0;
   if (!Array.isArray(list)) throw new ReconcileInputError('expected the verify report, {"verdicts": [...]}, or an array');
@@ -12107,6 +12241,11 @@ function parseSecondPass(parsed) {
     if (e["outcome"] === "downgraded" && (typeof e["finalSeverity"] !== "string" || e["finalSeverity"] === "")) {
       throw new ReconcileInputError(`${who}: a downgraded verdict needs finalSeverity`);
     }
+    if (!VERDICTS2.includes(e["verdict"])) {
+      throw new ReconcileInputError(`${who}: verdict must be one of ${VERDICTS2.join(", ")}`);
+    }
+    const problem = contradiction(e);
+    if (problem !== null) throw new ReconcileInputError(`${who}: ${problem}`);
     const hasId = typeof e["candidateId"] === "string" && e["candidateId"] !== "";
     if (!hasId && !(typeof e["path"] === "string" && Number.isInteger(e["line"]))) {
       throw new ReconcileInputError(`${who}: needs candidateId, or path and line`);
@@ -12132,11 +12271,30 @@ function parseTieBreaks(parsed) {
     if (e["applied"] !== void 0 && typeof e["applied"] !== "boolean") {
       throw new ReconcileInputError(`${who}: applied must be true or false when supplied`);
     }
+    const impactTraced = e["impact_traced"] ?? e["impactTraced"];
+    if (impactTraced !== void 0 && typeof impactTraced !== "boolean") {
+      throw new ReconcileInputError(`${who}: impact_traced must be true or false when supplied`);
+    }
+    const confidence = e["confidence"];
+    if (confidence !== void 0 && (typeof confidence !== "number" || !(confidence >= 0 && confidence <= 1))) {
+      throw new ReconcileInputError(`${who}: confidence must be a number from 0 to 1 when supplied`);
+    }
+    const quality = e["evidence_quality"] ?? e["evidenceQuality"];
+    if (quality !== void 0 && typeof quality !== "string") {
+      throw new ReconcileInputError(`${who}: evidence_quality must be a string when supplied`);
+    }
+    if (e["raised"] !== void 0 && rank(e["raised"]) === null) {
+      throw new ReconcileInputError(`${who}: raised must be a severity when supplied`);
+    }
     return {
       candidateId: id,
       upheld: e["upheld"],
       reason: e["reason"],
-      ...typeof e["applied"] === "boolean" ? { applied: e["applied"] } : {}
+      ...typeof e["applied"] === "boolean" ? { applied: e["applied"] } : {},
+      ...typeof impactTraced === "boolean" ? { impactTraced } : {},
+      ...typeof confidence === "number" ? { confidence } : {},
+      ...typeof quality === "string" ? { evidenceQuality: quality } : {},
+      ...typeof e["raised"] === "string" ? { raised: e["raised"] } : {}
     };
   });
 }
@@ -12189,18 +12347,32 @@ function reconcile(candidates, verifications, secondPass, tieBreaks) {
     const id = ids[index];
     const verdict = verdictById.get(id);
     if (verdict === void 0) continue;
-    if (verdict.outcome !== "downgraded" && verdict.outcome !== "dropped") continue;
     const verification2 = verificationById.get(id);
-    if (!tracedConfidently(verification2)) continue;
+    let kind;
+    if (verdict.outcome === "downgraded" || verdict.outcome === "dropped") {
+      if (!tracedConfidently(verification2)) continue;
+      kind = "downgrade";
+    } else if (verdict.outcome === "kept" && verdict.proposedSeverity !== void 0) {
+      const held = rank(candidate["severity"]);
+      const proposed = rank(verdict.proposedSeverity);
+      if (held === null || proposed === null || proposed <= held || candidate["severity"] === "question") {
+        notes.push(`Note: ${id}'s proposed ${verdict.proposedSeverity} is not above its ${String(candidate["severity"])}, so it is not disputed.`);
+        continue;
+      }
+      kind = "upgrade";
+    } else {
+      continue;
+    }
     disputes.push({
       candidateId: id,
+      kind,
       path: candidate["path"],
       line: candidate["line"],
       severity: candidate["severity"],
       claim: candidate["claim"],
       failureMode: candidate["failure_mode"] ?? candidate["failureMode"],
       evidence: candidate["evidence"],
-      verification: verification2,
+      verification: verification2 ?? {},
       secondPass: {
         verdict: verdict.verdict,
         confidence: verdict.confidence,
@@ -12208,11 +12380,14 @@ function reconcile(candidates, verifications, secondPass, tieBreaks) {
         outcome: verdict.outcome,
         originalSeverity: verdict.originalSeverity,
         finalSeverity: verdict.finalSeverity,
-        verifier: verdict.verifier
+        verifier: verdict.verifier,
+        proposedSeverity: kind === "upgrade" ? verdict.proposedSeverity : null,
+        decisiveEvidence: verdict.decisiveEvidence ?? []
       }
     });
   }
-  const disputed = new Set(disputes.map((d) => d.candidateId));
+  const kinds = new Map(disputes.map((d) => [d.candidateId, d.kind]));
+  const disputed = new Set(kinds.keys());
   const rulings = /* @__PURE__ */ new Map();
   for (const tieBreak of tieBreaks ?? []) {
     if (!ids.includes(tieBreak.candidateId)) {
@@ -12225,10 +12400,31 @@ function reconcile(candidates, verifications, secondPass, tieBreaks) {
   }
   const out = [];
   const applied = [];
+  const raisedTo = /* @__PURE__ */ new Map();
   for (const [index, candidate] of candidates.entries()) {
     const id = ids[index];
     const verdict = verdictById.get(id);
     const ruling = rulings.get(id);
+    const kind = kinds.get(id);
+    if (kind === "upgrade") {
+      const sure = verifierConfidence(ruling?.confidence, ruling?.evidenceQuality);
+      const raise = ruling?.upheld === true && ruling.impactTraced === true && sure !== null && sure >= ESCALATION_CONFIDENCE;
+      const proposed = verdict?.proposedSeverity;
+      const result2 = raise ? { ...candidate, severity: proposed } : candidate;
+      if (raise) raisedTo.set(id, proposed);
+      else if (ruling?.upheld === true) {
+        notes.push(`Note: ${id}'s upheld ruling did not trace the worse impact at ${ESCALATION_CONFIDENCE} or more, so its tier stays.`);
+      }
+      out.push(result2);
+      applied.push({
+        candidateId: id,
+        kind,
+        result: ruling === void 0 ? "no tie-break supplied" : raise ? "upheld" : ruling.upheld ? "upheld without traced impact" : "not upheld",
+        severity: typeof result2["severity"] === "string" ? result2["severity"] : null,
+        reason: ruling?.reason ?? null
+      });
+      continue;
+    }
     const secondPassStands = ruling === void 0 || !ruling.upheld;
     let result = candidate;
     if (secondPassStands && verdict !== void 0) {
@@ -12242,13 +12438,18 @@ function reconcile(candidates, verifications, secondPass, tieBreaks) {
     if (disputed.has(id)) {
       applied.push({
         candidateId: id,
+        kind: "downgrade",
         result: ruling === void 0 ? "no tie-break supplied" : ruling.upheld ? "upheld" : "not upheld",
         severity: result === null ? null : typeof result["severity"] === "string" ? result["severity"] : null,
         reason: ruling?.reason ?? null
       });
     }
   }
-  const marked = (tieBreaks ?? []).map((tieBreak) => ({ ...tieBreak, applied: rulings.has(tieBreak.candidateId) }));
+  const marked = (tieBreaks ?? []).map((tieBreak) => {
+    const { raised: _input, ...rest } = tieBreak;
+    const raised = raisedTo.get(tieBreak.candidateId);
+    return { ...rest, applied: rulings.has(tieBreak.candidateId), ...raised === void 0 ? {} : { raised } };
+  });
   return { candidates: out, disputes, applied, tieBreaks: marked, notes };
 }
 
@@ -13394,9 +13595,9 @@ function retrievePrecedents(db, query) {
   for (const precedent of scored) {
     precedent.matchStrength = Math.max(0, Math.min(1, precedent.relevance / best));
   }
-  const rank = (a, b) => Math.abs(b.weight) * b.matchStrength - Math.abs(a.weight) * a.matchStrength;
-  const positive = scored.filter((p) => p.weight > 0).sort(rank).slice(0, query.maxPositive);
-  const negative = scored.filter((p) => p.weight < 0).sort(rank).slice(0, query.maxNegative);
+  const rank2 = (a, b) => Math.abs(b.weight) * b.matchStrength - Math.abs(a.weight) * a.matchStrength;
+  const positive = scored.filter((p) => p.weight > 0).sort(rank2).slice(0, query.maxPositive);
+  const negative = scored.filter((p) => p.weight < 0).sort(rank2).slice(0, query.maxNegative);
   return [...negative, ...positive];
 }
 
@@ -13420,8 +13621,8 @@ function confidenceFrom(evidence) {
   if (supporting === 0) return 0;
   const corroboration = Math.min(1, supporting / 6);
   const ownerShare = Math.min(1, evidence.ownerSignals / Math.max(1, supporting));
-  const contradiction = evidence.contradictingSignals / (supporting + evidence.contradictingSignals);
-  return Math.max(0, corroboration * 0.5 + ownerShare * 0.5 - contradiction);
+  const contradiction2 = evidence.contradictingSignals / (supporting + evidence.contradictingSignals);
+  return Math.max(0, corroboration * 0.5 + ownerShare * 0.5 - contradiction2);
 }
 function label(row) {
   try {
@@ -13896,16 +14097,33 @@ function buildDraft(input) {
 }
 
 // plugins/review-voice/src/publish/anchors.ts
-function extractAnchors(output) {
+function extractAnchors(output, checks = {}) {
+  const hunks = checks.hunks ?? null;
+  const scores = checks.scores ?? [];
+  const anchors = [];
+  const unanchored = [];
   const blocks = splitFindings(output);
-  const anchors = blocks.map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null && finding.line !== null).map((finding, index) => ({
-    findingId: `rv_${String(index + 1).padStart(2, "0")}`,
-    severity: finding.severity,
-    path: finding.path,
-    line: finding.line,
-    body: finding.raw
-  }));
-  return { anchors, unanchorable: blocks.length - anchors.length };
+  let index = 0;
+  for (const block of blocks) {
+    const finding = parseFinding(block.raw, block.startLine);
+    if (finding.severity === null || finding.path === null || finding.line === null) continue;
+    index += 1;
+    const findingId = `rv_${String(index).padStart(2, "0")}`;
+    const stale = scoresAtLocation(scores, finding.path, finding.line).some(isStaleConsumer);
+    const check = hunks === null ? null : classifyAnchor(hunks, finding.path, finding.line);
+    const reason2 = stale ? "stale-consumer" : check !== null && (check.kind === "outside-hunk" || check.kind === "file-not-in-diff") ? check.kind : null;
+    if (reason2 !== null) {
+      unanchored.push({ findingId, severity: finding.severity, path: finding.path, line: finding.line, body: finding.raw, reason: reason2 });
+      continue;
+    }
+    anchors.push({ findingId, severity: finding.severity, path: finding.path, line: finding.line, body: finding.raw });
+  }
+  return {
+    anchors,
+    unanchorable: blocks.length - anchors.length,
+    unanchored,
+    hunkChecks: hunks === null ? "skipped" : "checked"
+  };
 }
 
 // plugins/review-voice/src/github/writer.ts
@@ -14437,6 +14655,8 @@ Commands:
 
 anchors:
   One inline anchor per finding of the review on stdin, read from its text.
+  --diff-file <path>     Unified diff; a line outside its hunks is unanchorable
+  --scores <path>        Scores; a stale-consumer finding is unanchorable
 
 thread flags:
   --pr <number>          Pull request whose existing comments to read
@@ -14801,7 +15021,8 @@ async function pullRequestDiffCommand(argv) {
       truncated: result.truncated,
       forceFull: argv.includes("--full"),
       base: result.refs.base.available && result.base !== null ? result.base : void 0,
-      fetchPriorHead: (sha) => fetchPriorHead(sha, repository, process.cwd())
+      fetchPriorHead: (sha) => fetchPriorHead(sha, repository, process.cwd()),
+      includeGenerated: argv.includes("--include-generated")
     });
   } catch (error) {
     planned = {
@@ -14822,7 +15043,7 @@ function diffSummary(result) {
   const scope = result.scope === void 0 ? null : {
     kind: result.scope.kind,
     cause: result.scope.kind === "full" ? result.scope.cause : result.scope.kind === "unchanged" ? result.scope.reason : null,
-    detail: result.scope.kind === "full" ? result.scope.detail ?? null : null,
+    detail: result.scope.kind === "full" || result.scope.kind === "interdiff" ? result.scope.detail ?? null : null,
     since: result.scope.since,
     mergeBase: result.scope.kind === "unchanged" || result.scope.kind === "interdiff" ? result.scope.mergeBase : null
   };
@@ -14834,6 +15055,7 @@ function diffSummary(result) {
     pullNumber: result.pullNumber ?? null,
     scope,
     scopeNote: result.scopeNote ?? null,
+    absorbedByBase: result.scope !== void 0 && (result.scope.kind === "unchanged" || result.scope.kind === "interdiff") ? result.scope.absorbedByBase ?? [] : [],
     complexity: result.complexity ?? null,
     humanReviewNote: result.humanReviewNote ?? null,
     truncated: result.truncated ?? false,
@@ -15813,8 +16035,36 @@ function retrieveCommand(argv) {
     db.close();
   }
 }
-function anchorsCommand() {
-  console.log(JSON.stringify(extractAnchors(readStdin()), null, 2));
+function anchorsCommand(argv) {
+  const diffFile = flag(argv, "--diff-file");
+  const scoresFile = flag(argv, "--scores");
+  for (const name of ["--diff-file", "--scores"]) {
+    if (argv.includes(name) && flag(argv, name) === null) {
+      console.error(`${name} needs a file path.`);
+      return 2;
+    }
+  }
+  let hunks = null;
+  let scores = [];
+  try {
+    if (diffFile !== null) hunks = parseHunks(readFileSync5(diffFile, "utf8"));
+    if (scoresFile !== null) {
+      const parsed = JSON.parse(readFileSync5(scoresFile, "utf8"));
+      const list = Array.isArray(parsed) ? parsed : parsed.scores;
+      scores = Array.isArray(list) ? list : [];
+    }
+  } catch (error) {
+    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const result = extractAnchors(readStdin(), { hunks, scores });
+  if (hunks === null) {
+    console.error("No --diff-file, so hunk ranges were not checked; only stale-consumer findings (from --scores) were routed to the body.");
+  }
+  const plain = diffFile === null && scoresFile === null;
+  console.log(
+    JSON.stringify(plain ? { anchors: result.anchors, unanchorable: result.unanchorable } : result, null, 2)
+  );
   return 0;
 }
 function redactCommand(argv) {
@@ -16737,7 +16987,7 @@ function explainCommand(argv) {
         const ruling = detail.tieBreaks.find((t) => t.candidateId === verdict.candidateId);
         if (ruling !== void 0) {
           console.log(
-            `  tie-break         ${ruling.upheld ? "upheld" : "not upheld"}${ruling.applied === false ? " (not applied)" : ""} - ${ruling.reason}`
+            `  tie-break         ${ruling.upheld ? "upheld" : "not upheld"}${ruling.applied === false ? " (not applied)" : ""}${ruling.raised === void 0 ? "" : ` (raised to ${ruling.raised})`} - ${ruling.reason}`
           );
         }
       }
@@ -17181,7 +17431,7 @@ async function main(argv) {
     case "symbols":
       return symbolsCommand(argv.slice(1));
     case "anchors":
-      return anchorsCommand();
+      return anchorsCommand(argv.slice(1));
     case "thread":
       return await threadCommand(argv.slice(1));
     case "follow-ups":
@@ -17275,6 +17525,7 @@ try {
   }
 }
 export {
+  diffSummary,
   resolveOutPath,
   verificationProblem
 };

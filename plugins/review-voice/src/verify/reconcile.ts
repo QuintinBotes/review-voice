@@ -1,5 +1,5 @@
 import { ESCALATION_CONFIDENCE, verifierConfidence } from '../scoring/confidence.ts';
-import type { FindingVerdict } from './types.ts';
+import type { DecisiveEvidence, FindingVerdict } from './types.ts';
 
 /**
  * Settles a disagreement between the evidence-verifier and the second pass.
@@ -11,6 +11,11 @@ import type { FindingVerdict } from './types.ts';
  * claim always win would undo the point of a second model. A tie-break, run
  * only on the disputed point and only when the passes disagree, decides it on
  * the code. See docs/adr/0014-verifier-tie-break.md.
+ *
+ * The other direction goes through the same tie-break. A second pass that
+ * traced a worse impact proposes a stronger tier; it rises only when the
+ * tie-breaker upholds that impact, traced, at the escalation confidence. See
+ * docs/adr/0019-cross-check-may-raise-through-tie-break.md.
  */
 
 /**
@@ -33,10 +38,28 @@ export interface TieBreak {
    * those as it always did.
    */
   applied?: boolean | undefined;
+  /**
+   * On a ruling about a worse impact the second pass proposed: whether the
+   * tie-breaker traced it, and how sure it was - a number, or a quality tier
+   * read as scoring reads one. The tier rises only on both.
+   */
+  impactTraced?: boolean | undefined;
+  confidence?: number | undefined;
+  evidenceQuality?: string | undefined;
+  /** Set by `reconcile`: the tier an applied upgrade raised the candidate to. */
+  raised?: string | undefined;
 }
+
+/**
+ * Which way the passes disagree. `downgrade`: the evidence-verifier traced an
+ * impact the second pass lowered or dropped. `upgrade`: the second pass traced
+ * a worse impact than the tier the candidate holds.
+ */
+export type DisputeKind = 'downgrade' | 'upgrade';
 
 export interface Dispute {
   candidateId: string;
+  kind: DisputeKind;
   path: unknown;
   line: unknown;
   severity: unknown;
@@ -53,12 +76,21 @@ export interface Dispute {
     originalSeverity: string;
     finalSeverity: string;
     verifier: string;
+    /** The stronger tier an `upgrade` dispute is about; null on a downgrade. */
+    proposedSeverity: string | null;
+    /** Places the tie-breaker should look, not conclusions to accept. */
+    decisiveEvidence: DecisiveEvidence[];
   };
 }
 
 export interface Applied {
   candidateId: string;
-  result: 'upheld' | 'not upheld' | 'no tie-break supplied';
+  kind: DisputeKind;
+  /**
+   * `upheld without traced impact`: an upgrade ruling that upheld the worse
+   * impact without tracing it at the escalation confidence, so the tier stays.
+   */
+  result: 'upheld' | 'not upheld' | 'upheld without traced impact' | 'no tie-break supplied';
   /** The severity the candidate goes to scoring with, or null when it was dropped. */
   severity: string | null;
   reason: string | null;
@@ -82,6 +114,80 @@ export function candidateIdOf(raw: Record<string, unknown>): string | null {
 }
 
 const OUTCOMES: readonly FindingVerdict['outcome'][] = ['kept', 'downgraded', 'dropped', 'unverified'];
+const VERDICTS: readonly FindingVerdict['verdict'][] = ['confirmed', 'rejected', 'uncertain'];
+
+/** The verdict label each outcome may carry; a `downgraded` one may follow any. */
+const OUTCOME_VERDICT: Partial<Record<FindingVerdict['outcome'], FindingVerdict['verdict']>> = {
+  kept: 'confirmed',
+  dropped: 'rejected',
+  unverified: 'uncertain',
+};
+
+/** Strongest first. A question asks rather than asserts, so it is weakest. */
+const SEVERITY_RANK: Record<string, number> = { blocking: 4, important: 3, minor: 2, nit: 1, question: 0 };
+
+function rank(severity: unknown): number | null {
+  return typeof severity === 'string' && Object.hasOwn(SEVERITY_RANK, severity) ? (SEVERITY_RANK[severity] ?? null) : null;
+}
+
+/** Why a decisive-evidence list is malformed, or null when it is well formed. */
+function decisiveEvidenceProblem(value: unknown): string | null {
+  if (!Array.isArray(value)) return 'decisiveEvidence must be an array';
+  for (const [index, entry] of value.entries()) {
+    const e = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+    if (typeof e['path'] !== 'string' || e['path'] === '') return `decisiveEvidence ${index} needs a path`;
+    if (!Number.isInteger(e['line']) || (e['line'] as number) < 1) return `decisiveEvidence ${index} needs a positive line`;
+    if (typeof e['why'] !== 'string' || e['why'].trim() === '') return `decisiveEvidence ${index} needs a why`;
+  }
+  return null;
+}
+
+/**
+ * Why a verdict's fields contradict its label, or null when they agree.
+ *
+ * A verdict counts only when what it says agrees with what it is labelled. A
+ * cross-check once answered "rejected" while its own reason confirmed the
+ * claim; the reason is prose, but the fields that state the same thing are
+ * not, and a verdict whose fields disagree with each other is refused rather
+ * than applied by whichever field is read.
+ */
+function contradiction(e: Record<string, unknown>): string | null {
+  const outcome = e['outcome'] as FindingVerdict['outcome'];
+  const expected = OUTCOME_VERDICT[outcome];
+  if (expected !== undefined && e['verdict'] !== expected) {
+    return `a ${outcome} verdict must be ${expected}, not ${String(e['verdict'])}`;
+  }
+  const original = rank(e['originalSeverity']);
+  const final = rank(e['finalSeverity']);
+  if (outcome === 'downgraded') {
+    if (final === null) return 'a downgraded verdict needs finalSeverity, a known tier';
+    // Only a nit or a question, with no weaker tier to go to, may stay put.
+    const floor = e['originalSeverity'] === 'nit' || e['originalSeverity'] === 'question';
+    if (original !== null && !(final < original || (floor && final === original))) {
+      return `a downgraded verdict needs a finalSeverity below ${String(e['originalSeverity'])}, not ${String(e['finalSeverity'])}`;
+    }
+  }
+  if (outcome === 'kept' && original !== null && final !== null && final !== original) {
+    return `a kept verdict leaves the severity at ${String(e['originalSeverity'])}, not ${String(e['finalSeverity'])}`;
+  }
+  if (e['decisiveEvidence'] !== undefined) {
+    const problem = decisiveEvidenceProblem(e['decisiveEvidence']);
+    if (problem !== null) return problem;
+  }
+  if (e['proposedSeverity'] !== undefined) {
+    const proposed = rank(e['proposedSeverity']);
+    if (outcome !== 'kept') return 'only a kept verdict may propose a stronger severity';
+    if (proposed === null || e['proposedSeverity'] === 'question') return 'proposedSeverity must be a tier';
+    if (original === null || proposed <= original) {
+      return `proposedSeverity ${String(e['proposedSeverity'])} is not above ${String(e['originalSeverity'])}`;
+    }
+    if (!Array.isArray(e['decisiveEvidence']) || e['decisiveEvidence'].length === 0) {
+      return 'a proposed stronger severity needs decisiveEvidence to trace';
+    }
+    if (typeof e['reason'] !== 'string' || e['reason'].trim() === '') return 'a proposed stronger severity needs a reason';
+  }
+  return null;
+}
 
 /**
  * The second pass's verdicts, checked before any is applied.
@@ -106,6 +212,11 @@ export function parseSecondPass(parsed: unknown): FindingVerdict[] {
     if (e['outcome'] === 'downgraded' && (typeof e['finalSeverity'] !== 'string' || e['finalSeverity'] === '')) {
       throw new ReconcileInputError(`${who}: a downgraded verdict needs finalSeverity`);
     }
+    if (!VERDICTS.includes(e['verdict'] as FindingVerdict['verdict'])) {
+      throw new ReconcileInputError(`${who}: verdict must be one of ${VERDICTS.join(', ')}`);
+    }
+    const problem = contradiction(e);
+    if (problem !== null) throw new ReconcileInputError(`${who}: ${problem}`);
     const hasId = typeof e['candidateId'] === 'string' && e['candidateId'] !== '';
     if (!hasId && !(typeof e['path'] === 'string' && Number.isInteger(e['line']))) {
       throw new ReconcileInputError(`${who}: needs candidateId, or path and line`);
@@ -144,11 +255,30 @@ export function parseTieBreaks(parsed: unknown): TieBreak[] {
     if (e['applied'] !== undefined && typeof e['applied'] !== 'boolean') {
       throw new ReconcileInputError(`${who}: applied must be true or false when supplied`);
     }
+    const impactTraced = e['impact_traced'] ?? e['impactTraced'];
+    if (impactTraced !== undefined && typeof impactTraced !== 'boolean') {
+      throw new ReconcileInputError(`${who}: impact_traced must be true or false when supplied`);
+    }
+    const confidence = e['confidence'];
+    if (confidence !== undefined && (typeof confidence !== 'number' || !(confidence >= 0 && confidence <= 1))) {
+      throw new ReconcileInputError(`${who}: confidence must be a number from 0 to 1 when supplied`);
+    }
+    const quality = e['evidence_quality'] ?? e['evidenceQuality'];
+    if (quality !== undefined && typeof quality !== 'string') {
+      throw new ReconcileInputError(`${who}: evidence_quality must be a string when supplied`);
+    }
+    if (e['raised'] !== undefined && rank(e['raised']) === null) {
+      throw new ReconcileInputError(`${who}: raised must be a severity when supplied`);
+    }
     return {
       candidateId: id,
       upheld: e['upheld'],
       reason: e['reason'],
       ...(typeof e['applied'] === 'boolean' ? { applied: e['applied'] } : {}),
+      ...(typeof impactTraced === 'boolean' ? { impactTraced } : {}),
+      ...(typeof confidence === 'number' ? { confidence } : {}),
+      ...(typeof quality === 'string' ? { evidenceQuality: quality } : {}),
+      ...(typeof e['raised'] === 'string' ? { raised: e['raised'] } : {}),
     };
   });
 }
@@ -218,18 +348,34 @@ export function reconcile(
     const id = ids[index] as string;
     const verdict = verdictById.get(id);
     if (verdict === undefined) continue;
-    if (verdict.outcome !== 'downgraded' && verdict.outcome !== 'dropped') continue;
     const verification = verificationById.get(id);
-    if (!tracedConfidently(verification)) continue;
+    let kind: DisputeKind;
+    if (verdict.outcome === 'downgraded' || verdict.outcome === 'dropped') {
+      if (!tracedConfidently(verification)) continue;
+      kind = 'downgrade';
+    } else if (verdict.outcome === 'kept' && verdict.proposedSeverity !== undefined) {
+      // Proposed against the tier the candidate holds now, whatever the
+      // verdict recorded as its original.
+      const held = rank(candidate['severity']);
+      const proposed = rank(verdict.proposedSeverity);
+      if (held === null || proposed === null || proposed <= held || candidate['severity'] === 'question') {
+        notes.push(`Note: ${id}'s proposed ${verdict.proposedSeverity} is not above its ${String(candidate['severity'])}, so it is not disputed.`);
+        continue;
+      }
+      kind = 'upgrade';
+    } else {
+      continue;
+    }
     disputes.push({
       candidateId: id,
+      kind,
       path: candidate['path'],
       line: candidate['line'],
       severity: candidate['severity'],
       claim: candidate['claim'],
       failureMode: candidate['failure_mode'] ?? candidate['failureMode'],
       evidence: candidate['evidence'],
-      verification: verification as Record<string, unknown>,
+      verification: verification ?? {},
       secondPass: {
         verdict: verdict.verdict,
         confidence: verdict.confidence,
@@ -238,11 +384,14 @@ export function reconcile(
         originalSeverity: verdict.originalSeverity,
         finalSeverity: verdict.finalSeverity,
         verifier: verdict.verifier,
+        proposedSeverity: kind === 'upgrade' ? (verdict.proposedSeverity as string) : null,
+        decisiveEvidence: verdict.decisiveEvidence ?? [],
       },
     });
   }
 
-  const disputed = new Set(disputes.map((d) => d.candidateId));
+  const kinds = new Map(disputes.map((d) => [d.candidateId, d.kind]));
+  const disputed = new Set(kinds.keys());
   const rulings = new Map<string, TieBreak>();
   for (const tieBreak of tieBreaks ?? []) {
     if (!ids.includes(tieBreak.candidateId)) {
@@ -258,10 +407,42 @@ export function reconcile(
 
   const out: RawCandidate[] = [];
   const applied: Applied[] = [];
+  const raisedTo = new Map<string, string>();
   for (const [index, candidate] of candidates.entries()) {
     const id = ids[index] as string;
     const verdict = verdictById.get(id);
     const ruling = rulings.get(id);
+    const kind = kinds.get(id);
+
+    if (kind === 'upgrade') {
+      // The worse impact counts only as the evidence-verifier's does for an
+      // escalation: traced, and at least that sure, read by the same function.
+      const sure = verifierConfidence(ruling?.confidence, ruling?.evidenceQuality);
+      const raise =
+        ruling?.upheld === true && ruling.impactTraced === true && sure !== null && sure >= ESCALATION_CONFIDENCE;
+      const proposed = verdict?.proposedSeverity as string;
+      const result = raise ? { ...candidate, severity: proposed } : candidate;
+      if (raise) raisedTo.set(id, proposed);
+      else if (ruling?.upheld === true) {
+        notes.push(`Note: ${id}'s upheld ruling did not trace the worse impact at ${ESCALATION_CONFIDENCE} or more, so its tier stays.`);
+      }
+      out.push(result);
+      applied.push({
+        candidateId: id,
+        kind,
+        result:
+          ruling === undefined
+            ? 'no tie-break supplied'
+            : raise
+              ? 'upheld'
+              : ruling.upheld
+                ? 'upheld without traced impact'
+                : 'not upheld',
+        severity: typeof result['severity'] === 'string' ? result['severity'] : null,
+        reason: ruling?.reason ?? null,
+      });
+      continue;
+    }
 
     // An upheld dispute keeps the candidate exactly as the evidence-verifier
     // passed it, which is what lets scoring report its traced severity.
@@ -281,6 +462,7 @@ export function reconcile(
     if (disputed.has(id)) {
       applied.push({
         candidateId: id,
+        kind: 'downgrade',
         result: ruling === undefined ? 'no tie-break supplied' : ruling.upheld ? 'upheld' : 'not upheld',
         severity: result === null ? null : typeof result['severity'] === 'string' ? result['severity'] : null,
         reason: ruling?.reason ?? null,
@@ -290,7 +472,11 @@ export function reconcile(
 
   // Recomputed here, whatever the input said: only reconcile knows which
   // rulings settled a dispute.
-  const marked = (tieBreaks ?? []).map((tieBreak) => ({ ...tieBreak, applied: rulings.has(tieBreak.candidateId) }));
+  const marked = (tieBreaks ?? []).map((tieBreak) => {
+    const { raised: _input, ...rest } = tieBreak;
+    const raised = raisedTo.get(tieBreak.candidateId);
+    return { ...rest, applied: rulings.has(tieBreak.candidateId), ...(raised === undefined ? {} : { raised }) };
+  });
 
   return { candidates: out, disputes, applied, tieBreaks: marked, notes };
 }
