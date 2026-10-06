@@ -2557,6 +2557,32 @@ function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = 
     diff
   };
 }
+var WRONG_BASE_MIN_COMMITS = 5;
+var WRONG_BASE_MAJORITY = 0.5;
+async function detectWrongBase(client, repository, pull) {
+  try {
+    if (!Number.isInteger(pull.commits)) return null;
+    const { data: repo } = await client.get(`/repos/${repository}`);
+    const other = repo.default_branch;
+    if (typeof other !== "string" || other === "" || pull.base.ref === other || pull.head.ref === other) return null;
+    const { data: compare } = await client.get(
+      `/repos/${repository}/compare/${encodeURIComponent(other)}...${pull.head.sha}`
+    );
+    if (typeof compare.ahead_by !== "number") return null;
+    const alreadyOn = Math.max(0, pull.commits - compare.ahead_by);
+    if (alreadyOn < WRONG_BASE_MIN_COMMITS || alreadyOn <= pull.commits * WRONG_BASE_MAJORITY) return null;
+    return {
+      base: pull.base.ref,
+      otherBranch: other,
+      commits: pull.commits,
+      alreadyOn,
+      files: pull.changed_files,
+      note: `${alreadyOn} of the pull request's ${pull.commits} commits are already on ${other}, which suggests it was opened against ${pull.base.ref} by mistake (a branch cut from ${other}). Ask about the base before reviewing the whole patch, unless bringing ${other}'s commits into ${pull.base.ref} is the intent.`
+    };
+  } catch {
+    return null;
+  }
+}
 async function acquirePullRequestDiff(options) {
   const client = new GitHubClient({ allowlist: [options.repository] });
   const { data: pull } = await client.get(
@@ -2637,7 +2663,8 @@ async function acquirePullRequestDiff(options) {
       base: pull.base.sha,
       head: pull.head.sha,
       cwd
-    })
+    }),
+    suspectedWrongBase: await detectWrongBase(client, options.repository, pull)
   };
 }
 
@@ -15667,6 +15694,7 @@ function diffSummary(result) {
     humanReviewNote: result.humanReviewNote ?? null,
     truncated: result.truncated ?? false,
     truncationNote: result.truncationNote ?? null,
+    suspectedWrongBase: result.suspectedWrongBase ?? null,
     reviewedFileCount: result.reviewedFileCount,
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,
