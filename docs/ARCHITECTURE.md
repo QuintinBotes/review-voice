@@ -17,6 +17,7 @@ agents. A command file orchestrates them.**
 | Convention discovery | CLI | which files exist is a fact |
 | Candidate generation | `diff-analyst` | genuine judgment |
 | Evidence verification | `evidence-verifier` | genuine judgment |
+| Verifier tie-break | `tie-breaker` | genuine judgment, only on a dispute |
 | Precedent retrieval | CLI | an index query |
 | Preference scoring | CLI | **arithmetic - never ask a model to do this** |
 | Dedup and ranking | CLI | deterministic |
@@ -102,9 +103,18 @@ files all produce a full review with a named cause. The implementation can
 prove only a simple descendant range is safe; every other shape is cheaper to
 read again than to explain away after it omits author work.
 
-A merge always falls back. A range diff can show the merge's files, but cannot
-reliably separate base-branch updates from the author's changes, so presenting
-it as a narrow author review would claim more precision than the data has.
+A range diff across a merged base or a rebase cannot separate base-branch
+updates from the author's changes. When the base commit is readable, the
+reviewed head is instead replayed onto the new merge base with
+`git merge-tree`, giving what the reviewed pull request would look like had it
+branched there, and the head is read against that, over the pull request's
+files. Base changes are
+on both sides and cancel out; what remains is the author's new commits and any
+rewrite of their own code while resolving the merge. A file whose replay
+conflicts has only conflict markers to compare with, so it is read as the pull
+request's own diff of it on the new base: the author's resolution and the rest
+of their change there, with the base's changes still left out. Without the base
+commit, a merge or a rewritten history still falls back.
 
 The resulting scope is written beside the patch and printed after the findings
 when it is incremental. In particular, `No actionable findings.` then means no
@@ -124,6 +134,13 @@ a declaration or an unrelated construct, and unfamiliar languages do not get a
 made-up parser; it is a reading hint, never proof of a call site. A failed grep
 marks that file inconclusive rather than empty, because a search that did not
 answer cannot establish that a changed symbol has no consumers.
+
+The collection has a time budget (`--max-ms`, default 60 seconds) that the
+process enforces itself: it is checked before every search, and each search is
+capped to what is left. It sits on the critical path before the analyst, so a
+large diff must not stall the review. A file the budget did not reach is listed
+as inconclusive with `reason: "time-budget"`, and the files finished so far are
+still written.
 
 ### Retrieval
 
@@ -427,7 +444,17 @@ claims: context the verifier needed and could not obtain, and an admission in
 the candidate's own evidence that the claim could not be checked. The second
 was observed verbatim - "No local key catalogue exists in the repo, so the
 keys' existence cannot be verified here", filed at 0.8 - and is exactly how a
-review comment ends up retracted.
+review comment ends up retracted. Only context the claim depends on caps it:
+the verifier can mark an entry `cosmetic` when it would only sharpen the
+wording, and a candidate the cap held back is listed locally as `unverified`
+rather than lost (ADR 0016).
+
+A `question` is the one candidate that can be eligible without a verified
+claim. It is eligible when its premises are verified, even if its answer is
+not: it skips the confidence gates, since low confidence in an answer is what a
+question is, and is stopped instead by `premises_verified: false` from the
+verifier, by owner precedent against asking it, or by the cap of two questions
+per review.
 
 `evidenceQuality` scored specificity as "names a line **or** is longer than 40
 characters". Analyst evidence is always longer than 40 characters, so the term
@@ -543,6 +570,13 @@ Every verdict is recorded, including the ones that change nothing, and
 `explain` lists what was suppressed and why. A verifier that silently deletes
 findings is the finding cap in a different coat - the failure has to be
 visible, or a bad verifier is indistinguishable from a clean diff.
+
+`RV reconcile` applies the verdicts rather than the orchestrator applying them
+by hand. When the evidence-verifier traced a finding's impact at 0.85 or more
+and the second pass downgraded or dropped it, the two disagree about a fact in
+the code, and one `tie-breaker` run on just that point settles it: upheld, the
+evidence-verifier's finding stands; not upheld, the second pass's outcome does.
+See [ADR 0014](adr/0014-verifier-tie-break.md).
 
 ### Scoring and activation
 

@@ -51,6 +51,13 @@ request's commits are not in the clone unless they were fetched. `refs.base`
 and `refs.head` each say whether that commit is actually readable, established
 by asking git rather than by assuming a fetch worked.
 
+`refs.mergeBase` (also `mergeBase` in the summary) is the commit the pull
+request branched from. `base` stays the base branch's tip, which is not an
+ancestor of the head once that branch has moved on, so `git diff base head`
+shows the branch's own changes reversed. Use `mergeBase` for any `git diff` or
+`git show` of the change and for `--base` on `record`, `symbols` and `score`;
+fall back to `base` only when `mergeBase` is null (a commit is missing locally).
+
 If either is `available: false`, pass that fact to the analyst and the verifier
 in their prompts, and print `refs.note` after the findings the way
 `truncationNote` is printed. Reading code at a missing ref fails, and a verifier
@@ -64,12 +71,22 @@ recorded. The scope is one of:
 
 - `unchanged` - the pull request's own diff is the same as at the previous
   head (a base merge or a rebase only). Do not review again: run
-  `RV carry --from <prior.runId> --head <sha>`, which keeps each earlier finding
-  whose line and the two lines either side are unchanged, at its new line, and
-  lists the rest under `notCarried`. Send `output` through `RV validate-output`,
-  display it, and record it in step 6 with `--carried-from <prior.runId>`. If
-  nothing is carried, print `scopeNote` and stop; the earlier review still
-  applies.
+  `RV carry --from <prior.runId> --head <sha> --text > <tmpdir>/review.txt`.
+  It prints the earlier review with each finding whose line and the two lines
+  either side are unchanged moved to its new line, and names the rest on
+  stderr. An earlier run with no findings prints exactly
+  `No actionable findings.`. Then hand that file on unchanged:
+  `RV validate-output < <tmpdir>/review.txt`, display it, and record it with
+  `RV record --repository <owner/repo> --head <sha> --carried-from <prior.runId> --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json < <tmpdir>/review.txt`.
+  Exit 1 from `carry` prints nothing. When stderr names a blocking or
+  important finding that did not carry, its code changed and it may be what
+  kept the earlier review from approving: review those files again with
+  `RV diff --pr <number> --full` from step 1 rather than recording the rest.
+  `record --carried-from` refuses the same case. Otherwise the earlier run had
+  findings and none carried: print `scopeNote` and stop; the earlier review
+  still applies. Without
+  `--text`, `carry` prints JSON, which is not a review: never pipe it into
+  `validate-output` or `record`.
 - `interdiff` - only the author's hunks that are new since the previous head,
   with base-branch churn excluded and head-side line numbers kept.
 - `incremental` - only the commits after the previous head (used only when
@@ -215,7 +232,10 @@ be current.
 Pass `symbols.json` to the `diff-analyst` in step 2 and the
 `evidence-verifier` in step 3. If any file is `inconclusive`, tell both agents
 that the changed-symbol context is incomplete; a failed search is not a report
-of zero consumers.
+of zero consumers. `symbols` stops itself after `--max-ms` (default 60000):
+files it had not finished are `inconclusive` with `reason: "time-budget"`, the
+finished ones are still written, and `budget.exhausted` says it happened. Never
+wrap it in a kill timer; a hung step is reported, not worked around.
 
 ## Step 2 - Generate candidates
 
@@ -247,7 +267,16 @@ count once after the findings. Never correct an anchor by hand.
 
 A candidate with `anchor: "stale-consumer"` sits on unchanged code the change
 made wrong, and is checked by its `caused_by`, which must be an added line or
-deletion site. A missing or unchanged cause fails like any other anchor.
+deletion site. A missing or unchanged cause fails like any other anchor. When
+the consumer's own line is itself changed in the diff, the reason says to file
+it as an ordinary finding. A passing one is listed under `suggestions` and goes
+on as it is; include it if you send anchor failures back to the analyst.
+
+**`--diff-file` here and in step 4 is the `diff.patch` the analyst read**, the
+interdiff on a follow-up, never the pull request's full diff. A cause is judged
+against the diff the analyst saw: a line the latest commit changed back to the
+base is a changed line in the interdiff and unchanged context in the full
+diff.
 
 **On a `--pr` run, add `--thread <tmpdir>/thread.json`** to that command. It
 removes candidates that repeat a comment already on the pull request, so the
@@ -255,6 +284,16 @@ verifier does not spend a pass on them, and flags a near match with
 `possibleRepeatOf`. A candidate that overlaps the pull request description is
 not dropped: wording cannot tell a restatement from a contradiction, so it is
 kept with `possibleRepeatOf` of `kind: description` and the verifier decides.
+A candidate that makes the same claim as an inline comment anywhere in the
+same file is kept with `possibleRepeatOf`, however far apart the lines are and
+whoever wrote it: a comment's line moves when the author inserts code above it,
+and one concern can cover several places in a file. Its `kind` is `own-comment`
+for the owner's own comment, which is preferred, and `thread` for anyone
+else's; `outdated: true` means the code under the comment has changed since,
+often because it was addressed. The owner is `identity.owner_reviewer` from the
+configuration, or `--owner <login>`. The owner's own inline comments are never
+a reason to drop here, however closely a candidate repeats one: it may be what
+the author left open of that comment, which only the verifier can tell.
 Send only `kept` to step 3. Keep `droppedAsRepeat` for
 step 6 (`record --held`); until then, do not pass them to `--verdicts`. An
 unreadable thread file exits 2: fix the path rather than skipping the check.
@@ -275,14 +314,37 @@ If there are no candidates, output exactly `No actionable findings.` and stop.
 Launch the `evidence-verifier` agent with the candidates, the same diff, the
 same convention `documents`, and `symbols.json`.
 
-Discard every candidate it does not verify. Rejection is the default when
-evidence is weak - do not argue with it, and do not reinstate a candidate
-because it seemed compelling.
+Discard every candidate it does not verify, with two exceptions that step 4
+decides:
+
+- a `question` it marked `premises_verified: true`;
+- a candidate it rejected because of context it could not obtain, with at
+  least one blocking entry in `required_context_missing` (a string, or an
+  object not marked `cosmetic`). **Set it aside**: it skips steps 3b and 3c and
+  is added to the candidates piped into step 4, where the cap rejects it and
+  lists it under `unverified` for the owner. It is never eligible and never
+  posted.
+
+Rejection is the default when evidence is weak - do not argue with it, and do
+not reinstate a candidate because it seemed compelling.
+
+**A prior comment the author only partly addressed.** For a candidate linked to
+the owner's own comment (`possibleRepeatOf` of `kind: own-comment`), the
+verifier may verify it for what is still open and add `partly_addressed`, with
+`remaining` and `addressed` points. Keep that in `verification.json` and keep
+the candidate's `possibleRepeatOf` when you pipe it on: `score` needs both.
 
 **Write its full output to `<tmpdir>/verification.json`.** It is not only a
 pass list: step 4 gates on the confidence it reports, because the verifier is
 the only stage that checked the claim against the repository. Without the file,
 scoring falls back to the analyst's opinion of its own work.
+
+**Check its shape at once:** pipe the file into `RV check-verification`. It
+runs the checks `score` runs on the same file and names the entry and field it
+refuses, such as an `evidence_quality` outside `high`, `medium` and `low`. If it
+exits 2, **relaunch the verifier once with the schema restated**, while its
+context is still warm, and do not translate its output by hand. If the second
+attempt is also malformed, say so and stop.
 
 Keep `fix_verdict`, `fix_confidence`, `fix_reason` and `fix_direction` in
 `verification.json` with every other verifier field. They verify a suggested
@@ -290,7 +352,9 @@ repair separately from the defect and must not be derived or filled in later.
 Keep `impact_traced` there too: scoring reads it to decide whether a finding may
 be reported above the tier the analyst asked for.
 
-If nothing survives, output exactly `No actionable findings.` and stop.
+If nothing survives and nothing was set aside, output exactly
+`No actionable findings.` and stop. If only set-aside candidates remain, skip
+to step 4 so they are listed.
 
 ## Step 3b - Second-pass verification
 
@@ -306,22 +370,42 @@ This pass is deliberately a **different model** from the one that generated the
 candidates. A verifier from the same family shares the analyst's blind spots
 and agrees with a plausible-sounding defect more often than it should.
 
-Apply each verdict:
-
-- `kept` - unchanged.
-- `downgraded` - use `finalSeverity`, not the original.
-- `dropped` - remove the finding from the review.
-- `unverified` - the verifier could not run. **Leave the finding exactly as it
-  is.** A verifier that did not answer has not agreed.
+Write the report to `<tmpdir>/second-pass.json`. Do not apply its verdicts by
+hand: `reconcile` in step 3c applies them - `downgraded` takes `finalSeverity`,
+`dropped` removes the finding, and `kept` and `unverified` leave it exactly as
+it is, since a verifier that did not answer has not agreed.
 
 Pass the whole report to `RV record --verdicts <file>` in step 6, including the
 dropped entries. A suppressed finding leaves no other trace, and
 `/review-voice:explain` showing what was removed is what makes a bad verifier
 visible instead of indistinguishable from a clean diff.
 
+## Step 3c - Settle disputes
+
+Skip this step when step 3b was skipped.
+
+Pipe the candidates as they were before step 3b, `{"candidates": [...]}`, into
+`RV reconcile --verification <tmpdir>/verification.json --second-pass <tmpdir>/second-pass.json`.
+A candidate is disputed when the evidence-verifier traced its impact
+(`impact_traced`, confidence at least 0.85) and the second pass downgraded or
+dropped it. If `disputes` is empty, its `candidates` are the input to step 4.
+
+Otherwise launch the `tie-breaker` agent **once per dispute**, with that
+dispute entry as it is and the same diff. Do not add your own view of who is
+right. Write the results, one `{candidate_id, upheld, reason}` each, as an
+array to `<tmpdir>/tie-breaks.json`, then run the same command again with
+`--tie-breaks <tmpdir>/tie-breaks.json`. Its `candidates` are the input to step
+4: an upheld dispute keeps the evidence-verifier's finding, a dropped one
+included, and one not upheld keeps the second pass's outcome. A malformed
+tie-break file exits 2; re-run the tie-breaker rather than editing its output.
+Write that second output to `<tmpdir>/reconciled.json` and keep it for step 6:
+its `tieBreaks` mark which rulings settled a dispute, and a ruling on a
+candidate nobody disputed is ignored.
+
 ## Step 4 - Score against precedent
 
-Pipe the verified candidates as `{"candidates": [...]}` into
+Pipe the verified candidates - step 3c's `candidates` when it ran - plus those
+set aside in step 3, as `{"candidates": [...]}` into
 `RV score --repository <name> --verification <tmpdir>/verification.json --base <ref> --diff-file <tmpdir>/diff.patch`,
 adding `--thread <tmpdir>/thread.json` on a `--pr` run.
 
@@ -329,16 +413,36 @@ adding `--thread <tmpdir>/thread.json` on a `--pr` run.
 `score` refuses a thread file it cannot read. Without it a pull request review
 repeats whatever the pull request already says.
 
+A partly-addressed follow-up is the one exception to that check: when the
+verifier set `partly_addressed` and the linked own comment is on the thread,
+that comment alone is not held against the candidate; any other comment on the
+thread, the owner's included, still rejects a repeat of it. The owner is
+checked again here, so pass the same `--owner` given to `check-candidates`, if
+any. Its `eligible[]` entry carries
+`possibleRepeatOf` with `status: partly-addressed`, `remaining` and
+`addressed`. Set anywhere else, `partly_addressed` is ignored with a warning.
+
 `score` reports a finding above the analyst's requested tier only when the
 verifier set `impact_traced` and reported confidence of at least 0.85, and caps
 a question-framed claim at minor; boundary categories are exempt.
+
+**A `question` is eligible when its premises are verified, even if its answer
+is not.** It is the one kind of candidate that can reach the editor without a
+verified claim: `score` does not gate it on confidence, and the verifier's
+`verified: false` for an answer it could not reach does not stop it. What stops
+it is `premises_verified: false` - a fact the question rests on was wrong or
+could not be checked - or owner precedent against asking it, and at most two
+questions are asked per review. So pass a question to step 4 when the verifier
+set `premises_verified: true`, even though it could not answer it.
 
 With `--diff-file`, `score` also rejects a candidate that is not anchored on an
 added line or a deletion site. Keep the `anchorCheck` and its
 `rejectedBecause` reason with the score output; re-anchor or withdraw a rejected
 candidate instead of moving it by hand. A stale consumer is anchored by its
-cause, and is eligible only when the verifier set `impact_traced`; it is posted
-in the review body, never inline.
+cause, and is eligible only when the verifier set `impact_traced`, except that
+a documentation consumer (a `.md`, `.rst` or `.adoc` file) the verifier
+confirmed is eligible untraced when it is reported at `nit`. It is posted in the review
+body, never inline.
 
 `score` also checks that each candidate's cited path exists at the reviewed ref.
 The path is the one field no other stage verifies, and a wrong one sends the
@@ -377,10 +481,20 @@ arithmetic, and a threshold you can talk your way past is not a threshold.
 Keep only candidates where `eligible` is true. For the rest, `rejectedBecause`
 says why, and `confidenceSource` says whose confidence the gate read: the
 `verifier` where it ran, the `analyst` where it did not, or `unverifiable-cap`
-where the claim itself says it could not be checked.
+where the claim itself says it could not be checked. A `required_context_missing`
+entry the verifier marked `cosmetic` - context that would only sharpen the
+wording - does not trigger the cap; every other entry does.
 
-`belowGate` lists the verified candidates stopped only by the final score. Keep
-it for step 6. They are never posted and are not part of the validated output.
+`belowGate` lists the verified candidates stopped only by the final score
+(`gate: score`) or only by the floor on the verifier's own confidence
+(`gate: confidence`). Keep it for step 6. They are never posted and are not part
+of the validated output.
+
+`unverified` lists the candidates rejected only because the verifier listed
+blocking context it could not obtain in `required_context_missing`, each with
+the verifier's confidence and those entries. The claim may be right; nobody in the
+pipeline could check it. Keep it for step 6. Like `belowGate`, it is never
+posted and is not part of the validated output.
 
 Then order by severity: `blocking`, `important`, `minor`, `nit`, `question`.
 Within a tier, prefer the higher final score.
@@ -420,15 +534,35 @@ derived `severity` - and a `fix` object. It returns the rendered review and
 nothing else.
 
 `fix` holds only what may be stated: `render` is `fix` or `direction` with the
-text to state, or `none` with no text. The editor does not decide or invent a
+text to state, or `none` with no text. An entry marked `impactDisputed` had its
+wider impact disputed in step 3c with no tie-break upholding it; the editor
+leaves that wider impact out. The editor does not decide or invent a
 correction, and a withheld repair never reaches it. The full fix decision stays
 in `scores` for `/review-voice:explain`.
+
+An entry with `possibleRepeatOf` of `status: partly-addressed` is rendered as
+an ordinary finding at its own line stating only what remains of the owner's
+earlier comment. **It is never a reply on that comment's thread**, and nothing
+resolves the thread: what remains is posted, if at all, as one more inline
+comment in the normal review, through the same single create-review request as
+every other finding.
 
 **Inline the candidate JSON for each eligible entry. Do not pass a file path.**
 The editor declares no tools at all, deliberately: its own authority limit - that
 it cannot add a technical claim - rests on having no way to verify one. Handed
 a path it can only reply that it cannot open files, which on a live run cost a
 manual paste of eight findings.
+
+**When a cross-check finds an eligible finding anchored on the wrong line**,
+correct that one candidate rather than re-running the analyst:
+`RV reanchor --candidate <id> --line <n> --scores <file> --diff-file <tmpdir>/diff.patch --candidates <file>`,
+adding `--path <p>` when the file is wrong too. `<file>` after `--scores` is the
+JSON `RV score` printed, and the one after `--candidates` is the file step 6
+passes to `record`. The claim is unchanged, so its verification and score are
+kept and both files are rewritten in place. Exit 1 is a refusal, with the
+reason: the new line is not an added line or deletion site of the diff, the
+candidate was not eligible, it is a stale consumer, or another finding is
+already there. Then give the editor the updated `eligible[]` entry.
 
 ## Step 6 - Validate, and retry once
 
@@ -452,8 +586,13 @@ stray directory and another project's notes took the reviewed count from 11 to
 
 - Exit 0: display the output verbatim. When `belowGate` from step 4 is not
   empty, print after it a line `Below the gate (not posted)` and then one line
-  per entry: `[severity] path:line - claim`. They are verified but scored below
-  the gate, are never posted, and are not part of the validated output. Then
+  per entry: `[severity] path:line - claim`. They are verified but stopped by
+  the score or confidence gate, are never posted, and are not part of the
+  validated output. When
+  `unverified` from step 4 is not empty, print after that a line
+  `Unverified (not posted)` and then one line per entry:
+  `[severity] path:line - claim (could not check: <required_context_missing>)`.
+  The verifier could not check them; they are never posted either. Then
   record it. Write the scored candidates to a temporary file and pass it:
   `RV record --repository <owner/repo> --base <ref> --head <sha> --candidates <file>
   --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --stages <file>` with the validated output on
@@ -464,9 +603,13 @@ stray directory and another project's notes took the reviewed count from 11 to
   name and pull-request number; a short name matches nothing, and every later
   review silently reads the whole pull request again.
 
-  `--stages` takes `[{"name","seconds","toolCalls","tokens"}]`, one entry per
-  agent stage you ran. Write what you observed; omit a field you do not know
-  rather than estimating it. A review measured once took about twenty-five
+  `--stages` takes `[{"name","seconds","toolCalls","filesRead","tokens"}]`, one
+  entry per agent stage you ran. Write what you observed; omit a field you do
+  not know rather than estimating it. `toolCalls` and `filesRead` for the
+  `analyst` are how `explain` shows what it actually read, and `record` prints
+  a `warnings` entry when a run with no findings came from a very shallow
+  analyst pass for the size of the diff. Show that warning to the person, and
+  never post it or put it in the review. A review measured once took about twenty-five
   minutes against a sweep that runs every ten, and whether that holds is a
   distribution nobody has yet.
 
@@ -483,21 +626,33 @@ stray directory and another project's notes took the reviewed count from 11 to
   cannot - the contract permits no text beyond the finding. Without it,
   feedback on that finding can never become a policy rule.
 
+  They also carry the partly-addressed state. A finding written from such an
+  entry is stored as `partlyAddressed`, with the earlier comment and what was
+  still open at this run, and `/review-voice:explain` shows it. The state is
+  local and per run; nothing later marks it resolved. Do not record a
+  partly-addressed follow-up under `--held` as a `repeat`, which would read as
+  closed.
+
   Pass every candidate that was held back rather than reported with
   `--held <file>` (an array of `{path, line, verdict, source, reason, text}`, verdict
   one of `partly`, `refuted`, `unverified`, `repeat`, `below-gate`): the
   `droppedAsRepeat` from step 2 as `repeat`, any cross-check result of PARTLY or
-  REFUTED, and each `belowGate` entry from step 4 as `below-gate`. Give each
+  REFUTED, each `belowGate` entry from step 4 as `below-gate`, and each
+  `unverified` entry from step 4 as `unverified`. Give each
   entry `text`, the candidate's claim, so the next review can match on wording. Malformed
   entries exit 2. `/review-voice:explain` lists them under "Held back".
 
   Pass the score breakdowns with `--scores <file>` and, if verification ran,
-  the verdicts with `--verdicts <file>`, so `/review-voice:explain` can show
+  the verdicts with `--verdicts <file>` and, if step 3c ran a tie-breaker,
+  `--tie-breaks <tmpdir>/reconciled.json`, so `/review-voice:explain` can show
   its working later - including findings that were suppressed. Without them a finding is
   recorded with no account of why it was emitted.
 
   This also assigns the positional ids `/review-voice:feedback` needs. Do not
   print the ids.
+
+  `record` checks stdin against the same contract and exits 2, recording
+  nothing, when it is not a validated review. Pipe exactly what passed.
 - Exit 1: it printed one violation per line. Send **all** of them back to the
   `concise-editor` with its previous output and have it produce a corrected
   version. Validate that too.
@@ -509,12 +664,51 @@ stray directory and another project's notes took the reviewed count from 11 to
 yourself to make it pass - the validator is the contract, and hand-patching it
 defeats the measurement.
 
+## When the head moves before posting
+
+If the author pushes after step 3, `verdict` and `post` refuse the old head
+(exit 3). The verified candidates can be carried, but the commits pushed in
+between are new code nobody has analysed, so they are reviewed like any other
+change first:
+
+1. `RV diff --pr <number> --full --out <newtmpdir>`, for the whole pull request
+   at the new head. This is the diff the carried candidates are checked
+   against and scored on.
+2. `RV diff --pr <number> --since <old sha> --out <interdir>`, for the commits
+   since the old head. Run steps 2 to 3c on `<interdir>/diff.patch` exactly as
+   for any review, and write the surviving candidates and the verifier's output
+   to files. If it reports `unchanged`, write `{"candidates": []}` and `[]`.
+3. Write the candidates step 4 scored to a file, then run
+   `RV carry-candidates --candidates <file> --verification <tmpdir>/verification.json --since <old sha> --head <new sha> --diff-file <newtmpdir>/diff.patch --out <newtmpdir> --interdiff <interdir> --interdiff-candidates <file> --interdiff-verification <file> --held <file>`.
+   A candidate carries only when nothing its verification read changed between
+   the two heads: its own file, a stale consumer's cause, and every file its
+   claim, evidence or verifier entry names. Its line must also still be a
+   changed line of the new diff. The interdiff review's candidates are merged
+   in, renamed where an id clashes. `--held` takes step 2's held list and moves
+   each entry to its line at the new head; an entry whose line or neighbours
+   changed is dropped and named. It writes `candidates.json`,
+   `verification.json`, `held.json` and `carry.json`, and records the carry in
+   the audit log.
+4. Exit 0: continue from step 4 with those files, the new `diff.patch` and
+   `--head <new sha>`, and record with the new `files.json`, `held.json` and
+   `--carry <newtmpdir>/carry.json`.
+5. Exit 1 names each refused candidate: code its verification read changed,
+   so it is not posted from this carry. Review the new head from step 2
+   instead of scoring only what carried; a refused finding may have been
+   fixed, or made worse.
+
+A run recorded with `--carry` from a carry made without `--interdiff`, or with
+a candidate refused, never approves: `verdict` caps it at COMMENT, and the
+next review of the pull request reads it in full. Never move a candidate across
+heads by hand.
+
 ## What not to do
 
 No greeting. No summary. No praise. No description of the process or of how
 many files you looked at. No markdown headings. No commentary after the
-findings, except the `Below the gate (not posted)` list from step 6 when it is
-not empty. If you have nothing that clears the bar, the entire output is:
+findings, except the `Below the gate (not posted)` and `Unverified (not posted)`
+lists from step 6 when they are not empty. If you have nothing that clears the
+bar, the entire output is:
 
 ```
 No actionable findings.

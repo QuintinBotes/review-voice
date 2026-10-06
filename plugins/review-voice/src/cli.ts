@@ -7,7 +7,7 @@
  * (candidate generation, verification, wording) live in the plugin's agents.
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
-import { readFileSync, readSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
+import { readFileSync, readSync, writeFileSync, mkdirSync, statSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
@@ -20,10 +20,19 @@ import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract
 import { acquireDiff, attributeSource, GitError, linguistGeneratedPaths, type ChangedFile } from './diff/acquire.ts';
 import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAssessment } from './diff/complexity.ts';
 import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
+import { isReviewable } from './diff/classify.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
-import { classifyAnchor, classifyStaleConsumer, parseHunks, reason, type AnchorCheck, type FileHunks } from './diff/hunks.ts';
+import {
+  classifyAnchor,
+  classifyStaleConsumer,
+  ordinaryFindingHint,
+  parseHunks,
+  reason,
+  type AnchorCheck,
+  type FileHunks,
+} from './diff/hunks.ts';
 import { readThread, type ThreadComment } from './diff/thread.ts';
-import { collectSymbolContext } from './diff/symbols.ts';
+import { collectSymbolContext, DEFAULT_MAX_MS } from './diff/symbols.ts';
 import { openDatabase } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
 import {
@@ -32,11 +41,14 @@ import {
   recordedRunsForPull,
   runDetail,
   heldProblem,
+  type CarryMarker,
   CarryMismatch,
+  type CandidateHint,
   type HeldFinding,
   type StageTiming,
 } from './store/runs.ts';
-import { carryFindings, CarryError, type CarriedFinding } from './diff/carry.ts';
+import { carryCandidates, carryFindings, CarryError, followLine, seriousNotCarried, type CarriedFinding } from './diff/carry.ts';
+import { candidateAnchor, reanchorCandidates, reanchorScores } from './diff/reanchor.ts';
 import { fetchPriorHead, latestOwnReview, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
   recordFeedback,
@@ -50,6 +62,7 @@ import { resolvePolicy } from './policy/schema.ts';
 import { repositoryRoot } from './diff/acquire.ts';
 import { collectEvidence } from './evidence/run.ts';
 import { verifyFindings, type VerifiableFinding } from './verify/external.ts';
+import { parseSecondPass, parseTieBreaks, reconcile, ReconcileInputError, type TieBreak } from './verify/reconcile.ts';
 import { redact } from './redact/redact.ts';
 import { GitHubClient, NotAllowlisted, ReadOnlyViolation } from './github/client.ts';
 import { AuthError } from './github/auth.ts';
@@ -68,7 +81,10 @@ import {
   applyQuestionCap,
   alreadySaidOnThread,
   possiblySaidOnThread,
+  possiblyRaisedInFile,
   possiblyRepeatsDescription,
+  followUpOf,
+  partlyAddressedProblem,
   normaliseCandidate,
   isFixVerdict,
   editorFix,
@@ -77,11 +93,15 @@ import {
   DEFAULT_THRESHOLDS,
   DUPLICATE_OVERLAP,
   EVIDENCE_QUALITIES,
+  CONTEXT_KINDS,
+  UNVERIFIABLE_REJECTION,
+  blockingContext,
   overlap,
   significantWords,
   type Candidate,
   type RawCandidate,
   type ScoreBreakdown,
+  type MissingContext,
   type Verification,
 } from './scoring/score.ts';
 import { compileProposals } from './policy/compile.ts';
@@ -95,6 +115,8 @@ import { extractAnchors } from './publish/anchors.ts';
 import { computeVerdict, postReview } from './publish/post.ts';
 import { ReviewWriter, WriteViolation } from './github/writer.ts';
 import { hashDiff } from './store/runs.ts';
+import { cleanStages, describeStage, shallowPassWarning } from './store/effort.ts';
+import { recordAudit } from './store/audit.ts';
 
 const USAGE = `review-voice <command>
 
@@ -102,10 +124,12 @@ Commands:
   diff              Acquire the diff under review as structured JSON
   symbols           Collect changed symbols and their lexical reference paths
   check-candidates  Validate analyst output against the candidate schema
+  check-verification  Validate verifier output from stdin, as score would
   context           Resolve config and the active policy stack as JSON
   conventions       Collect the repository's own convention documents
   evidence          Run the configured static checks and emit structured signals
-  verify            Second-pass verification of candidates by a configured command
+  verify            Second-pass verification by a configured command
+  reconcile         Apply --second-pass verdicts; --tie-breaks settles disputes
   redact            Redact secrets from stdin (used before anything is stored)
   sync              Ingest review history from allowlisted repositories
   discover          List repositories the credential can see (reads no history)
@@ -124,6 +148,8 @@ Commands:
   feedback          Record feedback on a finding
   status            Show what is stored locally
   carry             Carry an earlier run's untouched findings to a new head
+  reanchor          Move one scored candidate to a corrected changed line
+  carry-candidates  Carry verified candidates to a pushed head if unchanged
   explain           Show why the last review said what it said
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
@@ -131,10 +157,7 @@ Commands:
   --help            Show this message
 
 anchors:
-  Reads a validated review on stdin and prints one inline anchor per finding.
-  Anchors come from the review text, never from candidate records: the
-  candidate path is the analyst's and the rendered path is what the verifier
-  read, and the two can disagree.
+  One inline anchor per finding of the review on stdin, read from its text.
 
 thread flags:
   --pr <number>          Pull request whose existing comments to read
@@ -147,38 +170,53 @@ diff flags:
   --pr <number>          Review a GitHub pull request (needs --repository)
   --full                 On --pr, review the complete pull request again
   --since <sha>          On --pr, the head last reviewed (overrides the record)
-  --repository <name>    owner/repo for --pr; inferred from the git remote if absent
+  --repository <name>    owner/repo for --pr (default: the git remote)
   --include-generated    Include lock files, generated, vendored and binary files
-  --out <dir>            Write diff.patch and files.json; stdout includes a summary
+  --out <dir>            Write diff.patch and files.json, print a summary
 
 symbols flags:
   --diff-file <path>     Unified diff whose changed symbols to inspect
-  --base <ref>           Search this committed tree instead of the working tree
+  --base <ref>           Search this committed tree, not the working tree
+                         (on --pr: refs.mergeBase)
+  --max-ms <n>           Time budget; unfinished files are inconclusive (default 60000)
   --out <path>           Write <path> or <dir>/symbols.json instead of stdout
 
 check-candidates:
   --diff-file <path>     Require anchors on changed lines
-  --thread <path>        Drop candidates the thread already states; flag
-                         description overlaps for the verifier
+  --thread <path>        Drop thread repeats; flag near ones for the verifier
+  --owner <login>        Owner for --thread; default from config
   --held-from <run-id>   Drop repeats of that run's held findings (--head)
 
 record flags:
   --repository <name>    Repository the review belongs to
-  --base <ref>           Base ref reviewed against
+  --base <ref>           Base ref reviewed against (on --pr: refs.mergeBase)
   --head <sha>           Head commit reviewed
   --diff-file <path>     Diff the review was produced from (for the run hash)
   --files <path>         files.json from diff --out, carrying pull-request scope
   --candidates <path>    Scored candidates, so findings carry their category
   --scores <path>        Score breakdowns, so explain can show its working
   --verdicts <path>      Verification verdicts, including findings that were dropped
+  --tie-breaks <path>    reconcile's output, with the rulings it applied
   --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
   --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
+  --carry <path>         carry.json of carry-candidates (needs --head)
   --stages <path>        Per-stage timings as
-                         [{"name","seconds","toolCalls","tokens"}], so how long
-                         a review takes is a distribution rather than an anecdote
+                         [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean
+                         result from a shallow analyst pass is warned about
 
 carry flags:
   --from <run-id> --head <sha>   Findings of that run still valid at the new head
+  --text                 Print only the carried review, for validate-output
+
+reanchor flags:
+  --candidate <id> --line <n> [--path <p>]  A changed line of --diff-file;
+                         rewrites --scores and --candidates, keeping the score
+
+carry-candidates flags:
+  --candidates --verification --since <sha> --head --diff-file --out <dir>
+  --interdiff <dir> --interdiff-candidates --interdiff-verification
+                         The reviewed commits between the heads, merged in
+  --held <path>          Held findings to move to the new head
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -188,48 +226,42 @@ score flags:
   --base <ref>              Reviewed tree for absence checks
   --verification <path>     Verifier output for confidence and fix rendering
   --exclude-pull <n>        Exclude precedents from this pull request
-  --min-confidence <n>      Gate on a confidence the verifier established
-                            (default 0.8)
-  --min-analyst-confidence <n>
-                            Analyst-only confidence gate (default 0.7)
+  --min-confidence <n>      Verifier confidence gate (default 0.8)
+  --min-analyst-confidence <n>  Analyst-only gate (default 0.7)
   --thread <path>           Existing pull-request comments
   --diff-file <path>        Diff for reach and anchor checks
   --min-score <n>           Final score gate (default 0.68)
   --repository <name>       Prefer precedents from this repository
 
 verify flags:
-  --diff-file <path>        The diff under review, so the command judges the
-                            change rather than the working tree
+  --diff-file <path>        The diff under review, not the working tree
   --base <ref>              Base commit, only when it is readable locally
   --head <ref>              Head commit, only when it is readable locally
   --repository <name>       owner/repo, inferred from the git remote if absent
 
 conventions flags:
-  --files <path>            files.json from diff --out, to scope nested
-                            CLAUDE.md and AGENTS.md to the changed subtrees
+  --files <path>            files.json from diff --out, scoping nested docs
   --path <p>                A changed path, repeatable, instead of --files
 
 sync flags:
-  --target <n>              Non-owner events to import (default: 60 per
-                            allowlisted repository, from 250 to 1500).
-                            Owner events are always imported in full.
+  --target <n>              Non-owner events to import (default 60 per
+                            repository, 250 to 1500); owner events all
   --max-pulls <n>           Pull requests inspected per repository (default 60)
   --include-conversation    Also read pull-request conversation comments
-  --dry-run                 Report what would be imported without storing anything
+  --dry-run                 Report the import without storing it
 
 purge flags (one required):
   --repo <owner/repo>   Remove one repository's events
   --before <ISO date>   Remove events older than a date
   --all                 Remove everything, including runs and feedback
-  --confirm             Actually delete; without it, only a preview is printed
+  --confirm             Delete; without it, only a preview
 
 retrieve flags:
   --text <query>        Candidate claim and failure mode (required)
   --repository <name>   Prefer precedents from this repository
   --path <path>         Prefer precedents on this file
   --language <lang>     Prefer precedents in this language
-  --max-positive <n>    Default 3
-  --max-negative <n>    Default 2
+  --max-positive <n> --max-negative <n>   Defaults 3 and 2
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -240,17 +272,18 @@ validate-output flags:
 
 Exit codes: 0 compliant, 1 violations found, 2 bad invocation.
 
-Review Voice is normally driven by its Claude Code commands
-(/review-voice:review, /review-voice:init) rather than invoked directly.`;
+Normally driven by the /review-voice:* commands, not invoked directly.`;
 
 /** What each stdin-reading command expects, for the message a terminal gets. */
 const STDIN_INPUT: Record<string, string> = {
   'check-candidates': 'candidates JSON',
+  'check-verification': 'the evidence-verifier output',
   score: 'candidates JSON',
   record: 'the validated review',
   'validate-output': 'the review text',
   anchors: 'the validated review',
   verify: 'candidates JSON',
+  reconcile: 'candidates JSON',
   redact: 'the text to redact',
   draft: 'the validated review',
   verdict: 'the validated review',
@@ -454,10 +487,18 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
   });
 
   let recorded: RecordedRun[] = [];
+  let uncoveredPrior: string | null = null;
   try {
     const db = openDatabase();
     try {
       recorded = recordedRunsForPull(db, repository, pullNumber);
+      // A run whose carry left commits unreviewed is no boundary: reading
+      // only what came after it would never read those commits. With no
+      // prior, the whole pull request is read (docs/adr/0017).
+      if (recorded.length > 0 && runDetail(db, recorded[0]!.runId)?.carry?.covered === false) {
+        uncoveredPrior = recorded[0]!.runId;
+        recorded = [];
+      }
     } finally {
       db.close();
     }
@@ -468,8 +509,14 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
   const { prior, resolution } = await resolvePrior({
     since,
     recorded,
-    ownReview: () => latestOwnReview(new GitHubClient({ allowlist: [repository] }), repository, pullNumber),
+    ownReview: () =>
+      uncoveredPrior !== null
+        ? Promise.resolve(null)
+        : latestOwnReview(new GitHubClient({ allowlist: [repository] }), repository, pullNumber),
   });
+  if (uncoveredPrior !== null && since === null) {
+    console.error(`Run ${uncoveredPrior} carried candidates without reviewing the commits before it, so the whole pull request is read.`);
+  }
 
   let planned: { scope: ReviewScope; interdiffPatch: string | null };
   try {
@@ -478,6 +525,11 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
       head: result.head,
       headAvailable: result.refs.head.available,
       reviewedFiles: result.files.filter((file) => file.reviewed),
+      // Deletions are never reviewed, but a follow-up must still show one. A
+      // deleted lock file or generated output stays out, as it would anyway.
+      deletedFiles: result.files
+        .filter((file) => file.status === 'deleted' && isReviewable(file.path, argv.includes('--include-generated')))
+        .map((file) => file.path),
       cwd: process.cwd(),
       truncated: result.truncated,
       forceFull: argv.includes('--full'),
@@ -526,6 +578,7 @@ interface EmittedDiff {
   refs?: {
     base: { sha: string; available: boolean };
     head: { sha: string; available: boolean };
+    mergeBase: string | null;
   };
   prior?: PriorResolution;
 }
@@ -534,6 +587,8 @@ interface EmittedDiff {
 function diffSummary(result: EmittedDiff): {
   mode: EmittedDiff['mode'];
   base: string | null;
+  /** On `--pr`, where the branch left the base; see `refs.mergeBase`. */
+  mergeBase: string | null;
   head: string;
   pullNumber: number | null;
   scope: {
@@ -553,7 +608,11 @@ function diffSummary(result: EmittedDiff): {
   hunkFileCount: number;
   excludedFileCount: number;
   handEditSuspected: string[];
-  refs: { base: { sha: string; available: boolean }; head: { sha: string; available: boolean } } | null;
+  refs: {
+    base: { sha: string; available: boolean };
+    head: { sha: string; available: boolean };
+    mergeBase: string | null;
+  } | null;
   prior: { source: PriorResolution['source']; head: string | null; runId: string | null } | null;
 } {
   const scope = result.scope === undefined
@@ -574,6 +633,7 @@ function diffSummary(result: EmittedDiff): {
   return {
     mode: result.mode,
     base: result.base,
+    mergeBase: result.refs?.mergeBase ?? null,
     head: result.head,
     pullNumber: result.pullNumber ?? null,
     scope,
@@ -586,7 +646,10 @@ function diffSummary(result: EmittedDiff): {
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,
     handEditSuspected: (result.files ?? []).filter((file) => file.handEditSuspected === true).map((file) => file.path),
-    refs: result.refs === undefined ? null : { base: result.refs.base, head: result.refs.head },
+    refs:
+      result.refs === undefined
+        ? null
+        : { base: result.refs.base, head: result.refs.head, mergeBase: result.refs.mergeBase },
     prior:
       result.prior === undefined
         ? null
@@ -707,7 +770,17 @@ function symbolsCommand(argv: string[]): number {
     return 2;
   }
 
-  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base });
+  let maxMs = DEFAULT_MAX_MS;
+  if (argv.includes('--max-ms')) {
+    const wanted = flag(argv, '--max-ms');
+    maxMs = wanted !== null && /^\d+$/.test(wanted) ? Number(wanted) : Number.NaN;
+    if (!Number.isSafeInteger(maxMs) || maxMs < 1) {
+      console.error('--max-ms needs a positive number of milliseconds, for example: --max-ms 60000');
+      return 2;
+    }
+  }
+
+  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, maxMs });
   const out = flag(argv, '--out');
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
@@ -717,7 +790,19 @@ function symbolsCommand(argv: string[]): number {
   try {
     const path = resolveOutPath(out, 'symbols.json');
     writeFileSync(path, JSON.stringify(result, null, 2), 'utf8');
-    console.log(JSON.stringify({ path, files: result.files.length, downstreamFiles: result.downstreamFiles }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          path,
+          files: result.files.length,
+          downstreamFiles: result.downstreamFiles,
+          inconclusiveFiles: result.files.filter((file) => file.inconclusive === true).length,
+          budgetExhausted: result.budget.exhausted,
+        },
+        null,
+        2,
+      ),
+    );
     return 0;
   } catch (error) {
     console.error(
@@ -1088,6 +1173,7 @@ async function verdictCommand(argv: string[]): Promise<number> {
       client: new GitHubClient({ allowlist: [target.repository] }),
       recheck: argv.includes('--recheck'),
       gateChecks: config?.ciGateChecks ?? [],
+      ciRules: config?.ciRules ?? {},
       owner: config?.ownerReviewer ?? null,
     });
     console.log(JSON.stringify(output, null, 2));
@@ -1120,6 +1206,7 @@ async function postCommand(argv: string[]): Promise<number> {
       event: flag(argv, '--event')?.toUpperCase(),
       postingEnabled: config?.postingEnabled ?? false,
       gateChecks: config?.ciGateChecks ?? [],
+      ciRules: config?.ciRules ?? {},
       owner: config?.ownerReviewer ?? null,
     });
     console.log(JSON.stringify(output, null, 2));
@@ -1227,9 +1314,7 @@ function containsCut(before: unknown, after: unknown): boolean {
  * since its own line is meant to be on unchanged code.
  */
 function anchorFor(hunks: Map<string, FileHunks>, candidate: Candidate): AnchorCheck {
-  return candidate.anchor === 'stale-consumer'
-    ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null)
-    : classifyAnchor(hunks, candidate.path, candidate.line);
+  return candidateAnchor(hunks, candidate);
 }
 
 function scoreCommand(argv: string[]): number {
@@ -1281,6 +1366,8 @@ function scoreCommand(argv: string[]): number {
         const fixReason = raw['fix_reason'] ?? raw['fixReason'];
         const fixDirection = raw['fix_direction'] ?? raw['fixDirection'];
         const impactTraced = raw['impact_traced'] ?? raw['impactTraced'];
+        const premisesVerified = raw['premises_verified'] ?? raw['premisesVerified'];
+        const verified = raw['verified'];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: (raw['evidence_quality'] ?? raw['evidenceQuality']) as Verification['evidenceQuality'],
@@ -1299,8 +1386,12 @@ function scoreCommand(argv: string[]): number {
           fixDirection: typeof fixDirection === 'string' ? fixDirection : undefined,
           // Only a real boolean counts; a string "true" is not evidence.
           impactTraced: typeof impactTraced === 'boolean' ? impactTraced : undefined,
+          premisesVerified: typeof premisesVerified === 'boolean' ? premisesVerified : undefined,
+          verified: typeof verified === 'boolean' ? verified : undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
-            raw['requiredContextMissing']) as string[] | undefined,
+            raw['requiredContextMissing']) as MissingContext[] | undefined,
+          // Already checked by `verificationProblem`.
+          partlyAddressed: (raw['partly_addressed'] ?? raw['partlyAddressed']) as Verification['partlyAddressed'],
         });
       }
     } catch (error) {
@@ -1416,6 +1507,10 @@ function scoreCommand(argv: string[]): number {
     }
   }
 
+  // Whose comment a partly-addressed follow-up may set aside: the owner's,
+  // checked here rather than taken from the candidate's own label.
+  const owner = flag(argv, '--owner') ?? configuredOwner();
+
   const pullFlag = argv.includes('--exclude-pull') ? numericFlag(argv, '--exclude-pull', 0) : null;
   if (argv.includes('--exclude-pull') && pullFlag === null) {
     console.error('--exclude-pull needs a pull request number.');
@@ -1426,6 +1521,7 @@ function scoreCommand(argv: string[]): number {
   try {
     const kept: Candidate[] = [];
     const results: (ScoreBreakdown & { precedents: Precedent[]; absenceCheck?: ExistenceCheck })[] = [];
+    const followUps = new Map<string, NonNullable<ReturnType<typeof followUpOf>>>();
 
     // Scored in order so novelty is measured against what has already been
     // kept, not against every candidate including worse duplicates.
@@ -1484,12 +1580,47 @@ function scoreCommand(argv: string[]): number {
       // A point already on the page is not worth making again, whoever made
       // it. On the first posted batch this removed more candidates than every
       // other stage combined, because those repositories already run a bot.
-      const echoed = breakdown.eligible ? alreadySaidOnThread(candidate, thread) : null;
+      //
+      // The exception is a follow-up on the owner's own comment that the author
+      // only partly addressed: it restates that comment by design, so the
+      // owner's own inline comments are not held against it. Anyone else's are.
+      const followUp = followUpOf(candidate, verifications.get(candidate.candidateId), thread, owner);
+      if (followUp !== null) followUps.set(candidate.candidateId, followUp);
+      else if (verifications.get(candidate.candidateId)?.partlyAddressed !== undefined) {
+        console.error(
+          `Warning: ${candidate.candidateId} is marked partly_addressed but is not linked to a comment of the ` +
+            'owner on this thread. Scored as an ordinary finding.',
+        );
+      }
+      // Only the linked comment is set aside. Any other comment, the owner's
+      // own included, still rejects a candidate that repeats it.
+      const echoThread =
+        followUp === null
+          ? thread
+          : thread.filter(
+              (comment) =>
+                !(comment.author === followUp.author && comment.path === followUp.path && comment.line === followUp.line),
+            );
+
+      // A candidate one local gate stopped is still checked against the rules
+      // below, so `belowGate` and `unverified` list only what that gate alone
+      // stopped. A failure here is appended rather than replacing the reason.
+      const listable = !breakdown.eligible && locallyListable(breakdown.rejectedBecause);
+      const alsoRejected = (because: string): void => {
+        breakdown.rejectedBecause = `${breakdown.rejectedBecause ?? ''}. Also: ${because}`;
+      };
+
+      const echoed = breakdown.eligible || listable ? alreadySaidOnThread(candidate, echoThread) : null;
       if (echoed !== null) {
-        breakdown.eligible = false;
-        breakdown.rejectedBecause =
+        const because =
           `already said on this pull request by ${echoed.author}` +
           (echoed.path === null ? '' : ` at ${echoed.path}:${echoed.line ?? '?'}`);
+        if (breakdown.eligible) {
+          breakdown.eligible = false;
+          breakdown.rejectedBecause = because;
+        } else {
+          alsoRejected(because);
+        }
       }
 
       // A candidate can only become a review comment where the reviewed diff
@@ -1508,13 +1639,19 @@ function scoreCommand(argv: string[]): number {
       // The path is the one field nothing checked, and a wrong one sends the
       // author to a file that does not exist.
       let citation = null;
-      if (breakdown.eligible && searchRoot !== null) {
+      const stillListable = !breakdown.eligible && listable && locallyListable(breakdown.rejectedBecause);
+      if ((breakdown.eligible || stillListable) && searchRoot !== null) {
         citation = checkCitation(candidate.path, searchRoot, baseRef, reachDiff);
         if (!citation.resolves && !citation.inconclusive) {
-          breakdown.eligible = false;
-          breakdown.rejectedBecause =
+          const because =
             `cites ${candidate.path}, which does not exist at the reviewed ref` +
             (citation.suggestion === null ? '' : `; did it mean ${citation.suggestion}?`);
+          if (breakdown.eligible) {
+            breakdown.eligible = false;
+            breakdown.rejectedBecause = because;
+          } else {
+            alsoRejected(because);
+          }
         }
       }
 
@@ -1532,29 +1669,56 @@ function scoreCommand(argv: string[]): number {
     // before the distribution below so `cleared` counts what actually ships.
     applyQuestionCap(results);
 
-    // Verified, past the confidence gate, and stopped only by the final score:
-    // real by the verifier's account, but not what the owner would choose to
-    // say. Shown locally so it is not lost, and never posted. A rejection
-    // from any other gate leads its reason, so the prefix tells them apart.
+    // Confirmed by the verifier and stopped by one numeric gate alone: the
+    // final score, which is preference, or the floor on the verifier's own
+    // confidence. Real by the verifier's account, but not shipped. Shown
+    // locally so it is not lost, and never posted. A rejection from any other
+    // gate leads its reason or is appended after "Also:", so the prefix tells
+    // them apart; `gate` says which one stopped it.
     const belowGate = results
       .filter(
         (r) =>
           r.confidenceSource === 'verifier' &&
           !r.eligible &&
           Number.isFinite(r.finalScore) &&
-          (r.rejectedBecause ?? '').startsWith('score '),
+          gateOf(r.rejectedBecause) !== null,
       )
-      .map((r) =>
-        boundLists({
+      .map((r) => {
+        const gate = gateOf(r.rejectedBecause);
+        return boundLists({
           candidateId: r.candidateId,
           path: r.path,
           line: r.line,
           severity: r.severity.severity,
           claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? '',
-          finalScore: r.finalScore,
-          threshold: thresholds.finalScore,
-        }),
-      );
+          gate,
+          ...(gate === 'score'
+            ? { finalScore: r.finalScore, threshold: thresholds.finalScore }
+            : { technicalConfidence: r.technicalConfidence, threshold: thresholds.technicalConfidence }),
+        });
+      });
+
+    // Held back by the verifier's own report of context it could not obtain,
+    // and by nothing else. The claim may well be right - one was later
+    // confirmed end to end and was the most useful point of its review - so
+    // the owner sees it locally, with what was missing. Never posted.
+    const unverified = results
+      .filter((r) => r.confidenceSource === 'unverifiable-cap' && r.rejectedBecause === UNVERIFIABLE_REJECTION)
+      .flatMap((r) => {
+        const missing = blockingContext(verifications.get(r.candidateId)?.requiredContextMissing);
+        if (missing.length === 0) return [];
+        return [
+          boundLists({
+            candidateId: r.candidateId,
+            path: r.path,
+            line: r.line,
+            severity: r.severity.severity,
+            claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? '',
+            verifierConfidence: r.verifiedConfidence,
+            requiredContextMissing: missing,
+          }),
+        ];
+      });
 
     const finals = results
       .map((r) => r.finalScore)
@@ -1619,9 +1783,19 @@ function scoreCommand(argv: string[]): number {
               // The editor names the cause in the prose, since the consumer's
               // line is what the finding's location shows.
               ...(c.anchor === 'stale-consumer' ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {}),
+              // A follow-up states only what remains of the owner's earlier
+              // comment, as an ordinary finding; `record` stores that state.
+              ...(followUps.has(c.candidateId)
+                ? { possibleRepeatOf: { kind: 'own-comment', status: 'partly-addressed', ...followUps.get(c.candidateId) } }
+                : {}),
+              // A contested point is marked so the editor leaves it out: the
+              // second pass disputed how far the failure reaches and no
+              // tie-break upheld the wider claim.
+              ...(c.impactDisputed === true ? { impactDisputed: true } : {}),
             };
           }),
           belowGate,
+          unverified,
         },
         null,
         2,
@@ -1631,6 +1805,24 @@ function scoreCommand(argv: string[]): number {
   } finally {
     db.close();
   }
+}
+
+/**
+ * Whether a rejection came from one of the gates whose candidates are listed
+ * locally - the unverifiable cap, the confidence floor or the final score -
+ * and from nothing else yet.
+ */
+function locallyListable(rejectedBecause: string | null): boolean {
+  if (rejectedBecause === null) return false;
+  return rejectedBecause === UNVERIFIABLE_REJECTION || gateOf(rejectedBecause) !== null;
+}
+
+/** The numeric gate that alone stopped a candidate, or null. */
+function gateOf(rejectedBecause: string | null): 'score' | 'confidence' | null {
+  if (rejectedBecause === null || rejectedBecause.includes(' Also: ')) return null;
+  if (rejectedBecause.startsWith('score ')) return 'score';
+  if (rejectedBecause.startsWith('technical confidence ')) return 'confidence';
+  return null;
 }
 
 function calibrateCommand(): number {
@@ -1747,7 +1939,16 @@ function verifyCommand(argv: string[]): number {
   let findings: VerifiableFinding[];
   try {
     const parsed = JSON.parse(readStdin()) as { candidates?: VerifiableFinding[] } | VerifiableFinding[];
-    findings = Array.isArray(parsed) ? parsed : (parsed.candidates ?? []);
+    // The analyst writes `candidate_id`. Without the camelCase id each verdict
+    // was keyed by location only, and `reconcile` needs the id to apply it.
+    findings = (Array.isArray(parsed) ? parsed : (parsed.candidates ?? [])).map((finding) => {
+      const raw = finding as VerifiableFinding & { candidate_id?: unknown; failure_mode?: unknown };
+      return {
+        ...raw,
+        candidateId: raw.candidateId ?? (typeof raw.candidate_id === 'string' ? raw.candidate_id : raw.candidateId),
+        failureMode: raw.failureMode ?? (typeof raw.failure_mode === 'string' ? raw.failure_mode : raw.failureMode),
+      };
+    });
   } catch {
     console.error('Expected {"candidates": [...]} on stdin.');
     return 2;
@@ -1778,6 +1979,90 @@ function verifyCommand(argv: string[]): number {
   } catch (error) {
     if (error instanceof GitError) {
       console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Applies the second pass to the candidates, settling disputes by tie-break.
+ *
+ * Replaces applying each verdict by hand. A candidate is disputed when the
+ * evidence-verifier traced its impact at 0.85 or more and the second pass
+ * downgraded or dropped it; without a tie-break for it the second pass stands,
+ * exactly as before, and `disputes` says what a tie-break would settle.
+ */
+function reconcileCommand(argv: string[]): number {
+  let candidates: Record<string, unknown>[];
+  try {
+    const parsed = JSON.parse(readStdin()) as { candidates?: unknown } | unknown[];
+    const list = Array.isArray(parsed) ? parsed : (parsed as { candidates?: unknown }).candidates;
+    if (!Array.isArray(list)) throw new Error('no candidates');
+    candidates = list as Record<string, unknown>[];
+  } catch {
+    console.error('Expected {"candidates": [...]} on stdin, as they were before the second pass.');
+    return 2;
+  }
+
+  const verificationFile = flag(argv, '--verification');
+  const secondPassFile = flag(argv, '--second-pass');
+  if (verificationFile === null || secondPassFile === null) {
+    console.error('reconcile needs --verification <file> (step 3) and --second-pass <file> (the verify report).');
+    return 2;
+  }
+
+  let verifications: Record<string, unknown>[];
+  try {
+    verifications = verdictList(JSON.parse(readFileSync(verificationFile, 'utf8')) as unknown);
+  } catch (error) {
+    console.error(`Cannot read ${verificationFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const problem = verificationProblem(verifications);
+  if (problem !== null) {
+    console.error(`Malformed verification - ${problem}`);
+    return 2;
+  }
+  // Read as "nothing was traced" it would make every dispute disappear.
+  if (verifications.length === 0) {
+    console.error(`${verificationFile} contained no verifications, so no dispute could be detected.`);
+    return 2;
+  }
+
+  let secondPass: ReturnType<typeof parseSecondPass>;
+  try {
+    secondPass = parseSecondPass(JSON.parse(readFileSync(secondPassFile, 'utf8')) as unknown);
+  } catch (error) {
+    console.error(`Cannot read the second pass from ${secondPassFile}: ${(error as Error).message}`);
+    return 2;
+  }
+
+  let tieBreaks: TieBreak[] | null = null;
+  const tieBreaksFile = flag(argv, '--tie-breaks');
+  if (tieBreaksFile !== null) {
+    try {
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync(tieBreaksFile, 'utf8')) as unknown);
+    } catch (error) {
+      console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${(error as Error).message}`);
+      return 2;
+    }
+  }
+
+  try {
+    const result = reconcile(candidates, verifications, secondPass, tieBreaks);
+    for (const note of result.notes) console.error(note);
+    console.log(
+      JSON.stringify(
+        { candidates: result.candidates, disputes: result.disputes, applied: result.applied, tieBreaks: result.tieBreaks },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  } catch (error) {
+    if (error instanceof ReconcileInputError) {
+      console.error(`Cannot reconcile: ${error.message}`);
       return 2;
     }
     throw error;
@@ -1817,6 +2102,26 @@ function recordCommand(argv: string[]): number {
   if (output.trim().length === 0) {
     console.error('Nothing on stdin. Pipe the validated review in.');
     console.error(noFindingsHint());
+    return 2;
+  }
+
+  // The same contract `validate-output` enforces, so a JSON blob or a draft
+  // cannot land in the store and be read back by `explain` and `status` as a
+  // review. Size limits are left to `validate-output`, which is given the
+  // policy's figures; this checks only that the text is review output.
+  const contract = validateOutput(output, {
+    ...DEFAULT_LIMITS,
+    maxFindings: null,
+    maxWordsPerFinding: Number.MAX_SAFE_INTEGER,
+    maxTotalWords: Number.MAX_SAFE_INTEGER,
+  });
+  if (!contract.valid) {
+    for (const violation of contract.violations) {
+      const where = violation.line === undefined ? '' : `line ${violation.line}: `;
+      console.error(`[${violation.code}] ${where}${violation.message}`);
+    }
+    console.error('stdin is not a validated review, so nothing was recorded. Pipe what `validate-output` passed.');
+    if (contract.findingCount === 0) console.error(noFindingsHint());
     return 2;
   }
 
@@ -1868,12 +2173,12 @@ function recordCommand(argv: string[]): number {
   // Categories cannot be recovered from the rendered output - the contract
   // permits no text beyond the finding - so they arrive alongside it.
   const candidatesFile = flag(argv, '--candidates');
-  let candidates: { path: string; line: number; category?: string }[] = [];
+  let candidates: CandidateHint[] = [];
   if (candidatesFile !== null) {
     try {
       const parsed = JSON.parse(readFileSync(candidatesFile, 'utf8')) as
-        | { candidates?: { path: string; line: number; category?: string }[] }
-        | { path: string; line: number; category?: string }[];
+        | { candidates?: CandidateHint[] }
+        | CandidateHint[];
       candidates = Array.isArray(parsed) ? parsed : (parsed.candidates ?? []);
     } catch {
       console.error(`Cannot read candidates from ${candidatesFile}.`);
@@ -1886,7 +2191,9 @@ function recordCommand(argv: string[]): number {
   if (scoresFile !== null) {
     try {
       const parsed = JSON.parse(readFileSync(scoresFile, 'utf8')) as { scores?: unknown };
-      scores = Array.isArray(parsed) ? parsed : (parsed.scores ?? []);
+      // Bounded again here: a scores file from before the cap, or one a caller
+      // assembled, must not put every matching path into the stored run.
+      scores = boundLists(Array.isArray(parsed) ? parsed : (parsed.scores ?? []));
     } catch {
       console.error(`Cannot read scores from ${scoresFile}.`);
       return 2;
@@ -1901,6 +2208,19 @@ function recordCommand(argv: string[]): number {
       verdicts = Array.isArray(parsed) ? parsed : (parsed.verdicts ?? []);
     } catch {
       console.error(`Cannot read verdicts from ${verdictsFile}.`);
+      return 2;
+    }
+  }
+
+  // Tie-break rulings from step 3c. Checked as strictly as reconcile checks
+  // them, so explain never shows a ruling reconcile would have refused.
+  const tieBreaksFile = flag(argv, '--tie-breaks');
+  let tieBreaks: TieBreak[] = [];
+  if (tieBreaksFile !== null) {
+    try {
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync(tieBreaksFile, 'utf8')) as unknown);
+    } catch (error) {
+      console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${(error as Error).message}`);
       return 2;
     }
   }
@@ -1938,6 +2258,7 @@ function recordCommand(argv: string[]): number {
           typeof (stage as StageTiming).name === 'string' &&
           Number.isFinite((stage as StageTiming).seconds),
       );
+      stages = cleanStages(stages, diff === '' ? null : diff);
     } catch {
       console.error(`Cannot read stages from ${stagesFile}.`);
       return 2;
@@ -1947,6 +2268,7 @@ function recordCommand(argv: string[]): number {
   const db = openDatabase();
   try {
     let carried: { runId: string; findings: CarriedFinding[] } | undefined;
+    let carry: CarryMarker | undefined;
     const carriedFrom = flag(argv, '--carried-from');
     if (carriedFrom !== null) {
       const head = flag(argv, '--head');
@@ -1956,11 +2278,58 @@ function recordCommand(argv: string[]): number {
       }
       try {
         const result = carryForRun(db, carriedFrom, head);
+        // A serious finding left behind may be what stopped an approval;
+        // recording the rest would let the review approve without it.
+        const serious = seriousNotCarried(result.notCarried);
+        if (serious.length > 0) {
+          console.error(
+            `Not recorded: ${serious.map((f) => `${f.findingId} (${f.severity}, ${f.path}:${f.line})`).join(', ')} ` +
+              'did not carry. Review those files again rather than recording the carry.',
+          );
+          return 2;
+        }
         carried = { runId: carriedFrom, findings: result.carried };
+        const prior = runDetail(db, carriedFrom)?.carry ?? null;
+        if (prior !== null && !prior.covered) carry = { ...prior, inheritedFrom: prior.inheritedFrom ?? carriedFrom };
       } catch (error) {
         console.error((error as Error).message);
         return 2;
       }
+    }
+
+    const carryFile = flag(argv, '--carry');
+    if (carryFile !== null) {
+      const head = flag(argv, '--head');
+      let marker: CarryMarker | null = null;
+      try {
+        const parsed = JSON.parse(readFileSync(carryFile, 'utf8')) as Record<string, unknown>;
+        const refused = Array.isArray(parsed['refused'])
+          ? (parsed['refused'] as { candidateId?: unknown }[]).map((r) => String(r?.candidateId))
+          : null;
+        const interdiff = parsed['interdiff'] as { reviewed?: unknown } | undefined;
+        if (refused !== null && typeof parsed['since'] === 'string' && typeof parsed['head'] === 'string') {
+          const reviewed = interdiff?.reviewed === true;
+          marker = {
+            since: parsed['since'],
+            head: parsed['head'],
+            interdiffReviewed: reviewed,
+            refused,
+            covered: reviewed && refused.length === 0,
+          };
+        }
+      } catch {
+        marker = null;
+      }
+      if (marker === null) {
+        console.error(`${carryFile} is not the carry.json that carry-candidates wrote.`);
+        return 2;
+      }
+      if (head === null || !sameCommit(marker.head, head)) {
+        console.error(`--carry is for ${marker.head}; pass --head with that commit.`);
+        return 2;
+      }
+      // An inherited gap stays a gap whatever this carry covered.
+      if (carry === undefined || marker.covered === false) carry = marker;
     }
 
     const { reviewRunId, findings } = recordRun(db, {
@@ -1975,11 +2344,15 @@ function recordCommand(argv: string[]): number {
       candidates,
       scores,
       verdicts,
+      tieBreaks,
       held,
       carried,
+      ...(carry === undefined ? {} : { carry }),
       stages,
     });
-    console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
+    // Local only: printed here and by `explain`, never part of what is posted.
+    const warning = shallowPassWarning(stages, findings.length);
+    console.log(JSON.stringify({ reviewRunId, findings, ...(warning === null ? {} : { warnings: [warning] }) }, null, 2));
     return 0;
   } catch (error) {
     if (error instanceof CarryMismatch) {
@@ -2010,13 +2383,38 @@ function carryCommand(argv: string[]): number {
   const from = flag(argv, '--from');
   const head = flag(argv, '--head');
   if (from === null || head === null) {
-    console.error('Usage: carry --from <run-id> --head <sha>');
+    console.error('Usage: carry --from <run-id> --head <sha> [--text]');
     return 2;
   }
   const db = openDatabase();
   try {
     const result = carryForRun(db, from, head);
-    console.log(JSON.stringify({ from, head, ...result }, null, 2));
+    if (!argv.includes('--text')) {
+      console.log(JSON.stringify({ from, head, ...result }, null, 2));
+      return 0;
+    }
+    // The review text alone, so it pipes straight into `validate-output` and
+    // `record`. What did not carry is named where a pipe does not take it.
+    for (const skipped of result.notCarried) {
+      console.error(`Not carried: ${skipped.findingId} ${skipped.path}:${skipped.line} - ${skipped.reason}`);
+    }
+    const serious = seriousNotCarried(result.notCarried);
+    if (serious.length > 0) {
+      // A blocking or important finding on code that changed may be what kept
+      // the earlier review from approving. Carrying the rest would drop it.
+      console.error(
+        `Not carried: ${serious.map((f) => `${f.findingId} (${f.severity})`).join(', ')}, on code that changed. ` +
+          'Review those files again; nothing was printed.',
+      );
+      return 1;
+    }
+    if (result.output.length === 0) {
+      // Findings existed and none carried. Printing the clean-review sentence
+      // here would record a review that says the opposite of the earlier one.
+      console.error(`Nothing carried from ${from}; its findings sit on code that changed.`);
+      return 1;
+    }
+    process.stdout.write(`${result.output}\n`);
     return 0;
   } catch (error) {
     if (error instanceof CarryError) {
@@ -2027,6 +2425,383 @@ function carryCommand(argv: string[]): number {
   } finally {
     db.close();
   }
+}
+
+/**
+ * Moves one scored candidate to a corrected changed line, keeping its
+ * verification and score. A finding anchored a line off otherwise goes back
+ * through the analyst, the anchor check and scoring for a claim that did not
+ * change. Exit 1 is a refusal, with the reason on stderr.
+ */
+function reanchorCommand(argv: string[]): number {
+  const candidateId = flag(argv, '--candidate');
+  const line = Number(flag(argv, '--line'));
+  const scoresFile = flag(argv, '--scores');
+  const diffFile = flag(argv, '--diff-file');
+  if (candidateId === null || !Number.isInteger(line) || line < 1 || scoresFile === null || diffFile === null) {
+    console.error('Usage: reanchor --candidate <id> --line <n> [--path <p>] --scores <file> --diff-file <patch> [--candidates <file>]');
+    return 2;
+  }
+  if (argv.includes('--path') && flag(argv, '--path') === null) {
+    console.error('--path needs the file the finding belongs in.');
+    return 2;
+  }
+
+  const readJson = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8'));
+  let scores: unknown;
+  let hunks: Map<string, FileHunks>;
+  try {
+    scores = readJson(scoresFile);
+    hunks = parseHunks(readFileSync(diffFile, 'utf8'));
+  } catch (error) {
+    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+
+  const result = reanchorScores(scores, candidateId, { path: flag(argv, '--path'), line }, hunks);
+  if (!result.ok) {
+    console.error(`Not re-anchored: ${result.refused}`);
+    return 1;
+  }
+
+  // Every file is checked before either is written, so a refusal leaves both
+  // as they were.
+  const candidatesFile = flag(argv, '--candidates');
+  let candidates: unknown = null;
+  if (candidatesFile !== null) {
+    try {
+      candidates = reanchorCandidates(readJson(candidatesFile), candidateId, result.to);
+    } catch (error) {
+      console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    if (candidates === null) {
+      console.error(`${candidatesFile} has no candidate ${candidateId}; nothing was re-anchored.`);
+      return 2;
+    }
+  }
+
+  // Both written beside their targets first and then renamed, candidates
+  // first, so a failure part way leaves no half-written file and never a
+  // score that moved without its candidate.
+  const staged: [string, string][] = [];
+  try {
+    if (candidatesFile !== null) {
+      staged.push([`${candidatesFile}.reanchor-${process.pid}`, candidatesFile]);
+      writeFileSync(staged[staged.length - 1]![0], `${JSON.stringify(candidates, null, 2)}\n`);
+    }
+    staged.push([`${scoresFile}.reanchor-${process.pid}`, scoresFile]);
+    writeFileSync(staged[staged.length - 1]![0], `${JSON.stringify(result.updated, null, 2)}\n`);
+    for (const [temporary, target] of staged) renameSync(temporary, target);
+  } catch (error) {
+    for (const [temporary] of staged) rmSync(temporary, { force: true });
+    console.error(`Cannot write: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  console.log(JSON.stringify({ candidateId, from: result.from, to: result.to, anchorCheck: result.anchorCheck }, null, 2));
+  return 0;
+}
+
+/** The list inside a JSON input, and how to put a filtered one back in its place. */
+function listIn(parsed: unknown, keys: readonly string[]): { list: Record<string, unknown>[]; rebuild: (list: unknown[]) => unknown } | null {
+  if (Array.isArray(parsed)) return { list: parsed as Record<string, unknown>[], rebuild: (list) => list };
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const record = parsed as Record<string, unknown>;
+  const key = keys.find((k) => Array.isArray(record[k]));
+  if (key === undefined) return null;
+  return { list: record[key] as Record<string, unknown>[], rebuild: (list) => ({ ...record, [key]: list }) };
+}
+
+/** Every string inside a JSON value, so a file named anywhere in it is seen. */
+function stringsIn(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap(stringsIn);
+  if (typeof value === 'object' && value !== null) return Object.values(value).flatMap(stringsIn);
+  return [];
+}
+
+const idOfEntry = (entry: Record<string, unknown>): string => String(entry['candidate_id'] ?? entry['candidateId']);
+
+/** The same entry under another candidate id, in the key spelling it already used. */
+function withId(entry: Record<string, unknown>, id: string): Record<string, unknown> {
+  return 'candidate_id' in entry ? { ...entry, candidate_id: id } : { ...entry, candidateId: id };
+}
+
+/** True when two commit names are the same commit, allowing an abbreviation of at least 7. */
+function sameCommit(a: string, b: string): boolean {
+  const x = a.toLowerCase();
+  const y = b.toLowerCase();
+  return x === y || (Math.min(x.length, y.length) >= 7 && (x.startsWith(y) || y.startsWith(x)));
+}
+
+/**
+ * The review of the commits between the two heads, read from `--interdiff`.
+ *
+ * Carried candidates say nothing about those commits, so a carry stands only
+ * beside a review of them. The manifest must be a pull-request diff of the new
+ * head that covers everything since the old one, and every candidate from it
+ * must sit on a changed line of that diff, so the review cannot be stood in
+ * for by an unrelated one.
+ */
+function readInterdiffReview(
+  dir: string,
+  candidatesFile: string,
+  verificationFile: string,
+  since: string,
+  head: string,
+): { candidates: Record<string, unknown>[]; verification: Record<string, unknown>[]; scope: string } | string {
+  let manifest: Record<string, unknown>;
+  let hunks: Map<string, FileHunks>;
+  try {
+    manifest = JSON.parse(readFileSync(join(dir, 'files.json'), 'utf8')) as Record<string, unknown>;
+    hunks = parseHunks(readFileSync(join(dir, 'diff.patch'), 'utf8'));
+  } catch (error) {
+    return `Cannot read the interdiff in ${dir}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  const scope = parseReviewScope(manifest['scope']);
+  if (scope === null || typeof manifest['head'] !== 'string') {
+    return `${dir} is not a pull-request diff; run diff --pr <number> --since <old sha> --out ${dir}`;
+  }
+  if (!sameCommit(manifest['head'], head)) return `${dir} reads ${manifest['head']}, not the new head ${head}`;
+  if (scope.kind !== 'full' && !sameCommit(scope.since, since)) {
+    return `${dir} covers the commits since ${scope.since}, not since ${since}`;
+  }
+
+  let candidates: Record<string, unknown>[];
+  let verification: Record<string, unknown>[];
+  try {
+    const parsed = listIn(JSON.parse(readFileSync(candidatesFile, 'utf8')), ['candidates']);
+    if (parsed === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
+    candidates = parsed.list;
+    const normalised = candidates.map((raw, index) => normaliseCandidate(raw as RawCandidate, index));
+    assertUniqueCandidateIds(normalised);
+    const misplaced = normalised.filter((c) => !candidateAnchor(hunks, c).ok);
+    if (misplaced.length > 0) {
+      throw new Error(
+        `interdiff candidate(s) not on a changed line of ${join(dir, 'diff.patch')}: ${misplaced.map((c) => c.candidateId).join(', ')}`,
+      );
+    }
+    candidates = candidates.map((raw, index) => withId(raw, normalised[index]!.candidateId));
+    const parsedVerification = listIn(JSON.parse(readFileSync(verificationFile, 'utf8')), VERDICT_KEYS);
+    verification = parsedVerification?.list ?? [];
+    if (parsedVerification === null && candidates.length > 0) throw new Error(`${verificationFile} contains no verifications`);
+    const problem = verificationProblem(verification);
+    if (problem !== null) throw new Error(`malformed verification - ${problem}`);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  return { candidates, verification, scope: scope.kind };
+}
+
+/**
+ * Carries verified candidates to a head the author pushed mid-review.
+ *
+ * Posting is refused once the head moves, and the alternative was copying
+ * candidates and verifications across by hand. Only candidates whose files
+ * are unchanged carry; the rest are named so they are verified again. The
+ * review of the commits between the heads, from `--interdiff`, is merged in;
+ * without it `carry.json` says so and a run recorded from it cannot approve.
+ * Exit 1 means at least one candidate was refused.
+ */
+function carryCandidatesCommand(argv: string[]): number {
+  const candidatesFile = flag(argv, '--candidates');
+  const verificationFile = flag(argv, '--verification');
+  const since = flag(argv, '--since');
+  const head = flag(argv, '--head');
+  const diffFile = flag(argv, '--diff-file');
+  const outDir = flag(argv, '--out');
+  if ([candidatesFile, verificationFile, since, head, diffFile, outDir].includes(null)) {
+    console.error(
+      'Usage: carry-candidates --candidates <file> --verification <file> --since <sha> --head <sha> --diff-file <patch> --out <dir> ' +
+        '[--interdiff <dir> --interdiff-candidates <file> --interdiff-verification <file>] [--held <file>]',
+    );
+    return 2;
+  }
+  const interdiffFlags = ['--interdiff', '--interdiff-candidates', '--interdiff-verification'].map((name) => flag(argv, name));
+  if (interdiffFlags.some((value) => value !== null) && interdiffFlags.some((value) => value === null)) {
+    console.error('--interdiff, --interdiff-candidates and --interdiff-verification go together.');
+    return 2;
+  }
+
+  let candidatesIn: NonNullable<ReturnType<typeof listIn>>;
+  let verificationIn: NonNullable<ReturnType<typeof listIn>>;
+  let candidates: Candidate[];
+  let hunks: Map<string, FileHunks>;
+  let heldIn: NonNullable<ReturnType<typeof listIn>> | null = null;
+  try {
+    const parsedCandidates = listIn(JSON.parse(readFileSync(candidatesFile!, 'utf8')), ['candidates']);
+    if (parsedCandidates === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
+    candidatesIn = parsedCandidates;
+    candidates = candidatesIn.list.map((raw, index) => normaliseCandidate(raw as RawCandidate, index));
+    assertUniqueCandidateIds(candidates);
+    const parsedVerification = listIn(JSON.parse(readFileSync(verificationFile!, 'utf8')), VERDICT_KEYS);
+    if (parsedVerification === null || parsedVerification.list.length === 0) {
+      throw new Error(`${verificationFile} contains no verifications`);
+    }
+    verificationIn = parsedVerification;
+    const problem = verificationProblem(verificationIn.list);
+    if (problem !== null) throw new Error(`malformed verification - ${problem}`);
+    hunks = parseHunks(readFileSync(diffFile!, 'utf8'));
+    const heldFile = flag(argv, '--held');
+    if (heldFile !== null) {
+      heldIn = listIn(JSON.parse(readFileSync(heldFile, 'utf8')), ['held']);
+      if (heldIn === null) throw new Error(`${heldFile} is not an array or {"held": [...]}`);
+      heldIn.list.forEach((entry, index) => {
+        const heldError = heldProblem(entry);
+        if (heldError !== null) throw new Error(`${heldFile} entry ${index}: ${heldError}`);
+      });
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
+
+  const interdiff =
+    interdiffFlags[0] === null
+      ? null
+      : readInterdiffReview(interdiffFlags[0]!, interdiffFlags[1]!, interdiffFlags[2]!, since!, head!);
+  if (typeof interdiff === 'string') {
+    console.error(interdiff);
+    return 2;
+  }
+
+  // A candidate the verifier never saw has nothing to carry.
+  const verificationById = new Map(verificationIn.list.map((v) => [idOfEntry(v), v]));
+  const unverified = candidates.filter((c) => !verificationById.has(c.candidateId));
+  let result: ReturnType<typeof carryCandidates>;
+  const heldKept: Record<string, unknown>[] = [];
+  const heldDropped: { path: string; line: number; reason: string }[] = [];
+  try {
+    result = carryCandidates(
+      candidates
+        .filter((c) => verificationById.has(c.candidateId))
+        .map((c) => ({
+          ...c,
+          texts: [...stringsIn(candidatesIn.list[candidates.indexOf(c)]), ...stringsIn(verificationById.get(c.candidateId))],
+        })),
+      since!,
+      head!,
+      hunks,
+      process.cwd(),
+    );
+    // Held findings name old-head lines. Each is moved to its line at the new
+    // head, or dropped when that line or its neighbours changed.
+    for (const entry of heldIn?.list ?? []) {
+      const path = entry['path'] as string;
+      const line = entry['line'] as number;
+      const moved = followLine(since!, head!, path, line, process.cwd());
+      if ('reason' in moved) heldDropped.push({ path, line, reason: moved.reason });
+      else heldKept.push({ ...entry, line: moved.line });
+    }
+  } catch (error) {
+    if (error instanceof CarryError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+  const refused = [
+    ...unverified.map((c) => ({ candidateId: c.candidateId, path: c.path, line: c.line, reason: 'no verification for it' })),
+    ...result.refused,
+  ];
+
+  // The analyst's own entries, moved, in the spelling the file already used.
+  const carriedById = new Map(result.carried.map((c) => [c.candidateId, c]));
+  const carriedCandidates = candidatesIn.list.flatMap((raw, index) => {
+    const moved = carriedById.get(candidates[index]!.candidateId);
+    if (moved === undefined) return [];
+    const causeKey = 'caused_by' in raw ? 'caused_by' : 'causedBy';
+    return [{
+      ...raw,
+      path: moved.path,
+      line: moved.line,
+      ...(moved.causedBy === undefined ? {} : { [causeKey]: { path: moved.causedBy.path, line: moved.causedBy.line } }),
+    }];
+  });
+  const carriedVerification = verificationIn.list.filter((v) => carriedById.has(idOfEntry(v)));
+
+  // The interdiff review's candidates join the carried ones. Its analyst
+  // numbers from the start too, so a clashing id is renamed in both files.
+  const taken = new Set(candidates.map((c) => c.candidateId));
+  const renamed: Record<string, string> = {};
+  const rename = (id: string): string => {
+    if (!taken.has(id)) {
+      taken.add(id);
+      return id;
+    }
+    let n = 1;
+    while (taken.has(`${id}_interdiff${n === 1 ? '' : `_${n}`}`)) n += 1;
+    const next = `${id}_interdiff${n === 1 ? '' : `_${n}`}`;
+    taken.add(next);
+    renamed[id] = next;
+    return next;
+  };
+  const interdiffCandidates = (interdiff?.candidates ?? []).map((raw) => withId(raw, rename(idOfEntry(raw))));
+  const interdiffVerification = (interdiff?.verification ?? []).map((v) => withId(v, renamed[idOfEntry(v)] ?? idOfEntry(v)));
+
+  const record = {
+    since,
+    head,
+    carried: result.carried,
+    refused,
+    interdiff:
+      interdiff === null
+        ? { reviewed: false }
+        : { reviewed: true, scope: interdiff.scope, candidates: interdiffCandidates.length, renamed },
+    ...(heldIn === null ? {} : { held: { kept: heldKept.length, dropped: heldDropped } }),
+  };
+
+  try {
+    mkdirSync(outDir!, { recursive: true });
+    writeFileSync(
+      join(outDir!, 'candidates.json'),
+      `${JSON.stringify(candidatesIn.rebuild([...carriedCandidates, ...interdiffCandidates]), null, 2)}\n`,
+    );
+    writeFileSync(
+      join(outDir!, 'verification.json'),
+      `${JSON.stringify(verificationIn.rebuild([...carriedVerification, ...interdiffVerification]), null, 2)}\n`,
+    );
+    if (heldIn !== null) writeFileSync(join(outDir!, 'held.json'), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}\n`);
+    writeFileSync(join(outDir!, 'carry.json'), `${JSON.stringify(record, null, 2)}\n`);
+  } catch (error) {
+    console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+
+  const db = openDatabase();
+  try {
+    recordAudit(db, 'candidates_carried', null, {
+      since,
+      head,
+      carried: result.carried.map((c) => c.candidateId),
+      refused: refused.map((r) => r.candidateId),
+      interdiffReviewed: interdiff !== null,
+    });
+  } finally {
+    db.close();
+  }
+
+  for (const r of refused) console.error(`Refused ${r.candidateId}: ${r.reason}`);
+  for (const h of heldDropped) console.error(`Held finding dropped: ${h.path}:${h.line} - ${h.reason}`);
+  if (interdiff === null) {
+    console.error('The commits between the two heads were not reviewed (--interdiff), so a run recorded from this carry will not approve.');
+  }
+  console.log(
+    JSON.stringify(
+      {
+        carried: result.carried.length,
+        refused,
+        interdiffReviewed: interdiff !== null,
+        candidates: join(outDir!, 'candidates.json'),
+        verification: join(outDir!, 'verification.json'),
+        ...(heldIn === null ? {} : { held: join(outDir!, 'held.json') }),
+        carry: join(outDir!, 'carry.json'),
+      },
+      null,
+      2,
+    ),
+  );
+  return refused.length === 0 ? 0 : 1;
 }
 
 function feedbackCommand(argv: string[]): number {
@@ -2073,6 +2848,7 @@ function explainCommand(argv: string[]): number {
 
     const wanted = argv.find((arg) => /^rv_\d+$/.test(arg));
     const verdicts = (Array.isArray(detail.verdicts) ? detail.verdicts : []) as {
+      candidateId?: string;
       path: string;
       line: number;
       verdict: string;
@@ -2114,6 +2890,9 @@ function explainCommand(argv: string[]): number {
     if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
     const recordedScope = describeReviewScope(detail.scope);
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
+    for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
+    const shallow = shallowPassWarning(detail.stages, detail.findings.length);
+    if (shallow !== null) console.log(`Warning ${shallow}`);
     if (detail.complexity !== null) {
       console.log(
         detail.complexity.level === 'high'
@@ -2143,6 +2922,13 @@ function explainCommand(argv: string[]): number {
       console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
       if (finding.carriedFrom !== undefined) {
         console.log(`  carried from      ${finding.carriedFrom.findingId} of run ${finding.carriedFrom.runId}`);
+      }
+      if (finding.partlyAddressed !== undefined) {
+        const { prior, remaining, addressed } = finding.partlyAddressed;
+        console.log(
+          `  partly addressed  ${prior.author} at ${prior.path}:${prior.line}; ` +
+            `${remaining.length} of ${remaining.length + addressed.length} still open: ${remaining.join('; ')}`,
+        );
       }
       console.log(`  category          ${finding.category ?? 'not recorded'}`);
       if (score?.technicalConfidence !== undefined) {
@@ -2195,6 +2981,13 @@ function explainCommand(argv: string[]): number {
             (verdict.outcome === 'kept' ? '' : ` - ${verdict.outcome}`),
         );
         if (verdict.reason.length > 0) console.log(`                    ${verdict.reason}`);
+        const ruling = detail.tieBreaks.find((t) => t.candidateId === verdict.candidateId);
+        if (ruling !== undefined) {
+          console.log(
+            `  tie-break         ${ruling.upheld ? 'upheld' : 'not upheld'}` +
+              `${ruling.applied === false ? ' (not applied)' : ''} - ${ruling.reason}`,
+          );
+        }
       }
       console.log('');
     }
@@ -2210,12 +3003,29 @@ function explainCommand(argv: string[]): number {
     // Findings the verifier removed leave no other trace. Showing them is what
     // makes a bad verifier visible rather than indistinguishable from a clean
     // diff.
-    const dropped = verdicts.filter((v) => v.outcome === 'dropped');
+    // A drop an upheld tie-break overturned was not a suppression. A ruling
+    // reconcile marked not applied overturned nothing: it was on a candidate
+    // nobody disputed, and hiding the drop on its account would hide a real
+    // suppression. A ruling with no mark, as runs recorded before reconcile
+    // marked them have, reads as it always did.
+    const dropped = verdicts.filter(
+      (v) =>
+        v.outcome === 'dropped' &&
+        !detail.tieBreaks.some(
+          (t) => t.upheld && t.applied !== false && v.candidateId !== undefined && t.candidateId === v.candidateId,
+        ),
+    );
     if (dropped.length > 0 && wanted === undefined) {
       console.log(`Suppressed by verification (${dropped.length}):`);
       for (const v of dropped) {
         console.log(`  [${v.originalSeverity}] ${v.path}:${v.line}  ${v.verifier} @ ${v.confidence.toFixed(2)}`);
         if (v.reason.length > 0) console.log(`      ${v.reason}`);
+        const ruling = detail.tieBreaks.find((t) => v.candidateId !== undefined && t.candidateId === v.candidateId);
+        if (ruling !== undefined) {
+          const state =
+            ruling.applied === false ? `${ruling.upheld ? 'upheld' : 'not upheld'} but not applied` : 'not upheld';
+          console.log(`      tie-break ${state} - ${ruling.reason}`);
+        }
       }
       console.log('');
     }
@@ -2311,7 +3121,7 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     if (typeof id !== 'string' || id === '') return `${who}: candidate_id must be a non-empty string.`;
     const quality = entry['evidence_quality'] ?? entry['evidenceQuality'];
     if (quality !== undefined && !(EVIDENCE_QUALITIES as readonly unknown[]).includes(quality)) {
-      return `${who}: evidence_quality must be one of ${EVIDENCE_QUALITIES.join(', ')}.`;
+      return `${who}: evidence_quality must be one of ${EVIDENCE_QUALITIES.join(', ')}, not ${JSON.stringify(quality)}.`;
     }
     const confidence = entry['technical_confidence'] ?? entry['technicalConfidence'];
     if (
@@ -2320,12 +3130,72 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     ) {
       return `${who}: technical_confidence must be a number from 0 to 1.`;
     }
-    const missing = entry['required_context_missing'] ?? entry['requiredContextMissing'];
-    if (missing !== undefined && !(Array.isArray(missing) && missing.every((item) => typeof item === 'string'))) {
-      return `${who}: required_context_missing must be an array of strings.`;
+    // Refused rather than ignored: a premise reported as "false" in a string
+    // would otherwise read as absent, and a question would ship on it.
+    if (entry['verified'] !== undefined && typeof entry['verified'] !== 'boolean') {
+      return `${who}: verified must be true or false.`;
     }
+    const premises = entry['premises_verified'] ?? entry['premisesVerified'];
+    if (premises !== undefined && typeof premises !== 'boolean') {
+      return `${who}: premises_verified must be true or false.`;
+    }
+    const missing = entry['required_context_missing'] ?? entry['requiredContextMissing'];
+    if (missing !== undefined && !(Array.isArray(missing) && missing.every(isMissingContext))) {
+      return (
+        `${who}: required_context_missing must be an array of strings, or of ` +
+        `{"context": string, "kind": ${CONTEXT_KINDS.map((kind) => `"${kind}"`).join(' | ')}}.`
+      );
+    }
+    const partly = entry['partly_addressed'] ?? entry['partlyAddressed'];
+    const partlyProblem = partly === undefined ? null : partlyAddressedProblem(partly);
+    if (partlyProblem !== null) return `${who}: partly_addressed ${partlyProblem}.`;
   }
   return null;
+}
+
+/**
+ * Checks evidence-verifier output against the verification schema, straight
+ * after the verifier runs.
+ *
+ * `score` runs the same checks, but it is the stage after verification. A
+ * verifier that wrote `evidence_quality: "strong"` was refused there with
+ * every earlier stage already spent, and relaunching it then meant a cold
+ * start. Failing here costs one re-run of one agent while its context is warm.
+ */
+function checkVerificationCommand(): number {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readStdin()) as unknown;
+  } catch {
+    console.error('Expected the evidence-verifier output as JSON on stdin.');
+    return 2;
+  }
+  const list = verdictList(parsed);
+  if (list.length === 0) {
+    console.error(
+      `No verifications found. Expected an array, or an object with one of: ${VERDICT_KEYS.join(', ')}, ` +
+        'each entry carrying candidate_id.',
+    );
+    return 2;
+  }
+  const problem = verificationProblem(list);
+  if (problem !== null) {
+    console.error(`Malformed verification - ${problem}`);
+    console.error('Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.');
+    return 2;
+  }
+  console.log(JSON.stringify({ valid: true, verifications: list.length }, null, 2));
+  return 0;
+}
+
+/** A string, or `{context, kind?}` with a non-empty context and a known kind. */
+function isMissingContext(item: unknown): boolean {
+  if (typeof item === 'string') return true;
+  if (typeof item !== 'object' || item === null || Array.isArray(item)) return false;
+  const entry = item as Record<string, unknown>;
+  if (Object.keys(entry).some((key) => key !== 'context' && key !== 'kind')) return false;
+  if (typeof entry['context'] !== 'string' || entry['context'].length === 0) return false;
+  return entry['kind'] === undefined || (CONTEXT_KINDS as readonly unknown[]).includes(entry['kind']);
 }
 
 function verdictList(parsed: unknown): Record<string, unknown>[] {
@@ -2403,6 +3273,15 @@ function matchHeld(candidate: Candidate, held: CarriedHeld[]): { entry: CarriedH
   return found;
 }
 
+/** The configured owner reviewer, or null outside a configured repository. */
+function configuredOwner(): string | null {
+  try {
+    return loadConfig(repositoryRoot(process.cwd())).ownerReviewer;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Checks analyst output against the candidate schema, before anything expensive
  * reads it.
@@ -2447,8 +3326,20 @@ function checkCandidatesCommand(argv: string[]): number {
       return 2;
     }
 
-    const anchorFailures = candidates
-      .map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) }))
+    const anchors = candidates.map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) }));
+    // A stale consumer that passes but sits on a line this diff changed. Not a
+    // failure: the finding is sound, it is only posted in the body when it
+    // could be inline.
+    const suggestions = anchors
+      .filter(({ anchor }) => anchor.ok && ordinaryFindingHint(anchor) !== null)
+      .map(({ candidate, anchor }) => ({
+        candidateId: candidate.candidateId,
+        path: candidate.path,
+        line: candidate.line,
+        suggestion: ordinaryFindingHint(anchor),
+      }));
+    const extra = suggestions.length > 0 ? { suggestions } : {};
+    const anchorFailures = anchors
       .filter(({ anchor }) => !anchor.ok)
       .map(({ candidate, anchor }) => ({
         candidateId: candidate.candidateId,
@@ -2478,7 +3369,9 @@ function checkCandidatesCommand(argv: string[]): number {
     }
 
     if (!argv.includes('--thread') && heldFrom === null) {
-      console.log(JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length } }, null, 2));
+      console.log(
+        JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length }, ...extra }, null, 2),
+      );
       return 0;
     }
 
@@ -2505,11 +3398,23 @@ function checkCandidatesCommand(argv: string[]): number {
 
     const held = heldFrom === null || headSha === null ? [] : carriedHeldFindings(heldFrom, headSha);
 
+    // The owner's own comments are told apart so the verifier knows whose point
+    // it would be repeating. Logins compare without case, as GitHub's do.
+    const owner = argv.includes('--thread') ? (flag(argv, '--owner') ?? configuredOwner())?.toLowerCase() ?? null : null;
+    const isOwn = (comment: { author: string }): boolean => owner !== null && comment.author.toLowerCase() === owner;
+
+    // The owner's own inline comments are never a reason to drop here. A
+    // candidate that restates one may be what the author left open of it, and
+    // only the verifier, reading the code, can tell that from a plain repeat;
+    // dropping it lost the open part. It is flagged below instead, and `score`
+    // still drops it unless the verifier found part of the comment open.
+    const droppable = thread.filter((comment) => !(isOwn(comment) && comment.path !== null && comment.line !== null));
+
     const kept: unknown[] = [];
     const droppedAsRepeat: unknown[] = [];
     const droppedAsHeld: unknown[] = [];
     candidates.forEach((candidate, index) => {
-      const repeat = alreadySaidOnThread(candidate, thread);
+      const repeat = alreadySaidOnThread(candidate, droppable);
       if (repeat !== null) {
         droppedAsRepeat.push({
           candidateId: candidate.candidateId,
@@ -2522,7 +3427,9 @@ function checkCandidatesCommand(argv: string[]): number {
         });
         return;
       }
-      const original = raw[index] as Record<string, unknown>;
+      // Only this command sets `possibleRepeatOf`; one arriving from the
+      // analyst is not evidence of anything, and `score` trusts the own-comment kind.
+      const { possibleRepeatOf: _ignored, ...original } = raw[index] as Record<string, unknown>;
       const heldMatch = matchHeld(candidate, held);
       if (heldMatch !== null && heldMatch.drop) {
         droppedAsHeld.push({
@@ -2549,14 +3456,22 @@ function checkCandidatesCommand(argv: string[]): number {
       // A nearby anchored comment is the stronger lead, so it wins when both
       // match. A description match is never dropped here: wording cannot tell
       // a restatement from a contradiction, so the verifier decides.
-      const possible = possiblySaidOnThread(candidate, thread);
+      // After it, the same claim anywhere in the file, the owner's own comment
+      // first: a line moves as the author edits above it, and one concern can
+      // cover several places, so distance says little about a repeat.
+      const possible =
+        possiblySaidOnThread(candidate, thread, isOwn) ??
+        possiblyRaisedInFile(candidate, thread, isOwn) ??
+        possiblyRaisedInFile(candidate, thread);
       if (possible !== null) {
         kept.push({
           ...original,
           possibleRepeatOf: {
+            kind: isOwn(possible) ? 'own-comment' : 'thread',
             author: possible.author,
             path: possible.path,
             line: possible.line,
+            ...(possible.outdated === true ? { outdated: true } : {}),
             excerpt: possible.body.slice(0, 200),
           },
         });
@@ -2581,7 +3496,9 @@ function checkCandidatesCommand(argv: string[]): number {
       );
     });
 
-    console.log(JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld }, null, 2));
+    console.log(
+      JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld, ...extra }, null, 2),
+    );
     return 0;
   } catch (error) {
     if (error instanceof MalformedCandidate) {
@@ -2754,12 +3671,17 @@ async function main(argv: string[]): Promise<number> {
     case 'check-candidates':
       return checkCandidatesCommand(argv.slice(1));
 
+    case 'check-verification':
+      return checkVerificationCommand();
+
     case 'conventions':
       return conventionsCommand(argv.slice(1));
 
     case 'evidence':
       return evidenceCommand();
 
+    case 'reconcile':
+      return reconcileCommand(argv.slice(1));
     case 'verify':
       return verifyCommand(argv);
 
@@ -2768,6 +3690,12 @@ async function main(argv: string[]): Promise<number> {
 
     case 'carry':
       return carryCommand(argv.slice(1));
+
+    case 'reanchor':
+      return reanchorCommand(argv.slice(1));
+
+    case 'carry-candidates':
+      return carryCandidatesCommand(argv.slice(1));
 
     case 'feedback':
       return feedbackCommand(argv.slice(1));

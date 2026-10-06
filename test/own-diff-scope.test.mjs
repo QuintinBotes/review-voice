@@ -226,8 +226,8 @@ test('a reverted author hunk is never unchanged', () => {
       r.commit('revert the reviewed change');
     });
     assert.notEqual(scope.kind, 'unchanged');
-    assert.equal(scope.kind, 'full');
-    assert.equal(scope.cause, 'own-diff-unrepresentable');
+    assert.equal(scope.kind, 'interdiff');
+    assert.match(plan(repository).interdiffPatch, /^-a 5 changed by the author$/m);
   });
 });
 
@@ -272,17 +272,17 @@ test('a rewritten reviewed hunk is reviewed as the new version, not read in full
   });
 });
 
-test('code restored to its merge-base state is never shown as newly added', () => {
-  // On a linear branch the commit range shows a restored line as `+`, though
-  // relative to the base the author only withdrew a change. Against the merge
-  // base that is a removed hunk, which nothing at the head can show.
+test('code restored to its merge-base state is read as the change since the review', () => {
+  // The author withdrew a reviewed change. The commit range shows exactly that:
+  // the reviewed line going and the base line coming back, so the follow-up
+  // reads the withdrawal instead of the whole pull request.
   withPullRequest((repository) => {
     repository.edit('src/a.ts', 'a 5 changed by the author\n', 'a 5\n');
     repository.commit('restore the base version');
     const { scope, interdiffPatch } = plan(repository);
-    assert.equal(scope.kind, 'full');
-    assert.equal(scope.cause, 'own-diff-unrepresentable');
-    assert.equal(interdiffPatch, null);
+    assert.equal(scope.kind, 'interdiff');
+    assert.match(interdiffPatch, /^-a 5 changed by the author$/m);
+    assert.match(interdiffPatch, /^\+a 5$/m);
   });
 });
 

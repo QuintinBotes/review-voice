@@ -5,7 +5,7 @@ import { humanReviewNote, type ComplexityAssessment } from '../diff/complexity.t
 import { AuthError } from '../github/auth.ts';
 import { GitHubError, NotAllowlisted, type GitHubClient } from '../github/client.ts';
 import { REVIEW_EVENTS, WriteViolation, type ReviewWriter } from '../github/writer.ts';
-import { readCi, type CiState, type GateCheck } from './ci.ts';
+import { readCi, type CiRules, type CiState, type GateCheck } from './ci.ts';
 import { evaluatePostingGate, type GateResult } from './gate.ts';
 import {
   buildPayload,
@@ -37,6 +37,8 @@ export interface VerdictOptions {
   runId?: string | undefined;
   recheck?: boolean | undefined;
   gateChecks?: readonly GateCheck[] | undefined;
+  /** Stuck thresholds and the like from `ci:` in the repository config. */
+  ciRules?: CiRules | undefined;
   /** The time a stuck check is judged against, in epoch milliseconds; default now. */
   now?: number | undefined;
   /** `identity.owner_reviewer`: whose earlier request for changes may be left standing. */
@@ -289,7 +291,7 @@ export async function computeVerdict(
   const headMoved = actual !== head;
   const ci = headMoved
     ? null
-    : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now());
+    : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {});
 
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === 'high';
@@ -302,6 +304,7 @@ export async function computeVerdict(
     recheck: options.recheck === true,
     heldBackApproval: planned.heldBackApproval,
     needsHuman,
+    uncoveredCarry: run.carry?.covered === false,
   });
   // Only a missing assessment is worth saying: a normal one changes nothing.
   if (complexity === null) decision.reasons.push('no complexity assessment was recorded for this run');
@@ -316,9 +319,12 @@ export async function computeVerdict(
       head,
       event: decision.event,
       planned,
+      // One plain summary line whichever cap applies: CI first, then a held
+      // finding or an uncovered carry, then complexity. None of them names
+      // human review or the carry in the posted body.
       cappedBy: decision.cappedByCi
         ? 'ci'
-        : planned.heldBackApproval
+        : planned.heldBackApproval || (run.carry?.covered === false && planned.mapped === 'APPROVE')
           ? 'held'
           : needsHuman && planned.mapped === 'APPROVE'
             ? 'complexity'
@@ -529,7 +535,7 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
     try {
       reread = {
         head: await readHead(options.client, options.repository, options.pullNumber),
-        ci: await readCi(options.client, options.repository, payload.commit_id, options.gateChecks ?? [], options.now ?? Date.now()),
+        ci: await readCi(options.client, options.repository, payload.commit_id, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {}),
       };
     } catch (error) {
       return refuse(1, [`could not re-read head and CI before approving: ${error instanceof Error ? error.message : String(error)}`], verdict, key);

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { PolicyLayer, ScopeType } from './schema.ts';
-import type { GateCheck } from '../publish/ci.ts';
+import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publish/ci.ts';
 import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
 
 export interface LoadedConfig {
@@ -15,6 +15,8 @@ export interface LoadedConfig {
    * reported as gates rather than as red CI. None are built in.
    */
   ciGateChecks: GateCheck[];
+  /** Stuck thresholds and rerun signatures from `ci:`; empty means the built-in defaults (docs/adr/0013). */
+  ciRules: CiRules;
   allowlist: string[];
   staticEvidence: { enabled: boolean; commands: { name: string; run: string; timeoutSeconds?: number }[] };
   /** A second, ideally different-model, verification pass. Off by default. */
@@ -84,6 +86,90 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
   result.humanReview.generatedPaths = globs('generated_paths') ?? result.humanReview.generatedPaths;
 }
 
+/** Words that appear in nearly every failure, so alone they would turn every failure into a rerun. */
+const GENERIC_SIGNATURE_WORDS = new Set([
+  'error', 'errors', 'failed', 'failure', 'failures', 'failing', 'fatal', 'exception', 'exceptions',
+  'timeout', 'timed out', 'cancelled', 'canceled', 'aborted', 'killed', 'crashed', 'panic', 'unavailable',
+  'refused', 'denied', 'forbidden', 'unauthorized', 'warning', 'retrying', 'connection', 'network', 'internal',
+  'exit code', 'traceback', 'stacktrace',
+]);
+
+/**
+ * A rerun signature has to be specific enough not to match a real failure:
+ * at least 8 characters, and not one generic word such as "error".
+ */
+function specificSignature(signature: string): boolean {
+  if (signature.length < 8) return false;
+  return !GENERIC_SIGNATURE_WORDS.has(signature.toLowerCase().replace(/[^a-z ]+/g, ' ').trim());
+}
+
+/**
+ * Stuck thresholds and rerun signatures. A threshold that is not a whole
+ * number above zero would take every running check as stuck, or none, so it
+ * is skipped and the default kept.
+ */
+function readCiRules(block: Record<string, unknown> | null, result: LoadedConfig): void {
+  if (block === null) return;
+  const minutes = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+
+  if (block['stuck_after_minutes'] !== undefined) {
+    const value = minutes(block['stuck_after_minutes']);
+    if (value === undefined) {
+      result.warnings.push('ci.stuck_after_minutes must be a whole number above zero; using 60.');
+    } else {
+      result.ciRules.stuckAfterMinutes = value;
+    }
+  }
+
+  const overrides = block['stuck_after_overrides'];
+  if (overrides !== undefined && !Array.isArray(overrides)) {
+    result.warnings.push('ci.stuck_after_overrides must be a list; ignoring it.');
+  } else if (overrides !== undefined) {
+    const stuckAfter: { name: string; minutes: number }[] = [];
+    for (const entry of overrides) {
+      const override = asRecord(entry);
+      const name = override?.['name'];
+      const value = minutes(override?.['minutes']);
+      if (typeof name !== 'string' || name.length === 0 || value === undefined) {
+        result.warnings.push('a ci.stuck_after_overrides entry needs a name and minutes above zero; skipping it.');
+        continue;
+      }
+      stuckAfter.push({ name, minutes: value });
+    }
+    if (stuckAfter.length > 0) result.ciRules.stuckAfter = stuckAfter;
+  }
+
+  // Configured signatures add to the built-in ones; `builtin_rerun_signatures:
+  // false` drops those, for a repository whose real failures print one.
+  const extra = block['rerun_signatures'];
+  if (extra !== undefined && !Array.isArray(extra)) {
+    result.warnings.push('ci.rerun_signatures must be a list; ignoring it.');
+  }
+  const added: string[] = [];
+  for (const entry of Array.isArray(extra) ? extra : []) {
+    if (typeof entry !== 'string') {
+      result.warnings.push(`ci.rerun_signatures: ${JSON.stringify(entry)} is not text; skipping it.`);
+      continue;
+    }
+    const signature = entry.trim();
+    if (!specificSignature(signature)) {
+      result.warnings.push(
+        `ci.rerun_signatures: "${signature}" is too short or too generic and would match real failures; skipping it.`,
+      );
+      continue;
+    }
+    added.push(signature);
+  }
+  const builtin = block['builtin_rerun_signatures'];
+  if (builtin !== undefined && typeof builtin !== 'boolean') {
+    result.warnings.push('ci.builtin_rerun_signatures must be true or false; keeping the built-in signatures.');
+  }
+  if (added.length > 0 || builtin === false) {
+    result.ciRules.rerunSignatures = [...(builtin === false ? [] : BUILTIN_RERUN_SIGNATURES), ...added];
+  }
+}
+
 function contentHash(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
@@ -131,6 +217,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
     ownerReviewer: null,
     postingEnabled: false,
     ciGateChecks: [],
+    ciRules: {},
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
     verification: { enabled: false, command: '', blockPresent: false },
@@ -197,6 +284,8 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
             ...(typeof summary === 'string' && summary.length > 0 ? { summary } : {}),
           });
         }
+
+        readCiRules(ci, result);
 
         const verification = asRecord(doc['verification']);
         if (verification !== null) {

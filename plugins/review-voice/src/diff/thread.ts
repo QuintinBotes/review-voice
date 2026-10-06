@@ -24,6 +24,13 @@ export interface ThreadComment {
   /** Redacted. Only redacted text ever reaches a prompt or a comparison. */
   body: string;
   kind: 'review-comment' | 'review-body' | 'conversation' | 'description';
+  /**
+   * An inline comment GitHub no longer places on the current head, because the
+   * code under it changed: often a sign it was addressed. `line` is then where
+   * it was written. Whether a thread is resolved is not readable through the
+   * REST API this client is limited to, so this is the nearest signal.
+   */
+  outdated?: boolean;
 }
 
 interface RawInline {
@@ -87,12 +94,14 @@ export async function readThread(options: {
   for (const raw of inline) {
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
+    const outdated = (raw.line ?? null) === null && (raw.original_line ?? null) !== null;
     comments.push({
       path: raw.path ?? null,
       line: raw.line ?? raw.original_line ?? null,
       author: kept.author,
       body: kept.body,
       kind: 'review-comment',
+      ...(outdated ? { outdated: true } : {}),
     });
   }
 

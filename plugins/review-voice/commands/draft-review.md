@@ -52,7 +52,8 @@ needs a rerun.
   this head is not sent again (`alreadyInline`), so an approval that follows a
   comment while CI was red carries the summary only.
 - **The head guard.** If the pull request's head is no longer `--head`, exit 3.
-  Review the new head instead.
+  Review the new head instead, or carry the verified candidates to it with
+  `carry-candidates` as `/review-voice:review` describes.
 - **The CI guard.** Check runs are read with `filter=latest`, every page, with
   combined commit statuses. `stale`, `skipped` and `neutral` do not count. A
   failure always counts, whatever else ran under its name; only a run that never
@@ -64,8 +65,14 @@ needs a rerun.
   Pending CI turns an approval into `action: "wait"`, exit 4, with no payload.
   COMMENT and REQUEST_CHANGES never wait for CI.
 - **CI that needs a rerun** (docs/adr/0013). A check that `timed_out`, hit a
-  `startup_failure` or `action_required`, a cancelled run with nothing after
-  it, or a check queued or running for more than 60 minutes: `event` is null,
+  `startup_failure` or `action_required`, a failure whose output title or
+  summary, or runner annotations, contain an infrastructure signature, with no
+  other failure annotation left unmatched (a lost runner, the
+  platform's time limit, a full disk, a dropped connection, a throttled or
+  unavailable service; more under `ci.rerun_signatures`, with the matched
+  phrase in `reasons`), a cancelled run with nothing after
+  it, or a check queued or running for more than 60 minutes (`ci.stuck_after_minutes`,
+  with per-name globs under `ci.stuck_after_overrides`): `event` is null,
   `action` is `wait`, exit 6, with no payload, whatever the mapped event, and
   `reasons` name each check. A real failure beside one is still red. Rerun CI,
   then compute the verdict again.

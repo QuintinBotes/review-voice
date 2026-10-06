@@ -77,6 +77,29 @@ review:
     # default), e.g. what a generator in this repository writes.
     generated_paths: []
 
+ci:
+  # Checks that fail by design until something else happens. `name` is a glob
+  # over the check name; `summary` is an optional phrase the check must contain.
+  gate_checks: []
+  # A check queued or running longer than this is taken as stuck, and the
+  # verdict waits for a rerun (docs/adr/0013). A whole number above zero.
+  stuck_after_minutes: 60
+  # Per check name, for suites that routinely run long. The first match wins.
+  stuck_after_overrides: []
+  # Example:
+  #   - name: "backend / integration*"
+  #     minutes: 150
+  # A failed check whose output title or summary, or whose runner annotations,
+  # contain one of these phrases (ignoring case) needs a rerun rather than
+  # counting as red, unless another failure annotation matches none. At least
+  # 8 characters, and not one generic word like "error". They add to a short
+  # built-in list: a lost runner or agent, the platform's time
+  # limit, a full disk, ECONNRESET, "other side closed", "429 Too Many
+  # Requests" and "503 Service Unavailable".
+  rerun_signatures: []
+  # Set to false to use only the phrases listed above.
+  builtin_rerun_signatures: true
+
 static_evidence:
   # Commands are opt-in. Review Voice will suggest what it detects but never
   # runs a project script you did not list. See docs/adr/0003.

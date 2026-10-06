@@ -72,7 +72,14 @@ export class GitHubClient {
     }
   }
 
-  async get<T>(path: string, init: { method?: string } = {}): Promise<{ data: T; linkNext: string | null }> {
+  /**
+   * `retryRateLimits: false` fails at once on a rate limit instead of waiting
+   * it out, for a read the caller can do without.
+   */
+  async get<T>(
+    path: string,
+    init: { method?: string; retryRateLimits?: boolean } = {},
+  ): Promise<{ data: T; linkNext: string | null }> {
     if (init.method !== undefined && init.method.toUpperCase() !== 'GET') {
       throw new ReadOnlyViolation(
         `Review Voice is read-only; refused a ${init.method} to ${path}.`,
@@ -109,7 +116,7 @@ export class GitHubClient {
         const remaining = response.headers.get('x-ratelimit-remaining');
         // Secondary limits and exhausted quota both arrive as 403; only the
         // rate-limited ones are worth retrying.
-        if ((remaining === '0' || retryAfter > 0) && attempt < 4) {
+        if (init.retryRateLimits !== false && (remaining === '0' || retryAfter > 0) && attempt < 4) {
           const waitMs = retryAfter > 0 ? retryAfter * 1000 : 2 ** attempt * 1000;
           await this.sleep(waitMs);
           continue;

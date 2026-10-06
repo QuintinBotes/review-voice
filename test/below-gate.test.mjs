@@ -128,7 +128,7 @@ test('score lists a verified candidate stopped only by the final score as below 
     assert.deepEqual(out.eligible, []);
   }));
 
-test('a verified candidate rejected on confidence is not below the gate', () =>
+test('a verified candidate rejected on confidence is below the gate, marked as the confidence gate', () =>
   withDir((dir) => {
     const verification = join(dir, 'verification.json');
     writeFileSync(verification, JSON.stringify({ results: [{ candidate_id: 'cand_001', technical_confidence: 0.5 }] }));
@@ -136,7 +136,7 @@ test('a verified candidate rejected on confidence is not below the gate', () =>
     assert.equal(r.code, 0, r.stderr);
     const out = JSON.parse(r.stdout);
     assert.match(out.scores[0].rejectedBecause, /technical confidence/);
-    assert.deepEqual(out.belowGate, []);
+    assert.deepEqual(out.belowGate.map((entry) => entry.gate), ['confidence']);
   }));
 
 test('a claim in the below-gate list is bounded like the rest of the output', () =>

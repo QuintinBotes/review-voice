@@ -7,8 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A prior comment of the owner's that the author only partly addressed gets a
+  local partly-addressed state. The verifier may mark a candidate linked to
+  that comment with `partly_addressed` (`remaining`, `addressed`); `score`
+  then no longer rejects it for repeating that one comment, after checking its
+  author is the owner (`--owner`, or the configured owner); the editor states
+  only what remains, and `record` stores the finding as `partlyAddressed` with
+  what was still open at that run, shown by `explain`. Nothing marks it
+  resolved later. What remains is posted as an ordinary inline comment in the
+  normal review, never as a thread reply. `check-candidates` no longer drops a
+  candidate for repeating the owner's own inline comment; it flags it for the
+  verifier, and `score` still rejects a plain repeat. (#30)
+- `RV reanchor --candidate <id> --line <n>` moves one eligible scored candidate
+  to a corrected line, optionally in another file (`--path`), keeping its
+  verification and score. It refuses a line that is not an added line or
+  deletion site of the reviewed diff, a candidate that was not eligible, a stale
+  consumer, and a location another finding holds. Both files are written
+  beside their targets and renamed into place. See ADR 0017. (#39)
+- `RV carry-candidates` carries verified candidates to a head the author pushed
+  mid-review. A candidate carries only when its file, a stale consumer's cause,
+  and every file its claim, evidence or verification names are unchanged
+  between the heads, and its line is a changed line of the new head's diff;
+  the rest are refused by name and the review command re-reviews the new head.
+  The review of the commits in between is merged in with `--interdiff`, held
+  findings move with `--held`, and the carry is written to `carry.json` and
+  the audit log. A run recorded with `record --carry` from a carry without that
+  review, or with a candidate refused, is capped at COMMENT, passes the cap to
+  runs carried from it, and is not used as the next review's boundary. See ADR
+  0017. (#29)
+- `RV reconcile` applies the second-pass verdicts to the candidates, and a new
+  `tie-breaker` agent settles a dispute between the two verifiers. A finding is
+  disputed when the evidence-verifier traced its impact at 0.85 or more and the
+  second pass downgraded or dropped it. One tie-break per dispute decides it on
+  the code: upheld, the evidence-verifier's finding is scored as it was, a
+  dropped one included; not upheld, or with no tie-break, the second pass's
+  outcome stands and scoring no longer escalates the finding back above it on
+  the disputed trace. `record --tie-breaks` keeps the rulings and `explain`
+  shows them. The second pass's verdicts now carry the candidate id whichever
+  spelling the analyst used. See ADR 0014.
+- `RV check-verification` checks the evidence-verifier's output straight after
+  it runs, with the checks `score --verification` applies, and names the entry,
+  field and refused value. The verifier prompt now states that
+  `evidence_quality` is exactly `high`, `medium` or `low`. (#37)
+- `score` lists `unverified`: candidates rejected only because the verifier
+  listed context it could not obtain, with the verifier's confidence and the
+  missing context. The review prints them locally under
+  `Unverified (not posted)` and records them with `record --held` as
+  `unverified`. They are never posted. The review sets such a candidate aside
+  in step 3 instead of discarding it, so it reaches `score`, and `score`
+  rejects any non-question whose verification says `verified: false`. (#20)
+- `belowGate` also lists a candidate the verifier confirmed below its own
+  confidence floor, with `gate: confidence`; final-score entries carry
+  `gate: score`. Both lists hold only candidates that one gate alone stopped:
+  a thread repeat, a missing citation or an untraced stale consumer is now
+  appended to the reason and keeps the candidate off them. (#20)
+
 ### Changed
 
+- A follow-up review on plain author commits - the reviewed head is an ancestor
+  of the new head and the merge base with the base branch did not move - reads
+  exactly the diff between the two heads, limited to the pull request's files.
+  A new file, an edit inside a reviewed hunk, removed lines and code moved by a
+  refactor no longer fall back to reading the whole pull request; removed lines
+  show as `-` lines.
+- A follow-up after the base branch was merged in, or the pull request was
+  rebased, replays the reviewed head onto the new merge base (`git merge-tree`,
+  git 2.40 or later) and reads the head against it, over the pull request's
+  files. Only what the author changed since the review is read - new commits
+  and any rewrite of their own code while resolving the merge - and none of the
+  base's changes. A merge that brought in base changes only is `unchanged`. A
+  file whose replay conflicts is read as the pull request's own diff of it on
+  the new base, which shows the author's resolution, and the scope's `detail`
+  names it. An older git reads the whole pull request, with the version in
+  `detail`. A follow-up that only deletes a file counts that file as reviewed.
+  Hunk matching between the
+  own diffs before and after, which read a reverted, moved or re-neighboured
+  hunk as a full re-read, is gone; stored `own-diff-unrepresentable` scopes
+  still read back.
+- A follow-up's files include both paths of a renamed file, so undoing a rename
+  shows the old path coming back, and files the pull request now deletes, so a
+  deletion is in the patch. With no pull request files to read, the follow-up
+  is `unchanged` rather than the whole commit range.
 - The posted review no longer says anything about human review. A change
   assessed as high-complexity is still capped at COMMENT (ADR 0012), but the
   summary line is the ordinary one and `humanReviewNote` is carried in the
@@ -17,6 +98,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `diff --pr` exposes `refs.mergeBase` (and `mergeBase` in the summary) beside
+  `base`, which stays the base branch tip. Once that branch moves on,
+  `git diff base head` shows its own changes; `record`, `symbols` and `score`
+  take the merge base as `--base`. (#36)
+- `symbols` stops itself after `--max-ms` (default 60000) instead of running on
+  a large diff. Files it had not finished are listed as `inconclusive` with
+  `reason: "time-budget"`, the finished ones are still written, and the report
+  carries a `budget`. (#33)
+- A change whose only edits in a file are one-line imports no longer gets
+  `repository` reach from the spread of the imported name or the module's
+  importers; its reach is absent and the category's own tier applies. `record`
+  also caps the path lists in the scores it stores, with a `<name>Total` count
+  beside each cut list, so a scores file cannot grow with the repository. See
+  ADR 0009. (#7)
+- `record --stages` also takes `filesRead`, and `explain` shows each stage's
+  tool calls, files read and tokens against the size of the diff the analyst
+  read. A run with no findings from an analyst pass of fewer than one tool call
+  per 40 changed lines (on diffs of 150 lines or more) gets a warning in
+  `record`'s output and in `explain`; it is local and is never posted. (#41)
+- A failed check whose output title or summary, or whose runner annotations,
+  name an infrastructure cause - a lost runner or agent, the platform's time
+  limit, a full disk, ECONNRESET, "other side closed", a 429 or 503 - needs a
+  rerun instead of counting as red, unless another failure annotation is
+  unmatched; the reasons name the matched phrase. Annotations are read by GET
+  and never wait out a rate limit; `ci.rerun_signatures` adds specific phrases
+  and `ci.builtin_rerun_signatures: false` drops the built-in ones. (#21)
+- The stuck-check threshold is configurable: `ci.stuck_after_minutes` replaces
+  the 60-minute default, and `ci.stuck_after_overrides` sets it per check-name
+  glob, so a long healthy suite no longer reads as needing a rerun. (#22)
+- `check-candidates --thread` follows the owner's own comment after its line
+  moves: a candidate making the same claim anywhere in that file is kept with
+  `possibleRepeatOf` of `kind: own-comment` for the verifier. The owner is
+  `identity.owner_reviewer`, or `--owner <login>`. (#24)
+- `check-candidates --thread` flags a same-file, same-concern repeat of any
+  reviewer's inline comment, whatever the line distance, as `possibleRepeatOf`
+  of `kind: thread`, with `outdated: true` when GitHub no longer places the
+  comment on the head because the code under it changed. Whether a thread is
+  resolved is not read: that needs GraphQL, and the client is read-only REST.
+  Every anchored thread match now carries its `kind`, and the nearby match is
+  the best one, the owner's own first, rather than the first found. (#43)
+- A `stale-consumer` finding on documentation (`.md`, `.rst`, `.adoc`) that the
+  verifier confirmed is eligible at `nit` without `impact_traced`; above `nit`,
+  without a verifier entry, or on code (`CMakeLists.txt`, `requirements.txt`
+  and `.mdx` included) it still needs the trace, and the rejection says which.
+  See ADR 0015. (#27)
+- The unverifiable cap no longer fires on context the claim does not depend
+  on. The verifier can mark a `required_context_missing` entry as
+  `{"context": "...", "kind": "cosmetic"}`; only blocking entries cap, and a
+  plain string or an entry without `kind` is blocking. See ADR 0016. (#38)
+- A `stale-consumer` cause is judged against the diff the analyst read, the
+  interdiff on a follow-up: the analyst prompt and the review command now say
+  so, and `check-candidates` and `score` must be given that same patch. When
+  the consumer's own line is changed in that diff, the anchor reason says to
+  file it as an ordinary finding, and `check-candidates` lists a passing one
+  under `suggestions`. (#28)
+- The rule that a `question` is eligible when its premises are verified, even
+  if its answer is not, is now stated in the review command, the architecture
+  notes and ADR 0016. The verifier may report `premises_verified` for a
+  question, and `false` keeps it from being asked. The editor contract states
+  that a `question` comes after every `nit`. (#40)
+- `reconcile` reads the evidence-verifier's confidence as `score` does,
+  falling back to the `evidence_quality` tier when there is no number, so a
+  trace reported by tier alone can be disputed and a second-pass downgrade of
+  it holds. (#31)
+- `explain` no longer hides a dropped finding behind a tie-break `reconcile`
+  ignored. `reconcile` marks each ruling `applied` under `tieBreaks`, and the
+  review records that output with `record --tie-breaks`; an upheld ruling
+  marked not applied no longer hides a drop. Runs recorded before the mark
+  explain as they did. (#31)
+- A finding whose wider impact was disputed and not upheld carries
+  `impactDisputed: true` to the editor, which then leaves that impact out of
+  the comment. (#31)
+- `record` checks stdin against the output contract `validate-output` enforces
+  and exits 2, naming each problem and storing nothing, when it is not a
+  review. (#34)
+- `carry` of an earlier run with no findings gives `No actionable findings.` as
+  its `output` instead of an empty string, and `carry --text` prints only the
+  carried review so it pipes into `validate-output` and `record`; it exits 1
+  when findings existed and none carried, or a blocking or important finding
+  did not carry, which `record --carried-from` also refuses. The review command
+  shows the handoff. (#35)
 - The complexity assessment no longer counts decision points in Markdown and
   other documentation. Prose words such as `if` and `or` had been read as
   branches; the assessment now reports how many files it left out, and

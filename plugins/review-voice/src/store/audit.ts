@@ -22,7 +22,9 @@ export type AuditAction =
   | 'review_post_attempted'
   | 'review_post_sent'
   | 'review_post_refused'
-  | 'review_post_failed';
+  | 'review_post_failed'
+  // Verified candidates carried to a head pushed mid-review.
+  | 'candidates_carried';
 
 export function recordAudit(
   db: Database,
