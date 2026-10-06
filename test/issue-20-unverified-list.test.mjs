@@ -89,6 +89,7 @@ test('score lists a candidate held back only by missing context as unverified', 
     assert.deepEqual(out.unverified, [
       {
         candidateId: 'cand_001',
+        candidate_id: 'cand_001',
         path: 'src/export.ts',
         line: 3,
         severity: byId.cand_001.severity.severity,
