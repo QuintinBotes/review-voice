@@ -11899,6 +11899,23 @@ function possiblySaidOnThread(candidate, thread) {
   }
   return null;
 }
+var SAME_FILE_REPEAT_OVERLAP = 0.4;
+function possiblyRaisedInFile(candidate, thread, accept = () => true) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+  let best = null;
+  for (const comment of thread) {
+    if (comment.path === null || comment.line === null) continue;
+    if (comment.path !== candidate.path || !accept(comment)) continue;
+    const share = overlap(mine, significantWords(comment.body));
+    if (share < SAME_FILE_REPEAT_OVERLAP) continue;
+    const distance = Math.abs(comment.line - candidate.line);
+    if (best === null || share > best.share || share === best.share && distance < best.distance) {
+      best = { comment, share, distance };
+    }
+  }
+  return best?.comment ?? null;
+}
 var DESCRIPTION_EXCERPT_CHARS = 400;
 function possiblyRepeatsDescription(candidate, thread) {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
@@ -13319,8 +13336,8 @@ symbols flags:
 
 check-candidates:
   --diff-file <path>     Require anchors on changed lines
-  --thread <path>        Drop candidates the thread already states; flag
-                         description overlaps for the verifier
+  --thread <path>        Drop thread repeats; flag near ones for the verifier
+  --owner <login>        Owner for --thread; default from config
   --held-from <run-id>   Drop repeats of that run's held findings (--head)
 
 record flags:
@@ -15096,6 +15113,13 @@ function matchHeld(candidate, held) {
   }
   return found;
 }
+function configuredOwner() {
+  try {
+    return loadConfig(repositoryRoot(process.cwd())).ownerReviewer;
+  } catch {
+    return null;
+  }
+}
 function checkCandidatesCommand(argv) {
   let raw;
   try {
@@ -15169,6 +15193,8 @@ function checkCandidatesCommand(argv) {
       }
     }
     const held = heldFrom === null || headSha === null ? [] : carriedHeldFindings(heldFrom, headSha);
+    const owner = argv.includes("--thread") ? (flag(argv, "--owner") ?? configuredOwner())?.toLowerCase() ?? null : null;
+    const isOwn = (comment) => owner !== null && comment.author.toLowerCase() === owner;
     const kept = [];
     const droppedAsRepeat = [];
     const droppedAsHeld = [];
@@ -15205,11 +15231,12 @@ function checkCandidatesCommand(argv) {
         reason: heldMatch.entry.reason,
         excerpt: (heldMatch.entry.text ?? "").slice(0, 200)
       };
-      const possible = possiblySaidOnThread(candidate, thread);
+      const possible = possiblySaidOnThread(candidate, thread) ?? possiblyRaisedInFile(candidate, thread, isOwn);
       if (possible !== null) {
         kept.push({
           ...original,
           possibleRepeatOf: {
+            ...isOwn(possible) ? { kind: "own-comment" } : {},
             author: possible.author,
             path: possible.path,
             line: possible.line,

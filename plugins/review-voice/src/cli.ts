@@ -70,6 +70,7 @@ import {
   applyQuestionCap,
   alreadySaidOnThread,
   possiblySaidOnThread,
+  possiblyRaisedInFile,
   possiblyRepeatsDescription,
   normaliseCandidate,
   isFixVerdict,
@@ -161,8 +162,8 @@ symbols flags:
 
 check-candidates:
   --diff-file <path>     Require anchors on changed lines
-  --thread <path>        Drop candidates the thread already states; flag
-                         description overlaps for the verifier
+  --thread <path>        Drop thread repeats; flag near ones for the verifier
+  --owner <login>        Owner for --thread; default from config
   --held-from <run-id>   Drop repeats of that run's held findings (--head)
 
 record flags:
@@ -2504,6 +2505,15 @@ function matchHeld(candidate: Candidate, held: CarriedHeld[]): { entry: CarriedH
   return found;
 }
 
+/** The configured owner reviewer, or null outside a configured repository. */
+function configuredOwner(): string | null {
+  try {
+    return loadConfig(repositoryRoot(process.cwd())).ownerReviewer;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Checks analyst output against the candidate schema, before anything expensive
  * reads it.
@@ -2606,6 +2616,11 @@ function checkCandidatesCommand(argv: string[]): number {
 
     const held = heldFrom === null || headSha === null ? [] : carriedHeldFindings(heldFrom, headSha);
 
+    // The owner's own comments are told apart so the verifier knows whose point
+    // it would be repeating. Logins compare without case, as GitHub's do.
+    const owner = argv.includes('--thread') ? (flag(argv, '--owner') ?? configuredOwner())?.toLowerCase() ?? null : null;
+    const isOwn = (comment: { author: string }): boolean => owner !== null && comment.author.toLowerCase() === owner;
+
     const kept: unknown[] = [];
     const droppedAsRepeat: unknown[] = [];
     const droppedAsHeld: unknown[] = [];
@@ -2650,11 +2665,15 @@ function checkCandidatesCommand(argv: string[]): number {
       // A nearby anchored comment is the stronger lead, so it wins when both
       // match. A description match is never dropped here: wording cannot tell
       // a restatement from a contradiction, so the verifier decides.
-      const possible = possiblySaidOnThread(candidate, thread);
+      // After it, the owner's own comment anywhere in the file: its line moves
+      // as the author edits above it, so distance says little about a repeat.
+      const possible =
+        possiblySaidOnThread(candidate, thread) ?? possiblyRaisedInFile(candidate, thread, isOwn);
       if (possible !== null) {
         kept.push({
           ...original,
           possibleRepeatOf: {
+            ...(isOwn(possible) ? { kind: 'own-comment' } : {}),
             author: possible.author,
             path: possible.path,
             line: possible.line,

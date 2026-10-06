@@ -251,6 +251,11 @@ verifier does not spend a pass on them, and flags a near match with
 `possibleRepeatOf`. A candidate that overlaps the pull request description is
 not dropped: wording cannot tell a restatement from a contradiction, so it is
 kept with `possibleRepeatOf` of `kind: description` and the verifier decides.
+A candidate that makes the same claim as one of the owner's own comments
+anywhere in the same file is kept with `possibleRepeatOf` of
+`kind: own-comment`, however far apart the lines are: a comment's line moves
+when the author inserts code above it. The owner is `identity.owner_reviewer`
+from the configuration, or `--owner <login>`.
 Send only `kept` to step 3. Keep `droppedAsRepeat` for
 step 6 (`record --held`); until then, do not pass them to `--verdicts`. An
 unreadable thread file exits 2: fix the path rather than skipping the check.

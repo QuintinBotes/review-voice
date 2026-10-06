@@ -470,6 +470,48 @@ export function possiblySaidOnThread(
   return null;
 }
 
+/**
+ * The bar for a same-file comment at any distance. Only the file agrees, so the
+ * wording carries what a nearby line no longer does: this is the overlap an
+ * anchored repeat is dropped at, but here it only flags.
+ */
+const SAME_FILE_REPEAT_OVERLAP = 0.4;
+
+/**
+ * An anchored comment anywhere in this candidate's file that makes much the
+ * same claim, however far its line is from the candidate's.
+ *
+ * Line proximity missed a real repeat: the owner's comment sat at line 1312,
+ * the author inserted a test above it, GitHub then reported it at 1436, and the
+ * same coverage point came back on another line of the file. The candidate is
+ * kept; the verifier judges whether it adds anything.
+ *
+ * `accept` narrows which comments count. The best overlap wins, then the
+ * nearest line.
+ */
+export function possiblyRaisedInFile(
+  candidate: Candidate,
+  thread: ThreadComment[],
+  accept: (comment: ThreadComment) => boolean = () => true,
+): ThreadComment | null {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+
+  let best: { comment: ThreadComment; share: number; distance: number } | null = null;
+  for (const comment of thread) {
+    if (comment.path === null || comment.line === null) continue;
+    if (comment.path !== candidate.path || !accept(comment)) continue;
+    const share = overlap(mine, significantWords(comment.body));
+    if (share < SAME_FILE_REPEAT_OVERLAP) continue;
+    const distance = Math.abs(comment.line - candidate.line);
+    if (best === null || share > best.share || (share === best.share && distance < best.distance)) {
+      best = { comment, share, distance };
+    }
+  }
+
+  return best?.comment ?? null;
+}
+
 /** Roughly what a verifier needs to judge a repeat without the whole body. */
 const DESCRIPTION_EXCERPT_CHARS = 400;
 

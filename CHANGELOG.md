@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deletion is in the patch. With no pull request files to read, the follow-up
   is `unchanged` rather than the whole commit range.
 
+### Fixed
+
+- `check-candidates --thread` follows the owner's own comment after its line
+  moves: a candidate making the same claim anywhere in that file is kept with
+  `possibleRepeatOf` of `kind: own-comment` for the verifier. The owner is
+  `identity.owner_reviewer`, or `--owner <login>`. (#24)
+
 ## [1.10.1] - 2026-10-05
 
 ### Changed
