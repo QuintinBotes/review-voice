@@ -1,6 +1,6 @@
 # 0002 - GitHub authentication model
 
-**Status:** Accepted · **Date:** 2026-09-16
+**Status:** Accepted, amended 2026-10-06 by [0018](0018-read-only-graphql-thread-state.md) · **Date:** 2026-09-16
 
 ## Context
 
@@ -54,3 +54,14 @@ management for a local-first tool. Revisit only if webhooks ship.
 
 **Prompt for a PAT and store it.** Rejected: makes Review Voice responsible for
 secure credential storage on three platforms, for no benefit over `gh`.
+
+## Amendment - 2026-10-06
+
+[ADR 0018](0018-read-only-graphql-thread-state.md): the client's read-only
+rule is "only GET, and GraphQL queries". Whether a review thread is resolved is
+only in GitHub's GraphQL API, which takes every operation as a POST. The client
+may send a GraphQL document that is a `query` and nothing else: any document
+naming `mutation` or `subscription`, not starting with `query` or `{`, or
+holding a string literal is refused in code before anything is sent, and the
+repository it reads must be allowlisted. Every REST request is still GET-only,
+and the test that a non-GET REST request throws is unchanged.

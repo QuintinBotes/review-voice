@@ -1783,6 +1783,12 @@ var GitHubError = class extends Error {
   }
 };
 var REPO_PATH = /^\/repos\/([^/]+\/[^/]+)(\/|$)/;
+var GRAPHQL_FORBIDDEN = /\b(?:mutation|subscription)\b/i;
+var GRAPHQL_QUERY = /^\s*(?:query\b|\{)/;
+function graphqlUrl(baseUrl) {
+  const root = baseUrl.replace(/\/+$/, "");
+  return /\/api\/v3$/.test(root) ? root.replace(/\/v3$/, "/graphql") : `${root}/graphql`;
+}
 var GitHubClient = class {
   allowlist;
   baseUrl;
@@ -1851,6 +1857,66 @@ var GitHubClient = class {
       const next = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
       return { data: await response.json(), linkNext: next };
     }
+  }
+  /**
+   * One GraphQL query about one allowlisted repository (docs/adr/0018).
+   *
+   * The only request this client sends that is not a GET. GraphQL has no GET
+   * form on GitHub, and some state - whether a review thread is resolved -
+   * has no REST endpoint at all. So the read-only promise moves from the HTTP
+   * method to the operation, and is checked here before anything is sent:
+   *
+   *   - the document must be a query (`query ...` or `{ ... }`), and a
+   *     document that names `mutation` or `subscription` anywhere is refused;
+   *   - it may hold no string literal, so the only repository it can name is
+   *     the one `owner` and `name` are set to, which must be allowlisted;
+   *     those two variables are always overwritten with it.
+   *
+   * It never retries. Every caller can do without the answer, and waiting out
+   * a rate limit for an optional read only spends the user's quota.
+   */
+  async graphql(repository, document, variables = {}) {
+    if (GRAPHQL_FORBIDDEN.test(document) || !GRAPHQL_QUERY.test(document)) {
+      throw new ReadOnlyViolation("Review Voice is read-only; refused a GraphQL document that is not a query.");
+    }
+    if (document.includes('"')) {
+      throw new ReadOnlyViolation("Refused a GraphQL query with a string literal; pass values as variables.");
+    }
+    const [owner, name, ...rest] = repository.split("/");
+    if (owner === void 0 || name === void 0 || rest.length > 0 || owner.length === 0 || name.length === 0) {
+      throw new NotAllowlisted(`${repository} is not an owner/repo name.`);
+    }
+    this.assertAllowed(`/repos/${owner}/${name}`);
+    const response = await this.doFetch(graphqlUrl(this.baseUrl), {
+      method: "POST",
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: this.authorization(),
+        "content-type": "application/json",
+        "user-agent": "review-voice"
+      },
+      body: JSON.stringify({ query: document, variables: { ...variables, owner, name } })
+    });
+    if (!response.ok) {
+      throw new GitHubError(
+        `GitHub GraphQL returned ${response.status}: ${(await response.text()).slice(0, 200)}`,
+        response.status
+      );
+    }
+    const body = await response.json();
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      throw new GitHubError("GitHub GraphQL returned no data.", response.status);
+    }
+    if (Array.isArray(body.errors) && body.errors.length > 0) {
+      throw new GitHubError(
+        `GitHub GraphQL returned errors: ${body.errors.map((e) => e?.message ?? "unknown").join("; ").slice(0, 200)}`,
+        response.status
+      );
+    }
+    if (body.data === void 0 || body.data === null) {
+      throw new GitHubError("GitHub GraphQL returned no data.", response.status);
+    }
+    return body.data;
   }
   /** Follows pagination up to `limit` items, so a huge repository cannot run away. */
   async paginate(path, limit) {
@@ -2596,17 +2662,30 @@ async function readThread(options) {
     `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,
     MAX_COMMENTS
   );
+  const warnings = [];
+  let states = /* @__PURE__ */ new Map();
+  if (inline.length > 0) {
+    try {
+      states = await readThreadStates(client, options.repository, options.pullNumber);
+    } catch (error) {
+      warnings.push(
+        `Could not read which review threads are resolved (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing with the REST data, so no comment is marked resolved.`
+      );
+    }
+  }
   for (const raw of inline) {
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
-    const outdated = (raw.line ?? null) === null && (raw.original_line ?? null) !== null;
+    const state = typeof raw.id === "number" ? states.get(raw.id) : void 0;
+    const outdated = (raw.line ?? null) === null && (raw.original_line ?? null) !== null || state?.outdated === true;
     comments.push({
       path: raw.path ?? null,
       line: raw.line ?? raw.original_line ?? null,
       author: kept.author,
       body: kept.body,
       kind: "review-comment",
-      ...outdated ? { outdated: true } : {}
+      ...outdated ? { outdated: true } : {},
+      ...state?.resolved === true ? { resolved: true } : {}
     });
   }
   const reviews = await client.paginate(
@@ -2629,8 +2708,41 @@ async function readThread(options) {
   }
   return {
     comments,
-    truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS
+    truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
+    ...warnings.length > 0 ? { warnings } : {}
   };
+}
+var REVIEW_THREADS = `query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          isResolved
+          isOutdated
+          comments(first: 100) { nodes { databaseId path line } }
+        }
+      }
+    }
+  }
+}`;
+async function readThreadStates(client, repository, pullNumber) {
+  const states = /* @__PURE__ */ new Map();
+  let cursor = null;
+  for (let read = 0; read < MAX_COMMENTS; read += 100) {
+    const data = await client.graphql(repository, REVIEW_THREADS, { number: pullNumber, cursor });
+    const threads = data?.repository?.pullRequest?.reviewThreads;
+    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
+    for (const thread of threads.nodes) {
+      const state = { resolved: thread?.isResolved === true, outdated: thread?.isOutdated === true };
+      for (const comment of thread?.comments?.nodes ?? []) {
+        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
+      }
+    }
+    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
+    cursor = threads.pageInfo.endCursor;
+  }
+  return states;
 }
 
 // plugins/review-voice/src/scoring/existence.ts
@@ -14380,6 +14492,7 @@ async function threadCommand(argv) {
     return 2;
   }
   const result = await readThread({ repository, pullNumber });
+  for (const warning of result.warnings ?? []) console.error(`Warning: ${warning}`);
   const out = flag(argv, "--out");
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
@@ -14388,7 +14501,18 @@ async function threadCommand(argv) {
   try {
     const path = resolveOutPath(out, "thread.json");
     writeFileSync(path, JSON.stringify(result, null, 2), "utf8");
-    console.log(JSON.stringify({ path, comments: result.comments.length, truncated: result.truncated }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          path,
+          comments: result.comments.length,
+          truncated: result.truncated,
+          ...result.warnings === void 0 ? {} : { warnings: result.warnings }
+        },
+        null,
+        2
+      )
+    );
     return 0;
   } catch (error) {
     console.error(
@@ -16646,6 +16770,7 @@ function checkCandidatesCommand(argv) {
             path: possible.path,
             line: possible.line,
             ...possible.outdated === true ? { outdated: true } : {},
+            ...possible.resolved === true ? { resolved: true } : {},
             excerpt: possible.body.slice(0, 200)
           }
         });

@@ -71,6 +71,10 @@ cover several places in a file. Read the code at the comment's line. Reject the
 candidate as a repeat when it makes the same point about the same code. When
 it is `outdated`, the code under the comment changed, often in a fix: keep the
 candidate only when it is an instance that fix did not cover, and say which.
+When it is `resolved`, someone marked that comment's thread resolved on the
+pull request: treat its point as likely addressed. Keep the candidate only when
+the code at the head shows an instance the resolution did not cover - another
+query, another call site - and say which; otherwise reject it as a repeat.
 
 **An own comment the author only partly addressed.** When `kind` is
 `own-comment` and that comment raised several points, check each against the

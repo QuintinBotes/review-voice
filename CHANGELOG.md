@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `RV thread` marks an inline comment whose review thread is resolved with
+  `resolved: true`, read through one GraphQL query, and `check-candidates`
+  carries it into `possibleRepeatOf`; the verifier treats a resolved thread as
+  a likely addressed point. The read-only client now sends GraphQL `query`
+  operations as its one non-GET request and refuses any document naming
+  `mutation` or `subscription`; every REST call stays GET-only. If the query
+  fails, `thread` warns locally and goes on with the REST data. See ADR 0018.
+  (#43)
 - A prior comment of the owner's that the author only partly addressed gets a
   local partly-addressed state. The verifier may mark a candidate linked to
   that comment with `partly_addressed` (`remaining`, `addressed`); `score`

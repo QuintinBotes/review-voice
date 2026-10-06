@@ -161,6 +161,12 @@ running on those repositories, or already fixed by the author. That removed more
 than every other stage combined. A repository with an existing bot reviewer will
 otherwise receive duplicates, and nothing else in this pipeline can see that.
 
+Whether each inline comment's thread is resolved comes from one read-only
+GraphQL query, the only place GitHub exposes it. If that read fails - a token
+without the permission, a rate limit - `thread` prints a warning on stderr and
+writes the comments without it. Show the warning to the person, never post it,
+and carry on: the review does not depend on it.
+
 Skip it when not reviewing a pull request; there is no thread to read.
 
 ## Step 1b - Resolve context
@@ -290,7 +296,8 @@ whoever wrote it: a comment's line moves when the author inserts code above it,
 and one concern can cover several places in a file. Its `kind` is `own-comment`
 for the owner's own comment, which is preferred, and `thread` for anyone
 else's; `outdated: true` means the code under the comment has changed since,
-often because it was addressed. The owner is `identity.owner_reviewer` from the
+often because it was addressed, and `resolved: true` that its thread was
+marked resolved, which the verifier treats as a likely addressed point. The owner is `identity.owner_reviewer` from the
 configuration, or `--owner <login>`. The owner's own inline comments are never
 a reason to drop here, however closely a candidate repeats one: it may be what
 the author left open of that comment, which only the verifier can tell.

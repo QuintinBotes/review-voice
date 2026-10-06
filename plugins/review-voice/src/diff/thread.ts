@@ -27,13 +27,19 @@ export interface ThreadComment {
   /**
    * An inline comment GitHub no longer places on the current head, because the
    * code under it changed: often a sign it was addressed. `line` is then where
-   * it was written. Whether a thread is resolved is not readable through the
-   * REST API this client is limited to, so this is the nearest signal.
+   * it was written.
    */
   outdated?: boolean;
+  /**
+   * The inline comment's thread is marked resolved on the pull request: most
+   * often because it was addressed. Read through one GraphQL query, the only
+   * place GitHub exposes it (docs/adr/0018); absent when that read failed.
+   */
+  resolved?: boolean;
 }
 
 interface RawInline {
+  id?: number;
   path?: string;
   line?: number | null;
   original_line?: number | null;
@@ -70,7 +76,7 @@ export async function readThread(options: {
   pullNumber: number;
   /** Injectable so a test can stub fetch. */
   client?: GitHubClient;
-}): Promise<{ comments: ThreadComment[]; truncated: boolean }> {
+}): Promise<{ comments: ThreadComment[]; truncated: boolean; warnings?: string[] }> {
   // Naming a pull request is the consent for reading it, the same rule
   // `acquirePullRequestDiff` follows.
   const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
@@ -91,10 +97,26 @@ export async function readThread(options: {
     `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,
     MAX_COMMENTS,
   );
+  const warnings: string[] = [];
+  let states = new Map<number, ThreadState>();
+  if (inline.length > 0) {
+    try {
+      states = await readThreadStates(client, options.repository, options.pullNumber);
+    } catch (error) {
+      // Optional: without it a resolved thread reads as an open one, which
+      // only means the verifier is not told. The review goes on.
+      warnings.push(
+        'Could not read which review threads are resolved ' +
+          `(${error instanceof Error ? error.message.slice(0, 160) : String(error)}); ` +
+          'continuing with the REST data, so no comment is marked resolved.',
+      );
+    }
+  }
   for (const raw of inline) {
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
-    const outdated = (raw.line ?? null) === null && (raw.original_line ?? null) !== null;
+    const state = typeof raw.id === 'number' ? states.get(raw.id) : undefined;
+    const outdated = ((raw.line ?? null) === null && (raw.original_line ?? null) !== null) || state?.outdated === true;
     comments.push({
       path: raw.path ?? null,
       line: raw.line ?? raw.original_line ?? null,
@@ -102,6 +124,7 @@ export async function readThread(options: {
       body: kept.body,
       kind: 'review-comment',
       ...(outdated ? { outdated: true } : {}),
+      ...(state?.resolved === true ? { resolved: true } : {}),
     });
   }
 
@@ -128,5 +151,69 @@ export async function readThread(options: {
   return {
     comments,
     truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
+}
+
+interface ThreadState {
+  resolved: boolean;
+  outdated: boolean;
+}
+
+/**
+ * Read only: a `query`, which the client checks before sending. The comments'
+ * `databaseId` is the REST comment `id`, which is how the two reads join.
+ */
+const REVIEW_THREADS = `query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          isResolved
+          isOutdated
+          comments(first: 100) { nodes { databaseId path line } }
+        }
+      }
+    }
+  }
+}`;
+
+interface RawThreads {
+  repository?: {
+    pullRequest?: {
+      reviewThreads?: {
+        pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+        nodes?: {
+          isResolved?: boolean;
+          isOutdated?: boolean;
+          comments?: { nodes?: { databaseId?: number | null }[] };
+        }[];
+      };
+    } | null;
+  } | null;
+}
+
+/**
+ * Each inline comment's thread state, by REST comment id. Throws on anything
+ * it cannot read, including an answer in the wrong shape, so the caller falls
+ * back to REST alone rather than half-trusting it.
+ */
+async function readThreadStates(client: GitHubClient, repository: string, pullNumber: number): Promise<Map<number, ThreadState>> {
+  const states = new Map<number, ThreadState>();
+  let cursor: string | null = null;
+  for (let read = 0; read < MAX_COMMENTS; read += 100) {
+    const data: RawThreads = await client.graphql<RawThreads>(repository, REVIEW_THREADS, { number: pullNumber, cursor });
+    const threads = data?.repository?.pullRequest?.reviewThreads;
+    if (threads === undefined || !Array.isArray(threads.nodes)) throw new Error('no reviewThreads in the answer');
+    for (const thread of threads.nodes) {
+      const state = { resolved: thread?.isResolved === true, outdated: thread?.isOutdated === true };
+      for (const comment of thread?.comments?.nodes ?? []) {
+        if (typeof comment?.databaseId === 'number') states.set(comment.databaseId, state);
+      }
+    }
+    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== 'string') break;
+    cursor = threads.pageInfo.endCursor;
+  }
+  return states;
 }

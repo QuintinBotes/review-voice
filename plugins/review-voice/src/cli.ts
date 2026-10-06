@@ -432,6 +432,8 @@ async function threadCommand(argv: string[]): Promise<number> {
   }
 
   const result = await readThread({ repository, pullNumber });
+  // Local only, never posted: the review goes on without thread resolution.
+  for (const warning of result.warnings ?? []) console.error(`Warning: ${warning}`);
   const out = flag(argv, '--out');
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
@@ -440,7 +442,18 @@ async function threadCommand(argv: string[]): Promise<number> {
   try {
     const path = resolveOutPath(out, 'thread.json');
     writeFileSync(path, JSON.stringify(result, null, 2), 'utf8');
-    console.log(JSON.stringify({ path, comments: result.comments.length, truncated: result.truncated }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          path,
+          comments: result.comments.length,
+          truncated: result.truncated,
+          ...(result.warnings === undefined ? {} : { warnings: result.warnings }),
+        },
+        null,
+        2,
+      ),
+    );
     return 0;
   } catch (error) {
     console.error(
@@ -3472,6 +3485,7 @@ function checkCandidatesCommand(argv: string[]): number {
             path: possible.path,
             line: possible.line,
             ...(possible.outdated === true ? { outdated: true } : {}),
+            ...(possible.resolved === true ? { resolved: true } : {}),
             excerpt: possible.body.slice(0, 200),
           },
         });

@@ -473,6 +473,8 @@ export interface ThreadComment {
   kind?: 'review-comment' | 'review-body' | 'conversation' | 'description';
   /** The code under an inline comment changed since it was written. */
   outdated?: boolean;
+  /** The inline comment's thread is marked resolved on the pull request. */
+  resolved?: boolean;
 }
 
 /**

@@ -657,7 +657,10 @@ inherit an old approval.
 Two constraints are enforced in the client rather than documented, because v1
 promises both and a promise a caller can bypass is not a promise: only GET
 requests are issued, and only allowlisted repositories are addressed. Both
-throw before any network call, and both are tested.
+throw before any network call, and both are tested. The one non-GET request is
+a GraphQL `query`, for review-thread state that REST does not expose; a
+document that is not a query, names `mutation` or `subscription`, or holds a
+string literal is refused before it is sent (ADR 0018).
 
 The allowlist matters more than it looks. The credential comes from `gh` and
 carries whatever scopes the user already had - almost always broader than

@@ -193,8 +193,9 @@ test('a review without its event, or with PENDING, is never sent', async () => {
 });
 
 test('nothing else in the plugin issues a write', () => {
-  // The read-only client keeps refusing non-GET; this is the only place a
-  // POST is spelled out.
+  // The read-only client keeps refusing non-GET REST requests. Its one POST is
+  // a GraphQL query, refused unless it is one (ADR 0018, tested in
+  // issue-43-thread-resolution); the writer is the only place a write is.
   const src = join(root, 'plugins/review-voice/src');
   const offenders = [];
   const walk = (dir) => {
@@ -205,7 +206,7 @@ test('nothing else in the plugin issues a write', () => {
     }
   };
   walk(src);
-  assert.deepEqual(offenders, ['github/writer.ts']);
+  assert.deepEqual(offenders.sort(), ['github/client.ts', 'github/writer.ts']);
 });
 
 test('a confirmed review is submitted with its event in one request', async () => {
