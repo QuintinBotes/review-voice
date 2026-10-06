@@ -719,6 +719,18 @@ export function narrowToResolution(own: string, resolution: string | undefined):
 }
 
 /**
+ * The hunks of `own` that meet a change in `delta`, both numbered by head
+ * lines: an empty string when none does, null when either cannot be read.
+ */
+function changedSince(own: string, delta: string): string | null {
+  const ownHunks = sectionHunks(own);
+  const changes = sectionHunks(delta);
+  if (ownHunks === null || changes === null) return null;
+  const kept = ownHunks.hunks.filter((hunk) => changes.hunks.some((change) => hunk.first <= change.last && change.first <= hunk.last));
+  return kept.length === 0 ? '' : ownHunks.header + kept.map((hunk) => hunk.text).join('');
+}
+
+/**
  * Reads the head against `from` - the reviewed head, or its replay onto the
  * new base - over the pull request's files only.
  *
@@ -726,9 +738,12 @@ export function narrowToResolution(own: string, resolution: string | undefined):
  * read as the pull request's own diff of it on the new base, cut to the hunks
  * the resolution touched; when those cannot be matched up, the whole of that
  * own diff, which shows the author's resolution and everything else the pull
- * request does there, and none of the base's changes. If that own diff is
- * empty the author resolved by dropping their change, and the marker diff is
- * the only place the withdrawal shows, so that file keeps it.
+ * request does there, and none of the base's changes. A cut file is then cut
+ * again to the hunks that changed since the reviewed head, and a file the
+ * same at both heads is left out, so a base merge that conflicted but left the
+ * author's code as reviewed reads as unchanged. If that own diff is empty the
+ * author resolved by dropping their change, and the marker diff is the only
+ * place the withdrawal shows, so that file keeps it.
  */
 function interdiffFrom(
   options: PlanIncrementalScopeOptions,
@@ -752,12 +767,33 @@ function interdiffFrom(
   const conflicted = conflicts.filter((path) => wanted.has(path));
   const own = patchSections(read(mergeBase, conflicted));
   const resolutions = patchSections(read(from, [...own.keys()]));
+  // What each conflicted file changed since the reviewed head itself (#63). A
+  // file that is the same at both heads holds nothing the review did not
+  // read, however far the base moved under it, so it drops out. When the
+  // resolution matched up hunk by hunk, the author withdrew nothing - a
+  // withdrawal is a resolution hunk with no own hunk - so a change since the
+  // review that meets no own hunk is the base's, and an own hunk that meets
+  // no such change is code the review already read, moved at most: only the
+  // own hunks that changed since the review are kept, and none can mean none.
+  const sinceReview = patchSections(read(prior.headRef, [...own.keys()]));
   const narrowed: string[] = [];
   const whole: string[] = [];
-  const resolved = [...own].map(([path, section]) => {
+  const resolved = [...own].flatMap(([path, section]) => {
+    const delta = sinceReview.get(path);
+    if (delta === undefined) return [];
     const cut = narrowToResolution(section, resolutions.get(path));
-    (cut === null ? whole : narrowed).push(path);
-    return cut ?? section;
+    if (cut === null) {
+      whole.push(path);
+      return [section];
+    }
+    const fresh = changedSince(cut, delta);
+    if (fresh === null) {
+      narrowed.push(path);
+      return [cut];
+    }
+    if (fresh.length === 0) return [];
+    narrowed.push(path);
+    return [fresh];
   });
   const rest = paths.filter((path) => !own.has(path));
   const outside = read(from, rest);

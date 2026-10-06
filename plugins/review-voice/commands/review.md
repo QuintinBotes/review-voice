@@ -97,9 +97,11 @@ recorded. The scope is one of:
   `validate-output` or `record`.
 - `interdiff` - only the author's hunks that are new since the previous head,
   with base-branch churn excluded and head-side line numbers kept. A file
-  whose merge conflicted holds only the hunks its resolution touched, or its
-  whole own diff when those could not be matched; `detail` and `scopeNote`
-  say which.
+  whose merge conflicted holds only the hunks its resolution touched that also
+  changed since the previous head, or its whole own diff when the resolution
+  could not be matched; `detail` and `scopeNote` say which. A conflicted file
+  that is the same at both heads is left out, so a conflicting base merge
+  that left the author's code as reviewed is `unchanged`.
 - `incremental` - only the commits after the previous head (used only when
   the base commit is not readable locally).
 - `full` - the whole pull request, with `cause` saying why and, where it
