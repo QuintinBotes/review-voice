@@ -90,9 +90,14 @@ nothing to do with the change.
   classified as before.
 - **A mixed run stays red.** A run needs a rerun only if every one of its
   failure-level annotations matched a signature. One unmatched failure
-  annotation - a failed test on a file, or a runner's "Process completed with
-  exit code 1" - may be a real failure beside the infrastructure one, so the
-  run stays red. So does a run with annotations that were not read.
+  annotation, such as a failed test on a file, may be a real failure beside
+  the infrastructure one, so the run stays red. So does a run with
+  annotations that were not read.
+- **The exit-code note is neutral.** GitHub Actions adds `Process completed
+  with exit code N.` to nearly every failed job. On `.github` or no path, and
+  with nothing else in the message, it neither matches nor keeps a run red:
+  beside a matched phrase the run needs a rerun, alone it stays red. Counting
+  it as unmatched would have kept almost every Actions failure red.
 - **The signatures.** A short built-in list of whole phrases: `We stopped
   hearing from agent`, `lost communication with the server`, `The runner has
   received a shutdown signal`, `has exceeded the maximum execution time`, `No

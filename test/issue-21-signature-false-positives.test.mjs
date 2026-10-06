@@ -68,8 +68,8 @@ test('one run with a real failure annotation beside an infrastructure one stays 
   assert.equal(summariseCi([mixed], []).state, 'red');
 
   // An unmatched runner annotation is as much a failure as one on a file.
-  const exited = failed('e2e', { summary: 'ECONNRESET while downloading' }, [runner('Process completed with exit code 1.')]);
-  assert.equal(summariseCi([exited], []).state, 'red');
+  const unmatched = failed('e2e', { summary: 'ECONNRESET while downloading' }, [runner('Error: the deployment was rejected')]);
+  assert.equal(summariseCi([unmatched], []).state, 'red');
 
   // Warnings beside the infrastructure failure do not hold it red.
   const clean = failed('e2e', {}, [

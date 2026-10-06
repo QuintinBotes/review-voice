@@ -9904,6 +9904,8 @@ function fromRunner(annotation) {
   const path = (annotation.path ?? "").trim();
   return path === "" || path === ".github";
 }
+var EXIT_CODE_NOTE = /^Process completed with exit code \d+\.?$/;
+var neutral = (annotation) => fromRunner(annotation) && EXIT_CODE_NOTE.test((annotation.message ?? "").trim());
 function infrastructureSignature(run, signatures) {
   const find = (...texts) => {
     const haystack = texts.filter((text) => typeof text === "string").join("\n").toLowerCase();
@@ -9913,6 +9915,7 @@ function infrastructureSignature(run, signatures) {
   let matched = find(run.output?.title, run.output?.summary);
   for (const annotation of run.annotations ?? []) {
     if ((annotation.annotation_level ?? "").toLowerCase() !== "failure") continue;
+    if (neutral(annotation)) continue;
     const hit = fromRunner(annotation) ? find(annotation.title, annotation.message) : null;
     if (hit === null) return null;
     matched ??= hit;

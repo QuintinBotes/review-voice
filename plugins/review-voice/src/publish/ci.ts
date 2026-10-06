@@ -210,6 +210,14 @@ function fromRunner(annotation: RawAnnotation): boolean {
 }
 
 /**
+ * The runner's own note that a step exited non-zero, on nearly every failed
+ * job. It says neither that the change failed nor that the runner did.
+ */
+const EXIT_CODE_NOTE = /^Process completed with exit code \d+\.?$/;
+const neutral = (annotation: RawAnnotation): boolean =>
+  fromRunner(annotation) && EXIT_CODE_NOTE.test((annotation.message ?? '').trim());
+
+/**
  * The signature that shows a failed run failed on infrastructure, or null.
  *
  * It must appear in the output's title or summary, or in a failure-level
@@ -217,7 +225,8 @@ function fromRunner(annotation: RawAnnotation): boolean {
  * details carry test and compiler output, so they are not read. And every
  * failure-level annotation must match one: an unmatched one may be a real
  * failure beside the infrastructure one, and so may an annotation GitHub
- * counted but that was not read. Warnings and notices do not count either way.
+ * counted but that was not read. Warnings and notices do not count either way,
+ * nor does the runner's "Process completed with exit code N." note.
  */
 export function infrastructureSignature(run: RawCheckRun, signatures: readonly string[]): string | null {
   const find = (...texts: (string | null | undefined)[]): string | null => {
@@ -228,6 +237,7 @@ export function infrastructureSignature(run: RawCheckRun, signatures: readonly s
   let matched = find(run.output?.title, run.output?.summary);
   for (const annotation of run.annotations ?? []) {
     if ((annotation.annotation_level ?? '').toLowerCase() !== 'failure') continue;
+    if (neutral(annotation)) continue;
     const hit = fromRunner(annotation) ? find(annotation.title, annotation.message) : null;
     if (hit === null) return null;
     matched ??= hit;
