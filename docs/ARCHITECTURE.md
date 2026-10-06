@@ -17,6 +17,7 @@ agents. A command file orchestrates them.**
 | Convention discovery | CLI | which files exist is a fact |
 | Candidate generation | `diff-analyst` | genuine judgment |
 | Evidence verification | `evidence-verifier` | genuine judgment |
+| Verifier tie-break | `tie-breaker` | genuine judgment, only on a dispute |
 | Precedent retrieval | CLI | an index query |
 | Preference scoring | CLI | **arithmetic - never ask a model to do this** |
 | Dedup and ranking | CLI | deterministic |
@@ -552,6 +553,13 @@ Every verdict is recorded, including the ones that change nothing, and
 `explain` lists what was suppressed and why. A verifier that silently deletes
 findings is the finding cap in a different coat - the failure has to be
 visible, or a bad verifier is indistinguishable from a clean diff.
+
+`RV reconcile` applies the verdicts rather than the orchestrator applying them
+by hand. When the evidence-verifier traced a finding's impact at 0.85 or more
+and the second pass downgraded or dropped it, the two disagree about a fact in
+the code, and one `tie-breaker` run on just that point settles it: upheld, the
+evidence-verifier's finding stands; not upheld, the second pass's outcome does.
+See [ADR 0014](adr/0014-verifier-tie-break.md).
 
 ### Scoring and activation
 

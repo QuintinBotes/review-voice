@@ -302,22 +302,39 @@ This pass is deliberately a **different model** from the one that generated the
 candidates. A verifier from the same family shares the analyst's blind spots
 and agrees with a plausible-sounding defect more often than it should.
 
-Apply each verdict:
-
-- `kept` - unchanged.
-- `downgraded` - use `finalSeverity`, not the original.
-- `dropped` - remove the finding from the review.
-- `unverified` - the verifier could not run. **Leave the finding exactly as it
-  is.** A verifier that did not answer has not agreed.
+Write the report to `<tmpdir>/second-pass.json`. Do not apply its verdicts by
+hand: `reconcile` in step 3c applies them - `downgraded` takes `finalSeverity`,
+`dropped` removes the finding, and `kept` and `unverified` leave it exactly as
+it is, since a verifier that did not answer has not agreed.
 
 Pass the whole report to `RV record --verdicts <file>` in step 6, including the
 dropped entries. A suppressed finding leaves no other trace, and
 `/review-voice:explain` showing what was removed is what makes a bad verifier
 visible instead of indistinguishable from a clean diff.
 
+## Step 3c - Settle disputes
+
+Skip this step when step 3b was skipped.
+
+Pipe the candidates as they were before step 3b, `{"candidates": [...]}`, into
+`RV reconcile --verification <tmpdir>/verification.json --second-pass <tmpdir>/second-pass.json`.
+A candidate is disputed when the evidence-verifier traced its impact
+(`impact_traced`, confidence at least 0.85) and the second pass downgraded or
+dropped it. If `disputes` is empty, its `candidates` are the input to step 4.
+
+Otherwise launch the `tie-breaker` agent **once per dispute**, with that
+dispute entry as it is and the same diff. Do not add your own view of who is
+right. Write the results, one `{candidate_id, upheld, reason}` each, as an
+array to `<tmpdir>/tie-breaks.json`, then run the same command again with
+`--tie-breaks <tmpdir>/tie-breaks.json`. Its `candidates` are the input to step
+4: an upheld dispute keeps the evidence-verifier's finding, a dropped one
+included, and one not upheld keeps the second pass's outcome. A malformed
+tie-break file exits 2; re-run the tie-breaker rather than editing its output.
+Keep the file for step 6.
+
 ## Step 4 - Score against precedent
 
-Pipe the verified candidates as `{"candidates": [...]}` into
+Pipe the verified candidates - step 3c's `candidates` when it ran - as `{"candidates": [...]}` into
 `RV score --repository <name> --verification <tmpdir>/verification.json --base <ref> --diff-file <tmpdir>/diff.patch`,
 adding `--thread <tmpdir>/thread.json` on a `--pr` run.
 
@@ -488,7 +505,8 @@ stray directory and another project's notes took the reviewed count from 11 to
   entries exit 2. `/review-voice:explain` lists them under "Held back".
 
   Pass the score breakdowns with `--scores <file>` and, if verification ran,
-  the verdicts with `--verdicts <file>`, so `/review-voice:explain` can show
+  the verdicts with `--verdicts <file>` and, if step 3c ran a tie-breaker,
+  `--tie-breaks <tmpdir>/tie-breaks.json`, so `/review-voice:explain` can show
   its working later - including findings that were suppressed. Without them a finding is
   recorded with no account of why it was emitted.
 

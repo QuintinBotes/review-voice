@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `RV reconcile` applies the second-pass verdicts to the candidates, and a new
+  `tie-breaker` agent settles a dispute between the two verifiers. A finding is
+  disputed when the evidence-verifier traced its impact at 0.85 or more and the
+  second pass downgraded or dropped it. One tie-break per dispute decides it on
+  the code: upheld, the evidence-verifier's finding is scored as it was, a
+  dropped one included; not upheld, or with no tie-break, the second pass's
+  outcome stands and scoring no longer escalates the finding back above it on
+  the disputed trace. `record --tie-breaks` keeps the rulings and `explain`
+  shows them. The second pass's verdicts now carry the candidate id whichever
+  spelling the analyst used. See ADR 0014.
+
 ### Changed
 
 - A follow-up review on plain author commits - the reviewed head is an ancestor

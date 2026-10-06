@@ -27,6 +27,9 @@ export interface RawCandidate {
   anchor?: string;
   caused_by?: { path?: unknown; line?: unknown } | null;
   causedBy?: { path?: unknown; line?: unknown } | null;
+  /** Set by `reconcile`; see `Candidate.impactDisputed`. */
+  impact_disputed?: unknown;
+  impactDisputed?: unknown;
 }
 
 /** The one anchor a candidate may declare; see `classifyStaleConsumer`. */
@@ -51,6 +54,12 @@ export interface Candidate {
    */
   anchor?: typeof STALE_CONSUMER | undefined;
   causedBy?: { path: string; line: number } | null | undefined;
+  /**
+   * The second pass disputed the impact the evidence-verifier traced, and no
+   * tie-break upheld it. The verifier's trace then no longer earns a tier
+   * above the one the second pass left; see docs/adr/0014.
+   */
+  impactDisputed?: true | undefined;
 }
 
 export const FIX_VERDICTS = ['verified', 'partial', 'refuted', 'absent'] as const;
@@ -163,6 +172,17 @@ export function boundSeverityByEvidence(
   const confidence =
     verification?.technicalConfidence ??
     (verification?.evidenceQuality === undefined ? null : (QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null));
+  // Without this, a tier the second pass lowered came straight back: the
+  // trace it disputed still cleared the bar below.
+  if (candidate.impactDisputed === true) {
+    return {
+      ...result,
+      severity: TIER_ORDER[asked] as DerivedSeverity['severity'],
+      reason:
+        `${result.reason}, held at ${candidate.severity} because the second pass disputed the traced ` +
+        'impact and no tie-break upheld it',
+    };
+  }
   if (verification?.impactTraced === true && confidence !== null && confidence >= ESCALATION_CONFIDENCE) {
     return result;
   }
@@ -593,6 +613,10 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     }
     causedBy = { path: rawCause.path, line: rawCause.line as number };
   }
+  const impactDisputed = raw.impact_disputed !== undefined ? raw.impact_disputed : raw.impactDisputed;
+  if (impactDisputed !== undefined && typeof impactDisputed !== 'boolean') {
+    throw new MalformedCandidate(`${candidateId}: impact_disputed must be true or false when supplied`);
+  }
 
   return {
     candidateId,
@@ -611,6 +635,7 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     technicalConfidence: confidence as number,
     // Spread only when declared, so an ordinary candidate keeps its shape.
     ...(raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {}),
+    ...(impactDisputed === true ? { impactDisputed: true as const } : {}),
   };
 }
 

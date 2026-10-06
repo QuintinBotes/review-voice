@@ -5,6 +5,7 @@ import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
 import { parseComplexity, type ComplexityAssessment } from '../diff/complexity.ts';
 import { matchCarried, type CarriedFinding } from '../diff/carry.ts';
+import type { TieBreak } from '../verify/reconcile.ts';
 
 export interface StoredFinding {
   findingId: string;
@@ -101,6 +102,12 @@ export interface RecordRunInput {
    * finding leaves no other trace, so this is the only record that it existed.
    */
   verdicts?: unknown;
+  /**
+   * Tie-break rulings on findings the two verification passes disagreed
+   * about. A dropped finding an upheld ruling restored would otherwise read
+   * as suppressed in `explain`.
+   */
+  tieBreaks?: TieBreak[] | undefined;
   /**
    * Candidates held back rather than reported, with the reason. Unlike a
    * verdict, this also covers repeats of an existing comment and cross-check
@@ -238,6 +245,7 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
       findings,
       scores: input.scores ?? [],
       verdicts: input.verdicts ?? [],
+      tieBreaks: input.tieBreaks ?? [],
       held: input.held ?? [],
     }),
     new Date().toISOString(),
@@ -273,6 +281,8 @@ export interface RunDetail {
   scores: unknown;
   precedents: unknown;
   verdicts: unknown;
+  /** Empty for runs recorded before tie-breaks existed. */
+  tieBreaks: TieBreak[];
   /** Empty for runs recorded before held findings were kept. */
   held: HeldFinding[];
 }
@@ -315,6 +325,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     findings: StoredFinding[];
     scores?: unknown;
     verdicts?: unknown;
+    tieBreaks?: unknown;
     held?: unknown;
   };
 
@@ -330,6 +341,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     findings: parsed.findings,
     scores: parsed.scores ?? [],
     verdicts: parsed.verdicts ?? [],
+    tieBreaks: Array.isArray(parsed.tieBreaks) ? (parsed.tieBreaks as TieBreak[]) : [],
     held: Array.isArray(parsed.held) ? (parsed.held as HeldFinding[]) : [],
     // Older rows predate the column, so absence is normal rather than an error.
     stages: ((): StageTiming[] => {

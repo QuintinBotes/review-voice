@@ -51,6 +51,7 @@ import { resolvePolicy } from './policy/schema.ts';
 import { repositoryRoot } from './diff/acquire.ts';
 import { collectEvidence } from './evidence/run.ts';
 import { verifyFindings, type VerifiableFinding } from './verify/external.ts';
+import { parseSecondPass, parseTieBreaks, reconcile, ReconcileInputError, type TieBreak } from './verify/reconcile.ts';
 import { redact } from './redact/redact.ts';
 import { GitHubClient, NotAllowlisted, ReadOnlyViolation } from './github/client.ts';
 import { AuthError } from './github/auth.ts';
@@ -107,6 +108,7 @@ Commands:
   conventions       Collect the repository's own convention documents
   evidence          Run the configured static checks and emit structured signals
   verify            Second-pass verification of candidates by a configured command
+  reconcile         Apply --second-pass verdicts; --tie-breaks settles disputes
   redact            Redact secrets from stdin (used before anything is stored)
   sync              Ingest review history from allowlisted repositories
   discover          List repositories the credential can see (reads no history)
@@ -252,6 +254,7 @@ const STDIN_INPUT: Record<string, string> = {
   'validate-output': 'the review text',
   anchors: 'the validated review',
   verify: 'candidates JSON',
+  reconcile: 'candidates JSON',
   redact: 'the text to redact',
   draft: 'the validated review',
   verdict: 'the validated review',
@@ -1730,7 +1733,16 @@ function verifyCommand(argv: string[]): number {
   let findings: VerifiableFinding[];
   try {
     const parsed = JSON.parse(readStdin()) as { candidates?: VerifiableFinding[] } | VerifiableFinding[];
-    findings = Array.isArray(parsed) ? parsed : (parsed.candidates ?? []);
+    // The analyst writes `candidate_id`. Without the camelCase id each verdict
+    // was keyed by location only, and `reconcile` needs the id to apply it.
+    findings = (Array.isArray(parsed) ? parsed : (parsed.candidates ?? [])).map((finding) => {
+      const raw = finding as VerifiableFinding & { candidate_id?: unknown; failure_mode?: unknown };
+      return {
+        ...raw,
+        candidateId: raw.candidateId ?? (typeof raw.candidate_id === 'string' ? raw.candidate_id : raw.candidateId),
+        failureMode: raw.failureMode ?? (typeof raw.failure_mode === 'string' ? raw.failure_mode : raw.failureMode),
+      };
+    });
   } catch {
     console.error('Expected {"candidates": [...]} on stdin.');
     return 2;
@@ -1761,6 +1773,86 @@ function verifyCommand(argv: string[]): number {
   } catch (error) {
     if (error instanceof GitError) {
       console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Applies the second pass to the candidates, settling disputes by tie-break.
+ *
+ * Replaces applying each verdict by hand. A candidate is disputed when the
+ * evidence-verifier traced its impact at 0.85 or more and the second pass
+ * downgraded or dropped it; without a tie-break for it the second pass stands,
+ * exactly as before, and `disputes` says what a tie-break would settle.
+ */
+function reconcileCommand(argv: string[]): number {
+  let candidates: Record<string, unknown>[];
+  try {
+    const parsed = JSON.parse(readStdin()) as { candidates?: unknown } | unknown[];
+    const list = Array.isArray(parsed) ? parsed : (parsed as { candidates?: unknown }).candidates;
+    if (!Array.isArray(list)) throw new Error('no candidates');
+    candidates = list as Record<string, unknown>[];
+  } catch {
+    console.error('Expected {"candidates": [...]} on stdin, as they were before the second pass.');
+    return 2;
+  }
+
+  const verificationFile = flag(argv, '--verification');
+  const secondPassFile = flag(argv, '--second-pass');
+  if (verificationFile === null || secondPassFile === null) {
+    console.error('reconcile needs --verification <file> (step 3) and --second-pass <file> (the verify report).');
+    return 2;
+  }
+
+  let verifications: Record<string, unknown>[];
+  try {
+    verifications = verdictList(JSON.parse(readFileSync(verificationFile, 'utf8')) as unknown);
+  } catch (error) {
+    console.error(`Cannot read ${verificationFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const problem = verificationProblem(verifications);
+  if (problem !== null) {
+    console.error(`Malformed verification - ${problem}`);
+    return 2;
+  }
+  // Read as "nothing was traced" it would make every dispute disappear.
+  if (verifications.length === 0) {
+    console.error(`${verificationFile} contained no verifications, so no dispute could be detected.`);
+    return 2;
+  }
+
+  let secondPass: ReturnType<typeof parseSecondPass>;
+  try {
+    secondPass = parseSecondPass(JSON.parse(readFileSync(secondPassFile, 'utf8')) as unknown);
+  } catch (error) {
+    console.error(`Cannot read the second pass from ${secondPassFile}: ${(error as Error).message}`);
+    return 2;
+  }
+
+  let tieBreaks: TieBreak[] | null = null;
+  const tieBreaksFile = flag(argv, '--tie-breaks');
+  if (tieBreaksFile !== null) {
+    try {
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync(tieBreaksFile, 'utf8')) as unknown);
+    } catch (error) {
+      console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${(error as Error).message}`);
+      return 2;
+    }
+  }
+
+  try {
+    const result = reconcile(candidates, verifications, secondPass, tieBreaks);
+    for (const note of result.notes) console.error(note);
+    console.log(
+      JSON.stringify({ candidates: result.candidates, disputes: result.disputes, applied: result.applied }, null, 2),
+    );
+    return 0;
+  } catch (error) {
+    if (error instanceof ReconcileInputError) {
+      console.error(`Cannot reconcile: ${error.message}`);
       return 2;
     }
     throw error;
@@ -1888,6 +1980,19 @@ function recordCommand(argv: string[]): number {
     }
   }
 
+  // Tie-break rulings from step 3c. Checked as strictly as reconcile checks
+  // them, so explain never shows a ruling reconcile would have refused.
+  const tieBreaksFile = flag(argv, '--tie-breaks');
+  let tieBreaks: TieBreak[] = [];
+  if (tieBreaksFile !== null) {
+    try {
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync(tieBreaksFile, 'utf8')) as unknown);
+    } catch (error) {
+      console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${(error as Error).message}`);
+      return 2;
+    }
+  }
+
   // Held-back candidates: a malformed entry is refused outright, because a
   // reason that was silently dropped would make the held list look complete.
   const heldFile = flag(argv, '--held');
@@ -1958,6 +2063,7 @@ function recordCommand(argv: string[]): number {
       candidates,
       scores,
       verdicts,
+      tieBreaks,
       held,
       carried,
       stages,
@@ -2056,6 +2162,7 @@ function explainCommand(argv: string[]): number {
 
     const wanted = argv.find((arg) => /^rv_\d+$/.test(arg));
     const verdicts = (Array.isArray(detail.verdicts) ? detail.verdicts : []) as {
+      candidateId?: string;
       path: string;
       line: number;
       verdict: string;
@@ -2178,6 +2285,10 @@ function explainCommand(argv: string[]): number {
             (verdict.outcome === 'kept' ? '' : ` - ${verdict.outcome}`),
         );
         if (verdict.reason.length > 0) console.log(`                    ${verdict.reason}`);
+        const ruling = detail.tieBreaks.find((t) => t.candidateId === verdict.candidateId);
+        if (ruling !== undefined) {
+          console.log(`  tie-break         ${ruling.upheld ? 'upheld' : 'not upheld'} - ${ruling.reason}`);
+        }
       }
       console.log('');
     }
@@ -2193,12 +2304,19 @@ function explainCommand(argv: string[]): number {
     // Findings the verifier removed leave no other trace. Showing them is what
     // makes a bad verifier visible rather than indistinguishable from a clean
     // diff.
-    const dropped = verdicts.filter((v) => v.outcome === 'dropped');
+    // A drop an upheld tie-break overturned was not a suppression.
+    const dropped = verdicts.filter(
+      (v) =>
+        v.outcome === 'dropped' &&
+        !detail.tieBreaks.some((t) => t.upheld && v.candidateId !== undefined && t.candidateId === v.candidateId),
+    );
     if (dropped.length > 0 && wanted === undefined) {
       console.log(`Suppressed by verification (${dropped.length}):`);
       for (const v of dropped) {
         console.log(`  [${v.originalSeverity}] ${v.path}:${v.line}  ${v.verifier} @ ${v.confidence.toFixed(2)}`);
         if (v.reason.length > 0) console.log(`      ${v.reason}`);
+        const ruling = detail.tieBreaks.find((t) => v.candidateId !== undefined && t.candidateId === v.candidateId);
+        if (ruling !== undefined) console.log(`      tie-break not upheld - ${ruling.reason}`);
       }
       console.log('');
     }
@@ -2743,6 +2861,8 @@ async function main(argv: string[]): Promise<number> {
     case 'evidence':
       return evidenceCommand();
 
+    case 'reconcile':
+      return reconcileCommand(argv.slice(1));
     case 'verify':
       return verifyCommand(argv);
 

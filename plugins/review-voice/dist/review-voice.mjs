@@ -3263,6 +3263,7 @@ function recordRun(db, input) {
       findings,
       scores: input.scores ?? [],
       verdicts: input.verdicts ?? [],
+      tieBreaks: input.tieBreaks ?? [],
       held: input.held ?? []
     }),
     (/* @__PURE__ */ new Date()).toISOString(),
@@ -3309,6 +3310,7 @@ function runDetail(db, reviewRunId) {
     findings: parsed.findings,
     scores: parsed.scores ?? [],
     verdicts: parsed.verdicts ?? [],
+    tieBreaks: Array.isArray(parsed.tieBreaks) ? parsed.tieBreaks : [],
     held: Array.isArray(parsed.held) ? parsed.held : [],
     // Older rows predate the column, so absence is normal rather than an error.
     stages: (() => {
@@ -10295,6 +10297,160 @@ ${result.stderr}`);
   return { enabled: true, verifier: name, verdicts, didNotRun: [...new Set(didNotRun)] };
 }
 
+// plugins/review-voice/src/verify/reconcile.ts
+var DISPUTE_CONFIDENCE = 0.85;
+var ReconcileInputError = class extends Error {
+};
+function candidateIdOf(raw) {
+  const id = raw["candidate_id"] ?? raw["candidateId"];
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+var OUTCOMES = ["kept", "downgraded", "dropped", "unverified"];
+function parseSecondPass(parsed) {
+  const list = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null ? parsed.verdicts : void 0;
+  if (!Array.isArray(list)) throw new ReconcileInputError('expected the verify report, {"verdicts": [...]}, or an array');
+  list.forEach((entry, index) => {
+    const e = typeof entry === "object" && entry !== null ? entry : {};
+    const who = `verdict ${index}`;
+    if (!OUTCOMES.includes(e["outcome"])) {
+      throw new ReconcileInputError(`${who}: outcome must be one of ${OUTCOMES.join(", ")}`);
+    }
+    if (e["outcome"] === "downgraded" && (typeof e["finalSeverity"] !== "string" || e["finalSeverity"] === "")) {
+      throw new ReconcileInputError(`${who}: a downgraded verdict needs finalSeverity`);
+    }
+    const hasId = typeof e["candidateId"] === "string" && e["candidateId"] !== "";
+    if (!hasId && !(typeof e["path"] === "string" && Number.isInteger(e["line"]))) {
+      throw new ReconcileInputError(`${who}: needs candidateId, or path and line`);
+    }
+  });
+  return list;
+}
+function parseTieBreaks(parsed) {
+  const list = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null ? parsed.tie_breaks ?? parsed.tieBreaks : void 0;
+  if (!Array.isArray(list)) throw new ReconcileInputError('expected an array or {"tie_breaks": [...]}');
+  const seen = /* @__PURE__ */ new Set();
+  return list.map((entry, index) => {
+    const e = typeof entry === "object" && entry !== null ? entry : {};
+    const id = candidateIdOf(e);
+    const who = `entry ${index} (${id ?? "no candidate id"})`;
+    if (id === null) throw new ReconcileInputError(`${who}: candidate_id must be a non-empty string`);
+    if (typeof e["upheld"] !== "boolean") throw new ReconcileInputError(`${who}: upheld must be true or false`);
+    if (typeof e["reason"] !== "string" || e["reason"].trim() === "") {
+      throw new ReconcileInputError(`${who}: reason must be a non-empty string`);
+    }
+    if (seen.has(id)) throw new ReconcileInputError(`${who}: a second tie-break for the same candidate`);
+    seen.add(id);
+    return { candidateId: id, upheld: e["upheld"], reason: e["reason"] };
+  });
+}
+function tracedConfidently(verification2) {
+  if (verification2 === void 0) return false;
+  const traced = verification2["impact_traced"] ?? verification2["impactTraced"];
+  const confidence = verification2["technical_confidence"] ?? verification2["technicalConfidence"];
+  return traced === true && typeof confidence === "number" && confidence >= DISPUTE_CONFIDENCE;
+}
+function reconcile(candidates, verifications, secondPass, tieBreaks) {
+  const notes = [];
+  const ids = candidates.map((candidate, index) => {
+    const id = candidateIdOf(candidate);
+    if (id === null) throw new ReconcileInputError(`candidate ${index}: candidate_id must be a non-empty string`);
+    return id;
+  });
+  if (new Set(ids).size !== ids.length) throw new ReconcileInputError("candidate ids must be unique");
+  const verificationById = /* @__PURE__ */ new Map();
+  for (const entry of verifications) {
+    const id = candidateIdOf(entry);
+    if (id !== null) verificationById.set(id, entry);
+  }
+  const verdictById = /* @__PURE__ */ new Map();
+  for (const [index, verdict] of secondPass.entries()) {
+    let id = typeof verdict.candidateId === "string" && verdict.candidateId !== "" ? verdict.candidateId : null;
+    if (id === null) {
+      const matches = candidates.filter((c) => c["path"] === verdict.path && c["line"] === verdict.line);
+      if (matches.length > 1) {
+        throw new ReconcileInputError(
+          `verdict ${index}: ${verdict.path}:${verdict.line} matches ${matches.length} candidates and carries no candidateId`
+        );
+      }
+      id = matches.length === 1 ? candidateIdOf(matches[0]) : null;
+      if (id === null) {
+        notes.push(`Warning: second-pass verdict for ${verdict.path}:${verdict.line} matches no candidate. Ignored.`);
+        continue;
+      }
+    } else if (!ids.includes(id)) {
+      notes.push(`Warning: second-pass verdict for unknown candidate id ${id}. Ignored.`);
+      continue;
+    }
+    if (verdictById.has(id)) throw new ReconcileInputError(`verdict ${index}: a second verdict for ${id}`);
+    verdictById.set(id, verdict);
+  }
+  const disputes = [];
+  for (const [index, candidate] of candidates.entries()) {
+    const id = ids[index];
+    const verdict = verdictById.get(id);
+    if (verdict === void 0) continue;
+    if (verdict.outcome !== "downgraded" && verdict.outcome !== "dropped") continue;
+    const verification2 = verificationById.get(id);
+    if (!tracedConfidently(verification2)) continue;
+    disputes.push({
+      candidateId: id,
+      path: candidate["path"],
+      line: candidate["line"],
+      severity: candidate["severity"],
+      claim: candidate["claim"],
+      failureMode: candidate["failure_mode"] ?? candidate["failureMode"],
+      evidence: candidate["evidence"],
+      verification: verification2,
+      secondPass: {
+        verdict: verdict.verdict,
+        confidence: verdict.confidence,
+        reason: verdict.reason,
+        outcome: verdict.outcome,
+        originalSeverity: verdict.originalSeverity,
+        finalSeverity: verdict.finalSeverity,
+        verifier: verdict.verifier
+      }
+    });
+  }
+  const disputed = new Set(disputes.map((d) => d.candidateId));
+  const rulings = /* @__PURE__ */ new Map();
+  for (const tieBreak of tieBreaks ?? []) {
+    if (!ids.includes(tieBreak.candidateId)) {
+      notes.push(`Warning: tie-break for unknown candidate id ${tieBreak.candidateId}. Ignored.`);
+    } else if (!disputed.has(tieBreak.candidateId)) {
+      notes.push(`Note: ${tieBreak.candidateId} is not disputed, so its tie-break is ignored.`);
+    } else {
+      rulings.set(tieBreak.candidateId, tieBreak);
+    }
+  }
+  const out = [];
+  const applied = [];
+  for (const [index, candidate] of candidates.entries()) {
+    const id = ids[index];
+    const verdict = verdictById.get(id);
+    const ruling = rulings.get(id);
+    const secondPassStands = ruling === void 0 || !ruling.upheld;
+    let result = candidate;
+    if (secondPassStands && verdict !== void 0) {
+      if (verdict.outcome === "dropped") result = null;
+      else if (verdict.outcome === "downgraded") {
+        result = { ...candidate, severity: verdict.finalSeverity };
+        if (disputed.has(id)) result["impact_disputed"] = true;
+      }
+    }
+    if (result !== null) out.push(result);
+    if (disputed.has(id)) {
+      applied.push({
+        candidateId: id,
+        result: ruling === void 0 ? "no tie-break supplied" : ruling.upheld ? "upheld" : "not upheld",
+        severity: result === null ? null : typeof result["severity"] === "string" ? result["severity"] : null,
+        reason: ruling?.reason ?? null
+      });
+    }
+  }
+  return { candidates: out, disputes, applied, notes };
+}
+
 // plugins/review-voice/src/github/roles.ts
 var BOT_HINTS = [
   /\[bot\]$/i,
@@ -11671,6 +11827,13 @@ function boundSeverityByEvidence(derived, candidate, verification2) {
   const got = TIER_ORDER.indexOf(result.severity);
   if (asked === -1 || got === -1 || got <= asked) return result;
   const confidence = verification2?.technicalConfidence ?? (verification2?.evidenceQuality === void 0 ? null : QUALITY_CONFIDENCE[verification2.evidenceQuality] ?? null);
+  if (candidate.impactDisputed === true) {
+    return {
+      ...result,
+      severity: TIER_ORDER[asked],
+      reason: `${result.reason}, held at ${candidate.severity} because the second pass disputed the traced impact and no tie-break upheld it`
+    };
+  }
   if (verification2?.impactTraced === true && confidence !== null && confidence >= ESCALATION_CONFIDENCE) {
     return result;
   }
@@ -11804,6 +11967,10 @@ function normaliseCandidate(raw, index) {
     }
     causedBy = { path: rawCause.path, line: rawCause.line };
   }
+  const impactDisputed = raw.impact_disputed !== void 0 ? raw.impact_disputed : raw.impactDisputed;
+  if (impactDisputed !== void 0 && typeof impactDisputed !== "boolean") {
+    throw new MalformedCandidate(`${candidateId}: impact_disputed must be true or false when supplied`);
+  }
   return {
     candidateId,
     path: raw.path,
@@ -11820,7 +11987,8 @@ function normaliseCandidate(raw, index) {
     fixConfidence: fixConfidence ?? null,
     technicalConfidence: confidence,
     // Spread only when declared, so an ordinary candidate keeps its shape.
-    ...raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {}
+    ...raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {},
+    ...impactDisputed === true ? { impactDisputed: true } : {}
   };
 }
 var WORDS = /[^\p{L}\p{N}]+/u;
@@ -13098,6 +13266,7 @@ Commands:
   conventions       Collect the repository's own convention documents
   evidence          Run the configured static checks and emit structured signals
   verify            Second-pass verification of candidates by a configured command
+  reconcile         Apply --second-pass verdicts; --tie-breaks settles disputes
   redact            Redact secrets from stdin (used before anything is stored)
   sync              Ingest review history from allowlisted repositories
   discover          List repositories the credential can see (reads no history)
@@ -13241,6 +13410,7 @@ var STDIN_INPUT = {
   "validate-output": "the review text",
   anchors: "the validated review",
   verify: "candidates JSON",
+  reconcile: "candidates JSON",
   redact: "the text to redact",
   draft: "the validated review",
   verdict: "the validated review",
@@ -14356,7 +14526,14 @@ function verifyCommand(argv) {
   let findings;
   try {
     const parsed = JSON.parse(readStdin());
-    findings = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
+    findings = (Array.isArray(parsed) ? parsed : parsed.candidates ?? []).map((finding) => {
+      const raw = finding;
+      return {
+        ...raw,
+        candidateId: raw.candidateId ?? (typeof raw.candidate_id === "string" ? raw.candidate_id : raw.candidateId),
+        failureMode: raw.failureMode ?? (typeof raw.failure_mode === "string" ? raw.failure_mode : raw.failureMode)
+      };
+    });
   } catch {
     console.error('Expected {"candidates": [...]} on stdin.');
     return 2;
@@ -14383,6 +14560,71 @@ function verifyCommand(argv) {
   } catch (error) {
     if (error instanceof GitError) {
       console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+}
+function reconcileCommand(argv) {
+  let candidates;
+  try {
+    const parsed = JSON.parse(readStdin());
+    const list = Array.isArray(parsed) ? parsed : parsed.candidates;
+    if (!Array.isArray(list)) throw new Error("no candidates");
+    candidates = list;
+  } catch {
+    console.error('Expected {"candidates": [...]} on stdin, as they were before the second pass.');
+    return 2;
+  }
+  const verificationFile = flag(argv, "--verification");
+  const secondPassFile = flag(argv, "--second-pass");
+  if (verificationFile === null || secondPassFile === null) {
+    console.error("reconcile needs --verification <file> (step 3) and --second-pass <file> (the verify report).");
+    return 2;
+  }
+  let verifications;
+  try {
+    verifications = verdictList(JSON.parse(readFileSync5(verificationFile, "utf8")));
+  } catch (error) {
+    console.error(`Cannot read ${verificationFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const problem = verificationProblem(verifications);
+  if (problem !== null) {
+    console.error(`Malformed verification - ${problem}`);
+    return 2;
+  }
+  if (verifications.length === 0) {
+    console.error(`${verificationFile} contained no verifications, so no dispute could be detected.`);
+    return 2;
+  }
+  let secondPass;
+  try {
+    secondPass = parseSecondPass(JSON.parse(readFileSync5(secondPassFile, "utf8")));
+  } catch (error) {
+    console.error(`Cannot read the second pass from ${secondPassFile}: ${error.message}`);
+    return 2;
+  }
+  let tieBreaks = null;
+  const tieBreaksFile = flag(argv, "--tie-breaks");
+  if (tieBreaksFile !== null) {
+    try {
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync5(tieBreaksFile, "utf8")));
+    } catch (error) {
+      console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
+      return 2;
+    }
+  }
+  try {
+    const result = reconcile(candidates, verifications, secondPass, tieBreaks);
+    for (const note of result.notes) console.error(note);
+    console.log(
+      JSON.stringify({ candidates: result.candidates, disputes: result.disputes, applied: result.applied }, null, 2)
+    );
+    return 0;
+  } catch (error) {
+    if (error instanceof ReconcileInputError) {
+      console.error(`Cannot reconcile: ${error.message}`);
       return 2;
     }
     throw error;
@@ -14485,6 +14727,16 @@ function recordCommand(argv) {
       return 2;
     }
   }
+  const tieBreaksFile = flag(argv, "--tie-breaks");
+  let tieBreaks = [];
+  if (tieBreaksFile !== null) {
+    try {
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync5(tieBreaksFile, "utf8")));
+    } catch (error) {
+      console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
+      return 2;
+    }
+  }
   const heldFile = flag(argv, "--held");
   let held = [];
   if (heldFile !== null) {
@@ -14546,6 +14798,7 @@ function recordCommand(argv) {
       candidates,
       scores,
       verdicts,
+      tieBreaks,
       held,
       carried,
       stages
@@ -14703,6 +14956,10 @@ function explainCommand(argv) {
           `  verified          ${verdict.verdict} (${verdict.confidence.toFixed(2)}) by ${verdict.verifier}` + (verdict.outcome === "kept" ? "" : ` - ${verdict.outcome}`)
         );
         if (verdict.reason.length > 0) console.log(`                    ${verdict.reason}`);
+        const ruling = detail.tieBreaks.find((t) => t.candidateId === verdict.candidateId);
+        if (ruling !== void 0) {
+          console.log(`  tie-break         ${ruling.upheld ? "upheld" : "not upheld"} - ${ruling.reason}`);
+        }
       }
       console.log("");
     }
@@ -14711,12 +14968,16 @@ function explainCommand(argv) {
       for (const h of detail.held) console.log(`  [${h.verdict}] ${h.path}:${h.line}  ${h.source} - ${h.reason}`);
       console.log("");
     }
-    const dropped = verdicts.filter((v) => v.outcome === "dropped");
+    const dropped = verdicts.filter(
+      (v) => v.outcome === "dropped" && !detail.tieBreaks.some((t) => t.upheld && v.candidateId !== void 0 && t.candidateId === v.candidateId)
+    );
     if (dropped.length > 0 && wanted === void 0) {
       console.log(`Suppressed by verification (${dropped.length}):`);
       for (const v of dropped) {
         console.log(`  [${v.originalSeverity}] ${v.path}:${v.line}  ${v.verifier} @ ${v.confidence.toFixed(2)}`);
         if (v.reason.length > 0) console.log(`      ${v.reason}`);
+        const ruling = detail.tieBreaks.find((t) => v.candidateId !== void 0 && t.candidateId === v.candidateId);
+        if (ruling !== void 0) console.log(`      tie-break not upheld - ${ruling.reason}`);
       }
       console.log("");
     }
@@ -15097,6 +15358,8 @@ async function main(argv) {
       return conventionsCommand(argv.slice(1));
     case "evidence":
       return evidenceCommand();
+    case "reconcile":
+      return reconcileCommand(argv.slice(1));
     case "verify":
       return verifyCommand(argv);
     case "record":
