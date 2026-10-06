@@ -38,9 +38,25 @@ export function seriousNotCarried(notCarried: NotCarriedFinding[]): NotCarriedFi
   return notCarried.filter((f) => f.severity !== undefined && SERIOUS_SEVERITIES.includes(f.severity.toLowerCase()));
 }
 
+/** A finding the author already answered on the pull request, so it is not repeated. */
+export interface HeldBackFinding {
+  findingId: string;
+  path: string;
+  line: number;
+  severity?: string | undefined;
+  /** What happened to it on the pull request: resolved, dismissed, replied to. */
+  reason: string;
+}
+
 export interface CarryResult {
   carried: CarriedFinding[];
   notCarried: NotCarriedFinding[];
+  /**
+   * Findings left out because the author resolved or dismissed them. They are
+   * neither carried nor not carried, and are not serious-not-carried: the
+   * author answered them, and the caller decides what that means.
+   */
+  heldBack: HeldBackFinding[];
   /**
    * The carried texts, blank-line separated, with each anchor moved to its new
    * line. A run that had no findings carries the contract's clean-review
@@ -163,16 +179,36 @@ function rewriteAnchor(text: string, path: string, oldLine: number, line: number
  *
  * The finding is carried only when nothing near its line changed between the
  * two commits, so the code it talked about is the code that is there now.
+ * A finding in `hold` (by id, with the reason) is checked first and is left out
+ * of both lists, whatever happened to its line.
  */
-export function carryFindings(findings: CarryInput[], previousHead: string, head: string, cwd: string): CarryResult {
+export function carryFindings(
+  findings: CarryInput[],
+  previousHead: string,
+  head: string,
+  cwd: string,
+  hold: ReadonlyMap<string, string> = new Map(),
+): CarryResult {
   for (const ref of [previousHead, head]) {
     if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
   }
 
   const carried: CarriedFinding[] = [];
   const notCarried: NotCarriedFinding[] = [];
+  const heldBack: HeldBackFinding[] = [];
 
   for (const finding of findings) {
+    const holdReason = hold.get(finding.findingId);
+    if (holdReason !== undefined) {
+      heldBack.push({
+        findingId: finding.findingId,
+        path: finding.path,
+        line: finding.line,
+        reason: holdReason,
+        ...(finding.severity === undefined ? {} : { severity: finding.severity }),
+      });
+      continue;
+    }
     const moved = followLine(previousHead, head, finding.path, finding.line, cwd);
     if ('reason' in moved) {
       notCarried.push({
@@ -195,7 +231,7 @@ export function carryFindings(findings: CarryInput[], previousHead: string, head
 
   const output =
     findings.length === 0 ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join('\n\n');
-  return { carried, notCarried, output };
+  return { carried, notCarried, heldBack, output };
 }
 
 /** What a finding says after its anchor, whitespace collapsed so wrapping cannot matter. */

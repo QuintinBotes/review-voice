@@ -71,15 +71,22 @@ recorded. The scope is one of:
 
 - `unchanged` - the pull request's own diff is the same as at the previous
   head (a base merge or a rebase only). Do not review again: run
-  `RV carry --from <prior.runId> --head <sha> --text > <tmpdir>/review.txt`.
+  `RV carry --from <prior.runId> --head <sha> --thread <tmpdir>/thread.json --text > <tmpdir>/review.txt`
+  (run `RV thread --pr <number> --out <tmpdir>` first if step 1a has not
+  written `thread.json` yet).
   Run it in the clone of the pull request's repository, which is where it reads both heads.
   It prints the earlier review with each finding whose line and the two lines
   either side are unchanged moved to its new line, and names the rest on
-  stderr. An earlier run with no findings prints exactly
+  stderr. A finding whose posted comment the author resolved, or whose review
+  the author dismissed, is not printed: stderr says `Held back: <id> <path>:<line>
+  (<severity>) - <reason>`, quoting the dismissal message and the author's last
+  reply. Show those lines to the person and do not post those findings again;
+  the author already answered them. An earlier run with no findings prints exactly
   `No actionable findings.`. Then hand that file on unchanged:
   `RV validate-output < <tmpdir>/review.txt`, display it, and record it with
-  `RV record --repository <owner/repo> --head <sha> --carried-from <prior.runId> --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json < <tmpdir>/review.txt`.
-  Exit 1 from `carry` prints nothing. When stderr names a blocking or
+  `RV record --repository <owner/repo> --head <sha> --carried-from <prior.runId> --thread <tmpdir>/thread.json --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json < <tmpdir>/review.txt`.
+  Exit 1 from `carry` prints nothing; when every finding was held back its
+  message says so. When stderr names a blocking or
   important finding that did not carry, its code changed and it may be what
   kept the earlier review from approving: review those files again with
   `RV diff --pr <number> --full` from step 1 rather than recording the rest.

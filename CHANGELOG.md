@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   <owner/repo>` for a run that recorded none, and `carry --help` states the
   working-directory requirement. (#58)
 
+- `carry --thread <thread.json>` holds back a finding the author already
+  answered on the pull request: its posted comment's thread is resolved, or the
+  review it was posted in was dismissed (every finding of a dismissed review
+  when the store knows its id). Held-back findings are not printed, are listed
+  as `heldBack` in the JSON and as `Held back: ... - <reason>` on stderr with the
+  dismissal message and the author's last reply, and do not count as a serious
+  finding that did not carry. `thread` now also records each inline comment's
+  `reviewId` and `inReplyTo`, every review's state under `reviews`, and the
+  message of a dismissed review. `record --carried-from` takes the same
+  `--thread`. Without `--thread`, `carry` on a pull request run says it did not
+  check. (#57)
+
 ## [1.11.1] - 2026-10-06
 
 ### Fixed
