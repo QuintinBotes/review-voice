@@ -495,6 +495,56 @@ export interface ThreadComment {
   /** GitHub's id for an inline comment, and when it was written. */
   id?: number;
   createdAt?: string;
+  /**
+   * Set on a comment `citedLocations` made from a `path:line` a review body or
+   * conversation comment cites: its path may be a suffix of the file's.
+   */
+  cited?: boolean;
+}
+
+/**
+ * A `path:line` a reviewer wrote in prose, as `src/a.ts:105`, `a.ts:105` or
+ * `a.ts:105-110`, with or without backticks. The path needs an extension, so
+ * a time (`10:30`) or a ratio does not read as one.
+ */
+const CITATION = /(?<![\w./-])`?((?:[\w.-]+\/)*[\w-][\w.-]*\.[A-Za-z0-9]+):(\d+)(?:-\d+)?`?/g;
+
+/**
+ * The thread with each `path:line` a review body or conversation comment cites
+ * added as an anchored comment of its own (#76).
+ *
+ * A reviewer who lists findings by location in a review body, with no inline
+ * comment, made each point about a line as surely as an inline comment does,
+ * but a body was only compared on wording, at the higher unanchored bar, so
+ * a repeat of one of its points went through to verification. Each citation
+ * becomes a comment at that line holding the text from the citation to the
+ * next one, so the anchored checks apply to it. The original stays as it was.
+ * The description is left alone, for the reason `alreadySaidOnThread` gives.
+ */
+export function citedLocations(thread: ThreadComment[]): ThreadComment[] {
+  const out: ThreadComment[] = [];
+  for (const comment of thread) {
+    out.push(comment);
+    if (comment.kind === 'description' || comment.path !== null) continue;
+    const citations = [...comment.body.matchAll(CITATION)];
+    citations.forEach((match, index) => {
+      const end = citations[index + 1]?.index ?? comment.body.length;
+      out.push({
+        ...comment,
+        path: (match[1] as string).replace(/^\.\//, ''),
+        line: Number(match[2]),
+        body: comment.body.slice(match.index, end),
+        cited: true,
+      });
+    });
+  }
+  return out;
+}
+
+/** Whether a comment is on this file: its path, or for a citation the end of it. */
+function onFile(comment: ThreadComment, path: string): boolean {
+  if (comment.path === path) return true;
+  return comment.cited === true && comment.path !== null && path.endsWith(`/${comment.path}`);
 }
 
 /**
@@ -532,7 +582,7 @@ export function alreadySaidOnThread(
     if (comment.kind === 'description') continue;
     const anchored = comment.path !== null && comment.line !== null;
     if (anchored) {
-      if (comment.path !== candidate.path) continue;
+      if (!onFile(comment, candidate.path)) continue;
       if (Math.abs((comment.line as number) - candidate.line) > DUPLICATE_LINE_WINDOW) continue;
       if (overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
       continue;
@@ -571,7 +621,7 @@ export function possiblySaidOnThread(
   let best: { comment: ThreadComment; rank: [number, number, number] } | null = null;
   for (const comment of thread) {
     if (comment.path === null || comment.line === null) continue;
-    if (comment.path !== candidate.path) continue;
+    if (!onFile(comment, candidate.path)) continue;
     const distance = Math.abs(comment.line - candidate.line);
     if (distance > POSSIBLE_REPEAT_LINE_WINDOW) continue;
     const share = overlap(mine, significantWords(comment.body));
@@ -623,7 +673,7 @@ export function possiblyRaisedInFile(
   let best: { comment: ThreadComment; share: number; distance: number } | null = null;
   for (const comment of thread) {
     if (comment.path === null || comment.line === null) continue;
-    if (comment.path !== candidate.path || !accept(comment)) continue;
+    if (!onFile(comment, candidate.path) || !accept(comment)) continue;
     const share = overlap(mine, significantWords(comment.body));
     if (share < SAME_FILE_REPEAT_OVERLAP) continue;
     const distance = Math.abs(comment.line - candidate.line);

@@ -3257,6 +3257,30 @@ function applyQuestionCap(breakdowns, limit = MAX_QUESTIONS) {
     dropped.rejectedBecause = `this review already asks ${limit} better-evidenced question${limit === 1 ? "" : "s"}, and a review that ends in a list of questions has stopped being a review`;
   }
 }
+var CITATION = /(?<![\w./-])`?((?:[\w.-]+\/)*[\w-][\w.-]*\.[A-Za-z0-9]+):(\d+)(?:-\d+)?`?/g;
+function citedLocations(thread) {
+  const out = [];
+  for (const comment of thread) {
+    out.push(comment);
+    if (comment.kind === "description" || comment.path !== null) continue;
+    const citations = [...comment.body.matchAll(CITATION)];
+    citations.forEach((match, index) => {
+      const end = citations[index + 1]?.index ?? comment.body.length;
+      out.push({
+        ...comment,
+        path: match[1].replace(/^\.\//, ""),
+        line: Number(match[2]),
+        body: comment.body.slice(match.index, end),
+        cited: true
+      });
+    });
+  }
+  return out;
+}
+function onFile(comment, path) {
+  if (comment.path === path) return true;
+  return comment.cited === true && comment.path !== null && path.endsWith(`/${comment.path}`);
+}
 function alreadySaidOnThread(candidate, thread) {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
   if (mine.size === 0) return null;
@@ -3264,7 +3288,7 @@ function alreadySaidOnThread(candidate, thread) {
     if (comment.kind === "description") continue;
     const anchored = comment.path !== null && comment.line !== null;
     if (anchored) {
-      if (comment.path !== candidate.path) continue;
+      if (!onFile(comment, candidate.path)) continue;
       if (Math.abs(comment.line - candidate.line) > DUPLICATE_LINE_WINDOW) continue;
       if (overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
       continue;
@@ -3281,7 +3305,7 @@ function possiblySaidOnThread(candidate, thread, preferred = () => false) {
   let best = null;
   for (const comment of thread) {
     if (comment.path === null || comment.line === null) continue;
-    if (comment.path !== candidate.path) continue;
+    if (!onFile(comment, candidate.path)) continue;
     const distance = Math.abs(comment.line - candidate.line);
     if (distance > POSSIBLE_REPEAT_LINE_WINDOW) continue;
     const share = overlap(mine, significantWords(comment.body));
@@ -3305,7 +3329,7 @@ function possiblyRaisedInFile(candidate, thread, accept = () => true) {
   let best = null;
   for (const comment of thread) {
     if (comment.path === null || comment.line === null) continue;
-    if (comment.path !== candidate.path || !accept(comment)) continue;
+    if (!onFile(comment, candidate.path) || !accept(comment)) continue;
     const share = overlap(mine, significantWords(comment.body));
     if (share < SAME_FILE_REPEAT_OVERLAP) continue;
     const distance = Math.abs(comment.line - candidate.line);
@@ -16493,8 +16517,8 @@ function scoreCommand(argv) {
           `Warning: ${candidate.candidateId} is marked partly_addressed but is not linked to a comment of the owner on this thread. Scored as an ordinary finding.`
         );
       }
-      const echoThread = followUp === null ? thread : thread.filter(
-        (comment) => !(comment.author === followUp.author && comment.path === followUp.path && comment.line === followUp.line)
+      const echoThread = followUp === null ? citedLocations(thread) : citedLocations(thread).filter(
+        (comment) => !(comment.author === followUp.author && comment.path === followUp.path && comment.line === followUp.line) && !(comment.cited === true && comment.author === followUp.author)
       );
       const listable = !breakdown.eligible && locallyListable(breakdown.rejectedBecause);
       const alsoRejected = (because) => {
@@ -18052,7 +18076,8 @@ function checkCandidatesCommand(argv) {
     const held = heldFrom === null || headSha === null ? [] : carriedHeldFindings(heldFrom, headSha);
     const owner = argv.includes("--thread") ? (flag(argv, "--owner") ?? configuredOwner())?.toLowerCase() ?? null : null;
     const isOwn = (comment) => owner !== null && comment.author.toLowerCase() === owner;
-    const droppable = thread.filter((comment) => !(isOwn(comment) && comment.path !== null && comment.line !== null));
+    const located = citedLocations(thread);
+    const droppable = located.filter((comment) => !(isOwn(comment) && comment.path !== null && comment.line !== null));
     const kept = [];
     const droppedAsRepeat = [];
     const droppedAsHeld = [];
@@ -18089,7 +18114,7 @@ function checkCandidatesCommand(argv) {
         reason: heldMatch.entry.reason,
         excerpt: (heldMatch.entry.text ?? "").slice(0, 200)
       };
-      const possible = possiblySaidOnThread(candidate, thread, isOwn) ?? possiblyRaisedInFile(candidate, thread, isOwn) ?? possiblyRaisedInFile(candidate, thread);
+      const possible = possiblySaidOnThread(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located);
       if (possible !== null) {
         kept.push({
           ...original,

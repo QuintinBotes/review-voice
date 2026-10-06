@@ -90,6 +90,7 @@ import {
   scoreCandidate,
   applyQuestionCap,
   alreadySaidOnThread,
+  citedLocations,
   possiblySaidOnThread,
   possiblyRaisedInFile,
   possiblyRepeatsDescription,
@@ -1555,12 +1556,15 @@ function scoreCommand(argv: string[]): number {
       }
       // Only the linked comment is set aside. Any other comment, the owner's
       // own included, still rejects a candidate that repeats it.
+      // A citation in the follow-up author's own review body is set aside with
+      // it: it is the same owner pointing at the same place.
       const echoThread =
         followUp === null
-          ? thread
-          : thread.filter(
+          ? citedLocations(thread)
+          : citedLocations(thread).filter(
               (comment) =>
-                !(comment.author === followUp.author && comment.path === followUp.path && comment.line === followUp.line),
+                !(comment.author === followUp.author && comment.path === followUp.path && comment.line === followUp.line) &&
+                !(comment.cited === true && comment.author === followUp.author),
             );
 
       // A candidate one local gate stopped is still checked against the rules
@@ -3615,7 +3619,10 @@ function checkCandidatesCommand(argv: string[]): number {
     // only the verifier, reading the code, can tell that from a plain repeat;
     // dropping it lost the open part. It is flagged below instead, and `score`
     // still drops it unless the verifier found part of the comment open.
-    const droppable = thread.filter((comment) => !(isOwn(comment) && comment.path !== null && comment.line !== null));
+    // A `path:line` cited in a review body counts as a comment at that line
+    // (#76), the owner's own included in the rule above.
+    const located = citedLocations(thread);
+    const droppable = located.filter((comment) => !(isOwn(comment) && comment.path !== null && comment.line !== null));
 
     const kept: unknown[] = [];
     const droppedAsRepeat: unknown[] = [];
@@ -3667,9 +3674,9 @@ function checkCandidatesCommand(argv: string[]): number {
       // first: a line moves as the author edits above it, and one concern can
       // cover several places, so distance says little about a repeat.
       const possible =
-        possiblySaidOnThread(candidate, thread, isOwn) ??
-        possiblyRaisedInFile(candidate, thread, isOwn) ??
-        possiblyRaisedInFile(candidate, thread);
+        possiblySaidOnThread(candidate, located, isOwn) ??
+        possiblyRaisedInFile(candidate, located, isOwn) ??
+        possiblyRaisedInFile(candidate, located);
       if (possible !== null) {
         kept.push({
           ...original,

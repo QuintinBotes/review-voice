@@ -5,6 +5,18 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `check-candidates` (and `score`'s second check) reads each `path:line` a
+  review body or conversation comment cites - `src/a.ts:105`, `a.ts:105`,
+  backticked or not - as a comment at that line, holding the text up to the
+  next citation. A candidate near a point another reviewer listed by location
+  in a review body is dropped as a repeat up front instead of only by the
+  verifier; the owner's own citation is flagged for the verifier, as the
+  owner's inline comments are. (#76)
+
 ## [1.13.1] - 2026-10-06
 
 ### Fixed
