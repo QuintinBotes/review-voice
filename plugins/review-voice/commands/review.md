@@ -448,6 +448,17 @@ it cannot add a technical claim - rests on having no way to verify one. Handed
 a path it can only reply that it cannot open files, which on a live run cost a
 manual paste of eight findings.
 
+**When a cross-check finds an eligible finding anchored on the wrong line**,
+correct that one candidate rather than re-running the analyst:
+`RV reanchor --candidate <id> --line <n> --scores <file> --diff-file <tmpdir>/diff.patch --candidates <file>`,
+adding `--path <p>` when the file is wrong too. `<file>` after `--scores` is the
+JSON `RV score` printed, and the one after `--candidates` is the file step 6
+passes to `record`. The claim is unchanged, so its verification and score are
+kept and both files are rewritten in place. Exit 1 is a refusal, with the
+reason: the new line is not an added line or deletion site of the diff, the
+candidate was not eligible, it is a stale consumer, or another finding is
+already there. Then give the editor the updated `eligible[]` entry.
+
 ## Step 6 - Validate, and retry once
 
 Pipe the editor's output through

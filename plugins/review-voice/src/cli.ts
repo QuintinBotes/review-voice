@@ -22,7 +22,7 @@ import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAsse
 import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
 import { isReviewable } from './diff/classify.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
-import { classifyAnchor, classifyStaleConsumer, parseHunks, reason, type AnchorCheck, type FileHunks } from './diff/hunks.ts';
+import { parseHunks, reason, type AnchorCheck, type FileHunks } from './diff/hunks.ts';
 import { readThread, type ThreadComment } from './diff/thread.ts';
 import { collectSymbolContext } from './diff/symbols.ts';
 import { openDatabase } from './store/db.ts';
@@ -38,6 +38,7 @@ import {
   type StageTiming,
 } from './store/runs.ts';
 import { carryFindings, CarryError, type CarriedFinding } from './diff/carry.ts';
+import { candidateAnchor, reanchorCandidates, reanchorScores } from './diff/reanchor.ts';
 import { fetchPriorHead, latestOwnReview, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
   recordFeedback,
@@ -127,6 +128,7 @@ Commands:
   feedback          Record feedback on a finding
   status            Show what is stored locally
   carry             Carry an earlier run's untouched findings to a new head
+  reanchor          Move one scored candidate to a corrected changed line
   explain           Show why the last review said what it said
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
@@ -179,6 +181,11 @@ carry flags:
   --from <run-id> --head <sha>   Findings of that run still valid at the new head
   --text                 Print only the carried review, for validate-output
 
+reanchor flags:
+  --candidate <id> --line <n> [--path <p>]  The corrected anchor, which must
+                         be a changed line of --diff-file; rewrites --scores
+                         and --candidates in place, keeping verification and score
+
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
   actions: ${FEEDBACK_ACTIONS.join(', ')} (hyphens accepted)
@@ -195,15 +202,13 @@ score flags:
   --repository <name>       Prefer precedents from this repository
 
 verify flags:
-  --diff-file <path>        The diff under review, so the command judges the
-                            change rather than the working tree
+  --diff-file <path>        The diff under review, not the working tree
   --base <ref>              Base commit, only when it is readable locally
   --head <ref>              Head commit, only when it is readable locally
   --repository <name>       owner/repo, inferred from the git remote if absent
 
 conventions flags:
-  --files <path>            files.json from diff --out, to scope nested
-                            CLAUDE.md and AGENTS.md to the changed subtrees
+  --files <path>            files.json from diff --out, scoping nested docs
   --path <p>                A changed path, repeatable, instead of --files
 
 sync flags:
@@ -224,8 +229,7 @@ retrieve flags:
   --repository <name>   Prefer precedents from this repository
   --path <path>         Prefer precedents on this file
   --language <lang>     Prefer precedents in this language
-  --max-positive <n>    Default 3
-  --max-negative <n>    Default 2
+  --max-positive <n> --max-negative <n>   Defaults 3 and 2
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -236,8 +240,7 @@ validate-output flags:
 
 Exit codes: 0 compliant, 1 violations found, 2 bad invocation.
 
-Review Voice is normally driven by its Claude Code commands
-(/review-voice:review, /review-voice:init) rather than invoked directly.`;
+Normally driven by /review-voice:review rather than invoked directly.`;
 
 /** What each stdin-reading command expects, for the message a terminal gets. */
 const STDIN_INPUT: Record<string, string> = {
@@ -1206,9 +1209,7 @@ function containsCut(before: unknown, after: unknown): boolean {
  * since its own line is meant to be on unchanged code.
  */
 function anchorFor(hunks: Map<string, FileHunks>, candidate: Candidate): AnchorCheck {
-  return candidate.anchor === 'stale-consumer'
-    ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null)
-    : classifyAnchor(hunks, candidate.path, candidate.line);
+  return candidateAnchor(hunks, candidate);
 }
 
 function scoreCommand(argv: string[]): number {
@@ -2146,6 +2147,66 @@ function carryCommand(argv: string[]): number {
   }
 }
 
+/**
+ * Moves one scored candidate to a corrected changed line, keeping its
+ * verification and score. A finding anchored a line off otherwise goes back
+ * through the analyst, the anchor check and scoring for a claim that did not
+ * change. Exit 1 is a refusal, with the reason on stderr.
+ */
+function reanchorCommand(argv: string[]): number {
+  const candidateId = flag(argv, '--candidate');
+  const line = Number(flag(argv, '--line'));
+  const scoresFile = flag(argv, '--scores');
+  const diffFile = flag(argv, '--diff-file');
+  if (candidateId === null || !Number.isInteger(line) || line < 1 || scoresFile === null || diffFile === null) {
+    console.error('Usage: reanchor --candidate <id> --line <n> [--path <p>] --scores <file> --diff-file <patch> [--candidates <file>]');
+    return 2;
+  }
+  if (argv.includes('--path') && flag(argv, '--path') === null) {
+    console.error('--path needs the file the finding belongs in.');
+    return 2;
+  }
+
+  const readJson = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8'));
+  let scores: unknown;
+  let hunks: Map<string, FileHunks>;
+  try {
+    scores = readJson(scoresFile);
+    hunks = parseHunks(readFileSync(diffFile, 'utf8'));
+  } catch (error) {
+    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+
+  const result = reanchorScores(scores, candidateId, { path: flag(argv, '--path'), line }, hunks);
+  if (!result.ok) {
+    console.error(`Not re-anchored: ${result.refused}`);
+    return 1;
+  }
+
+  // Every file is checked before either is written, so a refusal leaves both
+  // as they were.
+  const candidatesFile = flag(argv, '--candidates');
+  let candidates: unknown = null;
+  if (candidatesFile !== null) {
+    try {
+      candidates = reanchorCandidates(readJson(candidatesFile), candidateId, result.to);
+    } catch (error) {
+      console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    if (candidates === null) {
+      console.error(`${candidatesFile} has no candidate ${candidateId}; nothing was re-anchored.`);
+      return 2;
+    }
+  }
+
+  writeFileSync(scoresFile, `${JSON.stringify(result.updated, null, 2)}\n`);
+  if (candidatesFile !== null) writeFileSync(candidatesFile, `${JSON.stringify(candidates, null, 2)}\n`);
+  console.log(JSON.stringify({ candidateId, from: result.from, to: result.to, anchorCheck: result.anchorCheck }, null, 2));
+  return 0;
+}
+
 function feedbackCommand(argv: string[]): number {
   const [findingRef, actionRaw] = argv;
   if (findingRef === undefined || actionRaw === undefined) {
@@ -2899,6 +2960,9 @@ async function main(argv: string[]): Promise<number> {
 
     case 'carry':
       return carryCommand(argv.slice(1));
+
+    case 'reanchor':
+      return reanchorCommand(argv.slice(1));
 
     case 'feedback':
       return feedbackCommand(argv.slice(1));

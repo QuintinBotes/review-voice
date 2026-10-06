@@ -3363,6 +3363,63 @@ function latestRun(db) {
   return { reviewRunId: row.review_run_id, findings: parsed.findings };
 }
 
+// plugins/review-voice/src/diff/reanchor.ts
+function candidateAnchor(hunks, candidate) {
+  return candidate.anchor === "stale-consumer" ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null) : classifyAnchor(hunks, candidate.path, candidate.line);
+}
+var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var idOf = (entry) => entry["candidateId"] ?? entry["candidate_id"];
+function reanchorScores(scores, candidateId, target, hunks) {
+  if (!isRecord(scores) || !Array.isArray(scores["scores"])) {
+    return { ok: false, refused: "expected the JSON `RV score` printed, with a `scores` list" };
+  }
+  const entries = scores["scores"].filter(isRecord);
+  const entry = entries.find((e) => idOf(e) === candidateId);
+  if (entry === void 0) return { ok: false, refused: `no scored candidate ${candidateId}` };
+  if (entry["eligible"] !== true) {
+    const why = typeof entry["rejectedBecause"] === "string" ? ` (${entry["rejectedBecause"]})` : "";
+    return {
+      ok: false,
+      refused: `${candidateId} is not eligible${why}; re-anchoring keeps a score, it does not make one. Re-run the analyst and score.`
+    };
+  }
+  const eligible = Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord) : [];
+  const shipped = eligible.find((e) => idOf(e) === candidateId);
+  if (shipped?.["anchor"] === "stale-consumer" || entry["anchorCheck"]?.kind === "stale-consumer") {
+    return {
+      ok: false,
+      refused: `${candidateId} is a stale consumer on unchanged code, so a new line cannot be checked against the diff. Re-run the analyst.`
+    };
+  }
+  if (typeof entry["path"] !== "string" || !Number.isInteger(entry["line"])) {
+    return { ok: false, refused: `scored candidate ${candidateId} has no path and line` };
+  }
+  const from = { path: entry["path"], line: entry["line"] };
+  const check = classifyAnchor(hunks, target.path ?? from.path, target.line);
+  if (!check.ok) return { ok: false, refused: `${candidateId} ${reason(check)}` };
+  const to = { path: check.path, line: check.line };
+  const taken = entries.find(
+    (e) => idOf(e) !== candidateId && e["eligible"] === true && e["path"] === to.path && e["line"] === to.line
+  );
+  if (taken !== void 0) {
+    return { ok: false, refused: `${String(idOf(taken))} is already anchored at ${to.path}:${to.line}` };
+  }
+  const moved = (e) => idOf(e) === candidateId ? { ...e, path: to.path, line: to.line, reanchoredFrom: from, ..."anchorCheck" in e ? { anchorCheck: check } : {} } : e;
+  const updated = {
+    ...scores,
+    scores: scores["scores"].map((e) => isRecord(e) ? moved(e) : e),
+    ...Array.isArray(scores["eligible"]) ? { eligible: scores["eligible"].map((e) => isRecord(e) ? moved(e) : e) } : {}
+  };
+  return { ok: true, updated, from, to, anchorCheck: check };
+}
+function reanchorCandidates(parsed, candidateId, to) {
+  const list = Array.isArray(parsed) ? parsed : isRecord(parsed) && Array.isArray(parsed["candidates"]) ? parsed["candidates"] : null;
+  if (list === null) return null;
+  if (!list.some((c) => isRecord(c) && idOf(c) === candidateId)) return null;
+  const rewritten = list.map((c) => isRecord(c) && idOf(c) === candidateId ? { ...c, path: to.path, line: to.line } : c);
+  return Array.isArray(parsed) ? rewritten : { ...parsed, candidates: rewritten };
+}
+
 // plugins/review-voice/src/diff/prior.ts
 import { execFileSync as execFileSync8 } from "node:child_process";
 function git3(args, cwd) {
@@ -13286,6 +13343,7 @@ Commands:
   feedback          Record feedback on a finding
   status            Show what is stored locally
   carry             Carry an earlier run's untouched findings to a new head
+  reanchor          Move one scored candidate to a corrected changed line
   explain           Show why the last review said what it said
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
@@ -13338,6 +13396,11 @@ carry flags:
   --from <run-id> --head <sha>   Findings of that run still valid at the new head
   --text                 Print only the carried review, for validate-output
 
+reanchor flags:
+  --candidate <id> --line <n> [--path <p>]  The corrected anchor, which must
+                         be a changed line of --diff-file; rewrites --scores
+                         and --candidates in place, keeping verification and score
+
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
   actions: ${FEEDBACK_ACTIONS.join(", ")} (hyphens accepted)
@@ -13354,15 +13417,13 @@ score flags:
   --repository <name>       Prefer precedents from this repository
 
 verify flags:
-  --diff-file <path>        The diff under review, so the command judges the
-                            change rather than the working tree
+  --diff-file <path>        The diff under review, not the working tree
   --base <ref>              Base commit, only when it is readable locally
   --head <ref>              Head commit, only when it is readable locally
   --repository <name>       owner/repo, inferred from the git remote if absent
 
 conventions flags:
-  --files <path>            files.json from diff --out, to scope nested
-                            CLAUDE.md and AGENTS.md to the changed subtrees
+  --files <path>            files.json from diff --out, scoping nested docs
   --path <p>                A changed path, repeatable, instead of --files
 
 sync flags:
@@ -13383,8 +13444,7 @@ retrieve flags:
   --repository <name>   Prefer precedents from this repository
   --path <path>         Prefer precedents on this file
   --language <lang>     Prefer precedents in this language
-  --max-positive <n>    Default 3
-  --max-negative <n>    Default 2
+  --max-positive <n> --max-negative <n>   Defaults 3 and 2
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -13395,8 +13455,7 @@ validate-output flags:
 
 Exit codes: 0 compliant, 1 violations found, 2 bad invocation.
 
-Review Voice is normally driven by its Claude Code commands
-(/review-voice:review, /review-voice:init) rather than invoked directly.`;
+Normally driven by /review-voice:review rather than invoked directly.`;
 var STDIN_INPUT = {
   "check-candidates": "candidates JSON",
   score: "candidates JSON",
@@ -14114,7 +14173,7 @@ function containsCut(before, after) {
   return false;
 }
 function anchorFor(hunks, candidate) {
-  return candidate.anchor === "stale-consumer" ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null) : classifyAnchor(hunks, candidate.path, candidate.line);
+  return candidateAnchor(hunks, candidate);
 }
 function scoreCommand(argv) {
   let candidates;
@@ -14865,6 +14924,55 @@ function carryCommand(argv) {
     db.close();
   }
 }
+function reanchorCommand(argv) {
+  const candidateId = flag(argv, "--candidate");
+  const line = Number(flag(argv, "--line"));
+  const scoresFile = flag(argv, "--scores");
+  const diffFile = flag(argv, "--diff-file");
+  if (candidateId === null || !Number.isInteger(line) || line < 1 || scoresFile === null || diffFile === null) {
+    console.error("Usage: reanchor --candidate <id> --line <n> [--path <p>] --scores <file> --diff-file <patch> [--candidates <file>]");
+    return 2;
+  }
+  if (argv.includes("--path") && flag(argv, "--path") === null) {
+    console.error("--path needs the file the finding belongs in.");
+    return 2;
+  }
+  const readJson = (path) => JSON.parse(readFileSync5(path, "utf8"));
+  let scores;
+  let hunks;
+  try {
+    scores = readJson(scoresFile);
+    hunks = parseHunks(readFileSync5(diffFile, "utf8"));
+  } catch (error) {
+    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const result = reanchorScores(scores, candidateId, { path: flag(argv, "--path"), line }, hunks);
+  if (!result.ok) {
+    console.error(`Not re-anchored: ${result.refused}`);
+    return 1;
+  }
+  const candidatesFile = flag(argv, "--candidates");
+  let candidates = null;
+  if (candidatesFile !== null) {
+    try {
+      candidates = reanchorCandidates(readJson(candidatesFile), candidateId, result.to);
+    } catch (error) {
+      console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    if (candidates === null) {
+      console.error(`${candidatesFile} has no candidate ${candidateId}; nothing was re-anchored.`);
+      return 2;
+    }
+  }
+  writeFileSync(scoresFile, `${JSON.stringify(result.updated, null, 2)}
+`);
+  if (candidatesFile !== null) writeFileSync(candidatesFile, `${JSON.stringify(candidates, null, 2)}
+`);
+  console.log(JSON.stringify({ candidateId, from: result.from, to: result.to, anchorCheck: result.anchorCheck }, null, 2));
+  return 0;
+}
 function feedbackCommand(argv) {
   const [findingRef, actionRaw] = argv;
   if (findingRef === void 0 || actionRaw === void 0) {
@@ -15387,6 +15495,8 @@ async function main(argv) {
       return recordCommand(argv.slice(1));
     case "carry":
       return carryCommand(argv.slice(1));
+    case "reanchor":
+      return reanchorCommand(argv.slice(1));
     case "feedback":
       return feedbackCommand(argv.slice(1));
     case "status":

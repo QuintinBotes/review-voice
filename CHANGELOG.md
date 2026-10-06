@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `RV reanchor --candidate <id> --line <n>` moves one eligible scored candidate
+  to a corrected line, optionally in another file (`--path`), keeping its
+  verification and score. It refuses a line that is not an added line or
+  deletion site of the reviewed diff, a candidate that was not eligible, a stale
+  consumer, and a location another finding holds. (#39)
 - `RV reconcile` applies the second-pass verdicts to the candidates, and a new
   `tie-breaker` agent settles a dispute between the two verifiers. A finding is
   disputed when the evidence-verifier traced its impact at 0.85 or more and the
