@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A prior comment of the owner's that the author only partly addressed gets a
+  local partly-addressed state. The verifier may mark a candidate linked to
+  that comment with `partly_addressed` (`remaining`, `addressed`); `score`
+  then no longer rejects it as already said, the editor states only what
+  remains, and `record` stores the finding as `partlyAddressed`, shown by
+  `explain`. What remains is posted as an ordinary inline comment in the
+  normal review, never as a thread reply. `check-candidates` no longer drops a
+  candidate for repeating the owner's own inline comment; it flags it for the
+  verifier, and `score` still rejects a plain repeat. (#30)
+
 - `RV reconcile` applies the second-pass verdicts to the candidates, and a new
   `tie-breaker` agent settles a dispute between the two verifiers. A finding is
   disputed when the evidence-verifier traced its impact at 0.85 or more and the

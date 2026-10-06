@@ -258,7 +258,9 @@ and one concern can cover several places in a file. Its `kind` is `own-comment`
 for the owner's own comment, which is preferred, and `thread` for anyone
 else's; `outdated: true` means the code under the comment has changed since,
 often because it was addressed. The owner is `identity.owner_reviewer` from the
-configuration, or `--owner <login>`.
+configuration, or `--owner <login>`. The owner's own inline comments are never
+a reason to drop here, however closely a candidate repeats one: it may be what
+the author left open of that comment, which only the verifier can tell.
 Send only `kept` to step 3. Keep `droppedAsRepeat` for
 step 6 (`record --held`); until then, do not pass them to `--verdicts`. An
 unreadable thread file exits 2: fix the path rather than skipping the check.
@@ -282,6 +284,12 @@ same convention `documents`, and `symbols.json`.
 Discard every candidate it does not verify. Rejection is the default when
 evidence is weak - do not argue with it, and do not reinstate a candidate
 because it seemed compelling.
+
+**A prior comment the author only partly addressed.** For a candidate linked to
+the owner's own comment (`possibleRepeatOf` of `kind: own-comment`), the
+verifier may verify it for what is still open and add `partly_addressed`, with
+`remaining` and `addressed` points. Keep that in `verification.json` and keep
+the candidate's `possibleRepeatOf` when you pipe it on: `score` needs both.
 
 **Write its full output to `<tmpdir>/verification.json`.** It is not only a
 pass list: step 4 gates on the confidence it reports, because the verifier is
@@ -349,6 +357,12 @@ adding `--thread <tmpdir>/thread.json` on a `--pr` run.
 **`--thread` is the file from step 1a**, so pass it only on a pull request run;
 `score` refuses a thread file it cannot read. Without it a pull request review
 repeats whatever the pull request already says.
+
+A partly-addressed follow-up is the one exception to that check: when the
+verifier set `partly_addressed` and the linked own comment is on the thread,
+that comment is not held against the candidate. Its `eligible[]` entry carries
+`possibleRepeatOf` with `status: partly-addressed`, `remaining` and
+`addressed`. Set anywhere else, `partly_addressed` is ignored with a warning.
 
 `score` reports a finding above the analyst's requested tier only when the
 verifier set `impact_traced` and reported confidence of at least 0.85, and caps
@@ -445,6 +459,13 @@ text to state, or `none` with no text. The editor does not decide or invent a
 correction, and a withheld repair never reaches it. The full fix decision stays
 in `scores` for `/review-voice:explain`.
 
+An entry with `possibleRepeatOf` of `status: partly-addressed` is rendered as
+an ordinary finding at its own line stating only what remains of the owner's
+earlier comment. **It is never a reply on that comment's thread**, and nothing
+resolves the thread: what remains is posted, if at all, as one more inline
+comment in the normal review, through the same single create-review request as
+every other finding.
+
 **Inline the candidate JSON for each eligible entry. Do not pass a file path.**
 The editor declares no tools at all, deliberately: its own authority limit - that
 it cannot add a technical claim - rests on having no way to verify one. Handed
@@ -503,6 +524,12 @@ stray directory and another project's notes took the reviewed count from 11 to
   The candidates carry each finding's category, which the rendered output
   cannot - the contract permits no text beyond the finding. Without it,
   feedback on that finding can never become a policy rule.
+
+  They also carry the partly-addressed state. A finding written from such an
+  entry is stored as `partlyAddressed`, with the earlier comment and what
+  remains, and `/review-voice:explain` shows it. The state is local: the earlier
+  comment stays open until a later review finds nothing of it remaining. Do
+  not record a partly-addressed follow-up under `--held` as a `repeat`.
 
   Pass every candidate that was held back rather than reported with
   `--held <file>` (an array of `{path, line, verdict, source, reason, text}`, verdict

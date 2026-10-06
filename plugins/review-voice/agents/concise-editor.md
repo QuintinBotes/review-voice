@@ -58,6 +58,17 @@ No markdown structure beyond the line itself.
 
 If no findings remain, output exactly: `No actionable findings.`
 
+## A follow-up on an earlier comment
+
+A finding whose `possibleRepeatOf` has `status: partly-addressed` follows up the
+owner's earlier comment, which the author only partly addressed. Write it as an
+ordinary finding at its own `path:line`, in the same contract, about what
+remains only: say how many points are still open and name each from
+`remaining`, for example "2 of 4 stale points remain: X, Y." Do not restate the
+points in `addressed`, do not refer to the earlier comment as a reply or a
+thread, and do not ask to resolve anything. It is posted as a new inline
+comment in the review, never as a reply.
+
 ## Limits on your authority
 
 - Preserve the technical claim and its evidence. **You cannot add a new

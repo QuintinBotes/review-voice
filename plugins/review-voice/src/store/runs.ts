@@ -28,6 +28,44 @@ export interface StoredFinding {
   unattributed?: boolean | undefined;
   /** The earlier run and finding this one was carried forward from, unchanged. */
   carriedFrom?: { runId: string; findingId: string } | undefined;
+  /**
+   * This finding follows up the owner's earlier comment, which the author only
+   * partly addressed. The comment stays open until a later review finds nothing
+   * of it remaining; the follow-up was posted as an ordinary inline comment.
+   */
+  partlyAddressed?: PartlyAddressedFinding | undefined;
+}
+
+export interface PartlyAddressedFinding {
+  status: 'partly-addressed';
+  /** The earlier comment, where it sat when this review read the thread. */
+  prior: { author: string; path: string; line: number };
+  remaining: string[];
+  addressed: string[];
+}
+
+/**
+ * The partly-addressed state a scored candidate carries from `score`, as
+ * `possibleRepeatOf` of `kind: own-comment` and `status: partly-addressed`.
+ * Anything else is no state, not an error: the finding is then recorded as an
+ * ordinary one.
+ */
+export function partlyAddressedOf(value: unknown): PartlyAddressedFinding | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const v = value as Record<string, unknown>;
+  if (v['kind'] !== 'own-comment' || v['status'] !== 'partly-addressed') return undefined;
+  const strings = (list: unknown): string[] | null =>
+    Array.isArray(list) && list.length > 0 && list.every((item) => typeof item === 'string') ? (list as string[]) : null;
+  const remaining = strings(v['remaining']);
+  const addressed = strings(v['addressed']);
+  if (remaining === null || addressed === null) return undefined;
+  if (typeof v['author'] !== 'string' || typeof v['path'] !== 'string' || !Number.isInteger(v['line'])) return undefined;
+  return {
+    status: 'partly-addressed',
+    prior: { author: v['author'], path: v['path'], line: v['line'] as number },
+    remaining,
+    addressed,
+  };
 }
 
 /**
@@ -78,6 +116,8 @@ export interface CandidateHint {
   path: string;
   line: number;
   category?: string | undefined;
+  /** As `score` hands it on; read with `partlyAddressedOf`. */
+  possibleRepeatOf?: unknown;
 }
 
 export interface RecordRunInput {
@@ -189,6 +229,7 @@ function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
       const anchor = { path: finding.path!, line: finding.line ?? 0 };
       const { hint, how } = attribute(anchor, hints, taken);
       if (hint !== undefined) taken.add(hint);
+      const partly = partlyAddressedOf(hint?.possibleRepeatOf);
       return {
         findingId: `rv_${String(index + 1).padStart(2, '0')}`,
         severity: finding.severity!,
@@ -202,6 +243,7 @@ function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
         // shipped is visible rather than showing up as a missing category.
         ...(how === 'exact' || how === 'none' ? {} : { attributedBy: how }),
         ...(how === 'none' && hints.length > 0 ? { unattributed: true } : {}),
+        ...(partly === undefined ? {} : { partlyAddressed: partly }),
       };
     });
 }

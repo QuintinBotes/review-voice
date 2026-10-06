@@ -3177,6 +3177,22 @@ function matchCarried(recorded, carried) {
 }
 
 // plugins/review-voice/src/store/runs.ts
+function partlyAddressedOf(value) {
+  if (typeof value !== "object" || value === null) return void 0;
+  const v = value;
+  if (v["kind"] !== "own-comment" || v["status"] !== "partly-addressed") return void 0;
+  const strings = (list) => Array.isArray(list) && list.length > 0 && list.every((item) => typeof item === "string") ? list : null;
+  const remaining = strings(v["remaining"]);
+  const addressed = strings(v["addressed"]);
+  if (remaining === null || addressed === null) return void 0;
+  if (typeof v["author"] !== "string" || typeof v["path"] !== "string" || !Number.isInteger(v["line"])) return void 0;
+  return {
+    status: "partly-addressed",
+    prior: { author: v["author"], path: v["path"], line: v["line"] },
+    remaining,
+    addressed
+  };
+}
 var HELD_VERDICTS = ["partly", "refuted", "unverified", "repeat", "below-gate"];
 function heldProblem(entry) {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "not an object";
@@ -3214,6 +3230,7 @@ function assignIds(output, hints) {
     const anchor = { path: finding.path, line: finding.line ?? 0 };
     const { hint, how } = attribute(anchor, hints, taken);
     if (hint !== void 0) taken.add(hint);
+    const partly = partlyAddressedOf(hint?.possibleRepeatOf);
     return {
       findingId: `rv_${String(index + 1).padStart(2, "0")}`,
       severity: finding.severity,
@@ -3226,7 +3243,8 @@ function assignIds(output, hints) {
       // Stated so a disagreement between what the analyst cited and what
       // shipped is visible rather than showing up as a missing category.
       ...how === "exact" || how === "none" ? {} : { attributedBy: how },
-      ...how === "none" && hints.length > 0 ? { unattributed: true } : {}
+      ...how === "none" && hints.length > 0 ? { unattributed: true } : {},
+      ...partly === void 0 ? {} : { partlyAddressed: partly }
     };
   });
 }
@@ -11986,6 +12004,7 @@ function normaliseCandidate(raw, index) {
     }
     causedBy = { path: rawCause.path, line: rawCause.line };
   }
+  const ownComment = ownCommentOf(raw.possibleRepeatOf);
   const impactDisputed = raw.impact_disputed !== void 0 ? raw.impact_disputed : raw.impactDisputed;
   if (impactDisputed !== void 0 && typeof impactDisputed !== "boolean") {
     throw new MalformedCandidate(`${candidateId}: impact_disputed must be true or false when supplied`);
@@ -12007,8 +12026,40 @@ function normaliseCandidate(raw, index) {
     technicalConfidence: confidence,
     // Spread only when declared, so an ordinary candidate keeps its shape.
     ...raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {},
-    ...impactDisputed === true ? { impactDisputed: true } : {}
+    ...impactDisputed === true ? { impactDisputed: true } : {},
+    ...ownComment === null ? {} : { ownComment }
   };
+}
+function ownCommentOf(value) {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value;
+  if (v["kind"] !== "own-comment") return null;
+  if (typeof v["author"] !== "string" || v["author"].length === 0) return null;
+  if (typeof v["path"] !== "string" || v["path"].length === 0) return null;
+  if (!Number.isInteger(v["line"]) || v["line"] < 1) return null;
+  return { author: v["author"], path: v["path"], line: v["line"] };
+}
+function partlyAddressedProblem(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return 'must be {"remaining": [...], "addressed": [...]}';
+  }
+  const v = value;
+  for (const key of ["remaining", "addressed"]) {
+    const list = v[key];
+    if (!Array.isArray(list) || list.length === 0 || !list.every((item) => typeof item === "string" && item.trim().length > 0)) {
+      return `${key} must be a non-empty array of non-empty strings`;
+    }
+  }
+  return null;
+}
+function followUpOf(candidate, verification2, thread) {
+  const prior = candidate.ownComment;
+  const partly = verification2?.partlyAddressed;
+  if (prior === void 0 || partly === void 0) return null;
+  const onThread = thread.some(
+    (comment) => comment.author === prior.author && comment.path === prior.path && comment.line === prior.line
+  );
+  return onThread ? { ...prior, remaining: partly.remaining, addressed: partly.addressed } : null;
 }
 var WORDS = /[^\p{L}\p{N}]+/u;
 function significantWords(text) {
@@ -14195,7 +14246,9 @@ function scoreCommand(argv) {
           fixDirection: typeof fixDirection === "string" ? fixDirection : void 0,
           // Only a real boolean counts; a string "true" is not evidence.
           impactTraced: typeof impactTraced === "boolean" ? impactTraced : void 0,
-          requiredContextMissing: raw["required_context_missing"] ?? raw["requiredContextMissing"]
+          requiredContextMissing: raw["required_context_missing"] ?? raw["requiredContextMissing"],
+          // Already checked by `verificationProblem`.
+          partlyAddressed: raw["partly_addressed"] ?? raw["partlyAddressed"]
         });
       }
     } catch (error) {
@@ -14290,6 +14343,7 @@ function scoreCommand(argv) {
   try {
     const kept = [];
     const results = [];
+    const followUps = /* @__PURE__ */ new Map();
     for (const candidate of candidates) {
       const precedents = retrievePrecedents(db, {
         text: `${candidate.claim} ${candidate.failureMode}`,
@@ -14328,7 +14382,15 @@ function scoreCommand(argv) {
         breakdown.eligible = false;
         breakdown.rejectedBecause = `claims something is absent, but the repository contains ${absence.found.join(", ")}`;
       }
-      const echoed = breakdown.eligible ? alreadySaidOnThread(candidate, thread) : null;
+      const followUp = followUpOf(candidate, verifications.get(candidate.candidateId), thread);
+      if (followUp !== null) followUps.set(candidate.candidateId, followUp);
+      else if (verifications.get(candidate.candidateId)?.partlyAddressed !== void 0) {
+        console.error(
+          `Warning: ${candidate.candidateId} is marked partly_addressed but is not linked to an own comment on this thread. Scored as an ordinary finding.`
+        );
+      }
+      const echoThread = followUp === null ? thread : thread.filter((comment) => comment.author !== followUp.author || comment.path === null || comment.line === null);
+      const echoed = breakdown.eligible ? alreadySaidOnThread(candidate, echoThread) : null;
       if (echoed !== null) {
         breakdown.eligible = false;
         breakdown.rejectedBecause = `already said on this pull request by ${echoed.author}` + (echoed.path === null ? "" : ` at ${echoed.path}:${echoed.line ?? "?"}`);
@@ -14427,7 +14489,10 @@ function scoreCommand(argv) {
               fix: scored === void 0 ? { render: "none", text: null } : editorFix(scored.fix),
               // The editor names the cause in the prose, since the consumer's
               // line is what the finding's location shows.
-              ...c.anchor === "stale-consumer" ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {}
+              ...c.anchor === "stale-consumer" ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {},
+              // A follow-up states only what remains of the owner's earlier
+              // comment, as an ordinary finding; `record` keeps it open.
+              ...followUps.has(c.candidateId) ? { possibleRepeatOf: { kind: "own-comment", status: "partly-addressed", ...followUps.get(c.candidateId) } } : {}
             };
           }),
           belowGate
@@ -14933,6 +14998,12 @@ function explainCommand(argv) {
       if (finding.carriedFrom !== void 0) {
         console.log(`  carried from      ${finding.carriedFrom.findingId} of run ${finding.carriedFrom.runId}`);
       }
+      if (finding.partlyAddressed !== void 0) {
+        const { prior, remaining, addressed } = finding.partlyAddressed;
+        console.log(
+          `  partly addressed  ${prior.author} at ${prior.path}:${prior.line}; ${remaining.length} of ${remaining.length + addressed.length} still open: ${remaining.join("; ")}`
+        );
+      }
       console.log(`  category          ${finding.category ?? "not recorded"}`);
       if (score?.technicalConfidence !== void 0) {
         console.log(`  technical         ${score.technicalConfidence.toFixed(2)}`);
@@ -15069,6 +15140,9 @@ function verificationProblem(list) {
     if (missing !== void 0 && !(Array.isArray(missing) && missing.every((item) => typeof item === "string"))) {
       return `${who}: required_context_missing must be an array of strings.`;
     }
+    const partly = entry["partly_addressed"] ?? entry["partlyAddressed"];
+    const partlyProblem = partly === void 0 ? null : partlyAddressedProblem(partly);
+    if (partlyProblem !== null) return `${who}: partly_addressed ${partlyProblem}.`;
   }
   return null;
 }
@@ -15197,11 +15271,12 @@ function checkCandidatesCommand(argv) {
     const held = heldFrom === null || headSha === null ? [] : carriedHeldFindings(heldFrom, headSha);
     const owner = argv.includes("--thread") ? (flag(argv, "--owner") ?? configuredOwner())?.toLowerCase() ?? null : null;
     const isOwn = (comment) => owner !== null && comment.author.toLowerCase() === owner;
+    const droppable = thread.filter((comment) => !(isOwn(comment) && comment.path !== null && comment.line !== null));
     const kept = [];
     const droppedAsRepeat = [];
     const droppedAsHeld = [];
     candidates.forEach((candidate, index) => {
-      const repeat = alreadySaidOnThread(candidate, thread);
+      const repeat = alreadySaidOnThread(candidate, droppable);
       if (repeat !== null) {
         droppedAsRepeat.push({
           candidateId: candidate.candidateId,
@@ -15214,7 +15289,7 @@ function checkCandidatesCommand(argv) {
         });
         return;
       }
-      const original = raw[index];
+      const { possibleRepeatOf: _ignored, ...original } = raw[index];
       const heldMatch = matchHeld(candidate, held);
       if (heldMatch !== null && heldMatch.drop) {
         droppedAsHeld.push({
