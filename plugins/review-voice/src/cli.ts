@@ -116,8 +116,7 @@ Commands:
   diff              Acquire the diff under review as structured JSON
   symbols           Collect changed symbols and their lexical reference paths
   check-candidates  Validate analyst output against the candidate schema
-  check-verification
-                    Validate evidence-verifier output against its schema
+  check-verification  Validate verifier output from stdin, as score would
   context           Resolve config and the active policy stack as JSON
   conventions       Collect the repository's own convention documents
   evidence          Run the configured static checks and emit structured signals
@@ -179,11 +178,6 @@ check-candidates:
                          description overlaps for the verifier
   --held-from <run-id>   Drop repeats of that run's held findings (--head)
 
-check-verification:
-  Reads the evidence-verifier output on stdin and runs the checks \`score
-  --verification\` runs, naming the entry and field that fail. Exit 2 when
-  malformed.
-
 record flags:
   --repository <name>    Repository the review belongs to
   --base <ref>           Base ref reviewed against
@@ -193,7 +187,7 @@ record flags:
   --candidates <path>    Scored candidates, so findings carry their category
   --scores <path>        Score breakdowns, so explain can show its working
   --verdicts <path>      Verification verdicts, including findings that were dropped
-  --tie-breaks <path>    reconcile's output, so explain shows the rulings it applied
+  --tie-breaks <path>    reconcile's output, with the rulings it applied
   --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
   --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
   --stages <path>        Per-stage timings as
