@@ -173,3 +173,23 @@ review, which still says nothing about human review (first amendment).
 Sensitive-path matching is unchanged and still applies to every changed path,
 excluded or not. An assessment recorded before this amendment has no
 `excluded` block and reads as excluding nothing.
+
+## Amendment - 2026-10-06: sensitive paths can be exempted, never by default
+
+A default sensitive glob matches a directory name wherever it sits:
+`**/auth/**` raised a marketing banner under `modules/auth/src/layouts/`, and
+the reason it gave did not hold. Narrowing the defaults would let a real auth
+change approve itself, so they are unchanged.
+
+Instead `review.human_review.sensitive_exempt_paths` (none by default) lists
+globs for changed paths that match a sensitive glob but are not sensitive in
+that repository. Two guards, because the list is read from the checked-out
+tree like the exclusion globs: `.review-voice/**` and `.github/workflows/**`
+are never exempted (a change could otherwise exempt itself, or change what CI
+proves), and a glob that matches ordinary production paths (`**`) is ignored
+whenever it would exempt a path of the change, with a reason that raises it.
+
+The reason now names the glob each shown path matched, and the assessment
+carries `sensitiveMatches` and `sensitiveExempted`; when the change is high for
+another reason, the local note lists the exempted paths. An assessment recorded
+before this amendment has none of these fields and reads as having none.

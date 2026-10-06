@@ -82,6 +82,7 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
     return undefined;
   };
   result.humanReview.sensitivePaths = globs('sensitive_paths') ?? result.humanReview.sensitivePaths;
+  result.humanReview.sensitiveExemptPaths = globs('sensitive_exempt_paths') ?? result.humanReview.sensitiveExemptPaths;
   result.humanReview.testPaths = globs('test_paths') ?? result.humanReview.testPaths;
   result.humanReview.generatedPaths = globs('generated_paths') ?? result.humanReview.generatedPaths;
 }
@@ -224,6 +225,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
     humanReview: {
       ...DEFAULT_HUMAN_REVIEW,
       sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths],
+      sensitiveExemptPaths: [...DEFAULT_HUMAN_REVIEW.sensitiveExemptPaths],
       testPaths: [...DEFAULT_HUMAN_REVIEW.testPaths],
       generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths],
     },

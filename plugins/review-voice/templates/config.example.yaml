@@ -52,6 +52,10 @@ review:
       - "**/auth/**"
       - "**/security/**"
       - ".review-voice/**"
+    # Opt-in: a changed path matching a sensitive glob and one of these is not
+    # sensitive, e.g. "**/auth/src/layouts/**" for a UI subtree of an auth
+    # module. It cannot exempt .review-voice/** or .github/workflows/**.
+    sensitive_exempt_paths: []
     # Decision points count in production source only. Documentation is
     # always left out; so are tests and fixtures matching these globs. A list
     # here replaces the defaults; an empty list counts tests again. A glob

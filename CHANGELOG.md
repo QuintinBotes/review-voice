@@ -15,6 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   out. A candidate refused for sitting in a file the diff does not touch says
   the same, and `carry-candidates --help` states it and lists exit 1. (#67)
 
+### Added
+
+- `review.human_review.sensitive_exempt_paths` (default none) exempts a changed
+  path from the sensitive-path signal when it matches one of its globs, so a
+  cosmetic change under a directory such as `auth/` need not raise the change.
+  `.review-voice/**` and `.github/workflows/**` can never be exempted, and a
+  glob broad enough to match ordinary source files is ignored and reported. The
+  built-in sensitive globs are unchanged. The assessment lists the exempted
+  paths as `sensitiveExempted` (#70).
+- The sensitive-paths reason names the glob each shown path matched
+  (`modules/auth/src/a.ts matched **/auth/**`), and the assessment carries
+  `sensitiveMatches` (#70).
+
 ## [1.12.0] - 2026-10-06
 
 ### Added

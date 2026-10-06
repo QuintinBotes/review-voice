@@ -12,6 +12,12 @@ export interface HumanReviewConfig {
   maxDecisionPoints: number;
   maxHunkDecisionPoints: number;
   sensitivePaths: string[];
+  /**
+   * A changed path matching one of these is not sensitive, although it matches
+   * `sensitivePaths`: a UI subtree of an auth module, say. Opt-in; the defaults
+   * stay as strict as they are, and `SENSITIVE_NEVER_EXEMPT` paths ignore it.
+   */
+  sensitiveExemptPaths: string[];
   /** Tests and fixtures: reviewed, but their decision points are not counted. */
   testPaths: string[];
   /**
@@ -29,6 +35,13 @@ export interface HumanReviewConfig {
 export const DEFAULT_SENSITIVE_PATHS = [
   '.github/workflows/**', '**/migrations/**', '**/auth/**', '**/security/**', '.review-voice/**',
 ];
+
+/**
+ * Paths no exemption reaches. The review's own configuration is read from the
+ * checked-out tree, so a pull request could otherwise exempt itself, and a
+ * workflow changes what CI proves.
+ */
+const SENSITIVE_NEVER_EXEMPT = ['.review-voice/**', '.github/workflows/**'];
 
 /**
  * Common test and fixture layouts. Counting them made the cap shape how tests
@@ -53,6 +66,7 @@ export const DEFAULT_HUMAN_REVIEW: HumanReviewConfig = {
   maxDecisionPoints: 40,
   maxHunkDecisionPoints: 15,
   sensitivePaths: DEFAULT_SENSITIVE_PATHS,
+  sensitiveExemptPaths: [],
   testPaths: DEFAULT_TEST_PATHS,
   generatedPaths: [],
 };
@@ -70,13 +84,23 @@ export interface ComplexityAssessment {
   excluded: Excluded;
   /** Matched changed paths, at most 20, sorted. */
   sensitivePaths: string[];
+  /** The same paths with the first sensitive glob each matched, in config order; same cap. */
+  sensitiveMatches: SensitiveMatch[];
+  /** Changed paths a sensitive glob matched but `sensitive_exempt_paths` exempted, sorted, same cap. */
+  sensitiveExempted: string[];
   limits: {
     maxDecisionPoints: number;
     maxHunkDecisionPoints: number;
     sensitivePaths: string[];
+    sensitiveExemptPaths: string[];
     testPaths: string[];
     generatedPaths: string[];
   };
+}
+
+export interface SensitiveMatch {
+  path: string;
+  glob: string;
 }
 
 export interface Excluded {
@@ -194,6 +218,7 @@ function config(partial: Partial<HumanReviewConfig> | undefined): HumanReviewCon
     maxDecisionPoints: partial?.maxDecisionPoints ?? DEFAULT_HUMAN_REVIEW.maxDecisionPoints,
     maxHunkDecisionPoints: partial?.maxHunkDecisionPoints ?? DEFAULT_HUMAN_REVIEW.maxHunkDecisionPoints,
     sensitivePaths: partial?.sensitivePaths ?? DEFAULT_HUMAN_REVIEW.sensitivePaths,
+    sensitiveExemptPaths: partial?.sensitiveExemptPaths ?? DEFAULT_HUMAN_REVIEW.sensitiveExemptPaths,
     testPaths: partial?.testPaths ?? DEFAULT_HUMAN_REVIEW.testPaths,
     generatedPaths: partial?.generatedPaths ?? DEFAULT_HUMAN_REVIEW.generatedPaths,
   };
@@ -280,13 +305,24 @@ export function assessComplexity(
   // Every changed path, reviewed or not: a path left out of the review is no
   // less sensitive for it, and a rename touches both of its names.
   const sensitiveMatchers = limits.sensitivePaths.map((glob) => globToRegExp(glob));
+  const neverExempt = SENSITIVE_NEVER_EXEMPT.map((glob) => globToRegExp(glob));
   const changed = new Set<string>();
   for (const file of files) {
     changed.add(file.path);
     if (file.previousPath !== undefined) changed.add(file.previousPath);
   }
-  const sensitive = [...changed].filter((path) => matchesAny(sensitiveMatchers, path)).sort();
+  const matched = [...changed].filter((path) => matchesAny(sensitiveMatchers, path)).sort();
+  // A catch-all exemption is ignored when it would exempt a path of this change.
+  const exemptible = matched.filter((path) => !matchesAny(neverExempt, path));
+  const exemptions = exclusionMatchers('sensitive_exempt_paths', limits.sensitiveExemptPaths, exemptible, reasons);
+  const exempted = exemptible.filter((path) => matchesAny(exemptions, path));
+  const sensitive = matched.filter((path) => !exempted.includes(path));
   const listed = sensitive.slice(0, MAX_SENSITIVE_LISTED);
+  const globOf = (path: string): string => limits.sensitivePaths[sensitiveMatchers.findIndex((matcher) => matcher.test(path))]!;
+  const matches = listed.map((path) => ({ path, glob: globOf(path) }));
+  for (const path of matched.filter((path) => matchesAny(neverExempt, path) && matchesAny(exemptions, path))) {
+    reasons.push(`sensitive_exempt_paths does not apply to ${path}, which is review configuration or a workflow`);
+  }
 
   if (decisionPoints > limits.maxDecisionPoints) {
     reasons.push(`${decisionPoints} decision points added (limit ${limits.maxDecisionPoints})`);
@@ -297,7 +333,7 @@ export function assessComplexity(
     );
   }
   if (sensitive.length > 0) {
-    const shown = listed.slice(0, 3).join(', ');
+    const shown = matches.slice(0, 3).map((match) => `${match.path} matched ${match.glob}`).join(', ');
     const more = sensitive.length - Math.min(3, listed.length);
     reasons.push(`touches sensitive paths (${shown}${more > 0 ? `, +${more} more` : ''})`);
   }
@@ -315,6 +351,8 @@ export function assessComplexity(
       generatedDecisionPoints: pointsOf('generated'),
     },
     sensitivePaths: listed,
+    sensitiveMatches: matches,
+    sensitiveExempted: exempted.slice(0, MAX_SENSITIVE_LISTED),
     limits: { ...limits },
   };
 }
@@ -336,10 +374,17 @@ function notCounted(excluded: Excluded): string {
   return parts.length === 0 ? '' : ` Left out of the decision-point count: ${parts.join(', ')}.`;
 }
 
+/** Which paths an exemption let through, so a reader sees the high level is not about them. */
+function exemptedClause(exempted: readonly string[]): string {
+  if (exempted.length === 0) return '';
+  const more = exempted.length - Math.min(3, exempted.length);
+  return ` Exempted by sensitive_exempt_paths: ${exempted.slice(0, 3).join(', ')}${more > 0 ? `, +${more} more` : ''}.`;
+}
+
 /** The one line for the agent and the user; never posted to the pull request. Null unless the change is high-complexity. */
 export function humanReviewNote(assessment: ComplexityAssessment | null): string | null {
   if (assessment === null || assessment.level !== 'high') return null;
-  return `Needs a human reviewer: ${assessment.reasons.join('; ')}.${notCounted(assessment.excluded)} Review Voice will not approve this change; this is not posted to the pull request.`;
+  return `Needs a human reviewer: ${assessment.reasons.join('; ')}.${exemptedClause(assessment.sensitiveExempted)}${notCounted(assessment.excluded)} Review Voice will not approve this change; this is not posted to the pull request.`;
 }
 
 const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0;
@@ -367,6 +412,20 @@ function parseExcluded(value: unknown): Excluded | null {
   return parsed;
 }
 
+/** An assessment recorded before matches were reported has none; a present but malformed list is rejected. */
+function parseMatches(value: unknown): SensitiveMatch[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+  const parsed: SensitiveMatch[] = [];
+  for (const item of value as unknown[]) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
+    const m = item as Record<string, unknown>;
+    if (typeof m['path'] !== 'string' || typeof m['glob'] !== 'string') return null;
+    parsed.push({ path: m['path'], glob: m['glob'] });
+  }
+  return parsed;
+}
+
 /** Reads a stored or manifest value back; null on anything malformed, since unknown is not high. */
 export function parseComplexity(value: unknown): ComplexityAssessment | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
@@ -382,6 +441,12 @@ export function parseComplexity(value: unknown): ComplexityAssessment | null {
     }
     densestHunk = { path: h['path'], line: h['line'], decisionPoints: h['decisionPoints'] };
   }
+
+  // Fields added after the first release of this record: absent means none.
+  const sensitiveExempted = v['sensitiveExempted'] === undefined ? [] : v['sensitiveExempted'];
+  if (!isStrings(sensitiveExempted)) return null;
+  const sensitiveMatches = parseMatches(v['sensitiveMatches']);
+  if (sensitiveMatches === null) return null;
 
   const excluded = parseExcluded(v['excluded']);
   if (excluded === null) return null;
@@ -402,9 +467,10 @@ export function parseComplexity(value: unknown): ComplexityAssessment | null {
     if (globs === undefined) return [];
     return isStrings(globs) ? globs : null;
   };
+  const sensitiveExemptPaths = optionalGlobs('sensitiveExemptPaths');
   const testPaths = optionalGlobs('testPaths');
   const generatedPaths = optionalGlobs('generatedPaths');
-  if (testPaths === null || generatedPaths === null) return null;
+  if (sensitiveExemptPaths === null || testPaths === null || generatedPaths === null) return null;
 
   return {
     level: v['level'],
@@ -413,10 +479,13 @@ export function parseComplexity(value: unknown): ComplexityAssessment | null {
     densestHunk,
     excluded,
     sensitivePaths: v['sensitivePaths'],
+    sensitiveMatches,
+    sensitiveExempted,
     limits: {
       maxDecisionPoints: l['maxDecisionPoints'],
       maxHunkDecisionPoints: l['maxHunkDecisionPoints'],
       sensitivePaths: l['sensitivePaths'],
+      sensitiveExemptPaths,
       testPaths,
       generatedPaths,
     },

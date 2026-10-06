@@ -65,7 +65,7 @@ test('linguist-generated, a configured glob and a reviewed generated-class file 
   // Sensitive-path matching is unchanged: the generated workflow still flags.
   assert.deepEqual(result.sensitivePaths, ['.github/workflows/build.yml']);
   assert.equal(result.level, 'high');
-  assert.deepEqual(result.reasons, ['touches sensitive paths (.github/workflows/build.yml)']);
+  assert.deepEqual(result.reasons, ['touches sensitive paths (.github/workflows/build.yml matched .github/workflows/**)']);
   assert.match(humanReviewNote(result), /Left out of the decision-point count: 3 generated files \(211 decision points\)\./);
 });
 
