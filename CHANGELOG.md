@@ -27,7 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listed context it could not obtain, with the verifier's confidence and the
   missing context. The review prints them locally under
   `Unverified (not posted)` and records them with `record --held` as
-  `unverified`. They are never posted. (#20)
+  `unverified`. They are never posted. The review sets such a candidate aside
+  in step 3 instead of discarding it, so it reaches `score`, and `score`
+  rejects any non-question whose verification says `verified: false`. (#20)
+- `belowGate` also lists a candidate the verifier confirmed below its own
+  confidence floor, with `gate: confidence`; final-score entries carry
+  `gate: score`. Both lists hold only candidates that one gate alone stopped:
+  a thread repeat, a missing citation or an untraced stale consumer is now
+  appended to the reason and keeps the candidate off them. (#20)
 
 ### Changed
 

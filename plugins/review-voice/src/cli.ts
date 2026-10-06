@@ -1283,6 +1283,7 @@ function scoreCommand(argv: string[]): number {
         const fixDirection = raw['fix_direction'] ?? raw['fixDirection'];
         const impactTraced = raw['impact_traced'] ?? raw['impactTraced'];
         const premisesVerified = raw['premises_verified'] ?? raw['premisesVerified'];
+        const verified = raw['verified'];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: (raw['evidence_quality'] ?? raw['evidenceQuality']) as Verification['evidenceQuality'],
@@ -1302,6 +1303,7 @@ function scoreCommand(argv: string[]): number {
           // Only a real boolean counts; a string "true" is not evidence.
           impactTraced: typeof impactTraced === 'boolean' ? impactTraced : undefined,
           premisesVerified: typeof premisesVerified === 'boolean' ? premisesVerified : undefined,
+          verified: typeof verified === 'boolean' ? verified : undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
             raw['requiredContextMissing']) as MissingContext[] | undefined,
         });
@@ -1487,12 +1489,25 @@ function scoreCommand(argv: string[]): number {
       // A point already on the page is not worth making again, whoever made
       // it. On the first posted batch this removed more candidates than every
       // other stage combined, because those repositories already run a bot.
-      const echoed = breakdown.eligible ? alreadySaidOnThread(candidate, thread) : null;
+      // A candidate one local gate stopped is still checked against the rules
+      // below, so `belowGate` and `unverified` list only what that gate alone
+      // stopped. A failure here is appended rather than replacing the reason.
+      const listable = !breakdown.eligible && locallyListable(breakdown.rejectedBecause);
+      const alsoRejected = (because: string): void => {
+        breakdown.rejectedBecause = `${breakdown.rejectedBecause ?? ''}. Also: ${because}`;
+      };
+
+      const echoed = breakdown.eligible || listable ? alreadySaidOnThread(candidate, thread) : null;
       if (echoed !== null) {
-        breakdown.eligible = false;
-        breakdown.rejectedBecause =
+        const because =
           `already said on this pull request by ${echoed.author}` +
           (echoed.path === null ? '' : ` at ${echoed.path}:${echoed.line ?? '?'}`);
+        if (breakdown.eligible) {
+          breakdown.eligible = false;
+          breakdown.rejectedBecause = because;
+        } else {
+          alsoRejected(because);
+        }
       }
 
       // A candidate can only become a review comment where the reviewed diff
@@ -1511,13 +1526,19 @@ function scoreCommand(argv: string[]): number {
       // The path is the one field nothing checked, and a wrong one sends the
       // author to a file that does not exist.
       let citation = null;
-      if (breakdown.eligible && searchRoot !== null) {
+      const stillListable = !breakdown.eligible && listable && locallyListable(breakdown.rejectedBecause);
+      if ((breakdown.eligible || stillListable) && searchRoot !== null) {
         citation = checkCitation(candidate.path, searchRoot, baseRef, reachDiff);
         if (!citation.resolves && !citation.inconclusive) {
-          breakdown.eligible = false;
-          breakdown.rejectedBecause =
+          const because =
             `cites ${candidate.path}, which does not exist at the reviewed ref` +
             (citation.suggestion === null ? '' : `; did it mean ${citation.suggestion}?`);
+          if (breakdown.eligible) {
+            breakdown.eligible = false;
+            breakdown.rejectedBecause = because;
+          } else {
+            alsoRejected(because);
+          }
         }
       }
 
@@ -1535,29 +1556,34 @@ function scoreCommand(argv: string[]): number {
     // before the distribution below so `cleared` counts what actually ships.
     applyQuestionCap(results);
 
-    // Verified, past the confidence gate, and stopped only by the final score:
-    // real by the verifier's account, but not what the owner would choose to
-    // say. Shown locally so it is not lost, and never posted. A rejection
-    // from any other gate leads its reason, so the prefix tells them apart.
+    // Confirmed by the verifier and stopped by one numeric gate alone: the
+    // final score, which is preference, or the floor on the verifier's own
+    // confidence. Real by the verifier's account, but not shipped. Shown
+    // locally so it is not lost, and never posted. A rejection from any other
+    // gate leads its reason or is appended after "Also:", so the prefix tells
+    // them apart; `gate` says which one stopped it.
     const belowGate = results
       .filter(
         (r) =>
           r.confidenceSource === 'verifier' &&
           !r.eligible &&
           Number.isFinite(r.finalScore) &&
-          (r.rejectedBecause ?? '').startsWith('score '),
+          gateOf(r.rejectedBecause) !== null,
       )
-      .map((r) =>
-        boundLists({
+      .map((r) => {
+        const gate = gateOf(r.rejectedBecause);
+        return boundLists({
           candidateId: r.candidateId,
           path: r.path,
           line: r.line,
           severity: r.severity.severity,
           claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? '',
-          finalScore: r.finalScore,
-          threshold: thresholds.finalScore,
-        }),
-      );
+          gate,
+          ...(gate === 'score'
+            ? { finalScore: r.finalScore, threshold: thresholds.finalScore }
+            : { technicalConfidence: r.technicalConfidence, threshold: thresholds.technicalConfidence }),
+        });
+      });
 
     // Held back by the verifier's own report of context it could not obtain,
     // and by nothing else. The claim may well be right - one was later
@@ -1661,6 +1687,24 @@ function scoreCommand(argv: string[]): number {
   } finally {
     db.close();
   }
+}
+
+/**
+ * Whether a rejection came from one of the gates whose candidates are listed
+ * locally - the unverifiable cap, the confidence floor or the final score -
+ * and from nothing else yet.
+ */
+function locallyListable(rejectedBecause: string | null): boolean {
+  if (rejectedBecause === null) return false;
+  return rejectedBecause === UNVERIFIABLE_REJECTION || gateOf(rejectedBecause) !== null;
+}
+
+/** The numeric gate that alone stopped a candidate, or null. */
+function gateOf(rejectedBecause: string | null): 'score' | 'confidence' | null {
+  if (rejectedBecause === null || rejectedBecause.includes(' Also: ')) return null;
+  if (rejectedBecause.startsWith('score ')) return 'score';
+  if (rejectedBecause.startsWith('technical confidence ')) return 'confidence';
+  return null;
 }
 
 function calibrateCommand(): number {
@@ -2482,6 +2526,9 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     }
     // Refused rather than ignored: a premise reported as "false" in a string
     // would otherwise read as absent, and a question would ship on it.
+    if (entry['verified'] !== undefined && typeof entry['verified'] !== 'boolean') {
+      return `${who}: verified must be true or false.`;
+    }
     const premises = entry['premises_verified'] ?? entry['premisesVerified'];
     if (premises !== undefined && typeof premises !== 'boolean') {
       return `${who}: premises_verified must be true or false.`;

@@ -115,7 +115,10 @@ Such a finding can still be reported at `nit`, and only at `nit`.
 - It is not purely stylistic, hypothetical, or generic.
 
 A plausible concern is not sufficient. Do not invent missing context to make a
-candidate work - if context is missing, say which context, and reject.
+candidate work - if context is missing, say which context, and reject. List
+that context in `required_context_missing` even when you reject: a candidate
+rejected only for blocking context is shown to the owner as unverified, never
+posted, so they can supply it and run the review again.
 
 ## Your confidence is the one that counts
 

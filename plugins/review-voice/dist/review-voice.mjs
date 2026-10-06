@@ -12229,6 +12229,8 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     }
   } else if (confidenceSource === "unverifiable-cap") {
     rejectedBecause = UNVERIFIABLE_REJECTION;
+  } else if (verification2?.verified === false) {
+    rejectedBecause = "the verifier did not verify this claim (verified: false)";
   } else if (confidence < confidenceFloor) {
     rejectedBecause = `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` + (confidenceSource === "analyst" ? ". No verification was supplied, so this is the analyst's opinion of its own output." : "");
   } else if (finalScore < thresholds.finalScore) {
@@ -14215,6 +14217,7 @@ function scoreCommand(argv) {
         const fixDirection = raw["fix_direction"] ?? raw["fixDirection"];
         const impactTraced = raw["impact_traced"] ?? raw["impactTraced"];
         const premisesVerified = raw["premises_verified"] ?? raw["premisesVerified"];
+        const verified = raw["verified"];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: raw["evidence_quality"] ?? raw["evidenceQuality"],
@@ -14228,6 +14231,7 @@ function scoreCommand(argv) {
           // Only a real boolean counts; a string "true" is not evidence.
           impactTraced: typeof impactTraced === "boolean" ? impactTraced : void 0,
           premisesVerified: typeof premisesVerified === "boolean" ? premisesVerified : void 0,
+          verified: typeof verified === "boolean" ? verified : void 0,
           requiredContextMissing: raw["required_context_missing"] ?? raw["requiredContextMissing"]
         });
       }
@@ -14361,10 +14365,19 @@ function scoreCommand(argv) {
         breakdown.eligible = false;
         breakdown.rejectedBecause = `claims something is absent, but the repository contains ${absence.found.join(", ")}`;
       }
-      const echoed = breakdown.eligible ? alreadySaidOnThread(candidate, thread) : null;
+      const listable = !breakdown.eligible && locallyListable(breakdown.rejectedBecause);
+      const alsoRejected = (because) => {
+        breakdown.rejectedBecause = `${breakdown.rejectedBecause ?? ""}. Also: ${because}`;
+      };
+      const echoed = breakdown.eligible || listable ? alreadySaidOnThread(candidate, thread) : null;
       if (echoed !== null) {
-        breakdown.eligible = false;
-        breakdown.rejectedBecause = `already said on this pull request by ${echoed.author}` + (echoed.path === null ? "" : ` at ${echoed.path}:${echoed.line ?? "?"}`);
+        const because = `already said on this pull request by ${echoed.author}` + (echoed.path === null ? "" : ` at ${echoed.path}:${echoed.line ?? "?"}`);
+        if (breakdown.eligible) {
+          breakdown.eligible = false;
+          breakdown.rejectedBecause = because;
+        } else {
+          alsoRejected(because);
+        }
       }
       const anchorCheck = anchorHunks === null ? null : anchorFor(anchorHunks, candidate);
       if (anchorCheck !== null && !anchorCheck.ok) {
@@ -14373,11 +14386,17 @@ function scoreCommand(argv) {
         breakdown.rejectedBecause = reason(anchorCheck) + (earlier === null ? "" : ` Also: ${earlier}`);
       }
       let citation = null;
-      if (breakdown.eligible && searchRoot !== null) {
+      const stillListable = !breakdown.eligible && listable && locallyListable(breakdown.rejectedBecause);
+      if ((breakdown.eligible || stillListable) && searchRoot !== null) {
         citation = checkCitation(candidate.path, searchRoot, baseRef, reachDiff);
         if (!citation.resolves && !citation.inconclusive) {
-          breakdown.eligible = false;
-          breakdown.rejectedBecause = `cites ${candidate.path}, which does not exist at the reviewed ref` + (citation.suggestion === null ? "" : `; did it mean ${citation.suggestion}?`);
+          const because = `cites ${candidate.path}, which does not exist at the reviewed ref` + (citation.suggestion === null ? "" : `; did it mean ${citation.suggestion}?`);
+          if (breakdown.eligible) {
+            breakdown.eligible = false;
+            breakdown.rejectedBecause = because;
+          } else {
+            alsoRejected(because);
+          }
         }
       }
       if (breakdown.eligible) kept.push(candidate);
@@ -14391,18 +14410,19 @@ function scoreCommand(argv) {
     }
     applyQuestionCap(results);
     const belowGate = results.filter(
-      (r) => r.confidenceSource === "verifier" && !r.eligible && Number.isFinite(r.finalScore) && (r.rejectedBecause ?? "").startsWith("score ")
-    ).map(
-      (r) => boundLists({
+      (r) => r.confidenceSource === "verifier" && !r.eligible && Number.isFinite(r.finalScore) && gateOf(r.rejectedBecause) !== null
+    ).map((r) => {
+      const gate = gateOf(r.rejectedBecause);
+      return boundLists({
         candidateId: r.candidateId,
         path: r.path,
         line: r.line,
         severity: r.severity.severity,
         claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? "",
-        finalScore: r.finalScore,
-        threshold: thresholds.finalScore
-      })
-    );
+        gate,
+        ...gate === "score" ? { finalScore: r.finalScore, threshold: thresholds.finalScore } : { technicalConfidence: r.technicalConfidence, threshold: thresholds.technicalConfidence }
+      });
+    });
     const unverified = results.filter((r) => r.confidenceSource === "unverifiable-cap" && r.rejectedBecause === UNVERIFIABLE_REJECTION).flatMap((r) => {
       const missing = blockingContext(verifications.get(r.candidateId)?.requiredContextMissing);
       if (missing.length === 0) return [];
@@ -14493,6 +14513,16 @@ function scoreCommand(argv) {
   } finally {
     db.close();
   }
+}
+function locallyListable(rejectedBecause) {
+  if (rejectedBecause === null) return false;
+  return rejectedBecause === UNVERIFIABLE_REJECTION || gateOf(rejectedBecause) !== null;
+}
+function gateOf(rejectedBecause) {
+  if (rejectedBecause === null || rejectedBecause.includes(" Also: ")) return null;
+  if (rejectedBecause.startsWith("score ")) return "score";
+  if (rejectedBecause.startsWith("technical confidence ")) return "confidence";
+  return null;
 }
 function calibrateCommand() {
   const db = openDatabase();
@@ -15128,6 +15158,9 @@ function verificationProblem(list) {
     const confidence = entry["technical_confidence"] ?? entry["technicalConfidence"];
     if (confidence !== void 0 && !(typeof confidence === "number" && Number.isFinite(confidence) && confidence >= 0 && confidence <= 1)) {
       return `${who}: technical_confidence must be a number from 0 to 1.`;
+    }
+    if (entry["verified"] !== void 0 && typeof entry["verified"] !== "boolean") {
+      return `${who}: verified must be true or false.`;
     }
     const premises = entry["premises_verified"] ?? entry["premisesVerified"];
     if (premises !== void 0 && typeof premises !== "boolean") {

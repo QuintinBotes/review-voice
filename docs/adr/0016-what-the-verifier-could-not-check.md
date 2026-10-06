@@ -43,8 +43,25 @@ posted.**
   under `Unverified (not posted)` and records it with `record --held` as
   `unverified`. A later review's `--held-from` does not drop candidates on
   account of it, since nothing was concluded about them.
+- **Reaching `score`.** The verifier rejects a claim it cannot check, and the
+  review used to discard every rejection before scoring, so the list could
+  never fill. A candidate the verifier rejected with at least one blocking
+  entry is now set aside in step 3, skips the second pass and the tie-break,
+  and is added to the candidates scored in step 4. The cap rejects it there.
+  Defence in depth: `score` also rejects any candidate other than a question
+  whose verification says `verified: false`, so a forwarded rejection can
+  never become eligible even with its context list emptied.
+- **Only the cap.** A candidate is listed only when the cap is the one rule
+  that stopped it. The thread-repeat and citation checks still run on it, and
+  a failure there, or an untraced stale consumer, is appended to the reason
+  and keeps it off the list.
+- **The confidence floor.** A candidate the verifier confirmed but rated below
+  its own floor (0.8) was in neither list either. It is now listed in
+  `belowGate` with `gate: confidence`, beside the final-score case
+  (`gate: score`), under the same only-this-gate rule. Local only.
 - **Strict input.** An entry that is neither a string nor that object, or has
-  an unknown kind, is refused by `check-verification` and `score`.
+  an unknown kind, is refused by `check-verification` and `score`, as is a
+  `verified` that is not a boolean.
 - **Questions.** A `question` is eligible when its premises are verified, even
   if its answer is not. This was already the behaviour - a question skips the
   confidence gates - but was written down nowhere, and it is the one place an

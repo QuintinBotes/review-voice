@@ -280,10 +280,19 @@ If there are no candidates, output exactly `No actionable findings.` and stop.
 Launch the `evidence-verifier` agent with the candidates, the same diff, the
 same convention `documents`, and `symbols.json`.
 
-Discard every candidate it does not verify, except a `question` it marked
-`premises_verified: true`, which step 4 decides. Rejection is the default when
-evidence is weak - do not argue with it, and do not reinstate a candidate
-because it seemed compelling.
+Discard every candidate it does not verify, with two exceptions that step 4
+decides:
+
+- a `question` it marked `premises_verified: true`;
+- a candidate it rejected because of context it could not obtain, with at
+  least one blocking entry in `required_context_missing` (a string, or an
+  object not marked `cosmetic`). **Set it aside**: it skips steps 3b and 3c and
+  is added to the candidates piped into step 4, where the cap rejects it and
+  lists it under `unverified` for the owner. It is never eligible and never
+  posted.
+
+Rejection is the default when evidence is weak - do not argue with it, and do
+not reinstate a candidate because it seemed compelling.
 
 **Write its full output to `<tmpdir>/verification.json`.** It is not only a
 pass list: step 4 gates on the confidence it reports, because the verifier is
@@ -303,7 +312,9 @@ repair separately from the defect and must not be derived or filled in later.
 Keep `impact_traced` there too: scoring reads it to decide whether a finding may
 be reported above the tier the analyst asked for.
 
-If nothing survives, output exactly `No actionable findings.` and stop.
+If nothing survives and nothing was set aside, output exactly
+`No actionable findings.` and stop. If only set-aside candidates remain, skip
+to step 4 so they are listed.
 
 ## Step 3b - Second-pass verification
 
@@ -353,7 +364,8 @@ candidate nobody disputed is ignored.
 
 ## Step 4 - Score against precedent
 
-Pipe the verified candidates - step 3c's `candidates` when it ran - as `{"candidates": [...]}` into
+Pipe the verified candidates - step 3c's `candidates` when it ran - plus those
+set aside in step 3, as `{"candidates": [...]}` into
 `RV score --repository <name> --verification <tmpdir>/verification.json --base <ref> --diff-file <tmpdir>/diff.patch`,
 adding `--thread <tmpdir>/thread.json` on a `--pr` run.
 
@@ -424,8 +436,10 @@ where the claim itself says it could not be checked. A `required_context_missing
 entry the verifier marked `cosmetic` - context that would only sharpen the
 wording - does not trigger the cap; every other entry does.
 
-`belowGate` lists the verified candidates stopped only by the final score. Keep
-it for step 6. They are never posted and are not part of the validated output.
+`belowGate` lists the verified candidates stopped only by the final score
+(`gate: score`) or only by the floor on the verifier's own confidence
+(`gate: confidence`). Keep it for step 6. They are never posted and are not part
+of the validated output.
 
 `unverified` lists the candidates rejected only because the verifier listed
 blocking context it could not obtain in `required_context_missing`, each with
@@ -505,8 +519,9 @@ stray directory and another project's notes took the reviewed count from 11 to
 
 - Exit 0: display the output verbatim. When `belowGate` from step 4 is not
   empty, print after it a line `Below the gate (not posted)` and then one line
-  per entry: `[severity] path:line - claim`. They are verified but scored below
-  the gate, are never posted, and are not part of the validated output. When
+  per entry: `[severity] path:line - claim`. They are verified but stopped by
+  the score or confidence gate, are never posted, and are not part of the
+  validated output. When
   `unverified` from step 4 is not empty, print after that a line
   `Unverified (not posted)` and then one line per entry:
   `[severity] path:line - claim (could not check: <required_context_missing>)`.

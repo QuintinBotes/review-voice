@@ -144,6 +144,12 @@ export interface Verification {
    * not when the verifier found a premise false or could not check one.
    */
   premisesVerified?: boolean | undefined;
+  /**
+   * The verifier's overall verdict on the claim. `false` rejects anything but
+   * a question. A candidate the verifier rejected reaches scoring only to be
+   * listed locally, when what stopped it was context it could not obtain.
+   */
+  verified?: boolean | undefined;
 }
 
 /** Weakest to strongest, the order a tier can be escalated along. */
@@ -1166,6 +1172,10 @@ export function scoreCandidate(
     // It used to depend on the cap sitting below the floor, which quietly tied
     // it to a number that has since moved.
     rejectedBecause = UNVERIFIABLE_REJECTION;
+  } else if (verification?.verified === false) {
+    // Not left to the confidence floor: a verifier can reject a claim and
+    // still report a number above it for what it could check.
+    rejectedBecause = 'the verifier did not verify this claim (verified: false)';
   } else if (confidence < confidenceFloor) {
     rejectedBecause =
       `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` +

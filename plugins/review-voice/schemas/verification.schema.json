@@ -12,6 +12,10 @@
       "type": "string",
       "minLength": 1
     },
+    "verified": {
+      "type": "boolean",
+      "description": "The verifier's verdict on the claim. false rejects anything but a question; such a candidate reaches scoring only to be listed as unverified when blocking context was missing."
+    },
     "evidence_quality": {
       "enum": [
         "high",
