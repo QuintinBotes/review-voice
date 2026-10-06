@@ -135,10 +135,10 @@ var SEVERITY_ALTERNATION = SEVERITIES.join("|");
 var OPENS_FINDING = new RegExp(`^\\[(?:${SEVERITY_ALTERNATION}|[a-z_]+)\\]`, "i");
 var FINDING = new RegExp(`^\\[([a-z_]+)\\]\\s+\`([^\`]+):(\\d+)\`\\s+-\\s*([\\s\\S]*)$`, "i");
 function splitFindings(output) {
-  const lines = output.split("\n");
+  const lines2 = output.split("\n");
   const blocks = [];
   let current = null;
-  lines.forEach((line, index) => {
+  lines2.forEach((line, index) => {
     if (OPENS_FINDING.test(line)) {
       if (current) blocks.push({ raw: current.raw.join("\n").trim(), startLine: current.startLine });
       current = { raw: [line], startLine: index + 1 };
@@ -593,7 +593,7 @@ function buildPayload(input) {
 }
 function renderPreview(input) {
   const { payload } = input;
-  const lines = [
+  const lines2 = [
     payload.event,
     `Repository: ${input.repository}`,
     `Pull request: #${input.pullNumber}`,
@@ -604,16 +604,16 @@ function renderPreview(input) {
   ${comment.body}`)
   ];
   if ((input.alreadyInline ?? 0) > 0) {
-    lines.push(`Already inline from an earlier post of this head, not sent again: ${input.alreadyInline}`);
+    lines2.push(`Already inline from an earlier post of this head, not sent again: ${input.alreadyInline}`);
   }
   if (input.held.length > 0) {
-    lines.push(`Held back, not verified: ${input.held.length}`);
+    lines2.push(`Held back, not verified: ${input.held.length}`);
     for (const held of input.held) {
       const where = held.path === null ? "no anchor" : `${held.path}:${held.line ?? "?"}`;
-      lines.push(`  ${held.findingId ?? "-"} ${where} (${held.reason})`);
+      lines2.push(`  ${held.findingId ?? "-"} ${where} (${held.reason})`);
     }
   }
-  return lines.join("\n");
+  return lines2.join("\n");
 }
 function commentSignature(comment) {
   return `${comment.path}:${comment.line}:${createHash("sha256").update(comment.body).digest("hex").slice(0, 32)}`;
@@ -5116,7 +5116,7 @@ import { readFileSync as readFileSync3, existsSync } from "node:fs";
 import { createHash as createHash4 } from "node:crypto";
 import { join as join4 } from "node:path";
 
-// node_modules/yaml/browser/dist/nodes/identity.js
+// ../../node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
 var DOC = /* @__PURE__ */ Symbol.for("yaml.document");
 var MAP = /* @__PURE__ */ Symbol.for("yaml.map");
@@ -5152,7 +5152,7 @@ function isNode(node) {
 }
 var hasAnchor = (node) => (isScalar(node) || isCollection(node)) && !!node.anchor;
 
-// node_modules/yaml/browser/dist/visit.js
+// ../../node_modules/yaml/browser/dist/visit.js
 var BREAK = /* @__PURE__ */ Symbol("break visit");
 var SKIP = /* @__PURE__ */ Symbol("skip children");
 var REMOVE = /* @__PURE__ */ Symbol("remove node");
@@ -5302,7 +5302,7 @@ function replaceNode(key, path, node) {
   }
 }
 
-// node_modules/yaml/browser/dist/doc/directives.js
+// ../../node_modules/yaml/browser/dist/doc/directives.js
 var escapeChars = {
   "!": "%21",
   ",": "%2C",
@@ -5441,7 +5441,7 @@ var Directives = class _Directives {
     return tag[0] === "!" ? tag : `!<${tag}>`;
   }
   toString(doc) {
-    const lines = this.yaml.explicit ? [`%YAML ${this.yaml.version || "1.2"}`] : [];
+    const lines2 = this.yaml.explicit ? [`%YAML ${this.yaml.version || "1.2"}`] : [];
     const tagEntries = Object.entries(this.tags);
     let tagNames;
     if (doc && tagEntries.length > 0 && isNode(doc.contents)) {
@@ -5457,15 +5457,15 @@ var Directives = class _Directives {
       if (handle === "!!" && prefix === "tag:yaml.org,2002:")
         continue;
       if (!doc || tagNames.some((tn) => tn.startsWith(prefix)))
-        lines.push(`%TAG ${handle} ${prefix}`);
+        lines2.push(`%TAG ${handle} ${prefix}`);
     }
-    return lines.join("\n");
+    return lines2.join("\n");
   }
 };
 Directives.defaultYaml = { explicit: false, version: "1.2" };
 Directives.defaultTags = { "!!": "tag:yaml.org,2002:" };
 
-// node_modules/yaml/browser/dist/doc/anchors.js
+// ../../node_modules/yaml/browser/dist/doc/anchors.js
 function anchorIsValid(anchor) {
   if (/[\x00-\x19\s,[\]{}]/.test(anchor)) {
     const sa = JSON.stringify(anchor);
@@ -5524,7 +5524,7 @@ function createNodeAnchors(doc, prefix) {
   };
 }
 
-// node_modules/yaml/browser/dist/doc/applyReviver.js
+// ../../node_modules/yaml/browser/dist/doc/applyReviver.js
 function applyReviver(reviver, obj, key, val) {
   if (val && typeof val === "object") {
     if (Array.isArray(val)) {
@@ -5568,7 +5568,7 @@ function applyReviver(reviver, obj, key, val) {
   return reviver.call(obj, key, val);
 }
 
-// node_modules/yaml/browser/dist/nodes/toJS.js
+// ../../node_modules/yaml/browser/dist/nodes/toJS.js
 function toJS(value, arg, ctx) {
   if (Array.isArray(value))
     return value.map((v, i) => toJS(v, String(i), ctx));
@@ -5591,7 +5591,7 @@ function toJS(value, arg, ctx) {
   return value;
 }
 
-// node_modules/yaml/browser/dist/nodes/Node.js
+// ../../node_modules/yaml/browser/dist/nodes/Node.js
 var NodeBase = class {
   constructor(type) {
     Object.defineProperty(this, NODE_TYPE, { value: type });
@@ -5623,7 +5623,7 @@ var NodeBase = class {
   }
 };
 
-// node_modules/yaml/browser/dist/nodes/Alias.js
+// ../../node_modules/yaml/browser/dist/nodes/Alias.js
 var Alias = class extends NodeBase {
   constructor(source) {
     super(ALIAS);
@@ -5730,7 +5730,7 @@ function getAliasCount(doc, node, anchors) {
   return 1;
 }
 
-// node_modules/yaml/browser/dist/nodes/Scalar.js
+// ../../node_modules/yaml/browser/dist/nodes/Scalar.js
 var isScalarValue = (value) => !value || typeof value !== "function" && typeof value !== "object";
 var Scalar = class extends NodeBase {
   constructor(value) {
@@ -5750,7 +5750,7 @@ Scalar.PLAIN = "PLAIN";
 Scalar.QUOTE_DOUBLE = "QUOTE_DOUBLE";
 Scalar.QUOTE_SINGLE = "QUOTE_SINGLE";
 
-// node_modules/yaml/browser/dist/doc/createNode.js
+// ../../node_modules/yaml/browser/dist/doc/createNode.js
 var defaultTagPrefix = "tag:yaml.org,2002:";
 function findTagObject(value, tagName, tags) {
   if (tagName) {
@@ -5816,7 +5816,7 @@ function createNode(value, tagName, ctx) {
   return node;
 }
 
-// node_modules/yaml/browser/dist/nodes/Collection.js
+// ../../node_modules/yaml/browser/dist/nodes/Collection.js
 function collectionFromPath(schema4, path, value) {
   let v = value;
   for (let i = path.length - 1; i >= 0; --i) {
@@ -5948,7 +5948,7 @@ var Collection = class extends NodeBase {
   }
 };
 
-// node_modules/yaml/browser/dist/stringify/stringifyComment.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyComment.js
 var stringifyComment = (str) => str.replace(/^(?!$)(?: $)?/gm, "#");
 function indentComment(comment, indent) {
   if (/^\n+$/.test(comment))
@@ -5957,7 +5957,7 @@ function indentComment(comment, indent) {
 }
 var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str.endsWith(" ") ? "" : " ") + comment;
 
-// node_modules/yaml/browser/dist/stringify/foldFlowLines.js
+// ../../node_modules/yaml/browser/dist/stringify/foldFlowLines.js
 var FOLD_FLOW = "flow";
 var FOLD_BLOCK = "block";
 var FOLD_QUOTED = "quoted";
@@ -6084,7 +6084,7 @@ function consumeMoreIndentedLines(text, i, indent) {
   return end;
 }
 
-// node_modules/yaml/browser/dist/stringify/stringifyString.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyString.js
 var getFoldOptions = (ctx, isBlock2) => ({
   indentAtStart: isBlock2 ? ctx.indent.length : ctx.indentAtStart,
   lineWidth: ctx.options.lineWidth,
@@ -6359,7 +6359,7 @@ function stringifyString(item, ctx, onComment, onChompKeep) {
   return res;
 }
 
-// node_modules/yaml/browser/dist/stringify/stringify.js
+// ../../node_modules/yaml/browser/dist/stringify/stringify.js
 function createStringifyContext(doc, options) {
   const opt = Object.assign({
     blockQuote: true,
@@ -6472,7 +6472,7 @@ function stringify(item, ctx, onComment, onChompKeep) {
 ${ctx.indent}${str}`;
 }
 
-// node_modules/yaml/browser/dist/stringify/stringifyPair.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyPair.js
 function stringifyPair({ key, value }, ctx, onComment, onChompKeep) {
   const { allNullValues, doc, indent, indentStep, options: { commentString, indentSeq, simpleKeys } } = ctx;
   let keyComment = isNode(key) && key.comment || null;
@@ -6595,14 +6595,14 @@ ${ctx.indent}`;
   return str;
 }
 
-// node_modules/yaml/browser/dist/log.js
+// ../../node_modules/yaml/browser/dist/log.js
 function warn(logLevel, warning) {
   if (logLevel === "debug" || logLevel === "warn") {
     console.warn(warning);
   }
 }
 
-// node_modules/yaml/browser/dist/schema/yaml-1.1/merge.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/merge.js
 var MERGE_KEY = "<<";
 var merge = {
   identify: (value) => value === MERGE_KEY || typeof value === "symbol" && value.description === MERGE_KEY,
@@ -6652,7 +6652,7 @@ function resolveAliasValue(ctx, value) {
   return ctx && isAlias(value) ? value.resolve(ctx.doc, ctx) : value;
 }
 
-// node_modules/yaml/browser/dist/nodes/addPairToJSMap.js
+// ../../node_modules/yaml/browser/dist/nodes/addPairToJSMap.js
 function addPairToJSMap(ctx, map2, { key, value }) {
   if (isNode(key) && key.addToJSMap)
     key.addToJSMap(ctx, map2, value);
@@ -6705,7 +6705,7 @@ function stringifyKey(key, jsKey, ctx) {
   return JSON.stringify(jsKey);
 }
 
-// node_modules/yaml/browser/dist/nodes/Pair.js
+// ../../node_modules/yaml/browser/dist/nodes/Pair.js
 function createPair(key, value, ctx) {
   const k = createNode(key, void 0, ctx);
   const v = createNode(value, void 0, ctx);
@@ -6734,7 +6734,7 @@ var Pair = class _Pair {
   }
 };
 
-// node_modules/yaml/browser/dist/stringify/stringifyCollection.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyCollection.js
 function stringifyCollection(collection, ctx, options) {
   const flow = ctx.inFlow ?? collection.flow;
   const stringify4 = flow ? stringifyFlowCollection : stringifyBlockCollection;
@@ -6744,22 +6744,22 @@ function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, fl
   const { indent, options: { commentString } } = ctx;
   const itemCtx = Object.assign({}, ctx, { indent: itemIndent, type: null });
   let chompKeep = false;
-  const lines = [];
+  const lines2 = [];
   for (let i = 0; i < items.length; ++i) {
     const item = items[i];
     let comment2 = null;
     if (isNode(item)) {
       if (!chompKeep && item.spaceBefore)
-        lines.push("");
-      addCommentBefore(ctx, lines, item.commentBefore, chompKeep);
+        lines2.push("");
+      addCommentBefore(ctx, lines2, item.commentBefore, chompKeep);
       if (item.comment)
         comment2 = item.comment;
     } else if (isPair(item)) {
       const ik = isNode(item.key) ? item.key : null;
       if (ik) {
         if (!chompKeep && ik.spaceBefore)
-          lines.push("");
-        addCommentBefore(ctx, lines, ik.commentBefore, chompKeep);
+          lines2.push("");
+        addCommentBefore(ctx, lines2, ik.commentBefore, chompKeep);
       }
     }
     chompKeep = false;
@@ -6768,15 +6768,15 @@ function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, fl
       str2 += lineComment(str2, itemIndent, commentString(comment2));
     if (chompKeep && comment2)
       chompKeep = false;
-    lines.push(blockItemPrefix + str2);
+    lines2.push(blockItemPrefix + str2);
   }
   let str;
-  if (lines.length === 0) {
+  if (lines2.length === 0) {
     str = flowChars.start + flowChars.end;
   } else {
-    str = lines[0];
-    for (let i = 1; i < lines.length; ++i) {
-      const line = lines[i];
+    str = lines2[0];
+    for (let i = 1; i < lines2.length; ++i) {
+      const line = lines2[i];
       str += line ? `
 ${indent}${line}` : "\n";
     }
@@ -6799,22 +6799,22 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
   });
   let reqNewline = false;
   let linesAtValue = 0;
-  const lines = [];
+  const lines2 = [];
   for (let i = 0; i < items.length; ++i) {
     const item = items[i];
     let comment = null;
     if (isNode(item)) {
       if (item.spaceBefore)
-        lines.push("");
-      addCommentBefore(ctx, lines, item.commentBefore, false);
+        lines2.push("");
+      addCommentBefore(ctx, lines2, item.commentBefore, false);
       if (item.comment)
         comment = item.comment;
     } else if (isPair(item)) {
       const ik = isNode(item.key) ? item.key : null;
       if (ik) {
         if (ik.spaceBefore)
-          lines.push("");
-        addCommentBefore(ctx, lines, ik.commentBefore, false);
+          lines2.push("");
+        addCommentBefore(ctx, lines2, ik.commentBefore, false);
         if (ik.comment)
           reqNewline = true;
       }
@@ -6831,12 +6831,12 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
     if (comment)
       reqNewline = true;
     let str = stringify(item, itemCtx, () => comment = null);
-    reqNewline || (reqNewline = lines.length > linesAtValue || str.includes("\n"));
+    reqNewline || (reqNewline = lines2.length > linesAtValue || str.includes("\n"));
     if (i < items.length - 1) {
       str += ",";
     } else if (ctx.options.trailingComma) {
       if (ctx.options.lineWidth > 0) {
-        reqNewline || (reqNewline = lines.reduce((sum, line) => sum + line.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
+        reqNewline || (reqNewline = lines2.reduce((sum, line) => sum + line.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
       }
       if (reqNewline) {
         str += ",";
@@ -6844,39 +6844,39 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
     }
     if (comment)
       str += lineComment(str, itemIndent, commentString(comment));
-    lines.push(str);
-    linesAtValue = lines.length;
+    lines2.push(str);
+    linesAtValue = lines2.length;
   }
   const { start, end } = flowChars;
-  if (lines.length === 0) {
+  if (lines2.length === 0) {
     return start + end;
   } else {
     if (!reqNewline) {
-      const len = lines.reduce((sum, line) => sum + line.length + 2, 2);
+      const len = lines2.reduce((sum, line) => sum + line.length + 2, 2);
       reqNewline = ctx.options.lineWidth > 0 && len > ctx.options.lineWidth;
     }
     if (reqNewline) {
       let str = start;
-      for (const line of lines)
+      for (const line of lines2)
         str += line ? `
 ${indentStep}${indent}${line}` : "\n";
       return `${str}
 ${indent}${end}`;
     } else {
-      return `${start}${fcPadding}${lines.join(" ")}${fcPadding}${end}`;
+      return `${start}${fcPadding}${lines2.join(" ")}${fcPadding}${end}`;
     }
   }
 }
-function addCommentBefore({ indent, options: { commentString } }, lines, comment, chompKeep) {
+function addCommentBefore({ indent, options: { commentString } }, lines2, comment, chompKeep) {
   if (comment && chompKeep)
     comment = comment.replace(/^\n+/, "");
   if (comment) {
     const ic = indentComment(commentString(comment), indent);
-    lines.push(ic.trimStart());
+    lines2.push(ic.trimStart());
   }
 }
 
-// node_modules/yaml/browser/dist/nodes/YAMLMap.js
+// ../../node_modules/yaml/browser/dist/nodes/YAMLMap.js
 function findPair(items, key) {
   const k = isScalar(key) ? key.value : key;
   for (const it of items) {
@@ -7007,7 +7007,7 @@ var YAMLMap = class extends Collection {
   }
 };
 
-// node_modules/yaml/browser/dist/schema/common/map.js
+// ../../node_modules/yaml/browser/dist/schema/common/map.js
 var map = {
   collection: "map",
   default: true,
@@ -7021,7 +7021,7 @@ var map = {
   createNode: (schema4, obj, ctx) => YAMLMap.from(schema4, obj, ctx)
 };
 
-// node_modules/yaml/browser/dist/nodes/YAMLSeq.js
+// ../../node_modules/yaml/browser/dist/nodes/YAMLSeq.js
 var YAMLSeq = class extends Collection {
   static get tagName() {
     return "tag:yaml.org,2002:seq";
@@ -7125,7 +7125,7 @@ function asItemIndex(key) {
   return typeof idx === "number" && Number.isInteger(idx) && idx >= 0 ? idx : null;
 }
 
-// node_modules/yaml/browser/dist/schema/common/seq.js
+// ../../node_modules/yaml/browser/dist/schema/common/seq.js
 var seq = {
   collection: "seq",
   default: true,
@@ -7139,7 +7139,7 @@ var seq = {
   createNode: (schema4, obj, ctx) => YAMLSeq.from(schema4, obj, ctx)
 };
 
-// node_modules/yaml/browser/dist/schema/common/string.js
+// ../../node_modules/yaml/browser/dist/schema/common/string.js
 var string = {
   identify: (value) => typeof value === "string",
   default: true,
@@ -7151,7 +7151,7 @@ var string = {
   }
 };
 
-// node_modules/yaml/browser/dist/schema/common/null.js
+// ../../node_modules/yaml/browser/dist/schema/common/null.js
 var nullTag = {
   identify: (value) => value == null,
   createNode: () => new Scalar(null),
@@ -7162,7 +7162,7 @@ var nullTag = {
   stringify: ({ source }, ctx) => typeof source === "string" && nullTag.test.test(source) ? source : ctx.options.nullStr
 };
 
-// node_modules/yaml/browser/dist/schema/core/bool.js
+// ../../node_modules/yaml/browser/dist/schema/core/bool.js
 var boolTag = {
   identify: (value) => typeof value === "boolean",
   default: true,
@@ -7179,7 +7179,7 @@ var boolTag = {
   }
 };
 
-// node_modules/yaml/browser/dist/stringify/stringifyNumber.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyNumber.js
 function stringifyNumber({ format, minFractionDigits, tag, value }) {
   if (typeof value === "bigint")
     return String(value);
@@ -7200,7 +7200,7 @@ function stringifyNumber({ format, minFractionDigits, tag, value }) {
   return n;
 }
 
-// node_modules/yaml/browser/dist/schema/core/float.js
+// ../../node_modules/yaml/browser/dist/schema/core/float.js
 var floatNaN = {
   identify: (value) => typeof value === "number",
   default: true,
@@ -7236,7 +7236,7 @@ var float = {
   stringify: stringifyNumber
 };
 
-// node_modules/yaml/browser/dist/schema/core/int.js
+// ../../node_modules/yaml/browser/dist/schema/core/int.js
 var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
 var intResolve = (str, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset), radix);
 function intStringify(node, radix, prefix) {
@@ -7272,7 +7272,7 @@ var intHex = {
   stringify: (node) => intStringify(node, 16, "0x")
 };
 
-// node_modules/yaml/browser/dist/schema/core/schema.js
+// ../../node_modules/yaml/browser/dist/schema/core/schema.js
 var schema = [
   map,
   seq,
@@ -7287,7 +7287,7 @@ var schema = [
   float
 ];
 
-// node_modules/yaml/browser/dist/schema/json/schema.js
+// ../../node_modules/yaml/browser/dist/schema/json/schema.js
 function intIdentify2(value) {
   return typeof value === "bigint" || Number.isInteger(value);
 }
@@ -7345,7 +7345,7 @@ var jsonError = {
 };
 var schema2 = [map, seq].concat(jsonScalars, jsonError);
 
-// node_modules/yaml/browser/dist/schema/yaml-1.1/binary.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/binary.js
 var binary = {
   identify: (value) => value instanceof Uint8Array,
   // Buffer inherits from Uint8Array
@@ -7388,17 +7388,17 @@ var binary = {
     if (type !== Scalar.QUOTE_DOUBLE) {
       const lineWidth = Math.max(ctx.options.lineWidth - ctx.indent.length, ctx.options.minContentWidth);
       const n = Math.ceil(str.length / lineWidth);
-      const lines = new Array(n);
+      const lines2 = new Array(n);
       for (let i = 0, o = 0; i < n; ++i, o += lineWidth) {
-        lines[i] = str.substr(o, lineWidth);
+        lines2[i] = str.substr(o, lineWidth);
       }
-      str = lines.join(type === Scalar.BLOCK_LITERAL ? "\n" : " ");
+      str = lines2.join(type === Scalar.BLOCK_LITERAL ? "\n" : " ");
     }
     return stringifyString({ comment, type, value: str }, ctx, onComment, onChompKeep);
   }
 };
 
-// node_modules/yaml/browser/dist/schema/yaml-1.1/pairs.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/pairs.js
 function resolvePairs(seq2, onError) {
   if (isSeq(seq2)) {
     for (let i = 0; i < seq2.items.length; ++i) {
@@ -7464,7 +7464,7 @@ var pairs = {
   createNode: createPairs
 };
 
-// node_modules/yaml/browser/dist/schema/yaml-1.1/omap.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/omap.js
 var YAMLOMap = class _YAMLOMap extends YAMLSeq {
   constructor() {
     super();
@@ -7530,7 +7530,7 @@ var omap = {
   createNode: (schema4, iterable, ctx) => YAMLOMap.from(schema4, iterable, ctx)
 };
 
-// node_modules/yaml/browser/dist/schema/yaml-1.1/bool.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/bool.js
 function boolStringify({ value, source }, ctx) {
   const boolObj = value ? trueTag : falseTag;
   if (source && boolObj.test.test(source))
@@ -7554,7 +7554,7 @@ var falseTag = {
   stringify: boolStringify
 };
 
-// node_modules/yaml/browser/dist/schema/yaml-1.1/float.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/float.js
 var floatNaN2 = {
   identify: (value) => typeof value === "number",
   default: true,
@@ -7593,7 +7593,7 @@ var float2 = {
   stringify: stringifyNumber
 };
 
-// node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
 var intIdentify3 = (value) => typeof value === "bigint" || Number.isInteger(value);
 function intResolve2(str, offset, radix, { intAsBigInt }) {
   const sign = str[0];
@@ -7662,7 +7662,7 @@ var intHex2 = {
   stringify: (node) => intStringify2(node, 16, "0x")
 };
 
-// node_modules/yaml/browser/dist/schema/yaml-1.1/set.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/set.js
 var YAMLSet = class _YAMLSet extends YAMLMap {
   constructor(schema4) {
     super(schema4);
@@ -7741,7 +7741,7 @@ var set = {
   }
 };
 
-// node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
 function parseSexagesimal(str, asBigInt) {
   const sign = str[0];
   const parts = sign === "-" || sign === "+" ? str.substring(1) : str;
@@ -7820,7 +7820,7 @@ var timestamp = {
   stringify: ({ value }) => value?.toISOString().replace(/(T00:00:00)?\.000Z$/, "") ?? ""
 };
 
-// node_modules/yaml/browser/dist/schema/yaml-1.1/schema.js
+// ../../node_modules/yaml/browser/dist/schema/yaml-1.1/schema.js
 var schema3 = [
   map,
   seq,
@@ -7845,7 +7845,7 @@ var schema3 = [
   timestamp
 ];
 
-// node_modules/yaml/browser/dist/schema/tags.js
+// ../../node_modules/yaml/browser/dist/schema/tags.js
 var schemas = /* @__PURE__ */ new Map([
   ["core", schema],
   ["failsafe", [map, seq, string]],
@@ -7916,7 +7916,7 @@ function getTags(customTags, schemaName, addMergeTag) {
   }, []);
 }
 
-// node_modules/yaml/browser/dist/schema/Schema.js
+// ../../node_modules/yaml/browser/dist/schema/Schema.js
 var sortMapEntriesByKey = (a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 var Schema = class _Schema {
   constructor({ compat, customTags, merge: merge2, resolveKnownTags, schema: schema4, sortMapEntries, toStringDefaults }) {
@@ -7937,37 +7937,37 @@ var Schema = class _Schema {
   }
 };
 
-// node_modules/yaml/browser/dist/stringify/stringifyDocument.js
+// ../../node_modules/yaml/browser/dist/stringify/stringifyDocument.js
 function stringifyDocument(doc, options) {
-  const lines = [];
+  const lines2 = [];
   let hasDirectives = options.directives === true;
   if (options.directives !== false && doc.directives) {
     const dir = doc.directives.toString(doc);
     if (dir) {
-      lines.push(dir);
+      lines2.push(dir);
       hasDirectives = true;
     } else if (doc.directives.docStart)
       hasDirectives = true;
   }
   if (hasDirectives)
-    lines.push("---");
+    lines2.push("---");
   const ctx = createStringifyContext(doc, options);
   const { commentString } = ctx.options;
   if (doc.commentBefore) {
-    if (lines.length !== 1)
-      lines.unshift("");
+    if (lines2.length !== 1)
+      lines2.unshift("");
     const cs = commentString(doc.commentBefore);
-    lines.unshift(indentComment(cs, ""));
+    lines2.unshift(indentComment(cs, ""));
   }
   let chompKeep = false;
   let contentComment = null;
   if (doc.contents) {
     if (isNode(doc.contents)) {
       if (doc.contents.spaceBefore && hasDirectives)
-        lines.push("");
+        lines2.push("");
       if (doc.contents.commentBefore) {
         const cs = commentString(doc.contents.commentBefore);
-        lines.push(indentComment(cs, ""));
+        lines2.push(indentComment(cs, ""));
       }
       ctx.forceBlockIndent = !!doc.comment;
       contentComment = doc.contents.comment;
@@ -7976,39 +7976,39 @@ function stringifyDocument(doc, options) {
     let body = stringify(doc.contents, ctx, () => contentComment = null, onChompKeep);
     if (contentComment)
       body += lineComment(body, "", commentString(contentComment));
-    if ((body[0] === "|" || body[0] === ">") && lines[lines.length - 1] === "---") {
-      lines[lines.length - 1] = `--- ${body}`;
+    if ((body[0] === "|" || body[0] === ">") && lines2[lines2.length - 1] === "---") {
+      lines2[lines2.length - 1] = `--- ${body}`;
     } else
-      lines.push(body);
+      lines2.push(body);
   } else {
-    lines.push(stringify(doc.contents, ctx));
+    lines2.push(stringify(doc.contents, ctx));
   }
   if (doc.directives?.docEnd) {
     if (doc.comment) {
       const cs = commentString(doc.comment);
       if (cs.includes("\n")) {
-        lines.push("...");
-        lines.push(indentComment(cs, ""));
+        lines2.push("...");
+        lines2.push(indentComment(cs, ""));
       } else {
-        lines.push(`... ${cs}`);
+        lines2.push(`... ${cs}`);
       }
     } else {
-      lines.push("...");
+      lines2.push("...");
     }
   } else {
     let dc = doc.comment;
     if (dc && chompKeep)
       dc = dc.replace(/^\n+/, "");
     if (dc) {
-      if ((!chompKeep || contentComment) && lines[lines.length - 1] !== "")
-        lines.push("");
-      lines.push(indentComment(commentString(dc), ""));
+      if ((!chompKeep || contentComment) && lines2[lines2.length - 1] !== "")
+        lines2.push("");
+      lines2.push(indentComment(commentString(dc), ""));
     }
   }
-  return lines.join("\n") + "\n";
+  return lines2.join("\n") + "\n";
 }
 
-// node_modules/yaml/browser/dist/doc/Document.js
+// ../../node_modules/yaml/browser/dist/doc/Document.js
 var Document = class _Document {
   constructor(value, replacer, options) {
     this.commentBefore = null;
@@ -8300,7 +8300,7 @@ function assertCollection(contents) {
   throw new Error("Expected a YAML collection as document contents");
 }
 
-// node_modules/yaml/browser/dist/errors.js
+// ../../node_modules/yaml/browser/dist/errors.js
 var YAMLError = class extends Error {
   constructor(name, pos, code, message) {
     super();
@@ -8356,7 +8356,7 @@ ${pointer}
   }
 };
 
-// node_modules/yaml/browser/dist/compose/resolve-props.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-props.js
 function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIndent, startOnNewline }) {
   let spaceBefore = false;
   let atNewline = startOnNewline;
@@ -8484,7 +8484,7 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
   };
 }
 
-// node_modules/yaml/browser/dist/compose/util-contains-newline.js
+// ../../node_modules/yaml/browser/dist/compose/util-contains-newline.js
 function containsNewline(key) {
   if (!key)
     return null;
@@ -8520,7 +8520,7 @@ function containsNewline(key) {
   }
 }
 
-// node_modules/yaml/browser/dist/compose/util-flow-indent-check.js
+// ../../node_modules/yaml/browser/dist/compose/util-flow-indent-check.js
 function flowIndentCheck(indent, fc, onError) {
   if (fc?.type === "flow-collection") {
     const end = fc.end[0];
@@ -8531,7 +8531,7 @@ function flowIndentCheck(indent, fc, onError) {
   }
 }
 
-// node_modules/yaml/browser/dist/compose/util-map-includes.js
+// ../../node_modules/yaml/browser/dist/compose/util-map-includes.js
 function mapIncludes(ctx, items, search) {
   const { uniqueKeys } = ctx.options;
   if (uniqueKeys === false)
@@ -8540,7 +8540,7 @@ function mapIncludes(ctx, items, search) {
   return items.some((pair) => isEqual(pair.key, search));
 }
 
-// node_modules/yaml/browser/dist/compose/resolve-block-map.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-block-map.js
 var startColMsg = "All mapping items must start at the same column";
 function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, bm, onError, tag) {
   const NodeClass = tag?.nodeClass ?? YAMLMap;
@@ -8636,7 +8636,7 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
   return map2;
 }
 
-// node_modules/yaml/browser/dist/compose/resolve-block-seq.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-block-seq.js
 function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, bs, onError, tag) {
   const NodeClass = tag?.nodeClass ?? YAMLSeq;
   const seq2 = new NodeClass(ctx.schema);
@@ -8678,7 +8678,7 @@ function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeE
   return seq2;
 }
 
-// node_modules/yaml/browser/dist/compose/resolve-end.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-end.js
 function resolveEnd(end, offset, reqSpace, onError) {
   let comment = "";
   if (end) {
@@ -8715,7 +8715,7 @@ function resolveEnd(end, offset, reqSpace, onError) {
   return { comment, offset };
 }
 
-// node_modules/yaml/browser/dist/compose/resolve-flow-collection.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-flow-collection.js
 var blockMsg = "Block collections are not allowed within flow collections";
 var isBlock = (token) => token && (token.type === "block-map" || token.type === "block-seq");
 function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, fc, onError, tag) {
@@ -8895,7 +8895,7 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
   return coll;
 }
 
-// node_modules/yaml/browser/dist/compose/compose-collection.js
+// ../../node_modules/yaml/browser/dist/compose/compose-collection.js
 function resolveCollection(CN2, ctx, token, onError, tagName, tag) {
   const coll = token.type === "block-map" ? resolveBlockMap(CN2, ctx, token, onError, tag) : token.type === "block-seq" ? resolveBlockSeq(CN2, ctx, token, onError, tag) : resolveFlowCollection(CN2, ctx, token, onError, tag);
   const Coll = coll.constructor;
@@ -8947,24 +8947,24 @@ function composeCollection(CN2, ctx, token, props, onError) {
   return node;
 }
 
-// node_modules/yaml/browser/dist/compose/resolve-block-scalar.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-block-scalar.js
 function resolveBlockScalar(ctx, scalar, onError) {
   const start = scalar.offset;
   const header = parseBlockScalarHeader(scalar, ctx.options.strict, onError);
   if (!header)
     return { value: "", type: null, comment: "", range: [start, start, start] };
   const type = header.mode === ">" ? Scalar.BLOCK_FOLDED : Scalar.BLOCK_LITERAL;
-  const lines = scalar.source ? splitLines(scalar.source) : [];
-  let chompStart = lines.length;
-  for (let i = lines.length - 1; i >= 0; --i) {
-    const content = lines[i][1];
+  const lines2 = scalar.source ? splitLines(scalar.source) : [];
+  let chompStart = lines2.length;
+  for (let i = lines2.length - 1; i >= 0; --i) {
+    const content = lines2[i][1];
     if (content === "" || content === "\r")
       chompStart = i;
     else
       break;
   }
   if (chompStart === 0) {
-    const value2 = header.chomp === "+" && lines.length > 0 ? "\n".repeat(Math.max(1, lines.length - 1)) : "";
+    const value2 = header.chomp === "+" && lines2.length > 0 ? "\n".repeat(Math.max(1, lines2.length - 1)) : "";
     let end2 = start + header.length;
     if (scalar.source)
       end2 += scalar.source.length;
@@ -8974,7 +8974,7 @@ function resolveBlockScalar(ctx, scalar, onError) {
   let offset = scalar.offset + header.length;
   let contentStart = 0;
   for (let i = 0; i < chompStart; ++i) {
-    const [indent, content] = lines[i];
+    const [indent, content] = lines2[i];
     if (content === "" || content === "\r") {
       if (header.indent === 0 && indent.length > trimIndent)
         trimIndent = indent.length;
@@ -8994,17 +8994,17 @@ function resolveBlockScalar(ctx, scalar, onError) {
     }
     offset += indent.length + content.length + 1;
   }
-  for (let i = lines.length - 1; i >= chompStart; --i) {
-    if (lines[i][0].length > trimIndent)
+  for (let i = lines2.length - 1; i >= chompStart; --i) {
+    if (lines2[i][0].length > trimIndent)
       chompStart = i + 1;
   }
   let value = "";
   let sep2 = "";
   let prevMoreIndented = false;
   for (let i = 0; i < contentStart; ++i)
-    value += lines[i][0].slice(trimIndent) + "\n";
+    value += lines2[i][0].slice(trimIndent) + "\n";
   for (let i = contentStart; i < chompStart; ++i) {
-    let [indent, content] = lines[i];
+    let [indent, content] = lines2[i];
     offset += indent.length + content.length + 1;
     const crlf = content[content.length - 1] === "\r";
     if (crlf)
@@ -9041,8 +9041,8 @@ function resolveBlockScalar(ctx, scalar, onError) {
     case "-":
       break;
     case "+":
-      for (let i = chompStart; i < lines.length; ++i)
-        value += "\n" + lines[i][0].slice(trimIndent);
+      for (let i = chompStart; i < lines2.length; ++i)
+        value += "\n" + lines2[i][0].slice(trimIndent);
       if (value[value.length - 1] !== "\n")
         value += "\n";
       break;
@@ -9117,13 +9117,13 @@ function splitLines(source) {
   const first = split[0];
   const m = first.match(/^( *)/);
   const line0 = m?.[1] ? [m[1], first.slice(m[1].length)] : ["", first];
-  const lines = [line0];
+  const lines2 = [line0];
   for (let i = 1; i < split.length; i += 2)
-    lines.push([split[i], split[i + 1]]);
-  return lines;
+    lines2.push([split[i], split[i + 1]]);
+  return lines2;
 }
 
-// node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
+// ../../node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
 function resolveFlowScalar(scalar, strict, onError) {
   const { offset, type, source, end } = scalar;
   let _type;
@@ -9336,7 +9336,7 @@ function parseCharCode(source, offset, length, onError) {
   }
 }
 
-// node_modules/yaml/browser/dist/compose/compose-scalar.js
+// ../../node_modules/yaml/browser/dist/compose/compose-scalar.js
 function composeScalar(ctx, token, tagToken, onError) {
   const { value, type, comment, range } = token.type === "block-scalar" ? resolveBlockScalar(ctx, token, onError) : resolveFlowScalar(token, ctx.options.strict, onError);
   const tagName = tagToken ? ctx.directives.tagName(tagToken.source, (msg) => onError(tagToken, "TAG_RESOLVE_FAILED", msg)) : null;
@@ -9407,7 +9407,7 @@ function findScalarTagByTest({ atKey, directives, schema: schema4 }, value, toke
   return tag;
 }
 
-// node_modules/yaml/browser/dist/compose/util-empty-scalar-position.js
+// ../../node_modules/yaml/browser/dist/compose/util-empty-scalar-position.js
 function emptyScalarPosition(offset, before, pos) {
   if (before) {
     pos ?? (pos = before.length);
@@ -9431,7 +9431,7 @@ function emptyScalarPosition(offset, before, pos) {
   return offset;
 }
 
-// node_modules/yaml/browser/dist/compose/compose-node.js
+// ../../node_modules/yaml/browser/dist/compose/compose-node.js
 var CN = { composeNode, composeEmptyNode };
 function composeNode(ctx, token, props, onError) {
   const atKey = ctx.atKey;
@@ -9524,7 +9524,7 @@ function composeAlias({ options }, { offset, source, end }, onError) {
   return alias;
 }
 
-// node_modules/yaml/browser/dist/compose/compose-doc.js
+// ../../node_modules/yaml/browser/dist/compose/compose-doc.js
 function composeDoc(options, directives, { offset, start, value, end }, onError) {
   const opts = Object.assign({ _directives: directives }, options);
   const doc = new Document(void 0, opts);
@@ -9557,7 +9557,7 @@ function composeDoc(options, directives, { offset, start, value, end }, onError)
   return doc;
 }
 
-// node_modules/yaml/browser/dist/compose/composer.js
+// ../../node_modules/yaml/browser/dist/compose/composer.js
 function getErrorPos(src) {
   if (typeof src === "number")
     return [src, src + 1];
@@ -9750,7 +9750,7 @@ ${end.comment}` : end.comment;
   }
 };
 
-// node_modules/yaml/browser/dist/parse/cst-visit.js
+// ../../node_modules/yaml/browser/dist/parse/cst-visit.js
 var BREAK2 = /* @__PURE__ */ Symbol("break visit");
 var SKIP2 = /* @__PURE__ */ Symbol("skip children");
 var REMOVE2 = /* @__PURE__ */ Symbol("remove item");
@@ -9806,7 +9806,7 @@ function _visit(path, item, visitor) {
   return typeof ctrl === "function" ? ctrl(item, path) : ctrl;
 }
 
-// node_modules/yaml/browser/dist/parse/cst.js
+// ../../node_modules/yaml/browser/dist/parse/cst.js
 var BOM = "\uFEFF";
 var DOCUMENT = "";
 var FLOW_END = "";
@@ -9871,7 +9871,7 @@ function tokenType(source) {
   return null;
 }
 
-// node_modules/yaml/browser/dist/parse/lexer.js
+// ../../node_modules/yaml/browser/dist/parse/lexer.js
 function isEmpty(ch) {
   switch (ch) {
     case void 0:
@@ -10453,7 +10453,7 @@ var Lexer = class {
   }
 };
 
-// node_modules/yaml/browser/dist/parse/line-counter.js
+// ../../node_modules/yaml/browser/dist/parse/line-counter.js
 var LineCounter = class {
   constructor() {
     this.lineStarts = [];
@@ -10478,7 +10478,7 @@ var LineCounter = class {
   }
 };
 
-// node_modules/yaml/browser/dist/parse/parser.js
+// ../../node_modules/yaml/browser/dist/parse/parser.js
 function includesToken(list, type) {
   for (let i = 0; i < list.length; ++i)
     if (list[i].type === type)
@@ -11341,7 +11341,7 @@ var Parser = class {
   }
 };
 
-// node_modules/yaml/browser/dist/public-api.js
+// ../../node_modules/yaml/browser/dist/public-api.js
 function parseOptions(options) {
   const prettyErrors = options.prettyErrors !== false;
   const lineCounter = options.lineCounter || prettyErrors && new LineCounter() || null;
@@ -12487,10 +12487,10 @@ var AUTOMATION_STATUS = [
 var STRUCTURE_LINE = /^\s*(?:-\s*\[[ x]\]\s|#{1,3}\s|\|.*\||-{3,}\s*$)/i;
 var TEMPLATE_HEADING = /^\s*#{1,3}\s*(description|checklist|type of change|how has this been tested)/im;
 function isTemplate(body) {
-  const lines = body.split("\n").filter((line) => line.trim().length > 0);
-  if (lines.length === 0) return true;
-  const structural = lines.filter((line) => STRUCTURE_LINE.test(line)).length;
-  const structureRatio = structural / lines.length;
+  const lines2 = body.split("\n").filter((line) => line.trim().length > 0);
+  if (lines2.length === 0) return true;
+  const structural = lines2.filter((line) => STRUCTURE_LINE.test(line)).length;
+  const structureRatio = structural / lines2.length;
   if (TEMPLATE_HEADING.test(body) && structureRatio >= 0.4) return true;
   return structureRatio >= 0.6;
 }
@@ -13697,7 +13697,7 @@ function nextVersion(db, scopeType, scopeKey) {
   return (row.v ?? 0) + 1;
 }
 function toYaml(rules, version, scopeKey) {
-  const lines = [
+  const lines2 = [
     `policy_version: ${version}`,
     "scope:",
     "  type: global",
@@ -13706,9 +13706,9 @@ function toYaml(rules, version, scopeKey) {
     "suppressed_patterns:"
   ];
   const suppress = rules.filter((rule) => rule.kind === "suppress");
-  if (suppress.length === 0) lines.push("  []");
-  for (const rule of suppress) lines.push(`  - ${JSON.stringify(rule.rule)}`);
-  return `${lines.join("\n")}
+  if (suppress.length === 0) lines2.push("  []");
+  for (const rule of suppress) lines2.push(`  - ${JSON.stringify(rule.rule)}`);
+  return `${lines2.join("\n")}
 `;
 }
 function proposePolicy(db, rules, scopeKey = "owner") {
@@ -14573,12 +14573,12 @@ var SHALLOW_MIN_DIFF_LINES = 150;
 var SHALLOW_LINES_PER_CALL = 40;
 var count2 = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : void 0;
 function changedLineCount(diff) {
-  let lines = 0;
+  let lines2 = 0;
   for (const raw of diff.split(/\r?\n/)) {
     if (raw.startsWith("+++ ") || raw.startsWith("--- ")) continue;
-    if (raw.startsWith("+") || raw.startsWith("-")) lines += 1;
+    if (raw.startsWith("+") || raw.startsWith("-")) lines2 += 1;
   }
-  return lines;
+  return lines2;
 }
 function cleanStages(stages, diff) {
   const diffLines = diff === null ? void 0 : changedLineCount(diff);
@@ -14613,171 +14613,583 @@ function shallowPassWarning(stages, findingCount) {
   return `The analyst made ${analyst.toolCalls} tool call(s) on ${analyst.diffLines} changed lines and found nothing. That is a shallow pass for this size; consider re-running it, on a stronger model if need be, before trusting a clean result.`;
 }
 
+// plugins/review-voice/src/help.ts
+var lines = (...rows) => rows.join("\n");
+var COMMAND_HELP = {
+  diff: {
+    summary: "Acquire the diff under review as structured JSON",
+    body: lines(
+      "review-voice diff [flags]",
+      "  Acquire the diff under review as structured JSON.",
+      "",
+      "Flags:",
+      "  --base <ref>           Review against a base ref (e.g. origin/main)",
+      "  --staged               Review staged changes only",
+      "  --pr <number>          Review a GitHub pull request (needs --repository)",
+      "  --full                 On --pr, review the complete pull request again",
+      "  --since <sha>          On --pr, the head last reviewed (overrides the record)",
+      "  --repository <name>    owner/repo for --pr (default: the git remote)",
+      "  --include-generated    Include lock files, generated, vendored and binary files",
+      "  --out <dir>            Write diff.patch and files.json, print a summary",
+      "Reads: nothing on stdin (--pr reads the pull request from GitHub, read-only).",
+      "Writes: the diff as JSON on stdout, or with --out, diff.patch and files.json in <dir>.",
+      "Exit codes: 0 ok, 2 bad invocation or unreadable input."
+    )
+  },
+  symbols: {
+    summary: "Collect changed symbols and their lexical reference paths",
+    body: lines(
+      "review-voice symbols --diff-file <path> [flags]",
+      "  Collect changed symbols and their lexical reference paths.",
+      "",
+      "Flags:",
+      "  --diff-file <path>     Unified diff whose changed symbols to inspect (required)",
+      "  --base <ref>           Search this committed tree, not the working tree",
+      "                         (on --pr: refs.mergeBase)",
+      "  --max-ms <n>           Time budget; unfinished files are inconclusive (default 60000)",
+      "  --out <path>           Write <path> or <dir>/symbols.json instead of stdout",
+      "Reads: nothing on stdin.",
+      "Writes: JSON on stdout, or to --out.",
+      "Exit codes: 0 ok, 2 bad invocation or unreadable input."
+    )
+  },
+  anchors: {
+    summary: "Resolve one inline anchor per finding of the review on stdin",
+    body: lines(
+      "review-voice anchors [flags]",
+      "  One inline anchor per finding of the review on stdin, read from its text.",
+      "",
+      "Flags:",
+      "  --diff-file <path>     Unified diff; a line outside its hunks is unanchorable",
+      "  --scores <path>        Scores; a stale-consumer finding is unanchorable",
+      "Reads: the validated review on stdin.",
+      "Writes: JSON on stdout.",
+      "Exit codes: 0 ok, 2 bad invocation or unreadable input."
+    )
+  },
+  thread: {
+    summary: "Read a pull request's existing comments, with resolution",
+    body: lines(
+      "review-voice thread --pr <number> [flags]",
+      "  Read a pull request's existing comments (read-only).",
+      "",
+      "Flags:",
+      "  --pr <number>          Pull request whose existing comments to read (required)",
+      "  --repository <name>    owner/repo; inferred from the git remote if absent",
+      "  --out <path>           Write <path> or <dir>/thread.json instead of stdout",
+      "Reads: nothing on stdin (reads GitHub, read-only).",
+      "Writes: JSON on stdout, or to --out.",
+      "Exit codes: 0 ok, 2 bad invocation, missing credential or repository not allowlisted."
+    )
+  },
+  "follow-ups": {
+    summary: "Partly-addressed follow-ups of a pull request still open",
+    body: lines(
+      "review-voice follow-ups --pr <number> [flags]",
+      "  List the partly-addressed follow-ups an earlier run of the pull request left open.",
+      "",
+      "Flags:",
+      "  --pr <number>          Pull request whose open follow-ups to list (required; local store)",
+      "  --repository <name>    owner/repo; inferred from the git remote if absent",
+      "Reads: nothing on stdin; the local store.",
+      "Writes: JSON on stdout. Nothing is stored.",
+      "Exit codes: 0 ok, 2 bad invocation."
+    )
+  },
+  "check-candidates": {
+    summary: "Validate analyst output against the candidate schema",
+    body: lines(
+      "review-voice check-candidates [flags]",
+      "  Validate analyst output against the candidate schema.",
+      "",
+      "Flags:",
+      "  --diff-file <path>     Require anchors on changed lines",
+      "  --thread <path>        Drop thread repeats; flag near ones for the verifier",
+      "  --owner <login>        Owner for --thread; default from config",
+      "  --held-from <run-id>   Drop repeats of that run's held findings (needs --head)",
+      "  --head <sha>           Head the candidates were produced against (with --held-from)",
+      "Reads: candidates JSON on stdin.",
+      "Writes: JSON on stdout.",
+      "Exit codes: 0 valid, 2 invalid candidates or bad invocation."
+    )
+  },
+  "check-verification": {
+    summary: "Validate verifier output from stdin, as score would",
+    body: lines(
+      "review-voice check-verification",
+      "  Validate verifier output the way score would read it. Takes no flags.",
+      "",
+      "Reads: the evidence-verifier output on stdin.",
+      "Writes: JSON on stdout.",
+      "Exit codes: 0 valid, 2 malformed or bad invocation."
+    )
+  },
+  context: {
+    summary: "Resolve config and the active policy stack as JSON",
+    body: lines(
+      "review-voice context",
+      "  Resolve config and the active policy stack as JSON. Takes no flags.",
+      "",
+      "Reads: nothing on stdin.",
+      "Writes: JSON on stdout.",
+      "Exit codes: 0 ok, 2 not in a repository or unreadable config."
+    )
+  },
+  conventions: {
+    summary: "Collect the repository's own convention documents",
+    body: lines(
+      "review-voice conventions [flags]",
+      "  Collect the repository's own convention documents.",
+      "",
+      "Flags:",
+      "  --files <path>         files.json from diff --out, scoping nested docs",
+      "  --path <p>             A changed path, repeatable, instead of --files",
+      "Reads: nothing on stdin.",
+      "Writes: JSON on stdout.",
+      "Exit codes: 0 ok, 2 bad invocation."
+    )
+  },
+  evidence: {
+    summary: "Run the configured static checks and emit structured signals",
+    body: lines(
+      "review-voice evidence",
+      "  Run the configured static checks and emit structured signals. Takes no flags.",
+      "",
+      "Reads: nothing on stdin.",
+      "Writes: JSON on stdout. Runs the commands configured under static evidence.",
+      "Exit codes: 0 ok (a failing check is evidence, not an error), 2 not in a repository."
+    )
+  },
+  verify: {
+    summary: "Second-pass verification by a configured command",
+    body: lines(
+      "review-voice verify [flags]",
+      "  Second-pass verification of candidates by a configured command.",
+      "",
+      "Flags:",
+      "  --diff-file <path>     The diff under review, not the working tree",
+      "  --base <ref>           Base commit, only when it is readable locally",
+      "  --head <ref>           Head commit, only when it is readable locally",
+      "  --repository <name>    owner/repo, inferred from the git remote if absent",
+      "Reads: candidates JSON on stdin.",
+      "Writes: JSON report on stdout. Runs the configured verification command.",
+      "Exit codes: 0 ok (a rejected finding is a result), 2 bad input or invocation."
+    )
+  },
+  reconcile: {
+    summary: "Apply --second-pass verdicts; --tie-breaks settles disputes",
+    body: lines(
+      "review-voice reconcile --verification <path> --second-pass <path> [flags]",
+      "  Apply the second pass to the candidates; a tie-break settles a dispute.",
+      "",
+      "Flags:",
+      "  --verification <path>  The verifier output (required)",
+      "  --second-pass <path>   The verify report (required)",
+      "  --tie-breaks <path>    Rulings that settle disputes between the two",
+      "Reads: the candidates JSON, before the second pass, on stdin.",
+      "Writes: JSON on stdout; notes on stderr.",
+      "Exit codes: 0 ok, 2 bad input or invocation."
+    )
+  },
+  redact: {
+    summary: "Redact secrets from stdin (used before anything is stored)",
+    body: lines(
+      "review-voice redact [flags]",
+      "  Redact secrets from stdin.",
+      "",
+      "Flags:",
+      "  --json                 Emit the result as JSON",
+      "Reads: the text to redact on stdin.",
+      "Writes: the redacted text (or JSON) on stdout.",
+      "Exit codes: 0 ok, 2 bad invocation."
+    )
+  },
+  sync: {
+    summary: "Ingest review history from allowlisted repositories",
+    body: lines(
+      "review-voice sync [flags]",
+      "  Ingest review history from allowlisted repositories.",
+      "",
+      "Flags:",
+      "  --target <n>              Non-owner events to import (default 60 per",
+      "                            repository, 250 to 1500); owner events all",
+      "  --max-pulls <n>           Pull requests inspected per repository (default 60)",
+      "  --include-conversation    Also read pull-request conversation comments",
+      "  --dry-run                 Report the import without storing it",
+      "Reads: nothing on stdin (reads GitHub, read-only).",
+      "Writes: events and watermarks to the local store (not with --dry-run); JSON summary on stdout.",
+      "Exit codes: 0 ok, 2 no allowlist, no owner reviewer, or credential problem."
+    )
+  },
+  discover: {
+    summary: "List repositories the credential can see (reads no history)",
+    body: lines(
+      "review-voice discover",
+      "  List repositories the credential can see. Reads no history. Takes no flags.",
+      "",
+      "Reads: nothing on stdin (reads GitHub, read-only).",
+      "Writes: JSON on stdout.",
+      "Exit codes: 0 ok, 2 credential problem."
+    )
+  },
+  "consent-plan": {
+    summary: "Show exactly what a sync would read, before it reads it",
+    body: lines(
+      "review-voice consent-plan [flags]",
+      "  Show exactly what a sync would read, before it reads it.",
+      "",
+      "Flags:",
+      "  --owner <login>        Owner reviewer; default from config (required if unset)",
+      "  --repo <owner/repo>    Repository to plan for, repeatable; default the allowlist",
+      "  --target <n>           Non-owner events to plan for (default 250)",
+      "Reads: nothing on stdin.",
+      "Writes: JSON on stdout. Reads no history.",
+      "Exit codes: 0 ok, 2 no owner or no repositories."
+    )
+  },
+  purge: {
+    summary: "Delete stored data by repository, age, or entirely",
+    body: lines(
+      "review-voice purge (--repo <owner/repo> | --before <date> | --all) [--confirm]",
+      "  Delete stored data by repository, age, or entirely.",
+      "",
+      "Flags (one scope required):",
+      "  --repo <owner/repo>   Remove one repository's events",
+      "  --before <ISO date>   Remove events older than a date",
+      "  --all                 Remove everything, including runs and feedback",
+      "  --confirm             Delete; without it, only a preview",
+      "Reads: nothing on stdin.",
+      "Writes: JSON preview on stdout; with --confirm, deletes from the local store.",
+      "Exit codes: 0 ok, 2 no scope given."
+    )
+  },
+  retrieve: {
+    summary: "Find weighted precedents for a candidate finding",
+    body: lines(
+      "review-voice retrieve --text <query> [flags]",
+      "  Find weighted precedents for a candidate finding.",
+      "",
+      "Flags:",
+      "  --text <query>        Candidate claim and failure mode (required)",
+      "  --repository <name>   Prefer precedents from this repository",
+      "  --path <path>         Prefer precedents on this file",
+      "  --language <lang>     Prefer precedents in this language",
+      "  --max-positive <n>    Positive precedents to return (default 3)",
+      "  --max-negative <n>    Negative precedents to return (default 2)",
+      "Reads: nothing on stdin; the local store.",
+      "Writes: JSON on stdout.",
+      "Exit codes: 0 ok, 2 bad invocation."
+    )
+  },
+  score: {
+    summary: "Score candidates from stdin against retrieved precedents",
+    body: lines(
+      "review-voice score [flags]",
+      "  Score candidates against retrieved precedents.",
+      "",
+      "Flags:",
+      "  --base <ref>              Reviewed tree for absence checks",
+      "  --verification <path>     Verifier output for confidence and fix rendering",
+      "  --exclude-pull <n>        Exclude precedents from this pull request",
+      "  --min-confidence <n>      Verifier confidence gate (default 0.8)",
+      "  --min-analyst-confidence <n>  Analyst-only gate (default 0.7)",
+      "  --thread <path>           Existing pull-request comments",
+      "  --diff-file <path>        Diff for reach and anchor checks",
+      "  --min-score <n>           Final score gate (default 0.68)",
+      "  --repository <name>       Prefer precedents from this repository",
+      "  --owner <login>           Owner whose precedents count; default from config",
+      "Reads: candidates JSON on stdin.",
+      "Writes: JSON scores on stdout.",
+      "Exit codes: 0 ok, 2 malformed candidates or bad invocation."
+    )
+  },
+  calibrate: {
+    summary: "Show proposed policy changes and their evidence",
+    body: lines(
+      "review-voice calibrate",
+      "  Show proposed policy changes and their evidence. Takes no flags.",
+      "",
+      "Reads: nothing on stdin; the local store.",
+      "Writes: JSON on stdout; stores the proposal as a pending policy version.",
+      "Exit codes: 0 ok."
+    )
+  },
+  policy: {
+    summary: "show | approve <id> | rollback <version>",
+    body: lines(
+      "review-voice policy [show | approve <id> | rollback <version>]",
+      "  Show, approve, or roll back policies.",
+      "",
+      "Positional:",
+      "  show                  List policies (the default with no argument)",
+      "  approve <id>          Approve a proposed policy",
+      "  rollback <version>    Roll back to a policy version number",
+      "Reads: nothing on stdin.",
+      "Writes: JSON or a one-line result on stdout; approve and rollback change the local store.",
+      "Exit codes: 0 ok, 1 refused (unknown id or version), 2 bad invocation."
+    )
+  },
+  evaluate: {
+    summary: "Report the evaluation metrics against their targets",
+    body: lines(
+      "review-voice evaluate [flags]",
+      "  Report the evaluation metrics against their targets.",
+      "",
+      "Flags:",
+      "  --json                 Emit the metrics as JSON",
+      "Reads: nothing on stdin; the local store.",
+      "Writes: text (or JSON) on stdout.",
+      "Exit codes: 0 ok."
+    )
+  },
+  draft: {
+    summary: "Render a validated review as a GitHub draft (posts nothing)",
+    body: lines(
+      "review-voice draft --repository <owner/repo> --pr <number> [flags]",
+      "  Render a validated review as a GitHub draft. Posts nothing.",
+      "",
+      "Flags:",
+      "  --repository <name>    owner/repo (required)",
+      "  --pr <number>          Pull request number (required)",
+      "  --json                 Emit the draft as JSON instead of a preview",
+      "Reads: the validated review on stdin.",
+      "Writes: the preview (or JSON) on stdout.",
+      "Exit codes: 0 ok, 2 bad invocation."
+    )
+  },
+  "post-check": {
+    summary: "Report whether posting is permitted, and why not",
+    body: lines(
+      "review-voice post-check",
+      "  Report whether posting is permitted, and why not. Takes no flags.",
+      "",
+      "Reads: nothing on stdin; the local store and config.",
+      "Writes: JSON on stdout.",
+      "Exit codes: 0 always (not permitted is an answer, not a failure)."
+    )
+  },
+  verdict: {
+    summary: "Review event under the head and CI guards (reads only)",
+    body: lines(
+      "review-voice verdict --pr <number> --head <sha> [flags]",
+      "  Compute the review event under the head and CI guards. Reads only.",
+      "",
+      "Flags:",
+      "  --pr <number>          Pull request number (required)",
+      "  --head <sha>           Head commit the review read (required)",
+      "  --repository <name>    owner/repo; inferred from the git remote if absent",
+      "  --run <run-id>         Recorded run to use; default the newest for the pull request",
+      "  --recheck              Re-read CI once more before answering",
+      "Reads: the validated review on stdin.",
+      "Writes: JSON on stdout. Nothing is sent to GitHub.",
+      "Exit codes: 0 ok, 2 refused or bad invocation, 3 the head moved, 4 CI still running",
+      "  on an approval, 5 a re-check found CI red, 6 CI needs a rerun."
+    )
+  },
+  post: {
+    summary: "Submit the review; needs --confirm --event <EVENT>",
+    body: lines(
+      "review-voice post --pr <number> --head <sha> --confirm --event <EVENT> [flags]",
+      "  Submit the review to GitHub. Recomputes the verdict live; sends nothing without --confirm.",
+      "",
+      "Flags:",
+      "  --pr <number>          Pull request number (required)",
+      "  --head <sha>           Head commit the review read (required)",
+      "  --repository <name>    owner/repo; inferred from the git remote if absent",
+      "  --run <run-id>         Recorded run to use; default the newest for the pull request",
+      "  --confirm              Send the review; without it, only a preview",
+      "  --event <EVENT>        The review event to send (COMMENT, APPROVE or REQUEST_CHANGES)",
+      "Reads: the validated review on stdin.",
+      "Writes: JSON on stdout. With --confirm, WRITES the review to GitHub (the plugin's only write).",
+      "Exit codes: 0 sent or previewed, 1 the send failed, 2 refused or bad invocation,",
+      "  3 the head moved, 4 CI still running on an approval, 5 CI red, 6 CI needs a rerun."
+    )
+  },
+  record: {
+    summary: "Store a validated review from stdin and assign finding ids",
+    body: lines(
+      "review-voice record [flags]",
+      "  Store a validated review and assign finding ids.",
+      "",
+      "Flags:",
+      "  --repository <name>    Repository the review belongs to",
+      "  --base <ref>           Base ref reviewed against (on --pr: refs.mergeBase)",
+      "  --head <sha>           Head commit reviewed",
+      "  --diff-file <path>     Diff the review was produced from (for the run hash)",
+      "  --files <path>         files.json from diff --out, carrying pull-request scope",
+      "  --candidates <path>    Scored candidates, so findings carry their category",
+      "  --scores <path>        Score breakdowns, so explain can show its working",
+      "  --verdicts <path>      Verification verdicts, including findings that were dropped",
+      "  --tie-breaks <path>    reconcile's output, with the rulings it applied",
+      '  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]',
+      "  --carried-from <run>   Validate findings carried by `carry` (needs --head)",
+      "  --carry <path>         carry.json of carry-candidates (needs --head)",
+      "  --thread <path>        thread.json; a follow-up whose comment thread is resolved is settled",
+      "  --follow-ups <path>    The verifier's follow_ups rulings on the open follow-ups",
+      "  --stages <path>        Per-stage timings as",
+      '                         [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean',
+      "                         result from a shallow analyst pass is warned about",
+      "Reads: the validated review on stdin (a run with no findings pipes",
+      `  ${DEFAULT_LIMITS.noFindingsResponse}).`,
+      "Writes: the run and its findings to the local store; the run id on stdout.",
+      "Exit codes: 0 recorded, 2 not a validated review or bad invocation."
+    )
+  },
+  carry: {
+    summary: "Carry an earlier run's untouched findings to a new head",
+    body: lines(
+      "review-voice carry --from <run-id> --head <sha> [--text]",
+      "  Carry an earlier run's untouched findings to a new head.",
+      "",
+      "Flags:",
+      "  --from <run-id>        The earlier run (required)",
+      "  --head <sha>           The new head (required)",
+      "  --text                 Print only the carried review, for validate-output",
+      "Reads: nothing on stdin; the local store.",
+      "Writes: JSON (or with --text, the review text) on stdout; what did not carry on stderr.",
+      "Exit codes: 0 ok, 1 with --text nothing carried or a serious finding did not, 2 bad invocation."
+    )
+  },
+  reanchor: {
+    summary: "Move one scored candidate to a corrected changed line",
+    body: lines(
+      "review-voice reanchor --candidate <id> --line <n> --scores <path> --diff-file <path> [flags]",
+      "  Move one scored candidate to a corrected changed line of --diff-file,",
+      "  keeping its score.",
+      "",
+      "Flags:",
+      "  --candidate <id>       Candidate to move (required)",
+      "  --line <n>             The changed line to move it to (required)",
+      "  --scores <path>        Scores file to rewrite (required)",
+      "  --diff-file <path>     Unified diff the line must be changed in (required)",
+      "  --path <p>             The file the finding belongs in, if not its current one",
+      "  --candidates <path>    Candidates file to rewrite alongside --scores",
+      "Reads: nothing on stdin.",
+      "Writes: rewrites --scores (and --candidates when given); a summary on stdout.",
+      "Exit codes: 0 moved, 1 refused (the line is not a changed line), 2 bad invocation or unreadable input."
+    )
+  },
+  "carry-candidates": {
+    summary: "Carry verified candidates to a pushed head if unchanged",
+    body: lines(
+      "review-voice carry-candidates --candidates <path> --verification <path> --since <sha>",
+      "    --head <sha> --diff-file <path> --out <dir> [flags]",
+      "  Carry verified candidates to a pushed head if unchanged.",
+      "",
+      "Flags:",
+      "  --candidates <path>    Candidates of the earlier run (required)",
+      "  --verification <path>  Verifier output of the earlier run (required)",
+      "  --since <sha>          The head the earlier run reviewed (required)",
+      "  --head <sha>           The new head (required)",
+      "  --diff-file <path>     Diff of the new head (required)",
+      "  --out <dir>            Directory to write the carried files into (required)",
+      "  --interdiff <dir>      The reviewed commits between the heads, merged in",
+      "  --interdiff-candidates <path>     Candidates of those commits (with --interdiff)",
+      "  --interdiff-verification <path>   Verification of those commits (with --interdiff)",
+      "  --held <path>          Held findings to move to the new head",
+      "Reads: nothing on stdin.",
+      "Writes: carried candidates, verification and carry.json under --out; a summary on stdout.",
+      "Exit codes: 0 ok, 2 bad invocation or unreadable input."
+    )
+  },
+  feedback: {
+    summary: "Record feedback on a finding",
+    body: lines(
+      "review-voice feedback <rv_NN|run-id:rv_NN> <action> [flags]",
+      "  Record feedback on a finding.",
+      "",
+      "Positional:",
+      "  <rv_NN|run-id:rv_NN>   The finding (required)",
+      `  <action>               ${FEEDBACK_ACTIONS.join(", ")} (hyphens accepted)`,
+      "Flags:",
+      "  --reason <text>        Why",
+      "  --replacement <text>   The wording to prefer (for a rewrite)",
+      "Reads: nothing on stdin.",
+      "Writes: one feedback record to the local store.",
+      "Exit codes: 0 recorded, 1 unknown finding, 2 bad invocation or action."
+    )
+  },
+  status: {
+    summary: "Show what is stored locally",
+    body: lines(
+      "review-voice status",
+      "  Show what is stored locally. Takes no flags.",
+      "",
+      "Reads: nothing on stdin; the local store and config.",
+      "Writes: text on stdout.",
+      "Exit codes: 0 ok."
+    )
+  },
+  explain: {
+    summary: "Show why the last review said what it said",
+    body: lines(
+      "review-voice explain [flags]",
+      "  Show why a recorded review emitted or suppressed each finding.",
+      "",
+      "Flags:",
+      "  --run <run-id>         The run to explain; default the latest",
+      "  --json                 Emit the detail as JSON",
+      "Reads: nothing on stdin; the local store.",
+      "Writes: text (or JSON) on stdout.",
+      "Exit codes: 0 ok."
+    )
+  },
+  "validate-output": {
+    summary: "Enforce the output contract on a review read from stdin",
+    body: lines(
+      "review-voice validate-output [flags]",
+      "  Enforce the output contract on a review.",
+      "",
+      "Flags:",
+      "  --json                     Emit the result as JSON",
+      "  --max-findings <n>         Default: no cap",
+      "  --scale-to-files <n>       Scale the total word budget to the change size",
+      `  --max-words-per-finding <n>  Default ${DEFAULT_LIMITS.maxWordsPerFinding}`,
+      `  --max-total-words <n>      Default ${DEFAULT_LIMITS.maxTotalWords}`,
+      "  --scores <path>            The JSON `score` printed; a severity tag that disagrees with its score is a violation",
+      "Reads: the review text on stdin.",
+      "Writes: the result on stdout.",
+      "Exit codes: 0 compliant, 1 violations found, 2 bad invocation."
+    )
+  },
+  doctor: {
+    summary: "Check that this machine can run Review Voice",
+    body: lines(
+      "review-voice doctor",
+      "  Check that this machine can run Review Voice. Takes no flags.",
+      "",
+      "Reads: nothing on stdin.",
+      "Writes: one line per check on stdout.",
+      "Exit codes: 0 every required check passed (gh is optional), 1 a required check failed."
+    )
+  }
+};
+var COMMAND_ORDER = Object.keys(COMMAND_HELP);
+function commandHelp(command) {
+  return Object.hasOwn(COMMAND_HELP, command) ? COMMAND_HELP[command].body : null;
+}
+function topLevelHelp() {
+  const list = COMMAND_ORDER.map((name) => `  ${name.padEnd(20)}${COMMAND_HELP[name].summary}`);
+  const reference = COMMAND_ORDER.map((name) => COMMAND_HELP[name].body);
+  return [
+    "review-voice <command>",
+    "",
+    "Commands:",
+    ...list,
+    "  --version           Print the plugin version",
+    "  --help              Show this message",
+    "",
+    "Run `review-voice <command> --help` for one command's flags.",
+    "",
+    reference.join("\n\n"),
+    "",
+    "Exit codes: 0 compliant, 1 violations found, 2 bad invocation.",
+    "",
+    "Normally driven by the /review-voice:* commands, not invoked directly."
+  ].join("\n");
+}
+
 // plugins/review-voice/src/cli.ts
-var USAGE = `review-voice <command>
-
-Commands:
-  diff              Acquire the diff under review as structured JSON
-  symbols           Collect changed symbols and their lexical reference paths
-  check-candidates  Validate analyst output against the candidate schema
-  check-verification  Validate verifier output from stdin, as score would
-  context           Resolve config and the active policy stack as JSON
-  conventions       Collect the repository's own convention documents
-  evidence          Run the configured static checks and emit structured signals
-  verify            Second-pass verification by a configured command
-  reconcile         Apply --second-pass verdicts; --tie-breaks settles disputes
-  redact            Redact secrets from stdin (used before anything is stored)
-  sync              Ingest review history from allowlisted repositories
-  discover          List repositories the credential can see (reads no history)
-  consent-plan      Show exactly what a sync would read, before it reads it
-  purge             Delete stored data by repository, age, or entirely
-  retrieve          Find weighted precedents for a candidate finding
-  score             Score candidates from stdin against retrieved precedents
-  calibrate         Show proposed policy changes and their evidence
-  policy            show | approve <id> | rollback <version>
-  evaluate          Report the evaluation metrics against their targets
-  draft             Render a validated review as a GitHub draft (posts nothing)
-  post-check        Report whether posting is permitted, and why not
-  verdict           Review event under the head and CI guards (reads only)
-  post              Submit the review; needs --confirm --event <EVENT>
-  record            Store a validated review from stdin and assign finding ids
-  follow-ups        Partly-addressed follow-ups of a pull request still open
-  feedback          Record feedback on a finding
-  status            Show what is stored locally
-  carry             Carry an earlier run's untouched findings to a new head
-  reanchor          Move one scored candidate to a corrected changed line
-  carry-candidates  Carry verified candidates to a pushed head if unchanged
-  explain           Show why the last review said what it said
-  validate-output   Enforce the output contract on a review read from stdin
-  doctor            Check that this machine can run Review Voice
-  --version         Print the plugin version
-  --help            Show this message
-
-anchors:
-  One inline anchor per finding of the review on stdin, read from its text.
-  --diff-file <path>     Unified diff; a line outside its hunks is unanchorable
-  --scores <path>        Scores; a stale-consumer finding is unanchorable
-
-thread flags:
-  --pr <number>          Pull request whose existing comments to read
-  --repository <name>    owner/repo; inferred from the git remote if absent
-  --out <path>           Write <path> or <dir>/thread.json instead of stdout
-
-follow-ups flags:
-  --pr <number>          Pull request whose open follow-ups to list (local store)
-  --repository <name>    owner/repo; inferred from the git remote if absent
-
-diff flags:
-  --base <ref>           Review against a base ref (e.g. origin/main)
-  --staged               Review staged changes only
-  --pr <number>          Review a GitHub pull request (needs --repository)
-  --full                 On --pr, review the complete pull request again
-  --since <sha>          On --pr, the head last reviewed (overrides the record)
-  --repository <name>    owner/repo for --pr (default: the git remote)
-  --include-generated    Include lock files, generated, vendored and binary files
-  --out <dir>            Write diff.patch and files.json, print a summary
-
-symbols flags:
-  --diff-file <path>     Unified diff whose changed symbols to inspect
-  --base <ref>           Search this committed tree, not the working tree
-                         (on --pr: refs.mergeBase)
-  --max-ms <n>           Time budget; unfinished files are inconclusive (default 60000)
-  --out <path>           Write <path> or <dir>/symbols.json instead of stdout
-
-check-candidates:
-  --diff-file <path>     Require anchors on changed lines
-  --thread <path>        Drop thread repeats; flag near ones for the verifier
-  --owner <login>        Owner for --thread; default from config
-  --held-from <run-id>   Drop repeats of that run's held findings (--head)
-
-record flags:
-  --repository <name>    Repository the review belongs to
-  --base <ref>           Base ref reviewed against (on --pr: refs.mergeBase)
-  --head <sha>           Head commit reviewed
-  --diff-file <path>     Diff the review was produced from (for the run hash)
-  --files <path>         files.json from diff --out, carrying pull-request scope
-  --candidates <path>    Scored candidates, so findings carry their category
-  --scores <path>        Score breakdowns, so explain can show its working
-  --verdicts <path>      Verification verdicts, including findings that were dropped
-  --tie-breaks <path>    reconcile's output, with the rulings it applied
-  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
-  --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
-  --carry <path>         carry.json of carry-candidates (needs --head)
-  --thread <path>        thread.json; a follow-up whose comment thread is resolved is settled
-  --follow-ups <path>    The verifier's follow_ups rulings on the open follow-ups
-  --stages <path>        Per-stage timings as
-                         [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean
-                         result from a shallow analyst pass is warned about
-
-carry flags:
-  --from <run-id> --head <sha>   Findings of that run still valid at the new head
-  --text                 Print only the carried review, for validate-output
-
-reanchor flags:
-  --candidate <id> --line <n> [--path <p>]  A changed line of --diff-file;
-                         rewrites --scores and --candidates, keeping the score
-
-carry-candidates flags:
-  --candidates --verification --since <sha> --head --diff-file --out <dir>
-  --interdiff <dir> --interdiff-candidates --interdiff-verification
-                         The reviewed commits between the heads, merged in
-  --held <path>          Held findings to move to the new head
-
-feedback usage:
-  feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
-  actions: ${FEEDBACK_ACTIONS.join(", ")} (hyphens accepted)
-
-score flags:
-  --base <ref>              Reviewed tree for absence checks
-  --verification <path>     Verifier output for confidence and fix rendering
-  --exclude-pull <n>        Exclude precedents from this pull request
-  --min-confidence <n>      Verifier confidence gate (default 0.8)
-  --min-analyst-confidence <n>  Analyst-only gate (default 0.7)
-  --thread <path>           Existing pull-request comments
-  --diff-file <path>        Diff for reach and anchor checks
-  --min-score <n>           Final score gate (default 0.68)
-  --repository <name>       Prefer precedents from this repository
-
-verify flags:
-  --diff-file <path>        The diff under review, not the working tree
-  --base <ref>              Base commit, only when it is readable locally
-  --head <ref>              Head commit, only when it is readable locally
-  --repository <name>       owner/repo, inferred from the git remote if absent
-
-conventions flags:
-  --files <path>            files.json from diff --out, scoping nested docs
-  --path <p>                A changed path, repeatable, instead of --files
-
-sync flags:
-  --target <n>              Non-owner events to import (default 60 per
-                            repository, 250 to 1500); owner events all
-  --max-pulls <n>           Pull requests inspected per repository (default 60)
-  --include-conversation    Also read pull-request conversation comments
-  --dry-run                 Report the import without storing it
-
-purge flags (one required):
-  --repo <owner/repo>   Remove one repository's events
-  --before <ISO date>   Remove events older than a date
-  --all                 Remove everything, including runs and feedback
-  --confirm             Delete; without it, only a preview
-
-retrieve flags:
-  --text <query>        Candidate claim and failure mode (required)
-  --repository <name>   Prefer precedents from this repository
-  --path <path>         Prefer precedents on this file
-  --language <lang>     Prefer precedents in this language
-  --max-positive <n> --max-negative <n>   Defaults 3 and 2
-
-validate-output flags:
-  --json                     Emit the result as JSON
-  --max-findings <n>         Default: no cap
-  --scale-to-files <n>       Scale the total word budget to the change size
-  --max-words-per-finding <n>  Default ${DEFAULT_LIMITS.maxWordsPerFinding}
-  --max-total-words <n>      Default ${DEFAULT_LIMITS.maxTotalWords}
-
-Exit codes: 0 compliant, 1 violations found, 2 bad invocation.
-
-Normally driven by the /review-voice:* commands, not invoked directly.`;
 var STDIN_INPUT = {
   "check-candidates": "candidates JSON",
   "check-verification": "the evidence-verifier output",
@@ -17410,18 +17822,52 @@ function statusCommand() {
   }
 }
 async function main(argv) {
+  const exit = await dispatch(argv);
+  const command = argv[0];
+  if (exit === 2 && command !== void 0 && commandHelp(command) !== null) {
+    console.error(`Run "review-voice ${command} --help" for its flags.`);
+  }
+  return exit;
+}
+async function dispatch(argv) {
   const command = argv[0];
   if (command !== void 0 && (argv.includes("--help") || argv.includes("-h"))) {
-    console.log(USAGE);
-    return 0;
+    const section = commandHelp(command);
+    if (section !== null) {
+      console.log(section);
+      return 0;
+    }
+    if (command === "--help" || command === "-h" || command === "help") {
+      console.log(topLevelHelp());
+      return 0;
+    }
+    console.error(`Unknown command: ${command}
+
+${topLevelHelp()}`);
+    return 2;
   }
   switch (command) {
     case void 0:
     case "--help":
     case "-h":
-    case "help":
-      console.log(USAGE);
+      console.log(topLevelHelp());
       return 0;
+    case "help": {
+      const topic = argv[1];
+      if (topic === void 0) {
+        console.log(topLevelHelp());
+        return 0;
+      }
+      const section = commandHelp(topic);
+      if (section === null) {
+        console.error(`Unknown command: ${topic}
+
+${topLevelHelp()}`);
+        return 2;
+      }
+      console.log(section);
+      return 0;
+    }
     case "--version":
     case "-v":
       console.log(pluginVersion());
@@ -17505,7 +17951,7 @@ async function main(argv) {
     default:
       console.error(`Unknown command: ${command}
 
-${USAGE}`);
+${topLevelHelp()}`);
       return 2;
   }
 }

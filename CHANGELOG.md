@@ -5,6 +5,20 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `review-voice <command> --help` (and `-h`, `help <command>`) prints only that
+  command's usage: synopsis, every flag and positional argument, what it reads
+  on stdin, what it writes, and its exit codes. Every dispatched command has an
+  entry, including `thread` and `anchors`, which the command list had omitted;
+  the top-level help is built from the same entries. A command that exits 2 for
+  a bad invocation now ends its stderr with a pointer to its own `--help`.
+  Flags the old text never listed are now documented, among them `draft`,
+  `verdict`, `post`, `consent-plan`, `reconcile`, `explain`, `evaluate`,
+  `redact` and `score --owner`. (#52)
+
 ## [1.11.0] - 2026-10-06
 
 ### Added
