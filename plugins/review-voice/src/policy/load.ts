@@ -73,14 +73,17 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
   };
   result.humanReview.maxDecisionPoints = limit('max_decision_points') ?? result.humanReview.maxDecisionPoints;
   result.humanReview.maxHunkDecisionPoints = limit('max_hunk_decision_points') ?? result.humanReview.maxHunkDecisionPoints;
-  const paths = block['sensitive_paths'];
-  if (paths === undefined) return;
-  if (Array.isArray(paths)) {
-    // An empty list is a choice, and it turns the signal off.
-    result.humanReview.sensitivePaths = asStringArray(paths);
-  } else {
-    result.warnings.push('review.human_review.sensitive_paths must be a list; using the default.');
-  }
+  const globs = (key: string): string[] | undefined => {
+    const paths = block[key];
+    if (paths === undefined) return undefined;
+    // An empty list is a choice: no sensitive paths, or nothing left out of the count.
+    if (Array.isArray(paths)) return asStringArray(paths);
+    result.warnings.push(`review.human_review.${key} must be a list; using the default.`);
+    return undefined;
+  };
+  result.humanReview.sensitivePaths = globs('sensitive_paths') ?? result.humanReview.sensitivePaths;
+  result.humanReview.testPaths = globs('test_paths') ?? result.humanReview.testPaths;
+  result.humanReview.generatedPaths = globs('generated_paths') ?? result.humanReview.generatedPaths;
 }
 
 /** Words that appear in nearly every failure, so alone they would turn every failure into a rerun. */
@@ -218,7 +221,12 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
     verification: { enabled: false, command: '', blockPresent: false },
-    humanReview: { ...DEFAULT_HUMAN_REVIEW, sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths] },
+    humanReview: {
+      ...DEFAULT_HUMAN_REVIEW,
+      sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths],
+      testPaths: [...DEFAULT_HUMAN_REVIEW.testPaths],
+      generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths],
+    },
     layers: [],
     unapproved: [],
     warnings: [],

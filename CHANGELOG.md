@@ -90,6 +90,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows the old path coming back, and files the pull request now deletes, so a
   deletion is in the patch. With no pull request files to read, the follow-up
   is `unchanged` rather than the whole commit range.
+- The posted review no longer says anything about human review. A change
+  assessed as high-complexity is still capped at COMMENT (ADR 0012), but the
+  summary line is the ordinary one and `humanReviewNote` is carried in the
+  `verdict` and `post` output for the agent to tell the user, not in the pull
+  request.
 
 ### Fixed
 
@@ -174,6 +179,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when findings existed and none carried, or a blocking or important finding
   did not carry, which `record --carried-from` also refuses. The review command
   shows the handoff. (#35)
+- The complexity assessment no longer counts decision points in Markdown and
+  other documentation. Prose words such as `if` and `or` had been read as
+  branches; the assessment now reports how many files it left out, and
+  sensitive paths still match them. Build scripts such as `CMakeLists.txt`,
+  MDX, and extensionless names outside the root or `docs/` stay counted (#23).
+- The complexity assessment no longer counts decision points in tests and
+  fixtures, matched by `review.human_review.test_paths` (narrow defaults: test
+  directories and names that mean a test in their language). Splitting a spec
+  file no longer changes the outcome, and the densest hunk named is always
+  production code. A glob broad enough to match ordinary source files is
+  ignored and named in the reasons, and `.review-voice/**` is a default
+  sensitive path (#32).
+- The complexity assessment no longer counts decision points in generated
+  output: files classified as generated, files marked `linguist-generated` in
+  `.gitattributes` as of the commit the change starts from (never its head),
+  and `review.human_review.generated_paths`. It reports
+  `generatedDecisionPoints` beside the hand-written count, and sensitive paths
+  still flag generated files (#42).
+- A high-complexity verdict now reports, for the agent only, the verdict the
+  review would have posted without the cap (`wouldHaveEvent`,
+  `wouldHaveSummary`), and the owner's earlier REQUEST_CHANGES that a COMMENT
+  leaves blocking (`staleRequestChanges`), for the user to dismiss by hand.
+  Neither is posted, and nothing is dismissed (#44).
 
 ## [1.10.1] - 2026-10-05
 

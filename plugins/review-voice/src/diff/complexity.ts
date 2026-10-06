@@ -1,6 +1,7 @@
 import type { ChangedFile } from './acquire.ts';
 import { unquoteGitPath } from './hunks.ts';
 import { globToRegExp } from '../conventions/globs.ts';
+import { isDocumentation } from './classify.ts';
 
 /**
  * Whether a change is complex enough that a person, not this tool, should
@@ -11,14 +12,49 @@ export interface HumanReviewConfig {
   maxDecisionPoints: number;
   maxHunkDecisionPoints: number;
   sensitivePaths: string[];
+  /** Tests and fixtures: reviewed, but their decision points are not counted. */
+  testPaths: string[];
+  /**
+   * Generated output that classification and `linguist-generated` miss, such
+   * as files a generator in the repository writes. Not counted either.
+   */
+  generatedPaths: string[];
 }
 
-export const DEFAULT_SENSITIVE_PATHS = ['.github/workflows/**', '**/migrations/**', '**/auth/**', '**/security/**'];
+/**
+ * `.review-voice/**` is here because the review's own configuration, exclusion
+ * globs included, is read from the checked-out tree: a change to it is a
+ * change to what this assessment measures.
+ */
+export const DEFAULT_SENSITIVE_PATHS = [
+  '.github/workflows/**', '**/migrations/**', '**/auth/**', '**/security/**', '.review-voice/**',
+];
+
+/**
+ * Common test and fixture layouts. Counting them made the cap shape how tests
+ * were written: an author split one spec into five files to get a hunk under
+ * the limit, and the change stayed high anyway.
+ *
+ * Narrow on purpose: a production file matched here goes uncounted. Name
+ * patterns are used only where the language makes them mean a test (`.test.`
+ * and `.spec.`, Go's `_test.go`, Ruby's `_spec.rb`); elsewhere a test
+ * directory is required, so `ab_test.py`, `LoadTest.java` and a Go `spec/`
+ * package still count.
+ */
+export const DEFAULT_TEST_PATHS = [
+  '**/test/**', '**/tests/**', '**/__tests__/**',
+  '**/fixtures/**', '**/__fixtures__/**', '**/testdata/**',
+  '**/*.test.*', '**/*.spec.*', '**/*_test.go',
+  '**/spec/**/*.rb', '**/*_spec.rb',
+  '**/*.Tests/**', '**/*.UnitTests/**', '**/*.IntegrationTests/**',
+];
 
 export const DEFAULT_HUMAN_REVIEW: HumanReviewConfig = {
   maxDecisionPoints: 40,
   maxHunkDecisionPoints: 15,
   sensitivePaths: DEFAULT_SENSITIVE_PATHS,
+  testPaths: DEFAULT_TEST_PATHS,
+  generatedPaths: [],
 };
 
 export interface ComplexityAssessment {
@@ -27,10 +63,39 @@ export interface ComplexityAssessment {
   reasons: string[];
   decisionPoints: number;
   densestHunk: { path: string; line: number; decisionPoints: number } | null;
+  /**
+   * Reviewed files whose decision points are not counted, because they are
+   * not production source. Sensitive paths still apply to every one of them.
+   */
+  excluded: Excluded;
   /** Matched changed paths, at most 20, sorted. */
   sensitivePaths: string[];
-  limits: { maxDecisionPoints: number; maxHunkDecisionPoints: number; sensitivePaths: string[] };
+  limits: {
+    maxDecisionPoints: number;
+    maxHunkDecisionPoints: number;
+    sensitivePaths: string[];
+    testPaths: string[];
+    generatedPaths: string[];
+  };
 }
+
+export interface Excluded {
+  documentationFiles: number;
+  testFiles: number;
+  /** What the test files would have added, so the note can say the logic change is smaller. */
+  testDecisionPoints: number;
+  /** Generated, vendored or lock files the review read, by classification, attribute or glob. */
+  generatedFiles: number;
+  generatedDecisionPoints: number;
+}
+
+const NOTHING_EXCLUDED: Excluded = {
+  documentationFiles: 0,
+  testFiles: 0,
+  testDecisionPoints: 0,
+  generatedFiles: 0,
+  generatedDecisionPoints: 0,
+};
 
 const MAX_SENSITIVE_LISTED = 20;
 
@@ -70,11 +135,11 @@ function headerPath(raw: string): string | null {
 }
 
 /**
- * Decision points per hunk, for the files that count. The header's line
+ * Decision points per hunk, for the files asked about. The header's line
  * counts say where a hunk ends, so an added line whose text starts with `++ `
  * is still a line of the hunk rather than a file header.
  */
-function countHunks(diff: string, counted: ReadonlySet<string>): HunkCount[] {
+function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount[] {
   const hunks: HunkCount[] = [];
   let path: string | null = null;
   let current: HunkCount | null = null;
@@ -118,7 +183,7 @@ function countHunks(diff: string, counted: ReadonlySet<string>): HunkCount[] {
       remainingOld = header[1] === undefined ? 1 : Number(header[1]);
       remainingNew = header[3] === undefined ? 1 : Number(header[3]);
       current = { path, line: Number(header[2]), decisionPoints: 0 };
-      if (counted.has(path)) hunks.push(current);
+      if (wanted.has(path)) hunks.push(current);
     }
   }
   return hunks;
@@ -129,18 +194,82 @@ function config(partial: Partial<HumanReviewConfig> | undefined): HumanReviewCon
     maxDecisionPoints: partial?.maxDecisionPoints ?? DEFAULT_HUMAN_REVIEW.maxDecisionPoints,
     maxHunkDecisionPoints: partial?.maxHunkDecisionPoints ?? DEFAULT_HUMAN_REVIEW.maxHunkDecisionPoints,
     sensitivePaths: partial?.sensitivePaths ?? DEFAULT_HUMAN_REVIEW.sensitivePaths,
+    testPaths: partial?.testPaths ?? DEFAULT_HUMAN_REVIEW.testPaths,
+    generatedPaths: partial?.generatedPaths ?? DEFAULT_HUMAN_REVIEW.generatedPaths,
   };
 }
 
+type Kind = 'production' | 'generated' | 'test' | 'documentation';
+
+const matchesAny = (matchers: readonly RegExp[], path: string): boolean => matchers.some((matcher) => matcher.test(path));
+
+/**
+ * Ordinary production paths. An exclusion glob that matches one of them is a
+ * catch-all (`**`, `src/**`, `**\/*.go`), not a test or generated layout.
+ */
+const PRODUCTION_PROBES = [
+  'index.js', 'main.go', 'src/index.ts', 'src/App.tsx', 'src/app/service.py', 'src/lib.rs', 'src/main.c',
+  'lib/core.rb', 'app/models/user.rb', 'cmd/server/main.go', 'pkg/api/handler.go', 'src/Program.cs',
+  'src/main/java/com/example/App.java', 'src/main/kotlin/com/example/App.kt', 'app.php',
+];
+
+/**
+ * The exclusion globs that may apply. A catch-all that would leave out a file
+ * of this change is ignored, with a reason: exclusion globs come from the
+ * checked-out tree, and `["**"]` would otherwise zero the count.
+ */
+function exclusionMatchers(key: string, globs: readonly string[], candidates: readonly string[], reasons: string[]): RegExp[] {
+  const kept: RegExp[] = [];
+  for (const glob of globs) {
+    const matcher = globToRegExp(glob);
+    const catchAll = PRODUCTION_PROBES.some((probe) => matcher.test(probe));
+    if (catchAll && candidates.some((path) => matcher.test(path))) {
+      reasons.push(`ignored ${key} glob "${glob}", which matches ordinary source files`);
+      continue;
+    }
+    kept.push(matcher);
+  }
+  return kept;
+}
+
+/**
+ * `markedGenerated` holds the paths the repository's `.gitattributes` marks
+ * `linguist-generated`; the caller reads them, so this stays a function of
+ * its arguments.
+ */
 export function assessComplexity(
   diff: string,
   files: readonly ChangedFile[],
   partial?: Partial<HumanReviewConfig>,
+  markedGenerated: ReadonlySet<string> = new Set(),
 ): ComplexityAssessment {
   const limits = config(partial);
 
-  const counted = new Set(files.filter((file) => file.class === 'source' && file.reviewed).map((file) => file.path));
-  const hunks = countHunks(diff, counted);
+  // Decision points count only in production source (amended 2026-10-06).
+  // Everything else the review reads is left out of the count, and counted
+  // as left out, so the assessment can say what it did not measure.
+  const reasons: string[] = [];
+  const candidates = files
+    .filter((file) => file.reviewed && file.class === 'source' && !isDocumentation(file.path))
+    .map((file) => file.path);
+  const tests = exclusionMatchers('test_paths', limits.testPaths, candidates, reasons);
+  const generated = exclusionMatchers('generated_paths', limits.generatedPaths, candidates, reasons);
+  const kindOf = (file: ChangedFile): Kind => {
+    // A file the review reads although it is not source - a hand-edited
+    // generated file, or anything under --include-generated - is generated.
+    if (file.class !== 'source' || markedGenerated.has(file.path) || matchesAny(generated, file.path)) return 'generated';
+    if (matchesAny(tests, file.path)) return 'test';
+    return isDocumentation(file.path) ? 'documentation' : 'production';
+  };
+  const kinds = new Map<string, Kind>();
+  for (const file of files) {
+    if (file.reviewed) kinds.set(file.path, kindOf(file));
+  }
+  const allHunks = countHunks(diff, new Set(kinds.keys()));
+  const hunks = allHunks.filter((hunk) => kinds.get(hunk.path) === 'production');
+  const ofKind = (kind: Kind): number => [...kinds.values()].filter((value) => value === kind).length;
+  const pointsOf = (kind: Kind): number =>
+    allHunks.filter((hunk) => kinds.get(hunk.path) === kind).reduce((sum, hunk) => sum + hunk.decisionPoints, 0);
   const decisionPoints = hunks.reduce((sum, hunk) => sum + hunk.decisionPoints, 0);
   // The first of equally dense hunks wins, so the report is stable.
   const densest = hunks.reduce<HunkCount | null>(
@@ -150,16 +279,15 @@ export function assessComplexity(
 
   // Every changed path, reviewed or not: a path left out of the review is no
   // less sensitive for it, and a rename touches both of its names.
-  const matchers = limits.sensitivePaths.map((glob) => globToRegExp(glob));
+  const sensitiveMatchers = limits.sensitivePaths.map((glob) => globToRegExp(glob));
   const changed = new Set<string>();
   for (const file of files) {
     changed.add(file.path);
     if (file.previousPath !== undefined) changed.add(file.previousPath);
   }
-  const sensitive = [...changed].filter((path) => matchers.some((matcher) => matcher.test(path))).sort();
+  const sensitive = [...changed].filter((path) => matchesAny(sensitiveMatchers, path)).sort();
   const listed = sensitive.slice(0, MAX_SENSITIVE_LISTED);
 
-  const reasons: string[] = [];
   if (decisionPoints > limits.maxDecisionPoints) {
     reasons.push(`${decisionPoints} decision points added (limit ${limits.maxDecisionPoints})`);
   }
@@ -179,19 +307,65 @@ export function assessComplexity(
     reasons,
     decisionPoints,
     densestHunk: densest === null ? null : { path: densest.path, line: densest.line, decisionPoints: densest.decisionPoints },
+    excluded: {
+      documentationFiles: ofKind('documentation'),
+      testFiles: ofKind('test'),
+      testDecisionPoints: pointsOf('test'),
+      generatedFiles: ofKind('generated'),
+      generatedDecisionPoints: pointsOf('generated'),
+    },
     sensitivePaths: listed,
     limits: { ...limits },
   };
 }
 
-/** The one line the review and the posted body carry; null unless the change is high-complexity. */
+const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;
+
+/** What the count left out, as a sentence, or an empty string when nothing was. */
+function notCounted(excluded: Excluded): string {
+  const parts: string[] = [];
+  if (excluded.generatedFiles > 0) {
+    parts.push(
+      `${plural(excluded.generatedFiles, 'generated file')} (${plural(excluded.generatedDecisionPoints, 'decision point')})`,
+    );
+  }
+  if (excluded.testFiles > 0) {
+    parts.push(`${plural(excluded.testFiles, 'test file')} (${plural(excluded.testDecisionPoints, 'decision point')})`);
+  }
+  if (excluded.documentationFiles > 0) parts.push(plural(excluded.documentationFiles, 'documentation file'));
+  return parts.length === 0 ? '' : ` Left out of the decision-point count: ${parts.join(', ')}.`;
+}
+
+/** The one line for the agent and the user; never posted to the pull request. Null unless the change is high-complexity. */
 export function humanReviewNote(assessment: ComplexityAssessment | null): string | null {
   if (assessment === null || assessment.level !== 'high') return null;
-  return `Raised for human review: ${assessment.reasons.join('; ')}. Review Voice will not approve this change.`;
+  return `Needs a human reviewer: ${assessment.reasons.join('; ')}.${notCounted(assessment.excluded)} Review Voice will not approve this change; this is not posted to the pull request.`;
 }
 
 const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0;
 const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+/**
+ * An assessment recorded before exclusions were reported excluded nothing,
+ * so a missing block reads as zeros; a present but malformed one is rejected.
+ */
+function parseExcluded(value: unknown): Excluded | null {
+  if (value === undefined) return { ...NOTHING_EXCLUDED };
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const e = value as Record<string, unknown>;
+  const read = (key: string): number | null => {
+    const count = e[key];
+    if (count === undefined) return 0;
+    return isCount(count) ? count : null;
+  };
+  const parsed = { ...NOTHING_EXCLUDED };
+  for (const key of Object.keys(NOTHING_EXCLUDED) as (keyof Excluded)[]) {
+    const count = read(key);
+    if (count === null) return null;
+    parsed[key] = count;
+  }
+  return parsed;
+}
 
 /** Reads a stored or manifest value back; null on anything malformed, since unknown is not high. */
 export function parseComplexity(value: unknown): ComplexityAssessment | null {
@@ -209,6 +383,9 @@ export function parseComplexity(value: unknown): ComplexityAssessment | null {
     densestHunk = { path: h['path'], line: h['line'], decisionPoints: h['decisionPoints'] };
   }
 
+  const excluded = parseExcluded(v['excluded']);
+  if (excluded === null) return null;
+
   const l = v['limits'] as Record<string, unknown> | null | undefined;
   if (
     typeof l !== 'object' ||
@@ -219,17 +396,29 @@ export function parseComplexity(value: unknown): ComplexityAssessment | null {
   ) {
     return null;
   }
+  // Globs added after the first release of this record: absent means none applied.
+  const optionalGlobs = (key: string): string[] | null => {
+    const globs = l[key];
+    if (globs === undefined) return [];
+    return isStrings(globs) ? globs : null;
+  };
+  const testPaths = optionalGlobs('testPaths');
+  const generatedPaths = optionalGlobs('generatedPaths');
+  if (testPaths === null || generatedPaths === null) return null;
 
   return {
     level: v['level'],
     reasons: v['reasons'],
     decisionPoints: v['decisionPoints'],
     densestHunk,
+    excluded,
     sensitivePaths: v['sensitivePaths'],
     limits: {
       maxDecisionPoints: l['maxDecisionPoints'],
       maxHunkDecisionPoints: l['maxHunkDecisionPoints'],
       sensitivePaths: l['sensitivePaths'],
+      testPaths,
+      generatedPaths,
     },
   };
 }

@@ -51,6 +51,31 @@ review:
       - "**/migrations/**"
       - "**/auth/**"
       - "**/security/**"
+      - ".review-voice/**"
+    # Decision points count in production source only. Documentation is
+    # always left out; so are tests and fixtures matching these globs. A list
+    # here replaces the defaults; an empty list counts tests again. A glob
+    # broad enough to match ordinary source files (such as "**") is ignored,
+    # and the assessment says so.
+    test_paths:
+      - "**/test/**"
+      - "**/tests/**"
+      - "**/__tests__/**"
+      - "**/fixtures/**"
+      - "**/__fixtures__/**"
+      - "**/testdata/**"
+      - "**/*.test.*"
+      - "**/*.spec.*"
+      - "**/*_test.go"
+      - "**/spec/**/*.rb"
+      - "**/*_spec.rb"
+      - "**/*.Tests/**"
+      - "**/*.UnitTests/**"
+      - "**/*.IntegrationTests/**"
+    # Generated output is left out too: files classified as generated, files
+    # marked `linguist-generated` in .gitattributes, and these globs (none by
+    # default), e.g. what a generator in this repository writes.
+    generated_paths: []
 
 ci:
   # Checks that fail by design until something else happens. `name` is a glob
