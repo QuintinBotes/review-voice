@@ -2344,12 +2344,14 @@ async function readThread(options) {
   for (const raw of inline) {
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
+    const outdated = (raw.line ?? null) === null && (raw.original_line ?? null) !== null;
     comments.push({
       path: raw.path ?? null,
       line: raw.line ?? raw.original_line ?? null,
       author: kept.author,
       body: kept.body,
-      kind: "review-comment"
+      kind: "review-comment",
+      ...outdated ? { outdated: true } : {}
     });
   }
   const reviews = await client.paginate(
@@ -15231,15 +15233,16 @@ function checkCandidatesCommand(argv) {
         reason: heldMatch.entry.reason,
         excerpt: (heldMatch.entry.text ?? "").slice(0, 200)
       };
-      const possible = possiblySaidOnThread(candidate, thread) ?? possiblyRaisedInFile(candidate, thread, isOwn);
+      const possible = possiblySaidOnThread(candidate, thread) ?? possiblyRaisedInFile(candidate, thread, isOwn) ?? possiblyRaisedInFile(candidate, thread);
       if (possible !== null) {
         kept.push({
           ...original,
           possibleRepeatOf: {
-            ...isOwn(possible) ? { kind: "own-comment" } : {},
+            kind: isOwn(possible) ? "own-comment" : "thread",
             author: possible.author,
             path: possible.path,
             line: possible.line,
+            ...possible.outdated === true ? { outdated: true } : {},
             excerpt: possible.body.slice(0, 200)
           }
         });

@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moves: a candidate making the same claim anywhere in that file is kept with
   `possibleRepeatOf` of `kind: own-comment` for the verifier. The owner is
   `identity.owner_reviewer`, or `--owner <login>`. (#24)
+- `check-candidates --thread` flags a same-file, same-concern repeat of any
+  reviewer's inline comment, whatever the line distance, as `possibleRepeatOf`
+  of `kind: thread`, with `outdated: true` when the code under the comment has
+  changed since. Every anchored thread match now carries its `kind`. (#43)
 
 ## [1.10.1] - 2026-10-05
 

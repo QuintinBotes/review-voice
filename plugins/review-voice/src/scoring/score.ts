@@ -393,6 +393,8 @@ export interface ThreadComment {
   body: string;
   /** Optional so a thread file written before the field existed still reads. */
   kind?: 'review-comment' | 'review-body' | 'conversation' | 'description';
+  /** The code under an inline comment changed since it was written. */
+  outdated?: boolean;
 }
 
 /**
@@ -479,12 +481,14 @@ const SAME_FILE_REPEAT_OVERLAP = 0.4;
 
 /**
  * An anchored comment anywhere in this candidate's file that makes much the
- * same claim, however far its line is from the candidate's.
+ * same claim, however far its line is from the candidate's, whoever wrote it.
  *
- * Line proximity missed a real repeat: the owner's comment sat at line 1312,
- * the author inserted a test above it, GitHub then reported it at 1436, and the
- * same coverage point came back on another line of the file. The candidate is
- * kept; the verifier judges whether it adds anything.
+ * Line proximity missed two real repeats. The owner's comment sat at line
+ * 1312, the author inserted a test above it, GitHub then reported it at 1436,
+ * and the same coverage point came back on another line of the file. And
+ * another reviewer's concern about one query, marked fixed, came back about a
+ * different query 15 lines away. The candidate is kept; the verifier judges
+ * whether it adds anything, or whether the earlier fix covered it.
  *
  * `accept` narrows which comments count. The best overlap wins, then the
  * nearest line.

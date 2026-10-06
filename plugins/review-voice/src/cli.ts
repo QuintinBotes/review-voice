@@ -2665,18 +2665,22 @@ function checkCandidatesCommand(argv: string[]): number {
       // A nearby anchored comment is the stronger lead, so it wins when both
       // match. A description match is never dropped here: wording cannot tell
       // a restatement from a contradiction, so the verifier decides.
-      // After it, the owner's own comment anywhere in the file: its line moves
-      // as the author edits above it, so distance says little about a repeat.
+      // After it, the same claim anywhere in the file, the owner's own comment
+      // first: a line moves as the author edits above it, and one concern can
+      // cover several places, so distance says little about a repeat.
       const possible =
-        possiblySaidOnThread(candidate, thread) ?? possiblyRaisedInFile(candidate, thread, isOwn);
+        possiblySaidOnThread(candidate, thread) ??
+        possiblyRaisedInFile(candidate, thread, isOwn) ??
+        possiblyRaisedInFile(candidate, thread);
       if (possible !== null) {
         kept.push({
           ...original,
           possibleRepeatOf: {
-            ...(isOwn(possible) ? { kind: 'own-comment' } : {}),
+            kind: isOwn(possible) ? 'own-comment' : 'thread',
             author: possible.author,
             path: possible.path,
             line: possible.line,
+            ...(possible.outdated === true ? { outdated: true } : {}),
             excerpt: possible.body.slice(0, 200),
           },
         });

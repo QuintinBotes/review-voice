@@ -64,12 +64,13 @@ finding contradicts something the description asserts, or shows that the
 stated intent is wrong, keep it and judge it on its evidence like any other
 candidate.
 
-When `possibleRepeatOf` has `kind: own-comment`, the comment is the owner's
-own, and it may sit far from the candidate: its line moves as the author edits
-above it, and one comment can cover several places in a file. Read the comment
-at its current line. Reject the candidate as a repeat when it makes the same
-point about the same code; keep it when it is a different instance the comment
-did not cover.
+When `possibleRepeatOf` has `kind: own-comment` or `kind: thread`, the
+comment is the owner's own or another reviewer's, and it may sit far from the
+candidate: its line moves as the author edits above it, and one comment can
+cover several places in a file. Read the code at the comment's line. Reject the
+candidate as a repeat when it makes the same point about the same code. When
+it is `outdated`, the code under the comment changed, often in a fix: keep the
+candidate only when it is an instance that fix did not cover, and say which.
 
 When `possibleRepeatOf` has `kind: held`, an earlier review held the same spot
 back with the given verdict and reason; that verdict is a prior, not a ruling,
