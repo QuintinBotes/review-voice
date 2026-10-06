@@ -339,7 +339,9 @@ same convention `documents`, and `symbols.json`.
 Discard every candidate it does not verify, with two exceptions that step 4
 decides:
 
-- a `question` it marked `premises_verified: true`;
+- a `question` it marked `premises_verified: true` (or `verified: true`). A
+  question with `verified: false` and no `premises_verified: true`, or with no
+  verdict at all, is discarded;
 - a candidate it rejected because of context it could not obtain, with at
   least one blocking entry in `required_context_missing` (a string, or an
   object not marked `cosmetic`). **Set it aside**: it skips steps 3b and 3c and
@@ -467,12 +469,13 @@ a question-framed claim at minor; boundary categories are exempt.
 
 **A `question` is eligible when its premises are verified, even if its answer
 is not.** It is the one kind of candidate that can reach the editor without a
-verified claim: `score` does not gate it on confidence, and the verifier's
-`verified: false` for an answer it could not reach does not stop it. What stops
-it is `premises_verified: false` - a fact the question rests on was wrong or
-could not be checked - or owner precedent against asking it, and at most two
-questions are asked per review. So pass a question to step 4 when the verifier
-set `premises_verified: true`, even though it could not answer it.
+verified answer: `score` does not gate it on confidence, and `verified: false`
+for an answer the verifier could not reach does not stop it when
+`premises_verified: true`. It fails closed otherwise: `verified: false` without
+`premises_verified: true`, `premises_verified: false`, or no verifier verdict
+at all rejects it, as does owner precedent against asking it, and at most two
+questions are asked per review. So pass a question to step 4 only when the
+verifier set `verified: true` or `premises_verified: true`.
 
 With `--diff-file`, `score` also rejects a candidate that is not anchored on an
 added line or a deletion site. Keep the `anchorCheck` and its

@@ -193,8 +193,9 @@ A question can reach the author without its answer being verified - that is
 what makes it a question - so check what it rests on instead. Set
 `premises_verified` to true when every fact the question states or assumes
 holds in the code, and false when one is wrong or you could not check it. A
-question whose premises are not verified is not asked. Omit the field for a
-candidate that is not a question.
+question whose premises are not verified is not asked, and neither is one with
+no `premises_verified` (unless `verified` is true): always set it on a question.
+Omit the field for a candidate that is not a question.
 
 Do not report a reach or radius. The CLI computes reach from the candidate's
 claim, changed path, and reviewed ref, and records the symbols and paths it

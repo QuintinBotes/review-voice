@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Flags the old text never listed are now documented, among them `draft`,
   `verdict`, `post`, `consent-plan`, `reconcile`, `explain`, `evaluate`,
   `redact` and `score --owner`. (#52)
+- A question the verifier did not back is no longer eligible (#54). It needs
+  `verified: true` or `premises_verified: true`; `verified: false` with the
+  premises omitted, no verifier entry, or no `--verification` now rejects it,
+  and the verifier's `reason` is quoted in `rejectedBecause`.
 
 ## [1.11.0] - 2026-10-06
 
