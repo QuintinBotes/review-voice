@@ -1287,6 +1287,7 @@ function scoreCommand(argv: string[]): number {
         const fixReason = raw['fix_reason'] ?? raw['fixReason'];
         const fixDirection = raw['fix_direction'] ?? raw['fixDirection'];
         const impactTraced = raw['impact_traced'] ?? raw['impactTraced'];
+        const premisesVerified = raw['premises_verified'] ?? raw['premisesVerified'];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: (raw['evidence_quality'] ?? raw['evidenceQuality']) as Verification['evidenceQuality'],
@@ -1305,6 +1306,7 @@ function scoreCommand(argv: string[]): number {
           fixDirection: typeof fixDirection === 'string' ? fixDirection : undefined,
           // Only a real boolean counts; a string "true" is not evidence.
           impactTraced: typeof impactTraced === 'boolean' ? impactTraced : undefined,
+          premisesVerified: typeof premisesVerified === 'boolean' ? premisesVerified : undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
             raw['requiredContextMissing']) as MissingContext[] | undefined,
         });
@@ -2463,6 +2465,12 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
       !(typeof confidence === 'number' && Number.isFinite(confidence) && confidence >= 0 && confidence <= 1)
     ) {
       return `${who}: technical_confidence must be a number from 0 to 1.`;
+    }
+    // Refused rather than ignored: a premise reported as "false" in a string
+    // would otherwise read as absent, and a question would ship on it.
+    const premises = entry['premises_verified'] ?? entry['premisesVerified'];
+    if (premises !== undefined && typeof premises !== 'boolean') {
+      return `${who}: premises_verified must be true or false.`;
     }
     const missing = entry['required_context_missing'] ?? entry['requiredContextMissing'];
     if (missing !== undefined && !(Array.isArray(missing) && missing.every(isMissingContext))) {

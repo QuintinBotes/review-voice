@@ -280,7 +280,8 @@ If there are no candidates, output exactly `No actionable findings.` and stop.
 Launch the `evidence-verifier` agent with the candidates, the same diff, the
 same convention `documents`, and `symbols.json`.
 
-Discard every candidate it does not verify. Rejection is the default when
+Discard every candidate it does not verify, except a `question` it marked
+`premises_verified: true`, which step 4 decides. Rejection is the default when
 evidence is weak - do not argue with it, and do not reinstate a candidate
 because it seemed compelling.
 
@@ -361,6 +362,15 @@ repeats whatever the pull request already says.
 `score` reports a finding above the analyst's requested tier only when the
 verifier set `impact_traced` and reported confidence of at least 0.85, and caps
 a question-framed claim at minor; boundary categories are exempt.
+
+**A `question` is eligible when its premises are verified, even if its answer
+is not.** It is the one kind of candidate that can reach the editor without a
+verified claim: `score` does not gate it on confidence, and the verifier's
+`verified: false` for an answer it could not reach does not stop it. What stops
+it is `premises_verified: false` - a fact the question rests on was wrong or
+could not be checked - or owner precedent against asking it, and at most two
+questions are asked per review. So pass a question to step 4 when the verifier
+set `premises_verified: true`, even though it could not answer it.
 
 With `--diff-file`, `score` also rejects a candidate that is not anchored on an
 added line or a deletion site. Keep the `anchorCheck` and its

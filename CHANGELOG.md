@@ -71,6 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the consumer's own line is changed in that diff, the anchor reason says to
   file it as an ordinary finding, and `check-candidates` lists a passing one
   under `suggestions`. (#28)
+- The rule that a `question` is eligible when its premises are verified, even
+  if its answer is not, is now stated in the review command, the architecture
+  notes and ADR 0016. The verifier may report `premises_verified` for a
+  question, and `false` keeps it from being asked. The editor contract states
+  that a `question` comes after every `nit`. (#40)
 
 ## [1.10.1] - 2026-10-05
 

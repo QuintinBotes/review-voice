@@ -12202,6 +12202,8 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     rejectedBecause = "score could not be computed from this candidate";
   } else if (alreadySaid !== null) {
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
+  } else if (isQuestion && verification2?.premisesVerified === false) {
+    rejectedBecause = "the verifier could not verify the premises this question rests on (premises_verified: false)";
   } else if (isQuestion) {
     if (ownerAlignment < NEUTRAL_ALIGNMENT) {
       rejectedBecause = `owner precedent is against asking this (${ownerAlignment.toFixed(2)} alignment), and a question the owner has dismissed the like of before is noise the second time`;
@@ -14197,6 +14199,7 @@ function scoreCommand(argv) {
         const fixReason = raw["fix_reason"] ?? raw["fixReason"];
         const fixDirection = raw["fix_direction"] ?? raw["fixDirection"];
         const impactTraced = raw["impact_traced"] ?? raw["impactTraced"];
+        const premisesVerified = raw["premises_verified"] ?? raw["premisesVerified"];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: raw["evidence_quality"] ?? raw["evidenceQuality"],
@@ -14209,6 +14212,7 @@ function scoreCommand(argv) {
           fixDirection: typeof fixDirection === "string" ? fixDirection : void 0,
           // Only a real boolean counts; a string "true" is not evidence.
           impactTraced: typeof impactTraced === "boolean" ? impactTraced : void 0,
+          premisesVerified: typeof premisesVerified === "boolean" ? premisesVerified : void 0,
           requiredContextMissing: raw["required_context_missing"] ?? raw["requiredContextMissing"]
         });
       }
@@ -15094,6 +15098,10 @@ function verificationProblem(list) {
     const confidence = entry["technical_confidence"] ?? entry["technicalConfidence"];
     if (confidence !== void 0 && !(typeof confidence === "number" && Number.isFinite(confidence) && confidence >= 0 && confidence <= 1)) {
       return `${who}: technical_confidence must be a number from 0 to 1.`;
+    }
+    const premises = entry["premises_verified"] ?? entry["premisesVerified"];
+    if (premises !== void 0 && typeof premises !== "boolean") {
+      return `${who}: premises_verified must be true or false.`;
     }
     const missing = entry["required_context_missing"] ?? entry["requiredContextMissing"];
     if (missing !== void 0 && !(Array.isArray(missing) && missing.every(isMissingContext))) {

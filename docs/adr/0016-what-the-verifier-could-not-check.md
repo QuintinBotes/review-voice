@@ -45,6 +45,12 @@ posted.**
   account of it, since nothing was concluded about them.
 - **Strict input.** An entry that is neither a string nor that object, or has
   an unknown kind, is refused by `check-verification` and `score`.
+- **Questions.** A `question` is eligible when its premises are verified, even
+  if its answer is not. This was already the behaviour - a question skips the
+  confidence gates - but was written down nowhere, and it is the one place an
+  unverified candidate reaches the editor. The verifier may now report
+  `premises_verified` for a question: `false`, a premise wrong or unchecked,
+  rejects it; `true` or absent leaves it as before.
 
 ## Consequences
 

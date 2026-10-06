@@ -135,6 +135,12 @@ export interface Verification {
    * the verifier observed, not how widely the touched file is referenced.
    */
   impactTraced?: boolean | undefined;
+  /**
+   * For a question: whether the facts it rests on hold. A question is eligible
+   * without its answer being verified - that is what makes it a question - but
+   * not when the verifier found a premise false or could not check one.
+   */
+  premisesVerified?: boolean | undefined;
 }
 
 /** Used when the verifier reports a tier rather than a number. */
@@ -1135,6 +1141,11 @@ export function scoreCandidate(
     // confident candidate with strong evidence still clears the threshold
     // while repeating a comment already published on that line.
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
+  } else if (isQuestion && verification?.premisesVerified === false) {
+    // Eligible without a verified answer, which is the point of a question,
+    // but not on a premise the verifier found false or could not check: the
+    // facts a question rests on are assertions like any other.
+    rejectedBecause = 'the verifier could not verify the premises this question rests on (premises_verified: false)';
   } else if (isQuestion) {
     // A question skips the confidence gates below, which measure belief in an
     // assertion it does not make. It does not skip precedent.

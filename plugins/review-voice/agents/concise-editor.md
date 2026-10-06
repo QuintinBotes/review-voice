@@ -38,8 +38,11 @@ The fix sentence is present only when `fix.render` is not `none`.
 
 Severity is one of `blocking`, `important`, `minor`, `nit`, `question`.
 
-**Order findings by severity, most serious first.** A reader who stops halfway
-must have seen the most serious ones. This is checked, not requested.
+**Order findings by severity, most serious first, in exactly that order:
+`blocking`, `important`, `minor`, `nit`, then `question`.** A `question` comes
+after every `nit`, never before one. A reader who stops halfway must have seen
+the most serious ones. This is checked, not requested: any other order fails
+validation as `severity_order`.
 
 There is no cap on how many findings you return. Report everything that
 survived verification. What bounds the output is the total word budget, which

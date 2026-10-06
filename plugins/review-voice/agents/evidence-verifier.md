@@ -153,6 +153,13 @@ gap is real and material - that the diff and repository do not settle an
 answer whose answer would change something. It is not confidence in an answer
 you do not have.
 
+A question can reach the author without its answer being verified - that is
+what makes it a question - so check what it rests on instead. Set
+`premises_verified` to true when every fact the question states or assumes
+holds in the code, and false when one is wrong or you could not check it. A
+question whose premises are not verified is not asked. Omit the field for a
+candidate that is not a question.
+
 Do not report a reach or radius. The CLI computes reach from the candidate's
 claim, changed path, and reviewed ref, and records the symbols and paths it
 searched. An agent-supplied value would make that derivation unfalsifiable.
@@ -179,7 +186,7 @@ For every candidate, return these fields in addition to the defect fields:
 JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `technical_confidence`, `contradictions`, `required_context_missing`, `reason`,
 `fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`,
-`impact_traced`.
+`impact_traced`, and `premises_verified` for a question.
 
 `evidence_quality` is exactly one of `high`, `medium` or `low`. No other word
 is accepted: `strong`, `weak`, `moderate` and the like are refused, and the
