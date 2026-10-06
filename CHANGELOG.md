@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolution touched that also changed since the previous head; the base's
   clean changes in the same file no longer bring back reviewed hunks. (#63)
 
+### Added
+
+- `diff --pr` reports `suspectedWrongBase` in its summary when most of a pull
+  request's commits are already on the repository's default branch, which means
+  a branch cut from it was opened against a release branch (#65). `review.md`
+  raises that one point instead of reviewing the whole patch.
+
 ## [1.11.1] - 2026-10-06
 
 ### Fixed

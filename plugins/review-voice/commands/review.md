@@ -137,6 +137,13 @@ Reviewing part of a change and presenting it as the whole is the one failure a
 reviewer cannot recover from, because nothing downstream can tell anything is
 missing. Silence here would be a lie by omission.
 
+**If `suspectedWrongBase` is not null, show its `note` to the person and make
+that the review.** Most of the pull request's commits are already on the
+default branch, so the patch is mostly not the author's change. Report one
+short question about the base branch instead of running the analyst over the
+whole patch, unless the person asks for the full review or the description
+says bringing those commits across is the intent.
+
 **If `scopeNote` is not null, print it on its own line after the findings, just
 as `truncationNote` is printed.** This includes an output of exactly
 `No actionable findings.`: in an incremental run, that sentence only applies to

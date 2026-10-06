@@ -19,7 +19,7 @@ import { checkSeverityAgainstScores, scoredEntries } from './contract/severity-c
 import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
 import { acquireDiff, attributeSource, GitError, linguistGeneratedPaths, type ChangedFile } from './diff/acquire.ts';
 import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAssessment } from './diff/complexity.ts';
-import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
+import { acquirePullRequestDiff, applyReviewScope, type SuspectedWrongBase } from './diff/pull-request.ts';
 import { isReviewable } from './diff/classify.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
 import {
@@ -489,6 +489,7 @@ interface EmittedDiff {
   scopeNote?: string | null;
   truncated?: boolean;
   truncationNote?: string | null;
+  suspectedWrongBase?: SuspectedWrongBase | null;
   /** Added by `emitDiff`; see docs/adr/0012. */
   complexity?: ComplexityAssessment;
   humanReviewNote?: string | null;
@@ -529,6 +530,8 @@ export function diffSummary(result: EmittedDiff): {
   humanReviewNote: string | null;
   truncated: boolean;
   truncationNote: string | null;
+  /** A pull request whose commits mostly sit on the default branch; see `acquirePullRequestDiff`. */
+  suspectedWrongBase: SuspectedWrongBase | null;
   reviewedFileCount: number;
   hunkFileCount: number;
   excludedFileCount: number;
@@ -572,6 +575,7 @@ export function diffSummary(result: EmittedDiff): {
     humanReviewNote: result.humanReviewNote ?? null,
     truncated: result.truncated ?? false,
     truncationNote: result.truncationNote ?? null,
+    suspectedWrongBase: result.suspectedWrongBase ?? null,
     reviewedFileCount: result.reviewedFileCount,
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,

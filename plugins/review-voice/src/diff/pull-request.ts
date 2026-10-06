@@ -20,6 +20,7 @@ interface RawPull {
   base: { sha: string; ref: string };
   head: { sha: string; ref: string };
   changed_files: number;
+  commits: number;
   additions: number;
   deletions: number;
 }
@@ -225,6 +226,17 @@ export interface PullRequestDiff extends DiffResult {
   truncationNote: string | null;
   /** Whether the pull request's commits can actually be read locally. */
   refs: RefAvailability;
+  /** Set when most commits are already on the default branch; null when not suspected or not checkable. */
+  suspectedWrongBase: SuspectedWrongBase | null;
+}
+
+export interface SuspectedWrongBase {
+  base: string;
+  otherBranch: string;
+  commits: number;
+  alreadyOn: number;
+  files: number;
+  note: string;
 }
 
 /** A pull-request diff with the exact boundary the caller will review. */
@@ -368,6 +380,46 @@ export function applyReviewScope(
   };
 }
 
+// Suspect a wrong base when at least this many commits, and more than half of
+// them, are already on the default branch; the floor keeps tiny PRs quiet.
+const WRONG_BASE_MIN_COMMITS = 5;
+const WRONG_BASE_MAJORITY = 0.5;
+
+/**
+ * A branch cut from the default branch but opened against a release branch
+ * carries the default branch's history. Optional read: any failure means
+ * "could not check", never a failed diff.
+ */
+async function detectWrongBase(client: GitHubClient, repository: string, pull: RawPull): Promise<SuspectedWrongBase | null> {
+  try {
+    if (!Number.isInteger(pull.commits)) return null;
+    const { data: repo } = await client.get<{ default_branch?: string }>(`/repos/${repository}`);
+    const other = repo.default_branch;
+    // From the default branch itself, carrying its history is the point: a
+    // promotion, not a mistake.
+    if (typeof other !== 'string' || other === '' || pull.base.ref === other || pull.head.ref === other) return null;
+    const { data: compare } = await client.get<{ ahead_by?: number }>(
+      `/repos/${repository}/compare/${encodeURIComponent(other)}...${pull.head.sha}`,
+    );
+    if (typeof compare.ahead_by !== 'number') return null;
+    const alreadyOn = Math.max(0, pull.commits - compare.ahead_by);
+    if (alreadyOn < WRONG_BASE_MIN_COMMITS || alreadyOn <= pull.commits * WRONG_BASE_MAJORITY) return null;
+    return {
+      base: pull.base.ref,
+      otherBranch: other,
+      commits: pull.commits,
+      alreadyOn,
+      files: pull.changed_files,
+      note:
+        `${alreadyOn} of the pull request's ${pull.commits} commits are already on ${other}, which suggests it was ` +
+        `opened against ${pull.base.ref} by mistake (a branch cut from ${other}). Ask about the base before reviewing ` +
+        `the whole patch, unless bringing ${other}'s commits into ${pull.base.ref} is the intent.`,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function acquirePullRequestDiff(options: {
   repository: string;
   pullNumber: number;
@@ -483,5 +535,6 @@ export async function acquirePullRequestDiff(options: {
       head: pull.head.sha,
       cwd,
     }),
+    suspectedWrongBase: await detectWrongBase(client, options.repository, pull),
   };
 }
