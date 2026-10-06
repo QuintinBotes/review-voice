@@ -1275,6 +1275,7 @@ function scoreCommand(argv: string[]): number {
         const impactTraced = raw['impact_traced'] ?? raw['impactTraced'];
         const premisesVerified = raw['premises_verified'] ?? raw['premisesVerified'];
         const verified = raw['verified'];
+        const reason = raw['reason'];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: (raw['evidence_quality'] ?? raw['evidenceQuality']) as Verification['evidenceQuality'],
@@ -1295,6 +1296,7 @@ function scoreCommand(argv: string[]): number {
           impactTraced: typeof impactTraced === 'boolean' ? impactTraced : undefined,
           premisesVerified: typeof premisesVerified === 'boolean' ? premisesVerified : undefined,
           verified: typeof verified === 'boolean' ? verified : undefined,
+          reason: typeof reason === 'string' ? reason : undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
             raw['requiredContextMissing']) as MissingContext[] | undefined,
           // Already checked by `verificationProblem`.

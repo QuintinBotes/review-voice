@@ -54,7 +54,7 @@ function score(dir, entry) {
 
 test('a question whose premises are verified is eligible though its answer is not', () =>
   withDir((dir) => {
-    for (const entry of [{ premises_verified: true }, {}]) {
+    for (const entry of [{ premises_verified: true }, { premises_verified: true, reason: 'could not reach the billing service' }]) {
       const r = score(dir, entry);
       assert.equal(r.code, 0, r.stderr);
       const [row] = JSON.parse(r.stdout).scores;

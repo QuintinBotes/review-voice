@@ -171,15 +171,28 @@ export interface Verification {
   /**
    * For a question: whether the facts it rests on hold. A question is eligible
    * without its answer being verified - that is what makes it a question - but
-   * not when the verifier found a premise false or could not check one.
+   * only when the verifier confirmed its premises (this, or `verified`, true).
+   * False, or no word from the verifier, keeps it from being asked.
    */
   premisesVerified?: boolean | undefined;
+  /** The verifier's free-text reason for its verdict, quoted when it rejects a question. */
+  reason?: string | undefined;
   /**
    * The verifier's overall verdict on the claim. `false` rejects anything but
    * a question. A candidate the verifier rejected reaches scoring only to be
    * listed locally, when what stopped it was context it could not obtain.
    */
   verified?: boolean | undefined;
+}
+
+/** Longest verifier reason quoted in a rejection. */
+const REASON_CAP = 200;
+
+function withVerifierReason(base: string, reason: string | undefined): string {
+  const text = reason?.replace(/\s+/g, ' ').trim() ?? '';
+  if (text.length === 0) return base;
+  const bounded = text.length > REASON_CAP ? `${text.slice(0, REASON_CAP - 1)}…` : text;
+  return `${base}; the verifier said: "${bounded}"`;
 }
 
 /** Weakest to strongest, the order a tier can be escalated along. */
@@ -1309,7 +1322,20 @@ export function scoreCandidate(
     // Eligible without a verified answer, which is the point of a question,
     // but not on a premise the verifier found false or could not check: the
     // facts a question rests on are assertions like any other.
-    rejectedBecause = 'the verifier could not verify the premises this question rests on (premises_verified: false)';
+    rejectedBecause = withVerifierReason(
+      'the verifier could not verify the premises this question rests on (premises_verified: false)',
+      verification.reason,
+    );
+  } else if (isQuestion && verification?.verified !== true && verification?.premisesVerified !== true) {
+    // Fail closed. A question is eligible without a verified answer, but only
+    // with verified premises: a verifier that rejected it, or said nothing
+    // about its premises, or never saw it, has not backed the facts it rests on.
+    rejectedBecause = withVerifierReason(
+      verification === undefined
+        ? 'a question needs the verifier to confirm the premises it rests on (premises_verified: true), and there is no verifier verdict for this one'
+        : 'the verifier did not verify this question or confirm the premises it rests on (premises_verified is not true)',
+      verification?.reason,
+    );
   } else if (isQuestion) {
     // A question skips the confidence gates below, which measure belief in an
     // assertion it does not make. It does not skip precedent.

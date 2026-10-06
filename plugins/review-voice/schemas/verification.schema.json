@@ -52,7 +52,11 @@
     },
     "premises_verified": {
       "type": "boolean",
-      "description": "For a question: whether the facts it rests on hold. A question is eligible without a verified answer, but not when this is false."
+      "description": "For a question: whether the facts it rests on hold. A question is eligible without a verified answer, but only when this is true (or `verified` is true); false or omitted rejects it."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Why the verifier reached its verdict. Quoted when a question is rejected."
     },
     "required_context_missing": {
       "type": "array",

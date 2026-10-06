@@ -3041,6 +3041,13 @@ var CONTEXT_KINDS = ["blocking", "cosmetic"];
 function blockingContext(entries) {
   return (entries ?? []).filter((entry) => typeof entry === "string" || entry.kind !== "cosmetic").map((entry) => typeof entry === "string" ? entry : entry.context);
 }
+var REASON_CAP = 200;
+function withVerifierReason(base, reason2) {
+  const text = reason2?.replace(/\s+/g, " ").trim() ?? "";
+  if (text.length === 0) return base;
+  const bounded = text.length > REASON_CAP ? `${text.slice(0, REASON_CAP - 1)}\u2026` : text;
+  return `${base}; the verifier said: "${bounded}"`;
+}
 var TIER_ORDER = ["nit", "minor", "important", "blocking"];
 var BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
   "security",
@@ -3491,7 +3498,15 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   } else if (alreadySaid !== null) {
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
   } else if (isQuestion && verification2?.premisesVerified === false) {
-    rejectedBecause = "the verifier could not verify the premises this question rests on (premises_verified: false)";
+    rejectedBecause = withVerifierReason(
+      "the verifier could not verify the premises this question rests on (premises_verified: false)",
+      verification2.reason
+    );
+  } else if (isQuestion && verification2?.verified !== true && verification2?.premisesVerified !== true) {
+    rejectedBecause = withVerifierReason(
+      verification2 === void 0 ? "a question needs the verifier to confirm the premises it rests on (premises_verified: true), and there is no verifier verdict for this one" : "the verifier did not verify this question or confirm the premises it rests on (premises_verified is not true)",
+      verification2?.reason
+    );
   } else if (isQuestion) {
     if (ownerAlignment < NEUTRAL_ALIGNMENT) {
       rejectedBecause = `owner precedent is against asking this (${ownerAlignment.toFixed(2)} alignment), and a question the owner has dismissed the like of before is noise the second time`;
@@ -16037,6 +16052,7 @@ function scoreCommand(argv) {
         const impactTraced = raw["impact_traced"] ?? raw["impactTraced"];
         const premisesVerified = raw["premises_verified"] ?? raw["premisesVerified"];
         const verified = raw["verified"];
+        const reason2 = raw["reason"];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: raw["evidence_quality"] ?? raw["evidenceQuality"],
@@ -16051,6 +16067,7 @@ function scoreCommand(argv) {
           impactTraced: typeof impactTraced === "boolean" ? impactTraced : void 0,
           premisesVerified: typeof premisesVerified === "boolean" ? premisesVerified : void 0,
           verified: typeof verified === "boolean" ? verified : void 0,
+          reason: typeof reason2 === "string" ? reason2 : void 0,
           requiredContextMissing: raw["required_context_missing"] ?? raw["requiredContextMissing"],
           // Already checked by `verificationProblem`.
           partlyAddressed: raw["partly_addressed"] ?? raw["partlyAddressed"]
