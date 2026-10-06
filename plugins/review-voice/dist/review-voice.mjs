@@ -1172,6 +1172,7 @@ function classifyAnchor(hunks, path, line) {
 }
 function classifyStaleConsumer(hunks, path, line, causedBy) {
   const consumer = path.replace(/^\.\/+/, "");
+  const consumerKind = classifyAnchor(hunks, path, line).kind;
   if (causedBy === null) {
     return {
       path: consumer,
@@ -1181,7 +1182,8 @@ function classifyStaleConsumer(hunks, path, line, causedBy) {
       nearest: [],
       patchLine: null,
       beyondHunks: false,
-      causedBy: null
+      causedBy: null,
+      consumerKind
     };
   }
   const cause = classifyAnchor(hunks, causedBy.path, causedBy.line);
@@ -1193,7 +1195,8 @@ function classifyStaleConsumer(hunks, path, line, causedBy) {
     nearest: cause.nearest,
     patchLine: cause.patchLine,
     beyondHunks: cause.beyondHunks,
-    causedBy: { path: cause.path, line: cause.line, kind: cause.kind }
+    causedBy: { path: cause.path, line: cause.line, kind: cause.kind },
+    consumerKind
   };
 }
 function reason(anchor) {
@@ -1226,7 +1229,18 @@ function reason(anchor) {
   }
   return `${rendered}.`;
 }
+function ordinaryFindingHint(anchor) {
+  if (anchor.kind !== "stale-consumer") return null;
+  if (anchor.consumerKind !== "added" && anchor.consumerKind !== "deletion-site") return null;
+  const where = anchor.consumerKind === "added" ? "an added line" : "a deletion site";
+  return `${anchor.path}:${anchor.line} is itself ${where} in this diff, so it is an ordinary finding: drop anchor and caused_by and keep the path and line.`;
+}
 function staleConsumerReason(anchor) {
+  const hint = ordinaryFindingHint(anchor);
+  const body = staleConsumerBody(anchor);
+  return hint === null ? body : `${body} ${hint}`;
+}
+function staleConsumerBody(anchor) {
   const consumer = `${anchor.path}:${anchor.line}`;
   const cause = anchor.causedBy ?? null;
   if (cause === null) {
@@ -15191,7 +15205,15 @@ function checkCandidatesCommand(argv) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
     }
-    const anchorFailures = candidates.map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) })).filter(({ anchor }) => !anchor.ok).map(({ candidate, anchor }) => ({
+    const anchors = candidates.map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) }));
+    const suggestions = anchors.filter(({ anchor }) => anchor.ok && ordinaryFindingHint(anchor) !== null).map(({ candidate, anchor }) => ({
+      candidateId: candidate.candidateId,
+      path: candidate.path,
+      line: candidate.line,
+      suggestion: ordinaryFindingHint(anchor)
+    }));
+    const extra = suggestions.length > 0 ? { suggestions } : {};
+    const anchorFailures = anchors.filter(({ anchor }) => !anchor.ok).map(({ candidate, anchor }) => ({
       candidateId: candidate.candidateId,
       path: candidate.path,
       line: candidate.line,
@@ -15216,7 +15238,9 @@ function checkCandidatesCommand(argv) {
       return 2;
     }
     if (!argv.includes("--thread") && heldFrom === null) {
-      console.log(JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length } }, null, 2));
+      console.log(
+        JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length }, ...extra }, null, 2)
+      );
       return 0;
     }
     let thread = [];
@@ -15299,7 +15323,9 @@ function checkCandidatesCommand(argv) {
         }
       );
     });
-    console.log(JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld }, null, 2));
+    console.log(
+      JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld, ...extra }, null, 2)
+    );
     return 0;
   } catch (error) {
     if (error instanceof MalformedCandidate) {

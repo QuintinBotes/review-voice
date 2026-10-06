@@ -65,6 +65,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on. The verifier can mark a `required_context_missing` entry as
   `{"context": "...", "kind": "cosmetic"}`; only blocking entries cap, and a
   plain string or an entry without `kind` is blocking. See ADR 0016. (#38)
+- A `stale-consumer` cause is judged against the diff the analyst read, the
+  interdiff on a follow-up: the analyst prompt and the review command now say
+  so, and `check-candidates` and `score` must be given that same patch. When
+  the consumer's own line is changed in that diff, the anchor reason says to
+  file it as an ordinary finding, and `check-candidates` lists a passing one
+  under `suggestions`. (#28)
 
 ## [1.10.1] - 2026-10-05
 

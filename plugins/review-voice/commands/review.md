@@ -243,7 +243,16 @@ count once after the findings. Never correct an anchor by hand.
 
 A candidate with `anchor: "stale-consumer"` sits on unchanged code the change
 made wrong, and is checked by its `caused_by`, which must be an added line or
-deletion site. A missing or unchanged cause fails like any other anchor.
+deletion site. A missing or unchanged cause fails like any other anchor. When
+the consumer's own line is itself changed in the diff, the reason says to file
+it as an ordinary finding. A passing one is listed under `suggestions` and goes
+on as it is; include it if you send anchor failures back to the analyst.
+
+**`--diff-file` here and in step 4 is the `diff.patch` the analyst read**, the
+interdiff on a follow-up, never the pull request's full diff. A cause is judged
+against the diff the analyst saw: a line the latest commit changed back to the
+base is a changed line in the interdiff and unchanged context in the full
+diff.
 
 **On a `--pr` run, add `--thread <tmpdir>/thread.json`** to that command. It
 removes candidates that repeat a comment already on the pull request, so the

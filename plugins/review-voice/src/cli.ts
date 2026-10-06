@@ -22,7 +22,15 @@ import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAsse
 import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
 import { isReviewable } from './diff/classify.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
-import { classifyAnchor, classifyStaleConsumer, parseHunks, reason, type AnchorCheck, type FileHunks } from './diff/hunks.ts';
+import {
+  classifyAnchor,
+  classifyStaleConsumer,
+  ordinaryFindingHint,
+  parseHunks,
+  reason,
+  type AnchorCheck,
+  type FileHunks,
+} from './diff/hunks.ts';
 import { readThread, type ThreadComment } from './diff/thread.ts';
 import { collectSymbolContext } from './diff/symbols.ts';
 import { openDatabase } from './store/db.ts';
@@ -2631,8 +2639,20 @@ function checkCandidatesCommand(argv: string[]): number {
       return 2;
     }
 
-    const anchorFailures = candidates
-      .map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) }))
+    const anchors = candidates.map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) }));
+    // A stale consumer that passes but sits on a line this diff changed. Not a
+    // failure: the finding is sound, it is only posted in the body when it
+    // could be inline.
+    const suggestions = anchors
+      .filter(({ anchor }) => anchor.ok && ordinaryFindingHint(anchor) !== null)
+      .map(({ candidate, anchor }) => ({
+        candidateId: candidate.candidateId,
+        path: candidate.path,
+        line: candidate.line,
+        suggestion: ordinaryFindingHint(anchor),
+      }));
+    const extra = suggestions.length > 0 ? { suggestions } : {};
+    const anchorFailures = anchors
       .filter(({ anchor }) => !anchor.ok)
       .map(({ candidate, anchor }) => ({
         candidateId: candidate.candidateId,
@@ -2662,7 +2682,9 @@ function checkCandidatesCommand(argv: string[]): number {
     }
 
     if (!argv.includes('--thread') && heldFrom === null) {
-      console.log(JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length } }, null, 2));
+      console.log(
+        JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length }, ...extra }, null, 2),
+      );
       return 0;
     }
 
@@ -2765,7 +2787,9 @@ function checkCandidatesCommand(argv: string[]): number {
       );
     });
 
-    console.log(JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld }, null, 2));
+    console.log(
+      JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld, ...extra }, null, 2),
+    );
     return 0;
   } catch (error) {
     if (error instanceof MalformedCandidate) {
