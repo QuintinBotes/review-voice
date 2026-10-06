@@ -23,5 +23,5 @@ after that gate.
 | [0010](0010-review-verdict-posting.md) | Posting a review with its verdict | Accepted, amended by 0012 and 0013 |
 | [0011](0011-severity-escalation-needs-traced-impact.md) | Severity escalation needs traced impact | Accepted |
 | [0012](0012-complex-changes-need-human-approval.md) | Complex changes are raised for a human's approval | Accepted |
-| [0013](0013-ci-needs-rerun.md) | CI that needs a rerun holds every event | Accepted |
+| [0013](0013-ci-needs-rerun.md) | CI that needs a rerun holds every event | Accepted, amended 2026-10-06 |
 | [0014](0014-verifier-tie-break.md) | A tie-break settles a disputed traced impact | Accepted |

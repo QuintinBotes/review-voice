@@ -1,6 +1,6 @@
 # 0013 - CI that needs a rerun holds every event
 
-**Status:** Accepted · **Date:** 2026-10-02
+**Status:** Accepted, amended 2026-10-06 · **Date:** 2026-10-02
 **Amends:** [0010](0010-review-verdict-posting.md) - the CI guard gains one
 state. No GitHub write is added or changed; this only adds a case in which the
 one write is not made.
@@ -69,3 +69,75 @@ head.
 
 **Rerun the checks automatically.** Fixes the cause, but it is a write to
 GitHub beyond the one 0010 allows.
+
+## Amendment - 2026-10-06
+
+### Infrastructure failures that conclude `failure`
+
+Most infrastructure failures do not conclude `timed_out` or
+`startup_failure`. A lost agent, a runner that stopped answering, a throttled
+cloud API and a dropped connection to a package registry all finished as
+`failure`, so they were red and capped an approval for reasons that had
+nothing to do with the change.
+
+- **What counts.** A check run concluding `failure` whose output title or
+  summary, or a failure-level annotation from the runner itself (on `.github`
+  or on no path), contains one of the rerun signatures, ignoring case, needs a
+  rerun. The output's free text, annotations on a file of the repository and
+  annotations' raw details are not read: they carry test names and compiler
+  diagnostics, which can quote "429 Too Many Requests" or `ECONNRESET`.
+  Warning and notice annotations do not count. Any other conclusion is
+  classified as before.
+- **A mixed run stays red.** A run needs a rerun only if every one of its
+  failure-level annotations matched a signature. One unmatched failure
+  annotation, such as a failed test on a file, may be a real failure beside
+  the infrastructure one, so the run stays red. So does a run with
+  annotations that were not read.
+- **The exit-code note is neutral.** GitHub Actions adds `Process completed
+  with exit code N.` to nearly every failed job. On `.github` or no path, and
+  with nothing else in the message, it neither matches nor keeps a run red:
+  beside a matched phrase the run needs a rerun, alone it stays red. Counting
+  it as unmatched would have kept almost every Actions failure red.
+- **The signatures.** A short built-in list of whole phrases: `We stopped
+  hearing from agent`, `lost communication with the server`, `The runner has
+  received a shutdown signal`, `has exceeded the maximum execution time`, `No
+  space left on device`, `ECONNRESET`, `other side closed`, `429 Too Many
+  Requests` and `503 Service Unavailable`. Bare status codes are not on it:
+  "503" also appears in "503 tests passed". `ci.rerun_signatures` adds phrases
+  for a repository, and `ci.builtin_rerun_signatures: false` drops the
+  built-in ones. A configured phrase shorter than 8 characters, or one
+  generic word such as `error` or `failed`, is skipped with a warning, since
+  it would turn nearly every failure into a rerun.
+- **Reading the text.** The check-run list already carries the output. A
+  failed run with annotations gets one more GET, `/check-runs/{id}/annotations`
+  (one page), for up to 50 failed runs. These reads are optional and never
+  wait out a rate limit: the first 403 or 429 stops them and the runs not yet
+  read stay red. Any other failed read leaves that run red. Job logs are not
+  read. No write is added.
+- **Precedence.** Unchanged: a real failure beside one is still red, and the
+  reasons name the phrase, for example `CI needs a rerun: deploy (failure,
+  matched "ECONNRESET")`.
+
+A signature is evidence about the runner, not proof. A change that breaks a
+service its own tests call can print `ECONNRESET` too, and a rerun will fail
+the same way; whoever drives the loop should treat a second `needs-rerun` on
+the same signature as red, or drop the phrase for that repository.
+
+### The stuck threshold is configurable
+
+A fixed 60 minutes held every review on a repository whose integration suite
+routinely runs about an hour: a healthy run read as stuck, and `verdict` and
+`post` exited 6. Listing such a check under `ci.gate_checks` was the only way
+out, and it also hid the check's real failures.
+
+- `ci.stuck_after_minutes` replaces the default for the repository.
+- `ci.stuck_after_overrides` is a list of `{ name, minutes }`, `name` a glob
+  over the check name as for gate checks. The first matching entry wins over
+  the repository threshold.
+- A value that is not a whole number above zero is skipped with a warning and
+  the default kept. With nothing configured the threshold is 60 minutes, as
+  before.
+
+A threshold derived from the check's own recent durations was considered. It
+needs the history of green runs, which is more reads per verdict, and it gives
+no answer for a new check; a stated number is easier to reason about.

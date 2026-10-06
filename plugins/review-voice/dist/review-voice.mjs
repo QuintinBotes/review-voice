@@ -1567,6 +1567,10 @@ var GitHubClient = class {
       );
     }
   }
+  /**
+   * `retryRateLimits: false` fails at once on a rate limit instead of waiting
+   * it out, for a read the caller can do without.
+   */
   async get(path, init = {}) {
     if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
       throw new ReadOnlyViolation(
@@ -1588,7 +1592,7 @@ var GitHubClient = class {
       if (response.status === 403 || response.status === 429) {
         const retryAfter = Number(response.headers.get("retry-after") ?? "0");
         const remaining = response.headers.get("x-ratelimit-remaining");
-        if ((remaining === "0" || retryAfter > 0) && attempt < 4) {
+        if (init.retryRateLimits !== false && (remaining === "0" || retryAfter > 0) && attempt < 4) {
           const waitMs = retryAfter > 0 ? retryAfter * 1e3 : 2 ** attempt * 1e3;
           await this.sleep(waitMs);
           continue;
@@ -9884,6 +9888,202 @@ function parse(src, reviver, options) {
   return doc.toJS(Object.assign({ reviver: _reviver }, options));
 }
 
+// plugins/review-voice/src/publish/ci.ts
+var MAX_ENTRIES = 1e3;
+var IGNORED_CONCLUSIONS = /* @__PURE__ */ new Set(["stale", "skipped", "neutral"]);
+var RERUN_CONCLUSIONS = /* @__PURE__ */ new Set(["timed_out", "action_required", "startup_failure"]);
+var STUCK_AFTER_MINUTES = 60;
+var BUILTIN_RERUN_SIGNATURES = [
+  "We stopped hearing from agent",
+  "lost communication with the server",
+  "The runner has received a shutdown signal",
+  "has exceeded the maximum execution time",
+  "No space left on device",
+  "ECONNRESET",
+  "other side closed",
+  "429 Too Many Requests",
+  "503 Service Unavailable"
+];
+var ANNOTATIONS_PER_RUN = 50;
+var MAX_ANNOTATION_READS = 50;
+function classifyCheckRun(run, now, stuckAfterMinutes = STUCK_AFTER_MINUTES) {
+  const status = (run.status ?? "").toLowerCase();
+  if (status !== "completed") {
+    const started = run.started_at === null || run.started_at === void 0 ? NaN : Date.parse(run.started_at);
+    if (now !== void 0 && Number.isFinite(started)) {
+      const minutes = Math.floor((now - started) / 6e4);
+      if (minutes > stuckAfterMinutes) {
+        return { result: "rerun", detail: `${status.length > 0 ? status : "unknown"} for ${minutes} min` };
+      }
+    }
+    return { result: "pending", detail: status.length > 0 ? status : "unknown" };
+  }
+  const conclusion = (run.conclusion ?? "").toLowerCase();
+  if (conclusion === "success") return { result: "passed", detail: conclusion };
+  if (IGNORED_CONCLUSIONS.has(conclusion)) return { result: "ignored", detail: conclusion };
+  if (conclusion === "failure") return { result: "failed", detail: conclusion };
+  if (RERUN_CONCLUSIONS.has(conclusion)) return { result: "rerun", detail: conclusion };
+  if (conclusion === "cancelled") return { result: "rerun", detail: "cancelled, with no later run" };
+  if (conclusion.length === 0) return { result: "pending", detail: "completed without a conclusion" };
+  return { result: "failed", detail: conclusion };
+}
+function classifyStatus(status) {
+  const state = (status.state ?? "").toLowerCase();
+  if (state === "success") return { result: "passed", detail: state };
+  if (state === "pending") return { result: "pending", detail: state };
+  return { result: "failed", detail: state.length > 0 ? state : "unknown" };
+}
+function nameGlob(glob) {
+  const source = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+  return new RegExp(`^${source}$`, "i");
+}
+function matchingGate(name, text, gates) {
+  for (const gate of gates) {
+    if (!nameGlob(gate.name).test(name)) continue;
+    if (gate.summary !== void 0 && !text.toLowerCase().includes(gate.summary.toLowerCase())) continue;
+    return gate;
+  }
+  return null;
+}
+function stuckAfterFor(name, rules = {}) {
+  const override = (rules.stuckAfter ?? []).find((entry) => nameGlob(entry.name).test(name));
+  return override?.minutes ?? rules.stuckAfterMinutes ?? STUCK_AFTER_MINUTES;
+}
+function fromRunner(annotation) {
+  const path = (annotation.path ?? "").trim();
+  return path === "" || path === ".github";
+}
+var EXIT_CODE_NOTE = /^Process completed with exit code \d+\.?$/;
+var neutral = (annotation) => fromRunner(annotation) && EXIT_CODE_NOTE.test((annotation.message ?? "").trim());
+function infrastructureSignature(run, signatures) {
+  const find = (...texts) => {
+    const haystack = texts.filter((text) => typeof text === "string").join("\n").toLowerCase();
+    if (haystack.length === 0) return null;
+    return signatures.find((signature) => signature.length > 0 && haystack.includes(signature.toLowerCase())) ?? null;
+  };
+  let matched = find(run.output?.title, run.output?.summary);
+  for (const annotation of run.annotations ?? []) {
+    if ((annotation.annotation_level ?? "").toLowerCase() !== "failure") continue;
+    if (neutral(annotation)) continue;
+    const hit = fromRunner(annotation) ? find(annotation.title, annotation.message) : null;
+    if (hit === null) return null;
+    matched ??= hit;
+  }
+  const counted = run.output?.annotations_count ?? 0;
+  if (counted > 0 && (run.annotations?.length ?? 0) < counted) return null;
+  return matched;
+}
+var isFailure = (run) => (run.status ?? "").toLowerCase() === "completed" && (run.conclusion ?? "").toLowerCase() === "failure";
+var identity = (run) => `${run.app?.id ?? run.app?.slug ?? ""}\0${run.name ?? ""}`;
+function later(a, b) {
+  if (typeof a.id === "number" && typeof b.id === "number") return a.id > b.id;
+  return (a.started_at ?? a.completed_at ?? "") > (b.started_at ?? b.completed_at ?? "");
+}
+function withoutSuperseded(runs) {
+  return runs.filter((run) => {
+    const unfinished = (run.status ?? "").toLowerCase() !== "completed";
+    const cancelled = !unfinished && (run.conclusion ?? "").toLowerCase() === "cancelled";
+    if (!unfinished && !cancelled) return true;
+    return !runs.some(
+      (other) => other !== run && (other.status ?? "").toLowerCase() === "completed" && identity(other) === identity(run) && later(other, run)
+    );
+  });
+}
+function summariseCi(checkRuns, statuses, gates = [], reading = {}, rules = {}) {
+  const entries = [];
+  const signatures = rules.rerunSignatures ?? BUILTIN_RERUN_SIGNATURES;
+  for (const run of withoutSuperseded(checkRuns)) {
+    let { result, detail } = classifyCheckRun(run, reading.now, stuckAfterFor(run.name ?? "", rules));
+    if (result === "failed" && isFailure(run)) {
+      const matched = infrastructureSignature(run, signatures);
+      if (matched !== null) {
+        result = "rerun";
+        detail = `failure, matched "${matched}"`;
+      }
+    }
+    const text = `${run.output?.title ?? ""}
+${run.output?.summary ?? ""}`;
+    entries.push({ entry: { name: run.name ?? "", source: "check-run", result, detail }, text });
+  }
+  for (const status of statuses) {
+    const { result, detail } = classifyStatus(status);
+    entries.push({ entry: { name: status.context ?? "", source: "status", result, detail }, text: status.description ?? "" });
+  }
+  const state = { state: "green", passed: 0, failed: [], rerun: [], pending: [], ignored: [], gates: [] };
+  for (const { entry, text } of entries) {
+    if (entry.result === "passed") {
+      state.passed += 1;
+      continue;
+    }
+    if (entry.result === "ignored") {
+      state.ignored.push(entry);
+      continue;
+    }
+    const gate = matchingGate(entry.name, text, gates);
+    if (gate !== null) {
+      state.gates.push({ ...entry, gate: gate.name });
+    } else if (entry.result === "failed") {
+      state.failed.push(entry);
+    } else if (entry.result === "rerun") {
+      state.rerun.push(entry);
+    } else {
+      state.pending.push(entry);
+    }
+  }
+  if (checkRuns.length === 0 && statuses.length === 0) {
+    state.pending.push({ name: "no checks reported yet", source: "check-run", result: "pending", detail: "none" });
+  }
+  if (reading.truncated === true) {
+    state.pending.push({ name: `more than ${MAX_ENTRIES} checks`, source: "check-run", result: "pending", detail: "not all read" });
+  }
+  if (reading.combined !== void 0 && reading.combined.totalCount > 0 && reading.combined.state?.toLowerCase() === "pending") {
+    state.pending.push({ name: "combined status", source: "status", result: "pending", detail: "pending" });
+  }
+  state.state = state.failed.length > 0 ? "red" : state.rerun.length > 0 ? "needs-rerun" : state.pending.length > 0 ? "pending" : "green";
+  return state;
+}
+async function attachAnnotations(client, repository, runs, signatures) {
+  if (signatures.length === 0) return;
+  const candidates = runs.filter(
+    (run) => isFailure(run) && typeof run.id === "number" && (run.output?.annotations_count ?? 0) > 0
+  ).slice(0, MAX_ANNOTATION_READS);
+  for (const run of candidates) {
+    try {
+      const page = await client.get(
+        `/repos/${repository}/check-runs/${run.id}/annotations?per_page=${ANNOTATIONS_PER_RUN}`,
+        { retryRateLimits: false }
+      );
+      if (Array.isArray(page.data)) run.annotations = page.data;
+    } catch (error) {
+      if (!(error instanceof GitHubError)) throw error;
+      if (error.status === 403 || error.status === 429) return;
+    }
+  }
+}
+async function readCi(client, repository, sha, gates = [], now = Date.now(), rules = {}) {
+  const checkRuns = await client.paginateWrapped(
+    `/repos/${repository}/commits/${sha}/check-runs?filter=latest&per_page=100`,
+    "check_runs",
+    MAX_ENTRIES + 1
+  );
+  await attachAnnotations(client, repository, checkRuns.slice(0, MAX_ENTRIES), rules.rerunSignatures ?? BUILTIN_RERUN_SIGNATURES);
+  const first = await client.get(
+    `/repos/${repository}/commits/${sha}/status?per_page=100`
+  );
+  const statuses = Array.isArray(first.data?.statuses) ? first.data.statuses : [];
+  if (first.linkNext !== null) {
+    statuses.push(...await client.paginateWrapped(first.linkNext, "statuses", MAX_ENTRIES + 1 - statuses.length));
+  }
+  return summariseCi(checkRuns.slice(0, MAX_ENTRIES), statuses.slice(0, MAX_ENTRIES), gates, {
+    combined: {
+      state: typeof first.data?.state === "string" ? first.data.state : null,
+      totalCount: typeof first.data?.total_count === "number" ? first.data.total_count : statuses.length
+    },
+    truncated: checkRuns.length > MAX_ENTRIES || statuses.length > MAX_ENTRIES,
+    now
+  }, rules);
+}
+
 // plugins/review-voice/src/policy/load.ts
 function asRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
@@ -9911,6 +10111,97 @@ function readHumanReview(block, result) {
     result.humanReview.sensitivePaths = asStringArray(paths);
   } else {
     result.warnings.push("review.human_review.sensitive_paths must be a list; using the default.");
+  }
+}
+var GENERIC_SIGNATURE_WORDS = /* @__PURE__ */ new Set([
+  "error",
+  "errors",
+  "failed",
+  "failure",
+  "failures",
+  "failing",
+  "fatal",
+  "exception",
+  "exceptions",
+  "timeout",
+  "timed out",
+  "cancelled",
+  "canceled",
+  "aborted",
+  "killed",
+  "crashed",
+  "panic",
+  "unavailable",
+  "refused",
+  "denied",
+  "forbidden",
+  "unauthorized",
+  "warning",
+  "retrying",
+  "connection",
+  "network",
+  "internal",
+  "exit code",
+  "traceback",
+  "stacktrace"
+]);
+function specificSignature(signature) {
+  if (signature.length < 8) return false;
+  return !GENERIC_SIGNATURE_WORDS.has(signature.toLowerCase().replace(/[^a-z ]+/g, " ").trim());
+}
+function readCiRules(block, result) {
+  if (block === null) return;
+  const minutes = (value) => typeof value === "number" && Number.isInteger(value) && value > 0 ? value : void 0;
+  if (block["stuck_after_minutes"] !== void 0) {
+    const value = minutes(block["stuck_after_minutes"]);
+    if (value === void 0) {
+      result.warnings.push("ci.stuck_after_minutes must be a whole number above zero; using 60.");
+    } else {
+      result.ciRules.stuckAfterMinutes = value;
+    }
+  }
+  const overrides = block["stuck_after_overrides"];
+  if (overrides !== void 0 && !Array.isArray(overrides)) {
+    result.warnings.push("ci.stuck_after_overrides must be a list; ignoring it.");
+  } else if (overrides !== void 0) {
+    const stuckAfter = [];
+    for (const entry of overrides) {
+      const override = asRecord(entry);
+      const name = override?.["name"];
+      const value = minutes(override?.["minutes"]);
+      if (typeof name !== "string" || name.length === 0 || value === void 0) {
+        result.warnings.push("a ci.stuck_after_overrides entry needs a name and minutes above zero; skipping it.");
+        continue;
+      }
+      stuckAfter.push({ name, minutes: value });
+    }
+    if (stuckAfter.length > 0) result.ciRules.stuckAfter = stuckAfter;
+  }
+  const extra = block["rerun_signatures"];
+  if (extra !== void 0 && !Array.isArray(extra)) {
+    result.warnings.push("ci.rerun_signatures must be a list; ignoring it.");
+  }
+  const added = [];
+  for (const entry of Array.isArray(extra) ? extra : []) {
+    if (typeof entry !== "string") {
+      result.warnings.push(`ci.rerun_signatures: ${JSON.stringify(entry)} is not text; skipping it.`);
+      continue;
+    }
+    const signature = entry.trim();
+    if (!specificSignature(signature)) {
+      result.warnings.push(
+        `ci.rerun_signatures: "${signature}" is too short or too generic and would match real failures; skipping it.`
+      );
+      continue;
+    }
+    added.push(signature);
+  }
+  const builtin = block["builtin_rerun_signatures"];
+  if (builtin !== void 0 && typeof builtin !== "boolean") {
+    result.warnings.push("ci.builtin_rerun_signatures must be true or false; keeping the built-in signatures.");
+  }
+  if (added.length > 0 || builtin === false) {
+    result.ciRules.rerunSignatures = [...builtin === false ? [] : BUILTIN_RERUN_SIGNATURES, ...added];
   }
 }
 function contentHash(text) {
@@ -9942,6 +10233,7 @@ function loadConfig(repositoryRoot2) {
     ownerReviewer: null,
     postingEnabled: false,
     ciGateChecks: [],
+    ciRules: {},
     allowlist: [],
     staticEvidence: { enabled: false, commands: [] },
     verification: { enabled: false, command: "", blockPresent: false },
@@ -9997,6 +10289,7 @@ function loadConfig(repositoryRoot2) {
             ...typeof summary === "string" && summary.length > 0 ? { summary } : {}
           });
         }
+        readCiRules(ci, result);
         const verification2 = asRecord(doc["verification"]);
         if (verification2 !== null) {
           const command = verification2["command"];
@@ -12880,133 +13173,6 @@ function assertPayload(payload) {
   }
 }
 
-// plugins/review-voice/src/publish/ci.ts
-var MAX_ENTRIES = 1e3;
-var IGNORED_CONCLUSIONS = /* @__PURE__ */ new Set(["stale", "skipped", "neutral"]);
-var RERUN_CONCLUSIONS = /* @__PURE__ */ new Set(["timed_out", "action_required", "startup_failure"]);
-var STUCK_AFTER_MINUTES = 60;
-function classifyCheckRun(run, now) {
-  const status = (run.status ?? "").toLowerCase();
-  if (status !== "completed") {
-    const started = run.started_at === null || run.started_at === void 0 ? NaN : Date.parse(run.started_at);
-    if (now !== void 0 && Number.isFinite(started)) {
-      const minutes = Math.floor((now - started) / 6e4);
-      if (minutes > STUCK_AFTER_MINUTES) {
-        return { result: "rerun", detail: `${status.length > 0 ? status : "unknown"} for ${minutes} min` };
-      }
-    }
-    return { result: "pending", detail: status.length > 0 ? status : "unknown" };
-  }
-  const conclusion = (run.conclusion ?? "").toLowerCase();
-  if (conclusion === "success") return { result: "passed", detail: conclusion };
-  if (IGNORED_CONCLUSIONS.has(conclusion)) return { result: "ignored", detail: conclusion };
-  if (conclusion === "failure") return { result: "failed", detail: conclusion };
-  if (RERUN_CONCLUSIONS.has(conclusion)) return { result: "rerun", detail: conclusion };
-  if (conclusion === "cancelled") return { result: "rerun", detail: "cancelled, with no later run" };
-  if (conclusion.length === 0) return { result: "pending", detail: "completed without a conclusion" };
-  return { result: "failed", detail: conclusion };
-}
-function classifyStatus(status) {
-  const state = (status.state ?? "").toLowerCase();
-  if (state === "success") return { result: "passed", detail: state };
-  if (state === "pending") return { result: "pending", detail: state };
-  return { result: "failed", detail: state.length > 0 ? state : "unknown" };
-}
-function nameGlob(glob) {
-  const source = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
-  return new RegExp(`^${source}$`, "i");
-}
-function matchingGate(name, text, gates) {
-  for (const gate of gates) {
-    if (!nameGlob(gate.name).test(name)) continue;
-    if (gate.summary !== void 0 && !text.toLowerCase().includes(gate.summary.toLowerCase())) continue;
-    return gate;
-  }
-  return null;
-}
-var identity = (run) => `${run.app?.id ?? run.app?.slug ?? ""}\0${run.name ?? ""}`;
-function later(a, b) {
-  if (typeof a.id === "number" && typeof b.id === "number") return a.id > b.id;
-  return (a.started_at ?? a.completed_at ?? "") > (b.started_at ?? b.completed_at ?? "");
-}
-function withoutSuperseded(runs) {
-  return runs.filter((run) => {
-    const unfinished = (run.status ?? "").toLowerCase() !== "completed";
-    const cancelled = !unfinished && (run.conclusion ?? "").toLowerCase() === "cancelled";
-    if (!unfinished && !cancelled) return true;
-    return !runs.some(
-      (other) => other !== run && (other.status ?? "").toLowerCase() === "completed" && identity(other) === identity(run) && later(other, run)
-    );
-  });
-}
-function summariseCi(checkRuns, statuses, gates = [], reading = {}) {
-  const entries = [];
-  for (const run of withoutSuperseded(checkRuns)) {
-    const { result, detail } = classifyCheckRun(run, reading.now);
-    const text = `${run.output?.title ?? ""}
-${run.output?.summary ?? ""}`;
-    entries.push({ entry: { name: run.name ?? "", source: "check-run", result, detail }, text });
-  }
-  for (const status of statuses) {
-    const { result, detail } = classifyStatus(status);
-    entries.push({ entry: { name: status.context ?? "", source: "status", result, detail }, text: status.description ?? "" });
-  }
-  const state = { state: "green", passed: 0, failed: [], rerun: [], pending: [], ignored: [], gates: [] };
-  for (const { entry, text } of entries) {
-    if (entry.result === "passed") {
-      state.passed += 1;
-      continue;
-    }
-    if (entry.result === "ignored") {
-      state.ignored.push(entry);
-      continue;
-    }
-    const gate = matchingGate(entry.name, text, gates);
-    if (gate !== null) {
-      state.gates.push({ ...entry, gate: gate.name });
-    } else if (entry.result === "failed") {
-      state.failed.push(entry);
-    } else if (entry.result === "rerun") {
-      state.rerun.push(entry);
-    } else {
-      state.pending.push(entry);
-    }
-  }
-  if (checkRuns.length === 0 && statuses.length === 0) {
-    state.pending.push({ name: "no checks reported yet", source: "check-run", result: "pending", detail: "none" });
-  }
-  if (reading.truncated === true) {
-    state.pending.push({ name: `more than ${MAX_ENTRIES} checks`, source: "check-run", result: "pending", detail: "not all read" });
-  }
-  if (reading.combined !== void 0 && reading.combined.totalCount > 0 && reading.combined.state?.toLowerCase() === "pending") {
-    state.pending.push({ name: "combined status", source: "status", result: "pending", detail: "pending" });
-  }
-  state.state = state.failed.length > 0 ? "red" : state.rerun.length > 0 ? "needs-rerun" : state.pending.length > 0 ? "pending" : "green";
-  return state;
-}
-async function readCi(client, repository, sha, gates = [], now = Date.now()) {
-  const checkRuns = await client.paginateWrapped(
-    `/repos/${repository}/commits/${sha}/check-runs?filter=latest&per_page=100`,
-    "check_runs",
-    MAX_ENTRIES + 1
-  );
-  const first = await client.get(
-    `/repos/${repository}/commits/${sha}/status?per_page=100`
-  );
-  const statuses = Array.isArray(first.data?.statuses) ? first.data.statuses : [];
-  if (first.linkNext !== null) {
-    statuses.push(...await client.paginateWrapped(first.linkNext, "statuses", MAX_ENTRIES + 1 - statuses.length));
-  }
-  return summariseCi(checkRuns.slice(0, MAX_ENTRIES), statuses.slice(0, MAX_ENTRIES), gates, {
-    combined: {
-      state: typeof first.data?.state === "string" ? first.data.state : null,
-      totalCount: typeof first.data?.total_count === "number" ? first.data.total_count : statuses.length
-    },
-    truncated: checkRuns.length > MAX_ENTRIES || statuses.length > MAX_ENTRIES,
-    now
-  });
-}
-
 // plugins/review-voice/src/publish/post.ts
 var SHA2 = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 function normalise2(text) {
@@ -13096,7 +13262,7 @@ async function computeVerdict(options) {
   const planned = planFindings(options.review, run, (id) => runDetail(options.db, id));
   const actual = await readHead2(options.client, options.repository, options.pullNumber);
   const headMoved = actual !== head;
-  const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now());
+  const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {});
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === "high";
   const decision = decide({
@@ -13244,7 +13410,7 @@ async function postReview(options) {
     try {
       reread = {
         head: await readHead2(options.client, options.repository, options.pullNumber),
-        ci: await readCi(options.client, options.repository, payload.commit_id, options.gateChecks ?? [], options.now ?? Date.now())
+        ci: await readCi(options.client, options.repository, payload.commit_id, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {})
       };
     } catch (error) {
       return refuse(1, [`could not re-read head and CI before approving: ${error instanceof Error ? error.message : String(error)}`], verdict, key);
@@ -14126,6 +14292,7 @@ async function verdictCommand(argv) {
     console.error(target);
     return 2;
   }
+  const config2 = repositoryConfig();
   const db = openDatabase();
   try {
     const { exitCode, output } = await computeVerdict({
@@ -14133,7 +14300,8 @@ async function verdictCommand(argv) {
       db,
       client: new GitHubClient({ allowlist: [target.repository] }),
       recheck: argv.includes("--recheck"),
-      gateChecks: repositoryConfig()?.ciGateChecks ?? []
+      gateChecks: config2?.ciGateChecks ?? [],
+      ciRules: config2?.ciRules ?? {}
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -14159,7 +14327,8 @@ async function postCommand(argv) {
       confirm: argv.includes("--confirm"),
       event: flag(argv, "--event")?.toUpperCase(),
       postingEnabled: config2?.postingEnabled ?? false,
-      gateChecks: config2?.ciGateChecks ?? []
+      gateChecks: config2?.ciGateChecks ?? [],
+      ciRules: config2?.ciRules ?? {}
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;

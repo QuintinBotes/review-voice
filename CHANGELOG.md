@@ -68,6 +68,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read. A run with no findings from an analyst pass of fewer than one tool call
   per 40 changed lines (on diffs of 150 lines or more) gets a warning in
   `record`'s output and in `explain`; it is local and is never posted. (#41)
+- A failed check whose output title or summary, or whose runner annotations,
+  name an infrastructure cause - a lost runner or agent, the platform's time
+  limit, a full disk, ECONNRESET, "other side closed", a 429 or 503 - needs a
+  rerun instead of counting as red, unless another failure annotation is
+  unmatched; the reasons name the matched phrase. Annotations are read by GET
+  and never wait out a rate limit; `ci.rerun_signatures` adds specific phrases
+  and `ci.builtin_rerun_signatures: false` drops the built-in ones. (#21)
+- The stuck-check threshold is configurable: `ci.stuck_after_minutes` replaces
+  the 60-minute default, and `ci.stuck_after_overrides` sets it per check-name
+  glob, so a long healthy suite no longer reads as needing a rerun. (#22)
 
 ## [1.10.1] - 2026-10-05
 
