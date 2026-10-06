@@ -15,7 +15,7 @@ import type { DecisiveEvidence, FindingVerdict } from './types.ts';
  * The other direction goes through the same tie-break. A second pass that
  * traced a worse impact proposes a stronger tier; it rises only when the
  * tie-breaker upholds that impact, traced, at the escalation confidence. See
- * docs/adr/0018-cross-check-may-raise-through-tie-break.md.
+ * docs/adr/0019-cross-check-may-raise-through-tie-break.md.
  */
 
 /**

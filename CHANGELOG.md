@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is stronger, with `decisive_evidence`, is kept with `proposedSeverity`;
   `reconcile` lists it as an `upgrade` dispute, and the tier rises only when
   the tie-breaker upholds it with `impact_traced: true` at confidence 0.85 or
-  more, recorded under `tieBreaks` with `applied` and `raised` (ADR 0018).
+  more, recorded under `tieBreaks` with `applied` and `raised` (ADR 0019).
   Second-pass verdicts may carry `decisiveEvidence: [{path, line, why}]`,
   which every dispute hands to the tie-breaker. (#31)
 - A prior comment of the owner's that the author only partly addressed gets a

@@ -46,7 +46,7 @@ export interface FindingVerdict {
   /**
    * A stronger tier the verifier traced, on a `kept` verdict. It changes
    * nothing by itself: `reconcile` sends it to the tie-break, and the tier
-   * rises only on an upheld, traced ruling. See docs/adr/0018.
+   * rises only on an upheld, traced ruling. See docs/adr/0019.
    */
   proposedSeverity?: string | undefined;
 }

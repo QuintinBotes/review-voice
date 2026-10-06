@@ -130,7 +130,7 @@ verification:
   #
   # A weaker suggested_severity applies. A stronger one, on a confirmed
   # verdict with decisive_evidence, is only proposed: the tie-break settles it
-  # (docs/adr/0018). Any other verdict label counts as no verdict.
+  # (docs/adr/0019). Any other verdict label counts as no verdict.
   #
   # Narration around the JSON is fine; the last JSON object wins.
   enabled: false

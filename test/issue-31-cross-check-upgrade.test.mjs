@@ -4,7 +4,7 @@
  * - A cross-check that traced a worse impact than the verifier had no way to
  *   raise a tier. It now proposes one, the tie-breaker settles it like any
  *   other dispute, and the tier rises only on an upheld ruling that traced
- *   the impact at the escalation confidence. See docs/adr/0018.
+ *   the impact at the escalation confidence. See docs/adr/0019.
  * - A cross-check that read excerpts missed the decisive lines. Its verdict
  *   now names them, and the tie-breaker gets them as places to look.
  * - A cross-check answered "REFUTED" while its reason confirmed the claim. A

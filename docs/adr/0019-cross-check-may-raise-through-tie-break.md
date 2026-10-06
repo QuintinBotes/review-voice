@@ -1,4 +1,4 @@
-# 0018 - A cross-check may raise a severity only through the tie-break
+# 0019 - A cross-check may raise a severity only through the tie-break
 
 **Status:** Accepted · **Date:** 2026-10-06
 **Amends:** [0014](0014-verifier-tie-break.md) - the tie-break also settles the

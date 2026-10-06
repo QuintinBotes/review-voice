@@ -75,7 +75,7 @@ claim posts. It costs one extra agent run, and only on disagreement.**
   it, leaving out the wider impact the tie-break did not uphold. The tier rule
   above is unchanged.
 - **The other direction goes through the same tie-break**, by
-  [0018](0018-cross-check-may-raise-through-tie-break.md). A second pass that
+  [0019](0019-cross-check-may-raise-through-tie-break.md). A second pass that
   traced a worse impact proposes a stronger tier, listed as an `upgrade`
   dispute; the tier rises only on an upheld ruling that traced the impact at
   0.85 or more, recorded with `applied` and `raised`. Every dispute now carries

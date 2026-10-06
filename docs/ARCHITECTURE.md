@@ -590,7 +590,7 @@ evidence-verifier's finding stands; not upheld, the second pass's outcome does.
 A second pass that proposed a stronger tier is settled by the same run, and the
 second pass's decisive lines go to the tie-breaker as places to look. See
 [ADR 0014](adr/0014-verifier-tie-break.md) and
-[ADR 0018](adr/0018-cross-check-may-raise-through-tie-break.md).
+[ADR 0019](adr/0019-cross-check-may-raise-through-tie-break.md).
 
 ### Scoring and activation
 
