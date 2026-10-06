@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other documentation. Prose words such as `if` and `or` had been read as
   branches; the assessment now reports how many files it left out, and
   sensitive paths still match them (#23).
+- The complexity assessment no longer counts decision points in tests and
+  fixtures, matched by `review.human_review.test_paths` (defaults cover the
+  common layouts). Splitting a spec file no longer changes the outcome, and
+  the densest hunk named is always production code (#32).
 
 ## [1.10.1] - 2026-10-05
 

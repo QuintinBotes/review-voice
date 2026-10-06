@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { assessComplexity, humanReviewNote, parseComplexity } from '../plugins/review-voice/src/diff/complexity.ts';
+import { assessComplexity, DEFAULT_TEST_PATHS, humanReviewNote, parseComplexity } from '../plugins/review-voice/src/diff/complexity.ts';
 import { loadConfig } from '../plugins/review-voice/src/policy/load.ts';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
 import { recordRun, runDetail } from '../plugins/review-voice/src/store/runs.ts';
@@ -182,6 +182,7 @@ test('human_review defaults when absent and reads each key when present', () => 
     maxDecisionPoints: 40,
     maxHunkDecisionPoints: 15,
     sensitivePaths: ['.github/workflows/**', '**/migrations/**', '**/auth/**', '**/security/**'],
+    testPaths: DEFAULT_TEST_PATHS,
   });
   const set = configIn('review:\n  human_review:\n    max_decision_points: 10\n    sensitive_paths: ["infra/**"]\n');
   assert.equal(set.humanReview.maxDecisionPoints, 10);

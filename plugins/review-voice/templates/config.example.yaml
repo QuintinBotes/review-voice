@@ -51,6 +51,27 @@ review:
       - "**/migrations/**"
       - "**/auth/**"
       - "**/security/**"
+    # Decision points count in production source only. Documentation is
+    # always left out; so are tests and fixtures matching these globs. A list
+    # here replaces the defaults; an empty list counts tests again.
+    test_paths:
+      - "**/test/**"
+      - "**/tests/**"
+      - "**/__tests__/**"
+      - "**/spec/**"
+      - "**/fixtures/**"
+      - "**/__fixtures__/**"
+      - "**/testdata/**"
+      - "**/*.test.*"
+      - "**/*.spec.*"
+      - "**/*_test.*"
+      - "**/*_spec.rb"
+      - "**/test_*.py"
+      - "**/*Test.java"
+      - "**/*Tests.java"
+      - "**/*Test.kt"
+      - "**/*Test.cs"
+      - "**/*Tests.cs"
 
 static_evidence:
   # Commands are opt-in. Review Voice will suggest what it detects but never

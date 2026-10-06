@@ -108,9 +108,19 @@ kinds are left out of the count, not down-weighted:
   AsciiDoc, plain text, CSV and the conventional extensionless names (`README`,
   `LICENSE`, `CHANGELOG` and the like). Configuration such as YAML stays
   counted: a workflow condition is a real branch.
+- *Tests and fixtures*: paths matching `review.human_review.test_paths`.
+  Counting them made the cap shape how tests were written - an author split
+  one spec into several files to get a hunk under the limit, and the change
+  stayed high anyway. The defaults cover the common layouts (`**/test/**`,
+  `**/tests/**`, `**/__tests__/**`, `**/spec/**`, `**/fixtures/**`,
+  `**/*.test.*`, `**/*.spec.*`, `**/*_test.*` and the usual Java, Kotlin, C#,
+  Python and Ruby names); a configured list replaces them, and an empty list
+  counts tests again.
 
-The assessment carries `excluded`, a count of the files left out, so the agent
-can say what the number did not measure; when the change is high, the note
-names them. Sensitive-path matching is unchanged and still applies to every
+The assessment carries `excluded`, a count of the files left out and, for
+tests, the decision points they would have added, so the agent can say what
+the number did not measure; when the change is high, the note names them, and
+its densest hunk is always a production hunk. The globs in effect are recorded
+in `limits`. Sensitive-path matching is unchanged and still applies to every
 changed path, excluded or not. An assessment recorded before this amendment
 has no `excluded` block and reads as excluding nothing.
