@@ -64,12 +64,17 @@ recorded. The scope is one of:
 
 - `unchanged` - the pull request's own diff is the same as at the previous
   head (a base merge or a rebase only). Do not review again: run
-  `RV carry --from <prior.runId> --head <sha>`, which keeps each earlier finding
-  whose line and the two lines either side are unchanged, at its new line, and
-  lists the rest under `notCarried`. Send `output` through `RV validate-output`,
-  display it, and record it in step 6 with `--carried-from <prior.runId>`. If
-  nothing is carried, print `scopeNote` and stop; the earlier review still
-  applies.
+  `RV carry --from <prior.runId> --head <sha> --text > <tmpdir>/review.txt`.
+  It prints the earlier review with each finding whose line and the two lines
+  either side are unchanged moved to its new line, and names the rest on
+  stderr. An earlier run with no findings prints exactly
+  `No actionable findings.`. Then hand that file on unchanged:
+  `RV validate-output < <tmpdir>/review.txt`, display it, and record it with
+  `RV record --repository <owner/repo> --head <sha> --carried-from <prior.runId> --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json < <tmpdir>/review.txt`.
+  Exit 1 from `carry` means the earlier run had findings and none carried:
+  print `scopeNote` and stop; the earlier review still applies. Without
+  `--text`, `carry` prints JSON, which is not a review: never pipe it into
+  `validate-output` or `record`.
 - `interdiff` - only the author's hunks that are new since the previous head,
   with base-branch churn excluded and head-side line numbers kept.
 - `incremental` - only the commits after the previous head (used only when

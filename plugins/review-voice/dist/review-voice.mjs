@@ -3147,7 +3147,8 @@ function carryFindings(findings, previousHead, head, cwd) {
       text: rewriteAnchor(finding.text, finding.path, finding.line, moved.line)
     });
   }
-  return { carried, notCarried, output: carried.map((c) => c.text).join("\n\n") };
+  const output = findings.length === 0 ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join("\n\n");
+  return { carried, notCarried, output };
 }
 function findingBody(text) {
   const joined = text.replace(/\s+/g, " ").trim();
@@ -13292,10 +13293,7 @@ Commands:
   --help            Show this message
 
 anchors:
-  Reads a validated review on stdin and prints one inline anchor per finding.
-  Anchors come from the review text, never from candidate records: the
-  candidate path is the analyst's and the rendered path is what the verifier
-  read, and the two can disagree.
+  One inline anchor per finding of the review on stdin, read from its text.
 
 thread flags:
   --pr <number>          Pull request whose existing comments to read
@@ -13334,12 +13332,11 @@ record flags:
   --verdicts <path>      Verification verdicts, including findings that were dropped
   --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
   --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
-  --stages <path>        Per-stage timings as
-                         [{"name","seconds","toolCalls","tokens"}], so how long
-                         a review takes is a distribution rather than an anecdote
+  --stages <path>        Per-stage [{"name","seconds","toolCalls","tokens"}]
 
 carry flags:
   --from <run-id> --head <sha>   Findings of that run still valid at the new head
+  --text                 Print only the carried review, for validate-output
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -13349,10 +13346,8 @@ score flags:
   --base <ref>              Reviewed tree for absence checks
   --verification <path>     Verifier output for confidence and fix rendering
   --exclude-pull <n>        Exclude precedents from this pull request
-  --min-confidence <n>      Gate on a confidence the verifier established
-                            (default 0.8)
-  --min-analyst-confidence <n>
-                            Analyst-only confidence gate (default 0.7)
+  --min-confidence <n>      Verifier confidence gate (default 0.8)
+  --min-analyst-confidence <n>  Analyst-only gate (default 0.7)
   --thread <path>           Existing pull-request comments
   --diff-file <path>        Diff for reach and anchor checks
   --min-score <n>           Final score gate (default 0.68)
@@ -13371,9 +13366,8 @@ conventions flags:
   --path <p>                A changed path, repeatable, instead of --files
 
 sync flags:
-  --target <n>              Non-owner events to import (default: 60 per
-                            allowlisted repository, from 250 to 1500).
-                            Owner events are always imported in full.
+  --target <n>              Non-owner events to import (default 60 per
+                            repository, 250 to 1500); owner events all
   --max-pulls <n>           Pull requests inspected per repository (default 60)
   --include-conversation    Also read pull-request conversation comments
   --dry-run                 Report what would be imported without storing anything
@@ -14841,13 +14835,25 @@ function carryCommand(argv) {
   const from = flag(argv, "--from");
   const head = flag(argv, "--head");
   if (from === null || head === null) {
-    console.error("Usage: carry --from <run-id> --head <sha>");
+    console.error("Usage: carry --from <run-id> --head <sha> [--text]");
     return 2;
   }
   const db = openDatabase();
   try {
     const result = carryForRun(db, from, head);
-    console.log(JSON.stringify({ from, head, ...result }, null, 2));
+    if (!argv.includes("--text")) {
+      console.log(JSON.stringify({ from, head, ...result }, null, 2));
+      return 0;
+    }
+    for (const skipped of result.notCarried) {
+      console.error(`Not carried: ${skipped.findingId} ${skipped.path}:${skipped.line} - ${skipped.reason}`);
+    }
+    if (result.output.length === 0) {
+      console.error(`Nothing carried from ${from}; its findings sit on code that changed.`);
+      return 1;
+    }
+    process.stdout.write(`${result.output}
+`);
     return 0;
   } catch (error) {
     if (error instanceof CarryError) {

@@ -52,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `record` checks stdin against the output contract `validate-output` enforces
   and exits 2, naming each problem and storing nothing, when it is not a
   review. (#34)
+- `carry` of an earlier run with no findings gives `No actionable findings.` as
+  its `output` instead of an empty string, and `carry --text` prints only the
+  carried review so it pipes into `validate-output` and `record`; it exits 1
+  when findings existed and none carried. The review command shows the handoff.
+  (#35)
 
 ## [1.10.1] - 2026-10-05
 

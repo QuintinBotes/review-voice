@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { topPathspecs } from './incremental.ts';
+import { DEFAULT_LIMITS } from '../contract/limits.ts';
 
 /** One stored finding, as far as carrying it forward needs to know it. */
 export interface CarryInput {
@@ -27,7 +28,12 @@ export interface NotCarriedFinding {
 export interface CarryResult {
   carried: CarriedFinding[];
   notCarried: NotCarriedFinding[];
-  /** The carried texts, blank-line separated, with each anchor moved to its new line. */
+  /**
+   * The carried texts, blank-line separated, with each anchor moved to its new
+   * line. A run that had no findings carries the contract's clean-review
+   * sentence, so the text passes `validate-output` and `record` as it is. Empty
+   * only when findings existed and none carried: that is not a clean review.
+   */
   output: string;
 }
 
@@ -160,7 +166,9 @@ export function carryFindings(findings: CarryInput[], previousHead: string, head
     });
   }
 
-  return { carried, notCarried, output: carried.map((c) => c.text).join('\n\n') };
+  const output =
+    findings.length === 0 ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join('\n\n');
+  return { carried, notCarried, output };
 }
 
 /** What a finding says after its anchor, whitespace collapsed so wrapping cannot matter. */
