@@ -4569,7 +4569,7 @@ function rewriteAnchor(text, path, oldLine, line) {
 }
 function carryFindings(findings, previousHead, head, cwd) {
   for (const ref of [previousHead, head]) {
-    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in this repository.`);
+    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
   }
   const carried = [];
   const notCarried = [];
@@ -4634,7 +4634,7 @@ function namesFile(text, path) {
 }
 function carryCandidates(candidates, previousHead, head, hunks, cwd) {
   for (const ref of [previousHead, head]) {
-    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in this repository.`);
+    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
   }
   const changed = changedFiles(previousHead, head, cwd);
   const carried = [];
@@ -15037,7 +15037,7 @@ var COMMAND_HELP = {
       "  --verdicts <path>      Verification verdicts, including findings that were dropped",
       "  --tie-breaks <path>    reconcile's output, with the rulings it applied",
       '  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]',
-      "  --carried-from <run>   Validate findings carried by `carry` (needs --head)",
+      "  --carried-from <run>   Validate findings carried by `carry` (needs --head; run in its clone)",
       "  --carry <path>         carry.json of carry-candidates (needs --head)",
       "  --thread <path>        thread.json; a follow-up whose comment thread is resolved is settled",
       "  --follow-ups <path>    The verifier's follow_ups rulings on the open follow-ups",
@@ -15053,12 +15053,15 @@ var COMMAND_HELP = {
   carry: {
     summary: "Carry an earlier run's untouched findings to a new head",
     body: lines(
-      "review-voice carry --from <run-id> --head <sha> [--text]",
-      "  Carry an earlier run's untouched findings to a new head.",
+      "review-voice carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text]",
+      "  Carry an earlier run's untouched findings to a new head. Commits are read from",
+      "  the git repository in the working directory, which must be a clone of the run's",
+      "  repository.",
       "",
       "Flags:",
       "  --from <run-id>        The earlier run (required)",
       "  --head <sha>           The new head (required)",
+      "  --repository <o/r>     The run's repository, when the run did not record one",
       "  --text                 Print only the carried review, for validate-output",
       "Reads: nothing on stdin; the local store.",
       "Writes: JSON (or with --text, the review text) on stdout; what did not carry on stderr.",
@@ -15321,6 +15324,26 @@ function inferRepository(cwd) {
   } catch {
     return null;
   }
+}
+function remoteRepositories(cwd) {
+  let out;
+  try {
+    out = execFileSync10("git", ["config", "--get-regexp", "^remote\\..*\\.url$"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+  } catch {
+    return [];
+  }
+  const slugs = [];
+  for (const line of out.split("\n")) {
+    const match = /^remote\.(.+)\.url\s+.*github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(line.trim());
+    if (match === null) continue;
+    if (match[1] === "origin") slugs.unshift(match[2]);
+    else slugs.push(match[2]);
+  }
+  return slugs;
 }
 async function threadCommand(argv) {
   const pullNumber = Number(flag(argv, "--pr"));
@@ -16817,7 +16840,7 @@ function recordCommand(argv) {
         return 2;
       }
       try {
-        const result = carryForRun(db, carriedFrom, head);
+        const result = carryForRun(db, carriedFrom, head, flag(argv, "--repository"));
         const serious = seriousNotCarried(result.notCarried);
         if (serious.length > 0) {
           console.error(
@@ -16930,22 +16953,47 @@ ${error.message}`);
     db.close();
   }
 }
-function carryForRun(db, runId, head) {
+function carryForRun(db, runId, head, repository) {
   const detail = runDetail(db, runId);
   if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
   if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head, so nothing can be carried from it.`);
-  return carryFindings(detail.findings, detail.headRef, head, process.cwd());
+  const recorded = detail.repository;
+  if (recorded !== null && repository !== null && recorded.toLowerCase() !== repository.toLowerCase()) {
+    throw new CarryError(`Run ${runId} is a review of ${recorded}, not ${repository}.`);
+  }
+  const expected = recorded ?? repository;
+  let root;
+  try {
+    root = repositoryRoot(process.cwd());
+  } catch {
+    throw new CarryError(`Run carry inside a clone of ${expected ?? "the run's repository"}.`);
+  }
+  const remotes = remoteRepositories(root);
+  const actual = inferRepository(root) ?? remotes[0] ?? null;
+  if (expected !== null && remotes.length > 0 && !remotes.some((slug) => slug.toLowerCase() === expected.toLowerCase())) {
+    throw new CarryError(
+      `Run ${runId} is a review of ${expected}, but ${root} is a clone of ${actual}. Run carry from a clone of ${expected}.`
+    );
+  }
+  for (const ref of [detail.headRef, head]) {
+    if (!commitReadable(ref, root)) {
+      throw new CarryError(
+        `Commit ${ref} is not readable in ${root}${actual === null ? "" : ` (a clone of ${actual})`}. Fetch it there, or run carry from a clone of ${expected ?? "the run's repository"}.`
+      );
+    }
+  }
+  return carryFindings(detail.findings, detail.headRef, head, root);
 }
 function carryCommand(argv) {
   const from = flag(argv, "--from");
   const head = flag(argv, "--head");
   if (from === null || head === null) {
-    console.error("Usage: carry --from <run-id> --head <sha> [--text]");
+    console.error("Usage: carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text]");
     return 2;
   }
   const db = openDatabase();
   try {
-    const result = carryForRun(db, from, head);
+    const result = carryForRun(db, from, head, flag(argv, "--repository"));
     if (!argv.includes("--text")) {
       console.log(JSON.stringify({ from, head, ...result }, null, 2));
       return 0;

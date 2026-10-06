@@ -72,6 +72,7 @@ recorded. The scope is one of:
 - `unchanged` - the pull request's own diff is the same as at the previous
   head (a base merge or a rebase only). Do not review again: run
   `RV carry --from <prior.runId> --head <sha> --text > <tmpdir>/review.txt`.
+  Run it in the clone of the pull request's repository, which is where it reads both heads.
   It prints the earlier review with each finding whose line and the two lines
   either side are unchanged moved to its new line, and names the rest on
   stderr. An earlier run with no findings prints exactly

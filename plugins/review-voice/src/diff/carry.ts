@@ -166,7 +166,7 @@ function rewriteAnchor(text: string, path: string, oldLine: number, line: number
  */
 export function carryFindings(findings: CarryInput[], previousHead: string, head: string, cwd: string): CarryResult {
   for (const ref of [previousHead, head]) {
-    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in this repository.`);
+    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
   }
 
   const carried: CarriedFinding[] = [];
@@ -301,7 +301,7 @@ export function carryCandidates(
   cwd: string,
 ): { carried: CarriedCandidate[]; refused: RefusedCandidate[] } {
   for (const ref of [previousHead, head]) {
-    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in this repository.`);
+    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
   }
 
   const changed = changedFiles(previousHead, head, cwd);
