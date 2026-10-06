@@ -91,8 +91,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it holds. (#31)
 - `explain` no longer hides a dropped finding behind a tie-break `reconcile`
   ignored. `reconcile` marks each ruling `applied` under `tieBreaks`, and the
-  review records that output with `record --tie-breaks`; only an applied,
-  upheld ruling overturns a drop. (#31)
+  review records that output with `record --tie-breaks`; an upheld ruling
+  marked not applied no longer hides a drop. Runs recorded before the mark
+  explain as they did. (#31)
 - A finding whose wider impact was disputed and not upheld carries
   `impactDisputed: true` to the editor, which then leaves that impact out of
   the comment. (#31)

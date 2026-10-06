@@ -105,7 +105,7 @@ test('an upheld ruling on an undisputed drop does not hide the suppression', () 
   }
 });
 
-test('a ruling straight from the tie-breaker is not taken as applied', () => {
+test('a ruling with no applied mark reads as before, so older runs explain as they did', () => {
   const dir = mkdtempSync(join(tmpdir(), 'rv-applied-raw-'));
   try {
     writeFileSync(join(dir, 'verdicts.json'), JSON.stringify({ verdicts: [dropped('d2', 20)] }));
@@ -117,7 +117,8 @@ test('a ruling straight from the tie-breaker is not taken as applied', () => {
     );
     assert.equal(recorded.status, 0, recorded.stderr);
     const text = cli(['explain', '--run', JSON.parse(recorded.stdout).reviewRunId], '', dir).stdout;
-    assert.match(text, /Suppressed by verification \(1\)/);
+    assert.doesNotMatch(text, /Suppressed by verification/);
+    assert.doesNotMatch(text, /not applied/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

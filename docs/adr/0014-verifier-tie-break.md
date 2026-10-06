@@ -66,8 +66,9 @@ claim posts. It costs one extra agent run, and only on disagreement.**
   a dispute. `record --tie-breaks` takes that output, and `explain` treats a
   drop as overturned only behind an applied, upheld ruling. A ruling on a
   candidate nobody disputed is ignored, as before, and its drop is still
-  listed as suppressed; a ruling recorded straight from the tie-breaker is not
-  taken as applied.
+  listed as suppressed. A ruling with no `applied` mark - every run recorded
+  before this amendment - reads as it always did, so explain does not change
+  its account of past runs.
 - **The editor is told what is contested.** A candidate marked
   `impact_disputed` carries `impactDisputed: true` into `score`'s `eligible`
   list, and the editor states its consequence where the changed code produces

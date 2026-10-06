@@ -15065,7 +15065,7 @@ function explainCommand(argv) {
         const ruling = detail.tieBreaks.find((t) => t.candidateId === verdict.candidateId);
         if (ruling !== void 0) {
           console.log(
-            `  tie-break         ${ruling.upheld ? "upheld" : "not upheld"}${ruling.applied === true ? "" : " (not applied)"} - ${ruling.reason}`
+            `  tie-break         ${ruling.upheld ? "upheld" : "not upheld"}${ruling.applied === false ? " (not applied)" : ""} - ${ruling.reason}`
           );
         }
       }
@@ -15078,7 +15078,7 @@ function explainCommand(argv) {
     }
     const dropped = verdicts.filter(
       (v) => v.outcome === "dropped" && !detail.tieBreaks.some(
-        (t) => t.upheld && t.applied === true && v.candidateId !== void 0 && t.candidateId === v.candidateId
+        (t) => t.upheld && t.applied !== false && v.candidateId !== void 0 && t.candidateId === v.candidateId
       )
     );
     if (dropped.length > 0 && wanted === void 0) {
@@ -15088,7 +15088,7 @@ function explainCommand(argv) {
         if (v.reason.length > 0) console.log(`      ${v.reason}`);
         const ruling = detail.tieBreaks.find((t) => v.candidateId !== void 0 && t.candidateId === v.candidateId);
         if (ruling !== void 0) {
-          const state = ruling.applied === true ? "not upheld" : `${ruling.upheld ? "upheld" : "not upheld"} but not applied`;
+          const state = ruling.applied === false ? `${ruling.upheld ? "upheld" : "not upheld"} but not applied` : "not upheld";
           console.log(`      tie-break ${state} - ${ruling.reason}`);
         }
       }

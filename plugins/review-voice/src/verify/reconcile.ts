@@ -29,7 +29,8 @@ export interface TieBreak {
    * Set by `reconcile`: whether this ruling settled a dispute. A ruling on a
    * candidate nobody disputed is ignored there, and `explain` must not treat
    * it as having restored anything. Absent on a ruling read straight from the
-   * tie-breaker, which says nothing about whether it was applied.
+   * tie-breaker and on runs recorded before the mark existed; `explain` reads
+   * those as it always did.
    */
   applied?: boolean | undefined;
 }

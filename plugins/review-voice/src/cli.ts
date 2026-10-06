@@ -2381,7 +2381,7 @@ function explainCommand(argv: string[]): number {
         if (ruling !== undefined) {
           console.log(
             `  tie-break         ${ruling.upheld ? 'upheld' : 'not upheld'}` +
-              `${ruling.applied === true ? '' : ' (not applied)'} - ${ruling.reason}`,
+              `${ruling.applied === false ? ' (not applied)' : ''} - ${ruling.reason}`,
           );
         }
       }
@@ -2399,15 +2399,16 @@ function explainCommand(argv: string[]): number {
     // Findings the verifier removed leave no other trace. Showing them is what
     // makes a bad verifier visible rather than indistinguishable from a clean
     // diff.
-    // A drop an upheld tie-break overturned was not a suppression. Only a
-    // ruling reconcile applied overturned anything: one on a candidate nobody
-    // disputed was ignored, and hiding the drop on its account would hide a
-    // real suppression.
+    // A drop an upheld tie-break overturned was not a suppression. A ruling
+    // reconcile marked not applied overturned nothing: it was on a candidate
+    // nobody disputed, and hiding the drop on its account would hide a real
+    // suppression. A ruling with no mark, as runs recorded before reconcile
+    // marked them have, reads as it always did.
     const dropped = verdicts.filter(
       (v) =>
         v.outcome === 'dropped' &&
         !detail.tieBreaks.some(
-          (t) => t.upheld && t.applied === true && v.candidateId !== undefined && t.candidateId === v.candidateId,
+          (t) => t.upheld && t.applied !== false && v.candidateId !== undefined && t.candidateId === v.candidateId,
         ),
     );
     if (dropped.length > 0 && wanted === undefined) {
@@ -2417,7 +2418,8 @@ function explainCommand(argv: string[]): number {
         if (v.reason.length > 0) console.log(`      ${v.reason}`);
         const ruling = detail.tieBreaks.find((t) => v.candidateId !== undefined && t.candidateId === v.candidateId);
         if (ruling !== undefined) {
-          const state = ruling.applied === true ? 'not upheld' : `${ruling.upheld ? 'upheld' : 'not upheld'} but not applied`;
+          const state =
+            ruling.applied === false ? `${ruling.upheld ? 'upheld' : 'not upheld'} but not applied` : 'not upheld';
           console.log(`      tie-break ${state} - ${ruling.reason}`);
         }
       }
