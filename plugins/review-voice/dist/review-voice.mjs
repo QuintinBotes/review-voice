@@ -1988,6 +1988,13 @@ function hasCommit(sha, cwd) {
     return false;
   }
 }
+function mergeBaseOf(base, head, cwd) {
+  try {
+    return git2(["merge-base", base, head], cwd, 1e4).trim() || null;
+  } catch {
+    return null;
+  }
+}
 function originRepository(cwd) {
   try {
     const url = git2(["remote", "get-url", "origin"], cwd, 1e4).trim();
@@ -2005,6 +2012,7 @@ function ensureRefs(options) {
   const result = (fetched, note) => ({
     base: { sha: options.base, available: present.base },
     head: { sha: options.head, available: present.head },
+    mergeBase: present.base && present.head ? mergeBaseOf(options.base, options.head, options.cwd) : null,
     fetched,
     note
   });
@@ -13291,12 +13299,6 @@ Commands:
   --version         Print the plugin version
   --help            Show this message
 
-anchors:
-  Reads a validated review on stdin and prints one inline anchor per finding.
-  Anchors come from the review text, never from candidate records: the
-  candidate path is the analyst's and the rendered path is what the verifier
-  read, and the two can disagree.
-
 thread flags:
   --pr <number>          Pull request whose existing comments to read
   --repository <name>    owner/repo; inferred from the git remote if absent
@@ -13314,7 +13316,8 @@ diff flags:
 
 symbols flags:
   --diff-file <path>     Unified diff whose changed symbols to inspect
-  --base <ref>           Search this committed tree instead of the working tree
+  --base <ref>           Search this committed tree, not the working tree
+                         (on --pr: refs.mergeBase)
   --out <path>           Write <path> or <dir>/symbols.json instead of stdout
 
 check-candidates:
@@ -13325,7 +13328,7 @@ check-candidates:
 
 record flags:
   --repository <name>    Repository the review belongs to
-  --base <ref>           Base ref reviewed against
+  --base <ref>           Base ref reviewed against (on --pr: refs.mergeBase)
   --head <sha>           Head commit reviewed
   --diff-file <path>     Diff the review was produced from (for the run hash)
   --files <path>         files.json from diff --out, carrying pull-request scope
@@ -13401,8 +13404,7 @@ validate-output flags:
 
 Exit codes: 0 compliant, 1 violations found, 2 bad invocation.
 
-Review Voice is normally driven by its Claude Code commands
-(/review-voice:review, /review-voice:init) rather than invoked directly.`;
+Normally driven by the /review-voice:* commands, not invoked directly.`;
 var STDIN_INPUT = {
   "check-candidates": "candidates JSON",
   score: "candidates JSON",
@@ -13633,6 +13635,7 @@ function diffSummary(result) {
   return {
     mode: result.mode,
     base: result.base,
+    mergeBase: result.refs?.mergeBase ?? null,
     head: result.head,
     pullNumber: result.pullNumber ?? null,
     scope,
@@ -13645,7 +13648,7 @@ function diffSummary(result) {
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,
     handEditSuspected: (result.files ?? []).filter((file) => file.handEditSuspected === true).map((file) => file.path),
-    refs: result.refs === void 0 ? null : { base: result.refs.base, head: result.refs.head },
+    refs: result.refs === void 0 ? null : { base: result.refs.base, head: result.refs.head, mergeBase: result.refs.mergeBase },
     prior: result.prior === void 0 ? null : { source: result.prior.source, head: result.prior.head, runId: result.prior.runId }
   };
 }

@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deletion is in the patch. With no pull request files to read, the follow-up
   is `unchanged` rather than the whole commit range.
 
+### Fixed
+
+- `diff --pr` exposes `refs.mergeBase` (and `mergeBase` in the summary) beside
+  `base`, which stays the base branch tip. Once that branch moves on,
+  `git diff base head` shows its own changes; `record`, `symbols` and `score`
+  take the merge base as `--base`. (#36)
+
 ## [1.10.1] - 2026-10-05
 
 ### Changed

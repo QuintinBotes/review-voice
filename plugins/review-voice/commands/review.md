@@ -51,6 +51,13 @@ request's commits are not in the clone unless they were fetched. `refs.base`
 and `refs.head` each say whether that commit is actually readable, established
 by asking git rather than by assuming a fetch worked.
 
+`refs.mergeBase` (also `mergeBase` in the summary) is the commit the pull
+request branched from. `base` stays the base branch's tip, which is not an
+ancestor of the head once that branch has moved on, so `git diff base head`
+shows the branch's own changes reversed. Use `mergeBase` for any `git diff` or
+`git show` of the change and for `--base` on `record`, `symbols` and `score`;
+fall back to `base` only when `mergeBase` is null (a commit is missing locally).
+
 If either is `available: false`, pass that fact to the analyst and the verifier
 in their prompts, and print `refs.note` after the findings the way
 `truncationNote` is printed. Reading code at a missing ref fails, and a verifier

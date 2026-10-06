@@ -74,6 +74,13 @@ const GITHUB_MAX_FILES = 3000;
 export interface RefAvailability {
   base: { sha: string; available: boolean };
   head: { sha: string; available: boolean };
+  /**
+   * The commit the pull request branched from: `git merge-base base head`.
+   * `base` is the base branch's tip, which is not an ancestor of the head once
+   * that branch has moved on, so `git diff base head` shows the branch's own
+   * changes reversed. Null when either commit is missing or git finds no base.
+   */
+  mergeBase: string | null;
   /** True only when this call fetched. Never inferred from an exit status. */
   fetched: boolean;
   note: string | null;
@@ -96,6 +103,15 @@ function hasCommit(sha: string, cwd: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function mergeBaseOf(base: string, head: string, cwd: string): string | null {
+  try {
+    return git(['merge-base', base, head], cwd, 10_000).trim() || null;
+  } catch {
+    // No common ancestor, or a shallow clone too short to find it.
+    return null;
   }
 }
 
@@ -136,6 +152,7 @@ function ensureRefs(options: {
   const result = (fetched: boolean, note: string | null): RefAvailability => ({
     base: { sha: options.base, available: present.base },
     head: { sha: options.head, available: present.head },
+    mergeBase: present.base && present.head ? mergeBaseOf(options.base, options.head, options.cwd) : null,
     fetched,
     note,
   });

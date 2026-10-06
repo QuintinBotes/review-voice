@@ -133,12 +133,6 @@ Commands:
   --version         Print the plugin version
   --help            Show this message
 
-anchors:
-  Reads a validated review on stdin and prints one inline anchor per finding.
-  Anchors come from the review text, never from candidate records: the
-  candidate path is the analyst's and the rendered path is what the verifier
-  read, and the two can disagree.
-
 thread flags:
   --pr <number>          Pull request whose existing comments to read
   --repository <name>    owner/repo; inferred from the git remote if absent
@@ -156,7 +150,8 @@ diff flags:
 
 symbols flags:
   --diff-file <path>     Unified diff whose changed symbols to inspect
-  --base <ref>           Search this committed tree instead of the working tree
+  --base <ref>           Search this committed tree, not the working tree
+                         (on --pr: refs.mergeBase)
   --out <path>           Write <path> or <dir>/symbols.json instead of stdout
 
 check-candidates:
@@ -167,7 +162,7 @@ check-candidates:
 
 record flags:
   --repository <name>    Repository the review belongs to
-  --base <ref>           Base ref reviewed against
+  --base <ref>           Base ref reviewed against (on --pr: refs.mergeBase)
   --head <sha>           Head commit reviewed
   --diff-file <path>     Diff the review was produced from (for the run hash)
   --files <path>         files.json from diff --out, carrying pull-request scope
@@ -243,8 +238,7 @@ validate-output flags:
 
 Exit codes: 0 compliant, 1 violations found, 2 bad invocation.
 
-Review Voice is normally driven by its Claude Code commands
-(/review-voice:review, /review-voice:init) rather than invoked directly.`;
+Normally driven by the /review-voice:* commands, not invoked directly.`;
 
 /** What each stdin-reading command expects, for the message a terminal gets. */
 const STDIN_INPUT: Record<string, string> = {
@@ -535,6 +529,7 @@ interface EmittedDiff {
   refs?: {
     base: { sha: string; available: boolean };
     head: { sha: string; available: boolean };
+    mergeBase: string | null;
   };
   prior?: PriorResolution;
 }
@@ -543,6 +538,8 @@ interface EmittedDiff {
 function diffSummary(result: EmittedDiff): {
   mode: EmittedDiff['mode'];
   base: string | null;
+  /** On `--pr`, where the branch left the base; see `refs.mergeBase`. */
+  mergeBase: string | null;
   head: string;
   pullNumber: number | null;
   scope: {
@@ -562,7 +559,11 @@ function diffSummary(result: EmittedDiff): {
   hunkFileCount: number;
   excludedFileCount: number;
   handEditSuspected: string[];
-  refs: { base: { sha: string; available: boolean }; head: { sha: string; available: boolean } } | null;
+  refs: {
+    base: { sha: string; available: boolean };
+    head: { sha: string; available: boolean };
+    mergeBase: string | null;
+  } | null;
   prior: { source: PriorResolution['source']; head: string | null; runId: string | null } | null;
 } {
   const scope = result.scope === undefined
@@ -583,6 +584,7 @@ function diffSummary(result: EmittedDiff): {
   return {
     mode: result.mode,
     base: result.base,
+    mergeBase: result.refs?.mergeBase ?? null,
     head: result.head,
     pullNumber: result.pullNumber ?? null,
     scope,
@@ -595,7 +597,10 @@ function diffSummary(result: EmittedDiff): {
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,
     handEditSuspected: (result.files ?? []).filter((file) => file.handEditSuspected === true).map((file) => file.path),
-    refs: result.refs === undefined ? null : { base: result.refs.base, head: result.refs.head },
+    refs:
+      result.refs === undefined
+        ? null
+        : { base: result.refs.base, head: result.refs.head, mergeBase: result.refs.mergeBase },
     prior:
       result.prior === undefined
         ? null
