@@ -522,28 +522,28 @@ function decide(input) {
   }
   return { event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false };
 }
-function plural(count2, word) {
-  return `${count2} ${word}${count2 === 1 ? "" : "s"}`;
+function plural(count3, word) {
+  return `${count3} ${word}${count3 === 1 ? "" : "s"}`;
 }
 function summaryLine(event, posted, cappedBy) {
-  const count2 = posted.length;
+  const count3 = posted.length;
   const highest = [...posted].map((finding) => finding.severity).sort((a, b) => RANK[a] - RANK[b])[0];
   if (cappedBy === "ci") {
-    return count2 === 0 ? "No problems found, but not approving while CI is red." : `${plural(count2, "nit")}; not approving while CI is red.`;
+    return count3 === 0 ? "No problems found, but not approving while CI is red." : `${plural(count3, "nit")}; not approving while CI is red.`;
   }
   if (cappedBy === "held") {
-    return count2 === 0 ? "Not approving yet." : `${plural(count2, "nit")}; not approving yet.`;
+    return count3 === 0 ? "Not approving yet." : `${plural(count3, "nit")}; not approving yet.`;
   }
   if (cappedBy === "complexity") {
-    return count2 === 0 ? "No problems found; leaving approval to a human reviewer." : `${plural(count2, "nit")}; leaving approval to a human reviewer.`;
+    return count3 === 0 ? "No problems found; leaving approval to a human reviewer." : `${plural(count3, "nit")}; leaving approval to a human reviewer.`;
   }
   if (event === "APPROVE") {
-    return count2 === 0 ? "No problems found." : `Approved, with ${plural(count2, "nit")}.`;
+    return count3 === 0 ? "No problems found." : `Approved, with ${plural(count3, "nit")}.`;
   }
   if (event === "REQUEST_CHANGES") {
-    return `Changes requested: ${plural(count2, "comment")}, the highest ${highest}.`;
+    return `Changes requested: ${plural(count3, "comment")}, the highest ${highest}.`;
   }
-  return `${plural(count2, "comment")}, the highest ${highest}.`;
+  return `${plural(count3, "comment")}, the highest ${highest}.`;
 }
 function inlineComment(finding) {
   return {
@@ -1043,9 +1043,9 @@ function hunkHeader(line) {
   if (match === null) return null;
   const oldCount = match[1] === void 0 ? 1 : Number(match[1]);
   const start = Number(match[2]);
-  const count2 = match[3] === void 0 ? 1 : Number(match[3]);
-  if (!Number.isSafeInteger(oldCount) || !Number.isSafeInteger(start) || !Number.isSafeInteger(count2) || oldCount < 0 || start < 0 || count2 < 0) return null;
-  return { oldCount, start, count: count2 };
+  const count3 = match[3] === void 0 ? 1 : Number(match[3]);
+  if (!Number.isSafeInteger(oldCount) || !Number.isSafeInteger(start) || !Number.isSafeInteger(count3) || oldCount < 0 || start < 0 || count3 < 0) return null;
+  return { oldCount, start, count: count3 };
 }
 function settleDeletion(hunk, nextRightLine) {
   if (!hunk.deleting) return;
@@ -1725,9 +1725,9 @@ var systemGit = {
     return runGit(["diff", "--name-only", "--no-renames", "-z", since, head], cwd).split("\0").filter((path) => path.length > 0);
   },
   commitCount(since, head, cwd) {
-    const count2 = Number(runGit(["rev-list", "--count", `${since}..${head}`], cwd).trim());
-    if (!Number.isSafeInteger(count2) || count2 < 0) throw new Error("git returned an invalid commit count");
-    return count2;
+    const count3 = Number(runGit(["rev-list", "--count", `${since}..${head}`], cwd).trim());
+    if (!Number.isSafeInteger(count3) || count3 < 0) throw new Error("git returned an invalid commit count");
+    return count3;
   },
   mergeBase(left, right, cwd) {
     const base = runGit(["merge-base", left, right], cwd).trim();
@@ -4115,8 +4115,8 @@ var NodeBase = class {
     };
     const res = toJS(this, "", ctx);
     if (typeof onAnchor === "function")
-      for (const { count: count2, res: res2 } of ctx.anchors.values())
-        onAnchor(res2, count2);
+      for (const { count: count3, res: res2 } of ctx.anchors.values())
+        onAnchor(res2, count3);
     return typeof reviver === "function" ? applyReviver(reviver, { "": res }, "", res) : res;
   }
 };
@@ -4213,13 +4213,13 @@ function getAliasCount(doc, node, anchors) {
     const anchor = anchors && source && anchors.get(source);
     return anchor ? anchor.count * anchor.aliasCount : 0;
   } else if (isCollection(node)) {
-    let count2 = 0;
+    let count3 = 0;
     for (const item of node.items) {
       const c = getAliasCount(doc, item, anchors);
-      if (c > count2)
-        count2 = c;
+      if (c > count3)
+        count3 = c;
     }
-    return count2;
+    return count3;
   } else if (isPair(node)) {
     const kc = getAliasCount(doc, node.key, anchors);
     const vc = getAliasCount(doc, node.value, anchors);
@@ -6768,8 +6768,8 @@ var Document = class _Document {
     };
     const res = toJS(this.contents, jsonArg ?? "", ctx);
     if (typeof onAnchor === "function")
-      for (const { count: count2, res: res2 } of ctx.anchors.values())
-        onAnchor(res2, count2);
+      for (const { count: count3, res: res2 } of ctx.anchors.values())
+        onAnchor(res2, count3);
     return typeof reviver === "function" ? applyReviver(reviver, { "": res }, "", res) : res;
   }
   /**
@@ -6840,12 +6840,12 @@ var prettifyError = (src, lc) => (error) => {
     lineStr = prev + lineStr;
   }
   if (/[^ ]/.test(lineStr)) {
-    let count2 = 1;
+    let count3 = 1;
     const end = error.linePos[1];
     if (end?.line === line && end.col > col) {
-      count2 = Math.max(1, Math.min(end.col - col, 80 - ci));
+      count3 = Math.max(1, Math.min(end.col - col, 80 - ci));
     }
-    const pointer = " ".repeat(ci) + "^".repeat(count2);
+    const pointer = " ".repeat(ci) + "^".repeat(count3);
     error.message += `:
 
 ${lineStr}
@@ -10731,22 +10731,22 @@ function selectEvents(events, options) {
   for (const event of sorted) {
     if (event.role === "owner") continue;
     if (selected.length >= options.target) break;
-    const count2 = perRepository[event.repository] ?? 0;
-    if (count2 >= cap) {
+    const count3 = perRepository[event.repository] ?? 0;
+    if (count3 >= cap) {
       deferred.push(event);
       continue;
     }
-    perRepository[event.repository] = count2 + 1;
+    perRepository[event.repository] = count3 + 1;
     selected.push(event);
   }
   const hardCap = Math.max(cap, Math.floor(options.target * Math.min(1, options.maxRepositoryShare * 1.5)));
   const overRepresented = /* @__PURE__ */ new Set();
   for (const event of deferred) {
     if (selected.length >= options.target) break;
-    const count2 = perRepository[event.repository] ?? 0;
-    if (count2 >= hardCap) continue;
-    if (count2 >= cap) overRepresented.add(event.repository);
-    perRepository[event.repository] = count2 + 1;
+    const count3 = perRepository[event.repository] ?? 0;
+    if (count3 >= hardCap) continue;
+    if (count3 >= cap) overRepresented.add(event.repository);
+    perRepository[event.repository] = count3 + 1;
     selected.push(event);
   }
   const shortfall = Math.max(0, options.target - selected.length);
@@ -11331,8 +11331,8 @@ function storeEvents(db, events) {
   }
   const redactionTotals = {};
   for (const event of events) {
-    for (const [label2, count2] of Object.entries(event.redactionCounts)) {
-      redactionTotals[label2] = (redactionTotals[label2] ?? 0) + count2;
+    for (const [label2, count3] of Object.entries(event.redactionCounts)) {
+      redactionTotals[label2] = (redactionTotals[label2] ?? 0) + count3;
     }
   }
   recordAudit(db, "corpus_ingested", null, {
@@ -11371,10 +11371,10 @@ function corpusCoverage(db, options = {}) {
   }
   const share = options.maxRepositoryShare;
   if (share !== void 0 && total > 0) {
-    for (const [repository, count2] of Object.entries(byRepository)) {
-      if (count2 / total > share) {
+    for (const [repository, count3] of Object.entries(byRepository)) {
+      if (count3 / total > share) {
         warnings.push(
-          `${repository} is ${Math.round(count2 / total * 100)}% of the corpus, above the configured ${Math.round(share * 100)}% share. Policy compiled from it will mostly describe that repository.`
+          `${repository} is ${Math.round(count3 / total * 100)}% of the corpus, above the configured ${Math.round(share * 100)}% share. Policy compiled from it will mostly describe that repository.`
         );
       }
     }
@@ -13304,6 +13304,51 @@ async function postReview(options) {
   }
 }
 
+// plugins/review-voice/src/store/effort.ts
+var SHALLOW_MIN_DIFF_LINES = 150;
+var SHALLOW_LINES_PER_CALL = 40;
+var count2 = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : void 0;
+function changedLineCount(diff) {
+  let lines = 0;
+  for (const raw of diff.split(/\r?\n/)) {
+    if (raw.startsWith("+++ ") || raw.startsWith("--- ")) continue;
+    if (raw.startsWith("+") || raw.startsWith("-")) lines += 1;
+  }
+  return lines;
+}
+function cleanStages(stages, diff) {
+  const diffLines = diff === null ? void 0 : changedLineCount(diff);
+  return stages.map((stage) => {
+    const toolCalls = count2(stage.toolCalls);
+    const tokens = count2(stage.tokens);
+    const filesRead = count2(stage.filesRead);
+    return {
+      name: stage.name,
+      seconds: stage.seconds,
+      ...toolCalls === void 0 ? {} : { toolCalls },
+      ...tokens === void 0 ? {} : { tokens },
+      ...filesRead === void 0 ? {} : { filesRead },
+      ...stage.name === "analyst" && diffLines !== void 0 ? { diffLines } : {}
+    };
+  });
+}
+function describeStage(stage) {
+  const parts = [`${Math.round(stage.seconds)}s`];
+  if (stage.toolCalls !== void 0) parts.push(`${stage.toolCalls} tool call${stage.toolCalls === 1 ? "" : "s"}`);
+  if (stage.filesRead !== void 0) parts.push(`${stage.filesRead} file${stage.filesRead === 1 ? "" : "s"} read`);
+  if (stage.tokens !== void 0) parts.push(`${stage.tokens} tokens`);
+  if (stage.diffLines !== void 0) parts.push(`on ${stage.diffLines} changed lines`);
+  return `${stage.name}: ${parts.join(", ")}`;
+}
+function shallowPassWarning(stages, findingCount) {
+  if (findingCount > 0) return null;
+  const analyst = stages.find((stage) => stage.name === "analyst");
+  if (analyst?.toolCalls === void 0 || analyst.diffLines === void 0) return null;
+  if (analyst.diffLines < SHALLOW_MIN_DIFF_LINES) return null;
+  if (analyst.toolCalls * SHALLOW_LINES_PER_CALL >= analyst.diffLines) return null;
+  return `The analyst made ${analyst.toolCalls} tool call(s) on ${analyst.diffLines} changed lines and found nothing. That is a shallow pass for this size; consider re-running it, on a stronger model if need be, before trusting a clean result.`;
+}
+
 // plugins/review-voice/src/cli.ts
 var USAGE = `review-voice <command>
 
@@ -13380,8 +13425,8 @@ record flags:
   --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
   --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
   --stages <path>        Per-stage timings as
-                         [{"name","seconds","toolCalls","tokens"}], so how long
-                         a review takes is a distribution rather than an anecdote
+                         [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean
+                         result from a shallow analyst pass is warned about
 
 carry flags:
   --from <run-id> --head <sha>   Findings of that run still valid at the new head
@@ -14829,6 +14874,7 @@ function recordCommand(argv) {
       stages = (Array.isArray(list) ? list : []).filter(
         (stage) => typeof stage === "object" && stage !== null && typeof stage.name === "string" && Number.isFinite(stage.seconds)
       );
+      stages = cleanStages(stages, diff === "" ? null : diff);
     } catch {
       console.error(`Cannot read stages from ${stagesFile}.`);
       return 2;
@@ -14869,7 +14915,8 @@ function recordCommand(argv) {
       carried,
       stages
     });
-    console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
+    const warning = shallowPassWarning(stages, findings.length);
+    console.log(JSON.stringify({ reviewRunId, findings, ...warning === null ? {} : { warnings: [warning] } }, null, 2));
     return 0;
   } catch (error) {
     if (error instanceof CarryMismatch) {
@@ -14960,6 +15007,9 @@ function explainCommand(argv) {
     if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
     const recordedScope = describeReviewScope(detail.scope);
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
+    for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
+    const shallow = shallowPassWarning(detail.stages, detail.findings.length);
+    if (shallow !== null) console.log(`Warning ${shallow}`);
     if (detail.complexity !== null) {
       console.log(
         detail.complexity.level === "high" ? `Complexity high - ${detail.complexity.reasons.join("; ")}` : "Complexity normal"

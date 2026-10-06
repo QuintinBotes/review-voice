@@ -131,6 +131,10 @@ export interface StageTiming {
   seconds: number;
   toolCalls?: number | undefined;
   tokens?: number | undefined;
+  /** Distinct files the stage read, as the stage itself counted them. */
+  filesRead?: number | undefined;
+  /** Added and removed lines of the diff the stage read; set on `analyst` at record time. */
+  diffLines?: number | undefined;
 }
 
 /**

@@ -97,6 +97,7 @@ import { extractAnchors } from './publish/anchors.ts';
 import { computeVerdict, postReview } from './publish/post.ts';
 import { ReviewWriter, WriteViolation } from './github/writer.ts';
 import { hashDiff } from './store/runs.ts';
+import { cleanStages, describeStage, shallowPassWarning } from './store/effort.ts';
 
 const USAGE = `review-voice <command>
 
@@ -173,8 +174,8 @@ record flags:
   --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
   --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
   --stages <path>        Per-stage timings as
-                         [{"name","seconds","toolCalls","tokens"}], so how long
-                         a review takes is a distribution rather than an anecdote
+                         [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean
+                         result from a shallow analyst pass is warned about
 
 carry flags:
   --from <run-id> --head <sha>   Findings of that run still valid at the new head
@@ -2056,6 +2057,7 @@ function recordCommand(argv: string[]): number {
           typeof (stage as StageTiming).name === 'string' &&
           Number.isFinite((stage as StageTiming).seconds),
       );
+      stages = cleanStages(stages, diff === '' ? null : diff);
     } catch {
       console.error(`Cannot read stages from ${stagesFile}.`);
       return 2;
@@ -2098,7 +2100,9 @@ function recordCommand(argv: string[]): number {
       carried,
       stages,
     });
-    console.log(JSON.stringify({ reviewRunId, findings }, null, 2));
+    // Local only: printed here and by `explain`, never part of what is posted.
+    const warning = shallowPassWarning(stages, findings.length);
+    console.log(JSON.stringify({ reviewRunId, findings, ...(warning === null ? {} : { warnings: [warning] }) }, null, 2));
     return 0;
   } catch (error) {
     if (error instanceof CarryMismatch) {
@@ -2234,6 +2238,9 @@ function explainCommand(argv: string[]): number {
     if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
     const recordedScope = describeReviewScope(detail.scope);
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
+    for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
+    const shallow = shallowPassWarning(detail.stages, detail.findings.length);
+    if (shallow !== null) console.log(`Warning ${shallow}`);
     if (detail.complexity !== null) {
       console.log(
         detail.complexity.level === 'high'

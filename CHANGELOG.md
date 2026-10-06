@@ -63,6 +63,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also caps the path lists in the scores it stores, with a `<name>Total` count
   beside each cut list, so a scores file cannot grow with the repository. See
   ADR 0009. (#7)
+- `record --stages` also takes `filesRead`, and `explain` shows each stage's
+  tool calls, files read and tokens against the size of the diff the analyst
+  read. A run with no findings from an analyst pass of fewer than one tool call
+  per 40 changed lines (on diffs of 150 lines or more) gets a warning in
+  `record`'s output and in `explain`; it is local and is never posted. (#41)
 
 ## [1.10.1] - 2026-10-05
 

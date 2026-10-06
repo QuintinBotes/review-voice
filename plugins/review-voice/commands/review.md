@@ -487,9 +487,13 @@ stray directory and another project's notes took the reviewed count from 11 to
   name and pull-request number; a short name matches nothing, and every later
   review silently reads the whole pull request again.
 
-  `--stages` takes `[{"name","seconds","toolCalls","tokens"}]`, one entry per
-  agent stage you ran. Write what you observed; omit a field you do not know
-  rather than estimating it. A review measured once took about twenty-five
+  `--stages` takes `[{"name","seconds","toolCalls","filesRead","tokens"}]`, one
+  entry per agent stage you ran. Write what you observed; omit a field you do
+  not know rather than estimating it. `toolCalls` and `filesRead` for the
+  `analyst` are how `explain` shows what it actually read, and `record` prints
+  a `warnings` entry when a run with no findings came from a very shallow
+  analyst pass for the size of the diff. Show that warning to the person, and
+  never post it or put it in the review. A review measured once took about twenty-five
   minutes against a sweep that runs every ten, and whether that holds is a
   distribution nobody has yet.
 
