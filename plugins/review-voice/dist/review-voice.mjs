@@ -15283,7 +15283,8 @@ var COMMAND_HELP = {
       "  --verification <path>  Verifier output of the earlier run (required)",
       "  --since <sha>          The head the earlier run reviewed (required)",
       "  --head <sha>           The new head (required)",
-      "  --diff-file <path>     Diff of the new head (required)",
+      "  --diff-file <path>     The whole pull request's diff at the new head, from",
+      "                         `diff --pr <number> --full` (required); an interdiff is refused",
       "  --out <dir>            Directory to write the carried files into (required)",
       "  --interdiff <dir>      The reviewed commits between the heads, merged in",
       "  --interdiff-candidates <path>     Candidates of those commits (with --interdiff)",
@@ -15291,7 +15292,8 @@ var COMMAND_HELP = {
       "  --held <path>          Held findings to move to the new head",
       "Reads: nothing on stdin.",
       "Writes: carried candidates, verification and carry.json under --out; a summary on stdout.",
-      "Exit codes: 0 ok, 2 bad invocation or unreadable input."
+      "Exit codes: 0 every candidate carried, 1 at least one was refused, 2 bad invocation,",
+      "  unreadable input or an interdiff --diff-file."
     )
   },
   feedback: {
@@ -17372,6 +17374,17 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   }
   return { candidates, verification: verification2, scope: scope.kind };
 }
+function partialDiffReason(diffFile) {
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync5(join6(dirname4(diffFile), "files.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  const scope = parseReviewScope(manifest["scope"]);
+  if (scope === null || scope.kind === "full") return null;
+  return `${diffFile} is the ${scope.kind} patch \`diff --pr\` wrote, not the whole pull request's diff. carry-candidates checks each anchor against the whole pull request: run \`diff --pr <number> --full --out <dir>\` and pass its diff.patch.`;
+}
 function carryCandidatesCommand(argv) {
   const candidatesFile = flag(argv, "--candidates");
   const verificationFile = flag(argv, "--verification");
@@ -17409,6 +17422,8 @@ function carryCandidatesCommand(argv) {
     const problem = verificationProblem(verificationIn.list);
     if (problem !== null) throw new Error(`malformed verification - ${problem}`);
     hunks = parseHunks(readFileSync5(diffFile, "utf8"));
+    const partial = partialDiffReason(diffFile);
+    if (partial !== null) throw new Error(partial);
     const heldFile = flag(argv, "--held");
     if (heldFile !== null) {
       heldIn = listIn(JSON.parse(readFileSync5(heldFile, "utf8")), ["held"]);
@@ -17459,7 +17474,11 @@ function carryCandidatesCommand(argv) {
   }
   const refused = [
     ...unverified.map((c) => ({ candidateId: c.candidateId, path: c.path, line: c.line, reason: "no verification for it" })),
-    ...result.refused
+    // A file the diff does not touch is most often a diff that is not the
+    // whole pull request's, so the refusal says which one it has to be.
+    ...result.refused.map(
+      (r) => r.reason.includes("in a file the diff does not touch") ? { ...r, reason: `${r.reason.replace(/\.$/, "")}; --diff-file must be the whole pull request's diff (\`diff --pr <number> --full\`), not an interdiff` } : r
+    )
   ];
   const carriedById = new Map(result.carried.map((c) => [c.candidateId, c]));
   const carriedCandidates = candidatesIn.list.flatMap((raw, index) => {

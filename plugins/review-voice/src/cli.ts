@@ -2735,6 +2735,31 @@ function readInterdiffReview(
 }
 
 /**
+ * Why `--diff-file` is not the whole pull request's diff, read from the
+ * files.json `diff --out` wrote beside it; null when it is, or nothing says.
+ *
+ * `diff --pr` writes an interdiff by default after an earlier review, and an
+ * anchor can only be checked against the whole pull request: a file the
+ * interdiff leaves out is unchanged since the review, not outside the pull
+ * request, so every candidate in it would be refused (#67).
+ */
+function partialDiffReason(diffFile: string): string | null {
+  let manifest: Record<string, unknown>;
+  try {
+    manifest = JSON.parse(readFileSync(join(dirname(diffFile), 'files.json'), 'utf8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const scope = parseReviewScope(manifest['scope']);
+  if (scope === null || scope.kind === 'full') return null;
+  return (
+    `${diffFile} is the ${scope.kind} patch \`diff --pr\` wrote, not the whole pull request's diff. ` +
+    'carry-candidates checks each anchor against the whole pull request: ' +
+    'run `diff --pr <number> --full --out <dir>` and pass its diff.patch.'
+  );
+}
+
+/**
  * Carries verified candidates to a head the author pushed mid-review.
  *
  * Posting is refused once the head moves, and the alternative was copying
@@ -2783,6 +2808,8 @@ function carryCandidatesCommand(argv: string[]): number {
     const problem = verificationProblem(verificationIn.list);
     if (problem !== null) throw new Error(`malformed verification - ${problem}`);
     hunks = parseHunks(readFileSync(diffFile!, 'utf8'));
+    const partial = partialDiffReason(diffFile!);
+    if (partial !== null) throw new Error(partial);
     const heldFile = flag(argv, '--held');
     if (heldFile !== null) {
       heldIn = listIn(JSON.parse(readFileSync(heldFile, 'utf8')), ['held']);
@@ -2843,7 +2870,13 @@ function carryCandidatesCommand(argv: string[]): number {
   }
   const refused = [
     ...unverified.map((c) => ({ candidateId: c.candidateId, path: c.path, line: c.line, reason: 'no verification for it' })),
-    ...result.refused,
+    // A file the diff does not touch is most often a diff that is not the
+    // whole pull request's, so the refusal says which one it has to be.
+    ...result.refused.map((r) =>
+      r.reason.includes('in a file the diff does not touch')
+        ? { ...r, reason: `${r.reason.replace(/\.$/, '')}; --diff-file must be the whole pull request's diff (\`diff --pr <number> --full\`), not an interdiff` }
+        : r,
+    ),
   ];
 
   // The analyst's own entries, moved, in the spelling the file already used.

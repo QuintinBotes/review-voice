@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `carry-candidates` refuses an interdiff as `--diff-file` up front (exit 2),
+  saying to pass the whole pull request's diff from `diff --pr <number>
+  --full`, instead of refusing every candidate in a file the interdiff leaves
+  out. A candidate refused for sitting in a file the diff does not touch says
+  the same, and `carry-candidates --help` states it and lists exit 1. (#67)
+
 ## [1.12.0] - 2026-10-06
 
 ### Added
