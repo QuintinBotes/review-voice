@@ -76,6 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notes and ADR 0016. The verifier may report `premises_verified` for a
   question, and `false` keeps it from being asked. The editor contract states
   that a `question` comes after every `nit`. (#40)
+- `reconcile` reads the evidence-verifier's confidence as `score` does,
+  falling back to the `evidence_quality` tier when there is no number, so a
+  trace reported by tier alone can be disputed and a second-pass downgrade of
+  it holds. (#31)
 
 ## [1.10.1] - 2026-10-05
 

@@ -1,6 +1,7 @@
 import type { Precedent } from '../retrieval/retrieve.ts';
 import type { ReachCheck } from './reach.ts';
 import { deriveSeverity, type DerivedSeverity } from './severity.ts';
+import { ESCALATION_CONFIDENCE, verifierConfidence } from './confidence.ts';
 
 /**
  * A candidate as the schema publishes it. `schemas/candidate.schema.json` is
@@ -143,9 +144,6 @@ export interface Verification {
   premisesVerified?: boolean | undefined;
 }
 
-/** Used when the verifier reports a tier rather than a number. */
-const QUALITY_CONFIDENCE: Record<string, number> = { high: 0.9, medium: 0.75, low: 0.5 };
-
 /** Weakest to strongest, the order a tier can be escalated along. */
 const TIER_ORDER = ['nit', 'minor', 'important', 'blocking'] as const;
 
@@ -157,8 +155,7 @@ const BOUNDARY_CATEGORIES: ReadonlySet<string> = new Set([
   'authentication',
 ]);
 
-/** The verifier confidence an escalation above the requested tier must clear. */
-export const ESCALATION_CONFIDENCE = 0.85;
+export { ESCALATION_CONFIDENCE, verifierConfidence };
 
 const INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
 
@@ -213,9 +210,7 @@ export function boundSeverityByEvidence(
   const got = TIER_ORDER.indexOf(result.severity as (typeof TIER_ORDER)[number]);
   if (asked === -1 || got === -1 || got <= asked) return result;
 
-  const confidence =
-    verification?.technicalConfidence ??
-    (verification?.evidenceQuality === undefined ? null : (QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null));
+  const confidence = verifierConfidence(verification?.technicalConfidence, verification?.evidenceQuality);
   // Without this, a tier the second pass lowered came straight back: the
   // trace it disputed still cleared the bar below.
   if (candidate.impactDisputed === true) {
@@ -1054,10 +1049,7 @@ export function scoreCandidate(
   const verifiedConfidence =
     verification === undefined
       ? null
-      : (verification.technicalConfidence ??
-        (verification.evidenceQuality === undefined
-          ? null
-          : (QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null)));
+      : verifierConfidence(verification.technicalConfidence, verification.evidenceQuality);
 
   // The verifier is the only stage that checks the claim against the
   // repository, so where the two disagree it is the one with evidence.

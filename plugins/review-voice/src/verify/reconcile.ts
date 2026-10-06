@@ -1,3 +1,4 @@
+import { ESCALATION_CONFIDENCE, verifierConfidence } from '../scoring/confidence.ts';
 import type { FindingVerdict } from './types.ts';
 
 /**
@@ -12,8 +13,11 @@ import type { FindingVerdict } from './types.ts';
  * the code. See docs/adr/0014-verifier-tie-break.md.
  */
 
-/** The evidence-verifier confidence a traced impact needs to be worth defending. */
-export const DISPUTE_CONFIDENCE = 0.85;
+/**
+ * The evidence-verifier confidence a traced impact needs to be worth defending:
+ * the bar at which scoring would escalate on it.
+ */
+export const DISPUTE_CONFIDENCE = ESCALATION_CONFIDENCE;
 
 export type RawCandidate = Record<string, unknown>;
 
@@ -135,8 +139,13 @@ export function parseTieBreaks(parsed: unknown): TieBreak[] {
 function tracedConfidently(verification: Record<string, unknown> | undefined): boolean {
   if (verification === undefined) return false;
   const traced = verification['impact_traced'] ?? verification['impactTraced'];
-  const confidence = verification['technical_confidence'] ?? verification['technicalConfidence'];
-  return traced === true && typeof confidence === 'number' && confidence >= DISPUTE_CONFIDENCE;
+  // Read exactly as scoring reads it, quality-tier fallback included, so a
+  // trace scoring would escalate on is always one a second pass can dispute.
+  const confidence = verifierConfidence(
+    verification['technical_confidence'] ?? verification['technicalConfidence'],
+    verification['evidence_quality'] ?? verification['evidenceQuality'],
+  );
+  return traced === true && confidence !== null && confidence >= DISPUTE_CONFIDENCE;
 }
 
 export function reconcile(

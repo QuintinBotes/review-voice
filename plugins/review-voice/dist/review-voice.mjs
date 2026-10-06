@@ -10311,8 +10311,17 @@ ${result.stderr}`);
   return { enabled: true, verifier: name, verdicts, didNotRun: [...new Set(didNotRun)] };
 }
 
+// plugins/review-voice/src/scoring/confidence.ts
+var QUALITY_CONFIDENCE = { high: 0.9, medium: 0.75, low: 0.5 };
+var ESCALATION_CONFIDENCE = 0.85;
+function verifierConfidence(technicalConfidence, evidenceQuality2) {
+  if (typeof technicalConfidence === "number" && Number.isFinite(technicalConfidence)) return technicalConfidence;
+  if (typeof evidenceQuality2 !== "string" || !Object.hasOwn(QUALITY_CONFIDENCE, evidenceQuality2)) return null;
+  return QUALITY_CONFIDENCE[evidenceQuality2] ?? null;
+}
+
 // plugins/review-voice/src/verify/reconcile.ts
-var DISPUTE_CONFIDENCE = 0.85;
+var DISPUTE_CONFIDENCE = ESCALATION_CONFIDENCE;
 var ReconcileInputError = class extends Error {
 };
 function candidateIdOf(raw) {
@@ -10360,8 +10369,11 @@ function parseTieBreaks(parsed) {
 function tracedConfidently(verification2) {
   if (verification2 === void 0) return false;
   const traced = verification2["impact_traced"] ?? verification2["impactTraced"];
-  const confidence = verification2["technical_confidence"] ?? verification2["technicalConfidence"];
-  return traced === true && typeof confidence === "number" && confidence >= DISPUTE_CONFIDENCE;
+  const confidence = verifierConfidence(
+    verification2["technical_confidence"] ?? verification2["technicalConfidence"],
+    verification2["evidence_quality"] ?? verification2["evidenceQuality"]
+  );
+  return traced === true && confidence !== null && confidence >= DISPUTE_CONFIDENCE;
 }
 function reconcile(candidates, verifications, secondPass, tieBreaks) {
   const notes = [];
@@ -11819,7 +11831,6 @@ var CONTEXT_KINDS = ["blocking", "cosmetic"];
 function blockingContext(entries) {
   return (entries ?? []).filter((entry) => typeof entry === "string" || entry.kind !== "cosmetic").map((entry) => typeof entry === "string" ? entry : entry.context);
 }
-var QUALITY_CONFIDENCE = { high: 0.9, medium: 0.75, low: 0.5 };
 var TIER_ORDER = ["nit", "minor", "important", "blocking"];
 var BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
   "security",
@@ -11827,7 +11838,6 @@ var BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
   "authorization",
   "authentication"
 ]);
-var ESCALATION_CONFIDENCE = 0.85;
 var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
 function isInterrogativeClaim(claim) {
   const text = claim.trim();
@@ -11848,7 +11858,7 @@ function boundSeverityByEvidence(derived, candidate, verification2) {
   const asked = TIER_ORDER.indexOf(candidate.severity);
   const got = TIER_ORDER.indexOf(result.severity);
   if (asked === -1 || got === -1 || got <= asked) return result;
-  const confidence = verification2?.technicalConfidence ?? (verification2?.evidenceQuality === void 0 ? null : QUALITY_CONFIDENCE[verification2.evidenceQuality] ?? null);
+  const confidence = verifierConfidence(verification2?.technicalConfidence, verification2?.evidenceQuality);
   if (candidate.impactDisputed === true) {
     return {
       ...result,
@@ -12171,7 +12181,7 @@ function renderFix(candidate, verification2, thresholds) {
 }
 function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2) {
   const analystConfidence = candidate.technicalConfidence;
-  const verifiedConfidence = verification2 === void 0 ? null : verification2.technicalConfidence ?? (verification2.evidenceQuality === void 0 ? null : QUALITY_CONFIDENCE[verification2.evidenceQuality] ?? null);
+  const verifiedConfidence = verification2 === void 0 ? null : verifierConfidence(verification2.technicalConfidence, verification2.evidenceQuality);
   let confidence = verifiedConfidence ?? analystConfidence;
   let confidenceSource = verifiedConfidence === null ? "analyst" : "verifier";
   const missingContext = blockingContext(verification2?.requiredContextMissing).length > 0;
