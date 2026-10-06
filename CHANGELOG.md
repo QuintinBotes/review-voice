@@ -5,17 +5,16 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.12.0] - 2026-10-06
+
+### Added
+
+- `diff --pr` reports `suspectedWrongBase` in its summary when most of a pull
+  request's commits are already on the repository's default branch, which means
+  a branch cut from it was opened against a release branch (#65). `review.md`
+  raises that one point instead of reviewing the whole patch.
 
 ### Fixed
-
-- `carry` (and `record --carried-from`) now checks that the working directory
-  is a clone of the run's repository before reading commits, and says so when
-  it is not: it names the run's repository, the clone it found and its path.
-  A commit that is not readable names the path it was looked up in, with a
-  hint to fetch it or run from the right clone. `carry` takes `--repository
-  <owner/repo>` for a run that recorded none, and `carry --help` states the
-  working-directory requirement. (#58)
 
 - `carry --thread <thread.json>` holds back a finding the author already
   answered on the pull request: its posted comment's thread is resolved, or the
@@ -29,15 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--thread`. Without `--thread`, `carry` on a pull request run says it did not
   check. (#57)
 
+- `carry` (and `record --carried-from`) now checks that the working directory
+  is a clone of the run's repository before reading commits, and says so when
+  it is not: it names the run's repository, the clone it found and its path.
+  A commit that is not readable names the path it was looked up in, with a
+  hint to fetch it or run from the right clone. `carry` takes `--repository
+  <owner/repo>` for a run that recorded none, and `carry --help` states the
+  working-directory requirement. (#58)
+
 - `score` output names each candidate `candidate_id` in `scores`, `eligible`,
   `belowGate` and `unverified`, the spelling candidates, verification and
   `check-candidates` use, so a pipeline joining them on one key no longer gets
   `null` for every score entry. (#59)
-
-### Deprecated
-
-- `candidateId` in `score` output. It is still written beside `candidate_id`
-  and will be removed in a later release; read `candidate_id`. (#59)
 
 - `diff --pr` after a conflicting base merge no longer re-reads a conflicted
   file's hunks when the file is the same at the previous and the new head: it
@@ -46,12 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolution touched that also changed since the previous head; the base's
   clean changes in the same file no longer bring back reviewed hunks. (#63)
 
-### Added
+### Deprecated
 
-- `diff --pr` reports `suspectedWrongBase` in its summary when most of a pull
-  request's commits are already on the repository's default branch, which means
-  a branch cut from it was opened against a release branch (#65). `review.md`
-  raises that one point instead of reviewing the whole patch.
+- `candidateId` in `score` output. It is still written beside `candidate_id`
+  and will be removed in a later release; read `candidate_id`. (#59)
 
 ## [1.11.1] - 2026-10-06
 
@@ -1534,7 +1534,8 @@ no data because nothing has been labelled, and `docs/EVALUATION.md` says so.
   vulnerability reporting, and the repository security posture documented in
   `docs/REPO-SECURITY.md`.
 
-[1.11.1]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.12.0]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.11.1]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.11.1
 [1.11.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.11.0
 [1.10.1]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.10.1
 [1.10.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.10.0
