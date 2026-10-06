@@ -30,6 +30,8 @@ export interface RawCandidate {
   /** Set by `reconcile`; see `Candidate.impactDisputed`. */
   impact_disputed?: unknown;
   impactDisputed?: unknown;
+  /** Set by `check-candidates --thread`; see `Candidate.ownComment`. */
+  possibleRepeatOf?: unknown;
 }
 
 /** The one anchor a candidate may declare; see `classifyStaleConsumer`. */
@@ -60,6 +62,27 @@ export interface Candidate {
    * above the one the second pass left; see docs/adr/0014.
    */
   impactDisputed?: true | undefined;
+  /**
+   * The owner's own comment `check-candidates --thread` linked this candidate
+   * to. Only that kind is kept: it is the one a follow-up may be posted for.
+   */
+  ownComment?: PriorComment | undefined;
+}
+
+/** Where an earlier comment on the pull request sits, and who wrote it. */
+export interface PriorComment {
+  author: string;
+  path: string;
+  line: number;
+}
+
+/**
+ * The verifier's account of an earlier comment of the owner's that the author
+ * only partly addressed: what is still open, and what was fixed.
+ */
+export interface PartlyAddressed {
+  remaining: string[];
+  addressed: string[];
 }
 
 export const FIX_VERDICTS = ['verified', 'partial', 'refuted', 'absent'] as const;
@@ -97,6 +120,11 @@ export interface Verification {
    * the verifier observed, not how widely the touched file is referenced.
    */
   impactTraced?: boolean | undefined;
+  /**
+   * The candidate restates the part of the owner's earlier comment that is
+   * still open. Honoured only for a candidate linked to that comment.
+   */
+  partlyAddressed?: PartlyAddressed | undefined;
 }
 
 /** Used when the verifier reports a tier rather than a number. */
@@ -393,6 +421,8 @@ export interface ThreadComment {
   body: string;
   /** Optional so a thread file written before the field existed still reads. */
   kind?: 'review-comment' | 'review-body' | 'conversation' | 'description';
+  /** The code under an inline comment changed since it was written. */
+  outdated?: boolean;
 }
 
 /**
@@ -452,22 +482,85 @@ const POSSIBLE_REPEAT_LINE_WINDOW = 5;
  * An anchored comment near this candidate that shares some of its wording but
  * not enough for `alreadySaidOnThread` to drop it. The candidate is kept and
  * the verifier is pointed at the comment, so it can reject a real repeat first.
+ *
+ * The best match is chosen, not the first: a comment `preferred` says is the
+ * owner's own comes first, then the higher overlap, then the nearer line. With
+ * two of the owner's comments in reach, linking the looser one let a candidate
+ * restating the other verbatim pass as a follow-up.
  */
 export function possiblySaidOnThread(
   candidate: Candidate,
   thread: ThreadComment[],
+  preferred: (comment: ThreadComment) => boolean = () => false,
 ): ThreadComment | null {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
   if (mine.size === 0) return null;
 
+  let best: { comment: ThreadComment; rank: [number, number, number] } | null = null;
   for (const comment of thread) {
     if (comment.path === null || comment.line === null) continue;
     if (comment.path !== candidate.path) continue;
-    if (Math.abs(comment.line - candidate.line) > POSSIBLE_REPEAT_LINE_WINDOW) continue;
-    if (overlap(mine, significantWords(comment.body)) >= POSSIBLE_REPEAT_OVERLAP) return comment;
+    const distance = Math.abs(comment.line - candidate.line);
+    if (distance > POSSIBLE_REPEAT_LINE_WINDOW) continue;
+    const share = overlap(mine, significantWords(comment.body));
+    if (share < POSSIBLE_REPEAT_OVERLAP) continue;
+    const rank: [number, number, number] = [preferred(comment) ? 1 : 0, share, -distance];
+    if (best === null || compareRank(rank, best.rank) > 0) best = { comment, rank };
   }
 
-  return null;
+  return best?.comment ?? null;
+}
+
+function compareRank(a: [number, number, number], b: [number, number, number]): number {
+  for (let i = 0; i < a.length; i += 1) {
+    const d = (a[i] as number) - (b[i] as number);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/**
+ * The bar for a same-file comment at any distance. Only the file agrees, so the
+ * wording carries what a nearby line no longer does: this is the overlap an
+ * anchored repeat is dropped at, but here it only flags.
+ */
+const SAME_FILE_REPEAT_OVERLAP = 0.4;
+
+/**
+ * An anchored comment anywhere in this candidate's file that makes much the
+ * same claim, however far its line is from the candidate's, whoever wrote it.
+ *
+ * Line proximity missed two real repeats. The owner's comment sat at line
+ * 1312, the author inserted a test above it, GitHub then reported it at 1436,
+ * and the same coverage point came back on another line of the file. And
+ * another reviewer's concern about one query, marked fixed, came back about a
+ * different query 15 lines away. The candidate is kept; the verifier judges
+ * whether it adds anything, or whether the earlier fix covered it.
+ *
+ * `accept` narrows which comments count. The best overlap wins, then the
+ * nearest line.
+ */
+export function possiblyRaisedInFile(
+  candidate: Candidate,
+  thread: ThreadComment[],
+  accept: (comment: ThreadComment) => boolean = () => true,
+): ThreadComment | null {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+
+  let best: { comment: ThreadComment; share: number; distance: number } | null = null;
+  for (const comment of thread) {
+    if (comment.path === null || comment.line === null) continue;
+    if (comment.path !== candidate.path || !accept(comment)) continue;
+    const share = overlap(mine, significantWords(comment.body));
+    if (share < SAME_FILE_REPEAT_OVERLAP) continue;
+    const distance = Math.abs(comment.line - candidate.line);
+    if (best === null || share > best.share || (share === best.share && distance < best.distance)) {
+      best = { comment, share, distance };
+    }
+  }
+
+  return best?.comment ?? null;
 }
 
 /** Roughly what a verifier needs to judge a repeat without the whole body. */
@@ -613,6 +706,7 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     }
     causedBy = { path: rawCause.path, line: rawCause.line as number };
   }
+  const ownComment = ownCommentOf(raw.possibleRepeatOf);
   const impactDisputed = raw.impact_disputed !== undefined ? raw.impact_disputed : raw.impactDisputed;
   if (impactDisputed !== undefined && typeof impactDisputed !== 'boolean') {
     throw new MalformedCandidate(`${candidateId}: impact_disputed must be true or false when supplied`);
@@ -636,7 +730,63 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     // Spread only when declared, so an ordinary candidate keeps its shape.
     ...(raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {}),
     ...(impactDisputed === true ? { impactDisputed: true as const } : {}),
+    ...(ownComment === null ? {} : { ownComment }),
   };
+}
+
+/**
+ * The owner's comment a candidate was linked to, or null. Any other kind of
+ * `possibleRepeatOf`, or one in another shape, is not an error: it only means
+ * there is no own comment to follow up.
+ */
+function ownCommentOf(value: unknown): PriorComment | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (v['kind'] !== 'own-comment') return null;
+  if (typeof v['author'] !== 'string' || v['author'].length === 0) return null;
+  if (typeof v['path'] !== 'string' || v['path'].length === 0) return null;
+  if (!Number.isInteger(v['line']) || (v['line'] as number) < 1) return null;
+  return { author: v['author'], path: v['path'], line: v['line'] as number };
+}
+
+/** Null when the verifier's `partly_addressed` is well formed, else what is wrong. */
+export function partlyAddressedProblem(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return 'must be {"remaining": [...], "addressed": [...]}';
+  }
+  const v = value as Record<string, unknown>;
+  for (const key of ['remaining', 'addressed'] as const) {
+    const list = v[key];
+    // Both non-empty: with nothing fixed it is not partly addressed, and with
+    // nothing left it is not open.
+    if (!Array.isArray(list) || list.length === 0 || !list.every((item) => typeof item === 'string' && item.trim().length > 0)) {
+      return `${key} must be a non-empty array of non-empty strings`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether this candidate is a follow-up on the owner's own comment: the
+ * verifier said part of that comment is still open, `check-candidates` linked
+ * the candidate to it, and the comment is on the thread being checked.
+ */
+export function followUpOf(
+  candidate: Candidate,
+  verification: Verification | undefined,
+  thread: ThreadComment[],
+  owner: string | null,
+): (PriorComment & PartlyAddressed) | null {
+  const prior = candidate.ownComment;
+  const partly = verification?.partlyAddressed;
+  if (prior === undefined || partly === undefined) return null;
+  // The kind is a label on the candidate, so the author is checked again: a
+  // mislabelled link must not exempt someone else's comment.
+  if (owner === null || prior.author.toLowerCase() !== owner.toLowerCase()) return null;
+  const onThread = thread.some(
+    (comment) => comment.author === prior.author && comment.path === prior.path && comment.line === prior.line,
+  );
+  return onThread ? { ...prior, remaining: partly.remaining, addressed: partly.addressed } : null;
 }
 
 const WORDS = /[^\p{L}\p{N}]+/u;

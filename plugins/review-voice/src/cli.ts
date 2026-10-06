@@ -34,6 +34,7 @@ import {
   runDetail,
   heldProblem,
   CarryMismatch,
+  type CandidateHint,
   type HeldFinding,
   type StageTiming,
 } from './store/runs.ts';
@@ -70,7 +71,10 @@ import {
   applyQuestionCap,
   alreadySaidOnThread,
   possiblySaidOnThread,
+  possiblyRaisedInFile,
   possiblyRepeatsDescription,
+  followUpOf,
+  partlyAddressedProblem,
   normaliseCandidate,
   isFixVerdict,
   editorFix,
@@ -158,8 +162,8 @@ symbols flags:
 
 check-candidates:
   --diff-file <path>     Require anchors on changed lines
-  --thread <path>        Drop candidates the thread already states; flag
-                         description overlaps for the verifier
+  --thread <path>        Drop thread repeats; flag near ones for the verifier
+  --owner <login>        Owner for --thread; default from config
   --held-from <run-id>   Drop repeats of that run's held findings (--head)
 
 record flags:
@@ -1319,6 +1323,8 @@ function scoreCommand(argv: string[]): number {
           impactTraced: typeof impactTraced === 'boolean' ? impactTraced : undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
             raw['requiredContextMissing']) as string[] | undefined,
+          // Already checked by `verificationProblem`.
+          partlyAddressed: (raw['partly_addressed'] ?? raw['partlyAddressed']) as Verification['partlyAddressed'],
         });
       }
     } catch (error) {
@@ -1434,6 +1440,10 @@ function scoreCommand(argv: string[]): number {
     }
   }
 
+  // Whose comment a partly-addressed follow-up may set aside: the owner's,
+  // checked here rather than taken from the candidate's own label.
+  const owner = flag(argv, '--owner') ?? configuredOwner();
+
   const pullFlag = argv.includes('--exclude-pull') ? numericFlag(argv, '--exclude-pull', 0) : null;
   if (argv.includes('--exclude-pull') && pullFlag === null) {
     console.error('--exclude-pull needs a pull request number.');
@@ -1444,6 +1454,7 @@ function scoreCommand(argv: string[]): number {
   try {
     const kept: Candidate[] = [];
     const results: (ScoreBreakdown & { precedents: Precedent[]; absenceCheck?: ExistenceCheck })[] = [];
+    const followUps = new Map<string, NonNullable<ReturnType<typeof followUpOf>>>();
 
     // Scored in order so novelty is measured against what has already been
     // kept, not against every candidate including worse duplicates.
@@ -1502,7 +1513,28 @@ function scoreCommand(argv: string[]): number {
       // A point already on the page is not worth making again, whoever made
       // it. On the first posted batch this removed more candidates than every
       // other stage combined, because those repositories already run a bot.
-      const echoed = breakdown.eligible ? alreadySaidOnThread(candidate, thread) : null;
+      //
+      // The exception is a follow-up on the owner's own comment that the author
+      // only partly addressed: it restates that comment by design, so the
+      // owner's own inline comments are not held against it. Anyone else's are.
+      const followUp = followUpOf(candidate, verifications.get(candidate.candidateId), thread, owner);
+      if (followUp !== null) followUps.set(candidate.candidateId, followUp);
+      else if (verifications.get(candidate.candidateId)?.partlyAddressed !== undefined) {
+        console.error(
+          `Warning: ${candidate.candidateId} is marked partly_addressed but is not linked to a comment of the ` +
+            'owner on this thread. Scored as an ordinary finding.',
+        );
+      }
+      // Only the linked comment is set aside. Any other comment, the owner's
+      // own included, still rejects a candidate that repeats it.
+      const echoThread =
+        followUp === null
+          ? thread
+          : thread.filter(
+              (comment) =>
+                !(comment.author === followUp.author && comment.path === followUp.path && comment.line === followUp.line),
+            );
+      const echoed = breakdown.eligible ? alreadySaidOnThread(candidate, echoThread) : null;
       if (echoed !== null) {
         breakdown.eligible = false;
         breakdown.rejectedBecause =
@@ -1637,6 +1669,11 @@ function scoreCommand(argv: string[]): number {
               // The editor names the cause in the prose, since the consumer's
               // line is what the finding's location shows.
               ...(c.anchor === 'stale-consumer' ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {}),
+              // A follow-up states only what remains of the owner's earlier
+              // comment, as an ordinary finding; `record` stores that state.
+              ...(followUps.has(c.candidateId)
+                ? { possibleRepeatOf: { kind: 'own-comment', status: 'partly-addressed', ...followUps.get(c.candidateId) } }
+                : {}),
             };
           }),
           belowGate,
@@ -1975,12 +2012,12 @@ function recordCommand(argv: string[]): number {
   // Categories cannot be recovered from the rendered output - the contract
   // permits no text beyond the finding - so they arrive alongside it.
   const candidatesFile = flag(argv, '--candidates');
-  let candidates: { path: string; line: number; category?: string }[] = [];
+  let candidates: CandidateHint[] = [];
   if (candidatesFile !== null) {
     try {
       const parsed = JSON.parse(readFileSync(candidatesFile, 'utf8')) as
-        | { candidates?: { path: string; line: number; category?: string }[] }
-        | { path: string; line: number; category?: string }[];
+        | { candidates?: CandidateHint[] }
+        | CandidateHint[];
       candidates = Array.isArray(parsed) ? parsed : (parsed.candidates ?? []);
     } catch {
       console.error(`Cannot read candidates from ${candidatesFile}.`);
@@ -2274,6 +2311,13 @@ function explainCommand(argv: string[]): number {
       if (finding.carriedFrom !== undefined) {
         console.log(`  carried from      ${finding.carriedFrom.findingId} of run ${finding.carriedFrom.runId}`);
       }
+      if (finding.partlyAddressed !== undefined) {
+        const { prior, remaining, addressed } = finding.partlyAddressed;
+        console.log(
+          `  partly addressed  ${prior.author} at ${prior.path}:${prior.line}; ` +
+            `${remaining.length} of ${remaining.length + addressed.length} still open: ${remaining.join('; ')}`,
+        );
+      }
       console.log(`  category          ${finding.category ?? 'not recorded'}`);
       if (score?.technicalConfidence !== undefined) {
         console.log(`  technical         ${score.technicalConfidence.toFixed(2)}`);
@@ -2465,6 +2509,9 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     if (missing !== undefined && !(Array.isArray(missing) && missing.every((item) => typeof item === 'string'))) {
       return `${who}: required_context_missing must be an array of strings.`;
     }
+    const partly = entry['partly_addressed'] ?? entry['partlyAddressed'];
+    const partlyProblem = partly === undefined ? null : partlyAddressedProblem(partly);
+    if (partlyProblem !== null) return `${who}: partly_addressed ${partlyProblem}.`;
   }
   return null;
 }
@@ -2542,6 +2589,15 @@ function matchHeld(candidate: Candidate, held: CarriedHeld[]): { entry: CarriedH
     found ??= { entry, drop };
   }
   return found;
+}
+
+/** The configured owner reviewer, or null outside a configured repository. */
+function configuredOwner(): string | null {
+  try {
+    return loadConfig(repositoryRoot(process.cwd())).ownerReviewer;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -2646,11 +2702,23 @@ function checkCandidatesCommand(argv: string[]): number {
 
     const held = heldFrom === null || headSha === null ? [] : carriedHeldFindings(heldFrom, headSha);
 
+    // The owner's own comments are told apart so the verifier knows whose point
+    // it would be repeating. Logins compare without case, as GitHub's do.
+    const owner = argv.includes('--thread') ? (flag(argv, '--owner') ?? configuredOwner())?.toLowerCase() ?? null : null;
+    const isOwn = (comment: { author: string }): boolean => owner !== null && comment.author.toLowerCase() === owner;
+
+    // The owner's own inline comments are never a reason to drop here. A
+    // candidate that restates one may be what the author left open of it, and
+    // only the verifier, reading the code, can tell that from a plain repeat;
+    // dropping it lost the open part. It is flagged below instead, and `score`
+    // still drops it unless the verifier found part of the comment open.
+    const droppable = thread.filter((comment) => !(isOwn(comment) && comment.path !== null && comment.line !== null));
+
     const kept: unknown[] = [];
     const droppedAsRepeat: unknown[] = [];
     const droppedAsHeld: unknown[] = [];
     candidates.forEach((candidate, index) => {
-      const repeat = alreadySaidOnThread(candidate, thread);
+      const repeat = alreadySaidOnThread(candidate, droppable);
       if (repeat !== null) {
         droppedAsRepeat.push({
           candidateId: candidate.candidateId,
@@ -2663,7 +2731,9 @@ function checkCandidatesCommand(argv: string[]): number {
         });
         return;
       }
-      const original = raw[index] as Record<string, unknown>;
+      // Only this command sets `possibleRepeatOf`; one arriving from the
+      // analyst is not evidence of anything, and `score` trusts the own-comment kind.
+      const { possibleRepeatOf: _ignored, ...original } = raw[index] as Record<string, unknown>;
       const heldMatch = matchHeld(candidate, held);
       if (heldMatch !== null && heldMatch.drop) {
         droppedAsHeld.push({
@@ -2690,14 +2760,22 @@ function checkCandidatesCommand(argv: string[]): number {
       // A nearby anchored comment is the stronger lead, so it wins when both
       // match. A description match is never dropped here: wording cannot tell
       // a restatement from a contradiction, so the verifier decides.
-      const possible = possiblySaidOnThread(candidate, thread);
+      // After it, the same claim anywhere in the file, the owner's own comment
+      // first: a line moves as the author edits above it, and one concern can
+      // cover several places, so distance says little about a repeat.
+      const possible =
+        possiblySaidOnThread(candidate, thread, isOwn) ??
+        possiblyRaisedInFile(candidate, thread, isOwn) ??
+        possiblyRaisedInFile(candidate, thread);
       if (possible !== null) {
         kept.push({
           ...original,
           possibleRepeatOf: {
+            kind: isOwn(possible) ? 'own-comment' : 'thread',
             author: possible.author,
             path: possible.path,
             line: possible.line,
+            ...(possible.outdated === true ? { outdated: true } : {}),
             excerpt: possible.body.slice(0, 200),
           },
         });

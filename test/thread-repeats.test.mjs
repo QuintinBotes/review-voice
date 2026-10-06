@@ -110,6 +110,7 @@ test('a lower-overlap comment within 5 lines flags a possible repeat and keeps t
     assert.deepEqual(out.droppedAsRepeat, []);
     assert.equal(out.kept[0].candidate_id, 'c1');
     assert.deepEqual(out.kept[0].possibleRepeatOf, {
+      kind: 'thread',
       author: 'acme-bot',
       path: 'a.ts',
       line: 15,

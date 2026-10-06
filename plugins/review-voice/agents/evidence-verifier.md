@@ -64,6 +64,24 @@ finding contradicts something the description asserts, or shows that the
 stated intent is wrong, keep it and judge it on its evidence like any other
 candidate.
 
+When `possibleRepeatOf` has `kind: own-comment` or `kind: thread`, the
+comment is the owner's own or another reviewer's, and it may sit far from the
+candidate: its line moves as the author edits above it, and one comment can
+cover several places in a file. Read the code at the comment's line. Reject the
+candidate as a repeat when it makes the same point about the same code. When
+it is `outdated`, the code under the comment changed, often in a fix: keep the
+candidate only when it is an instance that fix did not cover, and say which.
+
+**An own comment the author only partly addressed.** When `kind` is
+`own-comment` and that comment raised several points, check each against the
+code at the head. If the author fixed some and the candidate states one or more
+of the rest, verify the candidate for the open points only and add
+`partly_addressed`: `{"remaining": [...], "addressed": [...]}`, each point a
+short phrase from the comment. Both lists must be non-empty: with nothing fixed
+it is a plain repeat, and with nothing open it is addressed - reject it as a
+repeat either way. Use it only for the owner's own comment; scoring ignores it
+anywhere else.
+
 When `possibleRepeatOf` has `kind: held`, an earlier review held the same spot
 back with the given verdict and reason; that verdict is a prior, not a ruling,
 so reject the candidate only if it makes the same point that was refuted or
@@ -165,7 +183,7 @@ For every candidate, return these fields in addition to the defect fields:
 JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `technical_confidence`, `contradictions`, `required_context_missing`, `reason`,
 `fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`,
-`impact_traced`.
+`impact_traced`, and `partly_addressed` only when it applies.
 
 `impact_traced` is a boolean: true only when you followed the failure to a
 caller, consumer or data path outside the changed function or component and saw
