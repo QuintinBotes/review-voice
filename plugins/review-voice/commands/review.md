@@ -379,8 +379,8 @@ added line or a deletion site. Keep the `anchorCheck` and its
 `rejectedBecause` reason with the score output; re-anchor or withdraw a rejected
 candidate instead of moving it by hand. A stale consumer is anchored by its
 cause, and is eligible only when the verifier set `impact_traced`, except that
-a documentation consumer (a `.md`, `.mdx`, `.rst`, `.adoc` or `.txt` file) is
-eligible untraced when it is reported at `nit`. It is posted in the review
+a documentation consumer (a `.md`, `.rst` or `.adoc` file) the verifier
+confirmed is eligible untraced when it is reported at `nit`. It is posted in the review
 body, never inline.
 
 `score` also checks that each candidate's cited path exists at the reviewed ref.

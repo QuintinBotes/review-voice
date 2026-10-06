@@ -11827,7 +11827,7 @@ function deriveSeverity(category, requested, reach = null) {
 
 // plugins/review-voice/src/scoring/score.ts
 var STALE_CONSUMER = "stale-consumer";
-var DOCUMENTATION_PATH = /\.(?:md|mdx|markdown|rst|adoc|asciidoc|txt)$/i;
+var DOCUMENTATION_PATH = /\.(?:md|rst|adoc)$/i;
 function isDocumentationPath(path) {
   return DOCUMENTATION_PATH.test(path);
 }
@@ -12236,11 +12236,12 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   }
   const severity = boundSeverityByEvidence(derivedSeverity, candidate, verification2);
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
-  const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit";
+  const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit" && confidenceSource === "verifier";
   if (staleConsumer && verification2?.impactTraced !== true && !untracedDocumentNit) {
-    const untraced = "a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause (impact_traced: true)" + (isDocumentationPath(candidate.path) ? `; a documentation consumer may go untraced only at nit, and this one is ${severity.severity}` : "");
+    const untraced = "a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause (impact_traced: true)" + (isDocumentationPath(candidate.path) ? `; a documentation consumer may go untraced only at nit and on the verifier's confidence, and this one is ${severity.severity}` + (confidenceSource === "analyst" ? " on the analyst's confidence alone" : confidenceSource === "unverifiable-cap" ? " with context the verifier could not obtain" : "") : "");
     if (rejectedBecause === null) rejectedBecause = untraced;
     else if (rejectedBecause.startsWith("score ")) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
+    else rejectedBecause = `${rejectedBecause}. Also: ${untraced}`;
   }
   const fix = renderFix(candidate, verification2, thresholds);
   return {

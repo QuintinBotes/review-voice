@@ -22,10 +22,10 @@ the anchor type was unusable for its most common case.
 
 ## Decision
 
-**A stale consumer whose path is a document (`.md`, `.mdx`, `.markdown`,
-`.rst`, `.adoc`, `.asciidoc` or `.txt`) is eligible without `impact_traced`
-when it is reported at `nit`. Anything above `nit`, and any consumer that is
-not a document, still needs the trace.**
+**A stale consumer whose path is a document (`.md`, `.rst` or `.adoc`) is
+eligible without `impact_traced` when it is reported at `nit` and the gate read
+the verifier's confidence. Anything above `nit`, anything without a verifier
+entry, and any consumer that is not a document, still needs the trace.**
 
 - The tier is the one `score` reports, after derivation and the evidence
   bound, not the one the analyst asked for.
@@ -35,6 +35,12 @@ not a document, still needs the trace.**
   analyst can refile it at the tier it can have.
 - A comment inside a source file keeps the stricter rule. It sits beside code
   the finding could break, and the extension cannot tell the two apart.
+- Only extensions no build reads count. `.txt` is also `CMakeLists.txt` and
+  `requirements.txt`, and `.mdx` compiles to components, so both keep the
+  stricter rule.
+- With no verification, or with the confidence capped for missing context,
+  the analyst's own opinion would be the whole case for the finding, so the
+  exception does not apply.
 
 ## Consequences
 

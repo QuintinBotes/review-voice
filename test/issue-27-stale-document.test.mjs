@@ -86,7 +86,7 @@ test('an untraced documentation consumer above nit is still rejected, and says w
     assert.equal(row.severity.severity, 'minor');
     assert.equal(row.eligible, false);
     assert.match(row.rejectedBecause, /needs the verifier to trace the impact/);
-    assert.match(row.rejectedBecause, /documentation consumer may go untraced only at nit, and this one is minor/);
+    assert.match(row.rejectedBecause, /documentation consumer may go untraced only at nit and on the verifier's confidence, and this one is minor/);
   }));
 
 test('an untraced code consumer at nit is still rejected', () =>
@@ -98,10 +98,10 @@ test('an untraced code consumer at nit is still rejected', () =>
   }));
 
 test('documentation is told apart from code by extension', () => {
-  for (const path of ['README.md', 'docs/guide.mdx', 'skills/x/SKILL.md', 'notes.rst', 'manual.adoc', 'CHANGES.txt']) {
+  for (const path of ['README.md', 'skills/x/SKILL.md', 'notes.rst', 'manual.adoc']) {
     assert.equal(isDocumentationPath(path), true, path);
   }
-  for (const path of ['src/report.ts', 'config.yaml', 'docs/build.py', 'md']) {
+  for (const path of ['src/report.ts', 'config.yaml', 'docs/build.py', 'md', 'CMakeLists.txt', 'requirements.txt', 'docs/page.mdx']) {
     assert.equal(isDocumentationPath(path), false, path);
   }
 });

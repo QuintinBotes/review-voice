@@ -58,9 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A `stale-consumer` finding on documentation (`.md`, `.mdx`, `.rst`, `.adoc`,
-  `.txt`) is eligible at `nit` without `impact_traced`; above `nit`, or on code,
-  it still needs the trace, and the rejection says which. See ADR 0015. (#27)
+- A `stale-consumer` finding on documentation (`.md`, `.rst`, `.adoc`) that the
+  verifier confirmed is eligible at `nit` without `impact_traced`; above `nit`,
+  without a verifier entry, or on code (`CMakeLists.txt`, `requirements.txt`
+  and `.mdx` included) it still needs the trace, and the rejection says which.
+  See ADR 0015. (#27)
 - The unverifiable cap no longer fires on context the claim does not depend
   on. The verifier can mark a `required_context_missing` entry as
   `{"context": "...", "kind": "cosmetic"}`; only blocking entries cap, and a

@@ -36,14 +36,16 @@ export interface RawCandidate {
 /** The one anchor a candidate may declare; see `classifyStaleConsumer`. */
 export const STALE_CONSUMER = 'stale-consumer';
 
-const DOCUMENTATION_PATH = /\.(?:md|mdx|markdown|rst|adoc|asciidoc|txt)$/i;
+const DOCUMENTATION_PATH = /\.(?:md|rst|adoc)$/i;
 
 /**
  * Whether a path is a document rather than code: a guide, a skill, a README.
  *
- * Judged on the extension alone. A comment inside a source file is also prose,
- * but it sits beside code a stale-consumer finding could break, so it keeps
- * the stricter rule.
+ * Judged on the extension alone, so the list holds only extensions that are
+ * never read by a build. `.txt` is also `CMakeLists.txt` and
+ * `requirements.txt`, and `.mdx` compiles to components; both keep the strict
+ * rule. A comment inside a source file is also prose, but it sits beside code
+ * a stale-consumer finding could break, so it keeps the strict rule too.
  */
 export function isDocumentationPath(path: string): boolean {
   return DOCUMENTATION_PATH.test(path);
@@ -1189,16 +1191,28 @@ export function scoreCandidate(
   // the most common stale consumer impossible to report. A nit costs the
   // author nothing to decline; anything louder still needs the trace.
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
-  const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === 'nit';
+  // Only on the verifier's own confirmation: with no verification the
+  // analyst's opinion of its own finding would be the whole case for it.
+  const untracedDocumentNit =
+    isDocumentationPath(candidate.path) && severity.severity === 'nit' && confidenceSource === 'verifier';
   if (staleConsumer && verification?.impactTraced !== true && !untracedDocumentNit) {
     const untraced =
       'a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause ' +
       '(impact_traced: true)' +
       (isDocumentationPath(candidate.path)
-        ? `; a documentation consumer may go untraced only at nit, and this one is ${severity.severity}`
+        ? '; a documentation consumer may go untraced only at nit and on the verifier\'s confidence, ' +
+          `and this one is ${severity.severity}` +
+          (confidenceSource === 'analyst'
+            ? " on the analyst's confidence alone"
+            : confidenceSource === 'unverifiable-cap'
+              ? ' with context the verifier could not obtain'
+              : '')
         : '');
     if (rejectedBecause === null) rejectedBecause = untraced;
     else if (rejectedBecause.startsWith('score ')) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
+    // Appended, so a local list that shows candidates stopped by one gate
+    // alone can see this one was also stopped here.
+    else rejectedBecause = `${rejectedBecause}. Also: ${untraced}`;
   }
 
   const fix = renderFix(candidate, verification, thresholds);
