@@ -11908,16 +11908,28 @@ function alreadySaidOnThread(candidate, thread) {
 }
 var POSSIBLE_REPEAT_OVERLAP = 0.25;
 var POSSIBLE_REPEAT_LINE_WINDOW = 5;
-function possiblySaidOnThread(candidate, thread) {
+function possiblySaidOnThread(candidate, thread, preferred = () => false) {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
   if (mine.size === 0) return null;
+  let best = null;
   for (const comment of thread) {
     if (comment.path === null || comment.line === null) continue;
     if (comment.path !== candidate.path) continue;
-    if (Math.abs(comment.line - candidate.line) > POSSIBLE_REPEAT_LINE_WINDOW) continue;
-    if (overlap(mine, significantWords(comment.body)) >= POSSIBLE_REPEAT_OVERLAP) return comment;
+    const distance = Math.abs(comment.line - candidate.line);
+    if (distance > POSSIBLE_REPEAT_LINE_WINDOW) continue;
+    const share = overlap(mine, significantWords(comment.body));
+    if (share < POSSIBLE_REPEAT_OVERLAP) continue;
+    const rank = [preferred(comment) ? 1 : 0, share, -distance];
+    if (best === null || compareRank(rank, best.rank) > 0) best = { comment, rank };
   }
-  return null;
+  return best?.comment ?? null;
+}
+function compareRank(a, b) {
+  for (let i = 0; i < a.length; i += 1) {
+    const d = a[i] - b[i];
+    if (d !== 0) return d;
+  }
+  return 0;
 }
 var SAME_FILE_REPEAT_OVERLAP = 0.4;
 function possiblyRaisedInFile(candidate, thread, accept = () => true) {
@@ -12052,10 +12064,11 @@ function partlyAddressedProblem(value) {
   }
   return null;
 }
-function followUpOf(candidate, verification2, thread) {
+function followUpOf(candidate, verification2, thread, owner) {
   const prior = candidate.ownComment;
   const partly = verification2?.partlyAddressed;
   if (prior === void 0 || partly === void 0) return null;
+  if (owner === null || prior.author.toLowerCase() !== owner.toLowerCase()) return null;
   const onThread = thread.some(
     (comment) => comment.author === prior.author && comment.path === prior.path && comment.line === prior.line
   );
@@ -14334,6 +14347,7 @@ function scoreCommand(argv) {
       });
     }
   }
+  const owner = flag(argv, "--owner") ?? configuredOwner();
   const pullFlag = argv.includes("--exclude-pull") ? numericFlag(argv, "--exclude-pull", 0) : null;
   if (argv.includes("--exclude-pull") && pullFlag === null) {
     console.error("--exclude-pull needs a pull request number.");
@@ -14382,14 +14396,16 @@ function scoreCommand(argv) {
         breakdown.eligible = false;
         breakdown.rejectedBecause = `claims something is absent, but the repository contains ${absence.found.join(", ")}`;
       }
-      const followUp = followUpOf(candidate, verifications.get(candidate.candidateId), thread);
+      const followUp = followUpOf(candidate, verifications.get(candidate.candidateId), thread, owner);
       if (followUp !== null) followUps.set(candidate.candidateId, followUp);
       else if (verifications.get(candidate.candidateId)?.partlyAddressed !== void 0) {
         console.error(
-          `Warning: ${candidate.candidateId} is marked partly_addressed but is not linked to an own comment on this thread. Scored as an ordinary finding.`
+          `Warning: ${candidate.candidateId} is marked partly_addressed but is not linked to a comment of the owner on this thread. Scored as an ordinary finding.`
         );
       }
-      const echoThread = followUp === null ? thread : thread.filter((comment) => comment.author !== followUp.author || comment.path === null || comment.line === null);
+      const echoThread = followUp === null ? thread : thread.filter(
+        (comment) => !(comment.author === followUp.author && comment.path === followUp.path && comment.line === followUp.line)
+      );
       const echoed = breakdown.eligible ? alreadySaidOnThread(candidate, echoThread) : null;
       if (echoed !== null) {
         breakdown.eligible = false;
@@ -14491,7 +14507,7 @@ function scoreCommand(argv) {
               // line is what the finding's location shows.
               ...c.anchor === "stale-consumer" ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {},
               // A follow-up states only what remains of the owner's earlier
-              // comment, as an ordinary finding; `record` keeps it open.
+              // comment, as an ordinary finding; `record` stores that state.
               ...followUps.has(c.candidateId) ? { possibleRepeatOf: { kind: "own-comment", status: "partly-addressed", ...followUps.get(c.candidateId) } } : {}
             };
           }),
@@ -15308,7 +15324,7 @@ function checkCandidatesCommand(argv) {
         reason: heldMatch.entry.reason,
         excerpt: (heldMatch.entry.text ?? "").slice(0, 200)
       };
-      const possible = possiblySaidOnThread(candidate, thread) ?? possiblyRaisedInFile(candidate, thread, isOwn) ?? possiblyRaisedInFile(candidate, thread);
+      const possible = possiblySaidOnThread(candidate, thread, isOwn) ?? possiblyRaisedInFile(candidate, thread, isOwn) ?? possiblyRaisedInFile(candidate, thread);
       if (possible !== null) {
         kept.push({
           ...original,

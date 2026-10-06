@@ -30,8 +30,9 @@ export interface StoredFinding {
   carriedFrom?: { runId: string; findingId: string } | undefined;
   /**
    * This finding follows up the owner's earlier comment, which the author only
-   * partly addressed. The comment stays open until a later review finds nothing
-   * of it remaining; the follow-up was posted as an ordinary inline comment.
+   * partly addressed, and records what was still open at this run. Nothing
+   * marks it resolved later: a later review links to the comment on the thread
+   * again. The follow-up is posted as an ordinary inline comment.
    */
   partlyAddressed?: PartlyAddressedFinding | undefined;
 }

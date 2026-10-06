@@ -1408,6 +1408,10 @@ function scoreCommand(argv: string[]): number {
     }
   }
 
+  // Whose comment a partly-addressed follow-up may set aside: the owner's,
+  // checked here rather than taken from the candidate's own label.
+  const owner = flag(argv, '--owner') ?? configuredOwner();
+
   const pullFlag = argv.includes('--exclude-pull') ? numericFlag(argv, '--exclude-pull', 0) : null;
   if (argv.includes('--exclude-pull') && pullFlag === null) {
     console.error('--exclude-pull needs a pull request number.');
@@ -1481,18 +1485,23 @@ function scoreCommand(argv: string[]): number {
       // The exception is a follow-up on the owner's own comment that the author
       // only partly addressed: it restates that comment by design, so the
       // owner's own inline comments are not held against it. Anyone else's are.
-      const followUp = followUpOf(candidate, verifications.get(candidate.candidateId), thread);
+      const followUp = followUpOf(candidate, verifications.get(candidate.candidateId), thread, owner);
       if (followUp !== null) followUps.set(candidate.candidateId, followUp);
       else if (verifications.get(candidate.candidateId)?.partlyAddressed !== undefined) {
         console.error(
-          `Warning: ${candidate.candidateId} is marked partly_addressed but is not linked to an own comment ` +
-            'on this thread. Scored as an ordinary finding.',
+          `Warning: ${candidate.candidateId} is marked partly_addressed but is not linked to a comment of the ` +
+            'owner on this thread. Scored as an ordinary finding.',
         );
       }
+      // Only the linked comment is set aside. Any other comment, the owner's
+      // own included, still rejects a candidate that repeats it.
       const echoThread =
         followUp === null
           ? thread
-          : thread.filter((comment) => comment.author !== followUp.author || comment.path === null || comment.line === null);
+          : thread.filter(
+              (comment) =>
+                !(comment.author === followUp.author && comment.path === followUp.path && comment.line === followUp.line),
+            );
       const echoed = breakdown.eligible ? alreadySaidOnThread(candidate, echoThread) : null;
       if (echoed !== null) {
         breakdown.eligible = false;
@@ -1629,7 +1638,7 @@ function scoreCommand(argv: string[]): number {
               // line is what the finding's location shows.
               ...(c.anchor === 'stale-consumer' ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {}),
               // A follow-up states only what remains of the owner's earlier
-              // comment, as an ordinary finding; `record` keeps it open.
+              // comment, as an ordinary finding; `record` stores that state.
               ...(followUps.has(c.candidateId)
                 ? { possibleRepeatOf: { kind: 'own-comment', status: 'partly-addressed', ...followUps.get(c.candidateId) } }
                 : {}),
@@ -2715,7 +2724,7 @@ function checkCandidatesCommand(argv: string[]): number {
       // first: a line moves as the author edits above it, and one concern can
       // cover several places, so distance says little about a repeat.
       const possible =
-        possiblySaidOnThread(candidate, thread) ??
+        possiblySaidOnThread(candidate, thread, isOwn) ??
         possiblyRaisedInFile(candidate, thread, isOwn) ??
         possiblyRaisedInFile(candidate, thread);
       if (possible !== null) {

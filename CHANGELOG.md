@@ -12,9 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A prior comment of the owner's that the author only partly addressed gets a
   local partly-addressed state. The verifier may mark a candidate linked to
   that comment with `partly_addressed` (`remaining`, `addressed`); `score`
-  then no longer rejects it as already said, the editor states only what
-  remains, and `record` stores the finding as `partlyAddressed`, shown by
-  `explain`. What remains is posted as an ordinary inline comment in the
+  then no longer rejects it for repeating that one comment, after checking its
+  author is the owner (`--owner`, or the configured owner); the editor states
+  only what remains, and `record` stores the finding as `partlyAddressed` with
+  what was still open at that run, shown by `explain`. Nothing marks it
+  resolved later. What remains is posted as an ordinary inline comment in the
   normal review, never as a thread reply. `check-candidates` no longer drops a
   candidate for repeating the owner's own inline comment; it flags it for the
   verifier, and `score` still rejects a plain repeat. (#30)
@@ -65,8 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `identity.owner_reviewer`, or `--owner <login>`. (#24)
 - `check-candidates --thread` flags a same-file, same-concern repeat of any
   reviewer's inline comment, whatever the line distance, as `possibleRepeatOf`
-  of `kind: thread`, with `outdated: true` when the code under the comment has
-  changed since. Every anchored thread match now carries its `kind`. (#43)
+  of `kind: thread`, with `outdated: true` when GitHub no longer places the
+  comment on the head because the code under it changed. Whether a thread is
+  resolved is not read: that needs GraphQL, and the client is read-only REST.
+  Every anchored thread match now carries its `kind`, and the nearby match is
+  the best one, the owner's own first, rather than the first found. (#43)
 
 ## [1.10.1] - 2026-10-05
 

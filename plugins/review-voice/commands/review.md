@@ -360,7 +360,10 @@ repeats whatever the pull request already says.
 
 A partly-addressed follow-up is the one exception to that check: when the
 verifier set `partly_addressed` and the linked own comment is on the thread,
-that comment is not held against the candidate. Its `eligible[]` entry carries
+that comment alone is not held against the candidate; any other comment on the
+thread, the owner's included, still rejects a repeat of it. The owner is
+checked again here, so pass the same `--owner` given to `check-candidates`, if
+any. Its `eligible[]` entry carries
 `possibleRepeatOf` with `status: partly-addressed`, `remaining` and
 `addressed`. Set anywhere else, `partly_addressed` is ignored with a warning.
 
@@ -526,10 +529,11 @@ stray directory and another project's notes took the reviewed count from 11 to
   feedback on that finding can never become a policy rule.
 
   They also carry the partly-addressed state. A finding written from such an
-  entry is stored as `partlyAddressed`, with the earlier comment and what
-  remains, and `/review-voice:explain` shows it. The state is local: the earlier
-  comment stays open until a later review finds nothing of it remaining. Do
-  not record a partly-addressed follow-up under `--held` as a `repeat`.
+  entry is stored as `partlyAddressed`, with the earlier comment and what was
+  still open at this run, and `/review-voice:explain` shows it. The state is
+  local and per run; nothing later marks it resolved. Do not record a
+  partly-addressed follow-up under `--held` as a `repeat`, which would read as
+  closed.
 
   Pass every candidate that was held back rather than reported with
   `--held <file>` (an array of `{path, line, verdict, source, reason, text}`, verdict

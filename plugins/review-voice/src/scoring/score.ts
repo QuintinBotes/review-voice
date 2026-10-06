@@ -482,22 +482,41 @@ const POSSIBLE_REPEAT_LINE_WINDOW = 5;
  * An anchored comment near this candidate that shares some of its wording but
  * not enough for `alreadySaidOnThread` to drop it. The candidate is kept and
  * the verifier is pointed at the comment, so it can reject a real repeat first.
+ *
+ * The best match is chosen, not the first: a comment `preferred` says is the
+ * owner's own comes first, then the higher overlap, then the nearer line. With
+ * two of the owner's comments in reach, linking the looser one let a candidate
+ * restating the other verbatim pass as a follow-up.
  */
 export function possiblySaidOnThread(
   candidate: Candidate,
   thread: ThreadComment[],
+  preferred: (comment: ThreadComment) => boolean = () => false,
 ): ThreadComment | null {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
   if (mine.size === 0) return null;
 
+  let best: { comment: ThreadComment; rank: [number, number, number] } | null = null;
   for (const comment of thread) {
     if (comment.path === null || comment.line === null) continue;
     if (comment.path !== candidate.path) continue;
-    if (Math.abs(comment.line - candidate.line) > POSSIBLE_REPEAT_LINE_WINDOW) continue;
-    if (overlap(mine, significantWords(comment.body)) >= POSSIBLE_REPEAT_OVERLAP) return comment;
+    const distance = Math.abs(comment.line - candidate.line);
+    if (distance > POSSIBLE_REPEAT_LINE_WINDOW) continue;
+    const share = overlap(mine, significantWords(comment.body));
+    if (share < POSSIBLE_REPEAT_OVERLAP) continue;
+    const rank: [number, number, number] = [preferred(comment) ? 1 : 0, share, -distance];
+    if (best === null || compareRank(rank, best.rank) > 0) best = { comment, rank };
   }
 
-  return null;
+  return best?.comment ?? null;
+}
+
+function compareRank(a: [number, number, number], b: [number, number, number]): number {
+  for (let i = 0; i < a.length; i += 1) {
+    const d = (a[i] as number) - (b[i] as number);
+    if (d !== 0) return d;
+  }
+  return 0;
 }
 
 /**
@@ -756,10 +775,14 @@ export function followUpOf(
   candidate: Candidate,
   verification: Verification | undefined,
   thread: ThreadComment[],
+  owner: string | null,
 ): (PriorComment & PartlyAddressed) | null {
   const prior = candidate.ownComment;
   const partly = verification?.partlyAddressed;
   if (prior === undefined || partly === undefined) return null;
+  // The kind is a label on the candidate, so the author is checked again: a
+  // mislabelled link must not exempt someone else's comment.
+  if (owner === null || prior.author.toLowerCase() !== owner.toLowerCase()) return null;
   const onThread = thread.some(
     (comment) => comment.author === prior.author && comment.path === prior.path && comment.line === prior.line,
   );

@@ -99,7 +99,7 @@ test('a possibleRepeatOf arriving from the analyst is not passed on', () =>
 function scoreLinked(dir, verification, thread = [ownComment]) {
   const linked = { ...candidate('c1', 12), possibleRepeatOf: { kind: 'own-comment', author: OWNER, path: PATH, line: 12, excerpt: NIT } };
   return run(
-    ['score', '--verification', writeJson(dir, 'v.json', [verification]), '--thread', writeJson(dir, 't.json', { comments: thread })],
+    ['score', '--verification', writeJson(dir, 'v.json', [verification]), '--thread', writeJson(dir, 't.json', { comments: thread }), '--owner', OWNER],
     JSON.stringify({ candidates: [linked] }),
     dir,
   );
