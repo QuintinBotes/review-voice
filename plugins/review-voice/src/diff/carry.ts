@@ -10,6 +10,8 @@ export interface CarryInput {
   path: string;
   line: number;
   text: string;
+  /** Read only to say whether a finding left behind was a serious one. */
+  severity?: string | undefined;
 }
 
 export interface CarriedFinding {
@@ -25,6 +27,15 @@ export interface NotCarriedFinding {
   path: string;
   line: number;
   reason: string;
+  severity?: string | undefined;
+}
+
+/** A finding at these tiers that does not carry may be what kept a review from approving. */
+export const SERIOUS_SEVERITIES: readonly string[] = ['blocking', 'important'];
+
+/** The serious findings among those that did not carry. */
+export function seriousNotCarried(notCarried: NotCarriedFinding[]): NotCarriedFinding[] {
+  return notCarried.filter((f) => f.severity !== undefined && SERIOUS_SEVERITIES.includes(f.severity.toLowerCase()));
 }
 
 export interface CarryResult {
@@ -124,7 +135,8 @@ function existsAt(ref: string, path: string, cwd: string): boolean {
 
 /**
  * Where one line of a file at `previousHead` is at `head`, or why it cannot be
- * followed: the file is gone, or the line or one either side of it changed.
+ * followed: the file is gone, or the line or one of the two either side of
+ * it changed.
  */
 export function followLine(
   previousHead: string,
@@ -163,7 +175,13 @@ export function carryFindings(findings: CarryInput[], previousHead: string, head
   for (const finding of findings) {
     const moved = followLine(previousHead, head, finding.path, finding.line, cwd);
     if ('reason' in moved) {
-      notCarried.push({ findingId: finding.findingId, path: finding.path, line: finding.line, reason: moved.reason });
+      notCarried.push({
+        findingId: finding.findingId,
+        path: finding.path,
+        line: finding.line,
+        reason: moved.reason,
+        ...(finding.severity === undefined ? {} : { severity: finding.severity }),
+      });
       continue;
     }
     carried.push({
@@ -224,6 +242,11 @@ export interface CandidateToCarry {
   line: number;
   anchor?: string | undefined;
   causedBy?: { path: string; line: number } | null | undefined;
+  /**
+   * The claim, failure mode and evidence, and the verifier's entry: every text
+   * that may name a file the verification read.
+   */
+  texts?: string[] | undefined;
 }
 
 export interface CarriedCandidate {
@@ -241,15 +264,34 @@ export interface RefusedCandidate {
   reason: string;
 }
 
+/** Files that differ between two commits, under both names when renamed. */
+export function changedFiles(previousHead: string, head: string, cwd: string): Set<string> {
+  const out = gitOut(['diff', '--name-only', '--no-renames', '-z', previousHead, head], cwd);
+  return new Set(out.split('\0').filter((name) => name.length > 0));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** True when a text names the file, by its path or by its file name alone. */
+export function namesFile(text: string, path: string): boolean {
+  if (text.includes(path)) return true;
+  const name = path.split('/').pop() ?? path;
+  return new RegExp(`(^|[^\\w./-])${escapeRegExp(name)}($|[^\\w-])`).test(text);
+}
+
 /**
  * Carries verified candidates from the head they were verified at to a head
  * the author pushed since.
  *
- * A candidate carries only when the code it is anchored on did not change: its
- * line and the two either side, and for a stale consumer its cause as well.
- * The moved anchor must then still be a changed line of the new head's diff,
- * the same check `reanchor` makes. Anything else is refused by name, because
- * its verification was of code that is no longer there.
+ * Unchanged lines around an anchor are not enough: a guard added ten lines
+ * above a null dereference makes the claim false without touching its line.
+ * So a candidate carries only when nothing its verification read changed: its
+ * own file, a stale consumer's cause, and every file its claim, evidence or
+ * verifier entry names are the same at both heads. Its anchor must then still
+ * be a changed line of the new head's diff, the same check `reanchor` makes.
+ * Anything else is refused by name, so it is verified again.
  */
 export function carryCandidates(
   candidates: CandidateToCarry[],
@@ -262,6 +304,7 @@ export function carryCandidates(
     if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in this repository.`);
   }
 
+  const changed = changedFiles(previousHead, head, cwd);
   const carried: CarriedCandidate[] = [];
   const refused: RefusedCandidate[] = [];
   for (const candidate of candidates) {
@@ -269,13 +312,28 @@ export function carryCandidates(
       refused.push({ candidateId: candidate.candidateId, path: candidate.path, line: candidate.line, reason });
     };
 
+    if (changed.has(candidate.path)) {
+      refuse(`${candidate.path} changed between the two heads`);
+      continue;
+    }
+    const cause = candidate.anchor === 'stale-consumer' ? (candidate.causedBy ?? null) : null;
+    if (cause !== null && changed.has(cause.path)) {
+      refuse(`the file of its cause, ${cause.path}, changed between the two heads`);
+      continue;
+    }
+    const named = [...changed].find((path) => (candidate.texts ?? []).some((text) => namesFile(text, path)));
+    if (named !== undefined) {
+      refuse(`its claim, evidence or verification names ${named}, which changed between the two heads`);
+      continue;
+    }
+
     const moved = followLine(previousHead, head, candidate.path, candidate.line, cwd);
     if ('reason' in moved) {
       refuse(`${candidate.path}:${candidate.line}: ${moved.reason}`);
       continue;
     }
 
-    let cause: CarriedCandidate['causedBy'];
+    let movedCause: CarriedCandidate['causedBy'];
     if (candidate.anchor === 'stale-consumer') {
       const from = candidate.causedBy ?? null;
       if (from === null) {
@@ -287,14 +345,14 @@ export function carryCandidates(
         refuse(`its cause ${from.path}:${from.line}: ${followed.reason}`);
         continue;
       }
-      cause = { path: from.path, oldLine: from.line, line: followed.line };
+      movedCause = { path: from.path, oldLine: from.line, line: followed.line };
     }
 
     const check = candidateAnchor(hunks, {
       path: candidate.path,
       line: moved.line,
       anchor: candidate.anchor,
-      causedBy: cause === undefined ? candidate.causedBy : { path: cause.path, line: cause.line },
+      causedBy: movedCause === undefined ? candidate.causedBy : { path: movedCause.path, line: movedCause.line },
     });
     if (!check.ok) {
       refuse(`at the new head it ${reason(check)}`);
@@ -306,7 +364,7 @@ export function carryCandidates(
       path: candidate.path,
       oldLine: candidate.line,
       line: moved.line,
-      ...(cause === undefined ? {} : { causedBy: cause }),
+      ...(movedCause === undefined ? {} : { causedBy: movedCause }),
     });
   }
   return { carried, refused };

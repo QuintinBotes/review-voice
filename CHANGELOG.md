@@ -13,13 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to a corrected line, optionally in another file (`--path`), keeping its
   verification and score. It refuses a line that is not an added line or
   deletion site of the reviewed diff, a candidate that was not eligible, a stale
-  consumer, and a location another finding holds. See ADR 0015. (#39)
+  consumer, and a location another finding holds. Both files are written
+  beside their targets and renamed into place. See ADR 0015. (#39)
 - `RV carry-candidates` carries verified candidates to a head the author pushed
-  mid-review. A candidate carries, at its new line, only when its line and the
-  two either side, and a stale consumer's cause, are unchanged between the
-  heads and its new line is a changed line of the new head's diff; the rest
-  are refused by name and the review command re-reviews the new head. The
-  carry is written to `carry.json` and the audit log. See ADR 0015. (#29)
+  mid-review. A candidate carries only when its file, a stale consumer's cause,
+  and every file its claim, evidence or verification names are unchanged
+  between the heads, and its line is a changed line of the new head's diff;
+  the rest are refused by name and the review command re-reviews the new head.
+  The review of the commits in between is merged in with `--interdiff`, held
+  findings move with `--held`, and the carry is written to `carry.json` and
+  the audit log. A run recorded with `record --carry` from a carry without that
+  review, or with a candidate refused, is capped at COMMENT, passes the cap to
+  runs carried from it, and is not used as the next review's boundary. See ADR
+  0015. (#29)
 - `RV reconcile` applies the second-pass verdicts to the candidates, and a new
   `tie-breaker` agent settles a dispute between the two verifiers. A finding is
   disputed when the evidence-verifier traced its impact at 0.85 or more and the
@@ -66,8 +72,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `carry` of an earlier run with no findings gives `No actionable findings.` as
   its `output` instead of an empty string, and `carry --text` prints only the
   carried review so it pipes into `validate-output` and `record`; it exits 1
-  when findings existed and none carried. The review command shows the handoff.
-  (#35)
+  when findings existed and none carried, or a blocking or important finding
+  did not carry, which `record --carried-from` also refuses. The review command
+  shows the handoff. (#35)
 
 ## [1.10.1] - 2026-10-05
 

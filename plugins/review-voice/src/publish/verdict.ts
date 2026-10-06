@@ -297,6 +297,11 @@ export function decide(input: {
   heldBackApproval?: boolean;
   /** The change was assessed high-complexity, so a person, not this tool, approves it. */
   needsHuman?: boolean;
+  /**
+   * The run carried candidates to this head without a review of the commits
+   * in between, or with a candidate refused (docs/adr/0015).
+   */
+  uncoveredCarry?: boolean;
 }): Decision {
   const reasons: string[] = [];
   if (input.heldBackApproval === true) {
@@ -325,6 +330,16 @@ export function decide(input: {
       exitCode: 6,
       cappedByCi: false,
     };
+  }
+
+  // Code nobody analysed is not approved. The reason stays local: the posted
+  // body says only that this is not an approval yet (docs/adr/0015).
+  if (input.uncoveredCarry === true && input.mapped === 'APPROVE') {
+    const why = 'candidates were carried to this head without a review of the commits since, so this comments rather than approves';
+    if (input.recheck) {
+      return { event: 'COMMENT', action: 'refuse', reasons: [...reasons, why], exitCode: 2, cappedByCi: false };
+    }
+    return { event: 'COMMENT', action: 'post', reasons: [...reasons, why], exitCode: 0, cappedByCi: false };
   }
 
   // Before the CI guard, so pending CI cannot turn a capped approval into a

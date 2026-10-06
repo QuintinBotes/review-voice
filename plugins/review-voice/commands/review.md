@@ -71,8 +71,13 @@ recorded. The scope is one of:
   `No actionable findings.`. Then hand that file on unchanged:
   `RV validate-output < <tmpdir>/review.txt`, display it, and record it with
   `RV record --repository <owner/repo> --head <sha> --carried-from <prior.runId> --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json < <tmpdir>/review.txt`.
-  Exit 1 from `carry` means the earlier run had findings and none carried:
-  print `scopeNote` and stop; the earlier review still applies. Without
+  Exit 1 from `carry` prints nothing. When stderr names a blocking or
+  important finding that did not carry, its code changed and it may be what
+  kept the earlier review from approving: review those files again with
+  `RV diff --pr <number> --full` from step 1 rather than recording the rest.
+  `record --carried-from` refuses the same case. Otherwise the earlier run had
+  findings and none carried: print `scopeNote` and stop; the earlier review
+  still applies. Without
   `--text`, `carry` prints JSON, which is not a review: never pipe it into
   `validate-output` or `record`.
 - `interdiff` - only the author's hunks that are new since the previous head,
@@ -545,27 +550,40 @@ defeats the measurement.
 ## When the head moves before posting
 
 If the author pushes after step 3, `verdict` and `post` refuse the old head
-(exit 3). Carry the verified candidates instead of copying files by hand:
+(exit 3). The verified candidates can be carried, but the commits pushed in
+between are new code nobody has analysed, so they are reviewed like any other
+change first:
 
 1. `RV diff --pr <number> --full --out <newtmpdir>`, for the whole pull request
-   at the new head. An `interdiff` patch would not hold the lines the
-   candidates sit on.
-2. Write the candidates step 4 scored to a file, then run
-   `RV carry-candidates --candidates <file> --verification <tmpdir>/verification.json --since <old sha> --head <new sha> --diff-file <newtmpdir>/diff.patch --out <newtmpdir>`.
-   It carries a candidate only when its line and the two either side, and a
-   stale consumer's `caused_by`, are unchanged between the two heads, and its
-   new line is still a changed line of the new diff. It writes
-   `candidates.json` and `verification.json` with what carried, at the new
-   lines, and `carry.json` with what carried and what was refused, and records
-   the carry in the audit log.
-3. Exit 0: continue from step 4 with those two files, the new `diff.patch` and
-   `--head <new sha>`, and record with the new `files.json`.
-4. Exit 1 names each refused candidate: its anchored code changed, so its
-   verification no longer holds and it is not posted from this carry. Review the
-   new head from step 2 instead of scoring only what carried; a refused finding
-   may have been fixed, or made worse.
+   at the new head. This is the diff the carried candidates are checked
+   against and scored on.
+2. `RV diff --pr <number> --since <old sha> --out <interdir>`, for the commits
+   since the old head. Run steps 2 to 3c on `<interdir>/diff.patch` exactly as
+   for any review, and write the surviving candidates and the verifier's output
+   to files. If it reports `unchanged`, write `{"candidates": []}` and `[]`.
+3. Write the candidates step 4 scored to a file, then run
+   `RV carry-candidates --candidates <file> --verification <tmpdir>/verification.json --since <old sha> --head <new sha> --diff-file <newtmpdir>/diff.patch --out <newtmpdir> --interdiff <interdir> --interdiff-candidates <file> --interdiff-verification <file> --held <file>`.
+   A candidate carries only when nothing its verification read changed between
+   the two heads: its own file, a stale consumer's cause, and every file its
+   claim, evidence or verifier entry names. Its line must also still be a
+   changed line of the new diff. The interdiff review's candidates are merged
+   in, renamed where an id clashes. `--held` takes step 2's held list and moves
+   each entry to its line at the new head; an entry whose line or neighbours
+   changed is dropped and named. It writes `candidates.json`,
+   `verification.json`, `held.json` and `carry.json`, and records the carry in
+   the audit log.
+4. Exit 0: continue from step 4 with those files, the new `diff.patch` and
+   `--head <new sha>`, and record with the new `files.json`, `held.json` and
+   `--carry <newtmpdir>/carry.json`.
+5. Exit 1 names each refused candidate: code its verification read changed,
+   so it is not posted from this carry. Review the new head from step 2
+   instead of scoring only what carried; a refused finding may have been
+   fixed, or made worse.
 
-Never move a candidate across heads by hand.
+A run recorded with `--carry` from a carry made without `--interdiff`, or with
+a candidate refused, never approves: `verdict` caps it at COMMENT, and the
+next review of the pull request reads it in full. Never move a candidate across
+heads by hand.
 
 ## What not to do
 

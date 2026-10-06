@@ -198,6 +198,7 @@ export async function computeVerdict(
     recheck: options.recheck === true,
     heldBackApproval: planned.heldBackApproval,
     needsHuman,
+    uncoveredCarry: run.carry?.covered === false,
   });
   // Only a missing assessment is worth saying: a normal one changes nothing.
   if (complexity === null) decision.reasons.push('no complexity assessment was recorded for this run');
@@ -217,7 +218,9 @@ export async function computeVerdict(
           ? 'held'
           : needsHuman && planned.mapped === 'APPROVE'
             ? 'complexity'
-            : null,
+            : run.carry?.covered === false && planned.mapped === 'APPROVE'
+              ? 'held'
+              : null,
       humanReviewNote: humanReviewNote(complexity),
     });
     // Keyed on the whole review, so the same review is refused a second time

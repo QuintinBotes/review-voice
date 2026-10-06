@@ -105,10 +105,10 @@ function withRepo(fn) {
   }
 }
 
-test('candidates on untouched code carry to the new head at their new lines', () => {
+test('candidates on untouched files carry to the new head', () => {
   withRepo(({ repo, dataDir, write, commit, files, carry, out }) => {
-    const body = 'import one;\nimport two;\n' + lines(40);
-    write('a.ts', body);
+    const body = lines(40);
+    write('b.ts', 'unrelated\n');
     const head = commit('push mid-review');
     writeFileSync(files.diff, newFileDiff(body));
 
@@ -117,11 +117,11 @@ test('candidates on untouched code carry to the new head at their new lines', ()
 
     const moved = out('candidates.json').candidates;
     assert.deepEqual(moved.map((c) => [c.candidate_id, c.path, c.line]), [
-      ['cand_001', 'a.ts', 22],
-      ['cand_002', 'a.ts', 32],
+      ['cand_001', 'a.ts', 20],
+      ['cand_002', 'a.ts', 30],
       ['cand_003', 'docs.md', 5],
     ]);
-    assert.deepEqual(moved[2].caused_by, { path: 'a.ts', line: 12 });
+    assert.deepEqual(moved[2].caused_by, { path: 'a.ts', line: 10 });
     // The verification is the same verification, carried unchanged.
     assert.deepEqual(out('verification.json'), VERIFICATION);
     const record = out('carry.json');
@@ -138,7 +138,7 @@ test('candidates on untouched code carry to the new head at their new lines', ()
   });
 });
 
-test('a candidate whose anchored code changed is refused by name and left out', () => {
+test('a candidate whose file changed is refused by name and left out', () => {
   withRepo(({ write, commit, files, carry, out }) => {
     const body = lines(40).replace('line 30\n', 'line 30 rewritten\n');
     write('a.ts', body);
@@ -147,10 +147,10 @@ test('a candidate whose anchored code changed is refused by name and left out', 
 
     const result = carry(head);
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /Refused cand_002: a\.ts:30: anchor or its neighbours changed/);
-    assert.deepEqual(out('candidates.json').candidates.map((c) => c.candidate_id), ['cand_001', 'cand_003']);
-    assert.deepEqual(out('verification.json').verifications.map((v) => v.candidate_id), ['cand_001', 'cand_003']);
-    assert.deepEqual(out('carry.json').refused.map((r) => r.candidateId), ['cand_002']);
+    assert.match(result.stderr, /Refused cand_002: a\.ts changed between the two heads/);
+    assert.deepEqual(out('candidates.json').candidates, []);
+    assert.deepEqual(out('verification.json').verifications, []);
+    assert.deepEqual(out('carry.json').refused.map((r) => r.candidateId), ['cand_001', 'cand_002', 'cand_003']);
   });
 });
 
@@ -163,7 +163,7 @@ test('a stale consumer whose cause changed is refused', () => {
 
     const result = carry(head);
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /Refused cand_003: its cause a\.ts:10: anchor or its neighbours changed/);
+    assert.match(result.stderr, /Refused cand_003: the file of its cause, a\.ts, changed between the two heads/);
     assert.ok(!out('candidates.json').candidates.some((c) => c.candidate_id === 'cand_003'));
   });
 });
