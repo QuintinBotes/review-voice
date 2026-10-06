@@ -805,7 +805,6 @@ var DOCUMENTATION_EXTENSIONS = /* @__PURE__ */ new Set([
   "markdown",
   "mdown",
   "mkd",
-  "mdx",
   "rst",
   "adoc",
   "asciidoc",
@@ -817,6 +816,7 @@ var DOCUMENTATION_EXTENSIONS = /* @__PURE__ */ new Set([
   "csv",
   "tsv"
 ]);
+var CODE_NAMES = /* @__PURE__ */ new Set(["cmakelists.txt"]);
 var DOCUMENTATION_NAMES = /* @__PURE__ */ new Set([
   "readme",
   "license",
@@ -829,9 +829,13 @@ var DOCUMENTATION_NAMES = /* @__PURE__ */ new Set([
   "copying"
 ]);
 function isDocumentation(path) {
+  const segments = path.split("/");
+  const name = (segments.pop() ?? "").toLowerCase();
+  if (CODE_NAMES.has(name)) return false;
   const extension = extensionOf(path);
   if (DOCUMENTATION_EXTENSIONS.has(extension)) return true;
-  return extension === "" && DOCUMENTATION_NAMES.has((path.split("/").pop() ?? "").toLowerCase());
+  if (extension !== "" || !DOCUMENTATION_NAMES.has(name)) return false;
+  return segments.length === 0 || segments.some((segment) => segment === "docs" || segment === "doc");
 }
 function isReviewable(path, includeGenerated) {
   return includeGenerated || classify(path) === "source";

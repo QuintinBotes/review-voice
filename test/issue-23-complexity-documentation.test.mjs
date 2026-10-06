@@ -34,7 +34,7 @@ function patch(path, added, start = 1) {
 const prose = Array.from({ length: 10 }, () => 'If the entry point is missing, or when it moves, check the graph or the index.');
 
 test('documentation files are recognised by extension and by conventional name', () => {
-  for (const path of ['docs/guide.md', 'a/b/entry-points.MD', 'notes.rst', 'README', 'pkg/LICENSE', 'data/rows.csv', 'x.mdx']) {
+  for (const path of ['docs/guide.md', 'a/b/entry-points.MD', 'notes.rst', 'README', 'docs/LICENSE', 'data/rows.csv']) {
     assert.equal(isDocumentation(path), true, path);
   }
   for (const path of ['src/a.ts', 'readme.ts', '.github/workflows/ci.yml', 'Makefile', 'Dockerfile', 'config.json']) {

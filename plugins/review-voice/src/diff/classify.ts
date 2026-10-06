@@ -86,21 +86,34 @@ export function classify(path: string): FileClass {
 /**
  * Prose and plain-text data: reviewed like any other file, but not code, so
  * its words are not branches. A Markdown hunk once read as 26 decision points
- * because prose is full of `if`, `when` and `or` (docs/adr/0012).
+ * because prose is full of `if`, `when` and `or` (docs/adr/0012). MDX is left
+ * out of the list because it can carry components and their logic.
  */
 const DOCUMENTATION_EXTENSIONS = new Set([
-  'md', 'markdown', 'mdown', 'mkd', 'mdx', 'rst', 'adoc', 'asciidoc',
+  'md', 'markdown', 'mdown', 'mkd', 'rst', 'adoc', 'asciidoc',
   'txt', 'text', 'org', 'rtf', 'tex', 'csv', 'tsv',
 ]);
 
+/** Text files that are code: a build script is not prose for its extension. */
+const CODE_NAMES = new Set(['cmakelists.txt']);
+
+/**
+ * Extensionless names that are documentation by convention. Only at the
+ * repository root or under a docs directory: elsewhere, `bin/changes` is as
+ * likely a script as a list of changes.
+ */
 const DOCUMENTATION_NAMES = new Set([
   'readme', 'license', 'licence', 'changelog', 'changes', 'notice', 'authors', 'contributors', 'copying',
 ]);
 
 export function isDocumentation(path: string): boolean {
+  const segments = path.split('/');
+  const name = (segments.pop() ?? '').toLowerCase();
+  if (CODE_NAMES.has(name)) return false;
   const extension = extensionOf(path);
   if (DOCUMENTATION_EXTENSIONS.has(extension)) return true;
-  return extension === '' && DOCUMENTATION_NAMES.has((path.split('/').pop() ?? '').toLowerCase());
+  if (extension !== '' || !DOCUMENTATION_NAMES.has(name)) return false;
+  return segments.length === 0 || segments.some((segment) => segment === 'docs' || segment === 'doc');
 }
 
 /** Everything but `source` is noise unless the user asked for it. */

@@ -105,9 +105,12 @@ Decision points now count only in production source. Reviewed files of these
 kinds are left out of the count, not down-weighted:
 
 - *Documentation and other non-code text*: Markdown, reStructuredText,
-  AsciiDoc, plain text, CSV and the conventional extensionless names (`README`,
-  `LICENSE`, `CHANGELOG` and the like). Configuration such as YAML stays
-  counted: a workflow condition is a real branch.
+  AsciiDoc, plain text and CSV, and the conventional extensionless names
+  (`README`, `LICENSE`, `CHANGELOG` and the like) at the repository root or
+  under a `docs` directory - elsewhere, `bin/changes` is as likely a script.
+  `CMakeLists.txt` is a build script and stays counted, MDX can carry
+  components and stays counted, and so does configuration such as YAML: a
+  workflow condition is a real branch.
 - *Tests and fixtures*: paths matching `review.human_review.test_paths`.
   Counting them made the cap shape how tests were written - an author split
   one spec into several files to get a hunk under the limit, and the change
