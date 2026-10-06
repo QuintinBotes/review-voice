@@ -20,7 +20,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normal review, never as a thread reply. `check-candidates` no longer drops a
   candidate for repeating the owner's own inline comment; it flags it for the
   verifier, and `score` still rejects a plain repeat. (#30)
-
+- `RV reanchor --candidate <id> --line <n>` moves one eligible scored candidate
+  to a corrected line, optionally in another file (`--path`), keeping its
+  verification and score. It refuses a line that is not an added line or
+  deletion site of the reviewed diff, a candidate that was not eligible, a stale
+  consumer, and a location another finding holds. Both files are written
+  beside their targets and renamed into place. See ADR 0017. (#39)
+- `RV carry-candidates` carries verified candidates to a head the author pushed
+  mid-review. A candidate carries only when its file, a stale consumer's cause,
+  and every file its claim, evidence or verification names are unchanged
+  between the heads, and its line is a changed line of the new head's diff;
+  the rest are refused by name and the review command re-reviews the new head.
+  The review of the commits in between is merged in with `--interdiff`, held
+  findings move with `--held`, and the carry is written to `carry.json` and
+  the audit log. A run recorded with `record --carry` from a carry without that
+  review, or with a candidate refused, is capped at COMMENT, passes the cap to
+  runs carried from it, and is not used as the next review's boundary. See ADR
+  0017. (#29)
 - `RV reconcile` applies the second-pass verdicts to the candidates, and a new
   `tie-breaker` agent settles a dispute between the two verifiers. A finding is
   disputed when the evidence-verifier traced its impact at 0.85 or more and the
@@ -149,6 +165,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A finding whose wider impact was disputed and not upheld carries
   `impactDisputed: true` to the editor, which then leaves that impact out of
   the comment. (#31)
+- `record` checks stdin against the output contract `validate-output` enforces
+  and exits 2, naming each problem and storing nothing, when it is not a
+  review. (#34)
+- `carry` of an earlier run with no findings gives `No actionable findings.` as
+  its `output` instead of an empty string, and `carry --text` prints only the
+  carried review so it pipes into `validate-output` and `record`; it exits 1
+  when findings existed and none carried, or a blocking or important finding
+  did not carry, which `record --carried-from` also refuses. The review command
+  shows the handoff. (#35)
 
 ## [1.10.1] - 2026-10-05
 

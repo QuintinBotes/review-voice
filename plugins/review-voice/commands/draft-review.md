@@ -51,7 +51,8 @@ needs a rerun.
   this head is not sent again (`alreadyInline`), so an approval that follows a
   comment while CI was red carries the summary only.
 - **The head guard.** If the pull request's head is no longer `--head`, exit 3.
-  Review the new head instead.
+  Review the new head instead, or carry the verified candidates to it with
+  `carry-candidates` as `/review-voice:review` describes.
 - **The CI guard.** Check runs are read with `filter=latest`, every page, with
   combined commit statuses. `stale`, `skipped` and `neutral` do not count. A
   failure always counts, whatever else ran under its name; only a run that never

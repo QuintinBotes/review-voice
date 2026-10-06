@@ -7,7 +7,7 @@
  * (candidate generation, verification, wording) live in the plugin's agents.
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
-import { readFileSync, readSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
+import { readFileSync, readSync, writeFileSync, mkdirSync, statSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
@@ -41,12 +41,14 @@ import {
   recordedRunsForPull,
   runDetail,
   heldProblem,
+  type CarryMarker,
   CarryMismatch,
   type CandidateHint,
   type HeldFinding,
   type StageTiming,
 } from './store/runs.ts';
-import { carryFindings, CarryError, type CarriedFinding } from './diff/carry.ts';
+import { carryCandidates, carryFindings, CarryError, followLine, seriousNotCarried, type CarriedFinding } from './diff/carry.ts';
+import { candidateAnchor, reanchorCandidates, reanchorScores } from './diff/reanchor.ts';
 import { fetchPriorHead, latestOwnReview, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
   recordFeedback,
@@ -114,6 +116,7 @@ import { computeVerdict, postReview } from './publish/post.ts';
 import { ReviewWriter, WriteViolation } from './github/writer.ts';
 import { hashDiff } from './store/runs.ts';
 import { cleanStages, describeStage, shallowPassWarning } from './store/effort.ts';
+import { recordAudit } from './store/audit.ts';
 
 const USAGE = `review-voice <command>
 
@@ -125,7 +128,7 @@ Commands:
   context           Resolve config and the active policy stack as JSON
   conventions       Collect the repository's own convention documents
   evidence          Run the configured static checks and emit structured signals
-  verify            Second-pass verification of candidates by a configured command
+  verify            Second-pass verification by a configured command
   reconcile         Apply --second-pass verdicts; --tie-breaks settles disputes
   redact            Redact secrets from stdin (used before anything is stored)
   sync              Ingest review history from allowlisted repositories
@@ -145,11 +148,16 @@ Commands:
   feedback          Record feedback on a finding
   status            Show what is stored locally
   carry             Carry an earlier run's untouched findings to a new head
+  reanchor          Move one scored candidate to a corrected changed line
+  carry-candidates  Carry verified candidates to a pushed head if unchanged
   explain           Show why the last review said what it said
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
   --version         Print the plugin version
   --help            Show this message
+
+anchors:
+  One inline anchor per finding of the review on stdin, read from its text.
 
 thread flags:
   --pr <number>          Pull request whose existing comments to read
@@ -162,9 +170,9 @@ diff flags:
   --pr <number>          Review a GitHub pull request (needs --repository)
   --full                 On --pr, review the complete pull request again
   --since <sha>          On --pr, the head last reviewed (overrides the record)
-  --repository <name>    owner/repo for --pr; inferred from the git remote if absent
+  --repository <name>    owner/repo for --pr (default: the git remote)
   --include-generated    Include lock files, generated, vendored and binary files
-  --out <dir>            Write diff.patch and files.json; stdout includes a summary
+  --out <dir>            Write diff.patch and files.json, print a summary
 
 symbols flags:
   --diff-file <path>     Unified diff whose changed symbols to inspect
@@ -191,12 +199,24 @@ record flags:
   --tie-breaks <path>    reconcile's output, with the rulings it applied
   --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
   --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
+  --carry <path>         carry.json of carry-candidates (needs --head)
   --stages <path>        Per-stage timings as
                          [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean
                          result from a shallow analyst pass is warned about
 
 carry flags:
   --from <run-id> --head <sha>   Findings of that run still valid at the new head
+  --text                 Print only the carried review, for validate-output
+
+reanchor flags:
+  --candidate <id> --line <n> [--path <p>]  A changed line of --diff-file;
+                         rewrites --scores and --candidates, keeping the score
+
+carry-candidates flags:
+  --candidates --verification --since <sha> --head --diff-file --out <dir>
+  --interdiff <dir> --interdiff-candidates --interdiff-verification
+                         The reviewed commits between the heads, merged in
+  --held <path>          Held findings to move to the new head
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -206,48 +226,42 @@ score flags:
   --base <ref>              Reviewed tree for absence checks
   --verification <path>     Verifier output for confidence and fix rendering
   --exclude-pull <n>        Exclude precedents from this pull request
-  --min-confidence <n>      Gate on a confidence the verifier established
-                            (default 0.8)
-  --min-analyst-confidence <n>
-                            Analyst-only confidence gate (default 0.7)
+  --min-confidence <n>      Verifier confidence gate (default 0.8)
+  --min-analyst-confidence <n>  Analyst-only gate (default 0.7)
   --thread <path>           Existing pull-request comments
   --diff-file <path>        Diff for reach and anchor checks
   --min-score <n>           Final score gate (default 0.68)
   --repository <name>       Prefer precedents from this repository
 
 verify flags:
-  --diff-file <path>        The diff under review, so the command judges the
-                            change rather than the working tree
+  --diff-file <path>        The diff under review, not the working tree
   --base <ref>              Base commit, only when it is readable locally
   --head <ref>              Head commit, only when it is readable locally
   --repository <name>       owner/repo, inferred from the git remote if absent
 
 conventions flags:
-  --files <path>            files.json from diff --out, to scope nested
-                            CLAUDE.md and AGENTS.md to the changed subtrees
+  --files <path>            files.json from diff --out, scoping nested docs
   --path <p>                A changed path, repeatable, instead of --files
 
 sync flags:
-  --target <n>              Non-owner events to import (default: 60 per
-                            allowlisted repository, from 250 to 1500).
-                            Owner events are always imported in full.
+  --target <n>              Non-owner events to import (default 60 per
+                            repository, 250 to 1500); owner events all
   --max-pulls <n>           Pull requests inspected per repository (default 60)
   --include-conversation    Also read pull-request conversation comments
-  --dry-run                 Report what would be imported without storing anything
+  --dry-run                 Report the import without storing it
 
 purge flags (one required):
   --repo <owner/repo>   Remove one repository's events
   --before <ISO date>   Remove events older than a date
   --all                 Remove everything, including runs and feedback
-  --confirm             Actually delete; without it, only a preview is printed
+  --confirm             Delete; without it, only a preview
 
 retrieve flags:
   --text <query>        Candidate claim and failure mode (required)
   --repository <name>   Prefer precedents from this repository
   --path <path>         Prefer precedents on this file
   --language <lang>     Prefer precedents in this language
-  --max-positive <n>    Default 3
-  --max-negative <n>    Default 2
+  --max-positive <n> --max-negative <n>   Defaults 3 and 2
 
 validate-output flags:
   --json                     Emit the result as JSON
@@ -473,10 +487,18 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
   });
 
   let recorded: RecordedRun[] = [];
+  let uncoveredPrior: string | null = null;
   try {
     const db = openDatabase();
     try {
       recorded = recordedRunsForPull(db, repository, pullNumber);
+      // A run whose carry left commits unreviewed is no boundary: reading
+      // only what came after it would never read those commits. With no
+      // prior, the whole pull request is read (docs/adr/0017).
+      if (recorded.length > 0 && runDetail(db, recorded[0]!.runId)?.carry?.covered === false) {
+        uncoveredPrior = recorded[0]!.runId;
+        recorded = [];
+      }
     } finally {
       db.close();
     }
@@ -487,8 +509,14 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
   const { prior, resolution } = await resolvePrior({
     since,
     recorded,
-    ownReview: () => latestOwnReview(new GitHubClient({ allowlist: [repository] }), repository, pullNumber),
+    ownReview: () =>
+      uncoveredPrior !== null
+        ? Promise.resolve(null)
+        : latestOwnReview(new GitHubClient({ allowlist: [repository] }), repository, pullNumber),
   });
+  if (uncoveredPrior !== null && since === null) {
+    console.error(`Run ${uncoveredPrior} carried candidates without reviewing the commits before it, so the whole pull request is read.`);
+  }
 
   let planned: { scope: ReviewScope; interdiffPatch: string | null };
   try {
@@ -1264,9 +1292,7 @@ function containsCut(before: unknown, after: unknown): boolean {
  * since its own line is meant to be on unchanged code.
  */
 function anchorFor(hunks: Map<string, FileHunks>, candidate: Candidate): AnchorCheck {
-  return candidate.anchor === 'stale-consumer'
-    ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null)
-    : classifyAnchor(hunks, candidate.path, candidate.line);
+  return candidateAnchor(hunks, candidate);
 }
 
 function scoreCommand(argv: string[]): number {
@@ -2057,6 +2083,26 @@ function recordCommand(argv: string[]): number {
     return 2;
   }
 
+  // The same contract `validate-output` enforces, so a JSON blob or a draft
+  // cannot land in the store and be read back by `explain` and `status` as a
+  // review. Size limits are left to `validate-output`, which is given the
+  // policy's figures; this checks only that the text is review output.
+  const contract = validateOutput(output, {
+    ...DEFAULT_LIMITS,
+    maxFindings: null,
+    maxWordsPerFinding: Number.MAX_SAFE_INTEGER,
+    maxTotalWords: Number.MAX_SAFE_INTEGER,
+  });
+  if (!contract.valid) {
+    for (const violation of contract.violations) {
+      const where = violation.line === undefined ? '' : `line ${violation.line}: `;
+      console.error(`[${violation.code}] ${where}${violation.message}`);
+    }
+    console.error('stdin is not a validated review, so nothing was recorded. Pipe what `validate-output` passed.');
+    if (contract.findingCount === 0) console.error(noFindingsHint());
+    return 2;
+  }
+
   const diffFile = flag(argv, '--diff-file');
   let diff = '';
   if (diffFile !== null) {
@@ -2200,6 +2246,7 @@ function recordCommand(argv: string[]): number {
   const db = openDatabase();
   try {
     let carried: { runId: string; findings: CarriedFinding[] } | undefined;
+    let carry: CarryMarker | undefined;
     const carriedFrom = flag(argv, '--carried-from');
     if (carriedFrom !== null) {
       const head = flag(argv, '--head');
@@ -2209,11 +2256,58 @@ function recordCommand(argv: string[]): number {
       }
       try {
         const result = carryForRun(db, carriedFrom, head);
+        // A serious finding left behind may be what stopped an approval;
+        // recording the rest would let the review approve without it.
+        const serious = seriousNotCarried(result.notCarried);
+        if (serious.length > 0) {
+          console.error(
+            `Not recorded: ${serious.map((f) => `${f.findingId} (${f.severity}, ${f.path}:${f.line})`).join(', ')} ` +
+              'did not carry. Review those files again rather than recording the carry.',
+          );
+          return 2;
+        }
         carried = { runId: carriedFrom, findings: result.carried };
+        const prior = runDetail(db, carriedFrom)?.carry ?? null;
+        if (prior !== null && !prior.covered) carry = { ...prior, inheritedFrom: prior.inheritedFrom ?? carriedFrom };
       } catch (error) {
         console.error((error as Error).message);
         return 2;
       }
+    }
+
+    const carryFile = flag(argv, '--carry');
+    if (carryFile !== null) {
+      const head = flag(argv, '--head');
+      let marker: CarryMarker | null = null;
+      try {
+        const parsed = JSON.parse(readFileSync(carryFile, 'utf8')) as Record<string, unknown>;
+        const refused = Array.isArray(parsed['refused'])
+          ? (parsed['refused'] as { candidateId?: unknown }[]).map((r) => String(r?.candidateId))
+          : null;
+        const interdiff = parsed['interdiff'] as { reviewed?: unknown } | undefined;
+        if (refused !== null && typeof parsed['since'] === 'string' && typeof parsed['head'] === 'string') {
+          const reviewed = interdiff?.reviewed === true;
+          marker = {
+            since: parsed['since'],
+            head: parsed['head'],
+            interdiffReviewed: reviewed,
+            refused,
+            covered: reviewed && refused.length === 0,
+          };
+        }
+      } catch {
+        marker = null;
+      }
+      if (marker === null) {
+        console.error(`${carryFile} is not the carry.json that carry-candidates wrote.`);
+        return 2;
+      }
+      if (head === null || !sameCommit(marker.head, head)) {
+        console.error(`--carry is for ${marker.head}; pass --head with that commit.`);
+        return 2;
+      }
+      // An inherited gap stays a gap whatever this carry covered.
+      if (carry === undefined || marker.covered === false) carry = marker;
     }
 
     const { reviewRunId, findings } = recordRun(db, {
@@ -2231,6 +2325,7 @@ function recordCommand(argv: string[]): number {
       tieBreaks,
       held,
       carried,
+      ...(carry === undefined ? {} : { carry }),
       stages,
     });
     // Local only: printed here and by `explain`, never part of what is posted.
@@ -2266,13 +2361,38 @@ function carryCommand(argv: string[]): number {
   const from = flag(argv, '--from');
   const head = flag(argv, '--head');
   if (from === null || head === null) {
-    console.error('Usage: carry --from <run-id> --head <sha>');
+    console.error('Usage: carry --from <run-id> --head <sha> [--text]');
     return 2;
   }
   const db = openDatabase();
   try {
     const result = carryForRun(db, from, head);
-    console.log(JSON.stringify({ from, head, ...result }, null, 2));
+    if (!argv.includes('--text')) {
+      console.log(JSON.stringify({ from, head, ...result }, null, 2));
+      return 0;
+    }
+    // The review text alone, so it pipes straight into `validate-output` and
+    // `record`. What did not carry is named where a pipe does not take it.
+    for (const skipped of result.notCarried) {
+      console.error(`Not carried: ${skipped.findingId} ${skipped.path}:${skipped.line} - ${skipped.reason}`);
+    }
+    const serious = seriousNotCarried(result.notCarried);
+    if (serious.length > 0) {
+      // A blocking or important finding on code that changed may be what kept
+      // the earlier review from approving. Carrying the rest would drop it.
+      console.error(
+        `Not carried: ${serious.map((f) => `${f.findingId} (${f.severity})`).join(', ')}, on code that changed. ` +
+          'Review those files again; nothing was printed.',
+      );
+      return 1;
+    }
+    if (result.output.length === 0) {
+      // Findings existed and none carried. Printing the clean-review sentence
+      // here would record a review that says the opposite of the earlier one.
+      console.error(`Nothing carried from ${from}; its findings sit on code that changed.`);
+      return 1;
+    }
+    process.stdout.write(`${result.output}\n`);
     return 0;
   } catch (error) {
     if (error instanceof CarryError) {
@@ -2283,6 +2403,383 @@ function carryCommand(argv: string[]): number {
   } finally {
     db.close();
   }
+}
+
+/**
+ * Moves one scored candidate to a corrected changed line, keeping its
+ * verification and score. A finding anchored a line off otherwise goes back
+ * through the analyst, the anchor check and scoring for a claim that did not
+ * change. Exit 1 is a refusal, with the reason on stderr.
+ */
+function reanchorCommand(argv: string[]): number {
+  const candidateId = flag(argv, '--candidate');
+  const line = Number(flag(argv, '--line'));
+  const scoresFile = flag(argv, '--scores');
+  const diffFile = flag(argv, '--diff-file');
+  if (candidateId === null || !Number.isInteger(line) || line < 1 || scoresFile === null || diffFile === null) {
+    console.error('Usage: reanchor --candidate <id> --line <n> [--path <p>] --scores <file> --diff-file <patch> [--candidates <file>]');
+    return 2;
+  }
+  if (argv.includes('--path') && flag(argv, '--path') === null) {
+    console.error('--path needs the file the finding belongs in.');
+    return 2;
+  }
+
+  const readJson = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8'));
+  let scores: unknown;
+  let hunks: Map<string, FileHunks>;
+  try {
+    scores = readJson(scoresFile);
+    hunks = parseHunks(readFileSync(diffFile, 'utf8'));
+  } catch (error) {
+    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+
+  const result = reanchorScores(scores, candidateId, { path: flag(argv, '--path'), line }, hunks);
+  if (!result.ok) {
+    console.error(`Not re-anchored: ${result.refused}`);
+    return 1;
+  }
+
+  // Every file is checked before either is written, so a refusal leaves both
+  // as they were.
+  const candidatesFile = flag(argv, '--candidates');
+  let candidates: unknown = null;
+  if (candidatesFile !== null) {
+    try {
+      candidates = reanchorCandidates(readJson(candidatesFile), candidateId, result.to);
+    } catch (error) {
+      console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    if (candidates === null) {
+      console.error(`${candidatesFile} has no candidate ${candidateId}; nothing was re-anchored.`);
+      return 2;
+    }
+  }
+
+  // Both written beside their targets first and then renamed, candidates
+  // first, so a failure part way leaves no half-written file and never a
+  // score that moved without its candidate.
+  const staged: [string, string][] = [];
+  try {
+    if (candidatesFile !== null) {
+      staged.push([`${candidatesFile}.reanchor-${process.pid}`, candidatesFile]);
+      writeFileSync(staged[staged.length - 1]![0], `${JSON.stringify(candidates, null, 2)}\n`);
+    }
+    staged.push([`${scoresFile}.reanchor-${process.pid}`, scoresFile]);
+    writeFileSync(staged[staged.length - 1]![0], `${JSON.stringify(result.updated, null, 2)}\n`);
+    for (const [temporary, target] of staged) renameSync(temporary, target);
+  } catch (error) {
+    for (const [temporary] of staged) rmSync(temporary, { force: true });
+    console.error(`Cannot write: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  console.log(JSON.stringify({ candidateId, from: result.from, to: result.to, anchorCheck: result.anchorCheck }, null, 2));
+  return 0;
+}
+
+/** The list inside a JSON input, and how to put a filtered one back in its place. */
+function listIn(parsed: unknown, keys: readonly string[]): { list: Record<string, unknown>[]; rebuild: (list: unknown[]) => unknown } | null {
+  if (Array.isArray(parsed)) return { list: parsed as Record<string, unknown>[], rebuild: (list) => list };
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const record = parsed as Record<string, unknown>;
+  const key = keys.find((k) => Array.isArray(record[k]));
+  if (key === undefined) return null;
+  return { list: record[key] as Record<string, unknown>[], rebuild: (list) => ({ ...record, [key]: list }) };
+}
+
+/** Every string inside a JSON value, so a file named anywhere in it is seen. */
+function stringsIn(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap(stringsIn);
+  if (typeof value === 'object' && value !== null) return Object.values(value).flatMap(stringsIn);
+  return [];
+}
+
+const idOfEntry = (entry: Record<string, unknown>): string => String(entry['candidate_id'] ?? entry['candidateId']);
+
+/** The same entry under another candidate id, in the key spelling it already used. */
+function withId(entry: Record<string, unknown>, id: string): Record<string, unknown> {
+  return 'candidate_id' in entry ? { ...entry, candidate_id: id } : { ...entry, candidateId: id };
+}
+
+/** True when two commit names are the same commit, allowing an abbreviation of at least 7. */
+function sameCommit(a: string, b: string): boolean {
+  const x = a.toLowerCase();
+  const y = b.toLowerCase();
+  return x === y || (Math.min(x.length, y.length) >= 7 && (x.startsWith(y) || y.startsWith(x)));
+}
+
+/**
+ * The review of the commits between the two heads, read from `--interdiff`.
+ *
+ * Carried candidates say nothing about those commits, so a carry stands only
+ * beside a review of them. The manifest must be a pull-request diff of the new
+ * head that covers everything since the old one, and every candidate from it
+ * must sit on a changed line of that diff, so the review cannot be stood in
+ * for by an unrelated one.
+ */
+function readInterdiffReview(
+  dir: string,
+  candidatesFile: string,
+  verificationFile: string,
+  since: string,
+  head: string,
+): { candidates: Record<string, unknown>[]; verification: Record<string, unknown>[]; scope: string } | string {
+  let manifest: Record<string, unknown>;
+  let hunks: Map<string, FileHunks>;
+  try {
+    manifest = JSON.parse(readFileSync(join(dir, 'files.json'), 'utf8')) as Record<string, unknown>;
+    hunks = parseHunks(readFileSync(join(dir, 'diff.patch'), 'utf8'));
+  } catch (error) {
+    return `Cannot read the interdiff in ${dir}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  const scope = parseReviewScope(manifest['scope']);
+  if (scope === null || typeof manifest['head'] !== 'string') {
+    return `${dir} is not a pull-request diff; run diff --pr <number> --since <old sha> --out ${dir}`;
+  }
+  if (!sameCommit(manifest['head'], head)) return `${dir} reads ${manifest['head']}, not the new head ${head}`;
+  if (scope.kind !== 'full' && !sameCommit(scope.since, since)) {
+    return `${dir} covers the commits since ${scope.since}, not since ${since}`;
+  }
+
+  let candidates: Record<string, unknown>[];
+  let verification: Record<string, unknown>[];
+  try {
+    const parsed = listIn(JSON.parse(readFileSync(candidatesFile, 'utf8')), ['candidates']);
+    if (parsed === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
+    candidates = parsed.list;
+    const normalised = candidates.map((raw, index) => normaliseCandidate(raw as RawCandidate, index));
+    assertUniqueCandidateIds(normalised);
+    const misplaced = normalised.filter((c) => !candidateAnchor(hunks, c).ok);
+    if (misplaced.length > 0) {
+      throw new Error(
+        `interdiff candidate(s) not on a changed line of ${join(dir, 'diff.patch')}: ${misplaced.map((c) => c.candidateId).join(', ')}`,
+      );
+    }
+    candidates = candidates.map((raw, index) => withId(raw, normalised[index]!.candidateId));
+    const parsedVerification = listIn(JSON.parse(readFileSync(verificationFile, 'utf8')), VERDICT_KEYS);
+    verification = parsedVerification?.list ?? [];
+    if (parsedVerification === null && candidates.length > 0) throw new Error(`${verificationFile} contains no verifications`);
+    const problem = verificationProblem(verification);
+    if (problem !== null) throw new Error(`malformed verification - ${problem}`);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  return { candidates, verification, scope: scope.kind };
+}
+
+/**
+ * Carries verified candidates to a head the author pushed mid-review.
+ *
+ * Posting is refused once the head moves, and the alternative was copying
+ * candidates and verifications across by hand. Only candidates whose files
+ * are unchanged carry; the rest are named so they are verified again. The
+ * review of the commits between the heads, from `--interdiff`, is merged in;
+ * without it `carry.json` says so and a run recorded from it cannot approve.
+ * Exit 1 means at least one candidate was refused.
+ */
+function carryCandidatesCommand(argv: string[]): number {
+  const candidatesFile = flag(argv, '--candidates');
+  const verificationFile = flag(argv, '--verification');
+  const since = flag(argv, '--since');
+  const head = flag(argv, '--head');
+  const diffFile = flag(argv, '--diff-file');
+  const outDir = flag(argv, '--out');
+  if ([candidatesFile, verificationFile, since, head, diffFile, outDir].includes(null)) {
+    console.error(
+      'Usage: carry-candidates --candidates <file> --verification <file> --since <sha> --head <sha> --diff-file <patch> --out <dir> ' +
+        '[--interdiff <dir> --interdiff-candidates <file> --interdiff-verification <file>] [--held <file>]',
+    );
+    return 2;
+  }
+  const interdiffFlags = ['--interdiff', '--interdiff-candidates', '--interdiff-verification'].map((name) => flag(argv, name));
+  if (interdiffFlags.some((value) => value !== null) && interdiffFlags.some((value) => value === null)) {
+    console.error('--interdiff, --interdiff-candidates and --interdiff-verification go together.');
+    return 2;
+  }
+
+  let candidatesIn: NonNullable<ReturnType<typeof listIn>>;
+  let verificationIn: NonNullable<ReturnType<typeof listIn>>;
+  let candidates: Candidate[];
+  let hunks: Map<string, FileHunks>;
+  let heldIn: NonNullable<ReturnType<typeof listIn>> | null = null;
+  try {
+    const parsedCandidates = listIn(JSON.parse(readFileSync(candidatesFile!, 'utf8')), ['candidates']);
+    if (parsedCandidates === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
+    candidatesIn = parsedCandidates;
+    candidates = candidatesIn.list.map((raw, index) => normaliseCandidate(raw as RawCandidate, index));
+    assertUniqueCandidateIds(candidates);
+    const parsedVerification = listIn(JSON.parse(readFileSync(verificationFile!, 'utf8')), VERDICT_KEYS);
+    if (parsedVerification === null || parsedVerification.list.length === 0) {
+      throw new Error(`${verificationFile} contains no verifications`);
+    }
+    verificationIn = parsedVerification;
+    const problem = verificationProblem(verificationIn.list);
+    if (problem !== null) throw new Error(`malformed verification - ${problem}`);
+    hunks = parseHunks(readFileSync(diffFile!, 'utf8'));
+    const heldFile = flag(argv, '--held');
+    if (heldFile !== null) {
+      heldIn = listIn(JSON.parse(readFileSync(heldFile, 'utf8')), ['held']);
+      if (heldIn === null) throw new Error(`${heldFile} is not an array or {"held": [...]}`);
+      heldIn.list.forEach((entry, index) => {
+        const heldError = heldProblem(entry);
+        if (heldError !== null) throw new Error(`${heldFile} entry ${index}: ${heldError}`);
+      });
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
+
+  const interdiff =
+    interdiffFlags[0] === null
+      ? null
+      : readInterdiffReview(interdiffFlags[0]!, interdiffFlags[1]!, interdiffFlags[2]!, since!, head!);
+  if (typeof interdiff === 'string') {
+    console.error(interdiff);
+    return 2;
+  }
+
+  // A candidate the verifier never saw has nothing to carry.
+  const verificationById = new Map(verificationIn.list.map((v) => [idOfEntry(v), v]));
+  const unverified = candidates.filter((c) => !verificationById.has(c.candidateId));
+  let result: ReturnType<typeof carryCandidates>;
+  const heldKept: Record<string, unknown>[] = [];
+  const heldDropped: { path: string; line: number; reason: string }[] = [];
+  try {
+    result = carryCandidates(
+      candidates
+        .filter((c) => verificationById.has(c.candidateId))
+        .map((c) => ({
+          ...c,
+          texts: [...stringsIn(candidatesIn.list[candidates.indexOf(c)]), ...stringsIn(verificationById.get(c.candidateId))],
+        })),
+      since!,
+      head!,
+      hunks,
+      process.cwd(),
+    );
+    // Held findings name old-head lines. Each is moved to its line at the new
+    // head, or dropped when that line or its neighbours changed.
+    for (const entry of heldIn?.list ?? []) {
+      const path = entry['path'] as string;
+      const line = entry['line'] as number;
+      const moved = followLine(since!, head!, path, line, process.cwd());
+      if ('reason' in moved) heldDropped.push({ path, line, reason: moved.reason });
+      else heldKept.push({ ...entry, line: moved.line });
+    }
+  } catch (error) {
+    if (error instanceof CarryError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+  const refused = [
+    ...unverified.map((c) => ({ candidateId: c.candidateId, path: c.path, line: c.line, reason: 'no verification for it' })),
+    ...result.refused,
+  ];
+
+  // The analyst's own entries, moved, in the spelling the file already used.
+  const carriedById = new Map(result.carried.map((c) => [c.candidateId, c]));
+  const carriedCandidates = candidatesIn.list.flatMap((raw, index) => {
+    const moved = carriedById.get(candidates[index]!.candidateId);
+    if (moved === undefined) return [];
+    const causeKey = 'caused_by' in raw ? 'caused_by' : 'causedBy';
+    return [{
+      ...raw,
+      path: moved.path,
+      line: moved.line,
+      ...(moved.causedBy === undefined ? {} : { [causeKey]: { path: moved.causedBy.path, line: moved.causedBy.line } }),
+    }];
+  });
+  const carriedVerification = verificationIn.list.filter((v) => carriedById.has(idOfEntry(v)));
+
+  // The interdiff review's candidates join the carried ones. Its analyst
+  // numbers from the start too, so a clashing id is renamed in both files.
+  const taken = new Set(candidates.map((c) => c.candidateId));
+  const renamed: Record<string, string> = {};
+  const rename = (id: string): string => {
+    if (!taken.has(id)) {
+      taken.add(id);
+      return id;
+    }
+    let n = 1;
+    while (taken.has(`${id}_interdiff${n === 1 ? '' : `_${n}`}`)) n += 1;
+    const next = `${id}_interdiff${n === 1 ? '' : `_${n}`}`;
+    taken.add(next);
+    renamed[id] = next;
+    return next;
+  };
+  const interdiffCandidates = (interdiff?.candidates ?? []).map((raw) => withId(raw, rename(idOfEntry(raw))));
+  const interdiffVerification = (interdiff?.verification ?? []).map((v) => withId(v, renamed[idOfEntry(v)] ?? idOfEntry(v)));
+
+  const record = {
+    since,
+    head,
+    carried: result.carried,
+    refused,
+    interdiff:
+      interdiff === null
+        ? { reviewed: false }
+        : { reviewed: true, scope: interdiff.scope, candidates: interdiffCandidates.length, renamed },
+    ...(heldIn === null ? {} : { held: { kept: heldKept.length, dropped: heldDropped } }),
+  };
+
+  try {
+    mkdirSync(outDir!, { recursive: true });
+    writeFileSync(
+      join(outDir!, 'candidates.json'),
+      `${JSON.stringify(candidatesIn.rebuild([...carriedCandidates, ...interdiffCandidates]), null, 2)}\n`,
+    );
+    writeFileSync(
+      join(outDir!, 'verification.json'),
+      `${JSON.stringify(verificationIn.rebuild([...carriedVerification, ...interdiffVerification]), null, 2)}\n`,
+    );
+    if (heldIn !== null) writeFileSync(join(outDir!, 'held.json'), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}\n`);
+    writeFileSync(join(outDir!, 'carry.json'), `${JSON.stringify(record, null, 2)}\n`);
+  } catch (error) {
+    console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+
+  const db = openDatabase();
+  try {
+    recordAudit(db, 'candidates_carried', null, {
+      since,
+      head,
+      carried: result.carried.map((c) => c.candidateId),
+      refused: refused.map((r) => r.candidateId),
+      interdiffReviewed: interdiff !== null,
+    });
+  } finally {
+    db.close();
+  }
+
+  for (const r of refused) console.error(`Refused ${r.candidateId}: ${r.reason}`);
+  for (const h of heldDropped) console.error(`Held finding dropped: ${h.path}:${h.line} - ${h.reason}`);
+  if (interdiff === null) {
+    console.error('The commits between the two heads were not reviewed (--interdiff), so a run recorded from this carry will not approve.');
+  }
+  console.log(
+    JSON.stringify(
+      {
+        carried: result.carried.length,
+        refused,
+        interdiffReviewed: interdiff !== null,
+        candidates: join(outDir!, 'candidates.json'),
+        verification: join(outDir!, 'verification.json'),
+        ...(heldIn === null ? {} : { held: join(outDir!, 'held.json') }),
+        carry: join(outDir!, 'carry.json'),
+      },
+      null,
+      2,
+    ),
+  );
+  return refused.length === 0 ? 0 : 1;
 }
 
 function feedbackCommand(argv: string[]): number {
@@ -3171,6 +3668,12 @@ async function main(argv: string[]): Promise<number> {
 
     case 'carry':
       return carryCommand(argv.slice(1));
+
+    case 'reanchor':
+      return reanchorCommand(argv.slice(1));
+
+    case 'carry-candidates':
+      return carryCandidatesCommand(argv.slice(1));
 
     case 'feedback':
       return feedbackCommand(argv.slice(1));

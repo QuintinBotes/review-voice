@@ -109,6 +109,41 @@ export function heldProblem(entry: unknown): string | null {
   return null;
 }
 
+/**
+ * A run built from candidates carried to a pushed head (docs/adr/0017).
+ *
+ * `covered` is true only when the commits between the two heads were reviewed
+ * and no candidate was refused. A run that is not covered never approves, and
+ * a run carried from it inherits the marker.
+ */
+export interface CarryMarker {
+  since: string;
+  head: string;
+  interdiffReviewed: boolean;
+  refused: string[];
+  covered: boolean;
+  /** The run this marker was inherited from, when it was. */
+  inheritedFrom?: string | undefined;
+}
+
+/** The marker as stored, or null when it is absent or not one. */
+export function parseCarryMarker(value: unknown): CarryMarker | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v['since'] !== 'string' || typeof v['head'] !== 'string') return null;
+  const refused = Array.isArray(v['refused']) ? v['refused'].filter((id): id is string => typeof id === 'string') : [];
+  const interdiffReviewed = v['interdiffReviewed'] === true;
+  return {
+    since: v['since'],
+    head: v['head'],
+    interdiffReviewed,
+    refused,
+    // Recomputed rather than trusted, so a hand-edited row cannot claim cover.
+    covered: interdiffReviewed && refused.length === 0 && v['covered'] === true,
+    ...(typeof v['inheritedFrom'] === 'string' ? { inheritedFrom: v['inheritedFrom'] } : {}),
+  };
+}
+
 /** Raised when a recorded finding repeats a carried one but sits on another line. */
 export class CarryMismatch extends Error {}
 
@@ -157,6 +192,8 @@ export interface RecordRunInput {
   held?: HeldFinding[] | undefined;
   /** The earlier run's carried findings, to be matched against what is recorded. */
   carried?: { runId: string; findings: CarriedFinding[] } | undefined;
+  /** Present when the run was built from candidates carried to this head. */
+  carry?: CarryMarker | undefined;
   /**
    * How long each stage took, and what it cost.
    *
@@ -294,6 +331,7 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
       verdicts: input.verdicts ?? [],
       tieBreaks: input.tieBreaks ?? [],
       held: input.held ?? [],
+      ...(input.carry === undefined ? {} : { carry: input.carry }),
     }),
     new Date().toISOString(),
     JSON.stringify(input.stages ?? []),
@@ -332,6 +370,8 @@ export interface RunDetail {
   tieBreaks: TieBreak[];
   /** Empty for runs recorded before held findings were kept. */
   held: HeldFinding[];
+  /** Null unless the run was built from carried candidates. */
+  carry: CarryMarker | null;
 }
 
 function storedComplexity(raw: unknown): ComplexityAssessment | null {
@@ -374,6 +414,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     verdicts?: unknown;
     tieBreaks?: unknown;
     held?: unknown;
+    carry?: unknown;
   };
 
   return {
@@ -390,6 +431,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     verdicts: parsed.verdicts ?? [],
     tieBreaks: Array.isArray(parsed.tieBreaks) ? (parsed.tieBreaks as TieBreak[]) : [],
     held: Array.isArray(parsed.held) ? (parsed.held as HeldFinding[]) : [],
+    carry: parseCarryMarker(parsed.carry),
     // Older rows predate the column, so absence is normal rather than an error.
     stages: ((): StageTiming[] => {
       const raw = row['stages_json'];

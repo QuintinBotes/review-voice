@@ -71,12 +71,22 @@ recorded. The scope is one of:
 
 - `unchanged` - the pull request's own diff is the same as at the previous
   head (a base merge or a rebase only). Do not review again: run
-  `RV carry --from <prior.runId> --head <sha>`, which keeps each earlier finding
-  whose line and the two lines either side are unchanged, at its new line, and
-  lists the rest under `notCarried`. Send `output` through `RV validate-output`,
-  display it, and record it in step 6 with `--carried-from <prior.runId>`. If
-  nothing is carried, print `scopeNote` and stop; the earlier review still
-  applies.
+  `RV carry --from <prior.runId> --head <sha> --text > <tmpdir>/review.txt`.
+  It prints the earlier review with each finding whose line and the two lines
+  either side are unchanged moved to its new line, and names the rest on
+  stderr. An earlier run with no findings prints exactly
+  `No actionable findings.`. Then hand that file on unchanged:
+  `RV validate-output < <tmpdir>/review.txt`, display it, and record it with
+  `RV record --repository <owner/repo> --head <sha> --carried-from <prior.runId> --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json < <tmpdir>/review.txt`.
+  Exit 1 from `carry` prints nothing. When stderr names a blocking or
+  important finding that did not carry, its code changed and it may be what
+  kept the earlier review from approving: review those files again with
+  `RV diff --pr <number> --full` from step 1 rather than recording the rest.
+  `record --carried-from` refuses the same case. Otherwise the earlier run had
+  findings and none carried: print `scopeNote` and stop; the earlier review
+  still applies. Without
+  `--text`, `carry` prints JSON, which is not a review: never pipe it into
+  `validate-output` or `record`.
 - `interdiff` - only the author's hunks that are new since the previous head,
   with base-branch churn excluded and head-side line numbers kept.
 - `incremental` - only the commits after the previous head (used only when
@@ -539,6 +549,17 @@ it cannot add a technical claim - rests on having no way to verify one. Handed
 a path it can only reply that it cannot open files, which on a live run cost a
 manual paste of eight findings.
 
+**When a cross-check finds an eligible finding anchored on the wrong line**,
+correct that one candidate rather than re-running the analyst:
+`RV reanchor --candidate <id> --line <n> --scores <file> --diff-file <tmpdir>/diff.patch --candidates <file>`,
+adding `--path <p>` when the file is wrong too. `<file>` after `--scores` is the
+JSON `RV score` printed, and the one after `--candidates` is the file step 6
+passes to `record`. The claim is unchanged, so its verification and score are
+kept and both files are rewritten in place. Exit 1 is a refusal, with the
+reason: the new line is not an added line or deletion site of the diff, the
+candidate was not eligible, it is a stale consumer, or another finding is
+already there. Then give the editor the updated `eligible[]` entry.
+
 ## Step 6 - Validate, and retry once
 
 Pipe the editor's output through
@@ -625,6 +646,9 @@ stray directory and another project's notes took the reviewed count from 11 to
 
   This also assigns the positional ids `/review-voice:feedback` needs. Do not
   print the ids.
+
+  `record` checks stdin against the same contract and exits 2, recording
+  nothing, when it is not a validated review. Pipe exactly what passed.
 - Exit 1: it printed one violation per line. Send **all** of them back to the
   `concise-editor` with its previous output and have it produce a corrected
   version. Validate that too.
@@ -635,6 +659,44 @@ stray directory and another project's notes took the reviewed count from 11 to
 **Never display output that has not passed validation**, and never edit it
 yourself to make it pass - the validator is the contract, and hand-patching it
 defeats the measurement.
+
+## When the head moves before posting
+
+If the author pushes after step 3, `verdict` and `post` refuse the old head
+(exit 3). The verified candidates can be carried, but the commits pushed in
+between are new code nobody has analysed, so they are reviewed like any other
+change first:
+
+1. `RV diff --pr <number> --full --out <newtmpdir>`, for the whole pull request
+   at the new head. This is the diff the carried candidates are checked
+   against and scored on.
+2. `RV diff --pr <number> --since <old sha> --out <interdir>`, for the commits
+   since the old head. Run steps 2 to 3c on `<interdir>/diff.patch` exactly as
+   for any review, and write the surviving candidates and the verifier's output
+   to files. If it reports `unchanged`, write `{"candidates": []}` and `[]`.
+3. Write the candidates step 4 scored to a file, then run
+   `RV carry-candidates --candidates <file> --verification <tmpdir>/verification.json --since <old sha> --head <new sha> --diff-file <newtmpdir>/diff.patch --out <newtmpdir> --interdiff <interdir> --interdiff-candidates <file> --interdiff-verification <file> --held <file>`.
+   A candidate carries only when nothing its verification read changed between
+   the two heads: its own file, a stale consumer's cause, and every file its
+   claim, evidence or verifier entry names. Its line must also still be a
+   changed line of the new diff. The interdiff review's candidates are merged
+   in, renamed where an id clashes. `--held` takes step 2's held list and moves
+   each entry to its line at the new head; an entry whose line or neighbours
+   changed is dropped and named. It writes `candidates.json`,
+   `verification.json`, `held.json` and `carry.json`, and records the carry in
+   the audit log.
+4. Exit 0: continue from step 4 with those files, the new `diff.patch` and
+   `--head <new sha>`, and record with the new `files.json`, `held.json` and
+   `--carry <newtmpdir>/carry.json`.
+5. Exit 1 names each refused candidate: code its verification read changed,
+   so it is not posted from this carry. Review the new head from step 2
+   instead of scoring only what carried; a refused finding may have been
+   fixed, or made worse.
+
+A run recorded with `--carry` from a carry made without `--interdiff`, or with
+a candidate refused, never approves: `verdict` caps it at COMMENT, and the
+next review of the pull request reads it in full. Never move a candidate across
+heads by hand.
 
 ## What not to do
 
