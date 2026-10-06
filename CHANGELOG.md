@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The posted review no longer says anything about human review. A change
+  assessed as high-complexity is still capped at COMMENT (ADR 0012), but the
+  summary line is the ordinary one and `humanReviewNote` is carried in the
+  `verdict` and `post` output for the agent to tell the user, not in the pull
+  request.
+
 ## [1.10.1] - 2026-10-05
 
 ### Changed

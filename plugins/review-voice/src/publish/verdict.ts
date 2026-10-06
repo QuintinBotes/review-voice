@@ -418,9 +418,7 @@ export function summaryLine(
     return count === 0 ? 'Not approving yet.' : `${plural(count, 'nit')}; not approving yet.`;
   }
   if (cappedBy === 'complexity') {
-    return count === 0
-      ? 'No problems found; leaving approval to a human reviewer.'
-      : `${plural(count, 'nit')}; leaving approval to a human reviewer.`;
+    return count === 0 ? 'No problems found.' : `${plural(count, 'nit')}.`;
   }
   if (event === 'APPROVE') {
     return count === 0 ? 'No problems found.' : `Approved, with ${plural(count, 'nit')}.`;
@@ -453,14 +451,10 @@ export function buildPayload(input: {
   event: ReviewEvent;
   planned: PlannedFindings;
   cappedBy: 'ci' | 'held' | 'complexity' | null;
-  /** The one line naming why a person should look; the second paragraph for every event. */
-  humanReviewNote?: string | null | undefined;
 }): ReviewPayload {
   const posted = [...input.planned.inline, ...input.planned.unanchored];
-  const note = input.humanReviewNote ?? null;
   const body = [
     summaryLine(input.event, posted, input.cappedBy),
-    ...(note === null ? [] : [note]),
     ...input.planned.unanchored.map((finding) => finding.raw),
   ].join('\n\n');
   return {

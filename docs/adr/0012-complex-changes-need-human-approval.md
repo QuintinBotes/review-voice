@@ -1,6 +1,6 @@
 # 0012 - Complex changes are raised for a human's approval
 
-**Status:** Accepted · **Date:** 2026-10-02
+**Status:** Accepted, amended 2026-10-06 · **Date:** 2026-10-02
 **Amends:** [0010](0010-review-verdict-posting.md) - the verdict mapping gains
 one cap. Nothing else in 0010 changes, and no new GitHub write is added.
 
@@ -49,10 +49,10 @@ review says so, and why, so a human picks it up.**
   so pending CI does not turn it into a wait. `verdict --recheck` refuses: there
   is no approval to re-check. COMMENT and REQUEST_CHANGES are unchanged, since
   neither unblocks anything.
-- **Raised in every case.** Whenever the assessment is high, the posted body
-  carries one line naming the reasons, whatever the event, and the review
-  command prints the same line after the findings, outside the validated text,
-  as it prints a scope note.
+- **Raised in every case.** Whenever the assessment is high, the review
+  command prints one line naming the reasons after the findings, outside the
+  validated text, as it prints a scope note. (Amended 2026-10-06: the posted
+  body no longer carries it; see below.)
 - **Unknown is not high.** A run recorded before this record, or without a
   manifest, has no assessment and is not capped; `verdict` says the assessment
   is missing.
@@ -80,3 +80,14 @@ not a defect, which is the false block 0010 was careful to avoid.
 **Use size (lines and files changed) as the signal.** Rejected by the owner:
 a large mechanical change is easy to read, and a short one dense with new
 branches is not.
+
+## Amendment - 2026-10-06
+
+The posted review no longer names human review. Its summary line is the
+ordinary one ("No problems found." or "N nits."), and the note is not in the
+body, an inline comment or the preview. The flag is local to the agent's
+output: `diff`, `verdict` and `post` carry `humanReviewNote` (null unless the
+change is high-complexity), and the commands tell the agent to print it and
+tell the user the change needs a human reviewer, without adding it to the pull
+request. The decision `reasons` still explain the cap locally. The APPROVE cap,
+the `--recheck` refusal and the sticky assessment are unchanged.

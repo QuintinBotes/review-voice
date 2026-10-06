@@ -535,7 +535,7 @@ function summaryLine(event, posted, cappedBy) {
     return count2 === 0 ? "Not approving yet." : `${plural(count2, "nit")}; not approving yet.`;
   }
   if (cappedBy === "complexity") {
-    return count2 === 0 ? "No problems found; leaving approval to a human reviewer." : `${plural(count2, "nit")}; leaving approval to a human reviewer.`;
+    return count2 === 0 ? "No problems found." : `${plural(count2, "nit")}.`;
   }
   if (event === "APPROVE") {
     return count2 === 0 ? "No problems found." : `Approved, with ${plural(count2, "nit")}.`;
@@ -557,10 +557,8 @@ function inlineComment(finding) {
 }
 function buildPayload(input) {
   const posted = [...input.planned.inline, ...input.planned.unanchored];
-  const note = input.humanReviewNote ?? null;
   const body = [
     summaryLine(input.event, posted, input.cappedBy),
-    ...note === null ? [] : [note],
     ...input.planned.unanchored.map((finding) => finding.raw)
   ].join("\n\n");
   return {
@@ -1465,7 +1463,7 @@ function assessComplexity(diff, files, partial) {
 }
 function humanReviewNote(assessment) {
   if (assessment === null || assessment.level !== "high") return null;
-  return `Raised for human review: ${assessment.reasons.join("; ")}. Review Voice will not approve this change.`;
+  return `Needs a human reviewer: ${assessment.reasons.join("; ")}. Review Voice will not approve this change; this is not posted to the pull request.`;
 }
 var isCount = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0;
 var isStrings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
@@ -12841,6 +12839,7 @@ function refusal(head, reason2) {
       run: null,
       held: [],
       complexity: null,
+      humanReviewNote: null,
       payload: null,
       alreadyInline: 0,
       key: null,
@@ -12926,8 +12925,7 @@ async function computeVerdict(options) {
       head,
       event: decision.event,
       planned,
-      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval ? "held" : needsHuman && planned.mapped === "APPROVE" ? "complexity" : null,
-      humanReviewNote: humanReviewNote(complexity)
+      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval ? "held" : needsHuman && planned.mapped === "APPROVE" ? "complexity" : null
     });
     key = idempotencyKey(options.repository, options.pullNumber, full2);
     const sent = sentInline(options.db, options.repository, options.pullNumber, head);
@@ -12954,6 +12952,7 @@ async function computeVerdict(options) {
       run: run.reviewRunId,
       held: planned.held,
       complexity,
+      humanReviewNote: humanReviewNote(complexity),
       payload,
       alreadyInline,
       key,

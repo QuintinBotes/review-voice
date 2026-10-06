@@ -26,7 +26,7 @@ RV verdict --repository <owner/repo> --pr <number> --head <sha> [--run <id>] < <
 
 `--run` defaults to the newest recorded run of that pull request. Nothing is
 sent. The JSON carries `event`, `action`, `reasons`, `head`, `ci`, `held`,
-`complexity`, `payload` and `preview`.
+`complexity`, `humanReviewNote`, `payload` and `preview`.
 
 `RV verdict` computes the whole decision - event, action, reasons, CI, the
 complexity cap, held findings and the payload preview - and never posts. A
@@ -68,6 +68,12 @@ needs a rerun.
   `action` is `wait`, exit 6, with no payload, whatever the mapped event, and
   `reasons` name each check. A real failure beside one is still red. Rerun CI,
   then compute the verdict again.
+
+**If `humanReviewNote` is not null, print it prominently on its own line before
+the preview, and tell the user the change needs a human reviewer.** It is not in
+the posted review, and it must not be added to the review or to any pull
+request comment; the verdict's `reasons` explain the cap locally. `post` carries
+the same field under `verdict`.
 
 Show `preview` exactly as printed, and the `held` findings with their reasons.
 The preview is generated from the payload that will be sent; its first line is

@@ -49,6 +49,8 @@ export interface VerdictOutput {
   held: HeldBack[];
   /** The recorded assessment, the pull request's own or a prior run's; null when none was recorded. */
   complexity: ComplexityAssessment | null;
+  /** For the agent to tell the user; never in the posted review. Null unless the change is high-complexity. */
+  humanReviewNote: string | null;
   /** What would be sent: inline comments already posted on this head are left out. */
   payload: ReviewPayload | null;
   /** Inline comments an earlier post of this head already sent. */
@@ -87,6 +89,7 @@ function refusal(head: string, reason: string): { exitCode: number; output: Verd
       run: null,
       held: [],
       complexity: null,
+      humanReviewNote: null,
       payload: null,
       alreadyInline: 0,
       key: null,
@@ -218,7 +221,6 @@ export async function computeVerdict(
           : needsHuman && planned.mapped === 'APPROVE'
             ? 'complexity'
             : null,
-      humanReviewNote: humanReviewNote(complexity),
     });
     // Keyed on the whole review, so the same review is refused a second time
     // even once its comments are all on the pull request.
@@ -250,6 +252,7 @@ export async function computeVerdict(
       run: run.reviewRunId,
       held: planned.held,
       complexity,
+      humanReviewNote: humanReviewNote(complexity),
       payload,
       alreadyInline,
       key,

@@ -151,7 +151,7 @@ test('the note is null unless high, and is one line naming the reasons', () => {
   const note = humanReviewNote(assessComplexity('', [file('src/auth/a.ts')]));
   assert.equal(
     note,
-    'Raised for human review: touches sensitive paths (src/auth/a.ts). Review Voice will not approve this change.',
+    'Needs a human reviewer: touches sensitive paths (src/auth/a.ts). Review Voice will not approve this change; this is not posted to the pull request.',
   );
 });
 
@@ -247,7 +247,7 @@ test('diff --out writes the assessment to files.json and the summary', () => {
     const manifest = JSON.parse(readFileSync(join(out, 'files.json'), 'utf8'));
     assert.equal(summary.complexity.level, 'high');
     assert.deepEqual(summary.complexity.sensitivePaths, ['src/auth/login.ts']);
-    assert.match(summary.humanReviewNote, /^Raised for human review: touches sensitive paths \(src\/auth\/login\.ts\)/);
+    assert.match(summary.humanReviewNote, /^Needs a human reviewer: touches sensitive paths \(src\/auth\/login\.ts\)/);
     assert.deepEqual(manifest.complexity, summary.complexity);
     assert.equal(manifest.humanReviewNote, summary.humanReviewNote);
 
@@ -435,7 +435,7 @@ const IMPORTANT = '[important] `src/pay.ts:8` - The retry charges twice. A timeo
 const NOTE = humanReviewNote(HIGH);
 const CAP_REASON = 'the change was raised for human review, so this comments rather than approves';
 
-test('a high run that would approve comments instead, with the reason and the note in the body', async () => {
+test('a high run that would approve comments instead, with the reason and no mention of a human in the body', async () => {
   await withDb(async (db) => {
     record(db, CLEAN, { complexity: HIGH });
     const { exitCode, output } = await verdict(db, fakeGitHub(), CLEAN);
@@ -444,19 +444,17 @@ test('a high run that would approve comments instead, with the reason and the no
     assert.equal(output.action, 'post');
     assert.ok(output.reasons.includes(CAP_REASON));
     assert.equal(output.complexity.level, 'high');
-    assert.equal(
-      output.payload.body,
-      `No problems found; leaving approval to a human reviewer.\n\n${NOTE}`,
-    );
+    assert.equal(output.payload.body, 'No problems found.');
+    assert.equal(output.humanReviewNote, NOTE);
   });
 });
 
-test('nits are named in the capped summary', async () => {
+test('nits are named in the capped summary, plainly', async () => {
   await withDb(async (db) => {
     record(db, NIT, { complexity: HIGH, scores: [verified('src/cart.ts', 40, 'nit')] });
     const { output } = await verdict(db, fakeGitHub(), NIT);
     assert.equal(output.event, 'COMMENT');
-    assert.ok(output.payload.body.startsWith('1 nit; leaving approval to a human reviewer.\n\n'));
+    assert.equal(output.payload.body, '1 nit.');
   });
 });
 
@@ -493,20 +491,19 @@ test('a moved head still refuses first, with exit 3', async () => {
   });
 });
 
-test('a high run that maps to REQUEST_CHANGES or COMMENT keeps its event and carries the note', async () => {
+test('a high run that maps to REQUEST_CHANGES or COMMENT keeps its event and the body stays plain', async () => {
   await withDb(async (db) => {
     record(db, IMPORTANT, { complexity: HIGH, scores: [verified('src/pay.ts', 8, 'important')] });
     const { output } = await verdict(db, fakeGitHub(), IMPORTANT);
     assert.equal(output.event, 'REQUEST_CHANGES');
-    assert.ok(output.payload.body.includes(NOTE));
+    assert.ok(!output.payload.body.includes(NOTE));
     assert.ok(!output.reasons.includes(CAP_REASON));
-    assert.equal(output.payload.body.split('\n\n')[1], NOTE);
   });
   await withDb(async (db) => {
     record(db, MINOR, { complexity: HIGH, scores: [verified('src/cart.ts', 12, 'minor')] });
     const { output } = await verdict(db, fakeGitHub(), MINOR);
     assert.equal(output.event, 'COMMENT');
-    assert.ok(output.payload.body.includes(NOTE));
+    assert.ok(!output.payload.body.includes(NOTE));
     assert.ok(!output.payload.body.includes('leaving approval'), 'the summary is the ordinary one');
   });
 });
@@ -539,7 +536,8 @@ test('a narrower normal run whose prior run was high is still capped', async () 
     assert.equal(output.event, 'COMMENT');
     assert.equal(output.complexity.level, 'high');
     assert.ok(output.reasons.includes(CAP_REASON));
-    assert.ok(output.payload.body.includes(NOTE));
+    assert.equal(output.humanReviewNote, NOTE);
+    assert.ok(!output.payload.body.includes(NOTE));
   });
 });
 

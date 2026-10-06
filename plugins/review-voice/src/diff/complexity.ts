@@ -184,10 +184,10 @@ export function assessComplexity(
   };
 }
 
-/** The one line the review and the posted body carry; null unless the change is high-complexity. */
+/** The one line for the agent and the user; never posted to the pull request. Null unless the change is high-complexity. */
 export function humanReviewNote(assessment: ComplexityAssessment | null): string | null {
   if (assessment === null || assessment.level !== 'high') return null;
-  return `Raised for human review: ${assessment.reasons.join('; ')}. Review Voice will not approve this change.`;
+  return `Needs a human reviewer: ${assessment.reasons.join('; ')}. Review Voice will not approve this change; this is not posted to the pull request.`;
 }
 
 const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0;
