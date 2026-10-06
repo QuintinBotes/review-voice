@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `review.human_review.generated_paths`. It reports
   `generatedDecisionPoints` beside the hand-written count, and sensitive paths
   still flag generated files (#42).
+- A high-complexity verdict now reports, for the agent only, the verdict the
+  review would have posted without the cap (`wouldHaveEvent`,
+  `wouldHaveSummary`), and the owner's earlier REQUEST_CHANGES that a COMMENT
+  leaves blocking (`staleRequestChanges`), for the user to dismiss by hand.
+  Neither is posted, and nothing is dismissed (#44).
 
 ## [1.10.1] - 2026-10-05
 

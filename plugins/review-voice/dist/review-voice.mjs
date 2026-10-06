@@ -545,6 +545,22 @@ function summaryLine(event, posted, cappedBy) {
   }
   return `${plural(count2, "comment")}, the highest ${highest}.`;
 }
+function wouldHaveSummary(planned) {
+  const posted = [...planned.inline, ...planned.unanchored];
+  const count2 = posted.length;
+  const highest = posted.map((finding) => finding.severity).sort((a, b) => RANK[a] - RANK[b])[0];
+  if (planned.mapped === "APPROVE") {
+    return count2 === 0 ? "Would have approved: no problems found." : `Would have approved, with ${plural(count2, "nit")}.`;
+  }
+  if (planned.mapped === "REQUEST_CHANGES") {
+    return `Would have requested changes: ${plural(count2, "comment")}, the highest ${highest}.`;
+  }
+  if (planned.heldBackApproval) {
+    const nits = count2 === 0 ? "" : `, with ${plural(count2, "nit")}`;
+    return `Would have commented: an unverified finding above a nit was held back${nits}.`;
+  }
+  return `Would have commented: ${plural(count2, "comment")}, the highest ${highest}.`;
+}
 function inlineComment(finding) {
   return {
     path: finding.path,
@@ -13056,6 +13072,9 @@ function refusal(head, reason2) {
       held: [],
       complexity: null,
       humanReviewNote: null,
+      wouldHaveEvent: null,
+      wouldHaveSummary: null,
+      staleRequestChanges: null,
       payload: null,
       alreadyInline: 0,
       key: null,
@@ -13081,6 +13100,44 @@ function pullRequestComplexity(run, loadRun) {
     current = prior;
   }
   return found;
+}
+var MAX_REVIEWS = 300;
+async function standingRequestChanges(client, repository, pullNumber, owner) {
+  const reviews = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`, MAX_REVIEWS);
+  const deciding = reviews.filter(
+    (review) => typeof review.user?.login === "string" && review.user.login.toLowerCase() === owner.toLowerCase() && (review.state === "APPROVED" || review.state === "CHANGES_REQUESTED" || review.state === "DISMISSED")
+  );
+  const latest = deciding[deciding.length - 1];
+  if (latest === void 0 || latest.state !== "CHANGES_REQUESTED" || typeof latest.id !== "number") return null;
+  return {
+    reviewId: latest.id,
+    submittedAt: typeof latest.submitted_at === "string" ? latest.submitted_at : null,
+    url: typeof latest.html_url === "string" ? latest.html_url : null
+  };
+}
+async function staleRequest(options, planned, reasons) {
+  const severities = [
+    ...[...planned.inline, ...planned.unanchored].map((finding) => finding.severity),
+    ...planned.held.map((held) => held.severity)
+  ];
+  if (severities.some((severity) => severity === null || severity === "blocking" || severity === "important")) return null;
+  const owner = options.owner ?? null;
+  if (owner === null || owner.length === 0) {
+    reasons.push("identity.owner_reviewer is not set, so an earlier request for changes was not looked for");
+    return null;
+  }
+  try {
+    const stale = await standingRequestChanges(options.client, options.repository, options.pullNumber, owner);
+    if (stale !== null) {
+      reasons.push(
+        `${owner}'s earlier REQUEST_CHANGES (review ${stale.reviewId}) still blocks the pull request and this review found nothing blocking; a COMMENT does not replace it, so dismiss it by hand`
+      );
+    }
+    return stale;
+  } catch (error) {
+    reasons.push(`could not read the pull request's reviews: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
 }
 function recordedRun(options, head) {
   const runId = options.runId ?? latestRunForPull(options.db, options.repository, options.pullNumber)?.reviewRunId ?? null;
@@ -13132,6 +13189,7 @@ async function computeVerdict(options) {
     needsHuman
   });
   if (complexity === null) decision.reasons.push("no complexity assessment was recorded for this run");
+  const staleRequestChanges = needsHuman ? await staleRequest(options, planned, decision.reasons) : null;
   let payload = null;
   let preview = null;
   let key = null;
@@ -13169,6 +13227,9 @@ async function computeVerdict(options) {
       held: planned.held,
       complexity,
       humanReviewNote: humanReviewNote(complexity),
+      wouldHaveEvent: needsHuman ? planned.mapped : null,
+      wouldHaveSummary: needsHuman ? wouldHaveSummary(planned) : null,
+      staleRequestChanges,
       payload,
       alreadyInline,
       key,
@@ -14096,6 +14157,7 @@ async function verdictCommand(argv) {
     console.error(target);
     return 2;
   }
+  const config2 = repositoryConfig();
   const db = openDatabase();
   try {
     const { exitCode, output } = await computeVerdict({
@@ -14103,7 +14165,8 @@ async function verdictCommand(argv) {
       db,
       client: new GitHubClient({ allowlist: [target.repository] }),
       recheck: argv.includes("--recheck"),
-      gateChecks: repositoryConfig()?.ciGateChecks ?? []
+      gateChecks: config2?.ciGateChecks ?? [],
+      owner: config2?.ownerReviewer ?? null
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -14129,7 +14192,8 @@ async function postCommand(argv) {
       confirm: argv.includes("--confirm"),
       event: flag(argv, "--event")?.toUpperCase(),
       postingEnabled: config2?.postingEnabled ?? false,
-      gateChecks: config2?.ciGateChecks ?? []
+      gateChecks: config2?.ciGateChecks ?? [],
+      owner: config2?.ownerReviewer ?? null
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;

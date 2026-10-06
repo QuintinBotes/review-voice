@@ -429,6 +429,28 @@ export function summaryLine(
   return `${plural(count, 'comment')}, the highest ${highest}.`;
 }
 
+/**
+ * The verdict the findings call for without the complexity cap, in one line,
+ * so the person who now has to approve has somewhere to start. For the agent
+ * only: never in the posted review (docs/adr/0012).
+ */
+export function wouldHaveSummary(planned: PlannedFindings): string {
+  const posted = [...planned.inline, ...planned.unanchored];
+  const count = posted.length;
+  const highest = posted.map((finding) => finding.severity as Severity).sort((a, b) => RANK[a] - RANK[b])[0];
+  if (planned.mapped === 'APPROVE') {
+    return count === 0 ? 'Would have approved: no problems found.' : `Would have approved, with ${plural(count, 'nit')}.`;
+  }
+  if (planned.mapped === 'REQUEST_CHANGES') {
+    return `Would have requested changes: ${plural(count, 'comment')}, the highest ${highest}.`;
+  }
+  if (planned.heldBackApproval) {
+    const nits = count === 0 ? '' : `, with ${plural(count, 'nit')}`;
+    return `Would have commented: an unverified finding above a nit was held back${nits}.`;
+  }
+  return `Would have commented: ${plural(count, 'comment')}, the highest ${highest}.`;
+}
+
 function inlineComment(finding: ReviewFinding): ReviewComment {
   return {
     path: finding.path as string,

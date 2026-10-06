@@ -16,8 +16,10 @@ import {
   renderPreview,
   type Action,
   type HeldBack,
+  type PlannedFindings,
   type ReviewEvent,
   type ReviewPayload,
+  wouldHaveSummary,
 } from './verdict.ts';
 
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -37,6 +39,15 @@ export interface VerdictOptions {
   gateChecks?: readonly GateCheck[] | undefined;
   /** The time a stuck check is judged against, in epoch milliseconds; default now. */
   now?: number | undefined;
+  /** `identity.owner_reviewer`: whose earlier request for changes may be left standing. */
+  owner?: string | null | undefined;
+}
+
+/** An earlier request for changes by the owner that a COMMENT will not replace. */
+export interface StaleRequestChanges {
+  reviewId: number;
+  submittedAt: string | null;
+  url: string | null;
 }
 
 export interface VerdictOutput {
@@ -51,6 +62,19 @@ export interface VerdictOutput {
   complexity: ComplexityAssessment | null;
   /** For the agent to tell the user; never in the posted review. Null unless the change is high-complexity. */
   humanReviewNote: string | null;
+  /**
+   * The event the findings map to without the complexity cap, and that
+   * verdict in one line: where the human reviewer starts. Shown to the user
+   * beside `humanReviewNote`, never posted. Null unless high-complexity.
+   */
+  wouldHaveEvent: ReviewEvent | null;
+  wouldHaveSummary: string | null;
+  /**
+   * The owner's request for changes still standing on a high-complexity pull
+   * request whose new review found nothing blocking. Nothing dismisses it: the
+   * agent tells the user to dismiss it by hand. Null otherwise.
+   */
+  staleRequestChanges: StaleRequestChanges | null;
   /** What would be sent: inline comments already posted on this head are left out. */
   payload: ReviewPayload | null;
   /** Inline comments an earlier post of this head already sent. */
@@ -90,6 +114,9 @@ function refusal(head: string, reason: string): { exitCode: number; output: Verd
       held: [],
       complexity: null,
       humanReviewNote: null,
+      wouldHaveEvent: null,
+      wouldHaveSummary: null,
+      staleRequestChanges: null,
       payload: null,
       alreadyInline: 0,
       key: null,
@@ -128,6 +155,80 @@ function pullRequestComplexity(run: RunDetail, loadRun: (id: string) => RunDetai
     current = prior;
   }
   return found;
+}
+
+interface RawReview {
+  id?: unknown;
+  user?: { login?: unknown } | null;
+  state?: unknown;
+  submitted_at?: unknown;
+  html_url?: unknown;
+}
+
+const MAX_REVIEWS = 300;
+
+/**
+ * The owner's request for changes, when it is where the owner currently
+ * stands on the pull request. Read only. A COMMENTED review replaces neither
+ * an approval nor a request for changes on GitHub, so only approvals, requests
+ * for changes and dismissals decide it; the list is chronological.
+ */
+async function standingRequestChanges(
+  client: GitHubClient,
+  repository: string,
+  pullNumber: number,
+  owner: string,
+): Promise<StaleRequestChanges | null> {
+  const reviews = await client.paginate<RawReview>(`/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`, MAX_REVIEWS);
+  const deciding = reviews.filter(
+    (review) =>
+      typeof review.user?.login === 'string' &&
+      review.user.login.toLowerCase() === owner.toLowerCase() &&
+      (review.state === 'APPROVED' || review.state === 'CHANGES_REQUESTED' || review.state === 'DISMISSED'),
+  );
+  const latest = deciding[deciding.length - 1];
+  if (latest === undefined || latest.state !== 'CHANGES_REQUESTED' || typeof latest.id !== 'number') return null;
+  return {
+    reviewId: latest.id,
+    submittedAt: typeof latest.submitted_at === 'string' ? latest.submitted_at : null,
+    url: typeof latest.html_url === 'string' ? latest.html_url : null,
+  };
+}
+
+/**
+ * Looks for the owner's request for changes that a high-complexity verdict
+ * leaves blocking (docs/adr/0012). Only when this review found nothing
+ * blocking: a finding that is, or might be, blocking keeps the request fair.
+ * Adds its reason to `reasons`; never writes to GitHub.
+ */
+async function staleRequest(
+  options: VerdictOptions,
+  planned: PlannedFindings,
+  reasons: string[],
+): Promise<StaleRequestChanges | null> {
+  const severities = [
+    ...[...planned.inline, ...planned.unanchored].map((finding) => finding.severity),
+    ...planned.held.map((held) => held.severity),
+  ];
+  if (severities.some((severity) => severity === null || severity === 'blocking' || severity === 'important')) return null;
+
+  const owner = options.owner ?? null;
+  if (owner === null || owner.length === 0) {
+    reasons.push('identity.owner_reviewer is not set, so an earlier request for changes was not looked for');
+    return null;
+  }
+  try {
+    const stale = await standingRequestChanges(options.client, options.repository, options.pullNumber, owner);
+    if (stale !== null) {
+      reasons.push(
+        `${owner}'s earlier REQUEST_CHANGES (review ${stale.reviewId}) still blocks the pull request and this review found nothing blocking; a COMMENT does not replace it, so dismiss it by hand`,
+      );
+    }
+    return stale;
+  } catch (error) {
+    reasons.push(`could not read the pull request's reviews: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
 }
 
 /** Picks the recorded run and checks it is the review on stdin, for this head. */
@@ -204,6 +305,7 @@ export async function computeVerdict(
   });
   // Only a missing assessment is worth saying: a normal one changes nothing.
   if (complexity === null) decision.reasons.push('no complexity assessment was recorded for this run');
+  const staleRequestChanges = needsHuman ? await staleRequest(options, planned, decision.reasons) : null;
 
   let payload: ReviewPayload | null = null;
   let preview: string | null = null;
@@ -253,6 +355,9 @@ export async function computeVerdict(
       held: planned.held,
       complexity,
       humanReviewNote: humanReviewNote(complexity),
+      wouldHaveEvent: needsHuman ? planned.mapped : null,
+      wouldHaveSummary: needsHuman ? wouldHaveSummary(planned) : null,
+      staleRequestChanges,
       payload,
       alreadyInline,
       key,

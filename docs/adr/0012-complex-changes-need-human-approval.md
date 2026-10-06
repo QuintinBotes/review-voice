@@ -94,6 +94,20 @@ tell the user the change needs a human reviewer, without adding it to the pull
 request. The decision `reasons` still explain the cap locally. The APPROVE cap,
 the `--recheck` refusal and the sticky assessment are unchanged.
 
+Two more local fields, so the person picking the change up has a starting
+point and is not left blocked by an answered request (also 2026-10-06):
+
+- `wouldHaveEvent` and `wouldHaveSummary` give the event and the one-line
+  verdict the findings map to without the cap ("Would have approved: no
+  problems found."). The agent shows them beside `humanReviewNote`; they are
+  never posted.
+- `staleRequestChanges` names the owner's request for changes when it is
+  still where the owner stands (a later COMMENT does not replace it on GitHub),
+  the change is high-complexity and the new review has nothing blocking or
+  important, verified or held. It is found with GETs only, and nothing is
+  dismissed: the agent tells the user to dismiss it by hand. With no
+  `identity.owner_reviewer`, it is not looked for, and `reasons` says so.
+
 ## Amendment - 2026-10-06: decision points count in production source only
 
 The count ran over every reviewed file the classifier called source, and that
