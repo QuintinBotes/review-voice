@@ -56,7 +56,7 @@ import {
   type HeldFinding,
   type StageTiming,
 } from './store/runs.ts';
-import { carryCandidates, carryFindings, CarryError, followLine, seriousNotCarried, type CarriedFinding } from './diff/carry.ts';
+import { carryCandidates, carryFindings, CarryError, commitReadable, followLine, seriousNotCarried, type CarriedFinding } from './diff/carry.ts';
 import { candidateAnchor, reanchorCandidates, reanchorScores } from './diff/reanchor.ts';
 import { fetchPriorHead, latestOwnReview, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
@@ -270,6 +270,28 @@ function inferRepository(cwd: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** owner/repo of every GitHub remote of the clone at `cwd`, origin first. */
+function remoteRepositories(cwd: string): string[] {
+  let out: string;
+  try {
+    out = execFileSync('git', ['config', '--get-regexp', '^remote\\..*\\.url$'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return [];
+  }
+  const slugs: string[] = [];
+  for (const line of out.split('\n')) {
+    const match = /^remote\.(.+)\.url\s+.*github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(line.trim());
+    if (match === null) continue;
+    if (match[1] === 'origin') slugs.unshift(match[2]!);
+    else slugs.push(match[2]!);
+  }
+  return slugs;
 }
 
 async function threadCommand(argv: string[]): Promise<number> {
@@ -2256,7 +2278,7 @@ function recordCommand(argv: string[]): number {
         return 2;
       }
       try {
-        const result = carryForRun(db, carriedFrom, head);
+        const result = carryForRun(db, carriedFrom, head, flag(argv, '--repository'));
         // A serious finding left behind may be what stopped an approval;
         // recording the rest would let the review approve without it.
         const serious = seriousNotCarried(result.notCarried);
@@ -2386,12 +2408,52 @@ function recordCommand(argv: string[]): number {
   }
 }
 
-/** Runs the carry for one stored run against the repository in the working directory. */
-function carryForRun(db: ReturnType<typeof openDatabase>, runId: string, head: string): ReturnType<typeof carryFindings> {
+/**
+ * Runs the carry for one stored run against the repository in the working
+ * directory, which has to be a clone of the run's repository: the commits are
+ * read from it, and another repository's clone cannot read them.
+ */
+function carryForRun(
+  db: ReturnType<typeof openDatabase>,
+  runId: string,
+  head: string,
+  repository: string | null,
+): ReturnType<typeof carryFindings> {
   const detail = runDetail(db, runId);
   if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
   if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head, so nothing can be carried from it.`);
-  return carryFindings(detail.findings, detail.headRef, head, process.cwd());
+
+  const recorded = detail.repository;
+  if (recorded !== null && repository !== null && recorded.toLowerCase() !== repository.toLowerCase()) {
+    throw new CarryError(`Run ${runId} is a review of ${recorded}, not ${repository}.`);
+  }
+  const expected = recorded ?? repository;
+
+  let root: string;
+  try {
+    root = repositoryRoot(process.cwd());
+  } catch {
+    throw new CarryError(`Run carry inside a clone of ${expected ?? "the run's repository"}.`);
+  }
+  // Any remote counts: a fork's clone reads the pull request through
+  // `upstream` while `origin` names the fork.
+  const remotes = remoteRepositories(root);
+  const actual = inferRepository(root) ?? remotes[0] ?? null;
+  if (expected !== null && remotes.length > 0 && !remotes.some((slug) => slug.toLowerCase() === expected.toLowerCase())) {
+    throw new CarryError(
+      `Run ${runId} is a review of ${expected}, but ${root} is a clone of ${actual}. Run carry from a clone of ${expected}.`,
+    );
+  }
+
+  for (const ref of [detail.headRef, head]) {
+    if (!commitReadable(ref, root)) {
+      throw new CarryError(
+        `Commit ${ref} is not readable in ${root}${actual === null ? '' : ` (a clone of ${actual})`}. ` +
+          `Fetch it there, or run carry from a clone of ${expected ?? "the run's repository"}.`,
+      );
+    }
+  }
+  return carryFindings(detail.findings, detail.headRef, head, root);
 }
 
 /**
@@ -2404,12 +2466,12 @@ function carryCommand(argv: string[]): number {
   const from = flag(argv, '--from');
   const head = flag(argv, '--head');
   if (from === null || head === null) {
-    console.error('Usage: carry --from <run-id> --head <sha> [--text]');
+    console.error('Usage: carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text]');
     return 2;
   }
   const db = openDatabase();
   try {
-    const result = carryForRun(db, from, head);
+    const result = carryForRun(db, from, head, flag(argv, '--repository'));
     if (!argv.includes('--text')) {
       console.log(JSON.stringify({ from, head, ...result }, null, 2));
       return 0;

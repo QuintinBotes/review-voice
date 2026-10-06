@@ -5,6 +5,18 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `carry` (and `record --carried-from`) now checks that the working directory
+  is a clone of the run's repository before reading commits, and says so when
+  it is not: it names the run's repository, the clone it found and its path.
+  A commit that is not readable names the path it was looked up in, with a
+  hint to fetch it or run from the right clone. `carry` takes `--repository
+  <owner/repo>` for a run that recorded none, and `carry --help` states the
+  working-directory requirement. (#58)
+
 ## [1.11.1] - 2026-10-06
 
 ### Fixed
