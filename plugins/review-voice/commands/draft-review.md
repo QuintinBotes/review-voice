@@ -155,7 +155,7 @@ reviewed that pull request is the consent; `--repository` alone is not.
 
 ## Inline anchors
 
-`RV anchors < <validated-output>` prints the same anchors the payload uses, one
+`RV anchors --diff-file <tmpdir>/diff.patch --scores <tmpdir>/scores.json < <validated-output>` prints the same anchors the payload uses, one
 per finding, taken from the **validated review text**, never from the scored
 candidates. The candidate's `path` is free text from the analyst; the rendered
 finding carries what the verifier actually read, and the two can disagree. On
@@ -163,5 +163,10 @@ one pull request the analyst cited
 `InvoicePaymentRequest/InvoicePaymentRequestDetail.tsx` and the finding that
 shipped, correctly, cited `bankTransfer/BankTransferCard.tsx`.
 
-`unanchorable` counts findings the contract accepted that carry no line. Say so
-rather than letting an inline comment go missing.
+`unanchorable` counts findings the contract accepted that cannot be an inline
+comment: no line, a stale consumer, or a line outside every hunk of the file on
+the RIGHT side. Say so rather than letting an inline comment go missing. Pass
+`--diff-file <tmpdir>/diff.patch` for the hunk check and `--scores <tmpdir>/scores.json`
+to recognise stale consumers; the ones that fail are listed under `unanchored`
+with a `reason`, and belong in the review body. Without `--diff-file`,
+`hunkChecks` is `skipped` and only stale consumers are routed.

@@ -90,7 +90,7 @@ export interface ScoreLike {
  * wrong. Read from either field, so a score taken without `--diff-file` still
  * says so.
  */
-function isStaleConsumer(score: ScoreLike): boolean {
+export function isStaleConsumer(score: ScoreLike): boolean {
   return score.anchor === 'stale-consumer' || score.anchorCheck?.kind === 'stale-consumer';
 }
 

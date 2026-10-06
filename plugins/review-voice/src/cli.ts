@@ -158,6 +158,8 @@ Commands:
 
 anchors:
   One inline anchor per finding of the review on stdin, read from its text.
+  --diff-file <path>     Unified diff; a line outside its hunks is unanchorable
+  --scores <path>        Scores; a stale-consumer finding is unanchorable
 
 thread flags:
   --pr <number>          Pull request whose existing comments to read
@@ -1934,8 +1936,37 @@ function retrieveCommand(argv: string[]): number {
 }
 
 /** Inline anchors from the validated review; see publish/anchors.ts for why. */
-function anchorsCommand(): number {
-  console.log(JSON.stringify(extractAnchors(readStdin()), null, 2));
+function anchorsCommand(argv: string[]): number {
+  const diffFile = flag(argv, '--diff-file');
+  const scoresFile = flag(argv, '--scores');
+  for (const name of ['--diff-file', '--scores']) {
+    if (argv.includes(name) && flag(argv, name) === null) {
+      console.error(`${name} needs a file path.`);
+      return 2;
+    }
+  }
+  let hunks: Map<string, FileHunks> | null = null;
+  let scores: unknown[] = [];
+  try {
+    if (diffFile !== null) hunks = parseHunks(readFileSync(diffFile, 'utf8'));
+    if (scoresFile !== null) {
+      const parsed = JSON.parse(readFileSync(scoresFile, 'utf8')) as { scores?: unknown };
+      const list = Array.isArray(parsed) ? parsed : parsed.scores;
+      scores = Array.isArray(list) ? list : [];
+    }
+  } catch (error) {
+    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const result = extractAnchors(readStdin(), { hunks, scores });
+  if (hunks === null) {
+    console.error('No --diff-file, so hunk ranges were not checked; only stale-consumer findings (from --scores) were routed to the body.');
+  }
+  // Without either input the output is what it always was.
+  const plain = diffFile === null && scoresFile === null;
+  console.log(
+    JSON.stringify(plain ? { anchors: result.anchors, unanchorable: result.unanchorable } : result, null, 2),
+  );
   return 0;
 }
 
@@ -3633,7 +3664,7 @@ async function main(argv: string[]): Promise<number> {
       return symbolsCommand(argv.slice(1));
 
     case 'anchors':
-      return anchorsCommand();
+      return anchorsCommand(argv.slice(1));
 
     case 'thread':
       return await threadCommand(argv.slice(1));
