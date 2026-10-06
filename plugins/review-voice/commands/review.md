@@ -117,7 +117,11 @@ extra.
 findings, the same way, including after `No actionable findings.`.** It is
 computed by `diff` from the diff and is not part of the validated text. It
 means the change was raised for a human: `verdict` and `post` will comment
-rather than approve, and the note is also in the posted body.
+rather than approve. Tell the user the change needs a human reviewer. The note
+is not in the posted review, and it must not be added to it or to any pull
+request comment. When `verdict` or `post` runs, show its `wouldHaveSummary`
+beside the note, and pass on `staleRequestChanges` as the draft-review command
+describes; neither goes into the posted review.
 
 A very large change is worth naming even when nothing was truncated. Each entry
 in `files` carries its own `additions` and `deletions`, so sum the reviewed

@@ -17,7 +17,7 @@ import { validateOutput } from './contract/validate.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
 import { checkSeverityAgainstScores, scoredEntries } from './contract/severity-check.ts';
 import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
-import { acquireDiff, GitError, type ChangedFile } from './diff/acquire.ts';
+import { acquireDiff, attributeSource, GitError, linguistGeneratedPaths, type ChangedFile } from './diff/acquire.ts';
 import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAssessment } from './diff/complexity.ts';
 import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
@@ -594,10 +594,30 @@ function diffSummary(result: EmittedDiff): {
   };
 }
 
+/**
+ * Reviewed paths the repository's `.gitattributes` marks generated, as of the
+ * commit the change starts from (see attributeSource). Outside a repository,
+ * or without that commit, nothing is marked.
+ */
+function markedGenerated(acquired: EmittedDiff): Set<string> {
+  const reviewed = (acquired.files ?? []).filter((file) => file.reviewed).map((file) => file.path);
+  try {
+    const root = repositoryRoot(process.cwd());
+    return linguistGeneratedPaths(root, reviewed, attributeSource(root, acquired));
+  } catch {
+    return new Set();
+  }
+}
+
 function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
   // Assessed here, from the diff the analyst will read, so the manifest and
   // the summary say the same thing and `record --files` carries it forward.
-  const complexity = assessComplexity(acquired.diff, acquired.files ?? [], repositoryConfig()?.humanReview);
+  const complexity = assessComplexity(
+    acquired.diff,
+    acquired.files ?? [],
+    repositoryConfig()?.humanReview,
+    markedGenerated(acquired),
+  );
   const result: EmittedDiff = { ...acquired, complexity, humanReviewNote: humanReviewNote(complexity) };
 
   if (outDir === null) {
@@ -1059,6 +1079,7 @@ async function verdictCommand(argv: string[]): Promise<number> {
     console.error(target);
     return 2;
   }
+  const config = repositoryConfig();
   const db = openDatabase();
   try {
     const { exitCode, output } = await computeVerdict({
@@ -1066,7 +1087,8 @@ async function verdictCommand(argv: string[]): Promise<number> {
       db,
       client: new GitHubClient({ allowlist: [target.repository] }),
       recheck: argv.includes('--recheck'),
-      gateChecks: repositoryConfig()?.ciGateChecks ?? [],
+      gateChecks: config?.ciGateChecks ?? [],
+      owner: config?.ownerReviewer ?? null,
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -1098,6 +1120,7 @@ async function postCommand(argv: string[]): Promise<number> {
       event: flag(argv, '--event')?.toUpperCase(),
       postingEnabled: config?.postingEnabled ?? false,
       gateChecks: config?.ciGateChecks ?? [],
+      owner: config?.ownerReviewer ?? null,
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;

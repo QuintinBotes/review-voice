@@ -1,6 +1,6 @@
 # 0012 - Complex changes are raised for a human's approval
 
-**Status:** Accepted · **Date:** 2026-10-02
+**Status:** Accepted, amended 2026-10-06 · **Date:** 2026-10-02
 **Amends:** [0010](0010-review-verdict-posting.md) - the verdict mapping gains
 one cap. Nothing else in 0010 changes, and no new GitHub write is added.
 
@@ -27,7 +27,8 @@ review says so, and why, so a human picks it up.**
   enough:
   - *Added decision points*: a lexical count of branches (`if`, loops, `case`,
     `catch`, `&&`, `||`, ternaries) on lines added to reviewed source files,
-    for the change as a whole and for its densest hunk. Lexical, like
+    for the change as a whole and for its densest hunk. (Amended 2026-10-06:
+    production source only; see the second amendment below.) Lexical, like
     changed-symbol context: no parser, no language left out, and a count that
     is wrong by a few on comments or strings is still the right order.
   - *Sensitive paths*: any changed path matching a configured glob, whether or
@@ -36,8 +37,9 @@ review says so, and why, so a human picks it up.**
 - **Configured, with defaults.** `review.human_review` sets
   `max_decision_points`, `max_hunk_decision_points` and `sensitive_paths`.
   Built-in sensitive paths are `.github/workflows/**`, `**/migrations/**`,
-  `**/auth/**` and `**/security/**`; a configured list replaces them, and an
-  empty list turns the signal off.
+  `**/auth/**` and `**/security/**` (amended 2026-10-06: and
+  `.review-voice/**`); a configured list replaces them, and an empty list
+  turns the signal off.
 - **Recorded with the run**, beside its scope, from the manifest. `verdict`
   and `post` read it from the recorded run, never from stdin or a flag, for the
   same reason the scope is stored: the run must keep saying what it read.
@@ -49,10 +51,10 @@ review says so, and why, so a human picks it up.**
   so pending CI does not turn it into a wait. `verdict --recheck` refuses: there
   is no approval to re-check. COMMENT and REQUEST_CHANGES are unchanged, since
   neither unblocks anything.
-- **Raised in every case.** Whenever the assessment is high, the posted body
-  carries one line naming the reasons, whatever the event, and the review
-  command prints the same line after the findings, outside the validated text,
-  as it prints a scope note.
+- **Raised in every case.** Whenever the assessment is high, the review
+  command prints one line naming the reasons after the findings, outside the
+  validated text, as it prints a scope note. (Amended 2026-10-06: the posted
+  body no longer carries it; see below.)
 - **Unknown is not high.** A run recorded before this record, or without a
   manifest, has no assessment and is not capped; `verdict` says the assessment
   is missing.
@@ -80,3 +82,94 @@ not a defect, which is the false block 0010 was careful to avoid.
 **Use size (lines and files changed) as the signal.** Rejected by the owner:
 a large mechanical change is easy to read, and a short one dense with new
 branches is not.
+
+## Amendment - 2026-10-06
+
+The posted review no longer names human review. Its summary line is the
+ordinary one ("No problems found." or "N nits."), and the note is not in the
+body, an inline comment or the preview. The flag is local to the agent's
+output: `diff`, `verdict` and `post` carry `humanReviewNote` (null unless the
+change is high-complexity), and the commands tell the agent to print it and
+tell the user the change needs a human reviewer, without adding it to the pull
+request. The decision `reasons` still explain the cap locally. The APPROVE cap,
+the `--recheck` refusal and the sticky assessment are unchanged.
+
+Two more local fields, so the person picking the change up has a starting
+point and is not left blocked by an answered request (also 2026-10-06):
+
+- `wouldHaveEvent` and `wouldHaveSummary` give the event and the one-line
+  verdict the findings map to without the cap ("Would have approved: no
+  problems found."). The agent shows them beside `humanReviewNote`; they are
+  never posted.
+- `staleRequestChanges` names the owner's request for changes when it is
+  still where the owner stands (a later COMMENT does not replace it on GitHub),
+  the change is high-complexity and the new review has nothing blocking or
+  important, verified or held. It is found with GETs only, and nothing is
+  dismissed: the agent tells the user to dismiss it by hand. With no
+  `identity.owner_reviewer`, it is not looked for, and `reasons` says so.
+
+## Amendment - 2026-10-06: decision points count in production source only
+
+The count ran over every reviewed file the classifier called source, and that
+included prose. A Markdown hunk read as 26 decision points, because prose is
+full of `if`, `when` and `or`, and was named as the densest hunk of a change
+whose source alone was over the limit: the verdict was right and the reason
+was wrong.
+
+Decision points now count only in production source. Reviewed files of these
+kinds are left out of the count, not down-weighted:
+
+- *Documentation and other non-code text*: Markdown, reStructuredText,
+  AsciiDoc, plain text and CSV, and the conventional extensionless names
+  (`README`, `LICENSE`, `CHANGELOG` and the like) at the repository root or
+  under a `docs` directory - elsewhere, `bin/changes` is as likely a script.
+  `CMakeLists.txt` is a build script and stays counted, MDX can carry
+  components and stays counted, and so does configuration such as YAML: a
+  workflow condition is a real branch.
+- *Tests and fixtures*: paths matching `review.human_review.test_paths`.
+  Counting them made the cap shape how tests were written - an author split
+  one spec into several files to get a hunk under the limit, and the change
+  stayed high anyway. The defaults cover the common layouts: test and fixture
+  directories (`**/test/**`, `**/tests/**`, `**/__tests__/**`,
+  `**/fixtures/**`, `**/testdata/**`, .NET `*.Tests/` projects), and only the
+  file names that mean a test in their language (`*.test.*`, `*.spec.*`, Go's
+  `*_test.go`, Ruby's `spec/**/*.rb` and `*_spec.rb`). They are narrow on
+  purpose, because a production file matched here goes uncounted: names such
+  as `ab_test.py`, `LoadTest.java` or a Go `spec/` package stay counted unless
+  they sit in a test directory. A configured list replaces the defaults, and
+  an empty list counts tests again.
+- *Generated output*: a reviewed file the classifier does not call source (a
+  hand-edited generated file, or anything read under `--include-generated`), a
+  path `.gitattributes` marks `linguist-generated`, and paths matching
+  `review.human_review.generated_paths` (none by default). A generator change
+  of a few hundred lines once read as thousands of decision points because of
+  the output it emitted; the reviewer only needs to spot-check that output
+  against the generator.
+
+  The attributes are read as of the commit the change starts from, never the
+  one it ends on: HEAD for a working-tree or staged change, the merge base (or
+  the base, when there is none) for a branch or pull request. Read at the
+  head, a change adding `src/** linguist-generated` would exempt its own code.
+  There is no working-tree fallback; when that commit is not available, no
+  file is excluded by attribute.
+
+Precedence is generated, then tests, then documentation, so each file is left
+out once.
+
+The exclusion globs come from `.review-voice/config.yaml` in the checked-out
+tree, so a change could widen them to cover itself. Two guards: an exclusion
+glob broad enough to match ordinary production paths (`**`, `src/**`,
+`**/*.go`) is ignored whenever it would leave out a file of the change, and the
+assessment adds a reason naming it, which raises the change; and
+`.review-voice/**` joins the default sensitive paths, so a change to the
+configuration is itself raised.
+
+The assessment carries `excluded`, a count of the files left out and, for
+tests and generated output, the decision points they would have added, so the
+agent can say what the number did not measure; when the change is high, the
+local note names them, and its densest hunk is always a production hunk. The
+globs in effect are recorded in `limits`. None of this reaches the posted
+review, which still says nothing about human review (first amendment).
+Sensitive-path matching is unchanged and still applies to every changed path,
+excluded or not. An assessment recorded before this amendment has no
+`excluded` block and reads as excluding nothing.

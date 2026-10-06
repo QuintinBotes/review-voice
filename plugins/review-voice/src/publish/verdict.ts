@@ -418,9 +418,7 @@ export function summaryLine(
     return count === 0 ? 'Not approving yet.' : `${plural(count, 'nit')}; not approving yet.`;
   }
   if (cappedBy === 'complexity') {
-    return count === 0
-      ? 'No problems found; leaving approval to a human reviewer.'
-      : `${plural(count, 'nit')}; leaving approval to a human reviewer.`;
+    return count === 0 ? 'No problems found.' : `${plural(count, 'nit')}.`;
   }
   if (event === 'APPROVE') {
     return count === 0 ? 'No problems found.' : `Approved, with ${plural(count, 'nit')}.`;
@@ -429,6 +427,28 @@ export function summaryLine(
     return `Changes requested: ${plural(count, 'comment')}, the highest ${highest}.`;
   }
   return `${plural(count, 'comment')}, the highest ${highest}.`;
+}
+
+/**
+ * The verdict the findings call for without the complexity cap, in one line,
+ * so the person who now has to approve has somewhere to start. For the agent
+ * only: never in the posted review (docs/adr/0012).
+ */
+export function wouldHaveSummary(planned: PlannedFindings): string {
+  const posted = [...planned.inline, ...planned.unanchored];
+  const count = posted.length;
+  const highest = posted.map((finding) => finding.severity as Severity).sort((a, b) => RANK[a] - RANK[b])[0];
+  if (planned.mapped === 'APPROVE') {
+    return count === 0 ? 'Would have approved: no problems found.' : `Would have approved, with ${plural(count, 'nit')}.`;
+  }
+  if (planned.mapped === 'REQUEST_CHANGES') {
+    return `Would have requested changes: ${plural(count, 'comment')}, the highest ${highest}.`;
+  }
+  if (planned.heldBackApproval) {
+    const nits = count === 0 ? '' : `, with ${plural(count, 'nit')}`;
+    return `Would have commented: an unverified finding above a nit was held back${nits}.`;
+  }
+  return `Would have commented: ${plural(count, 'comment')}, the highest ${highest}.`;
 }
 
 function inlineComment(finding: ReviewFinding): ReviewComment {
@@ -453,14 +473,10 @@ export function buildPayload(input: {
   event: ReviewEvent;
   planned: PlannedFindings;
   cappedBy: 'ci' | 'held' | 'complexity' | null;
-  /** The one line naming why a person should look; the second paragraph for every event. */
-  humanReviewNote?: string | null | undefined;
 }): ReviewPayload {
   const posted = [...input.planned.inline, ...input.planned.unanchored];
-  const note = input.humanReviewNote ?? null;
   const body = [
     summaryLine(input.event, posted, input.cappedBy),
-    ...(note === null ? [] : [note]),
     ...input.planned.unanchored.map((finding) => finding.raw),
   ].join('\n\n');
   return {

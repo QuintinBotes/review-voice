@@ -26,7 +26,8 @@ RV verdict --repository <owner/repo> --pr <number> --head <sha> [--run <id>] < <
 
 `--run` defaults to the newest recorded run of that pull request. Nothing is
 sent. The JSON carries `event`, `action`, `reasons`, `head`, `ci`, `held`,
-`complexity`, `payload` and `preview`.
+`complexity`, `humanReviewNote`, `wouldHaveEvent`, `wouldHaveSummary`,
+`staleRequestChanges`, `payload` and `preview`.
 
 `RV verdict` computes the whole decision - event, action, reasons, CI, the
 complexity cap, held findings and the payload preview - and never posts. A
@@ -68,6 +69,25 @@ needs a rerun.
   `action` is `wait`, exit 6, with no payload, whatever the mapped event, and
   `reasons` name each check. A real failure beside one is still red. Rerun CI,
   then compute the verdict again.
+
+**If `humanReviewNote` is not null, print it prominently on its own line before
+the preview, and tell the user the change needs a human reviewer.** It is not in
+the posted review, and it must not be added to the review or to any pull
+request comment; the verdict's `reasons` explain the cap locally. `post` carries
+the same field under `verdict`.
+
+**Beside it, print `wouldHaveSummary`** (for example `Would have approved: no
+problems found.`): the verdict without the complexity cap, as a starting point
+for the human reviewer. `wouldHaveEvent` is the same as an event. Like the
+note, it is for the user only and must not be added to the review or to any
+pull request comment.
+
+**If `staleRequestChanges` is not null, tell the user** that their earlier
+request for changes (`url`, review `reviewId`) still blocks the pull request,
+that a COMMENT does not replace it, and that this review found nothing
+blocking, so they should dismiss it by hand if they agree. Review Voice does
+not dismiss reviews. When `reasons` says `identity.owner_reviewer` is not set,
+the earlier review was not looked for.
 
 Show `preview` exactly as printed, and the `held` findings with their reasons.
 The preview is generated from the payload that will be sent; its first line is
