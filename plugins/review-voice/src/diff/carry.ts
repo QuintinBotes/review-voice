@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { topPathspecs } from './incremental.ts';
 import { DEFAULT_LIMITS } from '../contract/limits.ts';
+import { reason, type FileHunks } from './hunks.ts';
+import { candidateAnchor } from './reanchor.ts';
 
 /** One stored finding, as far as carrying it forward needs to know it. */
 export interface CarryInput {
@@ -120,6 +122,25 @@ function existsAt(ref: string, path: string, cwd: string): boolean {
   }
 }
 
+/**
+ * Where one line of a file at `previousHead` is at `head`, or why it cannot be
+ * followed: the file is gone, or the line or one either side of it changed.
+ */
+export function followLine(
+  previousHead: string,
+  head: string,
+  path: string,
+  line: number,
+  cwd: string,
+): { line: number } | { reason: string } {
+  if (!existsAt(head, path, cwd)) return { reason: 'file deleted or renamed' };
+  const patch = gitOut(
+    ['diff', '--unified=0', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', previousHead, head, '--', ...topPathspecs([path])],
+    cwd,
+  );
+  return remapLine(oldSideHunks(patch), line);
+}
+
 /** Moves the anchor in a finding's first line, and nothing else in it. */
 function rewriteAnchor(text: string, path: string, oldLine: number, line: number): string {
   return text.replace(`\`${path}:${oldLine}\``, `\`${path}:${line}\``);
@@ -140,21 +161,9 @@ export function carryFindings(findings: CarryInput[], previousHead: string, head
   const notCarried: NotCarriedFinding[] = [];
 
   for (const finding of findings) {
-    const skip = (reason: string): void => {
-      notCarried.push({ findingId: finding.findingId, path: finding.path, line: finding.line, reason });
-    };
-
-    if (!existsAt(head, finding.path, cwd)) {
-      skip('file deleted or renamed');
-      continue;
-    }
-    const patch = gitOut(
-      ['diff', '--unified=0', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', previousHead, head, '--', ...topPathspecs([finding.path])],
-      cwd,
-    );
-    const moved = remapLine(oldSideHunks(patch), finding.line);
+    const moved = followLine(previousHead, head, finding.path, finding.line, cwd);
     if ('reason' in moved) {
-      skip(moved.reason);
+      notCarried.push({ findingId: finding.findingId, path: finding.path, line: finding.line, reason: moved.reason });
       continue;
     }
     carried.push({
@@ -206,4 +215,99 @@ export function matchCarried(
     matches.set(finding.findingId, source.findingId);
   }
   return { matches, mismatches };
+}
+
+/** One verified candidate, as far as carrying it to a new head needs to know it. */
+export interface CandidateToCarry {
+  candidateId: string;
+  path: string;
+  line: number;
+  anchor?: string | undefined;
+  causedBy?: { path: string; line: number } | null | undefined;
+}
+
+export interface CarriedCandidate {
+  candidateId: string;
+  path: string;
+  oldLine: number;
+  line: number;
+  causedBy?: { path: string; oldLine: number; line: number } | undefined;
+}
+
+export interface RefusedCandidate {
+  candidateId: string;
+  path: string;
+  line: number;
+  reason: string;
+}
+
+/**
+ * Carries verified candidates from the head they were verified at to a head
+ * the author pushed since.
+ *
+ * A candidate carries only when the code it is anchored on did not change: its
+ * line and the two either side, and for a stale consumer its cause as well.
+ * The moved anchor must then still be a changed line of the new head's diff,
+ * the same check `reanchor` makes. Anything else is refused by name, because
+ * its verification was of code that is no longer there.
+ */
+export function carryCandidates(
+  candidates: CandidateToCarry[],
+  previousHead: string,
+  head: string,
+  hunks: Map<string, FileHunks>,
+  cwd: string,
+): { carried: CarriedCandidate[]; refused: RefusedCandidate[] } {
+  for (const ref of [previousHead, head]) {
+    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in this repository.`);
+  }
+
+  const carried: CarriedCandidate[] = [];
+  const refused: RefusedCandidate[] = [];
+  for (const candidate of candidates) {
+    const refuse = (reason: string): void => {
+      refused.push({ candidateId: candidate.candidateId, path: candidate.path, line: candidate.line, reason });
+    };
+
+    const moved = followLine(previousHead, head, candidate.path, candidate.line, cwd);
+    if ('reason' in moved) {
+      refuse(`${candidate.path}:${candidate.line}: ${moved.reason}`);
+      continue;
+    }
+
+    let cause: CarriedCandidate['causedBy'];
+    if (candidate.anchor === 'stale-consumer') {
+      const from = candidate.causedBy ?? null;
+      if (from === null) {
+        refuse('a stale consumer with no caused_by');
+        continue;
+      }
+      const followed = followLine(previousHead, head, from.path, from.line, cwd);
+      if ('reason' in followed) {
+        refuse(`its cause ${from.path}:${from.line}: ${followed.reason}`);
+        continue;
+      }
+      cause = { path: from.path, oldLine: from.line, line: followed.line };
+    }
+
+    const check = candidateAnchor(hunks, {
+      path: candidate.path,
+      line: moved.line,
+      anchor: candidate.anchor,
+      causedBy: cause === undefined ? candidate.causedBy : { path: cause.path, line: cause.line },
+    });
+    if (!check.ok) {
+      refuse(`at the new head it ${reason(check)}`);
+      continue;
+    }
+
+    carried.push({
+      candidateId: candidate.candidateId,
+      path: candidate.path,
+      oldLine: candidate.line,
+      line: moved.line,
+      ...(cause === undefined ? {} : { causedBy: cause }),
+    });
+  }
+  return { carried, refused };
 }

@@ -37,7 +37,7 @@ import {
   type HeldFinding,
   type StageTiming,
 } from './store/runs.ts';
-import { carryFindings, CarryError, type CarriedFinding } from './diff/carry.ts';
+import { carryCandidates, carryFindings, CarryError, type CarriedFinding } from './diff/carry.ts';
 import { candidateAnchor, reanchorCandidates, reanchorScores } from './diff/reanchor.ts';
 import { fetchPriorHead, latestOwnReview, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
@@ -98,6 +98,7 @@ import { extractAnchors } from './publish/anchors.ts';
 import { computeVerdict, postReview } from './publish/post.ts';
 import { ReviewWriter, WriteViolation } from './github/writer.ts';
 import { hashDiff } from './store/runs.ts';
+import { recordAudit } from './store/audit.ts';
 
 const USAGE = `review-voice <command>
 
@@ -129,6 +130,7 @@ Commands:
   status            Show what is stored locally
   carry             Carry an earlier run's untouched findings to a new head
   reanchor          Move one scored candidate to a corrected changed line
+  carry-candidates  Carry verified candidates to a pushed head if unchanged
   explain           Show why the last review said what it said
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
@@ -160,8 +162,7 @@ symbols flags:
 
 check-candidates:
   --diff-file <path>     Require anchors on changed lines
-  --thread <path>        Drop candidates the thread already states; flag
-                         description overlaps for the verifier
+  --thread <path>        Drop candidates the thread already states
   --held-from <run-id>   Drop repeats of that run's held findings (--head)
 
 record flags:
@@ -185,6 +186,10 @@ reanchor flags:
   --candidate <id> --line <n> [--path <p>]  The corrected anchor, which must
                          be a changed line of --diff-file; rewrites --scores
                          and --candidates in place, keeping verification and score
+
+carry-candidates flags:
+  --candidates --verification --since <sha> --head --diff-file --out <dir>
+                         Unchanged ones move to the new head; others refused
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -2207,6 +2212,140 @@ function reanchorCommand(argv: string[]): number {
   return 0;
 }
 
+/** The list inside a JSON input, and how to put a filtered one back in its place. */
+function listIn(parsed: unknown, keys: readonly string[]): { list: Record<string, unknown>[]; rebuild: (list: unknown[]) => unknown } | null {
+  if (Array.isArray(parsed)) return { list: parsed as Record<string, unknown>[], rebuild: (list) => list };
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const record = parsed as Record<string, unknown>;
+  const key = keys.find((k) => Array.isArray(record[k]));
+  if (key === undefined) return null;
+  return { list: record[key] as Record<string, unknown>[], rebuild: (list) => ({ ...record, [key]: list }) };
+}
+
+/**
+ * Carries verified candidates to a head the author pushed mid-review.
+ *
+ * Posting is refused once the head moves, and the alternative was copying
+ * candidates and verifications across by hand. Only candidates whose anchored
+ * code is unchanged carry, at their new lines; the rest are named so they are
+ * verified again. Exit 1 means at least one was refused.
+ */
+function carryCandidatesCommand(argv: string[]): number {
+  const candidatesFile = flag(argv, '--candidates');
+  const verificationFile = flag(argv, '--verification');
+  const since = flag(argv, '--since');
+  const head = flag(argv, '--head');
+  const diffFile = flag(argv, '--diff-file');
+  const outDir = flag(argv, '--out');
+  if ([candidatesFile, verificationFile, since, head, diffFile, outDir].includes(null)) {
+    console.error(
+      'Usage: carry-candidates --candidates <file> --verification <file> --since <sha> --head <sha> --diff-file <patch> --out <dir>',
+    );
+    return 2;
+  }
+
+  let candidatesIn: NonNullable<ReturnType<typeof listIn>>;
+  let verificationIn: NonNullable<ReturnType<typeof listIn>>;
+  let candidates: Candidate[];
+  let hunks: Map<string, FileHunks>;
+  try {
+    const parsedCandidates = listIn(JSON.parse(readFileSync(candidatesFile!, 'utf8')), ['candidates']);
+    if (parsedCandidates === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
+    candidatesIn = parsedCandidates;
+    candidates = candidatesIn.list.map((raw, index) => normaliseCandidate(raw as RawCandidate, index));
+    assertUniqueCandidateIds(candidates);
+    const parsedVerification = listIn(JSON.parse(readFileSync(verificationFile!, 'utf8')), VERDICT_KEYS);
+    if (parsedVerification === null || parsedVerification.list.length === 0) {
+      throw new Error(`${verificationFile} contains no verifications`);
+    }
+    verificationIn = parsedVerification;
+    const problem = verificationProblem(verificationIn.list);
+    if (problem !== null) throw new Error(`malformed verification - ${problem}`);
+    hunks = parseHunks(readFileSync(diffFile!, 'utf8'));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
+
+  // A candidate the verifier never saw has nothing to carry.
+  const verifiedIds = new Set(verificationIn.list.map((v) => v['candidate_id'] ?? v['candidateId']));
+  const unverified = candidates.filter((c) => !verifiedIds.has(c.candidateId));
+  let result: ReturnType<typeof carryCandidates>;
+  try {
+    result = carryCandidates(
+      candidates.filter((c) => verifiedIds.has(c.candidateId)),
+      since!,
+      head!,
+      hunks,
+      process.cwd(),
+    );
+  } catch (error) {
+    if (error instanceof CarryError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+  const refused = [
+    ...unverified.map((c) => ({ candidateId: c.candidateId, path: c.path, line: c.line, reason: 'no verification for it' })),
+    ...result.refused,
+  ];
+
+  // The analyst's own entries, moved, in the spelling the file already used.
+  const carriedById = new Map(result.carried.map((c) => [c.candidateId, c]));
+  const carriedCandidates = candidatesIn.list.flatMap((raw, index) => {
+    const moved = carriedById.get(candidates[index]!.candidateId);
+    if (moved === undefined) return [];
+    const causeKey = 'caused_by' in raw ? 'caused_by' : 'causedBy';
+    return [{
+      ...raw,
+      path: moved.path,
+      line: moved.line,
+      ...(moved.causedBy === undefined ? {} : { [causeKey]: { path: moved.causedBy.path, line: moved.causedBy.line } }),
+    }];
+  });
+  const carriedVerification = verificationIn.list.filter((v) => carriedById.has((v['candidate_id'] ?? v['candidateId']) as string));
+  const record = { since, head, carried: result.carried, refused };
+
+  try {
+    mkdirSync(outDir!, { recursive: true });
+    writeFileSync(join(outDir!, 'candidates.json'), `${JSON.stringify(candidatesIn.rebuild(carriedCandidates), null, 2)}\n`);
+    writeFileSync(join(outDir!, 'verification.json'), `${JSON.stringify(verificationIn.rebuild(carriedVerification), null, 2)}\n`);
+    writeFileSync(join(outDir!, 'carry.json'), `${JSON.stringify(record, null, 2)}\n`);
+  } catch (error) {
+    console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+
+  const db = openDatabase();
+  try {
+    recordAudit(db, 'candidates_carried', null, {
+      since,
+      head,
+      carried: result.carried.map((c) => c.candidateId),
+      refused: refused.map((r) => r.candidateId),
+    });
+  } finally {
+    db.close();
+  }
+
+  for (const r of refused) console.error(`Refused ${r.candidateId}: ${r.reason}`);
+  console.log(
+    JSON.stringify(
+      {
+        carried: result.carried.length,
+        refused,
+        candidates: join(outDir!, 'candidates.json'),
+        verification: join(outDir!, 'verification.json'),
+        carry: join(outDir!, 'carry.json'),
+      },
+      null,
+      2,
+    ),
+  );
+  return refused.length === 0 ? 0 : 1;
+}
+
 function feedbackCommand(argv: string[]): number {
   const [findingRef, actionRaw] = argv;
   if (findingRef === undefined || actionRaw === undefined) {
@@ -2963,6 +3102,9 @@ async function main(argv: string[]): Promise<number> {
 
     case 'reanchor':
       return reanchorCommand(argv.slice(1));
+
+    case 'carry-candidates':
+      return carryCandidatesCommand(argv.slice(1));
 
     case 'feedback':
       return feedbackCommand(argv.slice(1));

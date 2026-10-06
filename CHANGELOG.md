@@ -13,7 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to a corrected line, optionally in another file (`--path`), keeping its
   verification and score. It refuses a line that is not an added line or
   deletion site of the reviewed diff, a candidate that was not eligible, a stale
-  consumer, and a location another finding holds. (#39)
+  consumer, and a location another finding holds. See ADR 0015. (#39)
+- `RV carry-candidates` carries verified candidates to a head the author pushed
+  mid-review. A candidate carries, at its new line, only when its line and the
+  two either side, and a stale consumer's cause, are unchanged between the
+  heads and its new line is a changed line of the new head's diff; the rest
+  are refused by name and the review command re-reviews the new head. The
+  carry is written to `carry.json` and the audit log. See ADR 0015. (#29)
 - `RV reconcile` applies the second-pass verdicts to the candidates, and a new
   `tie-breaker` agent settles a dispute between the two verifiers. A finding is
   disputed when the evidence-verifier traced its impact at 0.85 or more and the

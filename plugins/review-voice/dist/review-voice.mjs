@@ -3057,6 +3057,65 @@ function recordAudit(db, action, subject, metadata = {}) {
 
 // plugins/review-voice/src/diff/carry.ts
 import { execFileSync as execFileSync7 } from "node:child_process";
+
+// plugins/review-voice/src/diff/reanchor.ts
+function candidateAnchor(hunks, candidate) {
+  return candidate.anchor === "stale-consumer" ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null) : classifyAnchor(hunks, candidate.path, candidate.line);
+}
+var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var idOf = (entry) => entry["candidateId"] ?? entry["candidate_id"];
+function reanchorScores(scores, candidateId, target, hunks) {
+  if (!isRecord(scores) || !Array.isArray(scores["scores"])) {
+    return { ok: false, refused: "expected the JSON `RV score` printed, with a `scores` list" };
+  }
+  const entries = scores["scores"].filter(isRecord);
+  const entry = entries.find((e) => idOf(e) === candidateId);
+  if (entry === void 0) return { ok: false, refused: `no scored candidate ${candidateId}` };
+  if (entry["eligible"] !== true) {
+    const why = typeof entry["rejectedBecause"] === "string" ? ` (${entry["rejectedBecause"]})` : "";
+    return {
+      ok: false,
+      refused: `${candidateId} is not eligible${why}; re-anchoring keeps a score, it does not make one. Re-run the analyst and score.`
+    };
+  }
+  const eligible = Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord) : [];
+  const shipped = eligible.find((e) => idOf(e) === candidateId);
+  if (shipped?.["anchor"] === "stale-consumer" || entry["anchorCheck"]?.kind === "stale-consumer") {
+    return {
+      ok: false,
+      refused: `${candidateId} is a stale consumer on unchanged code, so a new line cannot be checked against the diff. Re-run the analyst.`
+    };
+  }
+  if (typeof entry["path"] !== "string" || !Number.isInteger(entry["line"])) {
+    return { ok: false, refused: `scored candidate ${candidateId} has no path and line` };
+  }
+  const from = { path: entry["path"], line: entry["line"] };
+  const check = classifyAnchor(hunks, target.path ?? from.path, target.line);
+  if (!check.ok) return { ok: false, refused: `${candidateId} ${reason(check)}` };
+  const to = { path: check.path, line: check.line };
+  const taken = entries.find(
+    (e) => idOf(e) !== candidateId && e["eligible"] === true && e["path"] === to.path && e["line"] === to.line
+  );
+  if (taken !== void 0) {
+    return { ok: false, refused: `${String(idOf(taken))} is already anchored at ${to.path}:${to.line}` };
+  }
+  const moved = (e) => idOf(e) === candidateId ? { ...e, path: to.path, line: to.line, reanchoredFrom: from, ..."anchorCheck" in e ? { anchorCheck: check } : {} } : e;
+  const updated = {
+    ...scores,
+    scores: scores["scores"].map((e) => isRecord(e) ? moved(e) : e),
+    ...Array.isArray(scores["eligible"]) ? { eligible: scores["eligible"].map((e) => isRecord(e) ? moved(e) : e) } : {}
+  };
+  return { ok: true, updated, from, to, anchorCheck: check };
+}
+function reanchorCandidates(parsed, candidateId, to) {
+  const list = Array.isArray(parsed) ? parsed : isRecord(parsed) && Array.isArray(parsed["candidates"]) ? parsed["candidates"] : null;
+  if (list === null) return null;
+  if (!list.some((c) => isRecord(c) && idOf(c) === candidateId)) return null;
+  const rewritten = list.map((c) => isRecord(c) && idOf(c) === candidateId ? { ...c, path: to.path, line: to.line } : c);
+  return Array.isArray(parsed) ? rewritten : { ...parsed, candidates: rewritten };
+}
+
+// plugins/review-voice/src/diff/carry.ts
 var NEIGHBOURHOOD = 2;
 function commitReadable(ref, cwd) {
   try {
@@ -3113,6 +3172,14 @@ function existsAt(ref, path, cwd) {
     return false;
   }
 }
+function followLine(previousHead, head, path, line, cwd) {
+  if (!existsAt(head, path, cwd)) return { reason: "file deleted or renamed" };
+  const patch = gitOut(
+    ["diff", "--unified=0", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", previousHead, head, "--", ...topPathspecs([path])],
+    cwd
+  );
+  return remapLine(oldSideHunks(patch), line);
+}
 function rewriteAnchor(text, path, oldLine, line) {
   return text.replace(`\`${path}:${oldLine}\``, `\`${path}:${line}\``);
 }
@@ -3123,20 +3190,9 @@ function carryFindings(findings, previousHead, head, cwd) {
   const carried = [];
   const notCarried = [];
   for (const finding of findings) {
-    const skip = (reason2) => {
-      notCarried.push({ findingId: finding.findingId, path: finding.path, line: finding.line, reason: reason2 });
-    };
-    if (!existsAt(head, finding.path, cwd)) {
-      skip("file deleted or renamed");
-      continue;
-    }
-    const patch = gitOut(
-      ["diff", "--unified=0", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", previousHead, head, "--", ...topPathspecs([finding.path])],
-      cwd
-    );
-    const moved = remapLine(oldSideHunks(patch), finding.line);
+    const moved = followLine(previousHead, head, finding.path, finding.line, cwd);
     if ("reason" in moved) {
-      skip(moved.reason);
+      notCarried.push({ findingId: finding.findingId, path: finding.path, line: finding.line, reason: moved.reason });
       continue;
     }
     carried.push({
@@ -3173,6 +3229,55 @@ function matchCarried(recorded, carried) {
     matches.set(finding.findingId, source.findingId);
   }
   return { matches, mismatches };
+}
+function carryCandidates(candidates, previousHead, head, hunks, cwd) {
+  for (const ref of [previousHead, head]) {
+    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in this repository.`);
+  }
+  const carried = [];
+  const refused = [];
+  for (const candidate of candidates) {
+    const refuse = (reason2) => {
+      refused.push({ candidateId: candidate.candidateId, path: candidate.path, line: candidate.line, reason: reason2 });
+    };
+    const moved = followLine(previousHead, head, candidate.path, candidate.line, cwd);
+    if ("reason" in moved) {
+      refuse(`${candidate.path}:${candidate.line}: ${moved.reason}`);
+      continue;
+    }
+    let cause;
+    if (candidate.anchor === "stale-consumer") {
+      const from = candidate.causedBy ?? null;
+      if (from === null) {
+        refuse("a stale consumer with no caused_by");
+        continue;
+      }
+      const followed = followLine(previousHead, head, from.path, from.line, cwd);
+      if ("reason" in followed) {
+        refuse(`its cause ${from.path}:${from.line}: ${followed.reason}`);
+        continue;
+      }
+      cause = { path: from.path, oldLine: from.line, line: followed.line };
+    }
+    const check = candidateAnchor(hunks, {
+      path: candidate.path,
+      line: moved.line,
+      anchor: candidate.anchor,
+      causedBy: cause === void 0 ? candidate.causedBy : { path: cause.path, line: cause.line }
+    });
+    if (!check.ok) {
+      refuse(`at the new head it ${reason(check)}`);
+      continue;
+    }
+    carried.push({
+      candidateId: candidate.candidateId,
+      path: candidate.path,
+      oldLine: candidate.line,
+      line: moved.line,
+      ...cause === void 0 ? {} : { causedBy: cause }
+    });
+  }
+  return { carried, refused };
 }
 
 // plugins/review-voice/src/store/runs.ts
@@ -3361,63 +3466,6 @@ function latestRun(db) {
   if (row === void 0) return null;
   const parsed = JSON.parse(row.output_json);
   return { reviewRunId: row.review_run_id, findings: parsed.findings };
-}
-
-// plugins/review-voice/src/diff/reanchor.ts
-function candidateAnchor(hunks, candidate) {
-  return candidate.anchor === "stale-consumer" ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null) : classifyAnchor(hunks, candidate.path, candidate.line);
-}
-var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-var idOf = (entry) => entry["candidateId"] ?? entry["candidate_id"];
-function reanchorScores(scores, candidateId, target, hunks) {
-  if (!isRecord(scores) || !Array.isArray(scores["scores"])) {
-    return { ok: false, refused: "expected the JSON `RV score` printed, with a `scores` list" };
-  }
-  const entries = scores["scores"].filter(isRecord);
-  const entry = entries.find((e) => idOf(e) === candidateId);
-  if (entry === void 0) return { ok: false, refused: `no scored candidate ${candidateId}` };
-  if (entry["eligible"] !== true) {
-    const why = typeof entry["rejectedBecause"] === "string" ? ` (${entry["rejectedBecause"]})` : "";
-    return {
-      ok: false,
-      refused: `${candidateId} is not eligible${why}; re-anchoring keeps a score, it does not make one. Re-run the analyst and score.`
-    };
-  }
-  const eligible = Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord) : [];
-  const shipped = eligible.find((e) => idOf(e) === candidateId);
-  if (shipped?.["anchor"] === "stale-consumer" || entry["anchorCheck"]?.kind === "stale-consumer") {
-    return {
-      ok: false,
-      refused: `${candidateId} is a stale consumer on unchanged code, so a new line cannot be checked against the diff. Re-run the analyst.`
-    };
-  }
-  if (typeof entry["path"] !== "string" || !Number.isInteger(entry["line"])) {
-    return { ok: false, refused: `scored candidate ${candidateId} has no path and line` };
-  }
-  const from = { path: entry["path"], line: entry["line"] };
-  const check = classifyAnchor(hunks, target.path ?? from.path, target.line);
-  if (!check.ok) return { ok: false, refused: `${candidateId} ${reason(check)}` };
-  const to = { path: check.path, line: check.line };
-  const taken = entries.find(
-    (e) => idOf(e) !== candidateId && e["eligible"] === true && e["path"] === to.path && e["line"] === to.line
-  );
-  if (taken !== void 0) {
-    return { ok: false, refused: `${String(idOf(taken))} is already anchored at ${to.path}:${to.line}` };
-  }
-  const moved = (e) => idOf(e) === candidateId ? { ...e, path: to.path, line: to.line, reanchoredFrom: from, ..."anchorCheck" in e ? { anchorCheck: check } : {} } : e;
-  const updated = {
-    ...scores,
-    scores: scores["scores"].map((e) => isRecord(e) ? moved(e) : e),
-    ...Array.isArray(scores["eligible"]) ? { eligible: scores["eligible"].map((e) => isRecord(e) ? moved(e) : e) } : {}
-  };
-  return { ok: true, updated, from, to, anchorCheck: check };
-}
-function reanchorCandidates(parsed, candidateId, to) {
-  const list = Array.isArray(parsed) ? parsed : isRecord(parsed) && Array.isArray(parsed["candidates"]) ? parsed["candidates"] : null;
-  if (list === null) return null;
-  if (!list.some((c) => isRecord(c) && idOf(c) === candidateId)) return null;
-  const rewritten = list.map((c) => isRecord(c) && idOf(c) === candidateId ? { ...c, path: to.path, line: to.line } : c);
-  return Array.isArray(parsed) ? rewritten : { ...parsed, candidates: rewritten };
 }
 
 // plugins/review-voice/src/diff/prior.ts
@@ -13344,6 +13392,7 @@ Commands:
   status            Show what is stored locally
   carry             Carry an earlier run's untouched findings to a new head
   reanchor          Move one scored candidate to a corrected changed line
+  carry-candidates  Carry verified candidates to a pushed head if unchanged
   explain           Show why the last review said what it said
   validate-output   Enforce the output contract on a review read from stdin
   doctor            Check that this machine can run Review Voice
@@ -13375,8 +13424,7 @@ symbols flags:
 
 check-candidates:
   --diff-file <path>     Require anchors on changed lines
-  --thread <path>        Drop candidates the thread already states; flag
-                         description overlaps for the verifier
+  --thread <path>        Drop candidates the thread already states
   --held-from <run-id>   Drop repeats of that run's held findings (--head)
 
 record flags:
@@ -13400,6 +13448,10 @@ reanchor flags:
   --candidate <id> --line <n> [--path <p>]  The corrected anchor, which must
                          be a changed line of --diff-file; rewrites --scores
                          and --candidates in place, keeping verification and score
+
+carry-candidates flags:
+  --candidates --verification --since <sha> --head --diff-file --out <dir>
+                         Unchanged ones move to the new head; others refused
 
 feedback usage:
   feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
@@ -14973,6 +15025,124 @@ function reanchorCommand(argv) {
   console.log(JSON.stringify({ candidateId, from: result.from, to: result.to, anchorCheck: result.anchorCheck }, null, 2));
   return 0;
 }
+function listIn(parsed, keys) {
+  if (Array.isArray(parsed)) return { list: parsed, rebuild: (list) => list };
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const record = parsed;
+  const key = keys.find((k) => Array.isArray(record[k]));
+  if (key === void 0) return null;
+  return { list: record[key], rebuild: (list) => ({ ...record, [key]: list }) };
+}
+function carryCandidatesCommand(argv) {
+  const candidatesFile = flag(argv, "--candidates");
+  const verificationFile = flag(argv, "--verification");
+  const since = flag(argv, "--since");
+  const head = flag(argv, "--head");
+  const diffFile = flag(argv, "--diff-file");
+  const outDir = flag(argv, "--out");
+  if ([candidatesFile, verificationFile, since, head, diffFile, outDir].includes(null)) {
+    console.error(
+      "Usage: carry-candidates --candidates <file> --verification <file> --since <sha> --head <sha> --diff-file <patch> --out <dir>"
+    );
+    return 2;
+  }
+  let candidatesIn;
+  let verificationIn;
+  let candidates;
+  let hunks;
+  try {
+    const parsedCandidates = listIn(JSON.parse(readFileSync5(candidatesFile, "utf8")), ["candidates"]);
+    if (parsedCandidates === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
+    candidatesIn = parsedCandidates;
+    candidates = candidatesIn.list.map((raw, index) => normaliseCandidate(raw, index));
+    assertUniqueCandidateIds(candidates);
+    const parsedVerification = listIn(JSON.parse(readFileSync5(verificationFile, "utf8")), VERDICT_KEYS);
+    if (parsedVerification === null || parsedVerification.list.length === 0) {
+      throw new Error(`${verificationFile} contains no verifications`);
+    }
+    verificationIn = parsedVerification;
+    const problem = verificationProblem(verificationIn.list);
+    if (problem !== null) throw new Error(`malformed verification - ${problem}`);
+    hunks = parseHunks(readFileSync5(diffFile, "utf8"));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
+  const verifiedIds = new Set(verificationIn.list.map((v) => v["candidate_id"] ?? v["candidateId"]));
+  const unverified = candidates.filter((c) => !verifiedIds.has(c.candidateId));
+  let result;
+  try {
+    result = carryCandidates(
+      candidates.filter((c) => verifiedIds.has(c.candidateId)),
+      since,
+      head,
+      hunks,
+      process.cwd()
+    );
+  } catch (error) {
+    if (error instanceof CarryError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+  const refused = [
+    ...unverified.map((c) => ({ candidateId: c.candidateId, path: c.path, line: c.line, reason: "no verification for it" })),
+    ...result.refused
+  ];
+  const carriedById = new Map(result.carried.map((c) => [c.candidateId, c]));
+  const carriedCandidates = candidatesIn.list.flatMap((raw, index) => {
+    const moved = carriedById.get(candidates[index].candidateId);
+    if (moved === void 0) return [];
+    const causeKey = "caused_by" in raw ? "caused_by" : "causedBy";
+    return [{
+      ...raw,
+      path: moved.path,
+      line: moved.line,
+      ...moved.causedBy === void 0 ? {} : { [causeKey]: { path: moved.causedBy.path, line: moved.causedBy.line } }
+    }];
+  });
+  const carriedVerification = verificationIn.list.filter((v) => carriedById.has(v["candidate_id"] ?? v["candidateId"]));
+  const record = { since, head, carried: result.carried, refused };
+  try {
+    mkdirSync2(outDir, { recursive: true });
+    writeFileSync(join6(outDir, "candidates.json"), `${JSON.stringify(candidatesIn.rebuild(carriedCandidates), null, 2)}
+`);
+    writeFileSync(join6(outDir, "verification.json"), `${JSON.stringify(verificationIn.rebuild(carriedVerification), null, 2)}
+`);
+    writeFileSync(join6(outDir, "carry.json"), `${JSON.stringify(record, null, 2)}
+`);
+  } catch (error) {
+    console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const db = openDatabase();
+  try {
+    recordAudit(db, "candidates_carried", null, {
+      since,
+      head,
+      carried: result.carried.map((c) => c.candidateId),
+      refused: refused.map((r) => r.candidateId)
+    });
+  } finally {
+    db.close();
+  }
+  for (const r of refused) console.error(`Refused ${r.candidateId}: ${r.reason}`);
+  console.log(
+    JSON.stringify(
+      {
+        carried: result.carried.length,
+        refused,
+        candidates: join6(outDir, "candidates.json"),
+        verification: join6(outDir, "verification.json"),
+        carry: join6(outDir, "carry.json")
+      },
+      null,
+      2
+    )
+  );
+  return refused.length === 0 ? 0 : 1;
+}
 function feedbackCommand(argv) {
   const [findingRef, actionRaw] = argv;
   if (findingRef === void 0 || actionRaw === void 0) {
@@ -15497,6 +15667,8 @@ async function main(argv) {
       return carryCommand(argv.slice(1));
     case "reanchor":
       return reanchorCommand(argv.slice(1));
+    case "carry-candidates":
+      return carryCandidatesCommand(argv.slice(1));
     case "feedback":
       return feedbackCommand(argv.slice(1));
     case "status":

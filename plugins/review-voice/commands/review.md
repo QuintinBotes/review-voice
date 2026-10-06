@@ -542,6 +542,31 @@ stray directory and another project's notes took the reviewed count from 11 to
 yourself to make it pass - the validator is the contract, and hand-patching it
 defeats the measurement.
 
+## When the head moves before posting
+
+If the author pushes after step 3, `verdict` and `post` refuse the old head
+(exit 3). Carry the verified candidates instead of copying files by hand:
+
+1. `RV diff --pr <number> --full --out <newtmpdir>`, for the whole pull request
+   at the new head. An `interdiff` patch would not hold the lines the
+   candidates sit on.
+2. Write the candidates step 4 scored to a file, then run
+   `RV carry-candidates --candidates <file> --verification <tmpdir>/verification.json --since <old sha> --head <new sha> --diff-file <newtmpdir>/diff.patch --out <newtmpdir>`.
+   It carries a candidate only when its line and the two either side, and a
+   stale consumer's `caused_by`, are unchanged between the two heads, and its
+   new line is still a changed line of the new diff. It writes
+   `candidates.json` and `verification.json` with what carried, at the new
+   lines, and `carry.json` with what carried and what was refused, and records
+   the carry in the audit log.
+3. Exit 0: continue from step 4 with those two files, the new `diff.patch` and
+   `--head <new sha>`, and record with the new `files.json`.
+4. Exit 1 names each refused candidate: its anchored code changed, so its
+   verification no longer holds and it is not posted from this carry. Review the
+   new head from step 2 instead of scoring only what carried; a refused finding
+   may have been fixed, or made worse.
+
+Never move a candidate across heads by hand.
+
 ## What not to do
 
 No greeting. No summary. No praise. No description of the process or of how
