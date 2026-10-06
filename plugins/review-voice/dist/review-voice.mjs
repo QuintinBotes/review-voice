@@ -897,32 +897,41 @@ function gitAllowingDifference(args, cwd) {
 function untrackedFiles(root) {
   return git(["ls-files", "--others", "--exclude-standard", "-z"], root).split("\0").filter((path) => path.length > 0);
 }
+function hasCommitLocally(commit, root) {
+  try {
+    git(["cat-file", "-e", `${commit}^{commit}`], root);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function attributeSource(root, diff) {
+  if (diff.mode === "worktree" || diff.mode === "staged") {
+    return hasCommitLocally(diff.head, root) ? diff.head : null;
+  }
+  if (diff.base === null) return null;
+  try {
+    const mergeBase = git(["merge-base", diff.base, diff.head], root).trim();
+    if (mergeBase.length > 0) return mergeBase;
+  } catch {
+  }
+  return hasCommitLocally(diff.base, root) ? diff.base : null;
+}
 function linguistGeneratedPaths(root, paths, source) {
   const marked = /* @__PURE__ */ new Set();
-  if (paths.length === 0) return marked;
-  const checkAttr = (extra) => {
-    try {
-      return execFileSync2("git", ["check-attr", ...extra, "-z", "--stdin", "linguist-generated"], {
-        cwd: root,
-        encoding: "utf8",
-        input: `${paths.join("\0")}\0`,
-        maxBuffer: 64 * 1024 * 1024,
-        stdio: ["pipe", "pipe", "pipe"]
-      });
-    } catch {
-      return null;
-    }
-  };
-  const known = (commit) => {
-    try {
-      git(["cat-file", "-e", `${commit}^{commit}`], root);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  const raw = (source !== void 0 && known(source) ? checkAttr(["--source", source]) : null) ?? checkAttr([]);
-  if (raw === null) return marked;
+  if (paths.length === 0 || source === null || !hasCommitLocally(source, root)) return marked;
+  let raw;
+  try {
+    raw = execFileSync2("git", ["check-attr", "--source", source, "-z", "--stdin", "linguist-generated"], {
+      cwd: root,
+      encoding: "utf8",
+      input: `${paths.join("\0")}\0`,
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+  } catch {
+    return marked;
+  }
   const fields = raw.split("\0");
   for (let i = 0; i + 2 < fields.length; i += 3) {
     const value = fields[i + 2];
@@ -13673,8 +13682,7 @@ function markedGenerated(acquired) {
   const reviewed = (acquired.files ?? []).filter((file) => file.reviewed).map((file) => file.path);
   try {
     const root = repositoryRoot(process.cwd());
-    const committed = acquired.mode === "base" || acquired.mode === "pull-request";
-    return linguistGeneratedPaths(root, reviewed, committed ? acquired.head : void 0);
+    return linguistGeneratedPaths(root, reviewed, attributeSource(root, acquired));
   } catch {
     return /* @__PURE__ */ new Set();
   }

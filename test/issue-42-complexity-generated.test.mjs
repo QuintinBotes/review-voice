@@ -121,7 +121,7 @@ function scratchRepo() {
   return { base, repo, git, dataDir, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
-test('linguistGeneratedPaths reads set and true, ignores unset, and falls back to the working tree', () => {
+test('linguistGeneratedPaths reads set and true at a commit, ignores unset, and never reads the working tree', () => {
   const scratch = scratchRepo();
   try {
     writeFileSync(
@@ -130,16 +130,15 @@ test('linguistGeneratedPaths reads set and true, ignores unset, and falls back t
     );
     const paths = ['pipelines/build.yml', 'pipelines/manual.yml', 'sdk/x/client.ts', 'src/a.ts'];
     const expected = new Set(['pipelines/build.yml', 'sdk/x/client.ts']);
-    assert.deepEqual(linguistGeneratedPaths(scratch.repo, paths), expected);
-    // The attributes are not committed yet, so a commit source has none and
-    // the working tree is not consulted: the commit is what was reviewed.
+    // Not committed yet: the working tree is never consulted.
     assert.deepEqual(linguistGeneratedPaths(scratch.repo, paths, 'HEAD'), new Set());
+    assert.deepEqual(linguistGeneratedPaths(scratch.repo, paths, null), new Set());
     scratch.git('add', '-A');
     scratch.git('commit', '-q', '-m', 'attributes');
     assert.deepEqual(linguistGeneratedPaths(scratch.repo, paths, 'HEAD'), expected);
-    // A commit git does not have falls back to the working tree.
-    assert.deepEqual(linguistGeneratedPaths(scratch.repo, paths, 'f'.repeat(40)), expected);
-    assert.deepEqual(linguistGeneratedPaths(join(scratch.base, 'data'), paths), new Set());
+    // A commit git does not have marks nothing.
+    assert.deepEqual(linguistGeneratedPaths(scratch.repo, paths, 'f'.repeat(40)), new Set());
+    assert.deepEqual(linguistGeneratedPaths(join(scratch.base, 'data'), paths, 'HEAD'), new Set());
   } finally {
     scratch.cleanup();
   }
@@ -149,6 +148,8 @@ test('diff honours linguist-generated: generated output is reported, not counted
   const scratch = scratchRepo();
   try {
     writeFileSync(join(scratch.repo, '.gitattributes'), 'sdk/** linguist-generated\n');
+    scratch.git('add', '-A');
+    scratch.git('commit', '-q', '-m', 'attributes');
     mkdirSync(join(scratch.repo, 'sdk'));
     writeFileSync(join(scratch.repo, 'sdk/client.ts'), Array.from({ length: 30 }, () => 'if (a && b) { go(); }').join('\n') + '\n');
     writeFileSync(join(scratch.repo, 'gen.ts'), 'if (a) { emit(); }\n');

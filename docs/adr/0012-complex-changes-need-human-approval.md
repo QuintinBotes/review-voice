@@ -118,13 +118,18 @@ kinds are left out of the count, not down-weighted:
   counts tests again.
 - *Generated output*: a reviewed file the classifier does not call source (a
   hand-edited generated file, or anything read under `--include-generated`), a
-  path the local checkout's `.gitattributes` marks `linguist-generated` (read
-  at the head commit when the reviewed side is committed and git has it,
-  otherwise from the working tree), and paths matching
+  path `.gitattributes` marks `linguist-generated`, and paths matching
   `review.human_review.generated_paths` (none by default). A generator change
   of a few hundred lines once read as thousands of decision points because of
   the output it emitted; the reviewer only needs to spot-check that output
   against the generator.
+
+  The attributes are read as of the commit the change starts from, never the
+  one it ends on: HEAD for a working-tree or staged change, the merge base (or
+  the base, when there is none) for a branch or pull request. Read at the
+  head, a change adding `src/** linguist-generated` would exempt its own code.
+  There is no working-tree fallback; when that commit is not available, no
+  file is excluded by attribute.
 
 Precedence is generated, then tests, then documentation, so each file is left
 out once.

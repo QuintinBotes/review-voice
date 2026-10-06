@@ -17,7 +17,7 @@ import { validateOutput } from './contract/validate.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
 import { checkSeverityAgainstScores, scoredEntries } from './contract/severity-check.ts';
 import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
-import { acquireDiff, GitError, linguistGeneratedPaths, type ChangedFile } from './diff/acquire.ts';
+import { acquireDiff, attributeSource, GitError, linguistGeneratedPaths, type ChangedFile } from './diff/acquire.ts';
 import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAssessment } from './diff/complexity.ts';
 import { acquirePullRequestDiff, applyReviewScope } from './diff/pull-request.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
@@ -595,16 +595,15 @@ function diffSummary(result: EmittedDiff): {
 }
 
 /**
- * Reviewed paths the local checkout's `.gitattributes` marks generated. A
- * committed side is read at its head commit, the working tree as it stands;
- * outside a repository nothing is marked.
+ * Reviewed paths the repository's `.gitattributes` marks generated, as of the
+ * commit the change starts from (see attributeSource). Outside a repository,
+ * or without that commit, nothing is marked.
  */
 function markedGenerated(acquired: EmittedDiff): Set<string> {
   const reviewed = (acquired.files ?? []).filter((file) => file.reviewed).map((file) => file.path);
   try {
     const root = repositoryRoot(process.cwd());
-    const committed = acquired.mode === 'base' || acquired.mode === 'pull-request';
-    return linguistGeneratedPaths(root, reviewed, committed ? acquired.head : undefined);
+    return linguistGeneratedPaths(root, reviewed, attributeSource(root, acquired));
   } catch {
     return new Set();
   }
