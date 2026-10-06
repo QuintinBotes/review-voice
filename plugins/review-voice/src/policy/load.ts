@@ -81,6 +81,7 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
   };
   result.humanReview.sensitivePaths = globs('sensitive_paths') ?? result.humanReview.sensitivePaths;
   result.humanReview.testPaths = globs('test_paths') ?? result.humanReview.testPaths;
+  result.humanReview.generatedPaths = globs('generated_paths') ?? result.humanReview.generatedPaths;
 }
 
 function contentHash(text: string): string {
@@ -137,6 +138,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
       ...DEFAULT_HUMAN_REVIEW,
       sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths],
       testPaths: [...DEFAULT_HUMAN_REVIEW.testPaths],
+      generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths],
     },
     layers: [],
     unapproved: [],

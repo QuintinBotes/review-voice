@@ -14,6 +14,11 @@ export interface HumanReviewConfig {
   sensitivePaths: string[];
   /** Tests and fixtures: reviewed, but their decision points are not counted. */
   testPaths: string[];
+  /**
+   * Generated output that classification and `linguist-generated` miss, such
+   * as files a generator in the repository writes. Not counted either.
+   */
+  generatedPaths: string[];
 }
 
 export const DEFAULT_SENSITIVE_PATHS = ['.github/workflows/**', '**/migrations/**', '**/auth/**', '**/security/**'];
@@ -35,6 +40,7 @@ export const DEFAULT_HUMAN_REVIEW: HumanReviewConfig = {
   maxHunkDecisionPoints: 15,
   sensitivePaths: DEFAULT_SENSITIVE_PATHS,
   testPaths: DEFAULT_TEST_PATHS,
+  generatedPaths: [],
 };
 
 export interface ComplexityAssessment {
@@ -50,7 +56,13 @@ export interface ComplexityAssessment {
   excluded: Excluded;
   /** Matched changed paths, at most 20, sorted. */
   sensitivePaths: string[];
-  limits: { maxDecisionPoints: number; maxHunkDecisionPoints: number; sensitivePaths: string[]; testPaths: string[] };
+  limits: {
+    maxDecisionPoints: number;
+    maxHunkDecisionPoints: number;
+    sensitivePaths: string[];
+    testPaths: string[];
+    generatedPaths: string[];
+  };
 }
 
 export interface Excluded {
@@ -58,9 +70,18 @@ export interface Excluded {
   testFiles: number;
   /** What the test files would have added, so the note can say the logic change is smaller. */
   testDecisionPoints: number;
+  /** Generated, vendored or lock files the review read, by classification, attribute or glob. */
+  generatedFiles: number;
+  generatedDecisionPoints: number;
 }
 
-const NOTHING_EXCLUDED: Excluded = { documentationFiles: 0, testFiles: 0, testDecisionPoints: 0 };
+const NOTHING_EXCLUDED: Excluded = {
+  documentationFiles: 0,
+  testFiles: 0,
+  testDecisionPoints: 0,
+  generatedFiles: 0,
+  generatedDecisionPoints: 0,
+};
 
 const MAX_SENSITIVE_LISTED = 20;
 
@@ -160,17 +181,24 @@ function config(partial: Partial<HumanReviewConfig> | undefined): HumanReviewCon
     maxHunkDecisionPoints: partial?.maxHunkDecisionPoints ?? DEFAULT_HUMAN_REVIEW.maxHunkDecisionPoints,
     sensitivePaths: partial?.sensitivePaths ?? DEFAULT_HUMAN_REVIEW.sensitivePaths,
     testPaths: partial?.testPaths ?? DEFAULT_HUMAN_REVIEW.testPaths,
+    generatedPaths: partial?.generatedPaths ?? DEFAULT_HUMAN_REVIEW.generatedPaths,
   };
 }
 
-type Kind = 'production' | 'test' | 'documentation';
+type Kind = 'production' | 'generated' | 'test' | 'documentation';
 
 const matchesAny = (matchers: readonly RegExp[], path: string): boolean => matchers.some((matcher) => matcher.test(path));
 
+/**
+ * `markedGenerated` holds the paths the repository's `.gitattributes` marks
+ * `linguist-generated`; the caller reads them, so this stays a function of
+ * its arguments.
+ */
 export function assessComplexity(
   diff: string,
   files: readonly ChangedFile[],
   partial?: Partial<HumanReviewConfig>,
+  markedGenerated: ReadonlySet<string> = new Set(),
 ): ComplexityAssessment {
   const limits = config(partial);
 
@@ -178,11 +206,17 @@ export function assessComplexity(
   // Everything else the review reads is left out of the count, and counted
   // as left out, so the assessment can say what it did not measure.
   const tests = limits.testPaths.map((glob) => globToRegExp(glob));
+  const generated = limits.generatedPaths.map((glob) => globToRegExp(glob));
+  const kindOf = (file: ChangedFile): Kind => {
+    // A file the review reads although it is not source - a hand-edited
+    // generated file, or anything under --include-generated - is generated.
+    if (file.class !== 'source' || markedGenerated.has(file.path) || matchesAny(generated, file.path)) return 'generated';
+    if (matchesAny(tests, file.path)) return 'test';
+    return isDocumentation(file.path) ? 'documentation' : 'production';
+  };
   const kinds = new Map<string, Kind>();
   for (const file of files) {
-    if (!file.reviewed || file.class !== 'source') continue;
-    const kind: Kind = matchesAny(tests, file.path) ? 'test' : isDocumentation(file.path) ? 'documentation' : 'production';
-    kinds.set(file.path, kind);
+    if (file.reviewed) kinds.set(file.path, kindOf(file));
   }
   const allHunks = countHunks(diff, new Set(kinds.keys()));
   const hunks = allHunks.filter((hunk) => kinds.get(hunk.path) === 'production');
@@ -231,6 +265,8 @@ export function assessComplexity(
       documentationFiles: ofKind('documentation'),
       testFiles: ofKind('test'),
       testDecisionPoints: pointsOf('test'),
+      generatedFiles: ofKind('generated'),
+      generatedDecisionPoints: pointsOf('generated'),
     },
     sensitivePaths: listed,
     limits: { ...limits },
@@ -242,6 +278,11 @@ const plural = (count: number, noun: string): string => `${count} ${noun}${count
 /** What the count left out, as a sentence, or an empty string when nothing was. */
 function notCounted(excluded: Excluded): string {
   const parts: string[] = [];
+  if (excluded.generatedFiles > 0) {
+    parts.push(
+      `${plural(excluded.generatedFiles, 'generated file')} (${plural(excluded.generatedDecisionPoints, 'decision point')})`,
+    );
+  }
   if (excluded.testFiles > 0) {
     parts.push(`${plural(excluded.testFiles, 'test file')} (${plural(excluded.testDecisionPoints, 'decision point')})`);
   }
@@ -316,7 +357,8 @@ export function parseComplexity(value: unknown): ComplexityAssessment | null {
     return isStrings(globs) ? globs : null;
   };
   const testPaths = optionalGlobs('testPaths');
-  if (testPaths === null) return null;
+  const generatedPaths = optionalGlobs('generatedPaths');
+  if (testPaths === null || generatedPaths === null) return null;
 
   return {
     level: v['level'],
@@ -330,6 +372,7 @@ export function parseComplexity(value: unknown): ComplexityAssessment | null {
       maxHunkDecisionPoints: l['maxHunkDecisionPoints'],
       sensitivePaths: l['sensitivePaths'],
       testPaths,
+      generatedPaths,
     },
   };
 }

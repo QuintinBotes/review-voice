@@ -116,11 +116,25 @@ kinds are left out of the count, not down-weighted:
   `**/*.test.*`, `**/*.spec.*`, `**/*_test.*` and the usual Java, Kotlin, C#,
   Python and Ruby names); a configured list replaces them, and an empty list
   counts tests again.
+- *Generated output*: a reviewed file the classifier does not call source (a
+  hand-edited generated file, or anything read under `--include-generated`), a
+  path the local checkout's `.gitattributes` marks `linguist-generated` (read
+  at the head commit when the reviewed side is committed and git has it,
+  otherwise from the working tree), and paths matching
+  `review.human_review.generated_paths` (none by default). A generator change
+  of a few hundred lines once read as thousands of decision points because of
+  the output it emitted; the reviewer only needs to spot-check that output
+  against the generator.
+
+Precedence is generated, then tests, then documentation, so each file is left
+out once.
 
 The assessment carries `excluded`, a count of the files left out and, for
-tests, the decision points they would have added, so the agent can say what
-the number did not measure; when the change is high, the note names them, and
-its densest hunk is always a production hunk. The globs in effect are recorded
-in `limits`. Sensitive-path matching is unchanged and still applies to every
-changed path, excluded or not. An assessment recorded before this amendment
-has no `excluded` block and reads as excluding nothing.
+tests and generated output, the decision points they would have added, so the
+agent can say what the number did not measure; when the change is high, the
+local note names them, and its densest hunk is always a production hunk. The
+globs in effect are recorded in `limits`. None of this reaches the posted
+review, which still says nothing about human review (first amendment).
+Sensitive-path matching is unchanged and still applies to every changed path,
+excluded or not. An assessment recorded before this amendment has no
+`excluded` block and reads as excluding nothing.

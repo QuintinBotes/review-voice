@@ -72,6 +72,10 @@ review:
       - "**/*Test.kt"
       - "**/*Test.cs"
       - "**/*Tests.cs"
+    # Generated output is left out too: files classified as generated, files
+    # marked `linguist-generated` in .gitattributes, and these globs (none by
+    # default), e.g. what a generator in this repository writes.
+    generated_paths: []
 
 static_evidence:
   # Commands are opt-in. Review Voice will suggest what it detects but never

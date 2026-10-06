@@ -897,6 +897,39 @@ function gitAllowingDifference(args, cwd) {
 function untrackedFiles(root) {
   return git(["ls-files", "--others", "--exclude-standard", "-z"], root).split("\0").filter((path) => path.length > 0);
 }
+function linguistGeneratedPaths(root, paths, source) {
+  const marked = /* @__PURE__ */ new Set();
+  if (paths.length === 0) return marked;
+  const checkAttr = (extra) => {
+    try {
+      return execFileSync2("git", ["check-attr", ...extra, "-z", "--stdin", "linguist-generated"], {
+        cwd: root,
+        encoding: "utf8",
+        input: `${paths.join("\0")}\0`,
+        maxBuffer: 64 * 1024 * 1024,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+    } catch {
+      return null;
+    }
+  };
+  const known = (commit) => {
+    try {
+      git(["cat-file", "-e", `${commit}^{commit}`], root);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const raw = (source !== void 0 && known(source) ? checkAttr(["--source", source]) : null) ?? checkAttr([]);
+  if (raw === null) return marked;
+  const fields = raw.split("\0");
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    const value = fields[i + 2];
+    if (value === "set" || value === "true") marked.add(fields[i]);
+  }
+  return marked;
+}
 function repositoryRoot(cwd) {
   return git(["rev-parse", "--show-toplevel"], cwd).trim();
 }
@@ -1400,9 +1433,16 @@ var DEFAULT_HUMAN_REVIEW = {
   maxDecisionPoints: 40,
   maxHunkDecisionPoints: 15,
   sensitivePaths: DEFAULT_SENSITIVE_PATHS,
-  testPaths: DEFAULT_TEST_PATHS
+  testPaths: DEFAULT_TEST_PATHS,
+  generatedPaths: []
 };
-var NOTHING_EXCLUDED = { documentationFiles: 0, testFiles: 0, testDecisionPoints: 0 };
+var NOTHING_EXCLUDED = {
+  documentationFiles: 0,
+  testFiles: 0,
+  testDecisionPoints: 0,
+  generatedFiles: 0,
+  generatedDecisionPoints: 0
+};
 var MAX_SENSITIVE_LISTED = 20;
 var KEYWORDS = /\b(?:if|elif|for|foreach|while|case|catch|except|when)\b/g;
 var TERNARY = / \? /g;
@@ -1473,18 +1513,23 @@ function config(partial) {
     maxDecisionPoints: partial?.maxDecisionPoints ?? DEFAULT_HUMAN_REVIEW.maxDecisionPoints,
     maxHunkDecisionPoints: partial?.maxHunkDecisionPoints ?? DEFAULT_HUMAN_REVIEW.maxHunkDecisionPoints,
     sensitivePaths: partial?.sensitivePaths ?? DEFAULT_HUMAN_REVIEW.sensitivePaths,
-    testPaths: partial?.testPaths ?? DEFAULT_HUMAN_REVIEW.testPaths
+    testPaths: partial?.testPaths ?? DEFAULT_HUMAN_REVIEW.testPaths,
+    generatedPaths: partial?.generatedPaths ?? DEFAULT_HUMAN_REVIEW.generatedPaths
   };
 }
 var matchesAny = (matchers, path) => matchers.some((matcher) => matcher.test(path));
-function assessComplexity(diff, files, partial) {
+function assessComplexity(diff, files, partial, markedGenerated2 = /* @__PURE__ */ new Set()) {
   const limits = config(partial);
   const tests = limits.testPaths.map((glob) => globToRegExp(glob));
+  const generated = limits.generatedPaths.map((glob) => globToRegExp(glob));
+  const kindOf = (file) => {
+    if (file.class !== "source" || markedGenerated2.has(file.path) || matchesAny(generated, file.path)) return "generated";
+    if (matchesAny(tests, file.path)) return "test";
+    return isDocumentation(file.path) ? "documentation" : "production";
+  };
   const kinds = /* @__PURE__ */ new Map();
   for (const file of files) {
-    if (!file.reviewed || file.class !== "source") continue;
-    const kind = matchesAny(tests, file.path) ? "test" : isDocumentation(file.path) ? "documentation" : "production";
-    kinds.set(file.path, kind);
+    if (file.reviewed) kinds.set(file.path, kindOf(file));
   }
   const allHunks = countHunks(diff, new Set(kinds.keys()));
   const hunks = allHunks.filter((hunk) => kinds.get(hunk.path) === "production");
@@ -1525,7 +1570,9 @@ function assessComplexity(diff, files, partial) {
     excluded: {
       documentationFiles: ofKind("documentation"),
       testFiles: ofKind("test"),
-      testDecisionPoints: pointsOf("test")
+      testDecisionPoints: pointsOf("test"),
+      generatedFiles: ofKind("generated"),
+      generatedDecisionPoints: pointsOf("generated")
     },
     sensitivePaths: listed,
     limits: { ...limits }
@@ -1534,6 +1581,11 @@ function assessComplexity(diff, files, partial) {
 var plural2 = (count2, noun) => `${count2} ${noun}${count2 === 1 ? "" : "s"}`;
 function notCounted(excluded) {
   const parts = [];
+  if (excluded.generatedFiles > 0) {
+    parts.push(
+      `${plural2(excluded.generatedFiles, "generated file")} (${plural2(excluded.generatedDecisionPoints, "decision point")})`
+    );
+  }
   if (excluded.testFiles > 0) {
     parts.push(`${plural2(excluded.testFiles, "test file")} (${plural2(excluded.testDecisionPoints, "decision point")})`);
   }
@@ -1588,7 +1640,8 @@ function parseComplexity(value) {
     return isStrings(globs) ? globs : null;
   };
   const testPaths = optionalGlobs("testPaths");
-  if (testPaths === null) return null;
+  const generatedPaths = optionalGlobs("generatedPaths");
+  if (testPaths === null || generatedPaths === null) return null;
   return {
     level: v["level"],
     reasons: v["reasons"],
@@ -1600,7 +1653,8 @@ function parseComplexity(value) {
       maxDecisionPoints: l["maxDecisionPoints"],
       maxHunkDecisionPoints: l["maxHunkDecisionPoints"],
       sensitivePaths: l["sensitivePaths"],
-      testPaths
+      testPaths,
+      generatedPaths
     }
   };
 }
@@ -9993,6 +10047,7 @@ function readHumanReview(block, result) {
   };
   result.humanReview.sensitivePaths = globs("sensitive_paths") ?? result.humanReview.sensitivePaths;
   result.humanReview.testPaths = globs("test_paths") ?? result.humanReview.testPaths;
+  result.humanReview.generatedPaths = globs("generated_paths") ?? result.humanReview.generatedPaths;
 }
 function contentHash(text) {
   return createHash4("sha256").update(text).digest("hex").slice(0, 16);
@@ -10029,7 +10084,8 @@ function loadConfig(repositoryRoot2) {
     humanReview: {
       ...DEFAULT_HUMAN_REVIEW,
       sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths],
-      testPaths: [...DEFAULT_HUMAN_REVIEW.testPaths]
+      testPaths: [...DEFAULT_HUMAN_REVIEW.testPaths],
+      generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths]
     },
     layers: [],
     unapproved: [],
@@ -13613,8 +13669,23 @@ function diffSummary(result) {
     prior: result.prior === void 0 ? null : { source: result.prior.source, head: result.prior.head, runId: result.prior.runId }
   };
 }
+function markedGenerated(acquired) {
+  const reviewed = (acquired.files ?? []).filter((file) => file.reviewed).map((file) => file.path);
+  try {
+    const root = repositoryRoot(process.cwd());
+    const committed = acquired.mode === "base" || acquired.mode === "pull-request";
+    return linguistGeneratedPaths(root, reviewed, committed ? acquired.head : void 0);
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
+}
 function emitDiff(acquired, outDir) {
-  const complexity = assessComplexity(acquired.diff, acquired.files ?? [], repositoryConfig()?.humanReview);
+  const complexity = assessComplexity(
+    acquired.diff,
+    acquired.files ?? [],
+    repositoryConfig()?.humanReview,
+    markedGenerated(acquired)
+  );
   const result = { ...acquired, complexity, humanReviewNote: humanReviewNote(complexity) };
   if (outDir === null) {
     console.log(JSON.stringify(result, null, 2));

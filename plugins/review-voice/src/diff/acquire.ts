@@ -93,6 +93,50 @@ function untrackedFiles(root: string): string[] {
     .filter((path) => path.length > 0);
 }
 
+/**
+ * Paths the repository marks `linguist-generated` in `.gitattributes`.
+ *
+ * Read from `source` (a commit) when it is given and git has it, else from
+ * the working tree. The attribute only refines the complexity count, so when
+ * git cannot answer at all the answer is an empty set rather than an error.
+ */
+export function linguistGeneratedPaths(root: string, paths: readonly string[], source?: string): Set<string> {
+  const marked = new Set<string>();
+  if (paths.length === 0) return marked;
+  const checkAttr = (extra: string[]): string | null => {
+    try {
+      return execFileSync('git', ['check-attr', ...extra, '-z', '--stdin', 'linguist-generated'], {
+        cwd: root,
+        encoding: 'utf8',
+        input: `${paths.join('\0')}\0`,
+        maxBuffer: 64 * 1024 * 1024,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch {
+      return null;
+    }
+  };
+  // An unknown source reads as no attributes rather than as an error, so its
+  // presence is checked first.
+  const known = (commit: string): boolean => {
+    try {
+      git(['cat-file', '-e', `${commit}^{commit}`], root);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const raw = (source !== undefined && known(source) ? checkAttr(['--source', source]) : null) ?? checkAttr([]);
+  if (raw === null) return marked;
+  // NUL-separated triples: path, attribute, value.
+  const fields = raw.split('\0');
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    const value = fields[i + 2];
+    if (value === 'set' || value === 'true') marked.add(fields[i]!);
+  }
+  return marked;
+}
+
 export function repositoryRoot(cwd: string): string {
   // Resolving the root means the command works from any subdirectory, which is
   // where people actually run it.
