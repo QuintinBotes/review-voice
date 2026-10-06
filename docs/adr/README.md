@@ -19,7 +19,7 @@ after that gate.
 | [0006](0006-team-governance.md) | Team and policy governance | Accepted |
 | [0007](0007-comment-posting.md) | GitHub comment posting | Accepted, superseded in part by 0010 |
 | [0008](0008-policy-sharing.md) | Policy sharing and export | Accepted |
-| [0009](0009-severity-from-computed-reach.md) | Severity from category and computed reach | Accepted |
+| [0009](0009-severity-from-computed-reach.md) | Severity from category and computed reach | Accepted, amended 2026-10-06 |
 | [0010](0010-review-verdict-posting.md) | Posting a review with its verdict | Accepted, amended by 0012 and 0013 |
 | [0011](0011-severity-escalation-needs-traced-impact.md) | Severity escalation needs traced impact | Accepted |
 | [0012](0012-complex-changes-need-human-approval.md) | Complex changes are raised for a human's approval | Accepted |

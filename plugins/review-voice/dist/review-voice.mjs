@@ -2603,6 +2603,32 @@ function isCode(path) {
   return classify(normalisePath2(path)) === "source";
 }
 var NON_DISCRIMINATING_DIRECTORIES = 12;
+var IMPORT_LINE = [
+  /^import\s+(?:type\s+)?(?:[\w$*{}\s,]+\s+from\s+)?['"][^'"]+['"]\s*;?$/,
+  /^from\s+[\w.]+\s+import\s+[\w*,\s()]+$/,
+  /^import\s+[\w.]+(?:\s+as\s+\w+)?(?:\s*,\s*[\w.]+(?:\s+as\s+\w+)?)*$/,
+  /^import\s+(?:static\s+)?[\w.]+(?:\.\*)?;?$/
+];
+function isImportOnlyChange(diff, changedPath) {
+  const wanted = normalisePath2(changedPath);
+  let inFile = false;
+  let imports = 0;
+  for (const raw of diff.split(/\r?\n/)) {
+    if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
+      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
+      if (match?.[1] !== void 0) inFile = normalisePath2(match[1]) === wanted;
+      else if (raw.startsWith("diff --git ")) inFile = false;
+      continue;
+    }
+    if (!inFile || raw.startsWith("--- ")) continue;
+    if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
+    const text = raw.slice(1).trim();
+    if (text === "") continue;
+    if (!IMPORT_LINE.some((pattern) => pattern.test(text))) return false;
+    imports += 1;
+  }
+  return imports > 0;
+}
 function withinSubtree(path, changedDirectory) {
   if (changedDirectory === "") return false;
   const normalised = normalisePath2(path);
@@ -2644,6 +2670,7 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
     };
   };
   if (symbols.length === 0) return result(null, false);
+  if (diff !== null && isImportOnlyChange(diff, changedPath)) return result(null, false);
   for (const symbol of symbols) {
     searched.push(symbol);
     let found;
@@ -14749,7 +14776,7 @@ function recordCommand(argv) {
   if (scoresFile !== null) {
     try {
       const parsed = JSON.parse(readFileSync5(scoresFile, "utf8"));
-      scores = Array.isArray(parsed) ? parsed : parsed.scores ?? [];
+      scores = boundLists(Array.isArray(parsed) ? parsed : parsed.scores ?? []);
     } catch {
       console.error(`Cannot read scores from ${scoresFile}.`);
       return 2;

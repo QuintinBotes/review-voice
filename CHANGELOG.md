@@ -57,6 +57,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a large diff. Files it had not finished are listed as `inconclusive` with
   `reason: "time-budget"`, the finished ones are still written, and the report
   carries a `budget`. (#33)
+- A change whose only edits in a file are one-line imports no longer gets
+  `repository` reach from the spread of the imported name or the module's
+  importers; its reach is absent and the category's own tier applies. `record`
+  also caps the path lists in the scores it stores, with a `<name>Total` count
+  beside each cut list, so a scores file cannot grow with the repository. See
+  ADR 0009. (#7)
 
 ## [1.10.1] - 2026-10-05
 

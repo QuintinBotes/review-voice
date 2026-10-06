@@ -1989,7 +1989,9 @@ function recordCommand(argv: string[]): number {
   if (scoresFile !== null) {
     try {
       const parsed = JSON.parse(readFileSync(scoresFile, 'utf8')) as { scores?: unknown };
-      scores = Array.isArray(parsed) ? parsed : (parsed.scores ?? []);
+      // Bounded again here: a scores file from before the cap, or one a caller
+      // assembled, must not put every matching path into the stored run.
+      scores = boundLists(Array.isArray(parsed) ? parsed : (parsed.scores ?? []));
     } catch {
       console.error(`Cannot read scores from ${scoresFile}.`);
       return 2;
