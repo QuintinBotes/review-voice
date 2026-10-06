@@ -347,7 +347,9 @@ array to `<tmpdir>/tie-breaks.json`, then run the same command again with
 4: an upheld dispute keeps the evidence-verifier's finding, a dropped one
 included, and one not upheld keeps the second pass's outcome. A malformed
 tie-break file exits 2; re-run the tie-breaker rather than editing its output.
-Keep the file for step 6.
+Write that second output to `<tmpdir>/reconciled.json` and keep it for step 6:
+its `tieBreaks` mark which rulings settled a dispute, and a ruling on a
+candidate nobody disputed is ignored.
 
 ## Step 4 - Score against precedent
 
@@ -547,7 +549,7 @@ stray directory and another project's notes took the reviewed count from 11 to
 
   Pass the score breakdowns with `--scores <file>` and, if verification ran,
   the verdicts with `--verdicts <file>` and, if step 3c ran a tie-breaker,
-  `--tie-breaks <tmpdir>/tie-breaks.json`, so `/review-voice:explain` can show
+  `--tie-breaks <tmpdir>/reconciled.json`, so `/review-voice:explain` can show
   its working later - including findings that were suppressed. Without them a finding is
   recorded with no account of why it was emitted.
 

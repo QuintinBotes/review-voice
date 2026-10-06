@@ -25,6 +25,13 @@ export interface TieBreak {
   candidateId: string;
   upheld: boolean;
   reason: string;
+  /**
+   * Set by `reconcile`: whether this ruling settled a dispute. A ruling on a
+   * candidate nobody disputed is ignored there, and `explain` must not treat
+   * it as having restored anything. Absent on a ruling read straight from the
+   * tie-breaker, which says nothing about whether it was applied.
+   */
+  applied?: boolean | undefined;
 }
 
 export interface Dispute {
@@ -60,6 +67,8 @@ export interface ReconcileResult {
   candidates: RawCandidate[];
   disputes: Dispute[];
   applied: Applied[];
+  /** Every ruling supplied, marked with whether it settled a dispute. */
+  tieBreaks: TieBreak[];
   /** Things the caller should see on stderr; none of them changes the output. */
   notes: string[];
 }
@@ -131,7 +140,15 @@ export function parseTieBreaks(parsed: unknown): TieBreak[] {
     // Two rulings on one point leave the decision to whichever is read last.
     if (seen.has(id)) throw new ReconcileInputError(`${who}: a second tie-break for the same candidate`);
     seen.add(id);
-    return { candidateId: id, upheld: e['upheld'], reason: e['reason'] };
+    if (e['applied'] !== undefined && typeof e['applied'] !== 'boolean') {
+      throw new ReconcileInputError(`${who}: applied must be true or false when supplied`);
+    }
+    return {
+      candidateId: id,
+      upheld: e['upheld'],
+      reason: e['reason'],
+      ...(typeof e['applied'] === 'boolean' ? { applied: e['applied'] } : {}),
+    };
   });
 }
 
@@ -270,5 +287,9 @@ export function reconcile(
     }
   }
 
-  return { candidates: out, disputes, applied, notes };
+  // Recomputed here, whatever the input said: only reconcile knows which
+  // rulings settled a dispute.
+  const marked = (tieBreaks ?? []).map((tieBreak) => ({ ...tieBreak, applied: rulings.has(tieBreak.candidateId) }));
+
+  return { candidates: out, disputes, applied, tieBreaks: marked, notes };
 }

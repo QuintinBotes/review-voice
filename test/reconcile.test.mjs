@@ -328,16 +328,18 @@ test('score refuses an impact_disputed that is not a boolean', () => {
 test('record keeps the rulings and explain shows them instead of a suppression', () => {
   withDir((dir, data) => {
     writeFileSync(join(dir, 'verdicts.json'), JSON.stringify(SECOND_PASS));
-    writeFileSync(
-      join(dir, 'tie-breaks.json'),
-      JSON.stringify([
+    // What step 6 records is reconcile's output, which marks the rulings it applied.
+    const reconciled = reconcile(dir, data, {
+      tieBreaks: [
         { candidate_id: 'c5', upheld: true, reason: 'src/consumer.ts:52 acks unconditionally.' },
         { candidate_id: 'c1', upheld: false, reason: 'Guarded at src/queue.ts:8.' },
-      ]),
-    );
+      ],
+    });
+    assert.equal(reconciled.status, 0, reconciled.stderr);
+    writeFileSync(join(dir, 'reconciled.json'), reconciled.stdout);
     const review = '[important] `src/queue.ts:50` - The worker acknowledges before the write commits.\n';
     const recorded = cli(
-      ['record', '--repository', 'o/r', '--verdicts', join(dir, 'verdicts.json'), '--tie-breaks', join(dir, 'tie-breaks.json')],
+      ['record', '--repository', 'o/r', '--verdicts', join(dir, 'verdicts.json'), '--tie-breaks', join(dir, 'reconciled.json')],
       review,
       dir,
       data,

@@ -10363,7 +10363,15 @@ function parseTieBreaks(parsed) {
     }
     if (seen.has(id)) throw new ReconcileInputError(`${who}: a second tie-break for the same candidate`);
     seen.add(id);
-    return { candidateId: id, upheld: e["upheld"], reason: e["reason"] };
+    if (e["applied"] !== void 0 && typeof e["applied"] !== "boolean") {
+      throw new ReconcileInputError(`${who}: applied must be true or false when supplied`);
+    }
+    return {
+      candidateId: id,
+      upheld: e["upheld"],
+      reason: e["reason"],
+      ...typeof e["applied"] === "boolean" ? { applied: e["applied"] } : {}
+    };
   });
 }
 function tracedConfidently(verification2) {
@@ -10474,7 +10482,8 @@ function reconcile(candidates, verifications, secondPass, tieBreaks) {
       });
     }
   }
-  return { candidates: out, disputes, applied, notes };
+  const marked = (tieBreaks ?? []).map((tieBreak) => ({ ...tieBreak, applied: rulings.has(tieBreak.candidateId) }));
+  return { candidates: out, disputes, applied, tieBreaks: marked, notes };
 }
 
 // plugins/review-voice/src/github/roles.ts
@@ -13376,6 +13385,7 @@ record flags:
   --candidates <path>    Scored candidates, so findings carry their category
   --scores <path>        Score breakdowns, so explain can show its working
   --verdicts <path>      Verification verdicts, including findings that were dropped
+  --tie-breaks <path>    reconcile's output, so explain shows the rulings it applied
   --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
   --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
   --stages <path>        Per-stage timings as
@@ -14682,7 +14692,11 @@ function reconcileCommand(argv) {
     const result = reconcile(candidates, verifications, secondPass, tieBreaks);
     for (const note of result.notes) console.error(note);
     console.log(
-      JSON.stringify({ candidates: result.candidates, disputes: result.disputes, applied: result.applied }, null, 2)
+      JSON.stringify(
+        { candidates: result.candidates, disputes: result.disputes, applied: result.applied, tieBreaks: result.tieBreaks },
+        null,
+        2
+      )
     );
     return 0;
   } catch (error) {
@@ -15021,7 +15035,9 @@ function explainCommand(argv) {
         if (verdict.reason.length > 0) console.log(`                    ${verdict.reason}`);
         const ruling = detail.tieBreaks.find((t) => t.candidateId === verdict.candidateId);
         if (ruling !== void 0) {
-          console.log(`  tie-break         ${ruling.upheld ? "upheld" : "not upheld"} - ${ruling.reason}`);
+          console.log(
+            `  tie-break         ${ruling.upheld ? "upheld" : "not upheld"}${ruling.applied === true ? "" : " (not applied)"} - ${ruling.reason}`
+          );
         }
       }
       console.log("");
@@ -15032,7 +15048,9 @@ function explainCommand(argv) {
       console.log("");
     }
     const dropped = verdicts.filter(
-      (v) => v.outcome === "dropped" && !detail.tieBreaks.some((t) => t.upheld && v.candidateId !== void 0 && t.candidateId === v.candidateId)
+      (v) => v.outcome === "dropped" && !detail.tieBreaks.some(
+        (t) => t.upheld && t.applied === true && v.candidateId !== void 0 && t.candidateId === v.candidateId
+      )
     );
     if (dropped.length > 0 && wanted === void 0) {
       console.log(`Suppressed by verification (${dropped.length}):`);
@@ -15040,7 +15058,10 @@ function explainCommand(argv) {
         console.log(`  [${v.originalSeverity}] ${v.path}:${v.line}  ${v.verifier} @ ${v.confidence.toFixed(2)}`);
         if (v.reason.length > 0) console.log(`      ${v.reason}`);
         const ruling = detail.tieBreaks.find((t) => v.candidateId !== void 0 && t.candidateId === v.candidateId);
-        if (ruling !== void 0) console.log(`      tie-break not upheld - ${ruling.reason}`);
+        if (ruling !== void 0) {
+          const state = ruling.applied === true ? "not upheld" : `${ruling.upheld ? "upheld" : "not upheld"} but not applied`;
+          console.log(`      tie-break ${state} - ${ruling.reason}`);
+        }
       }
       console.log("");
     }

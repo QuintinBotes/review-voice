@@ -193,6 +193,7 @@ record flags:
   --candidates <path>    Scored candidates, so findings carry their category
   --scores <path>        Score breakdowns, so explain can show its working
   --verdicts <path>      Verification verdicts, including findings that were dropped
+  --tie-breaks <path>    reconcile's output, so explain shows the rulings it applied
   --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
   --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
   --stages <path>        Per-stage timings as
@@ -1892,7 +1893,11 @@ function reconcileCommand(argv: string[]): number {
     const result = reconcile(candidates, verifications, secondPass, tieBreaks);
     for (const note of result.notes) console.error(note);
     console.log(
-      JSON.stringify({ candidates: result.candidates, disputes: result.disputes, applied: result.applied }, null, 2),
+      JSON.stringify(
+        { candidates: result.candidates, disputes: result.disputes, applied: result.applied, tieBreaks: result.tieBreaks },
+        null,
+        2,
+      ),
     );
     return 0;
   } catch (error) {
@@ -2332,7 +2337,10 @@ function explainCommand(argv: string[]): number {
         if (verdict.reason.length > 0) console.log(`                    ${verdict.reason}`);
         const ruling = detail.tieBreaks.find((t) => t.candidateId === verdict.candidateId);
         if (ruling !== undefined) {
-          console.log(`  tie-break         ${ruling.upheld ? 'upheld' : 'not upheld'} - ${ruling.reason}`);
+          console.log(
+            `  tie-break         ${ruling.upheld ? 'upheld' : 'not upheld'}` +
+              `${ruling.applied === true ? '' : ' (not applied)'} - ${ruling.reason}`,
+          );
         }
       }
       console.log('');
@@ -2349,11 +2357,16 @@ function explainCommand(argv: string[]): number {
     // Findings the verifier removed leave no other trace. Showing them is what
     // makes a bad verifier visible rather than indistinguishable from a clean
     // diff.
-    // A drop an upheld tie-break overturned was not a suppression.
+    // A drop an upheld tie-break overturned was not a suppression. Only a
+    // ruling reconcile applied overturned anything: one on a candidate nobody
+    // disputed was ignored, and hiding the drop on its account would hide a
+    // real suppression.
     const dropped = verdicts.filter(
       (v) =>
         v.outcome === 'dropped' &&
-        !detail.tieBreaks.some((t) => t.upheld && v.candidateId !== undefined && t.candidateId === v.candidateId),
+        !detail.tieBreaks.some(
+          (t) => t.upheld && t.applied === true && v.candidateId !== undefined && t.candidateId === v.candidateId,
+        ),
     );
     if (dropped.length > 0 && wanted === undefined) {
       console.log(`Suppressed by verification (${dropped.length}):`);
@@ -2361,7 +2374,10 @@ function explainCommand(argv: string[]): number {
         console.log(`  [${v.originalSeverity}] ${v.path}:${v.line}  ${v.verifier} @ ${v.confidence.toFixed(2)}`);
         if (v.reason.length > 0) console.log(`      ${v.reason}`);
         const ruling = detail.tieBreaks.find((t) => v.candidateId !== undefined && t.candidateId === v.candidateId);
-        if (ruling !== undefined) console.log(`      tie-break not upheld - ${ruling.reason}`);
+        if (ruling !== undefined) {
+          const state = ruling.applied === true ? 'not upheld' : `${ruling.upheld ? 'upheld' : 'not upheld'} but not applied`;
+          console.log(`      tie-break ${state} - ${ruling.reason}`);
+        }
       }
       console.log('');
     }

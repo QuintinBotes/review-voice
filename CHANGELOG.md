@@ -80,6 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   falling back to the `evidence_quality` tier when there is no number, so a
   trace reported by tier alone can be disputed and a second-pass downgrade of
   it holds. (#31)
+- `explain` no longer hides a dropped finding behind a tie-break `reconcile`
+  ignored. `reconcile` marks each ruling `applied` under `tieBreaks`, and the
+  review records that output with `record --tie-breaks`; only an applied,
+  upheld ruling overturns a drop. (#31)
 
 ## [1.10.1] - 2026-10-05
 
