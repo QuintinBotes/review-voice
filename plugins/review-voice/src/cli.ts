@@ -126,171 +126,7 @@ import { ReviewWriter, WriteViolation } from './github/writer.ts';
 import { hashDiff } from './store/runs.ts';
 import { cleanStages, describeStage, shallowPassWarning } from './store/effort.ts';
 import { recordAudit } from './store/audit.ts';
-
-const USAGE = `review-voice <command>
-
-Commands:
-  diff              Acquire the diff under review as structured JSON
-  symbols           Collect changed symbols and their lexical reference paths
-  check-candidates  Validate analyst output against the candidate schema
-  check-verification  Validate verifier output from stdin, as score would
-  context           Resolve config and the active policy stack as JSON
-  conventions       Collect the repository's own convention documents
-  evidence          Run the configured static checks and emit structured signals
-  verify            Second-pass verification by a configured command
-  reconcile         Apply --second-pass verdicts; --tie-breaks settles disputes
-  redact            Redact secrets from stdin (used before anything is stored)
-  sync              Ingest review history from allowlisted repositories
-  discover          List repositories the credential can see (reads no history)
-  consent-plan      Show exactly what a sync would read, before it reads it
-  purge             Delete stored data by repository, age, or entirely
-  retrieve          Find weighted precedents for a candidate finding
-  score             Score candidates from stdin against retrieved precedents
-  calibrate         Show proposed policy changes and their evidence
-  policy            show | approve <id> | rollback <version>
-  evaluate          Report the evaluation metrics against their targets
-  draft             Render a validated review as a GitHub draft (posts nothing)
-  post-check        Report whether posting is permitted, and why not
-  verdict           Review event under the head and CI guards (reads only)
-  post              Submit the review; needs --confirm --event <EVENT>
-  record            Store a validated review from stdin and assign finding ids
-  follow-ups        Partly-addressed follow-ups of a pull request still open
-  feedback          Record feedback on a finding
-  status            Show what is stored locally
-  carry             Carry an earlier run's untouched findings to a new head
-  reanchor          Move one scored candidate to a corrected changed line
-  carry-candidates  Carry verified candidates to a pushed head if unchanged
-  explain           Show why the last review said what it said
-  validate-output   Enforce the output contract on a review read from stdin
-  doctor            Check that this machine can run Review Voice
-  --version         Print the plugin version
-  --help            Show this message
-
-anchors:
-  One inline anchor per finding of the review on stdin, read from its text.
-  --diff-file <path>     Unified diff; a line outside its hunks is unanchorable
-  --scores <path>        Scores; a stale-consumer finding is unanchorable
-
-thread flags:
-  --pr <number>          Pull request whose existing comments to read
-  --repository <name>    owner/repo; inferred from the git remote if absent
-  --out <path>           Write <path> or <dir>/thread.json instead of stdout
-
-follow-ups flags:
-  --pr <number>          Pull request whose open follow-ups to list (local store)
-  --repository <name>    owner/repo; inferred from the git remote if absent
-
-diff flags:
-  --base <ref>           Review against a base ref (e.g. origin/main)
-  --staged               Review staged changes only
-  --pr <number>          Review a GitHub pull request (needs --repository)
-  --full                 On --pr, review the complete pull request again
-  --since <sha>          On --pr, the head last reviewed (overrides the record)
-  --repository <name>    owner/repo for --pr (default: the git remote)
-  --include-generated    Include lock files, generated, vendored and binary files
-  --out <dir>            Write diff.patch and files.json, print a summary
-
-symbols flags:
-  --diff-file <path>     Unified diff whose changed symbols to inspect
-  --base <ref>           Search this committed tree, not the working tree
-                         (on --pr: refs.mergeBase)
-  --max-ms <n>           Time budget; unfinished files are inconclusive (default 60000)
-  --out <path>           Write <path> or <dir>/symbols.json instead of stdout
-
-check-candidates:
-  --diff-file <path>     Require anchors on changed lines
-  --thread <path>        Drop thread repeats; flag near ones for the verifier
-  --owner <login>        Owner for --thread; default from config
-  --held-from <run-id>   Drop repeats of that run's held findings (--head)
-
-record flags:
-  --repository <name>    Repository the review belongs to
-  --base <ref>           Base ref reviewed against (on --pr: refs.mergeBase)
-  --head <sha>           Head commit reviewed
-  --diff-file <path>     Diff the review was produced from (for the run hash)
-  --files <path>         files.json from diff --out, carrying pull-request scope
-  --candidates <path>    Scored candidates, so findings carry their category
-  --scores <path>        Score breakdowns, so explain can show its working
-  --verdicts <path>      Verification verdicts, including findings that were dropped
-  --tie-breaks <path>    reconcile's output, with the rulings it applied
-  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]
-  --carried-from <run>   Validate findings carried by \`carry\` (needs --head)
-  --carry <path>         carry.json of carry-candidates (needs --head)
-  --thread <path>        thread.json; a follow-up whose comment thread is resolved is settled
-  --follow-ups <path>    The verifier's follow_ups rulings on the open follow-ups
-  --stages <path>        Per-stage timings as
-                         [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean
-                         result from a shallow analyst pass is warned about
-
-carry flags:
-  --from <run-id> --head <sha>   Findings of that run still valid at the new head
-  --text                 Print only the carried review, for validate-output
-
-reanchor flags:
-  --candidate <id> --line <n> [--path <p>]  A changed line of --diff-file;
-                         rewrites --scores and --candidates, keeping the score
-
-carry-candidates flags:
-  --candidates --verification --since <sha> --head --diff-file --out <dir>
-  --interdiff <dir> --interdiff-candidates --interdiff-verification
-                         The reviewed commits between the heads, merged in
-  --held <path>          Held findings to move to the new head
-
-feedback usage:
-  feedback <rv_NN|<run-id>:rv_NN> <action> [--reason <text>] [--replacement <text>]
-  actions: ${FEEDBACK_ACTIONS.join(', ')} (hyphens accepted)
-
-score flags:
-  --base <ref>              Reviewed tree for absence checks
-  --verification <path>     Verifier output for confidence and fix rendering
-  --exclude-pull <n>        Exclude precedents from this pull request
-  --min-confidence <n>      Verifier confidence gate (default 0.8)
-  --min-analyst-confidence <n>  Analyst-only gate (default 0.7)
-  --thread <path>           Existing pull-request comments
-  --diff-file <path>        Diff for reach and anchor checks
-  --min-score <n>           Final score gate (default 0.68)
-  --repository <name>       Prefer precedents from this repository
-
-verify flags:
-  --diff-file <path>        The diff under review, not the working tree
-  --base <ref>              Base commit, only when it is readable locally
-  --head <ref>              Head commit, only when it is readable locally
-  --repository <name>       owner/repo, inferred from the git remote if absent
-
-conventions flags:
-  --files <path>            files.json from diff --out, scoping nested docs
-  --path <p>                A changed path, repeatable, instead of --files
-
-sync flags:
-  --target <n>              Non-owner events to import (default 60 per
-                            repository, 250 to 1500); owner events all
-  --max-pulls <n>           Pull requests inspected per repository (default 60)
-  --include-conversation    Also read pull-request conversation comments
-  --dry-run                 Report the import without storing it
-
-purge flags (one required):
-  --repo <owner/repo>   Remove one repository's events
-  --before <ISO date>   Remove events older than a date
-  --all                 Remove everything, including runs and feedback
-  --confirm             Delete; without it, only a preview
-
-retrieve flags:
-  --text <query>        Candidate claim and failure mode (required)
-  --repository <name>   Prefer precedents from this repository
-  --path <path>         Prefer precedents on this file
-  --language <lang>     Prefer precedents in this language
-  --max-positive <n> --max-negative <n>   Defaults 3 and 2
-
-validate-output flags:
-  --json                     Emit the result as JSON
-  --max-findings <n>         Default: no cap
-  --scale-to-files <n>       Scale the total word budget to the change size
-  --max-words-per-finding <n>  Default ${DEFAULT_LIMITS.maxWordsPerFinding}
-  --max-total-words <n>      Default ${DEFAULT_LIMITS.maxTotalWords}
-
-Exit codes: 0 compliant, 1 violations found, 2 bad invocation.
-
-Normally driven by the /review-voice:* commands, not invoked directly.`;
+import { commandHelp, topLevelHelp } from './help.ts';
 
 /** What each stdin-reading command expects, for the message a terminal gets. */
 const STDIN_INPUT: Record<string, string> = {
@@ -3795,6 +3631,16 @@ function statusCommand(): number {
 }
 
 async function main(argv: string[]): Promise<number> {
+  const exit = await dispatch(argv);
+  const command = argv[0];
+  // Said once here, not at every call site that rejects its flags.
+  if (exit === 2 && command !== undefined && commandHelp(command) !== null) {
+    console.error(`Run "review-voice ${command} --help" for its flags.`);
+  }
+  return exit;
+}
+
+async function dispatch(argv: string[]): Promise<number> {
   const command = argv[0];
 
   // Before dispatch, so it cannot be swallowed by a command that reads stdin.
@@ -3802,17 +3648,41 @@ async function main(argv: string[]): Promise<number> {
   // which also hid `--exclude-pull`: the flag is in this text, and nobody
   // could get the text to appear.
   if (command !== undefined && (argv.includes('--help') || argv.includes('-h'))) {
-    console.log(USAGE);
-    return 0;
+    const section = commandHelp(command);
+    if (section !== null) {
+      console.log(section);
+      return 0;
+    }
+    // `--help` and `-h` themselves, and `help --help`, show the whole list.
+    if (command === '--help' || command === '-h' || command === 'help') {
+      console.log(topLevelHelp());
+      return 0;
+    }
+    console.error(`Unknown command: ${command}\n\n${topLevelHelp()}`);
+    return 2;
   }
 
   switch (command) {
     case undefined:
     case '--help':
     case '-h':
-    case 'help':
-      console.log(USAGE);
+      console.log(topLevelHelp());
       return 0;
+
+    case 'help': {
+      const topic = argv[1];
+      if (topic === undefined) {
+        console.log(topLevelHelp());
+        return 0;
+      }
+      const section = commandHelp(topic);
+      if (section === null) {
+        console.error(`Unknown command: ${topic}\n\n${topLevelHelp()}`);
+        return 2;
+      }
+      console.log(section);
+      return 0;
+    }
 
     case '--version':
     case '-v':
@@ -3934,7 +3804,7 @@ async function main(argv: string[]): Promise<number> {
     }
 
     default:
-      console.error(`Unknown command: ${command}\n\n${USAGE}`);
+      console.error(`Unknown command: ${command}\n\n${topLevelHelp()}`);
       return 2;
   }
 }

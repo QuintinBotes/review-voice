@@ -158,7 +158,7 @@ test('conventions --help prints help instead of dumping every document', () => {
   // It executed with repository-wide defaults and wrote 82 KB to stdout.
   const { code, stdout } = run(['conventions', '--help']);
   assert.equal(code, 0);
-  assert.match(stdout, /review-voice <command>/);
+  assert.match(stdout, /^review-voice conventions \[flags\]/);
   // Well under the 82 KB dump, with room for the command list to grow.
   assert.ok(stdout.length < 10_000, `help should be help, got ${stdout.length} bytes`);
 });
