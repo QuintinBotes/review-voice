@@ -58,10 +58,10 @@ secure credential storage on three platforms, for no benefit over `gh`.
 ## Amendment - 2026-10-06
 
 [ADR 0018](0018-read-only-graphql-thread-state.md): the client's read-only
-rule is "only GET, and GraphQL queries". Whether a review thread is resolved is
-only in GitHub's GraphQL API, which takes every operation as a POST. The client
-may send a GraphQL document that is a `query` and nothing else: any document
-naming `mutation` or `subscription`, not starting with `query` or `{`, or
-holding a string literal is refused in code before anything is sent, and the
-repository it reads must be allowlisted. Every REST request is still GET-only,
+rule is "only GET, and known GraphQL queries". Whether a review thread is
+resolved is only in GitHub's GraphQL API, which takes every operation as a
+POST. The client may send only a GraphQL document that is exactly one of a
+fixed set of queries (today one), with only the variables that query declares;
+`owner` and `name` always come from the allowlisted repository. Anything else
+is refused in code before it is sent. Every REST request is still GET-only,
 and the test that a non-GET REST request throws is unchanged.

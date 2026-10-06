@@ -652,9 +652,11 @@ stray directory and another project's notes took the reviewed count from 11 to
   local. On a `--pr` run, also pass `--thread <tmpdir>/thread.json` and, when
   the verifier ruled on open follow-ups, `--follow-ups <tmpdir>/verification.json`.
   `record` then settles each follow-up an earlier run of the pull request left
-  open: resolved when its own posted comment's thread is resolved, or when the
-  verifier found every remaining point addressed; otherwise open, including when
-  its file was not in this review. It prints them as `followUps`, and
+  open: resolved when the owner resolved its own posted comment's thread, or
+  when the verifier found every remaining point addressed; otherwise open,
+  including when someone else resolved it or its file was not in this review.
+  It refuses a thread file of another pull request. It prints them as
+  `followUps`, and
   `/review-voice:explain` shows each as open or resolved. Nothing about them is
   posted. Do not record a partly-addressed follow-up under `--held` as a
   `repeat`, which would read as closed.

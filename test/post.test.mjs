@@ -207,6 +207,13 @@ test('nothing else in the plugin issues a write', () => {
   };
   walk(src);
   assert.deepEqual(offenders.sort(), ['github/client.ts', 'github/writer.ts']);
+  // Exactly one POST in the read-only client, and it is inside graphql().
+  const client = readFileSync(join(src, 'github/client.ts'), 'utf8');
+  const posts = [...client.matchAll(/method:\s*'POST'/g)].map((m) => m.index);
+  assert.equal(posts.length, 1);
+  const start = client.indexOf('async graphql<');
+  const end = client.indexOf('async paginate<');
+  assert.ok(start > 0 && posts[0] > start && posts[0] < end, 'the POST is not inside graphql()');
 });
 
 test('a confirmed review is submitted with its event in one request', async () => {

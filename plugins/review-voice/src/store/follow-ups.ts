@@ -10,7 +10,9 @@ import { overlap, significantWords, DUPLICATE_OVERLAP, type ThreadComment } from
  * comment was still open at that run. It stays open until a later run of the
  * same pull request sees it settled, and only on positive evidence:
  *
- *   - the follow-up's own comment thread is resolved on the pull request; or
+ *   - the follow-up's own posted comment has its thread resolved by the
+ *     owner, who wrote both comments; a resolution by anyone else, the
+ *     author included, is left to the verifier; or
  *   - the verifier, given the open follow-up, found every remaining point
  *     addressed in the code at the head.
  *
@@ -25,10 +27,12 @@ export interface OpenFollowUp {
   findingId: string;
   path: string;
   line: number;
-  prior: { author: string; path: string; line: number };
+  prior: { author: string; path: string; line: number; commentId?: number };
   remaining: string[];
   /** The finding as rendered, to find its posted comment on the thread. */
   text: string;
+  /** When the run that recorded it was recorded: its comment was posted after. */
+  recordedAt: string;
 }
 
 export interface FollowUpState {
@@ -57,6 +61,7 @@ export class FollowUpRulingError extends Error {}
 
 interface StoredRun {
   runId: string;
+  createdAt: string;
   findings: StoredFinding[];
   followUps: FollowUpState[];
 }
@@ -65,12 +70,12 @@ interface StoredRun {
 function runsForPull(db: Database, repository: string, pullNumber: number): StoredRun[] {
   const rows = db
     .prepare(
-      `SELECT review_run_id, output_json
+      `SELECT review_run_id, output_json, created_at
        FROM review_runs
        WHERE LOWER(repository) = LOWER(?) AND pull_number = ?
        ORDER BY created_at ASC, rowid ASC`,
     )
-    .all(repository, pullNumber) as { review_run_id: string; output_json: string }[];
+    .all(repository, pullNumber) as { review_run_id: string; output_json: string; created_at: string }[];
   return rows.map((row) => {
     let parsed: { findings?: unknown; followUps?: unknown } = {};
     try {
@@ -80,6 +85,7 @@ function runsForPull(db: Database, repository: string, pullNumber: number): Stor
     }
     return {
       runId: row.review_run_id,
+      createdAt: row.created_at,
       findings: Array.isArray(parsed.findings) ? (parsed.findings as StoredFinding[]) : [],
       followUps: Array.isArray(parsed.followUps) ? (parsed.followUps as FollowUpState[]) : [],
     };
@@ -112,6 +118,7 @@ export function followUpHistory(
           prior: partly.prior,
           remaining: partly.remaining,
           text: finding.text,
+          recordedAt: run.createdAt,
         },
         state: null,
         stateRunId: null,
@@ -178,28 +185,39 @@ export function parseFollowUpRulings(parsed: unknown): FollowUpRuling[] {
 }
 
 /**
- * The follow-up's own inline comment on the thread: posted by the owner whose
- * comment it follows up, on its file, in the form `post` sends a finding
- * (`**<severity>** - <prose>`), at its line or saying what it said. GitHub
- * moves a comment's line as code is inserted above it, so the wording finds it
- * when the line no longer does. The form is what keeps the owner's original
- * comment out: it makes the same points, and its thread being resolved says
- * nothing about the follow-up.
+ * The follow-up's own inline comment on the thread, found only when every
+ * sign agrees, because the owner's original comment makes the same points and
+ * its thread being resolved says nothing about the follow-up:
+ *
+ *   - by the owner whose comment it follows up, on its file, in the form
+ *     `post` sends a finding (`**<severity>** - <prose>`);
+ *   - not the original comment, when its id was recorded;
+ *   - written after the run that recorded the follow-up, since `post` sends
+ *     only a recorded review - the original was already on the thread then;
+ *   - saying what the follow-up said: its prose and its remaining points.
+ *
+ * The line is not used: GitHub moves it as code is inserted above, and the
+ * original may sit on the same one.
  */
 function postedComment(followUp: OpenFollowUp, thread: ThreadComment[]): ThreadComment[] {
   const author = followUp.prior.author.toLowerCase();
   const finding = parseFinding(followUp.text, 1);
   if (finding.severity === null || finding.prose.length === 0) return [];
   const opening = `**${finding.severity}** - `;
-  const mine = significantWords(finding.prose);
-  return thread.filter(
-    (comment) =>
-      (comment.kind === undefined || comment.kind === 'review-comment') &&
-      comment.path === followUp.path &&
-      comment.author.toLowerCase() === author &&
-      comment.body.startsWith(opening) &&
-      (comment.line === followUp.line || overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP),
-  );
+  const prose = significantWords(finding.prose);
+  const points = significantWords(followUp.remaining.join(' '));
+  const recordedAt = Date.parse(followUp.recordedAt);
+  if (Number.isNaN(recordedAt)) return [];
+  return thread.filter((comment) => {
+    if (comment.kind !== undefined && comment.kind !== 'review-comment') return false;
+    if (comment.path !== followUp.path || comment.author.toLowerCase() !== author) return false;
+    if (!comment.body.startsWith(opening)) return false;
+    if (followUp.prior.commentId !== undefined && comment.id === followUp.prior.commentId) return false;
+    const written = typeof comment.createdAt === 'string' ? Date.parse(comment.createdAt) : Number.NaN;
+    if (Number.isNaN(written) || written <= recordedAt) return false;
+    const words = significantWords(comment.body);
+    return overlap(prose, words) >= DUPLICATE_OVERLAP && overlap(points, words) >= DUPLICATE_OVERLAP;
+  });
 }
 
 /**
@@ -221,13 +239,14 @@ export function settleFollowUps(
   const states = open.map((followUp): FollowUpState => {
     const base = { id: followUp.id, runId: followUp.runId, findingId: followUp.findingId, path: followUp.path, line: followUp.line };
     const posted = evidence.thread === null ? [] : postedComment(followUp, evidence.thread);
-    if (posted.some((comment) => comment.resolved === true)) {
+    const owner = followUp.prior.author.toLowerCase();
+    if (posted.some((comment) => comment.resolved === true && comment.resolvedBy?.toLowerCase() === owner)) {
       return {
         ...base,
         status: 'resolved',
         resolvedBy: 'thread',
         remaining: followUp.remaining,
-        reason: 'its comment thread is resolved on the pull request',
+        reason: 'the owner resolved its comment thread on the pull request',
       };
     }
     const ruling = rulings.get(followUp.id);

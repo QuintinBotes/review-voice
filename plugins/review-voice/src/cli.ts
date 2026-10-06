@@ -498,7 +498,7 @@ function followUpsCommand(argv: string[]): number {
   }
   const db = openDatabase();
   try {
-    const followUps = openFollowUps(db, repository, pullNumber).map(({ text: _text, ...followUp }) => followUp);
+    const followUps = openFollowUps(db, repository, pullNumber).map(({ text: _text, recordedAt: _at, ...followUp }) => followUp);
     console.log(JSON.stringify({ followUps }, null, 2));
     return 0;
   } finally {
@@ -2324,16 +2324,22 @@ function recordCommand(argv: string[]): number {
   // thread resolved on the thread this run read, or the verifier's ruling.
   const followUpThreadFile = flag(argv, '--thread');
   let followUpThread: ThreadComment[] | null = null;
+  let followUpThreadFor: { repository: unknown; pullNumber: unknown } | null = null;
   if (argv.includes('--thread')) {
     if (followUpThreadFile === null) {
       console.error('--thread needs a thread JSON path.');
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync(followUpThreadFile, 'utf8')) as { comments?: ThreadComment[] } | ThreadComment[];
+      const parsed = JSON.parse(readFileSync(followUpThreadFile, 'utf8')) as
+        | { comments?: ThreadComment[]; repository?: unknown; pullNumber?: unknown }
+        | ThreadComment[];
       const list = Array.isArray(parsed) ? parsed : parsed.comments;
       if (!Array.isArray(list)) throw new Error('comments is not a list');
       followUpThread = list;
+      followUpThreadFor = Array.isArray(parsed)
+        ? { repository: undefined, pullNumber: undefined }
+        : { repository: parsed.repository, pullNumber: parsed.pullNumber };
     } catch (error) {
       console.error(`Cannot read ${followUpThreadFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -2423,6 +2429,22 @@ function recordCommand(argv: string[]): number {
     }
 
     const repository = flag(argv, '--repository');
+    // A thread of another pull request would settle this one's follow-ups on
+    // someone else's resolutions, so it must name this run's pull request.
+    if (followUpThreadFor !== null) {
+      const sameRepository =
+        typeof followUpThreadFor.repository === 'string' &&
+        repository !== null &&
+        followUpThreadFor.repository.toLowerCase() === repository.toLowerCase();
+      if (!sameRepository || pullNumber === undefined || followUpThreadFor.pullNumber !== pullNumber) {
+        console.error(
+          `${followUpThreadFile} is not the thread of this run's pull request ` +
+            `(${repository ?? 'no --repository'}#${pullNumber ?? '? (no pull request in --files)'}). ` +
+            'Pass the thread.json that `RV thread` wrote for it.',
+        );
+        return 2;
+      }
+    }
     let followUps: FollowUpState[] = [];
     if (repository !== null && pullNumber !== undefined) {
       const open = openFollowUps(db, repository, pullNumber);
@@ -3612,6 +3634,8 @@ function checkCandidatesCommand(argv: string[]): number {
             line: possible.line,
             ...(possible.outdated === true ? { outdated: true } : {}),
             ...(possible.resolved === true ? { resolved: true } : {}),
+            ...(possible.resolved === true && typeof possible.resolvedBy === 'string' ? { resolvedBy: possible.resolvedBy } : {}),
+            ...(typeof possible.id === 'number' ? { commentId: possible.id } : {}),
             excerpt: possible.body.slice(0, 200),
           },
         });

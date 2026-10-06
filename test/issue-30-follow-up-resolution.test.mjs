@@ -87,7 +87,10 @@ function later(s, extra = [], files = ['src/other.ts']) {
 
 const openList = (s) => JSON.parse(run(s.dir, ['follow-ups', '--pr', String(PR), '--repository', REPO]).stdout).followUps;
 
-const posted = (extra) => ({ path: PATH, line: 12, author: OWNER, body: `**nit** - ${PROSE}`, kind: 'review-comment', ...extra });
+// Posted after the run that recorded the follow-up, as `post` only sends a recorded review.
+const AFTER = () => new Date(Date.now() + 60_000).toISOString();
+const posted = (extra) => ({ path: PATH, line: 12, author: OWNER, body: `**nit** - ${PROSE}`, kind: 'review-comment', createdAt: AFTER(), ...extra });
+const threadFile = (s, comments) => writeJson(s.dir, `thread-${Math.random().toString(36).slice(2)}.json`, { repository: REPO, pullNumber: PR, comments });
 
 test('follow-ups lists the open follow-up of the pull request for the verifier', () =>
   withFollowUp((s) => {
@@ -99,7 +102,7 @@ test('follow-ups lists the open follow-up of the pull request for the verifier',
 
 test('a later run whose interdiff left the file out keeps the follow-up open', () =>
   withFollowUp((s) => {
-    const out = later(s, ['--thread', writeJson(s.dir, 'thread.json', { comments: [posted({})] })]);
+    const out = later(s, ['--thread', threadFile(s, [posted({})])]);
     assert.equal(out.followUps.length, 1);
     assert.equal(out.followUps[0].status, 'open');
     assert.match(out.followUps[0].reason, /not in this review/);
@@ -110,12 +113,12 @@ test('a later run whose interdiff left the file out keeps the follow-up open', (
 test("a resolved thread on the follow-up's posted comment resolves it, and explain says so", () =>
   withFollowUp((s) => {
     // GitHub moved the comment 30 lines down; its wording still finds it.
-    const thread = writeJson(s.dir, 'thread.json', { comments: [posted({ line: 42, resolved: true })] });
+    const thread = threadFile(s, [posted({ line: 42, resolved: true, resolvedBy: OWNER })]);
     const out = later(s, ['--thread', thread]);
     assert.equal(out.followUps[0].status, 'resolved');
     assert.equal(out.followUps[0].resolvedBy, 'thread');
     assert.deepEqual(openList(s), []);
-    assert.match(run(s.dir, ['explain', '--run', s.runId]).stdout, /follow-up {9}resolved in run .* - its comment thread is resolved/);
+    assert.match(run(s.dir, ['explain', '--run', s.runId]).stdout, /follow-up {9}resolved in run .* - the owner resolved its comment thread/);
     assert.match(run(s.dir, ['explain', '--run', out.reviewRunId]).stdout, /\[resolved\] rv_01 of run/);
     // Resolved stays resolved on a later run with no evidence at all.
     assert.equal(later(s).followUps, undefined);
@@ -123,8 +126,13 @@ test("a resolved thread on the follow-up's posted comment resolves it, and expla
 
 test("the owner's original comment being resolved does not resolve the follow-up", () =>
   withFollowUp((s) => {
-    const original = { path: PATH, line: 12, author: OWNER, body: `Four stale points: ${REMAINING.join('; ')}; the deploy step; the owner list.`, kind: 'review-comment', resolved: true };
-    const out = later(s, ['--thread', writeJson(s.dir, 'thread.json', { comments: [original] })], [PATH]);
+    // Itself posted by an earlier review, so it carries the same form.
+    const original = {
+      path: PATH, line: 12, author: OWNER, kind: 'review-comment', resolved: true, resolvedBy: OWNER,
+      body: `**nit** - Four stale points: ${REMAINING.join('; ')}; the deploy step; the owner list. Readers follow stale guidance.`,
+      createdAt: '2020-01-01T00:00:00Z',
+    };
+    const out = later(s, ['--thread', threadFile(s, [original])], [PATH]);
     assert.equal(out.followUps[0].status, 'open');
     assert.equal(openList(s).length, 1);
   }));

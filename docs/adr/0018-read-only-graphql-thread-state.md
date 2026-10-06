@@ -24,28 +24,35 @@ could not ask.
 
 ## Decision
 
-**The read-only `GitHubClient` may send GraphQL `query` operations, and
-nothing else, as its only non-GET request. Read-only is checked on the
-operation, in code, before anything is sent.**
+**The read-only `GitHubClient` may send a fixed set of GraphQL queries, known
+by their exact text, as its only non-GET request - today one. Read-only and the
+allowlist are checked on the document and its variables, in code, before
+anything is sent.**
 
 - **`graphql(repository, document, variables)`** refuses, with
   `ReadOnlyViolation` and before any network call:
-  - any document containing the word `mutation` or `subscription` anywhere,
-    case-insensitively, a comment included;
-  - any document that does not begin with `query` or `{`;
-  - any document holding a string literal, so a repository can be named only
-    through the `owner` and `name` variables.
+  - any document that is not, character for character, one of the known
+    queries (`REVIEW_THREADS_QUERY` in `github/client.ts`), and, as a second
+    check, any containing the word `mutation` or `subscription`;
+  - any variable the query does not declare (`number` and `cursor` for the one
+    query), or one of the wrong shape;
+  - `owner` or `name` passed by the caller at all.
 - **The allowlist still bounds it.** `repository` must be allowlisted, and
-  `owner` and `name` are always overwritten with it, whatever the caller
-  passed.
+  `owner` and `name` are always set from it. A known query names only
+  `repository(owner: $owner, name: $name)`, so it cannot reach another
+  repository through another variable, `viewer`, `search`, `node` or
+  `organization`, all of which the first version of this record let through
+  because it checked only that the document was a query.
 - **REST stays GET-only.** `get`, `paginate` and `paginateWrapped` are
   unchanged and still refuse any other method; their test still passes.
 - **No retries.** A GraphQL read is optional for every caller, so a rate limit
   or permissions error fails it at once.
-- **One query today.** `RV thread` reads each review thread's `isResolved`
-  and `isOutdated` and its comments' `databaseId`, `path` and `line`, joins
-  them to the REST inline comments on the comment id, and marks a comment
-  whose thread is resolved `resolved: true`. `check-candidates` carries it into
+- **One query today.** `RV thread` reads each review thread's `isResolved`,
+  `isOutdated` and `resolvedBy { login }` and its comments' `databaseId`,
+  `path` and `line`, joins them to the REST inline comments on the comment id,
+  and marks a comment whose thread is resolved `resolved: true`, with
+  `resolvedBy`. The thread file names its repository and pull request, and
+  `record --thread` refuses one of another pull request. `check-candidates` carries it into
   `possibleRepeatOf`, and the verifier treats a resolved thread as a likely
   addressed point: it keeps the candidate only for an instance the resolution
   did not cover.
@@ -56,11 +63,10 @@ operation, in code, before anything is sent.**
 
 ## Consequences
 
-- **The guarantee is narrower in kind.** "Only GET" was checkable by method
-  alone; "only queries" depends on refusing two words in the document. The
-  refusal is deliberately coarse - a field or comment that merely contains the
-  word is refused too - because a false refusal costs one optional read and a
-  false pass would be a write.
+- **The guarantee is checked on the text.** "Only GET" was checkable by method
+  alone; here the check is that the document is one reviewed text and the
+  variables are the ones it declares. Adding a field or a query changes that
+  text, so it is a security change, reviewed as one.
 - **Scopes are unchanged.** Reading review threads needs the same pull-request
   read access the REST reads already use.
 - **Still never done:** resolving or unresolving a thread, or any other
@@ -77,5 +83,8 @@ both rules in one file under one test.
 says the code moved, not that anyone considered the point closed. Already in
 use; not a substitute.
 
-**An allowlist of exact query texts.** Stronger, but it turns every new field
-into a security change. Revisit if a second query is added.
+**Refuse `mutation` and `subscription`, and string literals, and accept any
+other query.** The first version of this record. It kept writes out but not
+other repositories: a query could name one through a variable it was not
+checked for, or reach others through `viewer`, `search`, `node` or
+`organization`. Replaced by the fixed set the same day.

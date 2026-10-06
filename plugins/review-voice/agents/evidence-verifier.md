@@ -72,7 +72,8 @@ candidate as a repeat when it makes the same point about the same code. When
 it is `outdated`, the code under the comment changed, often in a fix: keep the
 candidate only when it is an instance that fix did not cover, and say which.
 When it is `resolved`, someone marked that comment's thread resolved on the
-pull request: treat its point as likely addressed. Keep the candidate only when
+pull request (`resolvedBy`, when known, says who): treat its point as likely
+addressed. Keep the candidate only when
 the code at the head shows an instance the resolution did not cover - another
 query, another call site - and say which; otherwise reject it as a repeat.
 

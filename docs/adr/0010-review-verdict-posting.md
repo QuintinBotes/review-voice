@@ -155,7 +155,7 @@ social act. `--recheck` prepares the approval and a person sends it.
 
 "The existing `GitHubClient` keeps rejecting every non-GET request" now reads:
 it keeps rejecting every non-GET REST request, and sends one kind of POST, a
-GraphQL `query`, checked in code to be nothing else
+GraphQL query from a fixed set, checked in code by its exact text
 ([ADR 0018](0018-read-only-graphql-thread-state.md)). It reads whether review
 threads are resolved. The writer above is still the only write, and resolving
 a thread is still never done.

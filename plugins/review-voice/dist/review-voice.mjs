@@ -1784,7 +1784,30 @@ var GitHubError = class extends Error {
 };
 var REPO_PATH = /^\/repos\/([^/]+\/[^/]+)(\/|$)/;
 var GRAPHQL_FORBIDDEN = /\b(?:mutation|subscription)\b/i;
-var GRAPHQL_QUERY = /^\s*(?:query\b|\{)/;
+var REVIEW_THREADS_QUERY = `query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          isResolved
+          isOutdated
+          resolvedBy { login }
+          comments(first: 100) { nodes { databaseId path line } }
+        }
+      }
+    }
+  }
+}`;
+var KNOWN_QUERIES = /* @__PURE__ */ new Map([
+  [
+    REVIEW_THREADS_QUERY,
+    {
+      number: (value) => Number.isInteger(value) && value > 0,
+      cursor: (value) => value === null || typeof value === "string"
+    }
+  ]
+]);
 function graphqlUrl(baseUrl) {
   const root = baseUrl.replace(/\/+$/, "");
   return /\/api\/v3$/.test(root) ? root.replace(/\/v3$/, "/graphql") : `${root}/graphql`;
@@ -1859,28 +1882,32 @@ var GitHubClient = class {
     }
   }
   /**
-   * One GraphQL query about one allowlisted repository (docs/adr/0018).
+   * One known GraphQL query about one allowlisted repository (docs/adr/0018).
    *
    * The only request this client sends that is not a GET. GraphQL has no GET
    * form on GitHub, and some state - whether a review thread is resolved -
    * has no REST endpoint at all. So the read-only promise moves from the HTTP
-   * method to the operation, and is checked here before anything is sent:
+   * method to the document, and is checked here before anything is sent:
    *
-   *   - the document must be a query (`query ...` or `{ ... }`), and a
-   *     document that names `mutation` or `subscription` anywhere is refused;
-   *   - it may hold no string literal, so the only repository it can name is
-   *     the one `owner` and `name` are set to, which must be allowlisted;
-   *     those two variables are always overwritten with it.
+   *   - the document must be, character for character, one of
+   *     `KNOWN_QUERIES`, none of which is a mutation or subscription;
+   *   - its variables must be ones that query declares, with values of the
+   *     declared shape; `owner` and `name` may not be passed at all and are
+   *     set from `repository`, which must be allowlisted.
    *
    * It never retries. Every caller can do without the answer, and waiting out
    * a rate limit for an optional read only spends the user's quota.
    */
   async graphql(repository, document, variables = {}) {
-    if (GRAPHQL_FORBIDDEN.test(document) || !GRAPHQL_QUERY.test(document)) {
-      throw new ReadOnlyViolation("Review Voice is read-only; refused a GraphQL document that is not a query.");
+    const declared = KNOWN_QUERIES.get(document);
+    if (declared === void 0 || GRAPHQL_FORBIDDEN.test(document)) {
+      throw new ReadOnlyViolation("Review Voice is read-only; refused a GraphQL document that is not one of its known queries.");
     }
-    if (document.includes('"')) {
-      throw new ReadOnlyViolation("Refused a GraphQL query with a string literal; pass values as variables.");
+    for (const [key, value] of Object.entries(variables)) {
+      const check = declared[key];
+      if (check === void 0 || !check(value)) {
+        throw new ReadOnlyViolation(`Refused GraphQL variable ${key}: not one this query declares, or not of its shape.`);
+      }
     }
     const [owner, name, ...rest] = repository.split("/");
     if (owner === void 0 || name === void 0 || rest.length > 0 || owner.length === 0 || name.length === 0) {
@@ -2685,7 +2712,10 @@ async function readThread(options) {
       body: kept.body,
       kind: "review-comment",
       ...outdated ? { outdated: true } : {},
-      ...state?.resolved === true ? { resolved: true } : {}
+      ...typeof raw.id === "number" ? { id: raw.id } : {},
+      ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
+      ...state?.resolved === true ? { resolved: true } : {},
+      ...state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {}
     });
   }
   const reviews = await client.paginate(
@@ -2707,34 +2737,26 @@ async function readThread(options) {
     comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: "conversation" });
   }
   return {
+    repository: options.repository,
+    pullNumber: options.pullNumber,
     comments,
     truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
     ...warnings.length > 0 ? { warnings } : {}
   };
 }
-var REVIEW_THREADS = `query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      reviewThreads(first: 100, after: $cursor) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          isResolved
-          isOutdated
-          comments(first: 100) { nodes { databaseId path line } }
-        }
-      }
-    }
-  }
-}`;
 async function readThreadStates(client, repository, pullNumber) {
   const states = /* @__PURE__ */ new Map();
   let cursor = null;
   for (let read = 0; read < MAX_COMMENTS; read += 100) {
-    const data = await client.graphql(repository, REVIEW_THREADS, { number: pullNumber, cursor });
+    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
     const threads = data?.repository?.pullRequest?.reviewThreads;
     if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
     for (const thread of threads.nodes) {
-      const state = { resolved: thread?.isResolved === true, outdated: thread?.isOutdated === true };
+      const state = {
+        resolved: thread?.isResolved === true,
+        outdated: thread?.isOutdated === true,
+        resolvedBy: typeof thread?.resolvedBy?.login === "string" ? thread.resolvedBy.login : null
+      };
       for (const comment of thread?.comments?.nodes ?? []) {
         if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
       }
@@ -3191,7 +3213,12 @@ function ownCommentOf(value) {
   if (typeof v["author"] !== "string" || v["author"].length === 0) return null;
   if (typeof v["path"] !== "string" || v["path"].length === 0) return null;
   if (!Number.isInteger(v["line"]) || v["line"] < 1) return null;
-  return { author: v["author"], path: v["path"], line: v["line"] };
+  return {
+    author: v["author"],
+    path: v["path"],
+    line: v["line"],
+    ...Number.isInteger(v["commentId"]) ? { commentId: v["commentId"] } : {}
+  };
 }
 function partlyAddressedProblem(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -3465,7 +3492,7 @@ var FollowUpRulingError = class extends Error {
 };
 function runsForPull(db, repository, pullNumber) {
   const rows = db.prepare(
-    `SELECT review_run_id, output_json
+    `SELECT review_run_id, output_json, created_at
        FROM review_runs
        WHERE LOWER(repository) = LOWER(?) AND pull_number = ?
        ORDER BY created_at ASC, rowid ASC`
@@ -3478,6 +3505,7 @@ function runsForPull(db, repository, pullNumber) {
     }
     return {
       runId: row.review_run_id,
+      createdAt: row.created_at,
       findings: Array.isArray(parsed.findings) ? parsed.findings : [],
       followUps: Array.isArray(parsed.followUps) ? parsed.followUps : []
     };
@@ -3499,7 +3527,8 @@ function followUpHistory(db, repository, pullNumber) {
           line: finding.line,
           prior: partly.prior,
           remaining: partly.remaining,
-          text: finding.text
+          text: finding.text,
+          recordedAt: run.createdAt
         },
         state: null,
         stateRunId: null
@@ -3552,23 +3581,34 @@ function postedComment(followUp, thread) {
   const finding = parseFinding(followUp.text, 1);
   if (finding.severity === null || finding.prose.length === 0) return [];
   const opening = `**${finding.severity}** - `;
-  const mine = significantWords(finding.prose);
-  return thread.filter(
-    (comment) => (comment.kind === void 0 || comment.kind === "review-comment") && comment.path === followUp.path && comment.author.toLowerCase() === author && comment.body.startsWith(opening) && (comment.line === followUp.line || overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP)
-  );
+  const prose = significantWords(finding.prose);
+  const points = significantWords(followUp.remaining.join(" "));
+  const recordedAt = Date.parse(followUp.recordedAt);
+  if (Number.isNaN(recordedAt)) return [];
+  return thread.filter((comment) => {
+    if (comment.kind !== void 0 && comment.kind !== "review-comment") return false;
+    if (comment.path !== followUp.path || comment.author.toLowerCase() !== author) return false;
+    if (!comment.body.startsWith(opening)) return false;
+    if (followUp.prior.commentId !== void 0 && comment.id === followUp.prior.commentId) return false;
+    const written = typeof comment.createdAt === "string" ? Date.parse(comment.createdAt) : Number.NaN;
+    if (Number.isNaN(written) || written <= recordedAt) return false;
+    const words = significantWords(comment.body);
+    return overlap(prose, words) >= DUPLICATE_OVERLAP && overlap(points, words) >= DUPLICATE_OVERLAP;
+  });
 }
 function settleFollowUps(open, evidence) {
   const rulings = new Map(evidence.rulings.map((ruling) => [ruling.id, ruling]));
   const states = open.map((followUp) => {
     const base = { id: followUp.id, runId: followUp.runId, findingId: followUp.findingId, path: followUp.path, line: followUp.line };
     const posted = evidence.thread === null ? [] : postedComment(followUp, evidence.thread);
-    if (posted.some((comment) => comment.resolved === true)) {
+    const owner = followUp.prior.author.toLowerCase();
+    if (posted.some((comment) => comment.resolved === true && comment.resolvedBy?.toLowerCase() === owner)) {
       return {
         ...base,
         status: "resolved",
         resolvedBy: "thread",
         remaining: followUp.remaining,
-        reason: "its comment thread is resolved on the pull request"
+        reason: "the owner resolved its comment thread on the pull request"
       };
     }
     const ruling = rulings.get(followUp.id);
@@ -4595,7 +4635,12 @@ function partlyAddressedOf(value) {
   if (typeof v["author"] !== "string" || typeof v["path"] !== "string" || !Number.isInteger(v["line"])) return void 0;
   return {
     status: "partly-addressed",
-    prior: { author: v["author"], path: v["path"], line: v["line"] },
+    prior: {
+      author: v["author"],
+      path: v["path"],
+      line: v["line"],
+      ...Number.isInteger(v["commentId"]) ? { commentId: v["commentId"] } : {}
+    },
     remaining,
     addressed
   };
@@ -14684,7 +14729,7 @@ function followUpsCommand(argv) {
   }
   const db = openDatabase();
   try {
-    const followUps = openFollowUps(db, repository, pullNumber).map(({ text: _text, ...followUp }) => followUp);
+    const followUps = openFollowUps(db, repository, pullNumber).map(({ text: _text, recordedAt: _at, ...followUp }) => followUp);
     console.log(JSON.stringify({ followUps }, null, 2));
     return 0;
   } finally {
@@ -16049,6 +16094,7 @@ function recordCommand(argv) {
   }
   const followUpThreadFile = flag(argv, "--thread");
   let followUpThread = null;
+  let followUpThreadFor = null;
   if (argv.includes("--thread")) {
     if (followUpThreadFile === null) {
       console.error("--thread needs a thread JSON path.");
@@ -16059,6 +16105,7 @@ function recordCommand(argv) {
       const list = Array.isArray(parsed) ? parsed : parsed.comments;
       if (!Array.isArray(list)) throw new Error("comments is not a list");
       followUpThread = list;
+      followUpThreadFor = Array.isArray(parsed) ? { repository: void 0, pullNumber: void 0 } : { repository: parsed.repository, pullNumber: parsed.pullNumber };
     } catch (error) {
       console.error(`Cannot read ${followUpThreadFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -16139,6 +16186,15 @@ function recordCommand(argv) {
       if (carry === void 0 || marker.covered === false) carry = marker;
     }
     const repository = flag(argv, "--repository");
+    if (followUpThreadFor !== null) {
+      const sameRepository = typeof followUpThreadFor.repository === "string" && repository !== null && followUpThreadFor.repository.toLowerCase() === repository.toLowerCase();
+      if (!sameRepository || pullNumber === void 0 || followUpThreadFor.pullNumber !== pullNumber) {
+        console.error(
+          `${followUpThreadFile} is not the thread of this run's pull request (${repository ?? "no --repository"}#${pullNumber ?? "? (no pull request in --files)"}). Pass the thread.json that \`RV thread\` wrote for it.`
+        );
+        return 2;
+      }
+    }
     let followUps = [];
     if (repository !== null && pullNumber !== void 0) {
       const open = openFollowUps(db, repository, pullNumber);
@@ -17015,6 +17071,8 @@ function checkCandidatesCommand(argv) {
             line: possible.line,
             ...possible.outdated === true ? { outdated: true } : {},
             ...possible.resolved === true ? { resolved: true } : {},
+            ...possible.resolved === true && typeof possible.resolvedBy === "string" ? { resolvedBy: possible.resolvedBy } : {},
+            ...typeof possible.id === "number" ? { commentId: possible.id } : {},
             excerpt: possible.body.slice(0, 200)
           }
         });

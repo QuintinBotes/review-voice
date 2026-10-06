@@ -12,18 +12,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RV thread` marks an inline comment whose review thread is resolved with
   `resolved: true`, read through one GraphQL query, and `check-candidates`
   carries it into `possibleRepeatOf`; the verifier treats a resolved thread as
-  a likely addressed point. The read-only client now sends GraphQL `query`
-  operations as its one non-GET request and refuses any document naming
-  `mutation` or `subscription`; every REST call stays GET-only. If the query
+  a likely addressed point. The read-only client now sends GraphQL queries as
+  its one non-GET request: only a known query, by its exact text, with only
+  the variables it declares and the repository from the allowlist; every REST
+  call stays GET-only. If the query
   fails, `thread` warns locally and goes on with the REST data. See ADR 0018.
   (#43)
 - A partly-addressed follow-up is tracked to resolution. `RV follow-ups --pr
   <n>` lists those an earlier run of the pull request left open, for the
   verifier to check at the new head (`follow_ups` rulings). `record --thread
   --follow-ups` on a later run of the same pull request marks each resolved
-  when its posted comment's thread is resolved or the verifier found every
-  remaining point addressed, and open otherwise, including when its file was
-  not in that review; `explain` shows open or resolved. Local only; nothing is
+  when the owner resolved its posted comment's thread or the verifier found
+  every remaining point addressed, and open otherwise, including when someone
+  else resolved it or its file was not in that review; `record --thread`
+  refuses a thread file of another pull request; `explain` shows open or resolved. Local only; nothing is
   posted. (#30)
 - A prior comment of the owner's that the author only partly addressed gets a
   local partly-addressed state. The verifier may mark a candidate linked to
@@ -149,9 +151,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `check-candidates --thread` flags a same-file, same-concern repeat of any
   reviewer's inline comment, whatever the line distance, as `possibleRepeatOf`
   of `kind: thread`, with `outdated: true` when GitHub no longer places the
-  comment on the head because the code under it changed. Whether a thread is
-  resolved is not read: that needs GraphQL, and the client is read-only REST.
-  Every anchored thread match now carries its `kind`, and the nearby match is
+  comment on the head because the code under it changed (and `resolved: true`
+  when its thread is resolved; see the GraphQL entry above). Every anchored thread match now carries its `kind`, and the nearby match is
   the best one, the owner's own first, rather than the first found. (#43)
 - A `stale-consumer` finding on documentation (`.md`, `.rst`, `.adoc`) that the
   verifier confirmed is eligible at `nit` without `impact_traced`; above `nit`,

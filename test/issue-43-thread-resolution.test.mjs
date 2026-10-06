@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readThread } from '../plugins/review-voice/src/diff/thread.ts';
-import { GitHubClient, NotAllowlisted, ReadOnlyViolation } from '../plugins/review-voice/src/github/client.ts';
+import { GitHubClient, NotAllowlisted, ReadOnlyViolation, REVIEW_THREADS_QUERY } from '../plugins/review-voice/src/github/client.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const bundle = join(root, 'plugins/review-voice/dist/review-voice.mjs');
@@ -46,18 +46,18 @@ test('the client refuses any GraphQL document that is not a plain query, before 
   for (const document of refused) {
     await assert.rejects(() => client.graphql('acme/web', document), ReadOnlyViolation, document);
   }
-  await assert.rejects(() => client.graphql('other/repo', 'query { viewer { login } }'), NotAllowlisted);
+  await assert.rejects(() => client.graphql('other/repo', REVIEW_THREADS_QUERY, { number: 1 }), NotAllowlisted);
   assert.equal(calls.length, 0);
 });
 
 test('a GraphQL query is posted to /graphql with owner and name forced to the allowlisted repository', async () => {
   const { calls, client } = recordingClient(() => json({ data: { ok: true } }));
-  const data = await client.graphql('acme/web', 'query($owner: String!, $name: String!) { x }', { owner: 'other', name: 'repo', n: 1 });
+  const data = await client.graphql('acme/web', REVIEW_THREADS_QUERY, { number: 1, cursor: null });
   assert.deepEqual(data, { ok: true });
   assert.equal(calls.length, 1);
   assert.equal(new URL(calls[0].url).pathname, '/graphql');
   assert.equal(calls[0].method, 'POST');
-  assert.deepEqual(JSON.parse(calls[0].body).variables, { owner: 'acme', name: 'web', n: 1 });
+  assert.deepEqual(JSON.parse(calls[0].body).variables, { number: 1, cursor: null, owner: 'acme', name: 'web' });
   // REST stays GET-only.
   await assert.rejects(() => client.get('/repos/acme/web/pulls/1/reviews', { method: 'POST' }), ReadOnlyViolation);
 });

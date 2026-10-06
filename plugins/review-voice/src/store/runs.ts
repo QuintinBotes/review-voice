@@ -41,8 +41,11 @@ export interface StoredFinding {
 
 export interface PartlyAddressedFinding {
   status: 'partly-addressed';
-  /** The earlier comment, where it sat when this review read the thread. */
-  prior: { author: string; path: string; line: number };
+  /**
+   * The earlier comment, where it sat when this review read the thread, and
+   * its GitHub id when the thread file carried it.
+   */
+  prior: { author: string; path: string; line: number; commentId?: number };
   remaining: string[];
   addressed: string[];
 }
@@ -65,7 +68,12 @@ export function partlyAddressedOf(value: unknown): PartlyAddressedFinding | unde
   if (typeof v['author'] !== 'string' || typeof v['path'] !== 'string' || !Number.isInteger(v['line'])) return undefined;
   return {
     status: 'partly-addressed',
-    prior: { author: v['author'], path: v['path'], line: v['line'] as number },
+    prior: {
+      author: v['author'],
+      path: v['path'],
+      line: v['line'] as number,
+      ...(Number.isInteger(v['commentId']) ? { commentId: v['commentId'] as number } : {}),
+    },
     remaining,
     addressed,
   };

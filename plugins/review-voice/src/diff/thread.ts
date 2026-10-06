@@ -1,4 +1,4 @@
-import { GitHubClient } from '../github/client.ts';
+import { GitHubClient, REVIEW_THREADS_QUERY } from '../github/client.ts';
 import { redact } from '../redact/redact.ts';
 
 /**
@@ -36,10 +36,16 @@ export interface ThreadComment {
    * place GitHub exposes it (docs/adr/0018); absent when that read failed.
    */
   resolved?: boolean;
+  /** Who resolved the thread, when it is resolved and GitHub said. */
+  resolvedBy?: string;
+  /** GitHub's id for an inline comment, and when it was written. */
+  id?: number;
+  createdAt?: string;
 }
 
 interface RawInline {
   id?: number;
+  created_at?: string;
   path?: string;
   line?: number | null;
   original_line?: number | null;
@@ -76,7 +82,7 @@ export async function readThread(options: {
   pullNumber: number;
   /** Injectable so a test can stub fetch. */
   client?: GitHubClient;
-}): Promise<{ comments: ThreadComment[]; truncated: boolean; warnings?: string[] }> {
+}): Promise<{ repository: string; pullNumber: number; comments: ThreadComment[]; truncated: boolean; warnings?: string[] }> {
   // Naming a pull request is the consent for reading it, the same rule
   // `acquirePullRequestDiff` follows.
   const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
@@ -124,7 +130,10 @@ export async function readThread(options: {
       body: kept.body,
       kind: 'review-comment',
       ...(outdated ? { outdated: true } : {}),
+      ...(typeof raw.id === 'number' ? { id: raw.id } : {}),
+      ...(typeof raw.created_at === 'string' ? { createdAt: raw.created_at } : {}),
       ...(state?.resolved === true ? { resolved: true } : {}),
+      ...(state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {}),
     });
   }
 
@@ -148,7 +157,10 @@ export async function readThread(options: {
     comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: 'conversation' });
   }
 
+  // Named, so a thread file cannot be applied to another pull request's run.
   return {
+    repository: options.repository,
+    pullNumber: options.pullNumber,
     comments,
     truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
     ...(warnings.length > 0 ? { warnings } : {}),
@@ -158,26 +170,8 @@ export async function readThread(options: {
 interface ThreadState {
   resolved: boolean;
   outdated: boolean;
+  resolvedBy: string | null;
 }
-
-/**
- * Read only: a `query`, which the client checks before sending. The comments'
- * `databaseId` is the REST comment `id`, which is how the two reads join.
- */
-const REVIEW_THREADS = `query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      reviewThreads(first: 100, after: $cursor) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          isResolved
-          isOutdated
-          comments(first: 100) { nodes { databaseId path line } }
-        }
-      }
-    }
-  }
-}`;
 
 interface RawThreads {
   repository?: {
@@ -187,6 +181,7 @@ interface RawThreads {
         nodes?: {
           isResolved?: boolean;
           isOutdated?: boolean;
+          resolvedBy?: { login?: string } | null;
           comments?: { nodes?: { databaseId?: number | null }[] };
         }[];
       };
@@ -203,11 +198,15 @@ async function readThreadStates(client: GitHubClient, repository: string, pullNu
   const states = new Map<number, ThreadState>();
   let cursor: string | null = null;
   for (let read = 0; read < MAX_COMMENTS; read += 100) {
-    const data: RawThreads = await client.graphql<RawThreads>(repository, REVIEW_THREADS, { number: pullNumber, cursor });
+    const data: RawThreads = await client.graphql<RawThreads>(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
     const threads = data?.repository?.pullRequest?.reviewThreads;
     if (threads === undefined || !Array.isArray(threads.nodes)) throw new Error('no reviewThreads in the answer');
     for (const thread of threads.nodes) {
-      const state = { resolved: thread?.isResolved === true, outdated: thread?.isOutdated === true };
+      const state = {
+        resolved: thread?.isResolved === true,
+        outdated: thread?.isOutdated === true,
+        resolvedBy: typeof thread?.resolvedBy?.login === 'string' ? thread.resolvedBy.login : null,
+      };
       for (const comment of thread?.comments?.nodes ?? []) {
         if (typeof comment?.databaseId === 'number') states.set(comment.databaseId, state);
       }
