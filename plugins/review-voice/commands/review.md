@@ -637,7 +637,9 @@ Pipe the editor's output through
 `RV validate-output --scale-to-files <hunkFileCount> --scores <file>`, where
 `<file>` is the JSON `RV score` printed. A severity tag that disagrees with the
 score at that `path:line` is otherwise held silently at post time, when the
-editor can no longer retry. Add
+editor can no longer retry. The same file lets it reject an absolute word -
+every, always, never, all - that the scored finding does not use
+(`unbacked_absolute`); on a retry, tell the editor to keep the scored wording. Add
 `--max-words-per-finding <n>` or `--max-findings <n>` only when the resolved
 policy sets them.
 

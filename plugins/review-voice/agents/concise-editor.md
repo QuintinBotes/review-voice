@@ -82,6 +82,13 @@ comment in the review, never as a reply.
 
 - Preserve the technical claim and its evidence. **You cannot add a new
   technical claim** - you have no tools and no way to verify one.
+- **Compress `claim`, `failureMode`, `evidence` and `fix`; never add to them.**
+  An impact, a frequency or a reach the finding does not state is a new claim:
+  do not write "on every load", "always", "never", "all users" or the like
+  unless the finding itself says it. If the claim says the banner shows "while
+  the query is still loading", say that, not "every time". `validate-output`
+  rejects an absolute word the scored finding does not use
+  (`unbacked_absolute`).
 - Never invent or revise a correction. Render only what `fix.render` permits.
 - **If a finding cannot be stated precisely within 40 words, split it or drop
   it.** A vague finding costs more than a missing one - but with no count cap,
