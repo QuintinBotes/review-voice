@@ -41,11 +41,35 @@ export interface ThreadComment {
   /** GitHub's id for an inline comment, and when it was written. */
   id?: number;
   createdAt?: string;
+  /** The review an inline comment was posted in, and the comment it replies to. */
+  reviewId?: number;
+  inReplyTo?: number;
+}
+
+/**
+ * One review on the pull request, whatever its body. A review with no body adds
+ * no `review-body` comment but still has a state, and `carry` needs to know
+ * which of this tool's reviews the author dismissed.
+ */
+export interface ThreadReview {
+  id: number;
+  author: string;
+  /** GitHub's state, such as `COMMENTED`, `APPROVED` or `DISMISSED`. */
+  state: string;
+  submittedAt?: string;
+  /**
+   * Redacted. Why a dismissed review was dismissed, from the pull request's
+   * `review_dismissed` event; absent when it was not dismissed or that read
+   * failed.
+   */
+  dismissalMessage?: string;
 }
 
 interface RawInline {
   id?: number;
   created_at?: string;
+  pull_request_review_id?: number | null;
+  in_reply_to_id?: number | null;
   path?: string;
   line?: number | null;
   original_line?: number | null;
@@ -54,8 +78,16 @@ interface RawInline {
 }
 
 interface RawReview {
+  id?: number;
+  state?: string;
+  submitted_at?: string | null;
   body?: string;
   user?: { login?: string };
+}
+
+interface RawIssueEvent {
+  event?: string;
+  dismissed_review?: { review_id?: number; dismissal_message?: string | null } | null;
 }
 
 interface RawIssueComment {
@@ -82,7 +114,7 @@ export async function readThread(options: {
   pullNumber: number;
   /** Injectable so a test can stub fetch. */
   client?: GitHubClient;
-}): Promise<{ repository: string; pullNumber: number; comments: ThreadComment[]; truncated: boolean; warnings?: string[] }> {
+}): Promise<{ repository: string; pullNumber: number; comments: ThreadComment[]; reviews: ThreadReview[]; truncated: boolean; warnings?: string[] }> {
   // Naming a pull request is the consent for reading it, the same rule
   // `acquirePullRequestDiff` follows.
   const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
@@ -132,6 +164,8 @@ export async function readThread(options: {
       ...(outdated ? { outdated: true } : {}),
       ...(typeof raw.id === 'number' ? { id: raw.id } : {}),
       ...(typeof raw.created_at === 'string' ? { createdAt: raw.created_at } : {}),
+      ...(typeof raw.pull_request_review_id === 'number' ? { reviewId: raw.pull_request_review_id } : {}),
+      ...(typeof raw.in_reply_to_id === 'number' ? { inReplyTo: raw.in_reply_to_id } : {}),
       ...(state?.resolved === true ? { resolved: true } : {}),
       ...(state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {}),
     });
@@ -141,10 +175,42 @@ export async function readThread(options: {
     `/repos/${options.repository}/pulls/${options.pullNumber}/reviews?per_page=100`,
     MAX_COMMENTS,
   );
+  const threadReviews: ThreadReview[] = [];
   for (const raw of reviews) {
+    if (typeof raw.id === 'number') {
+      threadReviews.push({
+        id: raw.id,
+        author: raw.user?.login ?? 'unknown',
+        state: raw.state ?? 'UNKNOWN',
+        ...(typeof raw.submitted_at === 'string' ? { submittedAt: raw.submitted_at } : {}),
+      });
+    }
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
     comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: 'review-body' });
+  }
+  // Only a dismissed review has a message to read, and only the issue's
+  // events carry it, so the extra read is made when there is one.
+  if (threadReviews.some((review) => review.state === 'DISMISSED')) {
+    try {
+      const events = await client.paginate<RawIssueEvent>(
+        `/repos/${options.repository}/issues/${options.pullNumber}/events?per_page=100`,
+        MAX_COMMENTS,
+      );
+      for (const event of events) {
+        const dismissed = event.event === 'review_dismissed' ? event.dismissed_review : null;
+        if (typeof dismissed?.review_id !== 'number') continue;
+        const message = clean(dismissed.dismissal_message ?? undefined, undefined);
+        const review = threadReviews.find((candidate) => candidate.id === dismissed.review_id);
+        if (review !== undefined && message !== null) review.dismissalMessage = message.body;
+      }
+    } catch (error) {
+      warnings.push(
+        'Could not read why a review was dismissed ' +
+          `(${error instanceof Error ? error.message.slice(0, 160) : String(error)}); ` +
+          'continuing, so no dismissal message is recorded.',
+      );
+    }
   }
 
   const conversation = await client.paginate<RawIssueComment>(
@@ -162,6 +228,7 @@ export async function readThread(options: {
     repository: options.repository,
     pullNumber: options.pullNumber,
     comments,
+    reviews: threadReviews,
     truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
     ...(warnings.length > 0 ? { warnings } : {}),
   };

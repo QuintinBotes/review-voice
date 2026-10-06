@@ -56,6 +56,7 @@ import {
   type HeldFinding,
   type StageTiming,
 } from './store/runs.ts';
+import { heldBackFindings, parseThreadFile, postedReviewIds } from './diff/held.ts';
 import { carryCandidates, carryFindings, CarryError, commitReadable, followLine, seriousNotCarried, type CarriedFinding } from './diff/carry.ts';
 import { candidateAnchor, reanchorCandidates, reanchorScores } from './diff/reanchor.ts';
 import { fetchPriorHead, latestOwnReview, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
@@ -2278,7 +2279,9 @@ function recordCommand(argv: string[]): number {
         return 2;
       }
       try {
-        const result = carryForRun(db, carriedFrom, head, flag(argv, '--repository'));
+        // The same hold-back `carry --thread` made, so the text it printed is
+        // the text recorded here.
+        const result = carryForRun(db, carriedFrom, head, flag(argv, '--repository'), followUpThreadFile);
         // A serious finding left behind may be what stopped an approval;
         // recording the rest would let the review approve without it.
         const serious = seriousNotCarried(result.notCarried);
@@ -2418,6 +2421,7 @@ function carryForRun(
   runId: string,
   head: string,
   repository: string | null,
+  threadFile: string | null = null,
 ): ReturnType<typeof carryFindings> {
   const detail = runDetail(db, runId);
   if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
@@ -2453,7 +2457,19 @@ function carryForRun(
       );
     }
   }
-  return carryFindings(detail.findings, detail.headRef, head, root);
+
+  let hold: Map<string, string> | undefined;
+  if (threadFile !== null) {
+    let text: string;
+    try {
+      text = readFileSync(threadFile, 'utf8');
+    } catch (error) {
+      throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const thread = parseThreadFile(text, threadFile, detail);
+    hold = heldBackFindings(detail.findings, thread, detail, postedReviewIds(db, runId));
+  }
+  return carryFindings(detail.findings, detail.headRef, head, root, hold);
 }
 
 /**
@@ -2466,12 +2482,24 @@ function carryCommand(argv: string[]): number {
   const from = flag(argv, '--from');
   const head = flag(argv, '--head');
   if (from === null || head === null) {
-    console.error('Usage: carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text]');
+    console.error('Usage: carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text] [--thread <thread.json>]');
+    return 2;
+  }
+  // What the author answered on the pull request: threads resolved, reviews dismissed.
+  const threadFile = flag(argv, '--thread');
+  if (argv.includes('--thread') && threadFile === null) {
+    console.error('--thread needs a thread JSON path.');
     return 2;
   }
   const db = openDatabase();
   try {
-    const result = carryForRun(db, from, head, flag(argv, '--repository'));
+    const result = carryForRun(db, from, head, flag(argv, '--repository'), threadFile);
+    if (threadFile === null && runDetail(db, from)?.pullNumber !== null) {
+      console.error(
+        'Findings the author resolved or dismissed on the pull request were not checked. ' +
+          'Pass --thread <thread.json> from `RV thread` to hold them back.',
+      );
+    }
     if (!argv.includes('--text')) {
       console.log(JSON.stringify({ from, head, ...result }, null, 2));
       return 0;
@@ -2480,6 +2508,10 @@ function carryCommand(argv: string[]): number {
     // `record`. What did not carry is named where a pipe does not take it.
     for (const skipped of result.notCarried) {
       console.error(`Not carried: ${skipped.findingId} ${skipped.path}:${skipped.line} - ${skipped.reason}`);
+    }
+    for (const held of result.heldBack) {
+      const severity = held.severity === undefined ? '' : ` (${held.severity})`;
+      console.error(`Held back: ${held.findingId} ${held.path}:${held.line}${severity} - ${held.reason}`);
     }
     const serious = seriousNotCarried(result.notCarried);
     if (serious.length > 0) {
@@ -2494,7 +2526,13 @@ function carryCommand(argv: string[]): number {
     if (result.output.length === 0) {
       // Findings existed and none carried. Printing the clean-review sentence
       // here would record a review that says the opposite of the earlier one.
-      console.error(`Nothing carried from ${from}; its findings sit on code that changed.`);
+      console.error(
+        result.heldBack.length > 0
+          ? `Nothing left to print from ${from}: ${result.heldBack.length} finding${result.heldBack.length === 1 ? ' was' : 's were'} ` +
+              'held back (resolved or dismissed on the pull request)' +
+              `${result.notCarried.length > 0 ? ', and the rest sit on code that changed' : ''}.`
+          : `Nothing carried from ${from}; its findings sit on code that changed.`,
+      );
       return 1;
     }
     process.stdout.write(`${result.output}\n`);

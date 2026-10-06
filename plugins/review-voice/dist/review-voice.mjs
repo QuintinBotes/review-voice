@@ -2773,6 +2773,8 @@ async function readThread(options) {
       ...outdated ? { outdated: true } : {},
       ...typeof raw.id === "number" ? { id: raw.id } : {},
       ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
+      ...typeof raw.pull_request_review_id === "number" ? { reviewId: raw.pull_request_review_id } : {},
+      ...typeof raw.in_reply_to_id === "number" ? { inReplyTo: raw.in_reply_to_id } : {},
       ...state?.resolved === true ? { resolved: true } : {},
       ...state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {}
     });
@@ -2781,10 +2783,38 @@ async function readThread(options) {
     `/repos/${options.repository}/pulls/${options.pullNumber}/reviews?per_page=100`,
     MAX_COMMENTS
   );
+  const threadReviews = [];
   for (const raw of reviews) {
+    if (typeof raw.id === "number") {
+      threadReviews.push({
+        id: raw.id,
+        author: raw.user?.login ?? "unknown",
+        state: raw.state ?? "UNKNOWN",
+        ...typeof raw.submitted_at === "string" ? { submittedAt: raw.submitted_at } : {}
+      });
+    }
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
     comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: "review-body" });
+  }
+  if (threadReviews.some((review) => review.state === "DISMISSED")) {
+    try {
+      const events = await client.paginate(
+        `/repos/${options.repository}/issues/${options.pullNumber}/events?per_page=100`,
+        MAX_COMMENTS
+      );
+      for (const event of events) {
+        const dismissed = event.event === "review_dismissed" ? event.dismissed_review : null;
+        if (typeof dismissed?.review_id !== "number") continue;
+        const message = clean(dismissed.dismissal_message ?? void 0, void 0);
+        const review = threadReviews.find((candidate) => candidate.id === dismissed.review_id);
+        if (review !== void 0 && message !== null) review.dismissalMessage = message.body;
+      }
+    } catch (error) {
+      warnings.push(
+        `Could not read why a review was dismissed (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing, so no dismissal message is recorded.`
+      );
+    }
   }
   const conversation = await client.paginate(
     `/repos/${options.repository}/issues/${options.pullNumber}/comments?per_page=100`,
@@ -2799,6 +2829,7 @@ async function readThread(options) {
     repository: options.repository,
     pullNumber: options.pullNumber,
     comments,
+    reviews: threadReviews,
     truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
     ...warnings.length > 0 ? { warnings } : {}
   };
@@ -4567,13 +4598,25 @@ function followLine(previousHead, head, path, line, cwd) {
 function rewriteAnchor(text, path, oldLine, line) {
   return text.replace(`\`${path}:${oldLine}\``, `\`${path}:${line}\``);
 }
-function carryFindings(findings, previousHead, head, cwd) {
+function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map()) {
   for (const ref of [previousHead, head]) {
     if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
   }
   const carried = [];
   const notCarried = [];
+  const heldBack = [];
   for (const finding of findings) {
+    const holdReason = hold.get(finding.findingId);
+    if (holdReason !== void 0) {
+      heldBack.push({
+        findingId: finding.findingId,
+        path: finding.path,
+        line: finding.line,
+        reason: holdReason,
+        ...finding.severity === void 0 ? {} : { severity: finding.severity }
+      });
+      continue;
+    }
     const moved = followLine(previousHead, head, finding.path, finding.line, cwd);
     if ("reason" in moved) {
       notCarried.push({
@@ -4594,7 +4637,7 @@ function carryFindings(findings, previousHead, head, cwd) {
     });
   }
   const output = findings.length === 0 ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join("\n\n");
-  return { carried, notCarried, output };
+  return { carried, notCarried, heldBack, output };
 }
 function findingBody(text) {
   const joined = text.replace(/\s+/g, " ").trim();
@@ -4926,6 +4969,92 @@ function latestRun(db) {
   if (row === void 0) return null;
   const parsed = JSON.parse(row.output_json);
   return { reviewRunId: row.review_run_id, findings: parsed.findings };
+}
+
+// plugins/review-voice/src/diff/held.ts
+var QUOTE_LIMIT = 200;
+function parseThreadFile(text, file, run) {
+  let parsed;
+  try {
+    const raw = JSON.parse(text);
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw) || !Array.isArray(raw["comments"])) {
+      throw new Error("expected the thread.json that `RV thread` wrote");
+    }
+    parsed = raw;
+  } catch (error) {
+    throw new CarryError(`Cannot read ${file}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const sameRepository = typeof parsed["repository"] === "string" && run.repository !== null && parsed["repository"].toLowerCase() === run.repository.toLowerCase();
+  if (!sameRepository || run.pullNumber === null || parsed["pullNumber"] !== run.pullNumber) {
+    throw new CarryError(
+      `${file} is the thread of ${String(parsed["repository"])}#${String(parsed["pullNumber"])}, not of this run's pull request (${run.repository ?? "no repository"}#${run.pullNumber ?? "?"}). Pass the thread.json that \`RV thread\` wrote for it.`
+    );
+  }
+  return {
+    repository: parsed["repository"],
+    pullNumber: parsed["pullNumber"],
+    comments: parsed["comments"],
+    reviews: Array.isArray(parsed["reviews"]) ? parsed["reviews"] : []
+  };
+}
+function postedReviewIds(db, runId) {
+  const attempts = db.prepare(`SELECT audit_id FROM audit_events WHERE action = 'review_post_attempted' AND json_extract(metadata_json, '$.run') = ?`).all(runId);
+  const ids = new Set(attempts.map((row) => row.audit_id));
+  if (ids.size === 0) return [];
+  const sent = db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent'`).all();
+  const reviewIds = [];
+  for (const row of sent) {
+    const meta = JSON.parse(row.metadata_json);
+    const id = Number(meta.reviewId);
+    if (typeof meta.attempt === "string" && ids.has(meta.attempt) && Number.isInteger(id)) reviewIds.push(id);
+  }
+  return reviewIds;
+}
+function quote(text) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return `"${flat.length > QUOTE_LIMIT ? `${flat.slice(0, QUOTE_LIMIT)}...` : flat}"`;
+}
+function postedComment2(finding, thread, run, reviewIds) {
+  const parsed = parseFinding(finding.text, 1);
+  if (parsed.severity === null || parsed.prose.length === 0) return null;
+  const opening = `**${parsed.severity}** - `;
+  const prose = significantWords(parsed.prose);
+  const recordedAt = Date.parse(run.createdAt);
+  for (const comment of thread) {
+    if (comment.kind !== "review-comment" || comment.inReplyTo !== void 0) continue;
+    if (comment.path !== finding.path || !comment.body.startsWith(opening)) continue;
+    if (reviewIds.length > 0) {
+      if (comment.reviewId === void 0 || !reviewIds.includes(comment.reviewId)) continue;
+    } else {
+      const written = typeof comment.createdAt === "string" ? Date.parse(comment.createdAt) : Number.NaN;
+      if (Number.isNaN(written) || Number.isNaN(recordedAt) || written <= recordedAt) continue;
+    }
+    if (overlap(prose, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
+  }
+  return null;
+}
+function heldBackFindings(findings, thread, run, reviewIds) {
+  const dismissed = new Map(thread.reviews.filter((review) => review.state === "DISMISSED").map((review) => [review.id, review]));
+  const held = /* @__PURE__ */ new Map();
+  for (const finding of findings) {
+    const comment = postedComment2(finding, thread.comments, run, reviewIds);
+    const review = (comment?.reviewId !== void 0 ? dismissed.get(comment.reviewId) : void 0) ?? reviewIds.map((id) => dismissed.get(id)).find((candidate) => candidate !== void 0);
+    const resolved = comment?.resolved === true;
+    if (!resolved && review === void 0) continue;
+    const parts = [];
+    if (resolved) parts.push(`its thread was resolved${comment?.resolvedBy === void 0 ? "" : ` by ${comment.resolvedBy}`}`);
+    if (review !== void 0) {
+      parts.push(`the review was dismissed${review.dismissalMessage === void 0 ? "" : `: ${quote(review.dismissalMessage)}`}`);
+    }
+    const replies = comment?.id === void 0 ? [] : thread.comments.filter((c) => c.inReplyTo === comment.id);
+    const last = replies.reduce(
+      (latest, reply) => latest === void 0 || (reply.createdAt ?? "") >= (latest.createdAt ?? "") ? reply : latest,
+      void 0
+    );
+    if (last !== void 0) parts.push(`${last.author} replied: ${quote(last.body)}`);
+    held.set(finding.findingId, parts.join("; "));
+  }
+  return held;
 }
 
 // plugins/review-voice/src/diff/prior.ts
@@ -10200,9 +10329,9 @@ var Lexer = class {
     }
   }
   *parseQuotedScalar() {
-    const quote = this.charAt(0);
-    let end = this.buffer.indexOf(quote, this.pos + 1);
-    if (quote === "'") {
+    const quote2 = this.charAt(0);
+    let end = this.buffer.indexOf(quote2, this.pos + 1);
+    if (quote2 === "'") {
       while (end !== -1 && this.buffer[end + 1] === "'")
         end = this.buffer.indexOf("'", end + 2);
     } else {
@@ -15039,7 +15168,8 @@ var COMMAND_HELP = {
       '  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]',
       "  --carried-from <run>   Validate findings carried by `carry` (needs --head; run in its clone)",
       "  --carry <path>         carry.json of carry-candidates (needs --head)",
-      "  --thread <path>        thread.json; a follow-up whose comment thread is resolved is settled",
+      "  --thread <path>        thread.json; a follow-up whose comment thread is resolved is settled,",
+      "                         and with --carried-from, findings `carry --thread` held back stay out",
       "  --follow-ups <path>    The verifier's follow_ups rulings on the open follow-ups",
       "  --stages <path>        Per-stage timings as",
       '                         [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean',
@@ -15053,7 +15183,7 @@ var COMMAND_HELP = {
   carry: {
     summary: "Carry an earlier run's untouched findings to a new head",
     body: lines(
-      "review-voice carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text]",
+      "review-voice carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text] [--thread <path>]",
       "  Carry an earlier run's untouched findings to a new head. Commits are read from",
       "  the git repository in the working directory, which must be a clone of the run's",
       "  repository.",
@@ -15063,8 +15193,13 @@ var COMMAND_HELP = {
       "  --head <sha>           The new head (required)",
       "  --repository <o/r>     The run's repository, when the run did not record one",
       "  --text                 Print only the carried review, for validate-output",
-      "Reads: nothing on stdin; the local store.",
+      "  --thread <path>        thread.json of the same pull request, from `thread`: a finding whose",
+      "                         comment thread was resolved, or whose review was dismissed, is held",
+      "                         back instead of carried. Without it a pull request run says so.",
+      "Reads: nothing on stdin; the local store, and --thread when given.",
       "Writes: JSON (or with --text, the review text) on stdout; what did not carry on stderr.",
+      "  JSON adds heldBack: {findingId, path, line, severity, reason}[], not counted as serious findings",
+      '  that did not carry; with --text each is on stderr as "Held back: ...".',
       "Exit codes: 0 ok, 1 with --text nothing carried or a serious finding did not, 2 bad invocation."
     )
   },
@@ -16840,7 +16975,7 @@ function recordCommand(argv) {
         return 2;
       }
       try {
-        const result = carryForRun(db, carriedFrom, head, flag(argv, "--repository"));
+        const result = carryForRun(db, carriedFrom, head, flag(argv, "--repository"), followUpThreadFile);
         const serious = seriousNotCarried(result.notCarried);
         if (serious.length > 0) {
           console.error(
@@ -16953,7 +17088,7 @@ ${error.message}`);
     db.close();
   }
 }
-function carryForRun(db, runId, head, repository) {
+function carryForRun(db, runId, head, repository, threadFile = null) {
   const detail = runDetail(db, runId);
   if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
   if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head, so nothing can be carried from it.`);
@@ -16982,24 +17117,49 @@ function carryForRun(db, runId, head, repository) {
       );
     }
   }
-  return carryFindings(detail.findings, detail.headRef, head, root);
+  let hold;
+  if (threadFile !== null) {
+    let text;
+    try {
+      text = readFileSync5(threadFile, "utf8");
+    } catch (error) {
+      throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const thread = parseThreadFile(text, threadFile, detail);
+    hold = heldBackFindings(detail.findings, thread, detail, postedReviewIds(db, runId));
+  }
+  return carryFindings(detail.findings, detail.headRef, head, root, hold);
 }
 function carryCommand(argv) {
   const from = flag(argv, "--from");
   const head = flag(argv, "--head");
   if (from === null || head === null) {
-    console.error("Usage: carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text]");
+    console.error("Usage: carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text] [--thread <thread.json>]");
+    return 2;
+  }
+  const threadFile = flag(argv, "--thread");
+  if (argv.includes("--thread") && threadFile === null) {
+    console.error("--thread needs a thread JSON path.");
     return 2;
   }
   const db = openDatabase();
   try {
-    const result = carryForRun(db, from, head, flag(argv, "--repository"));
+    const result = carryForRun(db, from, head, flag(argv, "--repository"), threadFile);
+    if (threadFile === null && runDetail(db, from)?.pullNumber !== null) {
+      console.error(
+        "Findings the author resolved or dismissed on the pull request were not checked. Pass --thread <thread.json> from `RV thread` to hold them back."
+      );
+    }
     if (!argv.includes("--text")) {
       console.log(JSON.stringify({ from, head, ...result }, null, 2));
       return 0;
     }
     for (const skipped of result.notCarried) {
       console.error(`Not carried: ${skipped.findingId} ${skipped.path}:${skipped.line} - ${skipped.reason}`);
+    }
+    for (const held of result.heldBack) {
+      const severity = held.severity === void 0 ? "" : ` (${held.severity})`;
+      console.error(`Held back: ${held.findingId} ${held.path}:${held.line}${severity} - ${held.reason}`);
     }
     const serious = seriousNotCarried(result.notCarried);
     if (serious.length > 0) {
@@ -17009,7 +17169,9 @@ function carryCommand(argv) {
       return 1;
     }
     if (result.output.length === 0) {
-      console.error(`Nothing carried from ${from}; its findings sit on code that changed.`);
+      console.error(
+        result.heldBack.length > 0 ? `Nothing left to print from ${from}: ${result.heldBack.length} finding${result.heldBack.length === 1 ? " was" : "s were"} held back (resolved or dismissed on the pull request)${result.notCarried.length > 0 ? ", and the rest sit on code that changed" : ""}.` : `Nothing carried from ${from}; its findings sit on code that changed.`
+      );
       return 1;
     }
     process.stdout.write(`${result.output}
