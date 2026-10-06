@@ -97,6 +97,12 @@ consumer to the cause: read the consumer, read the changed line, and confirm
 the change is what makes the consumer wrong. Set `impact_traced` to true only
 when you did. Without it the finding is dropped, whatever its confidence.
 
+A consumer that is a document - a guide, a skill, a README - is the one
+exception. A document that still describes what the change replaced is wrong
+without any runtime break to trace, so leave `impact_traced` false rather than
+stretching it, and confirm only that the change is what made the text wrong.
+Such a finding can still be reported at `nit`, and only at `nit`.
+
 ## Reject unless every condition holds
 
 - The path and line are changed by, or directly causally affected by, the diff.

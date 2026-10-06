@@ -35,6 +35,19 @@ export interface RawCandidate {
 /** The one anchor a candidate may declare; see `classifyStaleConsumer`. */
 export const STALE_CONSUMER = 'stale-consumer';
 
+const DOCUMENTATION_PATH = /\.(?:md|mdx|markdown|rst|adoc|asciidoc|txt)$/i;
+
+/**
+ * Whether a path is a document rather than code: a guide, a skill, a README.
+ *
+ * Judged on the extension alone. A comment inside a source file is also prose,
+ * but it sits beside code a stale-consumer finding could break, so it keeps
+ * the stricter rule.
+ */
+export function isDocumentationPath(path: string): boolean {
+  return DOCUMENTATION_PATH.test(path);
+}
+
 export interface Candidate {
   candidateId: string;
   path: string;
@@ -1134,15 +1147,27 @@ export function scoreCandidate(
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
 
+  const severity = boundSeverityByEvidence(derivedSeverity, candidate, verification);
+
   // A stale consumer sits on code the diff did not touch, so nothing in the
   // diff shows it breaking. Only the verifier following it back to its cause
   // does. Checked after the chain so a question cannot skip it, and it leads
   // over a score rejection because it is the one the analyst can act on.
+  //
+  // A document is the exception at nit. A guide that still tells authors to do
+  // what the change replaced is wrong without any runtime break to trace, so
+  // the verifier rightly leaves `impact_traced` false, and requiring it made
+  // the most common stale consumer impossible to report. A nit costs the
+  // author nothing to decline; anything louder still needs the trace.
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
-  if (staleConsumer && verification?.impactTraced !== true) {
+  const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === 'nit';
+  if (staleConsumer && verification?.impactTraced !== true && !untracedDocumentNit) {
     const untraced =
       'a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause ' +
-      '(impact_traced: true)';
+      '(impact_traced: true)' +
+      (isDocumentationPath(candidate.path)
+        ? `; a documentation consumer may go untraced only at nit, and this one is ${severity.severity}`
+        : '');
     if (rejectedBecause === null) rejectedBecause = untraced;
     else if (rejectedBecause.startsWith('score ')) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
   }
@@ -1154,7 +1179,7 @@ export function scoreCandidate(
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
-    severity: boundSeverityByEvidence(derivedSeverity, candidate, verification),
+    severity,
     analystConfidence,
     verifiedConfidence,
     confidenceSource,

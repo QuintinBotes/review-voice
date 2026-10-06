@@ -25,3 +25,4 @@ after that gate.
 | [0012](0012-complex-changes-need-human-approval.md) | Complex changes are raised for a human's approval | Accepted |
 | [0013](0013-ci-needs-rerun.md) | CI that needs a rerun holds every event | Accepted |
 | [0014](0014-verifier-tie-break.md) | A tie-break settles a disputed traced impact | Accepted |
+| [0015](0015-untraced-document-consumers.md) | A stale document may be reported untraced at nit | Accepted |

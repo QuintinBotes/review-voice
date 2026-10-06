@@ -11792,6 +11792,10 @@ function deriveSeverity(category, requested, reach = null) {
 
 // plugins/review-voice/src/scoring/score.ts
 var STALE_CONSUMER = "stale-consumer";
+var DOCUMENTATION_PATH = /\.(?:md|mdx|markdown|rst|adoc|asciidoc|txt)$/i;
+function isDocumentationPath(path) {
+  return DOCUMENTATION_PATH.test(path);
+}
 var FIX_VERDICTS = ["verified", "partial", "refuted", "absent"];
 function isFixVerdict(value) {
   return typeof value === "string" && FIX_VERDICTS.includes(value);
@@ -12191,9 +12195,11 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
+  const severity = boundSeverityByEvidence(derivedSeverity, candidate, verification2);
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
-  if (staleConsumer && verification2?.impactTraced !== true) {
-    const untraced = "a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause (impact_traced: true)";
+  const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit";
+  if (staleConsumer && verification2?.impactTraced !== true && !untracedDocumentNit) {
+    const untraced = "a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause (impact_traced: true)" + (isDocumentationPath(candidate.path) ? `; a documentation consumer may go untraced only at nit, and this one is ${severity.severity}` : "");
     if (rejectedBecause === null) rejectedBecause = untraced;
     else if (rejectedBecause.startsWith("score ")) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
   }
@@ -12203,7 +12209,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
-    severity: boundSeverityByEvidence(derivedSeverity, candidate, verification2),
+    severity,
     analystConfidence,
     verifiedConfidence,
     confidenceSource,

@@ -56,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deletion is in the patch. With no pull request files to read, the follow-up
   is `unchanged` rather than the whole commit range.
 
+### Fixed
+
+- A `stale-consumer` finding on documentation (`.md`, `.mdx`, `.rst`, `.adoc`,
+  `.txt`) is eligible at `nit` without `impact_traced`; above `nit`, or on code,
+  it still needs the trace, and the rejection says which. See ADR 0015. (#27)
+
 ## [1.10.1] - 2026-10-05
 
 ### Changed
