@@ -5,15 +5,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Fixed
-
-- `carry-candidates` refuses an interdiff as `--diff-file` up front (exit 2),
-  saying to pass the whole pull request's diff from `diff --pr <number>
-  --full`, instead of refusing every candidate in a file the interdiff leaves
-  out. A candidate refused for sitting in a file the diff does not touch says
-  the same, and `carry-candidates --help` states it and lists exit 1. (#67)
+## [1.13.0] - 2026-10-06
 
 ### Added
 
@@ -27,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The sensitive-paths reason names the glob each shown path matched
   (`modules/auth/src/a.ts matched **/auth/**`), and the assessment carries
   `sensitiveMatches` (#70).
+
+### Fixed
+
+- `carry-candidates` refuses an interdiff as `--diff-file` up front (exit 2),
+  saying to pass the whole pull request's diff from `diff --pr <number>
+  --full`, instead of refusing every candidate in a file the interdiff leaves
+  out. A candidate refused for sitting in a file the diff does not touch says
+  the same, and `carry-candidates --help` states it and lists exit 1. (#67)
 
 ## [1.12.0] - 2026-10-06
 
@@ -1557,7 +1557,8 @@ no data because nothing has been labelled, and `docs/EVALUATION.md` says so.
   vulnerability reporting, and the repository security posture documented in
   `docs/REPO-SECURITY.md`.
 
-[1.12.0]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.13.0]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.12.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.12.0
 [1.11.1]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.11.1
 [1.11.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.11.0
 [1.10.1]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.10.1
