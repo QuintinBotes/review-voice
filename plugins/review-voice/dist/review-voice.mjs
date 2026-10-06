@@ -2300,6 +2300,13 @@ function narrowToResolution(own, resolution) {
   }
   return ownHunks.header + ownHunks.hunks.filter((hunk) => kept.has(hunk)).map((hunk) => hunk.text).join("");
 }
+function changedSince(own, delta) {
+  const ownHunks = sectionHunks(own);
+  const changes = sectionHunks(delta);
+  if (ownHunks === null || changes === null) return null;
+  const kept = ownHunks.hunks.filter((hunk) => changes.hunks.some((change) => hunk.first <= change.last && change.first <= hunk.last));
+  return kept.length === 0 ? "" : ownHunks.header + kept.map((hunk) => hunk.text).join("");
+}
 function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedReason, conflicts = [], withdrawn = []) {
   const diffText = git5.diffText;
   const read = (left, list) => list.length === 0 ? "" : diffText(left, options.head, list, options.cwd);
@@ -2307,12 +2314,25 @@ function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedRe
   const conflicted = conflicts.filter((path) => wanted.has(path));
   const own = patchSections(read(mergeBase, conflicted));
   const resolutions = patchSections(read(from, [...own.keys()]));
+  const sinceReview = patchSections(read(prior.headRef, [...own.keys()]));
   const narrowed = [];
   const whole = [];
-  const resolved = [...own].map(([path, section]) => {
+  const resolved = [...own].flatMap(([path, section]) => {
+    const delta = sinceReview.get(path);
+    if (delta === void 0) return [];
     const cut = narrowToResolution(section, resolutions.get(path));
-    (cut === null ? whole : narrowed).push(path);
-    return cut ?? section;
+    if (cut === null) {
+      whole.push(path);
+      return [section];
+    }
+    const fresh = changedSince(cut, delta);
+    if (fresh === null) {
+      narrowed.push(path);
+      return [cut];
+    }
+    if (fresh.length === 0) return [];
+    narrowed.push(path);
+    return [fresh];
   });
   const rest = paths.filter((path) => !own.has(path));
   const outside = read(from, rest);

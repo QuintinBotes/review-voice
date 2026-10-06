@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `candidateId` in `score` output. It is still written beside `candidate_id`
   and will be removed in a later release; read `candidate_id`. (#59)
 
+- `diff --pr` after a conflicting base merge no longer re-reads a conflicted
+  file's hunks when the file is the same at the previous and the new head: it
+  drops out, and the scope is `unchanged` (`base-merged`) when nothing else
+  moved. A conflicted file that did change keeps only the hunks its
+  resolution touched that also changed since the previous head; the base's
+  clean changes in the same file no longer bring back reviewed hunks. (#63)
+
 ## [1.11.1] - 2026-10-06
 
 ### Fixed
