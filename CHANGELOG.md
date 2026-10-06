@@ -98,6 +98,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `anchors` routes a stale-consumer finding, and any line outside every hunk of its file on
+  the right side, to `unanchored` rather than listing it as an inline anchor. It takes
+  `--diff-file` and `--scores`, and says when hunk checks were skipped (#47)
 - `diff --pr` exposes `refs.mergeBase` (and `mergeBase` in the summary) beside
   `base`, which stays the base branch tip. Once that branch moves on,
   `git diff base head` shows its own changes; `record`, `symbols` and `score`

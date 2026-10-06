@@ -13596,16 +13596,33 @@ function buildDraft(input) {
 }
 
 // plugins/review-voice/src/publish/anchors.ts
-function extractAnchors(output) {
+function extractAnchors(output, checks = {}) {
+  const hunks = checks.hunks ?? null;
+  const scores = checks.scores ?? [];
+  const anchors = [];
+  const unanchored = [];
   const blocks = splitFindings(output);
-  const anchors = blocks.map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null && finding.line !== null).map((finding, index) => ({
-    findingId: `rv_${String(index + 1).padStart(2, "0")}`,
-    severity: finding.severity,
-    path: finding.path,
-    line: finding.line,
-    body: finding.raw
-  }));
-  return { anchors, unanchorable: blocks.length - anchors.length };
+  let index = 0;
+  for (const block of blocks) {
+    const finding = parseFinding(block.raw, block.startLine);
+    if (finding.severity === null || finding.path === null || finding.line === null) continue;
+    index += 1;
+    const findingId = `rv_${String(index).padStart(2, "0")}`;
+    const stale = scoresAtLocation(scores, finding.path, finding.line).some(isStaleConsumer);
+    const check = hunks === null ? null : classifyAnchor(hunks, finding.path, finding.line);
+    const reason2 = stale ? "stale-consumer" : check !== null && (check.kind === "outside-hunk" || check.kind === "file-not-in-diff") ? check.kind : null;
+    if (reason2 !== null) {
+      unanchored.push({ findingId, severity: finding.severity, path: finding.path, line: finding.line, body: finding.raw, reason: reason2 });
+      continue;
+    }
+    anchors.push({ findingId, severity: finding.severity, path: finding.path, line: finding.line, body: finding.raw });
+  }
+  return {
+    anchors,
+    unanchorable: blocks.length - anchors.length,
+    unanchored,
+    hunkChecks: hunks === null ? "skipped" : "checked"
+  };
 }
 
 // plugins/review-voice/src/github/writer.ts
@@ -14136,6 +14153,8 @@ Commands:
 
 anchors:
   One inline anchor per finding of the review on stdin, read from its text.
+  --diff-file <path>     Unified diff; a line outside its hunks is unanchorable
+  --scores <path>        Scores; a stale-consumer finding is unanchorable
 
 thread flags:
   --pr <number>          Pull request whose existing comments to read
@@ -15474,8 +15493,36 @@ function retrieveCommand(argv) {
     db.close();
   }
 }
-function anchorsCommand() {
-  console.log(JSON.stringify(extractAnchors(readStdin()), null, 2));
+function anchorsCommand(argv) {
+  const diffFile = flag(argv, "--diff-file");
+  const scoresFile = flag(argv, "--scores");
+  for (const name of ["--diff-file", "--scores"]) {
+    if (argv.includes(name) && flag(argv, name) === null) {
+      console.error(`${name} needs a file path.`);
+      return 2;
+    }
+  }
+  let hunks = null;
+  let scores = [];
+  try {
+    if (diffFile !== null) hunks = parseHunks(readFileSync5(diffFile, "utf8"));
+    if (scoresFile !== null) {
+      const parsed = JSON.parse(readFileSync5(scoresFile, "utf8"));
+      const list = Array.isArray(parsed) ? parsed : parsed.scores;
+      scores = Array.isArray(list) ? list : [];
+    }
+  } catch (error) {
+    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const result = extractAnchors(readStdin(), { hunks, scores });
+  if (hunks === null) {
+    console.error("No --diff-file, so hunk ranges were not checked; only stale-consumer findings (from --scores) were routed to the body.");
+  }
+  const plain = diffFile === null && scoresFile === null;
+  console.log(
+    JSON.stringify(plain ? { anchors: result.anchors, unanchorable: result.unanchorable } : result, null, 2)
+  );
   return 0;
 }
 function redactCommand(argv) {
@@ -16754,7 +16801,7 @@ async function main(argv) {
     case "symbols":
       return symbolsCommand(argv.slice(1));
     case "anchors":
-      return anchorsCommand();
+      return anchorsCommand(argv.slice(1));
     case "thread":
       return await threadCommand(argv.slice(1));
     case "context":
