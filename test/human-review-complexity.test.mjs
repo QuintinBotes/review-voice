@@ -181,7 +181,7 @@ test('human_review defaults when absent and reads each key when present', () => 
   assert.deepEqual(absent.humanReview, {
     maxDecisionPoints: 40,
     maxHunkDecisionPoints: 15,
-    sensitivePaths: ['.github/workflows/**', '**/migrations/**', '**/auth/**', '**/security/**'],
+    sensitivePaths: ['.github/workflows/**', '**/migrations/**', '**/auth/**', '**/security/**', '.review-voice/**'],
     testPaths: DEFAULT_TEST_PATHS,
     generatedPaths: [],
   });
@@ -203,7 +203,7 @@ test('a bad limit falls back with a warning; an empty list is valid; a non-list 
   assert.deepEqual(empty.warnings, []);
 
   const notList = configIn('review:\n  human_review:\n    sensitive_paths: "infra/**"\n');
-  assert.equal(notList.humanReview.sensitivePaths.length, 4);
+  assert.equal(notList.humanReview.sensitivePaths.length, 5);
   assert.equal(notList.warnings.length, 1);
 });
 

@@ -1422,7 +1422,13 @@ function pointerTargets(content) {
 }
 
 // plugins/review-voice/src/diff/complexity.ts
-var DEFAULT_SENSITIVE_PATHS = [".github/workflows/**", "**/migrations/**", "**/auth/**", "**/security/**"];
+var DEFAULT_SENSITIVE_PATHS = [
+  ".github/workflows/**",
+  "**/migrations/**",
+  "**/auth/**",
+  "**/security/**",
+  ".review-voice/**"
+];
 var DEFAULT_TEST_PATHS = [
   "**/test/**",
   "**/tests/**",
@@ -1528,10 +1534,42 @@ function config(partial) {
   };
 }
 var matchesAny = (matchers, path) => matchers.some((matcher) => matcher.test(path));
+var PRODUCTION_PROBES = [
+  "index.js",
+  "main.go",
+  "src/index.ts",
+  "src/App.tsx",
+  "src/app/service.py",
+  "src/lib.rs",
+  "src/main.c",
+  "lib/core.rb",
+  "app/models/user.rb",
+  "cmd/server/main.go",
+  "pkg/api/handler.go",
+  "src/Program.cs",
+  "src/main/java/com/example/App.java",
+  "src/main/kotlin/com/example/App.kt",
+  "app.php"
+];
+function exclusionMatchers(key, globs, candidates, reasons) {
+  const kept = [];
+  for (const glob of globs) {
+    const matcher = globToRegExp(glob);
+    const catchAll = PRODUCTION_PROBES.some((probe) => matcher.test(probe));
+    if (catchAll && candidates.some((path) => matcher.test(path))) {
+      reasons.push(`ignored ${key} glob "${glob}", which matches ordinary source files`);
+      continue;
+    }
+    kept.push(matcher);
+  }
+  return kept;
+}
 function assessComplexity(diff, files, partial, markedGenerated2 = /* @__PURE__ */ new Set()) {
   const limits = config(partial);
-  const tests = limits.testPaths.map((glob) => globToRegExp(glob));
-  const generated = limits.generatedPaths.map((glob) => globToRegExp(glob));
+  const reasons = [];
+  const candidates = files.filter((file) => file.reviewed && file.class === "source" && !isDocumentation(file.path)).map((file) => file.path);
+  const tests = exclusionMatchers("test_paths", limits.testPaths, candidates, reasons);
+  const generated = exclusionMatchers("generated_paths", limits.generatedPaths, candidates, reasons);
   const kindOf = (file) => {
     if (file.class !== "source" || markedGenerated2.has(file.path) || matchesAny(generated, file.path)) return "generated";
     if (matchesAny(tests, file.path)) return "test";
@@ -1558,7 +1596,6 @@ function assessComplexity(diff, files, partial, markedGenerated2 = /* @__PURE__ 
   }
   const sensitive = [...changed].filter((path) => matchesAny(sensitiveMatchers, path)).sort();
   const listed = sensitive.slice(0, MAX_SENSITIVE_LISTED);
-  const reasons = [];
   if (decisionPoints > limits.maxDecisionPoints) {
     reasons.push(`${decisionPoints} decision points added (limit ${limits.maxDecisionPoints})`);
   }

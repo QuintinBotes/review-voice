@@ -51,9 +51,12 @@ review:
       - "**/migrations/**"
       - "**/auth/**"
       - "**/security/**"
+      - ".review-voice/**"
     # Decision points count in production source only. Documentation is
     # always left out; so are tests and fixtures matching these globs. A list
-    # here replaces the defaults; an empty list counts tests again.
+    # here replaces the defaults; an empty list counts tests again. A glob
+    # broad enough to match ordinary source files (such as "**") is ignored,
+    # and the assessment says so.
     test_paths:
       - "**/test/**"
       - "**/tests/**"

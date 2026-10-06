@@ -21,7 +21,14 @@ export interface HumanReviewConfig {
   generatedPaths: string[];
 }
 
-export const DEFAULT_SENSITIVE_PATHS = ['.github/workflows/**', '**/migrations/**', '**/auth/**', '**/security/**'];
+/**
+ * `.review-voice/**` is here because the review's own configuration, exclusion
+ * globs included, is read from the checked-out tree: a change to it is a
+ * change to what this assessment measures.
+ */
+export const DEFAULT_SENSITIVE_PATHS = [
+  '.github/workflows/**', '**/migrations/**', '**/auth/**', '**/security/**', '.review-voice/**',
+];
 
 /**
  * Common test and fixture layouts. Counting them made the cap shape how tests
@@ -197,6 +204,35 @@ type Kind = 'production' | 'generated' | 'test' | 'documentation';
 const matchesAny = (matchers: readonly RegExp[], path: string): boolean => matchers.some((matcher) => matcher.test(path));
 
 /**
+ * Ordinary production paths. An exclusion glob that matches one of them is a
+ * catch-all (`**`, `src/**`, `**\/*.go`), not a test or generated layout.
+ */
+const PRODUCTION_PROBES = [
+  'index.js', 'main.go', 'src/index.ts', 'src/App.tsx', 'src/app/service.py', 'src/lib.rs', 'src/main.c',
+  'lib/core.rb', 'app/models/user.rb', 'cmd/server/main.go', 'pkg/api/handler.go', 'src/Program.cs',
+  'src/main/java/com/example/App.java', 'src/main/kotlin/com/example/App.kt', 'app.php',
+];
+
+/**
+ * The exclusion globs that may apply. A catch-all that would leave out a file
+ * of this change is ignored, with a reason: exclusion globs come from the
+ * checked-out tree, and `["**"]` would otherwise zero the count.
+ */
+function exclusionMatchers(key: string, globs: readonly string[], candidates: readonly string[], reasons: string[]): RegExp[] {
+  const kept: RegExp[] = [];
+  for (const glob of globs) {
+    const matcher = globToRegExp(glob);
+    const catchAll = PRODUCTION_PROBES.some((probe) => matcher.test(probe));
+    if (catchAll && candidates.some((path) => matcher.test(path))) {
+      reasons.push(`ignored ${key} glob "${glob}", which matches ordinary source files`);
+      continue;
+    }
+    kept.push(matcher);
+  }
+  return kept;
+}
+
+/**
  * `markedGenerated` holds the paths the repository's `.gitattributes` marks
  * `linguist-generated`; the caller reads them, so this stays a function of
  * its arguments.
@@ -212,8 +248,12 @@ export function assessComplexity(
   // Decision points count only in production source (amended 2026-10-06).
   // Everything else the review reads is left out of the count, and counted
   // as left out, so the assessment can say what it did not measure.
-  const tests = limits.testPaths.map((glob) => globToRegExp(glob));
-  const generated = limits.generatedPaths.map((glob) => globToRegExp(glob));
+  const reasons: string[] = [];
+  const candidates = files
+    .filter((file) => file.reviewed && file.class === 'source' && !isDocumentation(file.path))
+    .map((file) => file.path);
+  const tests = exclusionMatchers('test_paths', limits.testPaths, candidates, reasons);
+  const generated = exclusionMatchers('generated_paths', limits.generatedPaths, candidates, reasons);
   const kindOf = (file: ChangedFile): Kind => {
     // A file the review reads although it is not source - a hand-edited
     // generated file, or anything under --include-generated - is generated.
@@ -248,7 +288,6 @@ export function assessComplexity(
   const sensitive = [...changed].filter((path) => matchesAny(sensitiveMatchers, path)).sort();
   const listed = sensitive.slice(0, MAX_SENSITIVE_LISTED);
 
-  const reasons: string[] = [];
   if (decisionPoints > limits.maxDecisionPoints) {
     reasons.push(`${decisionPoints} decision points added (limit ${limits.maxDecisionPoints})`);
   }

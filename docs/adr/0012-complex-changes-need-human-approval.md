@@ -37,8 +37,9 @@ review says so, and why, so a human picks it up.**
 - **Configured, with defaults.** `review.human_review` sets
   `max_decision_points`, `max_hunk_decision_points` and `sensitive_paths`.
   Built-in sensitive paths are `.github/workflows/**`, `**/migrations/**`,
-  `**/auth/**` and `**/security/**`; a configured list replaces them, and an
-  empty list turns the signal off.
+  `**/auth/**` and `**/security/**` (amended 2026-10-06: and
+  `.review-voice/**`); a configured list replaces them, and an empty list
+  turns the signal off.
 - **Recorded with the run**, beside its scope, from the manifest. `verdict`
   and `post` read it from the recorded run, never from stdin or a flag, for the
   same reason the scope is stored: the run must keep saying what it read.
@@ -140,6 +141,14 @@ kinds are left out of the count, not down-weighted:
 
 Precedence is generated, then tests, then documentation, so each file is left
 out once.
+
+The exclusion globs come from `.review-voice/config.yaml` in the checked-out
+tree, so a change could widen them to cover itself. Two guards: an exclusion
+glob broad enough to match ordinary production paths (`**`, `src/**`,
+`**/*.go`) is ignored whenever it would leave out a file of the change, and the
+assessment adds a reason naming it, which raises the change; and
+`.review-voice/**` joins the default sensitive paths, so a change to the
+configuration is itself raised.
 
 The assessment carries `excluded`, a count of the files left out and, for
 tests and generated output, the decision points they would have added, so the

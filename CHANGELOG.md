@@ -20,14 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The complexity assessment no longer counts decision points in Markdown and
   other documentation. Prose words such as `if` and `or` had been read as
   branches; the assessment now reports how many files it left out, and
-  sensitive paths still match them (#23).
+  sensitive paths still match them. Build scripts such as `CMakeLists.txt`,
+  MDX, and extensionless names outside the root or `docs/` stay counted (#23).
 - The complexity assessment no longer counts decision points in tests and
-  fixtures, matched by `review.human_review.test_paths` (defaults cover the
-  common layouts). Splitting a spec file no longer changes the outcome, and
-  the densest hunk named is always production code (#32).
+  fixtures, matched by `review.human_review.test_paths` (narrow defaults: test
+  directories and names that mean a test in their language). Splitting a spec
+  file no longer changes the outcome, and the densest hunk named is always
+  production code. A glob broad enough to match ordinary source files is
+  ignored and named in the reasons, and `.review-voice/**` is a default
+  sensitive path (#32).
 - The complexity assessment no longer counts decision points in generated
   output: files classified as generated, files marked `linguist-generated` in
-  `.gitattributes`, and `review.human_review.generated_paths`. It reports
+  `.gitattributes` as of the commit the change starts from (never its head),
+  and `review.human_review.generated_paths`. It reports
   `generatedDecisionPoints` beside the hand-written count, and sensitive paths
   still flag generated files (#42).
 
