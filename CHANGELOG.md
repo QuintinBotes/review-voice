@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `validate-output --scores` reports `unbacked_absolute` when a rendered
+  finding uses an absolute word - every, always, never, all, and the like -
+  that its scored claim, failure mode, evidence and fix do not, so an editor
+  that widens "while the query is still loading" to "on every load" is caught
+  while it can retry. Code spans are ignored. The concise editor's prompt says
+  to compress the finding and never add impact, frequency or reach. (#79)
+
 ## [1.13.2] - 2026-10-06
 
 ### Fixed

@@ -16,6 +16,7 @@ import { runDoctor } from './doctor.ts';
 import { validateOutput } from './contract/validate.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
 import { checkSeverityAgainstScores, scoredEntries } from './contract/severity-check.ts';
+import { checkUnbackedAbsolutes } from './contract/backing-check.ts';
 import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
 import { acquireDiff, attributeSource, GitError, linguistGeneratedPaths, type ChangedFile } from './diff/acquire.ts';
 import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAssessment } from './diff/complexity.ts';
@@ -234,6 +235,9 @@ function validateOutputCommand(argv: string[]): number {
       return 2;
     }
     result.violations.push(...checkSeverityAgainstScores(output, entries));
+    // An impact the finding does not state - "on every load" - passes every
+    // other check (#79), so it is caught here while the editor can retry.
+    result.violations.push(...checkUnbackedAbsolutes(output, entries));
     result.valid = result.violations.length === 0;
   }
 

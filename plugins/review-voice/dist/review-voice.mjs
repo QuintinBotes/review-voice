@@ -672,6 +672,46 @@ function checkSeverityAgainstScores(output, scores) {
   return violations;
 }
 
+// plugins/review-voice/src/contract/backing-check.ts
+var ABSOLUTES = ["every", "everyone", "everything", "everywhere", "always", "never", "all"];
+var WORD = /[a-z]+/g;
+function wordsOf(text) {
+  const prose = text.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ");
+  return new Set(prose.toLowerCase().match(WORD) ?? []);
+}
+function backingText(entry) {
+  const parts = [entry["claim"], entry["failureMode"], entry["failure_mode"]];
+  const evidence = entry["evidence"];
+  if (Array.isArray(evidence)) parts.push(...evidence);
+  const fix = entry["fix"];
+  if (typeof fix === "object" && fix !== null) parts.push(fix.text);
+  const repeat = entry["possibleRepeatOf"];
+  if (typeof repeat === "object" && repeat !== null) {
+    const remaining = repeat.remaining;
+    if (Array.isArray(remaining)) parts.push(...remaining);
+  }
+  return parts.filter((part) => typeof part === "string").join(" ");
+}
+function checkUnbackedAbsolutes(output, scores) {
+  const violations = [];
+  for (const block of splitFindings(output)) {
+    const finding = parseFinding(block.raw, block.startLine);
+    if (finding.path === null || finding.line === null) continue;
+    const here = scoresAtLocation(scores, finding.path, finding.line);
+    if (here.length === 0) continue;
+    const backed = wordsOf(here.map((entry) => backingText(entry)).join(" "));
+    const said = wordsOf(finding.prose);
+    const unbacked = ABSOLUTES.filter((word) => said.has(word) && !backed.has(word));
+    if (unbacked.length === 0) continue;
+    violations.push({
+      code: "unbacked_absolute",
+      line: finding.startLine,
+      message: `${finding.path}:${finding.line} says ${unbacked.map((word) => `"${word}"`).join(", ")}, which its scored claim, failure mode, evidence and fix do not. State the consequence as the finding states it; do not widen its reach.`
+    });
+  }
+  return violations;
+}
+
 // plugins/review-voice/src/diff/acquire.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
 import { readFileSync as readFileSync2 } from "node:fs";
@@ -15435,7 +15475,9 @@ var COMMAND_HELP = {
       "  --scale-to-files <n>       Scale the total word budget to the change size",
       `  --max-words-per-finding <n>  Default ${DEFAULT_LIMITS.maxWordsPerFinding}`,
       `  --max-total-words <n>      Default ${DEFAULT_LIMITS.maxTotalWords}`,
-      "  --scores <path>            The JSON `score` printed; a severity tag that disagrees with its score is a violation",
+      "  --scores <path>            The JSON `score` printed; a severity tag that disagrees with its score,",
+      "                             or an absolute word (every, always, never, all) the scored finding",
+      "                             does not use, is a violation",
       "Reads: the review text on stdin.",
       "Writes: the result on stdout.",
       "Exit codes: 0 compliant, 1 violations found, 2 bad invocation."
@@ -15563,6 +15605,7 @@ function validateOutputCommand(argv) {
       return 2;
     }
     result.violations.push(...checkSeverityAgainstScores(output, entries));
+    result.violations.push(...checkUnbackedAbsolutes(output, entries));
     result.valid = result.violations.length === 0;
   }
   if (argv.includes("--json")) {
