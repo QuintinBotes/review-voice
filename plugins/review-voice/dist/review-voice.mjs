@@ -5306,17 +5306,30 @@ async function latestOwnReview(client, repository, pullNumber) {
     return null;
   }
 }
+function missingRunIdNote(source, head, pull, recorded) {
+  if (source === "github-review") {
+    return "the previous head came from your GitHub review, which has no run id";
+  }
+  if (recorded.length === 0) {
+    return `no run is recorded for ${pull}; a run recorded without --repository or --files cannot be matched`;
+  }
+  const heads = recorded.slice(0, 5).map((run) => run.head.slice(0, 7)).join(", ");
+  return `--since ${head.slice(0, 7)} matches no recorded run of ${pull}; ${recorded.length} run${recorded.length === 1 ? " is" : "s are"} recorded for it, at head${recorded.length === 1 ? "" : "s"} ${heads}`;
+}
 async function resolvePrior(options) {
+  const pull = options.pull ?? "this pull request";
   const resolution = (source, head, runId) => ({
     source,
     head,
     runId,
+    ...source !== null && head !== null && runId === null ? { runIdNote: missingRunIdNote(source, head, pull, options.recorded) } : {},
     recordedRuns: options.recorded.slice(0, 10)
   });
   if (options.since !== null) {
+    const match = options.recorded.find((run) => run.head === options.since);
     return {
-      prior: { reviewRunId: null, headRef: options.since, createdAt: null },
-      resolution: resolution("flag", options.since, null)
+      prior: { reviewRunId: match?.runId ?? null, headRef: options.since, createdAt: match?.createdAt ?? null },
+      resolution: resolution("flag", options.since, match?.runId ?? null)
     };
   }
   const latest = options.recorded[0];
@@ -15036,7 +15049,7 @@ var COMMAND_HELP = {
       "  --diff-file <path>     Require anchors on changed lines",
       "  --thread <path>        Drop thread repeats; flag near ones for the verifier",
       "  --owner <login>        Owner for --thread; default from config",
-      "  --held-from <run-id>   Drop repeats of that run's held findings (needs --head)",
+      "  --held-from <run-id>   Drop or flag repeats of that run's held findings (needs --head)",
       "  --head <sha>           Head the candidates were produced against (with --held-from)",
       "Reads: candidates JSON on stdin.",
       "Writes: JSON on stdout.",
@@ -15344,9 +15357,10 @@ var COMMAND_HELP = {
       "  Store a validated review and assign finding ids.",
       "",
       "Flags:",
-      "  --repository <name>    Repository the review belongs to",
+      "  --repository <name>    Repository the review belongs to (default: the repository in --files,",
+      "                         else the git remote)",
       "  --base <ref>           Base ref reviewed against (on --pr: refs.mergeBase)",
-      "  --head <sha>           Head commit reviewed",
+      "  --head <sha>           Head commit reviewed (stored in full when this clone has it)",
       "  --diff-file <path>     Diff the review was produced from (for the run hash)",
       "  --files <path>         files.json from diff --out, carrying pull-request scope",
       "  --candidates <path>    Scored candidates, so findings carry their category",
@@ -15780,6 +15794,7 @@ async function pullRequestDiffCommand(argv) {
   const { prior, resolution } = await resolvePrior({
     since,
     recorded,
+    pull: `${repository}#${pullNumber}`,
     ownReview: () => uncoveredPrior !== null ? Promise.resolve(null) : latestOwnReview(new GitHubClient({ allowlist: [repository] }), repository, pullNumber)
   });
   if (uncoveredPrior !== null && since === null) {
@@ -15815,7 +15830,7 @@ async function pullRequestDiffCommand(argv) {
     };
   }
   const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), void 0, planned.interdiffPatch);
-  return emitDiff({ ...scoped, prior: resolution }, flag(argv, "--out"));
+  return emitDiff({ ...scoped, repository, prior: resolution }, flag(argv, "--out"));
 }
 function diffSummary(result) {
   const scope = result.scope === void 0 ? null : {
@@ -15845,7 +15860,12 @@ function diffSummary(result) {
     excludedFileCount: result.excludedFileCount,
     handEditSuspected: (result.files ?? []).filter((file) => file.handEditSuspected === true).map((file) => file.path),
     refs: result.refs === void 0 ? null : { base: result.refs.base, head: result.refs.head, mergeBase: result.refs.mergeBase },
-    prior: result.prior === void 0 ? null : { source: result.prior.source, head: result.prior.head, runId: result.prior.runId }
+    prior: result.prior === void 0 ? null : {
+      source: result.prior.source,
+      head: result.prior.head,
+      runId: result.prior.runId,
+      runIdNote: result.prior.runIdNote ?? null
+    }
   };
 }
 function markedGenerated(acquired) {
@@ -17044,6 +17064,7 @@ function recordCommand(argv) {
   }
   const filesFile = flag(argv, "--files");
   let pullNumber;
+  let manifestRepository = null;
   let scope;
   let complexity = null;
   if (filesFile !== null) {
@@ -17051,6 +17072,9 @@ function recordCommand(argv) {
       const manifest = JSON.parse(readFileSync5(filesFile, "utf8"));
       if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
         pullNumber = manifest.pullNumber;
+      }
+      if (typeof manifest.repository === "string" && /^[^/\s]+\/[^/\s]+$/.test(manifest.repository)) {
+        manifestRepository = manifest.repository;
       }
       scope = reviewScopeFromManifest(manifest.scope);
       if (manifest.complexity !== void 0 && manifest.complexity !== null) {
@@ -17229,7 +17253,9 @@ function recordCommand(argv) {
       }
       if (carry === void 0 || marker.covered === false) carry = marker;
     }
-    const repository = flag(argv, "--repository");
+    const repository = flag(argv, "--repository") ?? manifestRepository ?? inferRepository(process.cwd());
+    const headFlag = flag(argv, "--head");
+    const headRef = headFlag === null || !/^[0-9a-f]{4,64}$/i.test(headFlag) ? headFlag : resolveCommit(headFlag, process.cwd()) ?? headFlag;
     if (followUpThreadFor !== null) {
       const sameRepository = typeof followUpThreadFor.repository === "string" && repository !== null && followUpThreadFor.repository.toLowerCase() === repository.toLowerCase();
       if (!sameRepository || pullNumber === void 0 || followUpThreadFor.pullNumber !== pullNumber) {
@@ -17254,7 +17280,7 @@ function recordCommand(argv) {
     const { reviewRunId, findings } = recordRun(db, {
       repository,
       baseRef: flag(argv, "--base"),
-      headRef: flag(argv, "--head"),
+      headRef,
       pullNumber,
       scope,
       complexity,
@@ -18020,7 +18046,9 @@ function carriedHeldFindings(runId, head) {
     const detail = runDetail(db, runId);
     if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
     if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head.`);
-    const entries = detail.held.filter((h) => h.verdict === "refuted" || h.verdict === "partly" || h.verdict === "repeat");
+    const entries = detail.held.filter(
+      (h) => h.verdict === "refuted" || h.verdict === "partly" || h.verdict === "repeat" || h.verdict === "below-gate"
+    );
     const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: "" }));
     const result = carryFindings(inputs, detail.headRef, head, process.cwd());
     return result.carried.map((c) => {
@@ -18037,16 +18065,32 @@ function carriedHeldFindings(runId, head) {
     db.close();
   }
 }
+function namesHeldPath(candidate, entry) {
+  if (candidate.path === entry.path) return true;
+  const base = entry.path.slice(entry.path.lastIndexOf("/") + 1);
+  const names = base.includes(".") && base.length >= 6 ? [entry.path, base] : [entry.path];
+  return [candidate.claim, candidate.failureMode, ...candidate.evidence].some(
+    (text) => typeof text === "string" && names.some((name) => text.includes(name))
+  );
+}
 function matchHeld(candidate, held) {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
   let found = null;
   for (const entry of held) {
     if (entry.path !== candidate.path || Math.abs(entry.line - candidate.line) > 2) continue;
-    const drop = entry.text !== void 0 && overlap(mine, significantWords(entry.text)) >= DUPLICATE_OVERLAP;
+    const drop = entry.verdict !== "below-gate" && entry.text !== void 0 && overlap(mine, significantWords(entry.text)) >= DUPLICATE_OVERLAP;
     if (drop) return { entry, drop };
     found ??= { entry, drop };
   }
-  return found;
+  if (found !== null) return found;
+  let best = null;
+  for (const entry of held) {
+    if (entry.text === void 0 || !namesHeldPath(candidate, entry)) continue;
+    const share = overlap(mine, significantWords(entry.text));
+    if (share < SAME_FILE_REPEAT_OVERLAP) continue;
+    if (best === null || share > best.share) best = { entry, share };
+  }
+  return best === null ? null : { entry: best.entry, drop: false };
 }
 function configuredOwner() {
   try {
@@ -18176,7 +18220,9 @@ function checkCandidatesCommand(argv) {
         kind: "held",
         verdict: heldMatch.entry.verdict,
         reason: heldMatch.entry.reason,
-        excerpt: (heldMatch.entry.text ?? "").slice(0, 200)
+        excerpt: (heldMatch.entry.text ?? "").slice(0, 200),
+        path: heldMatch.entry.path,
+        line: heldMatch.entry.line
       };
       const possible = possiblySaidOnThread(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located);
       if (possible !== null) {

@@ -97,10 +97,16 @@ each point a phrase from its `remaining`. Put a point in `addressed` only when
 you saw the code that addresses it; when you could not tell, it stays in
 `remaining`. These rulings are local and never posted.
 
-When `possibleRepeatOf` has `kind: held`, an earlier review held the same spot
-back with the given verdict and reason; that verdict is a prior, not a ruling,
-so reject the candidate only if it makes the same point that was refuted or
-held.
+When `possibleRepeatOf` has `kind: held`, an earlier review held a finding back
+with the given verdict and reason, at the `path` and `line` it gives; that may
+be another anchor than the candidate's, when the same concern was raised again
+on a different file. That verdict is a prior, not a ruling, so reject the
+candidate only if it makes the same point that was refuted or held. Check
+whether the candidate adds anything the held finding did not, such as another
+site, a different failure or new evidence, and reject a plain restatement. A
+verdict of `below-gate` means the earlier verifier confirmed the point but it
+fell under the confidence gate: it is not a refutation, so judge the candidate
+on its own evidence.
 
 **Stated intent.** Behaviour the author describes as intentional in the
 description is grounds to reject or downgrade a candidate that calls it a

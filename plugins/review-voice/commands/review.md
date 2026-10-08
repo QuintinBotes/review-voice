@@ -67,7 +67,9 @@ without saying so - the same failure as a guard searching the wrong tree.
 **Read `scope` on a `--pr` run.** The previous head comes from `--since <sha>`
 when given, else the latest recorded run, else your own latest review on
 GitHub; `prior.source` says which and `prior.recordedRuns` lists what was
-recorded. The scope is one of:
+recorded. When `prior.runId` is null on a follow-up, `prior.runIdNote` says why,
+and `carry` cannot be used until a run id is found, for example in
+`prior.recordedRuns`. The scope is one of:
 
 - `unchanged` - the pull request's own diff is the same as at the previous
   head (a base merge or a rebase only). Do not review again: run
@@ -346,12 +348,15 @@ step 6 (`record --held`); until then, do not pass them to `--verdicts`. An
 unreadable thread file exits 2: fix the path rather than skipping the check.
 
 **When step 1 reported a prior run, also add `--held-from <prior.runId> --head <sha>`.**
-It carries that run's held findings (`refuted`, `partly`, `repeat`) to the
-current head and drops a candidate that restates one on unchanged code, so a
-finding the verifier already refuted is not raised again. List `droppedAsHeld`
-with the other drops and keep it for step 6. A candidate on the same line with
-different wording is kept with `possibleRepeatOf` of `kind: held` for the
-verifier. If the prior run cannot be read the command says so on stderr and
+It carries that run's held findings (`refuted`, `partly`, `repeat`,
+`below-gate`) to the current head and drops a candidate that restates one on
+unchanged code, so a finding the verifier already refuted is not raised again.
+List `droppedAsHeld` with the other drops and keep it for step 6. A
+`below-gate` finding is never a reason to drop: the verifier confirmed it, so a
+restatement is only marked. A candidate on the same line with different wording is kept with `possibleRepeatOf` of `kind: held` for the
+verifier, and so is one anchored elsewhere that names the held finding's file
+and largely shares its wording; the mark carries the held finding's `path` and
+`line`. If the prior run cannot be read the command says so on stderr and
 keeps every candidate.
 
 If there are no candidates, output exactly `No actionable findings.` and stop.
