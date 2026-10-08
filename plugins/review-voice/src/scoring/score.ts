@@ -114,6 +114,18 @@ export const EVIDENCE_QUALITIES = ['high', 'medium', 'low'] as const;
 export type EvidenceQuality = (typeof EVIDENCE_QUALITIES)[number];
 
 /**
+ * What a boundary defect actually exposes, as the verifier traced it.
+ * `no-exposure`: the boundary still holds elsewhere - the server rejects the
+ * request, say - so the defect is broken behaviour, not a breach.
+ */
+export const IMPACT_CLASSES = ['no-exposure', 'data-exposure', 'privilege-escalation'] as const;
+export type ImpactClass = (typeof IMPACT_CLASSES)[number];
+
+export function isImpactClass(value: unknown): value is ImpactClass {
+  return typeof value === 'string' && (IMPACT_CLASSES as readonly string[]).includes(value);
+}
+
+/**
  * Whether the claim depends on a piece of missing context. `cosmetic` context
  * would only sharpen the wording - the exact text behind a localisation key,
  * say - and the claim holds without it.
@@ -163,6 +175,11 @@ export interface Verification {
    * the verifier observed, not how widely the touched file is referenced.
    */
   impactTraced?: boolean | undefined;
+  /**
+   * What a boundary defect exposes. Only `no-exposure` changes anything: it
+   * lets a boundary category be held at the tier the analyst asked for.
+   */
+  impactClass?: ImpactClass | undefined;
   /**
    * The candidate restates the part of the owner's earlier comment that is
    * still open. Honoured only for a candidate linked to that comment.
@@ -231,9 +248,11 @@ export function isInterrogativeClaim(claim: string): boolean {
  * popularity alone, and let a claim ending "Is that intended?" block. This
  * stage sits after it, in the scorer, so that table stays exactly as pinned.
  *
- * Boundary categories keep their tier. An interrogative claim never exceeds
- * minor. Anything else is reported above the requested tier only when the
- * verifier traced the impact and was at least ESCALATION_CONFIDENCE sure.
+ * Boundary categories keep their tier, unless the verifier found the boundary
+ * still holds elsewhere (`impactClass: 'no-exposure'`); then they are held at
+ * the requested tier. An interrogative claim never exceeds minor. Anything
+ * else is reported above the requested tier only when the verifier traced the
+ * impact and was at least ESCALATION_CONFIDENCE sure.
  * Downward derivation is untouched.
  */
 export function boundSeverityByEvidence(
@@ -241,7 +260,22 @@ export function boundSeverityByEvidence(
   candidate: Candidate,
   verification?: Verification | undefined,
 ): DerivedSeverity {
-  if (BOUNDARY_CATEGORIES.has(candidate.category)) return derived;
+  if (BOUNDARY_CATEGORIES.has(candidate.category)) {
+    // The tier tables give a boundary category its tier at every reach, so an
+    // authorization gap the server still enforces blocked as a breach would.
+    // Only the verifier's explicit word that nothing is exposed lowers it;
+    // `impactTraced` plays no part, since tracing that nothing leaks is still
+    // a trace. Without that word the boundary tier stands.
+    if (verification?.impactClass !== 'no-exposure' || candidate.severity === 'question') return derived;
+    const asked = TIER_ORDER.indexOf(candidate.severity as (typeof TIER_ORDER)[number]);
+    const got = TIER_ORDER.indexOf(derived.severity as (typeof TIER_ORDER)[number]);
+    if (asked === -1 || got === -1 || asked >= got) return derived;
+    return {
+      ...derived,
+      severity: TIER_ORDER[asked] as DerivedSeverity['severity'],
+      reason: `${derived.reason}, held at ${candidate.severity} because the verifier found no exposure`,
+    };
+  }
   // A question request is already the weakest assertion there is.
   if (candidate.severity === 'question' || derived.severity === 'question') return derived;
 

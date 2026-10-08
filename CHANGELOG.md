@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and largely shares its wording, it is kept with `possibleRepeatOf` of
   `kind: held`, now carrying the held finding's `path` and `line`. `below-gate`
   held findings are carried as well, to flag only, never to drop. (#83)
+- `score` holds a `security`, `trust_boundary`, `authorization` or
+  `authentication` finding at the tier the analyst asked for when the verifier
+  sets the new `impact_class: "no-exposure"`, so a front-end gap the server
+  still refuses is no longer reported as blocking. Without that word, or with
+  `data-exposure` or `privilege-escalation`, the boundary tier stands. Any
+  other `impact_class` is refused. (#84)
 
 ## [1.13.3] - 2026-10-07
 
