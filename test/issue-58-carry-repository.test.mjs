@@ -132,14 +132,14 @@ test('record --carried-from from the wrong clone exits 2', () => {
 });
 
 test('a run with no recorded repository carries from any clone that has the commits', () => {
-  withRun({ repository: null }, ({ repo, dataDir, runId, head }) => {
+  withRun({ origin: null, repository: null }, ({ repo, dataDir, runId, head }) => {
     const result = run(['carry', '--from', runId, '--head', head], { cwd: repo, dataDir });
     assert.equal(result.code, 0, result.stderr);
   });
 });
 
 test('a run with no recorded repository still names where a commit was not found', () => {
-  withRun({ repository: null }, ({ wrong, dataDir, runId, head }) => {
+  withRun({ origin: null, repository: null }, ({ wrong, dataDir, runId, head }) => {
     const result = run(['carry', '--from', runId, '--head', head], { cwd: wrong, dataDir });
     assert.equal(result.code, 2);
     assert.match(result.stderr, /is not readable in .*wrong \(a clone of x\/y\)/);

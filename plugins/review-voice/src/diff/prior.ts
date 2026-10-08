@@ -23,6 +23,11 @@ export interface PriorResolution {
   source: PriorSource | null;
   head: string | null;
   runId: string | null;
+  /**
+   * Why `runId` is null when this is not a first review, so `carry --from` is
+   * not left without an id and without a reason. Absent when `runId` is set.
+   */
+  runIdNote?: string;
   /** Every recorded run for the pull request, newest first, so a wrong pick is visible. */
   recordedRuns: RecordedRun[];
 }
@@ -39,7 +44,7 @@ function git(args: string[], cwd: string): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60_000 });
 }
 
-function resolveCommit(ref: string, cwd: string): string | null {
+export function resolveCommit(ref: string, cwd: string): string | null {
   try {
     return git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd).trim() || null;
   } catch {
@@ -141,23 +146,52 @@ export async function latestOwnReview(
   }
 }
 
+/** Why a previous head has no run id, in words a person can act on. */
+function missingRunIdNote(
+  source: PriorSource,
+  head: string,
+  pull: string,
+  recorded: RecordedRun[],
+): string {
+  if (source === 'github-review') {
+    return 'the previous head came from your GitHub review, which has no run id';
+  }
+  if (recorded.length === 0) {
+    return `no run is recorded for ${pull}; a run recorded without --repository or --files cannot be matched`;
+  }
+  const heads = recorded.slice(0, 5).map((run) => run.head.slice(0, 7)).join(', ');
+  return (
+    `--since ${head.slice(0, 7)} matches no recorded run of ${pull}; ` +
+    `${recorded.length} run${recorded.length === 1 ? ' is' : 's are'} recorded for it, at head${recorded.length === 1 ? '' : 's'} ${heads}`
+  );
+}
+
 /** Picks the previous head from the first source that has one. */
 export async function resolvePrior(options: {
   since: string | null;
   recorded: RecordedRun[];
+  /** `owner/repo#number`, named in the note that explains a missing run id. */
+  pull?: string;
   ownReview: () => Promise<{ head: string; submittedAt: string | null } | null>;
 }): Promise<{ prior: PriorPullReview | null; resolution: PriorResolution }> {
+  const pull = options.pull ?? 'this pull request';
   const resolution = (source: PriorSource | null, head: string | null, runId: string | null): PriorResolution => ({
     source,
     head,
     runId,
+    ...(source !== null && head !== null && runId === null
+      ? { runIdNote: missingRunIdNote(source, head, pull, options.recorded) }
+      : {}),
     recordedRuns: options.recorded.slice(0, 10),
   });
 
   if (options.since !== null) {
+    // `since` is a full sha, so a run recorded at that head is the run that
+    // review read: its id is what `carry --from` needs.
+    const match = options.recorded.find((run) => run.head === options.since);
     return {
-      prior: { reviewRunId: null, headRef: options.since, createdAt: null },
-      resolution: resolution('flag', options.since, null),
+      prior: { reviewRunId: match?.runId ?? null, headRef: options.since, createdAt: match?.createdAt ?? null },
+      resolution: resolution('flag', options.since, match?.runId ?? null),
     };
   }
 

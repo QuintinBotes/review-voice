@@ -60,7 +60,7 @@ import {
 import { heldBackFindings, parseThreadFile, postedReviewIds } from './diff/held.ts';
 import { carryCandidates, carryFindings, CarryError, commitReadable, followLine, seriousNotCarried, type CarriedFinding } from './diff/carry.ts';
 import { candidateAnchor, reanchorCandidates, reanchorScores } from './diff/reanchor.ts';
-import { fetchPriorHead, latestOwnReview, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
+import { fetchPriorHead, latestOwnReview, resolveCommit, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
   recordFeedback,
   normaliseAction,
@@ -430,6 +430,7 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
   const { prior, resolution } = await resolvePrior({
     since,
     recorded,
+    pull: `${repository}#${pullNumber}`,
     ownReview: () =>
       uncoveredPrior !== null
         ? Promise.resolve(null)
@@ -472,7 +473,7 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
   }
 
   const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), undefined, planned.interdiffPatch);
-  return emitDiff({ ...scoped, prior: resolution }, flag(argv, '--out'));
+  return emitDiff({ ...scoped, repository, prior: resolution }, flag(argv, '--out'));
 }
 
 /**
@@ -504,6 +505,8 @@ interface EmittedDiff {
     mergeBase: string | null;
   };
   prior?: PriorResolution;
+  /** On `--pr`: the repository the diff was read for, so `record --files` can store it. */
+  repository?: string;
 }
 
 /** The compact metadata a command runner needs after `diff --out`. */
@@ -551,7 +554,12 @@ export function diffSummary(result: EmittedDiff): {
     head: { sha: string; available: boolean };
     mergeBase: string | null;
   } | null;
-  prior: { source: PriorResolution['source']; head: string | null; runId: string | null } | null;
+  prior: {
+    source: PriorResolution['source'];
+    head: string | null;
+    runId: string | null;
+    runIdNote: string | null;
+  } | null;
 } {
   const scope = result.scope === undefined
     ? null
@@ -601,7 +609,12 @@ export function diffSummary(result: EmittedDiff): {
     prior:
       result.prior === undefined
         ? null
-        : { source: result.prior.source, head: result.prior.head, runId: result.prior.runId },
+        : {
+            source: result.prior.source,
+            head: result.prior.head,
+            runId: result.prior.runId,
+            runIdNote: result.prior.runIdNote ?? null,
+          },
   };
 }
 
@@ -2148,6 +2161,7 @@ function recordCommand(argv: string[]): number {
   // tied to the exact boundary the analyst saw rather than to a later lookup.
   const filesFile = flag(argv, '--files');
   let pullNumber: number | undefined;
+  let manifestRepository: string | null = null;
   let scope: ReviewScope | undefined;
   let complexity: ComplexityAssessment | null = null;
   if (filesFile !== null) {
@@ -2155,6 +2169,9 @@ function recordCommand(argv: string[]): number {
       const manifest = JSON.parse(readFileSync(filesFile, 'utf8')) as Record<string, unknown>;
       if (Number.isInteger(manifest.pullNumber) && (manifest.pullNumber as number) > 0) {
         pullNumber = manifest.pullNumber as number;
+      }
+      if (typeof manifest.repository === 'string' && /^[^/\s]+\/[^/\s]+$/.test(manifest.repository)) {
+        manifestRepository = manifest.repository;
       }
       scope = reviewScopeFromManifest(manifest.scope);
       if (manifest.complexity !== undefined && manifest.complexity !== null) {
@@ -2373,7 +2390,17 @@ function recordCommand(argv: string[]): number {
       if (carry === undefined || marker.covered === false) carry = marker;
     }
 
-    const repository = flag(argv, '--repository');
+    // An omitted --repository used to store null, and a run with no repository
+    // is never found by `diff --pr`, so `carry --from` had no run id to use.
+    // The manifest's repository, then this clone's origin, stand in for it.
+    const repository = flag(argv, '--repository') ?? manifestRepository ?? inferRepository(process.cwd());
+    // A short --head would never equal the full sha `diff --since` compares.
+    // Only a hex id is looked up, so nothing else is handed to git.
+    const headFlag = flag(argv, '--head');
+    const headRef =
+      headFlag === null || !/^[0-9a-f]{4,64}$/i.test(headFlag)
+        ? headFlag
+        : (resolveCommit(headFlag, process.cwd()) ?? headFlag);
     // A thread of another pull request would settle this one's follow-ups on
     // someone else's resolutions, so it must name this run's pull request.
     if (followUpThreadFor !== null) {
@@ -2406,7 +2433,7 @@ function recordCommand(argv: string[]): number {
     const { reviewRunId, findings } = recordRun(db, {
       repository,
       baseRef: flag(argv, '--base'),
-      headRef: flag(argv, '--head'),
+      headRef,
       pullNumber,
       scope,
       complexity,
