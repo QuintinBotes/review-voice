@@ -104,6 +104,7 @@ import {
   MalformedCandidate,
   DEFAULT_THRESHOLDS,
   DUPLICATE_OVERLAP,
+  SAME_FILE_REPEAT_OVERLAP,
   EVIDENCE_QUALITIES,
   CONTEXT_KINDS,
   UNVERIFIABLE_REJECTION,
@@ -3448,9 +3449,12 @@ function carriedHeldFindings(runId: string, head: string): CarriedHeld[] {
     if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head.`);
     // Only a conclusion holds a candidate back. `unverified` reached none, and
     // any later kind of held entry has to opt in here rather than suppress by default.
-    // `below-gate` stays out: the verifier confirmed it, so it argues for the
-    // candidate, not against it.
-    const entries = detail.held.filter((h) => h.verdict === 'refuted' || h.verdict === 'partly' || h.verdict === 'repeat');
+    // `below-gate` is carried too, but only to flag: the verifier confirmed it,
+    // so it argues for the candidate and never removes one (`matchHeld`). The
+    // mark tells the verifier the same concern was already held below the gate.
+    const entries = detail.held.filter(
+      (h) => h.verdict === 'refuted' || h.verdict === 'partly' || h.verdict === 'repeat' || h.verdict === 'below-gate',
+    );
     const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: '' }));
     const result = carryFindings(inputs, detail.headRef, head, process.cwd());
     return result.carried.map((c) => {
@@ -3468,6 +3472,18 @@ function carriedHeldFindings(runId: string, head: string): CarriedHeld[] {
   }
 }
 
+/** Whether the candidate's own text or path points at the held entry's file. */
+function namesHeldPath(candidate: Candidate, entry: CarriedHeld): boolean {
+  if (candidate.path === entry.path) return true;
+  const base = entry.path.slice(entry.path.lastIndexOf('/') + 1);
+  // A bare basename such as `index.ts` or `a.ts` would match anything, so only
+  // a distinctive one stands in for the full path.
+  const names = base.includes('.') && base.length >= 6 ? [entry.path, base] : [entry.path];
+  return [candidate.claim, candidate.failureMode, ...candidate.evidence].some(
+    (text) => typeof text === 'string' && names.some((name) => text.includes(name)),
+  );
+}
+
 /**
  * The held finding a candidate may repeat, and whether its wording settles it.
  *
@@ -3475,17 +3491,37 @@ function carriedHeldFindings(runId: string, head: string): CarriedHeld[] {
  * has not changed since. When the wording matches, the candidate is the same
  * point again. When it does not, the line may carry a new defect, so the
  * candidate stays and the verifier decides.
+ *
+ * A `below-gate` entry never settles anything: the verifier confirmed it, so
+ * a candidate that restates it is marked, not dropped.
+ *
+ * With no entry at the same anchor, a held concern can still come back
+ * anchored elsewhere: one change often touches several files and the analyst
+ * picks a different one to hang it on. An entry whose file the candidate names
+ * and whose wording it largely shares is returned to flag, never to drop.
  */
 function matchHeld(candidate: Candidate, held: CarriedHeld[]): { entry: CarriedHeld; drop: boolean } | null {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
   let found: { entry: CarriedHeld; drop: boolean } | null = null;
   for (const entry of held) {
     if (entry.path !== candidate.path || Math.abs(entry.line - candidate.line) > 2) continue;
-    const drop = entry.text !== undefined && overlap(mine, significantWords(entry.text)) >= DUPLICATE_OVERLAP;
+    const drop =
+      entry.verdict !== 'below-gate' &&
+      entry.text !== undefined &&
+      overlap(mine, significantWords(entry.text)) >= DUPLICATE_OVERLAP;
     if (drop) return { entry, drop };
     found ??= { entry, drop };
   }
-  return found;
+  if (found !== null) return found;
+
+  let best: { entry: CarriedHeld; share: number } | null = null;
+  for (const entry of held) {
+    if (entry.text === undefined || !namesHeldPath(candidate, entry)) continue;
+    const share = overlap(mine, significantWords(entry.text));
+    if (share < SAME_FILE_REPEAT_OVERLAP) continue;
+    if (best === null || share > best.share) best = { entry, share };
+  }
+  return best === null ? null : { entry: best.entry, drop: false };
 }
 
 /** The configured owner reviewer, or null outside a configured repository. */
@@ -3670,6 +3706,8 @@ function checkCandidatesCommand(argv: string[]): number {
               verdict: heldMatch.entry.verdict,
               reason: heldMatch.entry.reason,
               excerpt: (heldMatch.entry.text ?? '').slice(0, 200),
+              path: heldMatch.entry.path,
+              line: heldMatch.entry.line,
             };
       // A nearby anchored comment is the stronger lead, so it wins when both
       // match. A description match is never dropped here: wording cannot tell

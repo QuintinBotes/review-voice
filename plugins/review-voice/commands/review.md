@@ -346,12 +346,15 @@ step 6 (`record --held`); until then, do not pass them to `--verdicts`. An
 unreadable thread file exits 2: fix the path rather than skipping the check.
 
 **When step 1 reported a prior run, also add `--held-from <prior.runId> --head <sha>`.**
-It carries that run's held findings (`refuted`, `partly`, `repeat`) to the
-current head and drops a candidate that restates one on unchanged code, so a
-finding the verifier already refuted is not raised again. List `droppedAsHeld`
-with the other drops and keep it for step 6. A candidate on the same line with
-different wording is kept with `possibleRepeatOf` of `kind: held` for the
-verifier. If the prior run cannot be read the command says so on stderr and
+It carries that run's held findings (`refuted`, `partly`, `repeat`,
+`below-gate`) to the current head and drops a candidate that restates one on
+unchanged code, so a finding the verifier already refuted is not raised again.
+List `droppedAsHeld` with the other drops and keep it for step 6. A
+`below-gate` finding is never a reason to drop: the verifier confirmed it, so a
+restatement is only marked. A candidate on the same line with different wording is kept with `possibleRepeatOf` of `kind: held` for the
+verifier, and so is one anchored elsewhere that names the held finding's file
+and largely shares its wording; the mark carries the held finding's `path` and
+`line`. If the prior run cannot be read the command says so on stderr and
 keeps every candidate.
 
 If there are no candidates, output exactly `No actionable findings.` and stop.

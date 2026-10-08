@@ -15022,7 +15022,7 @@ var COMMAND_HELP = {
       "  --diff-file <path>     Require anchors on changed lines",
       "  --thread <path>        Drop thread repeats; flag near ones for the verifier",
       "  --owner <login>        Owner for --thread; default from config",
-      "  --held-from <run-id>   Drop repeats of that run's held findings (needs --head)",
+      "  --held-from <run-id>   Drop or flag repeats of that run's held findings (needs --head)",
       "  --head <sha>           Head the candidates were produced against (with --held-from)",
       "Reads: candidates JSON on stdin.",
       "Writes: JSON on stdout.",
@@ -17999,7 +17999,9 @@ function carriedHeldFindings(runId, head) {
     const detail = runDetail(db, runId);
     if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
     if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head.`);
-    const entries = detail.held.filter((h) => h.verdict === "refuted" || h.verdict === "partly" || h.verdict === "repeat");
+    const entries = detail.held.filter(
+      (h) => h.verdict === "refuted" || h.verdict === "partly" || h.verdict === "repeat" || h.verdict === "below-gate"
+    );
     const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: "" }));
     const result = carryFindings(inputs, detail.headRef, head, process.cwd());
     return result.carried.map((c) => {
@@ -18016,16 +18018,32 @@ function carriedHeldFindings(runId, head) {
     db.close();
   }
 }
+function namesHeldPath(candidate, entry) {
+  if (candidate.path === entry.path) return true;
+  const base = entry.path.slice(entry.path.lastIndexOf("/") + 1);
+  const names = base.includes(".") && base.length >= 6 ? [entry.path, base] : [entry.path];
+  return [candidate.claim, candidate.failureMode, ...candidate.evidence].some(
+    (text) => typeof text === "string" && names.some((name) => text.includes(name))
+  );
+}
 function matchHeld(candidate, held) {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
   let found = null;
   for (const entry of held) {
     if (entry.path !== candidate.path || Math.abs(entry.line - candidate.line) > 2) continue;
-    const drop = entry.text !== void 0 && overlap(mine, significantWords(entry.text)) >= DUPLICATE_OVERLAP;
+    const drop = entry.verdict !== "below-gate" && entry.text !== void 0 && overlap(mine, significantWords(entry.text)) >= DUPLICATE_OVERLAP;
     if (drop) return { entry, drop };
     found ??= { entry, drop };
   }
-  return found;
+  if (found !== null) return found;
+  let best = null;
+  for (const entry of held) {
+    if (entry.text === void 0 || !namesHeldPath(candidate, entry)) continue;
+    const share = overlap(mine, significantWords(entry.text));
+    if (share < SAME_FILE_REPEAT_OVERLAP) continue;
+    if (best === null || share > best.share) best = { entry, share };
+  }
+  return best === null ? null : { entry: best.entry, drop: false };
 }
 function configuredOwner() {
   try {
@@ -18155,7 +18173,9 @@ function checkCandidatesCommand(argv) {
         kind: "held",
         verdict: heldMatch.entry.verdict,
         reason: heldMatch.entry.reason,
-        excerpt: (heldMatch.entry.text ?? "").slice(0, 200)
+        excerpt: (heldMatch.entry.text ?? "").slice(0, 200),
+        path: heldMatch.entry.path,
+        line: heldMatch.entry.line
       };
       const possible = possiblySaidOnThread(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located);
       if (possible !== null) {

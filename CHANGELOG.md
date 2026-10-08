@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `check-candidates --held-from` also marks a candidate that re-raises a held
+  concern at another anchor: when the candidate names the held finding's file
+  and largely shares its wording, it is kept with `possibleRepeatOf` of
+  `kind: held`, now carrying the held finding's `path` and `line`. `below-gate`
+  held findings are carried as well, to flag only, never to drop. (#83)
+
 ## [1.13.3] - 2026-10-07
 
 ### Fixed
