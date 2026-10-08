@@ -67,7 +67,9 @@ without saying so - the same failure as a guard searching the wrong tree.
 **Read `scope` on a `--pr` run.** The previous head comes from `--since <sha>`
 when given, else the latest recorded run, else your own latest review on
 GitHub; `prior.source` says which and `prior.recordedRuns` lists what was
-recorded. The scope is one of:
+recorded. When `prior.runId` is null on a follow-up, `prior.runIdNote` says why,
+and `carry` cannot be used until a run id is found, for example in
+`prior.recordedRuns`. The scope is one of:
 
 - `unchanged` - the pull request's own diff is the same as at the previous
   head (a base merge or a rebase only). Do not review again: run

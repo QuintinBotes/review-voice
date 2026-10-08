@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `diff --pr` reports `prior.runId` for the run `record` stored at the
+  `--since` head, instead of `null` on every interdiff. `record` without
+  `--repository` now takes the repository from the `--files` manifest, else
+  from the clone's `origin`, so the run can be found again, and stores a short
+  `--head` as the full commit. When the run id is still unknown, the new
+  `prior.runIdNote` says why. (#82)
+
 ## [1.13.3] - 2026-10-07
 
 ### Fixed
