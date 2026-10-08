@@ -646,7 +646,7 @@ function compareRank(a: [number, number, number], b: [number, number, number]): 
  * wording carries what a nearby line no longer does: this is the overlap an
  * anchored repeat is dropped at, but here it only flags.
  */
-const SAME_FILE_REPEAT_OVERLAP = 0.4;
+export const SAME_FILE_REPEAT_OVERLAP = 0.4;
 
 /**
  * An anchored comment anywhere in this candidate's file that makes much the

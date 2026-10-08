@@ -107,7 +107,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  --diff-file <path>     Require anchors on changed lines',
       '  --thread <path>        Drop thread repeats; flag near ones for the verifier',
       '  --owner <login>        Owner for --thread; default from config',
-      '  --held-from <run-id>   Drop repeats of that run\'s held findings (needs --head)',
+      '  --held-from <run-id>   Drop or flag repeats of that run\'s held findings (needs --head)',
       '  --head <sha>           Head the candidates were produced against (with --held-from)',
       'Reads: candidates JSON on stdin.',
       'Writes: JSON on stdout.',
