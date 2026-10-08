@@ -406,7 +406,7 @@ Keep `fix_verdict`, `fix_confidence`, `fix_reason` and `fix_direction` in
 `verification.json` with every other verifier field. They verify a suggested
 repair separately from the defect and must not be derived or filled in later.
 Keep `impact_traced` there too: scoring reads it to decide whether a finding may
-be reported above the tier the analyst asked for.
+be reported above the tier the analyst asked for. Keep `impact_class` as well.
 
 If nothing survives and nothing was set aside, output exactly
 `No actionable findings.` and stop. If only set-aside candidates remain, skip
@@ -490,7 +490,9 @@ any. Its `eligible[]` entry carries
 
 `score` reports a finding above the analyst's requested tier only when the
 verifier set `impact_traced` and reported confidence of at least 0.85, and caps
-a question-framed claim at minor; boundary categories are exempt.
+a question-framed claim at minor; boundary categories are exempt. A boundary
+category keeps its tier unless the verifier set `impact_class: "no-exposure"`,
+in which case it is held at the tier the analyst asked for.
 
 **A `question` is eligible when its premises are verified, even if its answer
 is not.** It is the one kind of candidate that can reach the editor without a

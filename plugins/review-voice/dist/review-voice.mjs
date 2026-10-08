@@ -3214,6 +3214,10 @@ function isFixVerdict(value) {
   return typeof value === "string" && FIX_VERDICTS.includes(value);
 }
 var EVIDENCE_QUALITIES = ["high", "medium", "low"];
+var IMPACT_CLASSES = ["no-exposure", "data-exposure", "privilege-escalation"];
+function isImpactClass(value) {
+  return typeof value === "string" && IMPACT_CLASSES.includes(value);
+}
 var CONTEXT_KINDS = ["blocking", "cosmetic"];
 function blockingContext(entries) {
   return (entries ?? []).filter((entry) => typeof entry === "string" || entry.kind !== "cosmetic").map((entry) => typeof entry === "string" ? entry : entry.context);
@@ -3239,7 +3243,17 @@ function isInterrogativeClaim(claim) {
   return text.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
 }
 function boundSeverityByEvidence(derived, candidate, verification2) {
-  if (BOUNDARY_CATEGORIES.has(candidate.category)) return derived;
+  if (BOUNDARY_CATEGORIES.has(candidate.category)) {
+    if (verification2?.impactClass !== "no-exposure" || candidate.severity === "question") return derived;
+    const asked2 = TIER_ORDER.indexOf(candidate.severity);
+    const got2 = TIER_ORDER.indexOf(derived.severity);
+    if (asked2 === -1 || got2 === -1 || asked2 >= got2) return derived;
+    return {
+      ...derived,
+      severity: TIER_ORDER[asked2],
+      reason: `${derived.reason}, held at ${candidate.severity} because the verifier found no exposure`
+    };
+  }
   if (candidate.severity === "question" || derived.severity === "question") return derived;
   let result = derived;
   if ((result.severity === "important" || result.severity === "blocking") && isInterrogativeClaim(candidate.claim)) {
@@ -16398,6 +16412,7 @@ function scoreCommand(argv) {
         const fixReason = raw["fix_reason"] ?? raw["fixReason"];
         const fixDirection = raw["fix_direction"] ?? raw["fixDirection"];
         const impactTraced = raw["impact_traced"] ?? raw["impactTraced"];
+        const impactClass = raw["impact_class"] ?? raw["impactClass"];
         const premisesVerified = raw["premises_verified"] ?? raw["premisesVerified"];
         const verified = raw["verified"];
         const reason2 = raw["reason"];
@@ -16413,6 +16428,8 @@ function scoreCommand(argv) {
           fixDirection: typeof fixDirection === "string" ? fixDirection : void 0,
           // Only a real boolean counts; a string "true" is not evidence.
           impactTraced: typeof impactTraced === "boolean" ? impactTraced : void 0,
+          // Already checked by `verificationProblem`.
+          impactClass: isImpactClass(impactClass) ? impactClass : void 0,
           premisesVerified: typeof premisesVerified === "boolean" ? premisesVerified : void 0,
           verified: typeof verified === "boolean" ? verified : void 0,
           reason: typeof reason2 === "string" ? reason2 : void 0,
@@ -17941,6 +17958,10 @@ function verificationProblem(list) {
     const premises = entry["premises_verified"] ?? entry["premisesVerified"];
     if (premises !== void 0 && typeof premises !== "boolean") {
       return `${who}: premises_verified must be true or false.`;
+    }
+    const impactClass = entry["impact_class"] ?? entry["impactClass"];
+    if (impactClass !== void 0 && !isImpactClass(impactClass)) {
+      return `${who}: impact_class must be one of ${IMPACT_CLASSES.join(", ")}, not ${JSON.stringify(impactClass)}.`;
     }
     const missing = entry["required_context_missing"] ?? entry["requiredContextMissing"];
     if (missing !== void 0 && !(Array.isArray(missing) && missing.every(isMissingContext))) {

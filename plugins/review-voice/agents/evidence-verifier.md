@@ -223,8 +223,9 @@ For every candidate, return these fields in addition to the defect fields:
 JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `technical_confidence`, `contradictions`, `required_context_missing`, `reason`,
 `fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`,
-`impact_traced`, `premises_verified` for a question, and `partly_addressed`
-only when it applies. When you were given `followUps`, return an object
+`impact_traced`, `impact_class` for a boundary finding when it applies,
+`premises_verified` for a question, and `partly_addressed` only when it
+applies. When you were given `followUps`, return an object
 `{"verifications": [<the entries>], "follow_ups": [<one ruling each>]}`
 instead of a bare array.
 
@@ -241,3 +242,13 @@ it break there. Otherwise false. It does not report reach, and how many places
 reference a symbol is not evidence that this defect propagates to them. A
 finding is reported above the tier the analyst asked for only when this is true
 and your confidence is at least 0.85.
+
+`impact_class` is for a `security`, `trust_boundary`, `authorization` or
+`authentication` finding, whose tier is otherwise fixed by its category. It is
+exactly one of `no-exposure`, `data-exposure` or `privilege-escalation`. Set
+`no-exposure` only when you traced that the boundary still holds elsewhere -
+the server rejects the request, a later check refuses it - so the defect is
+broken behaviour rather than a breach; the finding is then held at the tier the
+analyst asked for. Set `data-exposure` or `privilege-escalation` when you
+traced that one. Leave it out when you are unsure: without it the finding keeps
+its boundary tier.

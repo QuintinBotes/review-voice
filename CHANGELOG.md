@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `score` holds a `security`, `trust_boundary`, `authorization` or
+  `authentication` finding at the tier the analyst asked for when the verifier
+  sets the new `impact_class: "no-exposure"`, so a front-end gap the server
+  still refuses is no longer reported as blocking. Without that word, or with
+  `data-exposure` or `privilege-escalation`, the boundary tier stands. Any
+  other `impact_class` is refused. (#84)
+
 ## [1.13.3] - 2026-10-07
 
 ### Fixed

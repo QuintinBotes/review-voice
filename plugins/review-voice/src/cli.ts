@@ -105,6 +105,8 @@ import {
   DEFAULT_THRESHOLDS,
   DUPLICATE_OVERLAP,
   EVIDENCE_QUALITIES,
+  IMPACT_CLASSES,
+  isImpactClass,
   CONTEXT_KINDS,
   UNVERIFIABLE_REJECTION,
   blockingContext,
@@ -1330,6 +1332,7 @@ function scoreCommand(argv: string[]): number {
         const fixReason = raw['fix_reason'] ?? raw['fixReason'];
         const fixDirection = raw['fix_direction'] ?? raw['fixDirection'];
         const impactTraced = raw['impact_traced'] ?? raw['impactTraced'];
+        const impactClass = raw['impact_class'] ?? raw['impactClass'];
         const premisesVerified = raw['premises_verified'] ?? raw['premisesVerified'];
         const verified = raw['verified'];
         const reason = raw['reason'];
@@ -1351,6 +1354,8 @@ function scoreCommand(argv: string[]): number {
           fixDirection: typeof fixDirection === 'string' ? fixDirection : undefined,
           // Only a real boolean counts; a string "true" is not evidence.
           impactTraced: typeof impactTraced === 'boolean' ? impactTraced : undefined,
+          // Already checked by `verificationProblem`.
+          impactClass: isImpactClass(impactClass) ? impactClass : undefined,
           premisesVerified: typeof premisesVerified === 'boolean' ? premisesVerified : undefined,
           verified: typeof verified === 'boolean' ? verified : undefined,
           reason: typeof reason === 'string' ? reason : undefined,
@@ -3353,6 +3358,12 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     const premises = entry['premises_verified'] ?? entry['premisesVerified'];
     if (premises !== undefined && typeof premises !== 'boolean') {
       return `${who}: premises_verified must be true or false.`;
+    }
+    // Refused rather than ignored: a misspelt "no exposure" would otherwise
+    // read as absent and leave a boundary finding blocking with no word why.
+    const impactClass = entry['impact_class'] ?? entry['impactClass'];
+    if (impactClass !== undefined && !isImpactClass(impactClass)) {
+      return `${who}: impact_class must be one of ${IMPACT_CLASSES.join(', ')}, not ${JSON.stringify(impactClass)}.`;
     }
     const missing = entry['required_context_missing'] ?? entry['requiredContextMissing'];
     if (missing !== undefined && !(Array.isArray(missing) && missing.every(isMissingContext))) {

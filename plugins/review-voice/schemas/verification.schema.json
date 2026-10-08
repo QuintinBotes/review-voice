@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/QuintinBotes/review-voice/schemas/verification.schema.json",
   "title": "Verification entry",
-  "description": "One entry of the evidence-verifier agent's output. The CLI also accepts the camelCase spelling of every field name (candidateId, evidenceQuality, technicalConfidence, fixVerdict, fixConfidence, fixReason, fixDirection, impactTraced, premisesVerified, requiredContextMissing, partlyAddressed). Keep the checks in `verificationProblem` in src/cli.ts in step with this file.",
+  "description": "One entry of the evidence-verifier agent's output. The CLI also accepts the camelCase spelling of every field name (candidateId, evidenceQuality, technicalConfidence, fixVerdict, fixConfidence, fixReason, fixDirection, impactTraced, impactClass, premisesVerified, requiredContextMissing, partlyAddressed). Keep the checks in `verificationProblem` in src/cli.ts in step with this file.",
   "type": "object",
   "required": [
     "candidate_id"
@@ -49,6 +49,14 @@
     },
     "impact_traced": {
       "type": "boolean"
+    },
+    "impact_class": {
+      "enum": [
+        "no-exposure",
+        "data-exposure",
+        "privilege-escalation"
+      ],
+      "description": "For a security, trust_boundary, authorization or authentication finding: what the defect exposes, as traced. no-exposure only when the boundary still holds elsewhere (the server rejects the request); the finding is then held at the requested tier instead of its boundary tier. Omit when unsure: any other value, or none, keeps the boundary tier."
     },
     "premises_verified": {
       "type": "boolean",
