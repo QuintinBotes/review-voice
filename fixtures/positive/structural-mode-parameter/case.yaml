@@ -1,0 +1,10 @@
+name: structural-mode-parameter
+asserts: >
+  A boolean added to a renderer and threaded through existing callers is
+  flagged as maintainability because callers now select rendering policy, and
+  so a notes-related change must be coordinated across them.
+expect:
+  findings: 1
+  verified: true
+  path: src/orders/render-receipt.ts
+  category: maintainability

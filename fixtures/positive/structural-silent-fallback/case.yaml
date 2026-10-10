@@ -1,0 +1,10 @@
+name: structural-silent-fallback
+asserts: >
+  A fallback added to a customer name that every caller supplies is flagged as
+  maintainability because it hides an impossible input, and so a broken order
+  becomes an ordinary customer label instead of a visible failure.
+expect:
+  findings: 1
+  verified: true
+  path: src/orders/customer-title.ts
+  category: maintainability

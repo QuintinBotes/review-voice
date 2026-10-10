@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   most 20 per file; other languages get none. The analyst may raise a finding
   only when it names the invariant being hidden and the type that would carry
   it. The verdict is unchanged. (#110)
+- The analyst and evidence verifier now apply a structural lens to thin
+  pass-through wrappers, threaded modes, copied logic, independent serialized
+  awaits, feature branches in shared modules and silent fallbacks. Each needs
+  cited shape evidence and a nameable `and so` consequence; the verifier checks
+  that evidence before keeping the finding. (#112)
 
 ## [1.14.0] - 2026-10-08
 

@@ -1,0 +1,16 @@
+--- a/src/orders/participant-labels.ts
++++ b/src/orders/participant-labels.ts
+@@ -1,3 +1,13 @@
++export function buyerLabel(buyer: Participant): string {
++  if (buyer.contact === null) return 'No contact';
++  return `${buyer.contact.name} <${buyer.contact.email}>`;
++}
++
++export function sellerLabel(seller: Participant): string {
++  if (seller.contact === null) return 'No contact';
++  return `${seller.contact.name} <${seller.contact.email}>`;
++}
++
+ export function orderLabel(order: Order): string {
+   return order.number;
+ }

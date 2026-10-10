@@ -1,0 +1,12 @@
+--- a/src/orders/invoice-actions.ts
++++ b/src/orders/invoice-actions.ts
+@@ -1,5 +1,9 @@
+ import { archiveInvoice } from './archive';
+ 
++export function archiveCustomerInvoice(invoice: Invoice) {
++  return archiveInvoice(invoice);
++}
++
+ export async function closeInvoice(invoice: Invoice): Promise<void> {
+   await archiveInvoice(invoice);
+ }

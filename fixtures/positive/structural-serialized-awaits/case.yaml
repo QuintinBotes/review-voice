@@ -1,0 +1,10 @@
+name: structural-serialized-awaits
+asserts: >
+  Independent account and delivery lookups awaited one after another are
+  flagged as performance because neither input uses the other result, and so
+  response time is their sum rather than their maximum.
+expect:
+  findings: 1
+  verified: true
+  path: src/orders/load-checkout.ts
+  category: performance

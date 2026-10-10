@@ -62,6 +62,34 @@ hidden invariant. A single justified cast at an interop edge, such as an
 untyped library or a JSON parse boundary that is validated, is not a finding.
 The match is lexical, so confirm the line really is code before citing it.
 
+Use this structural lens only for a concrete consequence. For the patterns
+below use `maintainability`, except independent serialized awaits, which are
+`performance`; state the consequence with "and so", prefer one structural
+finding to several naming nits on the same code, and drop a preference with no
+nameable consequence. Treat `declared[].possibleExisting` as a lead, never
+proof of duplication; `inconclusive` means unknown.
+
+- A thin pass-through wrapper needs the new function and its one delegating
+  call with the same arguments. Raise it only when the duplicate API obscures
+  the behavior's owner, and so its two contracts can drift.
+- A one-off boolean or mode threaded through callers needs the new parameter
+  and every existing call site the diff changes to pass it. Raise it only when
+  those callers now choose policy they do not own, and so a feature change must
+  be coordinated across them.
+- Copied logic needs two added blocks that differ only in literals or names.
+  Name the shared behavior, and so the next correction must be made twice and
+  can diverge.
+- Independent serialized awaits need sequential awaits whose expressions do
+  not use the earlier result. Raise `performance` only when no ordering or
+  side-effect requirement explains them, and so latency is their sum instead
+  of their maximum.
+- Feature logic in a shared module needs the branch and its other consumers
+  that do not need it. Name the feature owner, and so unrelated consumers must
+  carry or reason about that branch.
+- A silent fallback needs a `?? default`, empty catch, or optional access on a
+  value every caller sets. Name the invariant and what the fallback hides, and
+  so its violation becomes ordinary output or success rather than a signal.
+
 ## What the pull request already says
 
 You may be given the pull request's thread: its inline comments, review bodies,
