@@ -185,15 +185,14 @@ list falls back to the middle tier, which loses the distinction you were
 making.
 
 Severe by nature:
-`security` · `authorization` · `authentication` · `trust_boundary` ·
-`data_integrity`
+`security` · `authorization` · `authentication` · `data_integrity`
 
 Wide reach by nature:
 `concurrency` · `persistence` · `migration` · `api_contract` · `release`
 
 Real defects whose reach depends on the situation:
 `correctness` · `error_handling` · `reliability` · `user_visible_behavior` ·
-`ci` · `packaging` · `dependency` · `performance`
+`ci` · `packaging` · `dependency` · `performance` · `trust_boundary`
 
 Low stakes:
 `observability` · `test_coverage` · `maintainability` · `style`
@@ -209,6 +208,10 @@ The confusable ones, settled:
 - A missing privilege check is `authorization`. A privilege check that exists
   and is wired to the wrong privilege is also `authorization`, not
   `correctness`.
+- A `trust_boundary` can be a non-security control boundary, such as a path
+  gate. Pick its requested tier from the concrete consequence; `score` raises
+  it above that tier only when the verifier traced impact beyond the changed
+  code.
 
 ## Severity
 

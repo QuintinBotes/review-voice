@@ -17,7 +17,7 @@ import { validateOutput } from './contract/validate.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
 import { checkSeverityAgainstScores, scoredEntries } from './contract/severity-check.ts';
 import { checkUnbackedAbsolutes } from './contract/backing-check.ts';
-import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
+import { DEFAULT_LIMITS, SEVERITY_ORDER, totalWordBudget, type ContractLimits, type Severity } from './contract/limits.ts';
 import { acquireDiff, attributeSource, GitError, linguistGeneratedPaths, type ChangedFile } from './diff/acquire.ts';
 import {
   applyStructureHumanReviewCap,
@@ -1314,6 +1314,60 @@ function anchorFor(hunks: Map<string, FileHunks>, candidate: Candidate): AnchorC
   return candidateAnchor(hunks, candidate);
 }
 
+/** A tier an owner may explicitly lower a scored finding to. Questions are not tiers to override. */
+const OWNER_OVERRIDE_SEVERITIES = ['blocking', 'important', 'minor', 'nit'] as const;
+type OwnerOverrideSeverity = (typeof OWNER_OVERRIDE_SEVERITIES)[number];
+
+/**
+ * Reads repeatable `--severity candidate_id=tier` owner downgrades.
+ *
+ * The score is still the source of truth for validation. This switch merely
+ * makes a narrower owner judgement explicit in that score instead of inviting
+ * an edit to the generated JSON after scoring.
+ */
+function ownerSeverityOverrides(argv: string[], candidates: readonly Candidate[]): Map<string, OwnerOverrideSeverity> | string {
+  const overrides = new Map<string, OwnerOverrideSeverity>();
+  const known = new Set(candidates.map((candidate) => candidate.candidateId));
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== '--severity') continue;
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith('--')) {
+      return '--severity needs candidate_id=tier, for example cand_001=minor.';
+    }
+    const separator = value.indexOf('=');
+    if (separator < 1 || separator !== value.lastIndexOf('=')) {
+      return `--severity ${JSON.stringify(value)} must be candidate_id=tier.`;
+    }
+    const candidateId = value.slice(0, separator);
+    const severity = value.slice(separator + 1);
+    if (!known.has(candidateId)) return `--severity names unknown candidate ${JSON.stringify(candidateId)}.`;
+    if (!(OWNER_OVERRIDE_SEVERITIES as readonly string[]).includes(severity)) {
+      return `--severity ${JSON.stringify(value)} must use one of ${OWNER_OVERRIDE_SEVERITIES.join(', ')}.`;
+    }
+    if (overrides.has(candidateId)) return `--severity names ${JSON.stringify(candidateId)} more than once.`;
+    overrides.set(candidateId, severity as OwnerOverrideSeverity);
+  }
+  return overrides;
+}
+
+/** Applies one explicit owner downgrade after deterministic derivation. */
+function applyOwnerSeverityOverride(breakdown: ScoreBreakdown, override: OwnerOverrideSeverity): string | null {
+  const current = breakdown.severity.severity;
+  if (current === 'question') return `--severity cannot override question for ${breakdown.candidateId}.`;
+  if (SEVERITY_ORDER[override] <= SEVERITY_ORDER[current as Severity]) {
+    return (
+      `--severity ${breakdown.candidateId}=${override} must lower the scored ${current} tier; ` +
+      'owner overrides cannot raise or restate a severity.'
+    );
+  }
+  breakdown.severity = {
+    ...breakdown.severity,
+    severity: override,
+    reason: `${breakdown.severity.reason}, held at ${override} by an explicit owner override`,
+  };
+  return null;
+}
+
 function scoreCommand(argv: string[]): number {
   let candidates: Candidate[];
   try {
@@ -1330,6 +1384,12 @@ function scoreCommand(argv: string[]): number {
       return 2;
     }
     console.error('Expected {"candidates": [...]} on stdin.');
+    return 2;
+  }
+
+  const severityOverrides = ownerSeverityOverrides(argv, candidates);
+  if (typeof severityOverrides === 'string') {
+    console.error(severityOverrides);
     return 2;
   }
 
@@ -1547,6 +1607,14 @@ function scoreCommand(argv: string[]): number {
         thresholds,
         verifications.get(candidate.candidateId),
       );
+      const override = severityOverrides.get(candidate.candidateId);
+      if (override !== undefined) {
+        const problem = applyOwnerSeverityOverride(breakdown, override);
+        if (problem !== null) {
+          console.error(problem);
+          return 2;
+        }
+      }
 
       // A claim that something is absent is checked against the repository
       // before anything else is weighed. It is the cheapest class of claim to
@@ -3384,6 +3452,12 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     const id = entry['candidate_id'] ?? entry['candidateId'];
     const who = `entry ${index} (${typeof id === 'string' ? id : 'no candidate id'})`;
     if (typeof id !== 'string' || id === '') return `${who}: candidate_id must be a non-empty string.`;
+    // These are the second-pass verifier's field names. Treating them as
+    // harmless extras made `score` fall back to the analyst's confidence,
+    // while `check-verification` had said the entry was valid.
+    if (Object.hasOwn(entry, 'verdict') || Object.hasOwn(entry, 'confidence')) {
+      return `${who}: use verified (boolean) and technical_confidence (0 to 1), not verdict or confidence; those are second-pass fields.`;
+    }
     const quality = entry['evidence_quality'] ?? entry['evidenceQuality'];
     if (quality !== undefined && !(EVIDENCE_QUALITIES as readonly unknown[]).includes(quality)) {
       return `${who}: evidence_quality must be one of ${EVIDENCE_QUALITIES.join(', ')}, not ${JSON.stringify(quality)}.`;
