@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   most 20 per file; other languages get none. The analyst may raise a finding
   only when it names the invariant being hidden and the type that would carry
   it. The verdict is unchanged. (#110)
+- `symbols` now lists up to eight new function or method declarations per file
+  in `declared`, with up to three lexical `possibleExisting` helpers found by
+  two-token name similarity. The evidence is a reading hint, can be
+  inconclusive, and does not change the verdict. (#111)
 
 ## [1.14.0] - 2026-10-08
 

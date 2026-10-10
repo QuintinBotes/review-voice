@@ -28,6 +28,11 @@ consumers: extraction recognises only distinctive identifier shapes, and a
 only partial results. Keep the requirement to search before accepting an
 absence.
 
+For a duplicate-helper claim, reject it unless the cited helper exists at that
+path and line at the reviewed ref and covers the new helper's inputs and
+outputs. Check edge behavior too, including separators, casing and null
+handling.
+
 ## Repository conventions
 
 You are given the repository's own convention documents: `CLAUDE.md`,
