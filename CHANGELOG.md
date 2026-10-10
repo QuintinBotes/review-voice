@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `declared`, with up to three lexical `possibleExisting` helpers found by
   two-token name similarity. The evidence is a reading hint, can be
   inconclusive, and does not change the verdict. (#111)
+- `review.human_review.structure.file_line_crossing` and `.branch_growth`
+  default to false. When enabled, a matching `structure.sizeCrossings` or
+  `structure.branchGrowth` signal joins the ADR 0012 human-review cap: only an
+  APPROVE becomes COMMENT, with the signal named locally. The posted review and
+  GitHub writes are unchanged. (#114)
 
 ### Fixed
 

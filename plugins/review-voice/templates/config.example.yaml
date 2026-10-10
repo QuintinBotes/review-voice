@@ -53,6 +53,12 @@ review:
   human_review:
     max_decision_points: 40         # branches added across the whole change
     max_hunk_decision_points: 15    # branches added in the densest hunk
+    # Opt in only when either structural regression should leave approval to a
+    # human. These cap APPROVE at COMMENT; they do not add a finding or text to
+    # the posted review (docs/adr/0020).
+    structure:
+      file_line_crossing: false     # a production file crosses max_file_lines
+      branch_growth: false          # an existing function gains branches
     # A list here replaces the defaults; an empty list turns the signal off.
     sensitive_paths:
       - ".github/workflows/**"

@@ -176,11 +176,13 @@ instead of treating it as small. "Production" means what the decision-point
 count means by it, from the same classification: tests, documentation and
 generated files are left out.
 
-This is a fact about a file, not about the diff: it is not the size signal
-[adr/0012](adr/0012-complex-changes-need-human-approval.md) rejected, and it
-plays no part in the verdict. The analyst gets it as a lead and still has to
-name a seam the added code could be split along, so "this file is large" on its
-own is never a finding.
+This is a fact about a file, not aggregate diff size. By default it plays no
+part in the verdict. A repository may opt in with
+`review.human_review.structure.file_line_crossing`; then a nonempty
+`sizeCrossings` list joins the [ADR 0012](adr/0012-complex-changes-need-human-approval.md)
+APPROVE cap. The analyst still gets it as a lead and has to name a seam the
+added code could be split along, so "this file is large" on its own is never a
+finding.
 
 The second is `branchGrowth`: declarations that exist at the base and gain at
 least `review.structure.max_added_branches_per_function` (default 3) decision
@@ -199,7 +201,15 @@ in a hunk without header context are not attributed either. There is no
 parser, so an indented method is attributed to the class or function around
 it, as git would; the analyst is told to check. One counter serves both uses,
 so the complexity assessment and this signal cannot disagree about what a
-decision point is.
+decision point is. By default it is evidence only; a repository can opt in
+with `review.human_review.structure.branch_growth` to make a nonempty
+`branchGrowth` list join the same ADR 0012 cap.
+
+Both switches default to false. Enabling one changes only an otherwise
+APPROVE verdict to COMMENT: it does not raise a maintainability tier, create a
+REQUEST_CHANGES event, add a new GitHub write, or put the structural reason in
+the posted review. The signal is named only in the existing local
+`humanReviewNote` and decision data.
 
 The third is `typeEscapes`: `{ path, line, kind }` for each escape from the type
 system on a line the change adds to production source, found by a small
