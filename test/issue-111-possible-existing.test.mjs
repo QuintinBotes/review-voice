@@ -244,3 +244,32 @@ test('the bundled symbols command finds a helper at the reviewed ref', () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('every hit of the real git grep is parsed, not only the first', () => {
+  const { directory, git } = gitRepository({
+    'src/strings.ts': 'export function snakeCase(value: string) { return value; }\n',
+    'src/text/case.ts': '// helpers\nexport function toSnakeCaseKey(value: string) { return value; }\n',
+    'src/new.ts': '// module\n',
+  });
+  try {
+    writeFileSync(join(directory, 'src/new.ts'), 'export function toSnakeCase(value: string) { return value; }\n');
+    const patch = join(directory, 'change.patch');
+    writeFileSync(patch, git('diff', '--', 'src/new.ts'));
+
+    const run = spawnSync(process.execPath, [bundle, 'symbols', '--diff-file', patch, '--base', 'HEAD'], {
+      cwd: directory,
+      encoding: 'utf8',
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const [declared] = changedFile(JSON.parse(run.stdout)).declared;
+    assert.deepEqual(
+      [...declared.possibleExisting].sort((a, b) => a.path.localeCompare(b.path)),
+      [
+        { path: 'src/strings.ts', line: 1, name: 'snakeCase' },
+        { path: 'src/text/case.ts', line: 2, name: 'toSnakeCaseKey' },
+      ],
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

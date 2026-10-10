@@ -294,13 +294,13 @@ export const gitGrepLines: LineSearcher = (patterns, cwd, ref, timeoutMs) => {
       timeout: Math.min(10_000, timeoutMs ?? 10_000),
       maxBuffer: 32 * 1024 * 1024,
     });
-    const fields = output.split('\0');
+    // Each hit is `<path>\0<line>\0<text>\n`: `-z` ends the fields, not the record.
     const prefix = ref === null ? '' : `${ref}:`;
     const lines: GrepLine[] = [];
-    for (let index = 0; index + 2 < fields.length; index += 3) {
-      const rawPath = fields[index] ?? '';
-      const line = Number(fields[index + 1]);
-      const text = fields[index + 2] ?? '';
+    for (const record of output.split('\n')) {
+      const [rawPath = '', number = '', ...rest] = record.split('\0');
+      const line = Number(number);
+      const text = rest.join('\0');
       if (!Number.isSafeInteger(line) || line < 1) continue;
       lines.push({
         path: prefix !== '' && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,

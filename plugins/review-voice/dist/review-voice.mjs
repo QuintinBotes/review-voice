@@ -4349,13 +4349,12 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
       timeout: Math.min(1e4, timeoutMs ?? 1e4),
       maxBuffer: 32 * 1024 * 1024
     });
-    const fields = output.split("\0");
     const prefix = ref === null ? "" : `${ref}:`;
     const lines2 = [];
-    for (let index = 0; index + 2 < fields.length; index += 3) {
-      const rawPath = fields[index] ?? "";
-      const line = Number(fields[index + 1]);
-      const text = fields[index + 2] ?? "";
+    for (const record of output.split("\n")) {
+      const [rawPath = "", number = "", ...rest] = record.split("\0");
+      const line = Number(number);
+      const text = rest.join("\0");
       if (!Number.isSafeInteger(line) || line < 1) continue;
       lines2.push({
         path: prefix !== "" && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
