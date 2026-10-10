@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { isReviewable } from './classify.ts';
 import { unquoteGitPath } from './hunks.ts';
 
 /** Every reason a pull request must be read in full rather than narrowed. */
@@ -11,9 +12,8 @@ export type FullReviewCause =
   | 'history-rewritten'
   | 'base-merged'
   | 'base-sync-only'
-  // The author's change since the last review cannot be shown as new hunks at
-  // the head: a hunk was reverted or moved, or a file was renamed, re-moded,
-  // added empty or deleted. Read in full rather than narrowed past it.
+  // Recorded by versions that matched own-diff hunks before and after a merge
+  // or rebase. No longer produced; kept so those stored scopes still read back.
   | 'own-diff-unrepresentable';
 
 /** Why a pull request whose own diff did not change was not read again. */
@@ -43,6 +43,10 @@ export type ReviewScope =
       /** The head's merge base with the base branch: what the own diff is against. */
       mergeBase: string;
       reason: UnchangedReason;
+      /** See the `interdiff` kind. */
+      absorbedByBase?: string[];
+      /** See the `interdiff` kind. */
+      noLongerChanged?: string[];
     }
   | {
       kind: 'interdiff';
@@ -52,6 +56,25 @@ export type ReviewScope =
       mergeBase: string;
       files: string[];
       hunks: number;
+      /**
+       * Which conflicted files were narrowed to their resolution, and which
+       * were read whole and why, when there were any.
+       */
+      detail?: string;
+      /**
+       * Files the reviewed head changed that the pull request no longer does,
+       * because the new base already makes the same change. Nothing in them is
+       * left to review, so they are not in the patch; they are listed so that
+       * their absence is not silent.
+       */
+      absorbedByBase?: string[];
+      /**
+       * Files whose replay conflicted that the pull request no longer changes:
+       * the author withdrew their change there, or the branch under it was
+       * rewritten. Only the replay's conflict markers could show them, so they
+       * are not in the patch (#73); listed so their absence is not silent.
+       */
+      noLongerChanged?: string[];
     }
   | {
       kind: 'full';
@@ -86,10 +109,27 @@ export function parseReviewScope(value: unknown): ReviewScope | null {
   if (scope.kind === 'incremental' && prior && Number.isInteger(scope.commits) && strings(scope.files)) {
     return scope as unknown as ReviewScope;
   }
-  if (scope.kind === 'unchanged' && prior && typeof scope.mergeBase === 'string' && UNCHANGED_REASONS.has(scope.reason as string)) {
+  const absorbed =
+    (scope.absorbedByBase === undefined || strings(scope.absorbedByBase)) &&
+    (scope.noLongerChanged === undefined || strings(scope.noLongerChanged));
+  if (
+    scope.kind === 'unchanged' &&
+    prior &&
+    typeof scope.mergeBase === 'string' &&
+    UNCHANGED_REASONS.has(scope.reason as string) &&
+    absorbed
+  ) {
     return scope as unknown as ReviewScope;
   }
-  if (scope.kind === 'interdiff' && prior && typeof scope.mergeBase === 'string' && strings(scope.files) && Number.isInteger(scope.hunks)) {
+  if (
+    scope.kind === 'interdiff' &&
+    prior &&
+    typeof scope.mergeBase === 'string' &&
+    strings(scope.files) &&
+    Number.isInteger(scope.hunks) &&
+    (scope.detail === undefined || typeof scope.detail === 'string') &&
+    absorbed
+  ) {
     return scope as unknown as ReviewScope;
   }
   if (
@@ -112,8 +152,10 @@ export function describeScope(scope: ReviewScope | null): string | null {
       return `incremental since ${scope.since.slice(0, 7)} (${scope.commits} commit${scope.commits === 1 ? '' : 's'})`;
     case 'unchanged':
       return `unchanged since ${scope.since.slice(0, 7)} (${scope.reason})`;
-    case 'interdiff':
-      return `interdiff since ${scope.since.slice(0, 7)} (${scope.hunks} hunk${scope.hunks === 1 ? '' : 's'} in ${scope.files.length} file${scope.files.length === 1 ? '' : 's'})`;
+    case 'interdiff': {
+      const counts = `${scope.hunks} hunk${scope.hunks === 1 ? '' : 's'} in ${scope.files.length} file${scope.files.length === 1 ? '' : 's'}`;
+      return `interdiff since ${scope.since.slice(0, 7)} (${scope.detail === undefined ? counts : `${counts}; ${scope.detail}`})`;
+    }
     case 'full':
       return scope.detail === undefined ? `full (${scope.cause})` : `full (${scope.cause}: ${scope.detail})`;
   }
@@ -146,8 +188,26 @@ export interface IncrementalGit {
   commitCount(since: string, head: string, cwd: string): number;
   /** Only needed when the pull request's base is known; see `ownDiffScope`. */
   mergeBase?(left: string, right: string, cwd: string): string;
+  /** `from` may be a commit or a tree: a replayed head is only a tree. */
   diffText?(from: string, to: string, paths: string[], cwd: string): string;
+  /**
+   * The tree of `head` with its changes since `from` re-applied onto `onto`,
+   * and the paths where they conflict. Only needed after a merge or a rebase.
+   */
+  replay?(from: string, onto: string, head: string, cwd: string): Replay;
 }
+
+/**
+ * A replayed head. A conflicted path's file in `tree` holds conflict markers,
+ * so it is no reference to read that file against.
+ */
+export interface Replay {
+  tree: string;
+  conflicts: string[];
+}
+
+/** `git merge-tree --merge-base` arrived in 2.40; `--write-tree` alone is 2.38. */
+const REPLAY_GIT = [2, 40] as const;
 
 export interface PlanIncrementalScopeOptions {
   priorRun: PriorPullReview | null;
@@ -156,13 +216,20 @@ export interface PlanIncrementalScopeOptions {
   headAvailable: boolean;
   /** Only files that the full pull-request read would otherwise review. */
   reviewedFiles: ReviewedPullFile[];
+  /**
+   * Files the pull request deletes at the head. A full read never reviews a
+   * deletion, but a follow-up that deletes a file has changed the pull request
+   * since the review, and leaving the file out of the patch would hide that.
+   */
+  deletedFiles?: string[] | undefined;
   cwd: string;
   truncated: boolean;
   forceFull: boolean;
   /**
-   * The pull request's base commit. With it, the planner compares the pull
-   * request's own diff before and after, so a merged base or a rebase no longer
-   * forces a full read. Without it every decision is the commit-range one.
+   * The pull request's base commit. With it, a merged base or a rebase is
+   * read as what the author changed since the review, replayed onto the new
+   * base, so neither forces a full read. Without it every decision is the
+   * commit-range one.
    */
   base?: string | undefined;
   git?: IncrementalGit | undefined;
@@ -174,6 +241,12 @@ export interface PlanIncrementalScopeOptions {
    * asked of git again afterwards, not taken from the answer.
    */
   fetchPriorHead?: ((sha: string) => string | null) | undefined;
+  /**
+   * Whether lock files, generated and vendored output count as reviewed, as
+   * `--include-generated` makes them. Only `absorbedByBase` reads it: a file
+   * no review would have read is not one whose absence needs saying.
+   */
+  includeGenerated?: boolean | undefined;
 }
 
 /** A planned scope, and the patch an `interdiff` scope reviews. */
@@ -247,7 +320,10 @@ const systemGit: IncrementalGit = {
       .filter((sha) => sha.length > 0);
   },
   changedPaths(since, head, cwd) {
-    return runGit(['diff', '--name-only', '-z', since, head], cwd)
+    // Without renames, so a renamed file lists both of its paths: a follow-up
+    // that undoes a rename must show the old path coming back, not only the
+    // new one going.
+    return runGit(['diff', '--name-only', '--no-renames', '-z', since, head], cwd)
       .split('\0')
       .filter((path) => path.length > 0);
   },
@@ -266,6 +342,32 @@ const systemGit: IncrementalGit = {
       ['diff', '--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', from, to, '--', ...topPathspecs(paths)],
       cwd,
     );
+  },
+  replay(from, onto, head, cwd) {
+    const version = /(\d+)\.(\d+)/.exec(runGit(['version'], cwd));
+    const [major, minor] = [Number(version?.[1] ?? 0), Number(version?.[2] ?? 0)];
+    if (major < REPLAY_GIT[0] || (major === REPLAY_GIT[0] && minor < REPLAY_GIT[1])) {
+      throw new Error(
+        `git ${version?.[0] ?? '(unknown version)'} cannot replay the reviewed head onto a new base; ` +
+          `that needs git ${REPLAY_GIT.join('.')} or later`,
+      );
+    }
+    const args = ['merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', '--merge-base', from, onto, head];
+    let output: string;
+    let conflicted = false;
+    try {
+      output = execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (error) {
+      // Exit 1 is merge-tree's answer for "conflicts", with the tree and the
+      // conflicted paths still on stdout. Anything else is a failed command.
+      const failure = error as { status?: unknown; stdout?: unknown };
+      if (failure.status !== 1 || typeof failure.stdout !== 'string') throw new Error(gitFailure(args, error));
+      output = failure.stdout;
+      conflicted = true;
+    }
+    const [tree, ...paths] = output.split('\0').filter((part) => part.length > 0);
+    if (tree === undefined || !/^[0-9a-f]{40,64}$/.test(tree)) throw new Error('git merge-tree returned no tree');
+    return { tree, conflicts: conflicted ? [...new Set(paths)].sort() : [] };
   },
 };
 
@@ -312,38 +414,20 @@ function changedReviewedFiles(files: ReviewedPullFile[], changedPaths: string[])
   return [...selected].sort();
 }
 
-/** One hunk of a pull request's own diff, keyed by what it changes. */
+/** One hunk of a patch, keyed by what it changes. */
 interface OwnHunk {
   /**
    * Its `-`/`+` lines, plus the context line directly before and after each
    * run of them. Not its `@@` numbers, so a hunk that only shifted is the same
    * hunk; but its immediate neighbours, so the same edit moved elsewhere in the
-   * file - a release moved to after a different call - is a different one.
+   * file is a different one.
    */
   key: string;
-  /**
-   * Where in the base the hunk applies: every unchanged line next to one of
-   * its changes, and the base lines it removes. A rewrite of the same edit
-   * keeps all of them; a revert of part of it, or a move, does not.
-   */
-  site: Set<string>;
-  /** The site's base lines by their text, whether kept as context or removed. */
-  siteText: Set<string>;
-  /** Its `-`, `+` and `\` lines: exactly what the author's edit is. */
-  changes: string[];
-  /** The `@@` line, to say which hunk a full read was about. */
-  header: string;
-  text: string;
 }
 
 interface OwnFile {
-  header: string[];
-  /** Rename, mode, new and deleted markers: what a hunk cannot show. */
-  metadata: string;
   hunks: OwnHunk[];
 }
-
-const METADATA = /^(?:old mode|new mode|deleted file mode|new file mode|similarity index|rename from|rename to|copy from|copy to|Binary files) /;
 
 function hunkKey(body: string[]): string {
   const keep = new Set<number>();
@@ -358,26 +442,6 @@ function hunkKey(body: string[]): string {
   return [...keep].sort((x, y) => x - y).map((index) => body[index]).join('\n');
 }
 
-function hunkChanges(body: string[]): string[] {
-  return body.filter((line) => line.startsWith('+') || line.startsWith('-') || line.startsWith('\\'));
-}
-
-/** A site line is a context or removed line; both are base text after the prefix. */
-function siteText(site: Set<string>): Set<string> {
-  return new Set([...site].map((line) => line.slice(1)));
-}
-
-function hunkSite(body: string[]): Set<string> {
-  const site = new Set<string>();
-  body.forEach((line, index) => {
-    if (line.startsWith('-')) site.add(line);
-    if (!line.startsWith('+') && !line.startsWith('-')) return;
-    if (index > 0 && body[index - 1]!.startsWith(' ')) site.add(body[index - 1]!);
-    if (index + 1 < body.length && body[index + 1]!.startsWith(' ')) site.add(body[index + 1]!);
-  });
-  return site;
-}
-
 /** The right-side path a `diff --git` header names, quoted or not. */
 function gitHeaderPath(line: string): string | null {
   const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line);
@@ -386,7 +450,7 @@ function gitHeaderPath(line: string): string | null {
 }
 
 /**
- * Splits a patch into files and hunks for the own-diff comparison.
+ * Splits a patch into files and hunks, to count what an interdiff holds.
  *
  * Each file is registered from its `diff --git` header, so a change with no
  * hunk text at all - a pure rename, a mode change, an empty new file - is
@@ -401,16 +465,7 @@ export function ownDiffFiles(patch: string): Map<string, OwnFile> {
     // The patch's final newline leaves an empty line that is not part of it.
     while (hunk !== null && hunk.length > 1 && hunk.at(-1) === '') hunk.pop();
     if (file !== null && hunk !== null) {
-      const body = hunk.slice(1);
-      const site = hunkSite(body);
-      file.hunks.push({
-        key: hunkKey(body),
-        site,
-        siteText: siteText(site),
-        changes: hunkChanges(body),
-        header: /^@@ [^@]* @@/.exec(hunk[0] ?? '')?.[0] ?? (hunk[0] ?? ''),
-        text: hunk.join('\n'),
-      });
+      file.hunks.push({ key: hunkKey(hunk.slice(1)) });
     }
     hunk = null;
   };
@@ -423,7 +478,7 @@ export function ownDiffFiles(patch: string): Map<string, OwnFile> {
     if (line.startsWith('diff --git ')) {
       closeHunk();
       const path = gitHeaderPath(line.endsWith('\r') ? line.slice(0, -1) : line);
-      file = { header: [line], metadata: '', hunks: [] };
+      file = { hunks: [] };
       if (path !== null) files.set(path, file);
       continue;
     }
@@ -439,101 +494,9 @@ export function ownDiffFiles(patch: string): Map<string, OwnFile> {
       }
       closeHunk();
     }
-    if (file === null) continue;
-    file.header.push(line);
-    if (METADATA.test(line)) file.metadata += `${line}\n`;
   }
   closeHunk();
   return files;
-}
-
-interface OwnComparison {
-  /** Hunks the head has that the reviewed head did not, per file. */
-  added: Map<string, OwnHunk[]>;
-  /** True when something changed that new head hunks cannot show. */
-  unrepresentable: boolean;
-  /** The first thing that made it so, naming the file. */
-  reason: string | null;
-}
-
-/**
- * Whether a new hunk is the reviewed one with a neighbouring line edited.
- *
- * A follow-up that edits the line next to a reviewed hunk merges the two into
- * one hunk, and the reviewed hunk's context line there now shows as removed:
- * ` b` becomes `-b`. The exact site no longer matches, though the edit sits
- * where it did. Matching the site on line text alone would also accept a
- * revert of the reviewed edit next to that new edit, so the reviewed hunk's
- * own `-`, `+` and `\` lines must all still be in the new hunk, counted:
- * nothing the review saw was withdrawn, and the new hunk shows the rest.
- */
-function keepsReviewedEdit(gone: OwnHunk, candidate: OwnHunk): boolean {
-  if (![...gone.siteText].every((line) => candidate.siteText.has(line))) return false;
-  const left = new Map<string, number>();
-  for (const line of candidate.changes) left.set(line, (left.get(line) ?? 0) + 1);
-  for (const line of gone.changes) {
-    const count = left.get(line) ?? 0;
-    if (count === 0) return false;
-    left.set(line, count - 1);
-  }
-  return true;
-}
-
-/**
- * Compares two own diffs in both directions.
- *
- * Counted rather than set-matched, so a change the author made twice is two
- * changes. A hunk only the earlier diff has is a revert or a move; a file whose
- * rename or mode markers differ, or that only one side has with no hunk to show,
- * cannot be expressed as head hunks either. Both make the comparison
- * unrepresentable, and the caller reads the pull request in full.
- */
-function compareOwnDiffs(before: Map<string, OwnFile>, after: Map<string, OwnFile>): OwnComparison {
-  const added = new Map<string, OwnHunk[]>();
-  let reason: string | null = null;
-  const because = (why: string) => {
-    reason ??= why;
-  };
-
-  for (const path of new Set([...before.keys(), ...after.keys()])) {
-    const earlier = before.get(path);
-    const later = after.get(path);
-    if ((earlier?.metadata ?? '') !== (later?.metadata ?? '')) {
-      because(`${path}: its rename, mode, new or deleted marker changed`);
-    }
-
-    const remaining = new Map<string, OwnHunk[]>();
-    for (const hunk of earlier?.hunks ?? []) remaining.set(hunk.key, [...(remaining.get(hunk.key) ?? []), hunk]);
-    const fresh: OwnHunk[] = [];
-    for (const hunk of later?.hunks ?? []) {
-      const left = remaining.get(hunk.key) ?? [];
-      if (left.length > 0) remaining.set(hunk.key, left.slice(1));
-      else fresh.push(hunk);
-    }
-    // A reviewed hunk that is gone is fine only when a new hunk sits on the
-    // same site: the author rewrote that edit, and the new hunk shows the
-    // result. Gone with nothing in its place is a revert or a move.
-    // A gone hunk is replaced only by a new hunk whose site holds all of its
-    // own, and each new hunk replaces at most one: two reviewed additions after
-    // the same closing brace must not both be accounted for by one rewrite, or
-    // the other's revert goes unread. An exact site match is a rewrite in
-    // place; otherwise the new hunk must keep the reviewed edit whole, with
-    // only a neighbouring line edited (see `keepsReviewedEdit`).
-    const unused = [...fresh];
-    for (const hunk of [...remaining.values()].flat()) {
-      let index = unused.findIndex((candidate) => [...hunk.site].every((line) => candidate.site.has(line)));
-      if (index === -1) index = unused.findIndex((candidate) => keepsReviewedEdit(hunk, candidate));
-      if (index === -1) because(`${path}: the reviewed hunk ${hunk.header} was reverted or moved`);
-      else unused.splice(index, 1);
-    }
-    // A file on one side only, with no hunk to carry it (an empty new file).
-    if ((earlier === undefined) !== (later === undefined) && fresh.length === 0) {
-      because(`${path}: on one side only, with no hunk to show it`);
-    }
-    if (fresh.length > 0) added.set(path, fresh);
-  }
-
-  return { added, unrepresentable: reason !== null, reason };
 }
 
 /**
@@ -577,12 +540,10 @@ export function planScope(options: PlanIncrementalScopeOptions): PlannedScope {
     const ancestor = git.isAncestor(prior.headRef, options.head, options.cwd);
     const merged = ancestor && git.mergeCommits(prior.headRef, options.head, options.cwd).length > 0;
 
-    // With the base known, the pull request's own diff is compared in every
-    // shape, plain commits included. The commit range answers "what changed
-    // since the reviewed head", which on a branch that restores code to its
-    // merge-base state shows the restored lines as newly added; the own diff
-    // answers what the author changes relative to the base, which is what a
-    // review of a pull request is about.
+    // With the base known, a plain follow-up is read as the commit range, and
+    // a merged base or a rewritten history as the head against the reviewed
+    // head replayed onto the new base, so base-branch work never reaches the
+    // review.
     if (options.base !== undefined) {
       return ownDiffScope(options, prior, git, ancestor, merged);
     }
@@ -621,11 +582,15 @@ function incremental(
 }
 
 /**
- * Compares the pull request's own diff before and after a merged base or a
- * rewritten history, so base churn never reaches the review.
+ * Reads what the author changed since the review, wherever the base moved.
  *
- * Own diff means what the pull request shows: the head against its merge base
- * with the base branch. Both sides are read for the reviewed files only.
+ * The reviewed head is first put where the head now stands: on a plain
+ * follow-up, or a rewrite that kept the merge base, it already is; after a
+ * merged base or a rebase it is replayed onto the new merge base, which is
+ * what the reviewed pull request would look like had it branched there. The
+ * head against that is only what the author changed since the review: new
+ * commits, and any rewrite of their own code while resolving the merge. The
+ * base's own changes are on both sides and cancel out.
  */
 function ownDiffScope(
   options: PlanIncrementalScopeOptions,
@@ -642,25 +607,266 @@ function ownDiffScope(
     return { scope: full('compare-unavailable', prior, `the base ${base.slice(0, 7)} is not in this clone`), interdiffPatch: null };
   }
 
-  const paths = [
-    ...new Set(
-      options.reviewedFiles.flatMap((file) => (file.previousPath === undefined ? [file.path] : [file.path, file.previousPath])),
-    ),
-  ];
   const mergeBase = git.mergeBase(base, options.head, options.cwd);
-  const before = ownDiffFiles(git.diffText(git.mergeBase(base, prior.headRef, options.cwd), prior.headRef, paths, options.cwd));
-  const after = ownDiffFiles(git.diffText(mergeBase, options.head, paths, options.cwd));
-  const { added, unrepresentable, reason } = compareOwnDiffs(before, after);
+  const priorMergeBase = git.mergeBase(base, prior.headRef, options.cwd);
+  const paths = pullRequestPaths(options, prior, git, priorMergeBase, mergeBase);
 
-  if (unrepresentable) {
-    return { scope: full('own-diff-unrepresentable', prior, reason ?? undefined), interdiffPatch: null };
+  // Commits on top of the reviewed head, against the same point on the base,
+  // hold nothing but author work, so that range is the review. A rewrite that
+  // kept the merge base needs no replay either: the reviewed head is already
+  // the pull request on this base.
+  if (priorMergeBase === mergeBase) {
+    return interdiffFrom(options, prior, git, prior.headRef, mergeBase, paths.all, ancestor ? 'base-sync-only' : 'history-rewritten');
   }
 
-  const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
+  if (git.replay === undefined) {
+    return { scope: full('compare-unavailable', prior, 'this git surface cannot replay the reviewed head'), interdiffPatch: null };
+  }
+  const replayed = git.replay(priorMergeBase, mergeBase, prior.headRef, options.cwd);
+  return interdiffFrom(
+    options,
+    prior,
+    git,
+    replayed.tree,
+    mergeBase,
+    paths.all,
+    !ancestor ? 'history-rewritten' : merged ? 'base-merged' : 'base-sync-only',
+    replayed.conflicts,
+    paths.withdrawn,
+  );
+}
 
-  if (added.size === 0) {
-    const reason: UnchangedReason = !ancestor ? 'history-rewritten' : merged ? 'base-merged' : 'base-sync-only';
-    return { scope: { kind: 'unchanged', ...common, reason }, interdiffPatch: null };
+/**
+ * The pull request's files, on either side of the review.
+ *
+ * Those the full read would review now under both names of a rename, those it
+ * deletes now, and those the reviewed head changed that the head no longer
+ * does, so withdrawing a file's changes still shows as its removed lines.
+ * The last are also returned alone: after a replay, one whose replay matches
+ * the head is a change the new base already makes.
+ */
+function pullRequestPaths(
+  options: PlanIncrementalScopeOptions,
+  prior: PriorPullReview,
+  git: IncrementalGit,
+  priorMergeBase: string,
+  mergeBase: string,
+): { all: string[]; withdrawn: string[] } {
+  const reviewed = options.reviewedFiles.flatMap((file) =>
+    file.previousPath === undefined ? [file.path] : [file.path, file.previousPath],
+  );
+  const current = new Set(git.changedPaths(mergeBase, options.head, options.cwd));
+  const withdrawn = git.changedPaths(priorMergeBase, prior.headRef, options.cwd).filter((path) => !current.has(path));
+  return { all: [...new Set([...reviewed, ...(options.deletedFiles ?? []), ...withdrawn])], withdrawn };
+}
+
+/** A patch cut at its `diff --git` lines, keyed by each file's head-side path. */
+function patchSections(patch: string): Map<string, string> {
+  const sections = new Map<string, string>();
+  const starts = [...patch.matchAll(/^diff --git .*$/gm)];
+  starts.forEach((match, index) => {
+    const end = starts[index + 1]?.index ?? patch.length;
+    const header = match[0].endsWith('\r') ? match[0].slice(0, -1) : match[0];
+    const path = gitHeaderPath(header);
+    if (path !== null) sections.set(path, patch.slice(match.index, end));
+  });
+  return sections;
+}
+
+/** One hunk of a file's section: its text, and the head-side lines it spans. */
+interface SpannedHunk {
+  text: string;
+  first: number;
+  last: number;
+}
+
+/**
+ * A file section's header and hunks. Null when a hunk header cannot be read,
+ * so nothing is narrowed on a guess.
+ */
+function sectionHunks(section: string): { header: string; hunks: SpannedHunk[] } | null {
+  const parts = section.split(/^(?=@@ )/m);
+  const header = parts[0]!.startsWith('@@ ') ? '' : parts.shift()!;
+  const hunks: SpannedHunk[] = [];
+  for (const text of parts) {
+    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text);
+    if (numbers === null) return null;
+    const start = Number(numbers[1]);
+    const count = numbers[2] === undefined ? 1 : Number(numbers[2]);
+    // A hunk that adds no head line sits between `start` and the line after
+    // it; spanning both keeps it touching whatever is on either side.
+    hunks.push({ text, first: start, last: count === 0 ? start + 1 : start + count - 1 });
+  }
+  return { header, hunks };
+}
+
+/**
+ * The pull request's own diff of a conflicted file, cut to the hunks its
+ * merge resolution touched. Null when that cannot be told hunk by hunk.
+ *
+ * `resolution` is the head against the replay, whose file holds conflict
+ * markers: every hunk of it is a place where the head is not simply the
+ * reviewed change replayed - a resolved conflict, or an edit made while
+ * resolving. Both sides are numbered by head lines, so an own-diff hunk is
+ * kept when its lines, context included, meet any of them. Anything the
+ * resolution did that meets no own-diff hunk - a conflict resolved by taking
+ * the base's side, which leaves no own diff there - cannot be shown this way,
+ * so the whole file is read instead, as before.
+ */
+export function narrowToResolution(own: string, resolution: string | undefined): string | null {
+  if (resolution === undefined) return null;
+  const ownHunks = sectionHunks(own);
+  const touched = sectionHunks(resolution);
+  if (ownHunks === null || touched === null || ownHunks.hunks.length === 0 || touched.hunks.length === 0) return null;
+
+  const meets = (left: SpannedHunk, right: SpannedHunk): boolean => left.first <= right.last && right.first <= left.last;
+  const kept = new Set<SpannedHunk>();
+  for (const change of touched.hunks) {
+    const hits = ownHunks.hunks.filter((hunk) => meets(hunk, change));
+    if (hits.length === 0) return null;
+    for (const hit of hits) kept.add(hit);
+  }
+  return ownHunks.header + ownHunks.hunks.filter((hunk) => kept.has(hunk)).map((hunk) => hunk.text).join('');
+}
+
+/**
+ * The hunks of `own` that meet a change in `delta`, both numbered by head
+ * lines: an empty string when none does, null when either cannot be read.
+ */
+function changedSince(own: string, delta: string): string | null {
+  const ownHunks = sectionHunks(own);
+  const changes = sectionHunks(delta);
+  if (ownHunks === null || changes === null) return null;
+  const kept = ownHunks.hunks.filter((hunk) => changes.hunks.some((change) => hunk.first <= change.last && change.first <= hunk.last));
+  return kept.length === 0 ? '' : ownHunks.header + kept.map((hunk) => hunk.text).join('');
+}
+
+/**
+ * True when a file's section removes a replay's conflict block: an opening
+ * and a closing marker line, which git writes and no author does.
+ */
+function hasReplayMarkers(section: string): boolean {
+  return /^-<{7} /m.test(section) && /^->{7} /m.test(section);
+}
+
+/**
+ * Reads the head against `from` - the reviewed head, or its replay onto the
+ * new base - over the pull request's files only.
+ *
+ * A file whose replay conflicted has only markers to compare with, so it is
+ * read as the pull request's own diff of it on the new base, cut to the hunks
+ * the resolution touched; when those cannot be matched up, the whole of that
+ * own diff, which shows the author's resolution and everything else the pull
+ * request does there, and none of the base's changes. A cut file is then cut
+ * again to the hunks that changed since the reviewed head, and a file the
+ * same at both heads is left out, so a base merge that conflicted but left the
+ * author's code as reviewed reads as unchanged. If that own diff is empty the
+ * author resolved by dropping their change, and the marker diff is the only
+ * place the withdrawal would show; but it shows it through the replay's
+ * conflict markers, so such a file is left out and listed instead (#73).
+ */
+function interdiffFrom(
+  options: PlanIncrementalScopeOptions,
+  prior: PriorPullReview,
+  git: IncrementalGit,
+  from: string,
+  mergeBase: string,
+  paths: string[],
+  unchangedReason: UnchangedReason,
+  conflicts: string[] = [],
+  withdrawn: string[] = [],
+): PlannedScope {
+  const diffText = git.diffText as NonNullable<IncrementalGit['diffText']>;
+  // No pathspec means the whole range to git: with no pull request files, the
+  // change since the review is nothing, never every file in the repository.
+  const read = (left: string, list: string[]): string => (list.length === 0 ? '' : diffText(left, options.head, list, options.cwd));
+
+  // A conflicted path outside the pull request's files stays out, as it would
+  // without the conflict.
+  const wanted = new Set(paths);
+  const conflicted = conflicts.filter((path) => wanted.has(path));
+  const own = patchSections(read(mergeBase, conflicted));
+  const resolutions = patchSections(read(from, [...own.keys()]));
+  // What each conflicted file changed since the reviewed head itself (#63). A
+  // file that is the same at both heads holds nothing the review did not
+  // read, however far the base moved under it, so it drops out. When the
+  // resolution matched up hunk by hunk, the author withdrew nothing - a
+  // withdrawal is a resolution hunk with no own hunk - so a change since the
+  // review that meets no own hunk is the base's, and an own hunk that meets
+  // no such change is code the review already read, moved at most: only the
+  // own hunks that changed since the review are kept, and none can mean none.
+  const sinceReview = patchSections(read(prior.headRef, [...own.keys()]));
+  const narrowed: string[] = [];
+  const whole: string[] = [];
+  const resolved = [...own].flatMap(([path, section]) => {
+    const delta = sinceReview.get(path);
+    if (delta === undefined) return [];
+    const cut = narrowToResolution(section, resolutions.get(path));
+    if (cut === null) {
+      whole.push(path);
+      return [section];
+    }
+    const fresh = changedSince(cut, delta);
+    if (fresh === null) {
+      narrowed.push(path);
+      return [cut];
+    }
+    if (fresh.length === 0) return [];
+    narrowed.push(path);
+    return [fresh];
+  });
+  const rest = paths.filter((path) => !own.has(path));
+  // A replay's conflict markers are never the author's lines, yet a file read
+  // against a conflicted replay shows them as removed code, and an analyst
+  // took them for a bad resolution (#73). Such a file is read as the pull
+  // request's own diff of it on the new base instead; when that is empty, the
+  // pull request no longer changes the file - its change there was withdrawn,
+  // or the branch under it was rewritten - and it is left out and listed.
+  const leaked: string[] = [];
+  const dropped: string[] = [];
+  const outsideSections = [...patchSections(read(from, rest))].map(([path, section]) => {
+    if (!hasReplayMarkers(section)) return section;
+    const ownSection = patchSections(read(mergeBase, [path])).get(path);
+    if (ownSection === undefined) {
+      dropped.push(path);
+      return '';
+    }
+    leaked.push(path);
+    return ownSection;
+  });
+  const outside = outsideSections.join('');
+  const patch = [outside, ...resolved].filter((part) => part.length > 0).join('');
+
+  const notes = [
+    narrowed.length === 0 ? null : `narrowed to the merge resolution after a conflicting replay: ${narrowed.sort().join(', ')}`,
+    whole.length === 0
+      ? null
+      : `read whole after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(', ')}`,
+    leaked.length === 0
+      ? null
+      : `read as the pull request's own diff after a conflicting replay, so no conflict marker is shown: ${leaked.sort().join(', ')}`,
+  ].filter((note): note is string => note !== null);
+  const detail = notes.length === 0 ? {} : { detail: notes.join('; ') };
+
+  // After a replay, a file the pull request no longer changes whose replay
+  // equals the head is one the new base changed the same way. Without a
+  // replay the reviewed head is read directly, and a withdrawal always shows.
+  // Asked of git without rename detection, so a file renamed since the review
+  // counts as changed under its old path too, never as absorbed.
+  let absorbedList: string[] = [];
+  const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true));
+  if (from !== prior.headRef && candidates.length > 0) {
+    const differs = new Set(git.changedPaths(from, options.head, options.cwd));
+    absorbedList = candidates.filter((path) => !differs.has(path)).sort();
+  }
+  const absorbed = {
+    ...(absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList }),
+    ...(dropped.length === 0 ? {} : { noLongerChanged: dropped.sort() }),
+  };
+
+  const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
+  if (patch.trim().length === 0) {
+    return { scope: { kind: 'unchanged', ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null };
   }
 
   const reviewed = new Map<string, string>();
@@ -668,24 +874,15 @@ function ownDiffScope(
     reviewed.set(file.path, file.path);
     if (file.previousPath !== undefined) reviewed.set(file.previousPath, file.path);
   }
-
-  const parts: string[] = [];
   const files = new Set<string>();
   let hunks = 0;
-  for (const [path, fresh] of added) {
-    const shown = reviewed.get(path);
-    // Every path compared came from the reviewed list, so this cannot miss;
-    // if it ever did, narrowing past it would be the silent skip to avoid.
-    if (shown === undefined) {
-      return { scope: full('compare-unavailable', prior, `${path} changed but is not a reviewed file`), interdiffPatch: null };
-    }
-    files.add(shown);
-    hunks += fresh.length;
-    parts.push([...(after.get(path)?.header ?? []), ...fresh.map((hunk) => hunk.text)].join('\n'));
+  for (const [path, file] of ownDiffFiles(patch)) {
+    files.add(reviewed.get(path) ?? path);
+    hunks += file.hunks.length;
   }
 
   return {
-    scope: { kind: 'interdiff', ...common, files: [...files].sort(), hunks },
-    interdiffPatch: `${parts.join('\n')}\n`,
+    scope: { kind: 'interdiff', ...common, files: [...files].sort(), hunks, ...detail, ...absorbed },
+    interdiffPatch: patch,
   };
 }

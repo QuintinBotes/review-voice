@@ -5,6 +5,8 @@ import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
 import { parseComplexity, type ComplexityAssessment } from '../diff/complexity.ts';
 import { matchCarried, type CarriedFinding } from '../diff/carry.ts';
+import type { TieBreak } from '../verify/reconcile.ts';
+import type { FollowUpState } from './follow-ups.ts';
 
 export interface StoredFinding {
   findingId: string;
@@ -27,6 +29,54 @@ export interface StoredFinding {
   unattributed?: boolean | undefined;
   /** The earlier run and finding this one was carried forward from, unchanged. */
   carriedFrom?: { runId: string; findingId: string } | undefined;
+  /**
+   * This finding follows up the owner's earlier comment, which the author only
+   * partly addressed, and records what was still open at this run. It stays as
+   * recorded; a later run of the same pull request records whether it is still
+   * open or resolved, in its `followUps` (see `store/follow-ups.ts`). The
+   * follow-up is posted as an ordinary inline comment.
+   */
+  partlyAddressed?: PartlyAddressedFinding | undefined;
+}
+
+export interface PartlyAddressedFinding {
+  status: 'partly-addressed';
+  /**
+   * The earlier comment, where it sat when this review read the thread, and
+   * its GitHub id when the thread file carried it.
+   */
+  prior: { author: string; path: string; line: number; commentId?: number };
+  remaining: string[];
+  addressed: string[];
+}
+
+/**
+ * The partly-addressed state a scored candidate carries from `score`, as
+ * `possibleRepeatOf` of `kind: own-comment` and `status: partly-addressed`.
+ * Anything else is no state, not an error: the finding is then recorded as an
+ * ordinary one.
+ */
+export function partlyAddressedOf(value: unknown): PartlyAddressedFinding | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const v = value as Record<string, unknown>;
+  if (v['kind'] !== 'own-comment' || v['status'] !== 'partly-addressed') return undefined;
+  const strings = (list: unknown): string[] | null =>
+    Array.isArray(list) && list.length > 0 && list.every((item) => typeof item === 'string') ? (list as string[]) : null;
+  const remaining = strings(v['remaining']);
+  const addressed = strings(v['addressed']);
+  if (remaining === null || addressed === null) return undefined;
+  if (typeof v['author'] !== 'string' || typeof v['path'] !== 'string' || !Number.isInteger(v['line'])) return undefined;
+  return {
+    status: 'partly-addressed',
+    prior: {
+      author: v['author'],
+      path: v['path'],
+      line: v['line'] as number,
+      ...(Number.isInteger(v['commentId']) ? { commentId: v['commentId'] as number } : {}),
+    },
+    remaining,
+    addressed,
+  };
 }
 
 /**
@@ -69,6 +119,41 @@ export function heldProblem(entry: unknown): string | null {
   return null;
 }
 
+/**
+ * A run built from candidates carried to a pushed head (docs/adr/0017).
+ *
+ * `covered` is true only when the commits between the two heads were reviewed
+ * and no candidate was refused. A run that is not covered never approves, and
+ * a run carried from it inherits the marker.
+ */
+export interface CarryMarker {
+  since: string;
+  head: string;
+  interdiffReviewed: boolean;
+  refused: string[];
+  covered: boolean;
+  /** The run this marker was inherited from, when it was. */
+  inheritedFrom?: string | undefined;
+}
+
+/** The marker as stored, or null when it is absent or not one. */
+export function parseCarryMarker(value: unknown): CarryMarker | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v['since'] !== 'string' || typeof v['head'] !== 'string') return null;
+  const refused = Array.isArray(v['refused']) ? v['refused'].filter((id): id is string => typeof id === 'string') : [];
+  const interdiffReviewed = v['interdiffReviewed'] === true;
+  return {
+    since: v['since'],
+    head: v['head'],
+    interdiffReviewed,
+    refused,
+    // Recomputed rather than trusted, so a hand-edited row cannot claim cover.
+    covered: interdiffReviewed && refused.length === 0 && v['covered'] === true,
+    ...(typeof v['inheritedFrom'] === 'string' ? { inheritedFrom: v['inheritedFrom'] } : {}),
+  };
+}
+
 /** Raised when a recorded finding repeats a carried one but sits on another line. */
 export class CarryMismatch extends Error {}
 
@@ -77,6 +162,8 @@ export interface CandidateHint {
   path: string;
   line: number;
   category?: string | undefined;
+  /** As `score` hands it on; read with `partlyAddressedOf`. */
+  possibleRepeatOf?: unknown;
 }
 
 export interface RecordRunInput {
@@ -102,6 +189,12 @@ export interface RecordRunInput {
    */
   verdicts?: unknown;
   /**
+   * Tie-break rulings on findings the two verification passes disagreed
+   * about. A dropped finding an upheld ruling restored would otherwise read
+   * as suppressed in `explain`.
+   */
+  tieBreaks?: TieBreak[] | undefined;
+  /**
    * Candidates held back rather than reported, with the reason. Unlike a
    * verdict, this also covers repeats of an existing comment and cross-check
    * results, which no verifier pass produces.
@@ -109,6 +202,10 @@ export interface RecordRunInput {
   held?: HeldFinding[] | undefined;
   /** The earlier run's carried findings, to be matched against what is recorded. */
   carried?: { runId: string; findings: CarriedFinding[] } | undefined;
+  /** Present when the run was built from candidates carried to this head. */
+  carry?: CarryMarker | undefined;
+  /** Earlier runs' partly-addressed follow-ups, as this run found them: open or resolved. */
+  followUps?: FollowUpState[] | undefined;
   /**
    * How long each stage took, and what it cost.
    *
@@ -124,6 +221,10 @@ export interface StageTiming {
   seconds: number;
   toolCalls?: number | undefined;
   tokens?: number | undefined;
+  /** Distinct files the stage read, as the stage itself counted them. */
+  filesRead?: number | undefined;
+  /** Added and removed lines of the diff the stage read; set on `analyst` at record time. */
+  diffLines?: number | undefined;
 }
 
 /**
@@ -182,6 +283,7 @@ function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
       const anchor = { path: finding.path!, line: finding.line ?? 0 };
       const { hint, how } = attribute(anchor, hints, taken);
       if (hint !== undefined) taken.add(hint);
+      const partly = partlyAddressedOf(hint?.possibleRepeatOf);
       return {
         findingId: `rv_${String(index + 1).padStart(2, '0')}`,
         severity: finding.severity!,
@@ -195,6 +297,7 @@ function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
         // shipped is visible rather than showing up as a missing category.
         ...(how === 'exact' || how === 'none' ? {} : { attributedBy: how }),
         ...(how === 'none' && hints.length > 0 ? { unattributed: true } : {}),
+        ...(partly === undefined ? {} : { partlyAddressed: partly }),
       };
     });
 }
@@ -238,7 +341,10 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
       findings,
       scores: input.scores ?? [],
       verdicts: input.verdicts ?? [],
+      tieBreaks: input.tieBreaks ?? [],
       held: input.held ?? [],
+      ...(input.carry === undefined ? {} : { carry: input.carry }),
+      ...(input.followUps === undefined || input.followUps.length === 0 ? {} : { followUps: input.followUps }),
     }),
     new Date().toISOString(),
     JSON.stringify(input.stages ?? []),
@@ -273,8 +379,14 @@ export interface RunDetail {
   scores: unknown;
   precedents: unknown;
   verdicts: unknown;
+  /** Empty for runs recorded before tie-breaks existed. */
+  tieBreaks: TieBreak[];
   /** Empty for runs recorded before held findings were kept. */
   held: HeldFinding[];
+  /** Null unless the run was built from carried candidates. */
+  carry: CarryMarker | null;
+  /** Empty unless an earlier run of the pull request left a follow-up open. */
+  followUps: FollowUpState[];
 }
 
 function storedComplexity(raw: unknown): ComplexityAssessment | null {
@@ -315,7 +427,10 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     findings: StoredFinding[];
     scores?: unknown;
     verdicts?: unknown;
+    tieBreaks?: unknown;
     held?: unknown;
+    carry?: unknown;
+    followUps?: unknown;
   };
 
   return {
@@ -330,7 +445,10 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     findings: parsed.findings,
     scores: parsed.scores ?? [],
     verdicts: parsed.verdicts ?? [],
+    tieBreaks: Array.isArray(parsed.tieBreaks) ? (parsed.tieBreaks as TieBreak[]) : [],
     held: Array.isArray(parsed.held) ? (parsed.held as HeldFinding[]) : [],
+    carry: parseCarryMarker(parsed.carry),
+    followUps: Array.isArray(parsed.followUps) ? (parsed.followUps as FollowUpState[]) : [],
     // Older rows predate the column, so absence is normal rather than an error.
     stages: ((): StageTiming[] => {
       const raw = row['stages_json'];

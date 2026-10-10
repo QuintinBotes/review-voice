@@ -9,6 +9,425 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `diff --out` writes a `structure` block to `files.json` and its summary.
+  `structure.sizeCrossings` lists the production files the change grows past
+  `review.structure.max_file_lines` (default 1000), with both line counts and
+  the first added line past the threshold. Files whose base or head could not
+  be read are listed in `structure.unmeasured`. The analyst may raise a
+  `maintainability` finding on a crossing only when it names where the file
+  could be split. The verdict is unchanged. (#108)
+- `structure.branchGrowth` lists existing functions, as git names them in hunk
+  headers, that gain at least `review.structure.max_added_branches_per_function`
+  (default 3) decision points net of the ones the change removes from them,
+  with the first added line as the anchor. The
+  analyst may raise a `maintainability` finding when the new branches belong
+  somewhere else and it can say where. The verdict is unchanged. (#109)
+- `structure.typeEscapes` lists escape hatches from the type system on the lines
+  a change adds to production source, as `{ path, line, kind }`: `any`, double
+  casts, non-null assertions and `@ts-ignore`-style directives in TypeScript and
+  JavaScript; `dynamic`, `(object)` casts, null-forgiving `!` and nullable
+  warning suppressions in C#; `# type: ignore`, `cast(` and `Any` in Python. At
+  most 20 per file; other languages get none. The analyst may raise a finding
+  only when it names the invariant being hidden and the type that would carry
+  it. The verdict is unchanged. (#110)
+
+## [1.14.0] - 2026-10-08
+
+### Fixed
+
+- `diff --pr` reports `prior.runId` for the run `record` stored at the
+  `--since` head, instead of `null` on every interdiff. `record` without
+  `--repository` now takes the repository from the `--files` manifest, else
+  from the clone's `origin`, so the run can be found again, and stores a short
+  `--head` as the full commit. When the run id is still unknown, the new
+  `prior.runIdNote` says why. (#82)
+- `check-candidates --held-from` also marks a candidate that re-raises a held
+  concern at another anchor: when the candidate names the held finding's file
+  and largely shares its wording, it is kept with `possibleRepeatOf` of
+  `kind: held`, now carrying the held finding's `path` and `line`. `below-gate`
+  held findings are carried as well, to flag only, never to drop. (#83)
+- `score` holds a `security`, `trust_boundary`, `authorization` or
+  `authentication` finding at the tier the analyst asked for when the verifier
+  sets the new `impact_class: "no-exposure"`, so a front-end gap the server
+  still refuses is no longer reported as blocking. Without that word, or with
+  `data-exposure` or `privilege-escalation`, the boundary tier stands. Any
+  other `impact_class` is refused. (#84)
+
+## [1.13.3] - 2026-10-07
+
+### Fixed
+
+- `validate-output --scores` reports `unbacked_absolute` when a rendered
+  finding uses an absolute word - every, always, never, all, and the like -
+  that its scored claim, failure mode, evidence and fix do not, so an editor
+  that widens "while the query is still loading" to "on every load" is caught
+  while it can retry. Code spans are ignored. The concise editor's prompt says
+  to compress the finding and never add impact, frequency or reach. (#79)
+
+## [1.13.2] - 2026-10-06
+
+### Fixed
+
+- `check-candidates` (and `score`'s second check) reads each `path:line` a
+  review body or conversation comment cites - `src/a.ts:105`, `a.ts:105`,
+  backticked or not - as a comment at that line, holding the text up to the
+  next citation. A candidate near a point another reviewer listed by location
+  in a review body is dropped as a repeat up front instead of only by the
+  verifier; the owner's own citation is flagged for the verifier, as the
+  owner's inline comments are. (#76)
+
+## [1.13.1] - 2026-10-06
+
+### Fixed
+
+- `diff --pr` after a conflicting replay no longer puts the replay's conflict
+  markers in `diff.patch`. A conflicted file the pull request no longer
+  changes - the author withdrew their change there, or the branch under it was
+  rewritten - is left out of the patch and listed as `noLongerChanged` in the
+  scope and the diff summary, which `review.md` prints after the findings. On
+  a stacked pull request whose parent was rewritten, the markers had been read
+  as the author dropping a feature in a bad merge. (#73)
+
+## [1.13.0] - 2026-10-06
+
+### Added
+
+- `review.human_review.sensitive_exempt_paths` (default none) exempts a changed
+  path from the sensitive-path signal when it matches one of its globs, so a
+  cosmetic change under a directory such as `auth/` need not raise the change.
+  `.review-voice/**` and `.github/workflows/**` can never be exempted, and a
+  glob broad enough to match ordinary source files is ignored and reported. The
+  built-in sensitive globs are unchanged. The assessment lists the exempted
+  paths as `sensitiveExempted` (#70).
+- The sensitive-paths reason names the glob each shown path matched
+  (`modules/auth/src/a.ts matched **/auth/**`), and the assessment carries
+  `sensitiveMatches` (#70).
+
+### Fixed
+
+- `carry-candidates` refuses an interdiff as `--diff-file` up front (exit 2),
+  saying to pass the whole pull request's diff from `diff --pr <number>
+  --full`, instead of refusing every candidate in a file the interdiff leaves
+  out. A candidate refused for sitting in a file the diff does not touch says
+  the same, and `carry-candidates --help` states it and lists exit 1. (#67)
+
+## [1.12.0] - 2026-10-06
+
+### Added
+
+- `diff --pr` reports `suspectedWrongBase` in its summary when most of a pull
+  request's commits are already on the repository's default branch, which means
+  a branch cut from it was opened against a release branch (#65). `review.md`
+  raises that one point instead of reviewing the whole patch.
+
+### Fixed
+
+- `carry --thread <thread.json>` holds back a finding the author already
+  answered on the pull request: its posted comment's thread is resolved, or the
+  review it was posted in was dismissed (every finding of a dismissed review
+  when the store knows its id). Held-back findings are not printed, are listed
+  as `heldBack` in the JSON and as `Held back: ... - <reason>` on stderr with the
+  dismissal message and the author's last reply, and do not count as a serious
+  finding that did not carry. `thread` now also records each inline comment's
+  `reviewId` and `inReplyTo`, every review's state under `reviews`, and the
+  message of a dismissed review. `record --carried-from` takes the same
+  `--thread`. Without `--thread`, `carry` on a pull request run says it did not
+  check. (#57)
+
+- `carry` (and `record --carried-from`) now checks that the working directory
+  is a clone of the run's repository before reading commits, and says so when
+  it is not: it names the run's repository, the clone it found and its path.
+  A commit that is not readable names the path it was looked up in, with a
+  hint to fetch it or run from the right clone. `carry` takes `--repository
+  <owner/repo>` for a run that recorded none, and `carry --help` states the
+  working-directory requirement. (#58)
+
+- `score` output names each candidate `candidate_id` in `scores`, `eligible`,
+  `belowGate` and `unverified`, the spelling candidates, verification and
+  `check-candidates` use, so a pipeline joining them on one key no longer gets
+  `null` for every score entry. (#59)
+
+- `diff --pr` after a conflicting base merge no longer re-reads a conflicted
+  file's hunks when the file is the same at the previous and the new head: it
+  drops out, and the scope is `unchanged` (`base-merged`) when nothing else
+  moved. A conflicted file that did change keeps only the hunks its
+  resolution touched that also changed since the previous head; the base's
+  clean changes in the same file no longer bring back reviewed hunks. (#63)
+
+### Deprecated
+
+- `candidateId` in `score` output. It is still written beside `candidate_id`
+  and will be removed in a later release; read `candidate_id`. (#59)
+
+## [1.11.1] - 2026-10-06
+
+### Fixed
+
+- `review-voice <command> --help` (and `-h`, `help <command>`) prints only that
+  command's usage: synopsis, every flag and positional argument, what it reads
+  on stdin, what it writes, and its exit codes. Every dispatched command has an
+  entry, including `thread` and `anchors`, which the command list had omitted;
+  the top-level help is built from the same entries. A command that exits 2 for
+  a bad invocation now ends its stderr with a pointer to its own `--help`.
+  Flags the old text never listed are now documented, among them `draft`,
+  `verdict`, `post`, `consent-plan`, `reconcile`, `explain`, `evaluate`,
+  `redact` and `score --owner`. (#52)
+- A question the verifier did not back is no longer eligible (#54). It needs
+  `verified: true` or `premises_verified: true`; `verified: false` with the
+  premises omitted, no verifier entry, or no `--verification` now rejects it,
+  and the verifier's `reason` is quoted in `rejectedBecause`.
+
+## [1.11.0] - 2026-10-06
+
+### Added
+
+- `RV thread` marks an inline comment whose review thread is resolved with
+  `resolved: true`, read through one GraphQL query, and `check-candidates`
+  carries it into `possibleRepeatOf`; the verifier treats a resolved thread as
+  a likely addressed point. The read-only client now sends GraphQL queries as
+  its one non-GET request: only a known query, by its exact text, with only
+  the variables it declares and the repository from the allowlist; every REST
+  call stays GET-only. If the query
+  fails, `thread` warns locally and goes on with the REST data. See ADR 0018.
+  (#43)
+- A partly-addressed follow-up is tracked to resolution. `RV follow-ups --pr
+  <n>` lists those an earlier run of the pull request left open, for the
+  verifier to check at the new head (`follow_ups` rulings). `record --thread
+  --follow-ups` on a later run of the same pull request marks each resolved
+  when the owner resolved its posted comment's thread or the verifier found
+  every remaining point addressed, and open otherwise, including when someone
+  else resolved it or its file was not in that review; `record --thread`
+  refuses a thread file of another pull request; `explain` shows open or resolved. Local only; nothing is
+  posted. (#30)
+- A second pass that traced a worse impact than a finding's tier can raise it,
+  only through the tie-break: a confirmed verdict whose `suggested_severity`
+  is stronger, with `decisive_evidence`, is kept with `proposedSeverity`;
+  `reconcile` lists it as an `upgrade` dispute, and the tier rises only when
+  the tie-breaker upholds it with `impact_traced: true` at confidence 0.85 or
+  more, recorded under `tieBreaks` with `applied` and `raised` (ADR 0019).
+  Second-pass verdicts may carry `decisiveEvidence: [{path, line, why}]`,
+  which every dispute hands to the tie-breaker. (#31)
+- A prior comment of the owner's that the author only partly addressed gets a
+  local partly-addressed state. The verifier may mark a candidate linked to
+  that comment with `partly_addressed` (`remaining`, `addressed`); `score`
+  then no longer rejects it for repeating that one comment, after checking its
+  author is the owner (`--owner`, or the configured owner); the editor states
+  only what remains, and `record` stores the finding as `partlyAddressed` with
+  what was still open at that run, shown by `explain`. What remains is posted
+  as an ordinary inline comment in the normal review, never as a thread reply. `check-candidates` no longer drops a
+  candidate for repeating the owner's own inline comment; it flags it for the
+  verifier, and `score` still rejects a plain repeat. (#30)
+- `RV reanchor --candidate <id> --line <n>` moves one eligible scored candidate
+  to a corrected line, optionally in another file (`--path`), keeping its
+  verification and score. It refuses a line that is not an added line or
+  deletion site of the reviewed diff, a candidate that was not eligible, a stale
+  consumer, and a location another finding holds. Both files are written
+  beside their targets and renamed into place. See ADR 0017. (#39)
+- `RV carry-candidates` carries verified candidates to a head the author pushed
+  mid-review. A candidate carries only when its file, a stale consumer's cause,
+  and every file its claim, evidence or verification names are unchanged
+  between the heads, and its line is a changed line of the new head's diff;
+  the rest are refused by name and the review command re-reviews the new head.
+  The review of the commits in between is merged in with `--interdiff`, held
+  findings move with `--held`, and the carry is written to `carry.json` and
+  the audit log. A run recorded with `record --carry` from a carry without that
+  review, or with a candidate refused, is capped at COMMENT, passes the cap to
+  runs carried from it, and is not used as the next review's boundary. See ADR
+  0017. (#29)
+- `RV reconcile` applies the second-pass verdicts to the candidates, and a new
+  `tie-breaker` agent settles a dispute between the two verifiers. A finding is
+  disputed when the evidence-verifier traced its impact at 0.85 or more and the
+  second pass downgraded or dropped it. One tie-break per dispute decides it on
+  the code: upheld, the evidence-verifier's finding is scored as it was, a
+  dropped one included; not upheld, or with no tie-break, the second pass's
+  outcome stands and scoring no longer escalates the finding back above it on
+  the disputed trace. `record --tie-breaks` keeps the rulings and `explain`
+  shows them. The second pass's verdicts now carry the candidate id whichever
+  spelling the analyst used. See ADR 0014.
+- `RV check-verification` checks the evidence-verifier's output straight after
+  it runs, with the checks `score --verification` applies, and names the entry,
+  field and refused value. The verifier prompt now states that
+  `evidence_quality` is exactly `high`, `medium` or `low`. (#37)
+- `score` lists `unverified`: candidates rejected only because the verifier
+  listed context it could not obtain, with the verifier's confidence and the
+  missing context. The review prints them locally under
+  `Unverified (not posted)` and records them with `record --held` as
+  `unverified`. They are never posted. The review sets such a candidate aside
+  in step 3 instead of discarding it, so it reaches `score`, and `score`
+  rejects any non-question whose verification says `verified: false`. (#20)
+- `belowGate` also lists a candidate the verifier confirmed below its own
+  confidence floor, with `gate: confidence`; final-score entries carry
+  `gate: score`. Both lists hold only candidates that one gate alone stopped:
+  a thread repeat, a missing citation or an untraced stale consumer is now
+  appended to the reason and keeps the candidate off them. (#20)
+
+### Changed
+
+- A follow-up review on plain author commits - the reviewed head is an ancestor
+  of the new head and the merge base with the base branch did not move - reads
+  exactly the diff between the two heads, limited to the pull request's files.
+  A new file, an edit inside a reviewed hunk, removed lines and code moved by a
+  refactor no longer fall back to reading the whole pull request; removed lines
+  show as `-` lines.
+- A follow-up after the base branch was merged in, or the pull request was
+  rebased, replays the reviewed head onto the new merge base (`git merge-tree`,
+  git 2.40 or later) and reads the head against it, over the pull request's
+  files. Only what the author changed since the review is read - new commits
+  and any rewrite of their own code while resolving the merge - and none of the
+  base's changes. A merge that brought in base changes only is `unchanged`. A
+  file whose replay conflicts is read as the pull request's own diff of it on
+  the new base, which shows the author's resolution, and the scope's `detail`
+  names it. An older git reads the whole pull request, with the version in
+  `detail`. A follow-up that only deletes a file counts that file as reviewed.
+  Hunk matching between the
+  own diffs before and after, which read a reverted, moved or re-neighboured
+  hunk as a full re-read, is gone; stored `own-diff-unrepresentable` scopes
+  still read back.
+- A follow-up's files include both paths of a renamed file, so undoing a rename
+  shows the old path coming back, and files the pull request now deletes, so a
+  deletion is in the patch. With no pull request files to read, the follow-up
+  is `unchanged` rather than the whole commit range.
+- A follow-up whose merge conflicted reads a conflicted file as only the
+  hunks of its own diff that the resolution touched, instead of the whole own
+  diff; when a part of the resolution meets no own-diff hunk, the whole own
+  diff is read and the scope note names the file. A file the pull request no
+  longer changes because the merged base makes the same change is listed as
+  `absorbedByBase` in the `diff` summary and printed after the findings; a
+  file renamed since the review, or one no review would read, such as a lock
+  file, is never listed. (#26)
+- The posted review no longer says anything about human review. A change
+  assessed as high-complexity is still capped at COMMENT (ADR 0012), but the
+  summary line is the ordinary one and `humanReviewNote` is carried in the
+  `verdict` and `post` output for the agent to tell the user, not in the pull
+  request.
+
+### Fixed
+
+- `anchors` routes a stale-consumer finding, and any line outside every hunk of its file on
+  the right side, to `unanchored` rather than listing it as an inline anchor. It takes
+  `--diff-file` and `--scores`, and says when hunk checks were skipped (#47)
+- `diff --pr` exposes `refs.mergeBase` (and `mergeBase` in the summary) beside
+  `base`, which stays the base branch tip. Once that branch moves on,
+  `git diff base head` shows its own changes; `record`, `symbols` and `score`
+  take the merge base as `--base`. (#36)
+- `symbols` stops itself after `--max-ms` (default 60000) instead of running on
+  a large diff. Files it had not finished are listed as `inconclusive` with
+  `reason: "time-budget"`, the finished ones are still written, and the report
+  carries a `budget`. (#33)
+- A change whose only edits in a file are one-line imports no longer gets
+  `repository` reach from the spread of the imported name or the module's
+  importers; its reach is absent and the category's own tier applies. `record`
+  also caps the path lists in the scores it stores, with a `<name>Total` count
+  beside each cut list, so a scores file cannot grow with the repository. See
+  ADR 0009. (#7)
+- `record --stages` also takes `filesRead`, and `explain` shows each stage's
+  tool calls, files read and tokens against the size of the diff the analyst
+  read. A run with no findings from an analyst pass of fewer than one tool call
+  per 40 changed lines (on diffs of 150 lines or more) gets a warning in
+  `record`'s output and in `explain`; it is local and is never posted. (#41)
+- A failed check whose output title or summary, or whose runner annotations,
+  name an infrastructure cause - a lost runner or agent, the platform's time
+  limit, a full disk, ECONNRESET, "other side closed", a 429 or 503 - needs a
+  rerun instead of counting as red, unless another failure annotation is
+  unmatched; the reasons name the matched phrase. Annotations are read by GET
+  and never wait out a rate limit; `ci.rerun_signatures` adds specific phrases
+  and `ci.builtin_rerun_signatures: false` drops the built-in ones. (#21)
+- The stuck-check threshold is configurable: `ci.stuck_after_minutes` replaces
+  the 60-minute default, and `ci.stuck_after_overrides` sets it per check-name
+  glob, so a long healthy suite no longer reads as needing a rerun. (#22)
+- `check-candidates --thread` follows the owner's own comment after its line
+  moves: a candidate making the same claim anywhere in that file is kept with
+  `possibleRepeatOf` of `kind: own-comment` for the verifier. The owner is
+  `identity.owner_reviewer`, or `--owner <login>`. (#24)
+- `check-candidates --thread` flags a same-file, same-concern repeat of any
+  reviewer's inline comment, whatever the line distance, as `possibleRepeatOf`
+  of `kind: thread`, with `outdated: true` when GitHub no longer places the
+  comment on the head because the code under it changed (and `resolved: true`
+  when its thread is resolved; see the GraphQL entry above). Every anchored thread match now carries its `kind`, and the nearby match is
+  the best one, the owner's own first, rather than the first found. (#43)
+- A `stale-consumer` finding on documentation (`.md`, `.rst`, `.adoc`) that the
+  verifier confirmed is eligible at `nit` without `impact_traced`; above `nit`,
+  without a verifier entry, or on code (`CMakeLists.txt`, `requirements.txt`
+  and `.mdx` included) it still needs the trace, and the rejection says which.
+  See ADR 0015. (#27)
+- The unverifiable cap no longer fires on context the claim does not depend
+  on. The verifier can mark a `required_context_missing` entry as
+  `{"context": "...", "kind": "cosmetic"}`; only blocking entries cap, and a
+  plain string or an entry without `kind` is blocking. See ADR 0016. (#38)
+- A `stale-consumer` cause is judged against the diff the analyst read, the
+  interdiff on a follow-up: the analyst prompt and the review command now say
+  so, and `check-candidates` and `score` must be given that same patch. When
+  the consumer's own line is changed in that diff, the anchor reason says to
+  file it as an ordinary finding, and `check-candidates` lists a passing one
+  under `suggestions`. (#28)
+- The rule that a `question` is eligible when its premises are verified, even
+  if its answer is not, is now stated in the review command, the architecture
+  notes and ADR 0016. The verifier may report `premises_verified` for a
+  question, and `false` keeps it from being asked. The editor contract states
+  that a `question` comes after every `nit`. (#40)
+- `reconcile` reads the evidence-verifier's confidence as `score` does,
+  falling back to the `evidence_quality` tier when there is no number, so a
+  trace reported by tier alone can be disputed and a second-pass downgrade of
+  it holds. (#31)
+- `explain` no longer hides a dropped finding behind a tie-break `reconcile`
+  ignored. `reconcile` marks each ruling `applied` under `tieBreaks`, and the
+  review records that output with `record --tie-breaks`; an upheld ruling
+  marked not applied no longer hides a drop. Runs recorded before the mark
+  explain as they did. (#31)
+- A finding whose wider impact was disputed and not upheld carries
+  `impactDisputed: true` to the editor, which then leaves that impact out of
+  the comment. (#31)
+- `reconcile` refuses, exiting 2, a second-pass verdict whose fields
+  contradict its label: a `kept` that was not confirmed or moved the tier, a
+  `dropped` that was not rejected, a `downgraded` whose `finalSeverity` is not
+  lower, or a proposal with no decisive evidence. `verify` reads a verdict
+  label other than confirmed, rejected or uncertain on its last verdict as no
+  verdict, instead of a confirmation or an earlier draft, reads a reason that
+  is not text as none, and no longer turns a doubted question into a nit. (#31)
+- `record` checks stdin against the output contract `validate-output` enforces
+  and exits 2, naming each problem and storing nothing, when it is not a
+  review. (#34)
+- `carry` of an earlier run with no findings gives `No actionable findings.` as
+  its `output` instead of an empty string, and `carry --text` prints only the
+  carried review so it pipes into `validate-output` and `record`; it exits 1
+  when findings existed and none carried, or a blocking or important finding
+  did not carry, which `record --carried-from` also refuses. The review command
+  shows the handoff. (#35)
+- The complexity assessment no longer counts decision points in Markdown and
+  other documentation. Prose words such as `if` and `or` had been read as
+  branches; the assessment now reports how many files it left out, and
+  sensitive paths still match them. Build scripts such as `CMakeLists.txt`,
+  MDX, and extensionless names outside the root or `docs/` stay counted (#23).
+- The complexity assessment no longer counts decision points in tests and
+  fixtures, matched by `review.human_review.test_paths` (narrow defaults: test
+  directories and names that mean a test in their language). Splitting a spec
+  file no longer changes the outcome, and the densest hunk named is always
+  production code. A glob broad enough to match ordinary source files is
+  ignored and named in the reasons, and `.review-voice/**` is a default
+  sensitive path (#32).
+- The complexity assessment no longer counts decision points in generated
+  output: files classified as generated, files marked `linguist-generated` in
+  `.gitattributes` as of the commit the change starts from (never its head),
+  and `review.human_review.generated_paths`. It reports
+  `generatedDecisionPoints` beside the hand-written count, and sensitive paths
+  still flag generated files (#42).
+- A high-complexity verdict now reports, for the agent only, the verdict the
+  review would have posted without the cap (`wouldHaveEvent`,
+  `wouldHaveSummary`), and the owner's earlier REQUEST_CHANGES that a COMMENT
+  leaves blocking (`staleRequestChanges`), for the user to dismiss by hand.
+  Neither is posted, and nothing is dismissed (#44).
+
+## [1.10.1] - 2026-10-05
+
+### Changed
+
+- Test fixtures, code comments and the architecture notes use generic example
+  names throughout. No behaviour changes.
+
+## [1.10.0] - 2026-10-05
+
+### Added
+
 - `check-candidates --held-from <run-id> --head <sha>` carries an earlier run's
   held findings to the new head and drops a candidate that restates one on
   unchanged code, so a finding the verifier refuted is not raised again. A
@@ -1221,7 +1640,17 @@ no data because nothing has been labelled, and `docs/EVALUATION.md` says so.
   vulnerability reporting, and the repository security posture documented in
   `docs/REPO-SECURITY.md`.
 
-[1.9.0]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.14.0]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.13.3]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.13.3
+[1.13.2]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.13.2
+[1.13.1]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.13.1
+[1.13.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.13.0
+[1.12.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.12.0
+[1.11.1]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.11.1
+[1.11.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.11.0
+[1.10.1]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.10.1
+[1.10.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.10.0
+[1.9.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.9.0
 [1.8.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.8.0
 [1.7.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.7.0
 [1.6.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.6.0

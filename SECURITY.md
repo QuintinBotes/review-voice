@@ -60,8 +60,13 @@ substantially; they do not eliminate it.
 
 ### One write, behind guards
 
-The GitHub client that reads review history rejects any non-GET request, in
-code and covered by test. The single write is `RV post`, through a separate
+The GitHub client that reads review history sends REST requests only as GET.
+Its one POST is a GraphQL read of review-thread state: only a document that is
+exactly one of a fixed set of known queries is sent, with only the variables
+it declares and the repository taken from the allowlist, so it can neither
+write nor read another repository
+([ADR 0018](docs/adr/0018-read-only-graphql-thread-state.md)); both rules are
+in code and covered by test. The single write is `RV post`, through a separate
 writer that can only create a pull request review
 ([ADR 0010](docs/adr/0010-review-verdict-posting.md)). It posts only findings
 the verifier established, inline on their lines, only with `--confirm` for that

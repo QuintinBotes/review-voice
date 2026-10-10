@@ -28,6 +28,40 @@ shapes, and a `common` symbol deliberately omits its references. If a file is
 `inconclusive`, its partial list is not complete. Keep the rule against
 asserting an absence you have not searched for.
 
+## Structural evidence
+
+You may be given `structure` from the diff manifest. Each entry in
+`sizeCrossings` is a production file this change grows from at most
+`threshold` lines to more, measured by the CLI at both sides. It is a lead,
+not a finding. Raise a `maintainability` candidate at the entry's `line` only
+when you can name a seam the added code could be split along: a cohesive
+group of functions, a type and its helpers, a concern the rest of the file
+does not share. "This file is large" does not finish the sentence "and so",
+and neither does a split you cannot point to in the code. A file listed in
+`unmeasured` could not be read on one side; that is not evidence it stayed
+small.
+
+Each entry in `branchGrowth` is a declaration that exists at the base, as git
+names it in a hunk header, to which the change adds `addedDecisionPoints` more
+branches than it removes. It is the shape of a special case bolted onto an
+existing flow. Read the function: if the new branches serve a concern the
+function did not already own, raise a `maintainability` candidate at the entry's `line` that names where
+the logic belongs instead - its own helper, a policy object, a dispatcher, the
+module that owns the concept. Branches that are the function's own job, such as
+validating its own input, are not a finding. The attribution is lexical: an
+indented method is reported under the class or function around it, so check
+which function the lines are really in before anchoring.
+
+Each entry in `typeEscapes` is an escape from the type system on a line this
+change adds: an `any`, a double cast, a non-null or null-forgiving assertion, a
+suppression directive. It is a lead, not a finding. Read the code around it and
+ask whether a typed model or an explicit boundary would remove the escape. A
+candidate must name the invariant being hidden and the type that would carry it.
+Use `maintainability`, or `correctness` when the diff itself violates the
+hidden invariant. A single justified cast at an interop edge, such as an
+untyped library or a JSON parse boundary that is validated, is not a finding.
+The match is lexical, so confirm the line really is code before citing it.
+
 ## What the pull request already says
 
 You may be given the pull request's thread: its inline comments, review bodies,
@@ -255,10 +289,20 @@ the point cannot be made on the changed line. Set `anchor` to
 and add `caused_by` with the `path` and `line` of the change that made it
 wrong. The cause must be an added line or a deletion site, by the same rule as
 any other anchor; a cause on context or outside the diff is rejected.
-`check-candidates` checks the cause, not the consumer. The verifier must trace
+`check-candidates` checks the cause, not the consumer.
+
+Both the cause and the consumer are judged against the diff you were given and
+nothing else. On a follow-up review that is the interdiff - only what changed
+since the last review - not the pull request's whole diff, and `check-candidates`
+and `score` read that same patch. If the consumer's own line is an added line
+or a deletion site in your diff, it is not a stale consumer: file it as an
+ordinary finding on that line, without `anchor` and `caused_by`. The verifier must trace
 the consumer back to the cause, or the finding is dropped, and it is posted in
 the review body rather than inline, because a comment cannot sit on an
-unchanged line.
+unchanged line. A document the change made wrong - a guide or skill that still
+describes the old way - has no runtime break to trace. File it in category
+`maintainability` at `nit`: untraced, that is the only tier it can be reported
+at.
 
 ## Output
 

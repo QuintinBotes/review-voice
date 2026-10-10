@@ -17,6 +17,7 @@ agents. A command file orchestrates them.**
 | Convention discovery | CLI | which files exist is a fact |
 | Candidate generation | `diff-analyst` | genuine judgment |
 | Evidence verification | `evidence-verifier` | genuine judgment |
+| Verifier tie-break | `tie-breaker` | genuine judgment, only on a dispute |
 | Precedent retrieval | CLI | an index query |
 | Preference scoring | CLI | **arithmetic - never ask a model to do this** |
 | Dedup and ranking | CLI | deterministic |
@@ -102,9 +103,23 @@ files all produce a full review with a named cause. The implementation can
 prove only a simple descendant range is safe; every other shape is cheaper to
 read again than to explain away after it omits author work.
 
-A merge always falls back. A range diff can show the merge's files, but cannot
-reliably separate base-branch updates from the author's changes, so presenting
-it as a narrow author review would claim more precision than the data has.
+A range diff across a merged base or a rebase cannot separate base-branch
+updates from the author's changes. When the base commit is readable, the
+reviewed head is instead replayed onto the new merge base with
+`git merge-tree`, giving what the reviewed pull request would look like had it
+branched there, and the head is read against that, over the pull request's
+files. Base changes are
+on both sides and cancel out; what remains is the author's new commits and any
+rewrite of their own code while resolving the merge. A file whose replay
+conflicts has only conflict markers to compare with, so it is read as the pull
+request's own diff of it on the new base, cut to the hunks that meet a place
+where the head differs from the marked-up replay: the author's resolution, with
+the base's changes still left out. When some part of the resolution meets no
+own-diff hunk, as when the author took the base's side, the whole own diff of
+that file is read instead, and the scope note says so. A file the reviewed head
+changed that the base now changes the same way drops out of the pull request;
+it is listed as `absorbedByBase` and printed after the findings. Without the
+base commit, a merge or a rewritten history still falls back.
 
 The resulting scope is written beside the patch and printed after the findings
 when it is incremental. In particular, `No actionable findings.` then means no
@@ -124,6 +139,73 @@ a declaration or an unrelated construct, and unfamiliar languages do not get a
 made-up parser; it is a reading hint, never proof of a call site. A failed grep
 marks that file inconclusive rather than empty, because a search that did not
 answer cannot establish that a changed symbol has no consumers.
+
+The collection has a time budget (`--max-ms`, default 60 seconds) that the
+process enforces itself: it is checked before every search, and each search is
+capped to what is left. It sits on the critical path before the analyst, so a
+large diff must not stall the review. A file the budget did not reach is listed
+as inconclusive with `reason: "time-budget"`, and the files finished so far are
+still written.
+
+### Structural evidence
+
+`diff --out` also writes a `structure` block to `files.json` and its summary:
+facts about the shape of the change that a reader pays for and the CLI can
+measure. The first is `sizeCrossings`, the production files the change grows
+from at most `review.structure.max_file_lines` (default 1000) to more. Each
+entry carries both line counts and an anchor, the first added line past the
+threshold, so a finding about it lands on code the change wrote.
+
+Both sides are read with one `git cat-file --batch`. The base is the commit the
+change starts from, the same one `.gitattributes` is read at, and a renamed
+file is measured at its previous path. A follow-up review starts from the head
+it last reviewed, so a crossing an earlier push made is not raised again, and
+a deleted file is not measured at all. The head is the working tree, the index
+or the head commit, depending on the mode. A side that cannot be read, such as
+a pull request whose head was not fetched, puts the file in `unmeasured`
+instead of treating it as small. "Production" means what the decision-point
+count means by it, from the same classification: tests, documentation and
+generated files are left out.
+
+This is a fact about a file, not about the diff: it is not the size signal
+[adr/0012](adr/0012-complex-changes-need-human-approval.md) rejected, and it
+plays no part in the verdict. The analyst gets it as a lead and still has to
+name a seam the added code could be split along, so "this file is large" on its
+own is never a finding.
+
+The second is `branchGrowth`: declarations that exist at the base and gain at
+least `review.structure.max_added_branches_per_function` (default 3) decision
+points, summed over the change and net of the ones it removes from them, so a
+rewrite that swaps one branch for another is not growth. The decision-point counter of
+[adr/0012](adr/0012-complex-changes-need-human-approval.md) attributes each
+added branch to its enclosing declaration the way git names one in a hunk
+header: the header's context, then any context line inside the hunk that
+starts in the first column with a letter, `_` or `$` and is not a statement
+keyword. Both come from the base side, so the declaration already existed.
+Names are cut at 80 bytes, as git cuts them in a header, so one function is one
+name however it was found. An added line of that shape starts something new,
+and branches after it are not attributed, unless it replaces a declaration the
+hunk removed, such as a changed signature, which keeps the base name. Branches
+in a hunk without header context are not attributed either. There is no
+parser, so an indented method is attributed to the class or function around
+it, as git would; the analyst is told to check. One counter serves both uses,
+so the complexity assessment and this signal cannot disagree about what a
+decision point is.
+
+The third is `typeEscapes`: `{ path, line, kind }` for each escape from the type
+system on a line the change adds to production source, found by a small
+per-language pattern table in `diff/type-escapes.ts`. TypeScript and JavaScript
+get `any`, `double-cast`, `non-null`, `ts-ignore`, `ts-expect-error` and
+`lint-disable` (an `eslint-disable` that names a `@typescript-eslint/` rule or
+no rule); C# gets `null-forgiving`, `dynamic`, `object-cast` and
+`nullable-disable`; Python gets `type-ignore`, `cast` and `any`. Only added
+lines count, at their new-side line numbers, at most 20 per file, earliest
+first. Each line is split into code and comment by a scanner that tracks quotes
+and comment markers, so a pattern in a string never matches, code patterns
+ignore comments, and directives are read from comments only. It works a line at
+a time and does not follow multi-line strings. A file with any other extension
+gets no entries rather than a guess. The analyst treats an entry as a lead and
+needs to name the hidden invariant and the type that would carry it.
 
 ### Retrieval
 
@@ -427,7 +509,17 @@ claims: context the verifier needed and could not obtain, and an admission in
 the candidate's own evidence that the claim could not be checked. The second
 was observed verbatim - "No local key catalogue exists in the repo, so the
 keys' existence cannot be verified here", filed at 0.8 - and is exactly how a
-review comment ends up retracted.
+review comment ends up retracted. Only context the claim depends on caps it:
+the verifier can mark an entry `cosmetic` when it would only sharpen the
+wording, and a candidate the cap held back is listed locally as `unverified`
+rather than lost (ADR 0016).
+
+A `question` is the one candidate that can be eligible without a verified
+claim. It is eligible when its premises are verified, even if its answer is
+not: it skips the confidence gates, since low confidence in an answer is what a
+question is, and is stopped instead by `premises_verified: false` from the
+verifier, by owner precedent against asking it, or by the cap of two questions
+per review.
 
 `evidenceQuality` scored specificity as "names a line **or** is longer than 40
 characters". Analyst evidence is always longer than 40 characters, so the term
@@ -464,7 +556,7 @@ Selection is ordered by relevance before the budget applies: directory-scoped
 files nearest the change, then rules from the touched subtrees, then the
 repository files, then root rules whose own name appears in the changed paths,
 and only then the rest. Ordering alphabetically instead sent
-`add-image-asset` and `build-form` to every review and cut the one document the
+`asset-guide` and `blank-forms` to every review and cut the one document the
 change was actually about. Each document reports the `reason` it was selected.
 
 The trust boundary does not move. These documents are supplied as evidence
@@ -521,7 +613,8 @@ verification:
 
 The command reads one finding as JSON on stdin and writes a verdict to stdout,
 read-only. A verifier that cannot run never confirms a finding, and verification
-may only weaken a severity, never raise one.
+may only weaken a severity on its own; a stronger tier it traced is a proposal
+the tie-break settles.
 
 It is opt-in, and a config written before it existed has no block for it at all,
 so `RV context` reports whether yours does.
@@ -534,8 +627,13 @@ Three rules keep it from becoming a worse version of the problem it solves:
 
 - **A confident rejection drops; an unsure one downgrades.** An unsure verifier
   should not be able to delete evidence.
-- **A verifier may weaken a severity, never strengthen one.** Its job is to
-  doubt, not to escalate.
+- **A verifier may weaken a severity, never strengthen one by itself.** Its
+  job is to doubt, not to escalate. A worse impact it traced, with the lines
+  that show it, goes to the tie-break below, and the tier rises only when that
+  upholds it with traced impact at the escalation confidence.
+- **A verdict counts only when its fields agree with its label.** A `kept`
+  that was rejected, a `downgraded` that does not lower the tier, or a
+  proposal with no decisive lines is refused, not applied.
 - **A verifier that could not run has not agreed.** Missing or unparseable
   output leaves the finding exactly as it was, and is reported as `didNotRun`.
 
@@ -543,6 +641,16 @@ Every verdict is recorded, including the ones that change nothing, and
 `explain` lists what was suppressed and why. A verifier that silently deletes
 findings is the finding cap in a different coat - the failure has to be
 visible, or a bad verifier is indistinguishable from a clean diff.
+
+`RV reconcile` applies the verdicts rather than the orchestrator applying them
+by hand. When the evidence-verifier traced a finding's impact at 0.85 or more
+and the second pass downgraded or dropped it, the two disagree about a fact in
+the code, and one `tie-breaker` run on just that point settles it: upheld, the
+evidence-verifier's finding stands; not upheld, the second pass's outcome does.
+A second pass that proposed a stronger tier is settled by the same run, and the
+second pass's decisive lines go to the tie-breaker as places to look. See
+[ADR 0014](adr/0014-verifier-tie-break.md) and
+[ADR 0019](adr/0019-cross-check-may-raise-through-tie-break.md).
 
 ### Scoring and activation
 
@@ -623,7 +731,11 @@ inherit an old approval.
 Two constraints are enforced in the client rather than documented, because v1
 promises both and a promise a caller can bypass is not a promise: only GET
 requests are issued, and only allowlisted repositories are addressed. Both
-throw before any network call, and both are tested.
+throw before any network call, and both are tested. The one non-GET request is
+a GraphQL query, for review-thread state that REST does not expose. Only a
+document that is exactly one of a fixed set of queries is sent, with only the
+variables it declares and the repository from the allowlist; anything else is
+refused before it is sent (ADR 0018).
 
 The allowlist matters more than it looks. The credential comes from `gh` and
 carries whatever scopes the user already had - almost always broader than

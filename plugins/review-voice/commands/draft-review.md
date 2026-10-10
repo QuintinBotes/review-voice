@@ -26,7 +26,8 @@ RV verdict --repository <owner/repo> --pr <number> --head <sha> [--run <id>] < <
 
 `--run` defaults to the newest recorded run of that pull request. Nothing is
 sent. The JSON carries `event`, `action`, `reasons`, `head`, `ci`, `held`,
-`complexity`, `payload` and `preview`.
+`complexity`, `humanReviewNote`, `wouldHaveEvent`, `wouldHaveSummary`,
+`staleRequestChanges`, `payload` and `preview`.
 
 `RV verdict` computes the whole decision - event, action, reasons, CI, the
 complexity cap, held findings and the payload preview - and never posts. A
@@ -51,7 +52,8 @@ needs a rerun.
   this head is not sent again (`alreadyInline`), so an approval that follows a
   comment while CI was red carries the summary only.
 - **The head guard.** If the pull request's head is no longer `--head`, exit 3.
-  Review the new head instead.
+  Review the new head instead, or carry the verified candidates to it with
+  `carry-candidates` as `/review-voice:review` describes.
 - **The CI guard.** Check runs are read with `filter=latest`, every page, with
   combined commit statuses. `stale`, `skipped` and `neutral` do not count. A
   failure always counts, whatever else ran under its name; only a run that never
@@ -63,11 +65,36 @@ needs a rerun.
   Pending CI turns an approval into `action: "wait"`, exit 4, with no payload.
   COMMENT and REQUEST_CHANGES never wait for CI.
 - **CI that needs a rerun** (docs/adr/0013). A check that `timed_out`, hit a
-  `startup_failure` or `action_required`, a cancelled run with nothing after
-  it, or a check queued or running for more than 60 minutes: `event` is null,
+  `startup_failure` or `action_required`, a failure whose output title or
+  summary, or runner annotations, contain an infrastructure signature, with no
+  other failure annotation left unmatched (a lost runner, the
+  platform's time limit, a full disk, a dropped connection, a throttled or
+  unavailable service; more under `ci.rerun_signatures`, with the matched
+  phrase in `reasons`), a cancelled run with nothing after
+  it, or a check queued or running for more than 60 minutes (`ci.stuck_after_minutes`,
+  with per-name globs under `ci.stuck_after_overrides`): `event` is null,
   `action` is `wait`, exit 6, with no payload, whatever the mapped event, and
   `reasons` name each check. A real failure beside one is still red. Rerun CI,
   then compute the verdict again.
+
+**If `humanReviewNote` is not null, print it prominently on its own line before
+the preview, and tell the user the change needs a human reviewer.** It is not in
+the posted review, and it must not be added to the review or to any pull
+request comment; the verdict's `reasons` explain the cap locally. `post` carries
+the same field under `verdict`.
+
+**Beside it, print `wouldHaveSummary`** (for example `Would have approved: no
+problems found.`): the verdict without the complexity cap, as a starting point
+for the human reviewer. `wouldHaveEvent` is the same as an event. Like the
+note, it is for the user only and must not be added to the review or to any
+pull request comment.
+
+**If `staleRequestChanges` is not null, tell the user** that their earlier
+request for changes (`url`, review `reviewId`) still blocks the pull request,
+that a COMMENT does not replace it, and that this review found nothing
+blocking, so they should dismiss it by hand if they agree. Review Voice does
+not dismiss reviews. When `reasons` says `identity.owner_reviewer` is not set,
+the earlier review was not looked for.
 
 Show `preview` exactly as printed, and the `held` findings with their reasons.
 The preview is generated from the payload that will be sent; its first line is
@@ -128,7 +155,7 @@ reviewed that pull request is the consent; `--repository` alone is not.
 
 ## Inline anchors
 
-`RV anchors < <validated-output>` prints the same anchors the payload uses, one
+`RV anchors --diff-file <tmpdir>/diff.patch --scores <tmpdir>/scores.json < <validated-output>` prints the same anchors the payload uses, one
 per finding, taken from the **validated review text**, never from the scored
 candidates. The candidate's `path` is free text from the analyst; the rendered
 finding carries what the verifier actually read, and the two can disagree. On
@@ -136,5 +163,10 @@ one pull request the analyst cited
 `InvoicePaymentRequest/InvoicePaymentRequestDetail.tsx` and the finding that
 shipped, correctly, cited `bankTransfer/BankTransferCard.tsx`.
 
-`unanchorable` counts findings the contract accepted that carry no line. Say so
-rather than letting an inline comment go missing.
+`unanchorable` counts findings the contract accepted that cannot be an inline
+comment: no line, a stale consumer, or a line outside every hunk of the file on
+the RIGHT side. Say so rather than letting an inline comment go missing. Pass
+`--diff-file <tmpdir>/diff.patch` for the hunk check and `--scores <tmpdir>/scores.json`
+to recognise stale consumers; the ones that fail are listed under `unanchored`
+with a `reason`, and belong in the review body. Without `--diff-file`,
+`hunkChecks` is `skipped` and only stale consumers are routed.

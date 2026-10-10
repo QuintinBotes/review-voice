@@ -1,6 +1,7 @@
 import type { Precedent } from '../retrieval/retrieve.ts';
 import type { ReachCheck } from './reach.ts';
 import { deriveSeverity, type DerivedSeverity } from './severity.ts';
+import { ESCALATION_CONFIDENCE, verifierConfidence } from './confidence.ts';
 
 /**
  * A candidate as the schema publishes it. `schemas/candidate.schema.json` is
@@ -27,10 +28,30 @@ export interface RawCandidate {
   anchor?: string;
   caused_by?: { path?: unknown; line?: unknown } | null;
   causedBy?: { path?: unknown; line?: unknown } | null;
+  /** Set by `reconcile`; see `Candidate.impactDisputed`. */
+  impact_disputed?: unknown;
+  impactDisputed?: unknown;
+  /** Set by `check-candidates --thread`; see `Candidate.ownComment`. */
+  possibleRepeatOf?: unknown;
 }
 
 /** The one anchor a candidate may declare; see `classifyStaleConsumer`. */
 export const STALE_CONSUMER = 'stale-consumer';
+
+const DOCUMENTATION_PATH = /\.(?:md|rst|adoc)$/i;
+
+/**
+ * Whether a path is a document rather than code: a guide, a skill, a README.
+ *
+ * Judged on the extension alone, so the list holds only extensions that are
+ * never read by a build. `.txt` is also `CMakeLists.txt` and
+ * `requirements.txt`, and `.mdx` compiles to components; both keep the strict
+ * rule. A comment inside a source file is also prose, but it sits beside code
+ * a stale-consumer finding could break, so it keeps the strict rule too.
+ */
+export function isDocumentationPath(path: string): boolean {
+  return DOCUMENTATION_PATH.test(path);
+}
 
 export interface Candidate {
   candidateId: string;
@@ -51,6 +72,35 @@ export interface Candidate {
    */
   anchor?: typeof STALE_CONSUMER | undefined;
   causedBy?: { path: string; line: number } | null | undefined;
+  /**
+   * The second pass disputed the impact the evidence-verifier traced, and no
+   * tie-break upheld it. The verifier's trace then no longer earns a tier
+   * above the one the second pass left; see docs/adr/0014.
+   */
+  impactDisputed?: true | undefined;
+  /**
+   * The owner's own comment `check-candidates --thread` linked this candidate
+   * to. Only that kind is kept: it is the one a follow-up may be posted for.
+   */
+  ownComment?: PriorComment | undefined;
+}
+
+/** Where an earlier comment on the pull request sits, and who wrote it. */
+export interface PriorComment {
+  author: string;
+  path: string;
+  line: number;
+  /** GitHub's id for the comment, when the thread file carried it. */
+  commentId?: number;
+}
+
+/**
+ * The verifier's account of an earlier comment of the owner's that the author
+ * only partly addressed: what is still open, and what was fixed.
+ */
+export interface PartlyAddressed {
+  remaining: string[];
+  addressed: string[];
 }
 
 export const FIX_VERDICTS = ['verified', 'partial', 'refuted', 'absent'] as const;
@@ -62,6 +112,43 @@ export function isFixVerdict(value: unknown): value is FixVerdict {
 
 export const EVIDENCE_QUALITIES = ['high', 'medium', 'low'] as const;
 export type EvidenceQuality = (typeof EVIDENCE_QUALITIES)[number];
+
+/**
+ * What a boundary defect actually exposes, as the verifier traced it.
+ * `no-exposure`: the boundary still holds elsewhere - the server rejects the
+ * request, say - so the defect is broken behaviour, not a breach.
+ */
+export const IMPACT_CLASSES = ['no-exposure', 'data-exposure', 'privilege-escalation'] as const;
+export type ImpactClass = (typeof IMPACT_CLASSES)[number];
+
+export function isImpactClass(value: unknown): value is ImpactClass {
+  return typeof value === 'string' && (IMPACT_CLASSES as readonly string[]).includes(value);
+}
+
+/**
+ * Whether the claim depends on a piece of missing context. `cosmetic` context
+ * would only sharpen the wording - the exact text behind a localisation key,
+ * say - and the claim holds without it.
+ */
+export const CONTEXT_KINDS = ['blocking', 'cosmetic'] as const;
+export type ContextKind = (typeof CONTEXT_KINDS)[number];
+
+/** A plain string is blocking, which is what every entry meant before kinds existed. */
+export type MissingContext = string | { context: string; kind?: ContextKind | undefined };
+
+/**
+ * The missing context a claim depends on: every entry not marked cosmetic.
+ *
+ * The cap used to fire on any entry. A verified behavioural finding was
+ * rejected because the only thing missing was the display text of a key it
+ * quoted; the defect, the wrong branch being shown, did not depend on that
+ * wording, and with the text fetched the same finding was eligible.
+ */
+export function blockingContext(entries: readonly MissingContext[] | undefined): string[] {
+  return (entries ?? [])
+    .filter((entry) => typeof entry === 'string' || entry.kind !== 'cosmetic')
+    .map((entry) => (typeof entry === 'string' ? entry : entry.context));
+}
 
 /**
  * What the `evidence-verifier` concluded, when it ran.
@@ -78,8 +165,8 @@ export interface Verification {
   fixConfidence?: number | undefined;
   fixReason?: string | undefined;
   fixDirection?: string | undefined;
-  /** Context the verifier needed and could not obtain. */
-  requiredContextMissing?: string[] | undefined;
+  /** Context the verifier needed and could not obtain; see `blockingContext`. */
+  requiredContextMissing?: MissingContext[] | undefined;
   /** Deterministic CLI evidence; it is never read from verifier output. */
   reach?: ReachCheck | undefined;
   /**
@@ -88,10 +175,42 @@ export interface Verification {
    * the verifier observed, not how widely the touched file is referenced.
    */
   impactTraced?: boolean | undefined;
+  /**
+   * What a boundary defect exposes. Only `no-exposure` changes anything: it
+   * lets a boundary category be held at the tier the analyst asked for.
+   */
+  impactClass?: ImpactClass | undefined;
+  /**
+   * The candidate restates the part of the owner's earlier comment that is
+   * still open. Honoured only for a candidate linked to that comment.
+   */
+  partlyAddressed?: PartlyAddressed | undefined;
+  /**
+   * For a question: whether the facts it rests on hold. A question is eligible
+   * without its answer being verified - that is what makes it a question - but
+   * only when the verifier confirmed its premises (this, or `verified`, true).
+   * False, or no word from the verifier, keeps it from being asked.
+   */
+  premisesVerified?: boolean | undefined;
+  /** The verifier's free-text reason for its verdict, quoted when it rejects a question. */
+  reason?: string | undefined;
+  /**
+   * The verifier's overall verdict on the claim. `false` rejects anything but
+   * a question. A candidate the verifier rejected reaches scoring only to be
+   * listed locally, when what stopped it was context it could not obtain.
+   */
+  verified?: boolean | undefined;
 }
 
-/** Used when the verifier reports a tier rather than a number. */
-const QUALITY_CONFIDENCE: Record<string, number> = { high: 0.9, medium: 0.75, low: 0.5 };
+/** Longest verifier reason quoted in a rejection. */
+const REASON_CAP = 200;
+
+function withVerifierReason(base: string, reason: string | undefined): string {
+  const text = reason?.replace(/\s+/g, ' ').trim() ?? '';
+  if (text.length === 0) return base;
+  const bounded = text.length > REASON_CAP ? `${text.slice(0, REASON_CAP - 1)}…` : text;
+  return `${base}; the verifier said: "${bounded}"`;
+}
 
 /** Weakest to strongest, the order a tier can be escalated along. */
 const TIER_ORDER = ['nit', 'minor', 'important', 'blocking'] as const;
@@ -104,8 +223,7 @@ const BOUNDARY_CATEGORIES: ReadonlySet<string> = new Set([
   'authentication',
 ]);
 
-/** The verifier confidence an escalation above the requested tier must clear. */
-export const ESCALATION_CONFIDENCE = 0.85;
+export { ESCALATION_CONFIDENCE, verifierConfidence };
 
 const INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
 
@@ -130,9 +248,11 @@ export function isInterrogativeClaim(claim: string): boolean {
  * popularity alone, and let a claim ending "Is that intended?" block. This
  * stage sits after it, in the scorer, so that table stays exactly as pinned.
  *
- * Boundary categories keep their tier. An interrogative claim never exceeds
- * minor. Anything else is reported above the requested tier only when the
- * verifier traced the impact and was at least ESCALATION_CONFIDENCE sure.
+ * Boundary categories keep their tier, unless the verifier found the boundary
+ * still holds elsewhere (`impactClass: 'no-exposure'`); then they are held at
+ * the requested tier. An interrogative claim never exceeds minor. Anything
+ * else is reported above the requested tier only when the verifier traced the
+ * impact and was at least ESCALATION_CONFIDENCE sure.
  * Downward derivation is untouched.
  */
 export function boundSeverityByEvidence(
@@ -140,7 +260,22 @@ export function boundSeverityByEvidence(
   candidate: Candidate,
   verification?: Verification | undefined,
 ): DerivedSeverity {
-  if (BOUNDARY_CATEGORIES.has(candidate.category)) return derived;
+  if (BOUNDARY_CATEGORIES.has(candidate.category)) {
+    // The tier tables give a boundary category its tier at every reach, so an
+    // authorization gap the server still enforces blocked as a breach would.
+    // Only the verifier's explicit word that nothing is exposed lowers it;
+    // `impactTraced` plays no part, since tracing that nothing leaks is still
+    // a trace. Without that word the boundary tier stands.
+    if (verification?.impactClass !== 'no-exposure' || candidate.severity === 'question') return derived;
+    const asked = TIER_ORDER.indexOf(candidate.severity as (typeof TIER_ORDER)[number]);
+    const got = TIER_ORDER.indexOf(derived.severity as (typeof TIER_ORDER)[number]);
+    if (asked === -1 || got === -1 || asked >= got) return derived;
+    return {
+      ...derived,
+      severity: TIER_ORDER[asked] as DerivedSeverity['severity'],
+      reason: `${derived.reason}, held at ${candidate.severity} because the verifier found no exposure`,
+    };
+  }
   // A question request is already the weakest assertion there is.
   if (candidate.severity === 'question' || derived.severity === 'question') return derived;
 
@@ -160,9 +295,18 @@ export function boundSeverityByEvidence(
   const got = TIER_ORDER.indexOf(result.severity as (typeof TIER_ORDER)[number]);
   if (asked === -1 || got === -1 || got <= asked) return result;
 
-  const confidence =
-    verification?.technicalConfidence ??
-    (verification?.evidenceQuality === undefined ? null : (QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null));
+  const confidence = verifierConfidence(verification?.technicalConfidence, verification?.evidenceQuality);
+  // Without this, a tier the second pass lowered came straight back: the
+  // trace it disputed still cleared the bar below.
+  if (candidate.impactDisputed === true) {
+    return {
+      ...result,
+      severity: TIER_ORDER[asked] as DerivedSeverity['severity'],
+      reason:
+        `${result.reason}, held at ${candidate.severity} because the second pass disputed the traced ` +
+        'impact and no tie-break upheld it',
+    };
+  }
   if (verification?.impactTraced === true && confidence !== null && confidence >= ESCALATION_CONFIDENCE) {
     return result;
   }
@@ -183,6 +327,9 @@ export function boundSeverityByEvidence(
  * claim anyway is the failure that produces a retracted comment.
  */
 export const UNVERIFIABLE_CONFIDENCE = 0.6;
+
+/** The rejection the unverifiable cap gives, so a caller can tell it from the others. */
+export const UNVERIFIABLE_REJECTION = 'the claim states it could not be verified, so it cannot ship whatever it scores';
 
 /**
  * An admission, in the candidate's own evidence, that the claim could not be
@@ -373,6 +520,65 @@ export interface ThreadComment {
   body: string;
   /** Optional so a thread file written before the field existed still reads. */
   kind?: 'review-comment' | 'review-body' | 'conversation' | 'description';
+  /** The code under an inline comment changed since it was written. */
+  outdated?: boolean;
+  /** The inline comment's thread is marked resolved on the pull request. */
+  resolved?: boolean;
+  /** Who resolved it, when GitHub said. */
+  resolvedBy?: string;
+  /** GitHub's id for an inline comment, and when it was written. */
+  id?: number;
+  createdAt?: string;
+  /**
+   * Set on a comment `citedLocations` made from a `path:line` a review body or
+   * conversation comment cites: its path may be a suffix of the file's.
+   */
+  cited?: boolean;
+}
+
+/**
+ * A `path:line` a reviewer wrote in prose, as `src/a.ts:105`, `a.ts:105` or
+ * `a.ts:105-110`, with or without backticks. The path needs an extension, so
+ * a time (`10:30`) or a ratio does not read as one.
+ */
+const CITATION = /(?<![\w./-])`?((?:[\w.-]+\/)*[\w-][\w.-]*\.[A-Za-z0-9]+):(\d+)(?:-\d+)?`?/g;
+
+/**
+ * The thread with each `path:line` a review body or conversation comment cites
+ * added as an anchored comment of its own (#76).
+ *
+ * A reviewer who lists findings by location in a review body, with no inline
+ * comment, made each point about a line as surely as an inline comment does,
+ * but a body was only compared on wording, at the higher unanchored bar, so
+ * a repeat of one of its points went through to verification. Each citation
+ * becomes a comment at that line holding the text from the citation to the
+ * next one, so the anchored checks apply to it. The original stays as it was.
+ * The description is left alone, for the reason `alreadySaidOnThread` gives.
+ */
+export function citedLocations(thread: ThreadComment[]): ThreadComment[] {
+  const out: ThreadComment[] = [];
+  for (const comment of thread) {
+    out.push(comment);
+    if (comment.kind === 'description' || comment.path !== null) continue;
+    const citations = [...comment.body.matchAll(CITATION)];
+    citations.forEach((match, index) => {
+      const end = citations[index + 1]?.index ?? comment.body.length;
+      out.push({
+        ...comment,
+        path: (match[1] as string).replace(/^\.\//, ''),
+        line: Number(match[2]),
+        body: comment.body.slice(match.index, end),
+        cited: true,
+      });
+    });
+  }
+  return out;
+}
+
+/** Whether a comment is on this file: its path, or for a citation the end of it. */
+function onFile(comment: ThreadComment, path: string): boolean {
+  if (comment.path === path) return true;
+  return comment.cited === true && comment.path !== null && path.endsWith(`/${comment.path}`);
 }
 
 /**
@@ -410,7 +616,7 @@ export function alreadySaidOnThread(
     if (comment.kind === 'description') continue;
     const anchored = comment.path !== null && comment.line !== null;
     if (anchored) {
-      if (comment.path !== candidate.path) continue;
+      if (!onFile(comment, candidate.path)) continue;
       if (Math.abs((comment.line as number) - candidate.line) > DUPLICATE_LINE_WINDOW) continue;
       if (overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
       continue;
@@ -432,22 +638,85 @@ const POSSIBLE_REPEAT_LINE_WINDOW = 5;
  * An anchored comment near this candidate that shares some of its wording but
  * not enough for `alreadySaidOnThread` to drop it. The candidate is kept and
  * the verifier is pointed at the comment, so it can reject a real repeat first.
+ *
+ * The best match is chosen, not the first: a comment `preferred` says is the
+ * owner's own comes first, then the higher overlap, then the nearer line. With
+ * two of the owner's comments in reach, linking the looser one let a candidate
+ * restating the other verbatim pass as a follow-up.
  */
 export function possiblySaidOnThread(
   candidate: Candidate,
   thread: ThreadComment[],
+  preferred: (comment: ThreadComment) => boolean = () => false,
 ): ThreadComment | null {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
   if (mine.size === 0) return null;
 
+  let best: { comment: ThreadComment; rank: [number, number, number] } | null = null;
   for (const comment of thread) {
     if (comment.path === null || comment.line === null) continue;
-    if (comment.path !== candidate.path) continue;
-    if (Math.abs(comment.line - candidate.line) > POSSIBLE_REPEAT_LINE_WINDOW) continue;
-    if (overlap(mine, significantWords(comment.body)) >= POSSIBLE_REPEAT_OVERLAP) return comment;
+    if (!onFile(comment, candidate.path)) continue;
+    const distance = Math.abs(comment.line - candidate.line);
+    if (distance > POSSIBLE_REPEAT_LINE_WINDOW) continue;
+    const share = overlap(mine, significantWords(comment.body));
+    if (share < POSSIBLE_REPEAT_OVERLAP) continue;
+    const rank: [number, number, number] = [preferred(comment) ? 1 : 0, share, -distance];
+    if (best === null || compareRank(rank, best.rank) > 0) best = { comment, rank };
   }
 
-  return null;
+  return best?.comment ?? null;
+}
+
+function compareRank(a: [number, number, number], b: [number, number, number]): number {
+  for (let i = 0; i < a.length; i += 1) {
+    const d = (a[i] as number) - (b[i] as number);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/**
+ * The bar for a same-file comment at any distance. Only the file agrees, so the
+ * wording carries what a nearby line no longer does: this is the overlap an
+ * anchored repeat is dropped at, but here it only flags.
+ */
+export const SAME_FILE_REPEAT_OVERLAP = 0.4;
+
+/**
+ * An anchored comment anywhere in this candidate's file that makes much the
+ * same claim, however far its line is from the candidate's, whoever wrote it.
+ *
+ * Line proximity missed two real repeats. The owner's comment sat at line
+ * 1312, the author inserted a test above it, GitHub then reported it at 1436,
+ * and the same coverage point came back on another line of the file. And
+ * another reviewer's concern about one query, marked fixed, came back about a
+ * different query 15 lines away. The candidate is kept; the verifier judges
+ * whether it adds anything, or whether the earlier fix covered it.
+ *
+ * `accept` narrows which comments count. The best overlap wins, then the
+ * nearest line.
+ */
+export function possiblyRaisedInFile(
+  candidate: Candidate,
+  thread: ThreadComment[],
+  accept: (comment: ThreadComment) => boolean = () => true,
+): ThreadComment | null {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+
+  let best: { comment: ThreadComment; share: number; distance: number } | null = null;
+  for (const comment of thread) {
+    if (comment.path === null || comment.line === null) continue;
+    if (!onFile(comment, candidate.path) || !accept(comment)) continue;
+    const share = overlap(mine, significantWords(comment.body));
+    if (share < SAME_FILE_REPEAT_OVERLAP) continue;
+    const distance = Math.abs(comment.line - candidate.line);
+    if (best === null || share > best.share || (share === best.share && distance < best.distance)) {
+      best = { comment, share, distance };
+    }
+  }
+
+  return best?.comment ?? null;
 }
 
 /** Roughly what a verifier needs to judge a repeat without the whole body. */
@@ -593,6 +862,11 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     }
     causedBy = { path: rawCause.path, line: rawCause.line as number };
   }
+  const ownComment = ownCommentOf(raw.possibleRepeatOf);
+  const impactDisputed = raw.impact_disputed !== undefined ? raw.impact_disputed : raw.impactDisputed;
+  if (impactDisputed !== undefined && typeof impactDisputed !== 'boolean') {
+    throw new MalformedCandidate(`${candidateId}: impact_disputed must be true or false when supplied`);
+  }
 
   return {
     candidateId,
@@ -611,7 +885,69 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     technicalConfidence: confidence as number,
     // Spread only when declared, so an ordinary candidate keeps its shape.
     ...(raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {}),
+    ...(impactDisputed === true ? { impactDisputed: true as const } : {}),
+    ...(ownComment === null ? {} : { ownComment }),
   };
+}
+
+/**
+ * The owner's comment a candidate was linked to, or null. Any other kind of
+ * `possibleRepeatOf`, or one in another shape, is not an error: it only means
+ * there is no own comment to follow up.
+ */
+function ownCommentOf(value: unknown): PriorComment | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (v['kind'] !== 'own-comment') return null;
+  if (typeof v['author'] !== 'string' || v['author'].length === 0) return null;
+  if (typeof v['path'] !== 'string' || v['path'].length === 0) return null;
+  if (!Number.isInteger(v['line']) || (v['line'] as number) < 1) return null;
+  return {
+    author: v['author'],
+    path: v['path'],
+    line: v['line'] as number,
+    ...(Number.isInteger(v['commentId']) ? { commentId: v['commentId'] as number } : {}),
+  };
+}
+
+/** Null when the verifier's `partly_addressed` is well formed, else what is wrong. */
+export function partlyAddressedProblem(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return 'must be {"remaining": [...], "addressed": [...]}';
+  }
+  const v = value as Record<string, unknown>;
+  for (const key of ['remaining', 'addressed'] as const) {
+    const list = v[key];
+    // Both non-empty: with nothing fixed it is not partly addressed, and with
+    // nothing left it is not open.
+    if (!Array.isArray(list) || list.length === 0 || !list.every((item) => typeof item === 'string' && item.trim().length > 0)) {
+      return `${key} must be a non-empty array of non-empty strings`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether this candidate is a follow-up on the owner's own comment: the
+ * verifier said part of that comment is still open, `check-candidates` linked
+ * the candidate to it, and the comment is on the thread being checked.
+ */
+export function followUpOf(
+  candidate: Candidate,
+  verification: Verification | undefined,
+  thread: ThreadComment[],
+  owner: string | null,
+): (PriorComment & PartlyAddressed) | null {
+  const prior = candidate.ownComment;
+  const partly = verification?.partlyAddressed;
+  if (prior === undefined || partly === undefined) return null;
+  // The kind is a label on the candidate, so the author is checked again: a
+  // mislabelled link must not exempt someone else's comment.
+  if (owner === null || prior.author.toLowerCase() !== owner.toLowerCase()) return null;
+  const onThread = thread.some(
+    (comment) => comment.author === prior.author && comment.path === prior.path && comment.line === prior.line,
+  );
+  return onThread ? { ...prior, remaining: partly.remaining, addressed: partly.addressed } : null;
 }
 
 const WORDS = /[^\p{L}\p{N}]+/u;
@@ -982,10 +1318,7 @@ export function scoreCandidate(
   const verifiedConfidence =
     verification === undefined
       ? null
-      : (verification.technicalConfidence ??
-        (verification.evidenceQuality === undefined
-          ? null
-          : (QUALITY_CONFIDENCE[verification.evidenceQuality] ?? null)));
+      : verifierConfidence(verification.technicalConfidence, verification.evidenceQuality);
 
   // The verifier is the only stage that checks the claim against the
   // repository, so where the two disagree it is the one with evidence.
@@ -994,7 +1327,8 @@ export function scoreCandidate(
 
   // Context the verifier itself could not obtain is binding: that is the
   // verifier reporting on its own reach, not a guess about someone else's.
-  const missingContext = (verification?.requiredContextMissing ?? []).length > 0;
+  // Only context the claim depends on; cosmetic context leaves it standing.
+  const missingContext = blockingContext(verification?.requiredContextMissing).length > 0;
 
   // The analyst's admission is a prior, not a ceiling. It used to outrank the
   // verifier absolutely, which inverted the whole point of letting the
@@ -1068,6 +1402,24 @@ export function scoreCandidate(
     // confident candidate with strong evidence still clears the threshold
     // while repeating a comment already published on that line.
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
+  } else if (isQuestion && verification?.premisesVerified === false) {
+    // Eligible without a verified answer, which is the point of a question,
+    // but not on a premise the verifier found false or could not check: the
+    // facts a question rests on are assertions like any other.
+    rejectedBecause = withVerifierReason(
+      'the verifier could not verify the premises this question rests on (premises_verified: false)',
+      verification.reason,
+    );
+  } else if (isQuestion && verification?.verified !== true && verification?.premisesVerified !== true) {
+    // Fail closed. A question is eligible without a verified answer, but only
+    // with verified premises: a verifier that rejected it, or said nothing
+    // about its premises, or never saw it, has not backed the facts it rests on.
+    rejectedBecause = withVerifierReason(
+      verification === undefined
+        ? 'a question needs the verifier to confirm the premises it rests on (premises_verified: true), and there is no verifier verdict for this one'
+        : 'the verifier did not verify this question or confirm the premises it rests on (premises_verified is not true)',
+      verification?.reason,
+    );
   } else if (isQuestion) {
     // A question skips the confidence gates below, which measure belief in an
     // assertion it does not make. It does not skip precedent.
@@ -1093,7 +1445,11 @@ export function scoreCandidate(
     // Stated as its own rejection rather than left to the numeric comparison.
     // It used to depend on the cap sitting below the floor, which quietly tied
     // it to a number that has since moved.
-    rejectedBecause = `the claim states it could not be verified, so it cannot ship whatever it scores`;
+    rejectedBecause = UNVERIFIABLE_REJECTION;
+  } else if (verification?.verified === false) {
+    // Not left to the confidence floor: a verifier can reject a claim and
+    // still report a number above it for what it could check.
+    rejectedBecause = 'the verifier did not verify this claim (verified: false)';
   } else if (confidence < confidenceFloor) {
     rejectedBecause =
       `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` +
@@ -1106,17 +1462,41 @@ export function scoreCandidate(
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
 
+  const severity = boundSeverityByEvidence(derivedSeverity, candidate, verification);
+
   // A stale consumer sits on code the diff did not touch, so nothing in the
   // diff shows it breaking. Only the verifier following it back to its cause
   // does. Checked after the chain so a question cannot skip it, and it leads
   // over a score rejection because it is the one the analyst can act on.
+  //
+  // A document is the exception at nit. A guide that still tells authors to do
+  // what the change replaced is wrong without any runtime break to trace, so
+  // the verifier rightly leaves `impact_traced` false, and requiring it made
+  // the most common stale consumer impossible to report. A nit costs the
+  // author nothing to decline; anything louder still needs the trace.
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
-  if (staleConsumer && verification?.impactTraced !== true) {
+  // Only on the verifier's own confirmation: with no verification the
+  // analyst's opinion of its own finding would be the whole case for it.
+  const untracedDocumentNit =
+    isDocumentationPath(candidate.path) && severity.severity === 'nit' && confidenceSource === 'verifier';
+  if (staleConsumer && verification?.impactTraced !== true && !untracedDocumentNit) {
     const untraced =
       'a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause ' +
-      '(impact_traced: true)';
+      '(impact_traced: true)' +
+      (isDocumentationPath(candidate.path)
+        ? '; a documentation consumer may go untraced only at nit and on the verifier\'s confidence, ' +
+          `and this one is ${severity.severity}` +
+          (confidenceSource === 'analyst'
+            ? " on the analyst's confidence alone"
+            : confidenceSource === 'unverifiable-cap'
+              ? ' with context the verifier could not obtain'
+              : '')
+        : '');
     if (rejectedBecause === null) rejectedBecause = untraced;
     else if (rejectedBecause.startsWith('score ')) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
+    // Appended, so a local list that shows candidates stopped by one gate
+    // alone can see this one was also stopped here.
+    else rejectedBecause = `${rejectedBecause}. Also: ${untraced}`;
   }
 
   const fix = renderFix(candidate, verification, thresholds);
@@ -1126,7 +1506,7 @@ export function scoreCandidate(
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
-    severity: boundSeverityByEvidence(derivedSeverity, candidate, verification),
+    severity,
     analystConfidence,
     verifiedConfidence,
     confidenceSource,

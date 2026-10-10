@@ -42,13 +42,13 @@ function scenario(base, reviewed, next) {
   }
 }
 
-test('one rewrite on a shared site does not hide a second reviewed hunk being reverted', () => {
+test('one rewrite on a shared site does not hide a second reviewed hunk being reverted from the follow-up', () => {
   const base = 'function a() {\n}\nfunction b() {\n}\nend();\n';
   const reviewed = 'function a() {\n}\nlockA();\nfunction b() {\n}\nlockB();\nend();\n';
   const next = 'function a() {\n}\nfunction b() {\n}\nlockB2();\nend();\n';
   const scope = scenario(base, reviewed, next);
-  assert.equal(scope.kind, 'full');
-  assert.equal(scope.cause, 'own-diff-unrepresentable');
+  assert.equal(scope.kind, 'interdiff');
+  assert.deepEqual(scope.files, ['src.ts']);
 });
 
 test('a line-ending-only edit is not unchanged', () => {

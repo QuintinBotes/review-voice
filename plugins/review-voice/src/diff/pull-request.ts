@@ -20,6 +20,7 @@ interface RawPull {
   base: { sha: string; ref: string };
   head: { sha: string; ref: string };
   changed_files: number;
+  commits: number;
   additions: number;
   deletions: number;
 }
@@ -74,6 +75,13 @@ const GITHUB_MAX_FILES = 3000;
 export interface RefAvailability {
   base: { sha: string; available: boolean };
   head: { sha: string; available: boolean };
+  /**
+   * The commit the pull request branched from: `git merge-base base head`.
+   * `base` is the base branch's tip, which is not an ancestor of the head once
+   * that branch has moved on, so `git diff base head` shows the branch's own
+   * changes reversed. Null when either commit is missing or git finds no base.
+   */
+  mergeBase: string | null;
   /** True only when this call fetched. Never inferred from an exit status. */
   fetched: boolean;
   note: string | null;
@@ -96,6 +104,15 @@ function hasCommit(sha: string, cwd: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function mergeBaseOf(base: string, head: string, cwd: string): string | null {
+  try {
+    return git(['merge-base', base, head], cwd, 10_000).trim() || null;
+  } catch {
+    // No common ancestor, or a shallow clone too short to find it.
+    return null;
   }
 }
 
@@ -136,6 +153,7 @@ function ensureRefs(options: {
   const result = (fetched: boolean, note: string | null): RefAvailability => ({
     base: { sha: options.base, available: present.base },
     head: { sha: options.head, available: present.head },
+    mergeBase: present.base && present.head ? mergeBaseOf(options.base, options.head, options.cwd) : null,
     fetched,
     note,
   });
@@ -208,6 +226,17 @@ export interface PullRequestDiff extends DiffResult {
   truncationNote: string | null;
   /** Whether the pull request's commits can actually be read locally. */
   refs: RefAvailability;
+  /** Set when most commits are already on the default branch; null when not suspected or not checkable. */
+  suspectedWrongBase: SuspectedWrongBase | null;
+}
+
+export interface SuspectedWrongBase {
+  base: string;
+  otherBranch: string;
+  commits: number;
+  alreadyOn: number;
+  files: number;
+  note: string;
 }
 
 /** A pull-request diff with the exact boundary the caller will review. */
@@ -238,9 +267,11 @@ function scopeNote(scope: Exclude<ReviewScope, { kind: 'full' }>): string {
         `${earlierReview(scope)} still applies.`
       );
     case 'interdiff':
+      // The detail says which conflicted files were cut to their resolution
+      // and which were read whole, so a reader knows what the review covered.
       return (
         `Reviewed changes to this pull request's own diff since ${scope.since.slice(0, 7)}; ` +
-        'base-branch changes merged in were not reviewed.'
+        `base-branch changes merged in were not reviewed${scope.detail === undefined ? '' : `; ${scope.detail}`}.`
       );
   }
 }
@@ -322,11 +353,17 @@ export function applyReviewScope(
   }
 
   const excludedBecause = `unchanged since the last review (${scope.since.slice(0, 7)})`;
-  const files = result.files.map((file) =>
-    file.reviewed && !included.has(file.path)
-      ? { ...file, reviewed: false, excludedBecause }
-      : file,
-  );
+  const files = result.files.map((file) => {
+    if (file.reviewed && !included.has(file.path)) return { ...file, reviewed: false, excludedBecause };
+    // A full read skips a deletion, but an interdiff that holds one is the
+    // change since the review: counted as unreviewed, a follow-up that only
+    // deletes a file would read as nothing to review.
+    if (scope.kind === 'interdiff' && file.status === 'deleted' && included.has(file.path)) {
+      const { excludedBecause: _skipped, ...rest } = file;
+      return { ...rest, reviewed: true };
+    }
+    return file;
+  });
   const hunkPaths = pathsWithHunks(diff);
   const reviewedFileCount = files.filter((file) => file.reviewed).length;
 
@@ -341,6 +378,46 @@ export function applyReviewScope(
     excludedFileCount: files.length - reviewedFileCount,
     diff,
   };
+}
+
+// Suspect a wrong base when at least this many commits, and more than half of
+// them, are already on the default branch; the floor keeps tiny PRs quiet.
+const WRONG_BASE_MIN_COMMITS = 5;
+const WRONG_BASE_MAJORITY = 0.5;
+
+/**
+ * A branch cut from the default branch but opened against a release branch
+ * carries the default branch's history. Optional read: any failure means
+ * "could not check", never a failed diff.
+ */
+async function detectWrongBase(client: GitHubClient, repository: string, pull: RawPull): Promise<SuspectedWrongBase | null> {
+  try {
+    if (!Number.isInteger(pull.commits)) return null;
+    const { data: repo } = await client.get<{ default_branch?: string }>(`/repos/${repository}`);
+    const other = repo.default_branch;
+    // From the default branch itself, carrying its history is the point: a
+    // promotion, not a mistake.
+    if (typeof other !== 'string' || other === '' || pull.base.ref === other || pull.head.ref === other) return null;
+    const { data: compare } = await client.get<{ ahead_by?: number }>(
+      `/repos/${repository}/compare/${encodeURIComponent(other)}...${pull.head.sha}`,
+    );
+    if (typeof compare.ahead_by !== 'number') return null;
+    const alreadyOn = Math.max(0, pull.commits - compare.ahead_by);
+    if (alreadyOn < WRONG_BASE_MIN_COMMITS || alreadyOn <= pull.commits * WRONG_BASE_MAJORITY) return null;
+    return {
+      base: pull.base.ref,
+      otherBranch: other,
+      commits: pull.commits,
+      alreadyOn,
+      files: pull.changed_files,
+      note:
+        `${alreadyOn} of the pull request's ${pull.commits} commits are already on ${other}, which suggests it was ` +
+        `opened against ${pull.base.ref} by mistake (a branch cut from ${other}). Ask about the base before reviewing ` +
+        `the whole patch, unless bringing ${other}'s commits into ${pull.base.ref} is the intent.`,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function acquirePullRequestDiff(options: {
@@ -458,5 +535,6 @@ export async function acquirePullRequestDiff(options: {
       head: pull.head.sha,
       cwd,
     }),
+    suspectedWrongBase: await detectWrongBase(client, options.repository, pull),
   };
 }

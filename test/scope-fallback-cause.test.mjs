@@ -103,12 +103,12 @@ test('an injected git failure keeps its message', () => {
   });
 });
 
-test('an unrepresentable own diff names the file and the reviewed hunk', () => {
+test('a withdrawn reviewed hunk is read as its removal', () => {
   withRepository((repository) => {
     const reverted = repository.commit('one();\ntwo();\nthree();\nmore();\n', 'withdraw the reviewed line');
-    const { scope } = planScope(options(repository, { head: reverted }));
-    assert.equal(scope.cause, 'own-diff-unrepresentable');
-    assert.match(scope.detail, /^src\.ts: the reviewed hunk @@ -\S+ \+\S+ @@ was reverted or moved$/);
+    const { scope, interdiffPatch } = planScope(options(repository, { head: reverted }));
+    assert.equal(scope.kind, 'interdiff');
+    assert.match(interdiffPatch, /^-added\(\);$/m);
   });
 });
 

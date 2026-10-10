@@ -128,7 +128,7 @@ test('score lists a verified candidate stopped only by the final score as below 
     assert.deepEqual(out.eligible, []);
   }));
 
-test('a verified candidate rejected on confidence is not below the gate', () =>
+test('a verified candidate rejected on confidence is below the gate, marked as the confidence gate', () =>
   withDir((dir) => {
     const verification = join(dir, 'verification.json');
     writeFileSync(verification, JSON.stringify({ results: [{ candidate_id: 'cand_001', technical_confidence: 0.5 }] }));
@@ -136,7 +136,7 @@ test('a verified candidate rejected on confidence is not below the gate', () =>
     assert.equal(r.code, 0, r.stderr);
     const out = JSON.parse(r.stdout);
     assert.match(out.scores[0].rejectedBecause, /technical confidence/);
-    assert.deepEqual(out.belowGate, []);
+    assert.deepEqual(out.belowGate.map((entry) => entry.gate), ['confidence']);
   }));
 
 test('a claim in the below-gate list is bounded like the rest of the output', () =>
@@ -232,7 +232,7 @@ test('a verdict payload built from that run does not contain the below-gate find
     }
   }));
 
-test('a below-gate held finding does not drop or mark the same candidate at the next head', () =>
+test('a below-gate held finding marks but does not drop the same candidate at the next head', () =>
   withDir((base) => {
     const repo = join(base, 'repo');
     const dataDir = join(base, 'data');
@@ -275,7 +275,8 @@ test('a below-gate held finding does not drop or mark the same candidate at the 
     const out = JSON.parse(r.stdout);
     assert.equal(out.droppedAsHeld.length, 0);
     assert.equal(out.kept.length, 1);
-    assert.equal(out.kept[0].possibleRepeatOf, undefined);
+    assert.equal(out.kept[0].possibleRepeatOf.kind, 'held');
+    assert.equal(out.kept[0].possibleRepeatOf.verdict, 'below-gate');
   }));
 
 test('the review command prints the below-gate list and records it as held', () => {

@@ -28,7 +28,7 @@ const ASSERTS_ABSENCE = [
  * Decided from the claim's grammar rather than from how a place is spelled. A
  * list of name shapes could not work: the same pattern that read "in acme-web"
  * as somewhere else, so a claim about this very repository went unchecked, also
- * left a bare path like `packages/commander/modules/eventing` unprotected, so a
+ * left a bare path like `packages/storefront/modules/catalog` unprotected, so a
  * true scoped claim was deleted. Hyphenation, backticks and capitalisation say
  * nothing about whether a claim is bounded.
  *
@@ -183,7 +183,12 @@ export interface ExistenceCheck {
 export type Searcher = (symbol: string, cwd: string, ref: string | null) => boolean;
 
 /** A repository search that reports every path containing the literal token. */
-export type PathSearcher = (symbol: string, cwd: string, ref: string | null) => string[];
+/**
+ * `timeoutMs` caps this one search below its own default, for a caller that
+ * has a budget for the whole collection. A search cut short throws, which is
+ * how callers already learn a search did not complete.
+ */
+export type PathSearcher = (symbol: string, cwd: string, ref: string | null, timeoutMs?: number) => string[];
 
 /**
  * Whether the repository contains a literal token.
@@ -226,13 +231,13 @@ export const gitGrep: Searcher = (symbol, cwd, ref) => {
  * is re-thrown so callers cannot mistake an unanswered search for a narrow
  * result. `-z` keeps filenames with whitespace or newlines unambiguous.
  */
-export const gitGrepPaths: PathSearcher = (symbol, cwd, ref) => {
+export const gitGrepPaths: PathSearcher = (symbol, cwd, ref, timeoutMs) => {
   const args =
     ref === null
       ? ['grep', '--fixed-strings', '--full-name', '-l', '-z', '-e', symbol]
       : ['grep', '--fixed-strings', '--full-name', '-l', '-z', '-e', symbol, ref];
   try {
-    const output = execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 });
+    const output = execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: Math.min(10_000, timeoutMs ?? 10_000) });
     // `git grep -l <ref>` prefixes every line with `<ref>:`. Left on, every
     // path compares unequal to the changed file and sits outside its subtree,
     // so `local` becomes unreachable and everything reads as repository-wide.

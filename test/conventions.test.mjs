@@ -83,7 +83,7 @@ test('the nearest document comes first, because the budget truncates the tail', 
 
 test('skill documents are collected', () => {
   const root = repository({
-    '.claude/skills/commander-fe-page/SKILL.md': 'A Divider precedes the destructive action.',
+    '.claude/skills/storefront-page/SKILL.md': 'A Divider precedes the destructive action.',
   });
   try {
     const report = discoverConventions(root, []);
@@ -149,15 +149,15 @@ test('rule and skill directories are found beside a package, not only at the roo
   // A monorepo keeps a package's rules with the package. Searching only the
   // root found none of them, and they did not even appear in `skipped`.
   const root = repository({
-    'packages/commander/.claude/skills/commander-fe-page/SKILL.md': 'A Divider precedes the destructive action.',
-    'packages/commander/.agents/rules/navigation-search.md': 'Build menu arrays with compactArray.',
+    'packages/storefront/.claude/skills/storefront-page/SKILL.md': 'A Divider precedes the destructive action.',
+    'packages/storefront/.agents/rules/menu-items.md': 'Build menu arrays with a compact helper.',
     '.claude/skills/unrelated/SKILL.md': 'Something else entirely.',
   });
   try {
-    const report = discoverConventions(root, ['packages/commander/src/Compass.tsx']);
+    const report = discoverConventions(root, ['packages/storefront/src/Compass.tsx']);
     const paths = report.documents.map((d) => d.path);
-    assert.ok(paths.includes(join('packages', 'commander', '.claude', 'skills', 'commander-fe-page', 'SKILL.md')));
-    assert.ok(paths.includes(join('packages', 'commander', '.agents', 'rules', 'navigation-search.md')));
+    assert.ok(paths.includes(join('packages', 'storefront', '.claude', 'skills', 'storefront-page', 'SKILL.md')));
+    assert.ok(paths.includes(join('packages', 'storefront', '.agents', 'rules', 'menu-items.md')));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -179,22 +179,22 @@ test('.agents/rules is collected, not just named by an index', () => {
 });
 
 test('a rule whose name matches the change outranks one that merely sorts early', () => {
-  // The budget used to fill alphabetically: add-image-asset, build-form and
+  // The budget used to fill alphabetically: asset-guide, blank-forms and
   // bump-vulnerability arrived on every pull request, and the cut landed just
   // before the one document the change was about.
   const root = repository({
-    '.claude/skills/add-image-asset/SKILL.md': 'Irrelevant.',
-    '.claude/skills/build-form/SKILL.md': 'Irrelevant.',
-    '.claude/skills/commander-fe-page/SKILL.md': 'Relevant.',
+    '.claude/skills/asset-guide/SKILL.md': 'Irrelevant.',
+    '.claude/skills/blank-forms/SKILL.md': 'Irrelevant.',
+    '.claude/skills/storefront-page/SKILL.md': 'Relevant.',
   });
   try {
-    const report = discoverConventions(root, ['packages/commander/src/Page.tsx']);
-    const commander = report.documents.find((d) => d.path.includes('commander-fe-page'));
-    const early = report.documents.find((d) => d.path.includes('add-image-asset'));
-    assert.equal(commander.reason, 'name matches the change');
+    const report = discoverConventions(root, ['packages/storefront/src/Page.tsx']);
+    const storefront = report.documents.find((d) => d.path.includes('storefront-page'));
+    const early = report.documents.find((d) => d.path.includes('asset-guide'));
+    assert.equal(storefront.reason, 'name matches the change');
     assert.equal(early.reason, 'remaining budget');
     assert.ok(
-      report.documents.indexOf(commander) < report.documents.indexOf(early),
+      report.documents.indexOf(storefront) < report.documents.indexOf(early),
       'the matching document must be selected before the budget can run out',
     );
   } finally {

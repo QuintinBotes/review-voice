@@ -161,6 +161,51 @@ export function isCode(path: string): boolean {
  */
 export const NON_DISCRIMINATING_DIRECTORIES = 12;
 
+/**
+ * A whole-statement import on one line: JS/TS `import ... from '...'`, Python
+ * `import x` and `from x import y`, Java and Kotlin `import a.b.C`. Multi-line
+ * named imports are not recognised, so a change touching one is not import-only
+ * and keeps its old behaviour.
+ */
+const IMPORT_LINE = [
+  /^import\s+(?:type\s+)?(?:[\w$*{}\s,]+\s+from\s+)?['"][^'"]+['"]\s*;?$/,
+  /^from\s+[\w.]+\s+import\s+[\w*,\s()]+$/,
+  /^import\s+[\w.]+(?:\s+as\s+\w+)?(?:\s*,\s*[\w.]+(?:\s+as\s+\w+)?)*$/,
+  /^import\s+(?:static\s+)?[\w.]+(?:\.\*)?;?$/,
+];
+
+/**
+ * Whether every added or removed line the diff has in this file is a one-line
+ * import. Such a change swaps what the file depends on and leaves everything
+ * it exposes alone, so the spread of the imported names, or of the file's own
+ * module name, says nothing about what it puts at risk. A one-line import
+ * change was scored at `repository` reach because the imported name is used
+ * across the repository.
+ */
+export function isImportOnlyChange(diff: string, changedPath: string): boolean {
+  const wanted = normalisePath(changedPath);
+  let inFile = false;
+  let imports = 0;
+
+  for (const raw of diff.split(/\r?\n/)) {
+    if (raw.startsWith('diff --git ') || raw.startsWith('+++ ')) {
+      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
+      if (match?.[1] !== undefined) inFile = normalisePath(match[1]) === wanted;
+      else if (raw.startsWith('diff --git ')) inFile = false;
+      continue;
+    }
+    if (!inFile || raw.startsWith('--- ')) continue;
+    if (!raw.startsWith('+') && !raw.startsWith('-')) continue;
+
+    const text = raw.slice(1).trim();
+    if (text === '') continue;
+    if (!IMPORT_LINE.some((pattern) => pattern.test(text))) return false;
+    imports += 1;
+  }
+
+  return imports > 0;
+}
+
 /** Whether a path sits inside the changed file's own directory subtree. */
 function withinSubtree(path: string, changedDirectory: string): boolean {
   if (changedDirectory === '') return false;
@@ -230,6 +275,10 @@ export function computeReach(
 
   // There is no deterministic evidence of spread without a distinctive name.
   if (symbols.length === 0) return result(null, false);
+
+  // Absent, not local: a wrong import path breaks this file's build, so the
+  // category's own tier is the honest answer, and it is not an extent.
+  if (diff !== null && isImportOnlyChange(diff, changedPath)) return result(null, false);
 
   for (const symbol of symbols) {
     searched.push(symbol);

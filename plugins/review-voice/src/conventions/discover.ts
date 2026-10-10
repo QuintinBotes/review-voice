@@ -66,7 +66,7 @@ const NESTED_FILES: { name: string; kind: ConventionKind }[] = [
  * Where a repository keeps rule and skill documents, relative to any directory
  * in the tree rather than only the root. A monorepo keeps a package's rules
  * beside the package: searching only the root found none of them, and the five
- * skills under `packages/commander/.claude/skills` never appeared in
+ * skills under `packages/storefront/.claude/skills` never appeared in
  * `documents` or in `skipped`.
  */
 const RULE_DIRECTORIES: { path: string; kind: ConventionKind }[] = [
@@ -390,7 +390,7 @@ function nameTokens(path: string): string[] {
  * Whether a document's name appears in the paths the diff touches.
  *
  * Without this the budget fills alphabetically. On a real run every pull
- * request received `add-image-asset`, `build-form`, `bump-vulnerability` and
+ * request received `asset-guide`, `blank-forms`, `bump-vulnerability` and
  * `check-deploy-status`, none of them relevant to any of the three, and the
  * cut landed immediately before the one document that was.
  */

@@ -116,6 +116,7 @@ test('a nearby anchored comment takes precedence over a description match', () =
     const out = checkCandidates(s);
     assert.deepEqual(out.droppedAsRepeat, []);
     assert.deepEqual(out.kept[0].possibleRepeatOf, {
+      kind: 'thread',
       author: 'acme-bot',
       path: 'a.ts',
       line: 13,
