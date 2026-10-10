@@ -205,12 +205,14 @@ be, and whether eligibility would flip - while the gate keeps using the current
 computation. `/review-voice:explain` shows it. The switch is a measurement
 waiting on real runs, not a decision waiting on an opinion.
 
-### `atEveryReach` is reserved for boundary categories
+### `trust_boundary` needs traced impact despite its fixed derivation
 
-`security`, `trust_boundary`, `authorization` and `authentication` name a
-boundary: crossing one is severe wherever it happens, so an analyst who
-underrated a concrete instance cannot talk it down, and they sit outside the
-tier bound for that reason.
+`security`, `authorization` and `authentication` name a breach whose
+consequence is severe wherever it happens, so an analyst who underrated a
+concrete instance cannot talk it down. `trust_boundary` shares the fixed
+derivation table but can also name a non-security control boundary, such as a
+path gate. It therefore rises above the requested tier only when the verifier
+traced impact beyond the changed code at the escalation confidence.
 
 Every other category names a **consequence**, and a consequence has an extent.
 Three were moved out of the fixed set one at a time, each on the same argument
