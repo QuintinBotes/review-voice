@@ -215,10 +215,23 @@ function withVerifierReason(base: string, reason: string | undefined): string {
 /** Weakest to strongest, the order a tier can be escalated along. */
 const TIER_ORDER = ['nit', 'minor', 'important', 'blocking'] as const;
 
-/** Categories whose severity is a property of the boundary, not of the claim. */
+/** Categories for which a traced `no-exposure` result can hold the requested tier. */
 const BOUNDARY_CATEGORIES: ReadonlySet<string> = new Set([
   'security',
   'trust_boundary',
+  'authorization',
+  'authentication',
+]);
+
+/**
+ * Boundaries that name a security or authorization breach by themselves.
+ *
+ * `trust_boundary` is deliberately absent. It also names non-security control
+ * boundaries such as a CI path filter, so it needs the same traced-impact
+ * evidence before it can rise above the analyst's requested tier.
+ */
+const FIXED_BOUNDARY_CATEGORIES: ReadonlySet<string> = new Set([
+  'security',
   'authorization',
   'authentication',
 ]);
@@ -248,11 +261,13 @@ export function isInterrogativeClaim(claim: string): boolean {
  * popularity alone, and let a claim ending "Is that intended?" block. This
  * stage sits after it, in the scorer, so that table stays exactly as pinned.
  *
- * Boundary categories keep their tier, unless the verifier found the boundary
- * still holds elsewhere (`impactClass: 'no-exposure'`); then they are held at
- * the requested tier. An interrogative claim never exceeds minor. Anything
- * else is reported above the requested tier only when the verifier traced the
- * impact and was at least ESCALATION_CONFIDENCE sure.
+ * A boundary finding whose verifier found no exposure is held at the requested
+ * tier. Security, authorization and authentication otherwise keep their
+ * inherent tier. `trust_boundary` may also describe a non-security control
+ * boundary, so it follows the ordinary traced-impact rule. An interrogative
+ * claim never exceeds minor. Anything else is reported above the requested
+ * tier only when the verifier traced the impact and was at least
+ * ESCALATION_CONFIDENCE sure.
  * Downward derivation is untouched.
  */
 export function boundSeverityByEvidence(
@@ -260,13 +275,13 @@ export function boundSeverityByEvidence(
   candidate: Candidate,
   verification?: Verification | undefined,
 ): DerivedSeverity {
-  if (BOUNDARY_CATEGORIES.has(candidate.category)) {
+  if (BOUNDARY_CATEGORIES.has(candidate.category) && verification?.impactClass === 'no-exposure') {
     // The tier tables give a boundary category its tier at every reach, so an
     // authorization gap the server still enforces blocked as a breach would.
     // Only the verifier's explicit word that nothing is exposed lowers it;
     // `impactTraced` plays no part, since tracing that nothing leaks is still
-    // a trace. Without that word the boundary tier stands.
-    if (verification?.impactClass !== 'no-exposure' || candidate.severity === 'question') return derived;
+    // a trace.
+    if (candidate.severity === 'question') return derived;
     const asked = TIER_ORDER.indexOf(candidate.severity as (typeof TIER_ORDER)[number]);
     const got = TIER_ORDER.indexOf(derived.severity as (typeof TIER_ORDER)[number]);
     if (asked === -1 || got === -1 || asked >= got) return derived;
@@ -276,6 +291,7 @@ export function boundSeverityByEvidence(
       reason: `${derived.reason}, held at ${candidate.severity} because the verifier found no exposure`,
     };
   }
+  if (FIXED_BOUNDARY_CATEGORIES.has(candidate.category)) return derived;
   // A question request is already the weakest assertion there is.
   if (candidate.severity === 'question' || derived.severity === 'question') return derived;
 

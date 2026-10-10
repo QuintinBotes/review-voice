@@ -329,7 +329,9 @@ evidence barely moved and the tier jumped.
 `score` derives it from the category **and computed reach**. The category says
 what kind of consequence a claim carries; reach says how far the affected code
 spreads. The requested severity is recorded beside the derived one so a
-divergence can be audited.
+divergence can be audited. An owner may explicitly lower a reported tier with
+`score --severity <candidate_id>=<tier>` when that reach overstates the case;
+the command refuses an increase and records the override in the score reason.
 
 One tier per category was the first version, and it was wrong whenever a
 category's members vary in reach: `ci` covers both a change that breaks every
@@ -386,6 +388,14 @@ and the category is a judgement that can still move. The same comment was
 `maintainability` on one run and `correctness` on the next, which is one tier
 apart. That is a narrower problem than the one this replaced, and a category is
 easier to argue about than a severity.
+
+`trust_boundary` is the exception to a category being severe by nature. It can
+name a non-security control boundary, such as a gate selecting the wrong path,
+so it rises above the requested tier only when the verifier traced impact beyond
+the changed code at the escalation confidence. `security`, `authorization` and
+`authentication` remain inherent boundary tiers. A verifier's
+`impact_class: "no-exposure"` holds any of those boundary findings at the
+requested tier because it traced that the boundary still holds elsewhere.
 
 `question` is preserved rather than derived. It says the reviewer could not
 establish the answer and the author can, which is a kind of finding rather than

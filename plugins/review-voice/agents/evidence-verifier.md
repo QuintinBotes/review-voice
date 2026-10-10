@@ -242,6 +242,10 @@ numbers from 0 to 1, not strings. `required_context_missing` is an array of
 strings or `{"context", "kind"}` objects, empty when nothing was missing. `check-verification` checks this shape straight
 after you return, and names the entry and field it refuses.
 
+Use `verified` and `technical_confidence`, not `verdict` and `confidence`.
+Those are the second-pass verifier's fields; `check-verification` refuses them
+here rather than letting `score` silently fall back to the analyst's number.
+
 `impact_traced` is a boolean: true only when you followed the failure to a
 caller, consumer or data path outside the changed function or component and saw
 it break there. Otherwise false. It does not report reach, and how many places
@@ -250,11 +254,12 @@ finding is reported above the tier the analyst asked for only when this is true
 and your confidence is at least 0.85.
 
 `impact_class` is for a `security`, `trust_boundary`, `authorization` or
-`authentication` finding, whose tier is otherwise fixed by its category. It is
-exactly one of `no-exposure`, `data-exposure` or `privilege-escalation`. Set
+`authentication` finding. It is exactly one of `no-exposure`, `data-exposure`
+or `privilege-escalation`. Set
 `no-exposure` only when you traced that the boundary still holds elsewhere -
 the server rejects the request, a later check refuses it - so the defect is
 broken behaviour rather than a breach; the finding is then held at the tier the
 analyst asked for. Set `data-exposure` or `privilege-escalation` when you
-traced that one. Leave it out when you are unsure: without it the finding keeps
-its boundary tier.
+traced that one. They do not replace `impact_traced`: a `trust_boundary`
+finding rises above the analyst's tier only with the usual traced impact and
+0.85 confidence. Leave the field out when you are unsure.

@@ -31,6 +31,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only when it names the invariant being hidden and the type that would carry
   it. The verdict is unchanged. (#110)
 
+- `score --severity <candidate_id>=<tier>` lets an owner explicitly lower a
+  computed tier when reach overstates the case. It refuses raises and no-op
+  restatements, writes the override into the score reason, and keeps
+  `validate-output` and recorded scores strict. (#90)
+
+### Fixed
+
+- `trust_boundary` now needs the verifier to trace impact before `score` raises
+  it above the analyst's requested tier, so a non-security control boundary
+  cannot jump to blocking on repository reach alone. `no-exposure` continues
+  to hold a boundary finding at the requested tier. (#89)
+- `check-verification` rejects second-pass `verdict`/`confidence` entries and
+  tells the verifier to use `verified`/`technical_confidence`, rather than
+  accepting a shape that `score` would ignore and fall back to the analyst's
+  self-report. (#91)
+
 ## [1.14.0] - 2026-10-08
 
 ### Fixed
