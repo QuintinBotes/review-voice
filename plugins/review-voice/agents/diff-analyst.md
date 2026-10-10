@@ -174,6 +174,22 @@ A candidate is valid only if it has all four:
 - evidence drawn from the diff or the supplied static analysis;
 - a plausible, material impact.
 
+**Test adequacy.** For each added or changed test, name the smallest production
+mutation that should turn it red; if none does, raise a `test_coverage`
+candidate at the test line and name the assertion or setup that leaves it
+green. Shared tracked read-backs, nullable negative-only or subset assertions,
+mocks above the unit, `nameof` wire values and fixtures that reuse the asserted
+value are leads, not automatic findings: trace the mutation. On a dependency
+called more than once with later arguments derived from earlier results, an
+any-argument setup is inadequate unless exact sequential setups or
+exact-argument verification catches a dropped cursor, key or page. Apply the
+same check to contract interactions: null examples, enum matchers accepting
+arbitrary strings, exact nondeterministic values, a copied client, or a
+header/idempotency interaction without provider state tying the header to an
+observable response can hide drift; check that CI runs the contract project.
+Without a concrete mutation that stays green, a different test is only a
+preference, not a finding.
+
 ## Low-stakes findings are still findings
 
 A real observation the author may reasonably decline is a `nit`, not something
@@ -213,15 +229,14 @@ list falls back to the middle tier, which loses the distinction you were
 making.
 
 Severe by nature:
-`security` · `authorization` · `authentication` · `trust_boundary` ·
-`data_integrity`
+`security` · `authorization` · `authentication` · `data_integrity`
 
 Wide reach by nature:
 `concurrency` · `persistence` · `migration` · `api_contract` · `release`
 
 Real defects whose reach depends on the situation:
 `correctness` · `error_handling` · `reliability` · `user_visible_behavior` ·
-`ci` · `packaging` · `dependency` · `performance`
+`ci` · `packaging` · `dependency` · `performance` · `trust_boundary`
 
 Low stakes:
 `observability` · `test_coverage` · `maintainability` · `style`
@@ -237,6 +252,10 @@ The confusable ones, settled:
 - A missing privilege check is `authorization`. A privilege check that exists
   and is wired to the wrong privilege is also `authorization`, not
   `correctness`.
+- A `trust_boundary` can be a non-security control boundary, such as a path
+  gate. Pick its requested tier from the concrete consequence; `score` raises
+  it above that tier only when the verifier traced impact beyond the changed
+  code.
 
 ## Severity
 
@@ -327,6 +346,46 @@ Control flow and error paths · authorization and trust boundaries · data
 persistence and transaction ordering · retry and idempotency behavior ·
 concurrency and resource lifecycle · CI, release and packaging correctness ·
 public API and user-visible behavior.
+
+### Parsers, mappers and validators
+
+Before reviewing its ordinary path, enumerate for each parser, mapper or
+validator the diff adds or changes: blank, separators only, zero or empty
+identifier, empty list, null, missing root, wrong case, trailing whitespace or
+newline, and a repeated element. Flag any case that resolves to a valid domain
+value or a silent no-op rather than an error. When a new type replaces an old
+one, compare every field, including optional ones, and flag a drop.
+
+### Observability and alerting
+
+For metrics and alert configuration, every label value must come from evidence
+of the final outcome, not a default or an earlier stage. Enumerate each value a
+label can emit in code, compare the list with the pull-request description, and
+trace it past filters and validation. Flag a free-text outcome where siblings
+use an enum, recording before those gates, or caller cancellation counted as a
+failure. For every label-to-route key, seek evidence of a matching series; if
+telemetry is outside the repository, ask a question rather than invent it. Flag
+a relabel that needs a manual re-save or reassignment but omits that step, and a
+threshold reused by alerts with distinct units or meanings; name a separately
+scoped threshold per alert.
+
+### Endpoint metadata
+
+For endpoint metadata added in the diff, including `Accepts`, consumes or
+produces constraints, route constraints, and versioning attributes, trace what
+the framework routes or rejects. If a filter or middleware on that endpoint
+answers the same condition, flag the response the metadata preempts and ask
+whether the annotation is meant to change behaviour or only document it.
+
+### Read endpoints
+
+Review every new or changed read endpoint in one pass: trace inherited and
+endpoint-specific authorization to the narrowest role, check no-role and
+wrong-role tests, walk the serialized payload for personal data, and compare it
+with the pull-request description. When an existing route is tightened, inspect
+its current callers from client-id telemetry. Do not accept "already true
+elsewhere" as a security or privacy premise without a source at an exact file
+and line; if it is unavailable, ask a question rather than state it.
 
 ## Anchors
 

@@ -206,11 +206,65 @@ Such a finding can still be reported at `nit`, and only at `nit`.
 - It does not duplicate another candidate.
 - It is not purely stylistic, hypothetical, or generic.
 
+**Test adequacy.** For a candidate about an added or changed test, trace the
+named smallest production mutation through the production flow and the test;
+keep it only when the cited assertion or setup admits that mutation and the
+test stays green. For a repeated dependency, establish that a later argument
+depends on an earlier result, that an any-argument matcher accepts the wrong
+argument, and that no exact sequential setup or exact-argument verification
+catches it. For a contract candidate, trace the interaction to the real
+provider rather than a copied client; confirm that the cited null,
+unbounded-enum or exact-nondeterministic matcher, missing header/idempotency
+state-and-response link, or CI exclusion actually permits the named provider
+drift; compare the CI command with the contract project path. Reject the
+candidate when an existing setup or assertion catches the mutation.
+
 A plausible concern is not sufficient. Do not invent missing context to make a
 candidate work - if context is missing, say which context, and reject. List
 that context in `required_context_missing` even when you reject: a candidate
 rejected only for blocking context is shown to the owner as unverified, never
 posted, so they can supply it and run the review again.
+
+### Parsers, mappers and validators
+
+For a candidate about a parser, mapper or validator, exercise the named
+degenerate input against the implementation and trace its result. Confirm it
+reaches a valid domain value or silent no-op rather than an error. For a
+replacement type, compare old and new fields, including optional ones. Reject
+the claim when an existing guard rejects the input or carries the alleged field.
+
+### Observability and alerting
+
+For an observability candidate, enumerate reachable label values in code and
+trace every assignment to the final outcome after filters and validation; compare
+the list with the pull-request description when present. Verify a caller
+cancellation is distinct from a failure and any sibling-enum claim. A
+routing-map candidate needs telemetry, data, or a repository source that
+establishes every key's series; otherwise record the missing context, or verify
+an appropriate question, not a fact. Trace a relabel through existing alerts to
+establish that a manual re-save or reassignment is needed. Keep a shared
+threshold concern only when its alert expressions show distinct units or
+meanings.
+
+### Endpoint metadata
+
+For an endpoint-metadata candidate, trace the added constraint's actual
+routing or rejection before filters or middleware run. Confirm that a filter or
+middleware on the same endpoint answers the same condition and that its
+response is preempted. Check source and the pull-request description for whether
+the annotation was intended to change behaviour; reject the concern when there
+is no overlapping response or the change is intentional.
+
+### Read endpoints
+
+For a new or changed read endpoint candidate, trace effective inherited,
+group, controller, and endpoint authorization with the policy and callers to
+support the narrowest role. Inspect no-role and wrong-role tests, and walk DTO
+or serializer fields, including nested ones, to corroborate any personal-data
+claim against the pull-request description. For a tightened route, verify the
+current callers from client-id telemetry or record it as missing context. An
+"already true elsewhere" premise establishes nothing until the cited source at
+that file and line proves it.
 
 ## Your confidence is the one that counts
 
@@ -295,6 +349,10 @@ numbers from 0 to 1, not strings. `required_context_missing` is an array of
 strings or `{"context", "kind"}` objects, empty when nothing was missing. `check-verification` checks this shape straight
 after you return, and names the entry and field it refuses.
 
+Use `verified` and `technical_confidence`, not `verdict` and `confidence`.
+Those are the second-pass verifier's fields; `check-verification` refuses them
+here rather than letting `score` silently fall back to the analyst's number.
+
 `impact_traced` is a boolean: true only when you followed the failure to a
 caller, consumer or data path outside the changed function or component and saw
 it break there. Otherwise false. It does not report reach, and how many places
@@ -303,11 +361,12 @@ finding is reported above the tier the analyst asked for only when this is true
 and your confidence is at least 0.85.
 
 `impact_class` is for a `security`, `trust_boundary`, `authorization` or
-`authentication` finding, whose tier is otherwise fixed by its category. It is
-exactly one of `no-exposure`, `data-exposure` or `privilege-escalation`. Set
+`authentication` finding. It is exactly one of `no-exposure`, `data-exposure`
+or `privilege-escalation`. Set
 `no-exposure` only when you traced that the boundary still holds elsewhere -
 the server rejects the request, a later check refuses it - so the defect is
 broken behaviour rather than a breach; the finding is then held at the tier the
 analyst asked for. Set `data-exposure` or `privilege-escalation` when you
-traced that one. Leave it out when you are unsure: without it the finding keeps
-its boundary tier.
+traced that one. They do not replace `impact_traced`: a `trust_boundary`
+finding rises above the analyst's tier only with the usual traced impact and
+0.85 confidence. Leave the field out when you are unsure.

@@ -1,0 +1,6 @@
+name: paged-mock-exact-arguments
+asserts: >
+  A paged-call test gives each cursor its own setup and verifies both calls,
+  so losing the returned cursor makes the test fail.
+expect:
+  output: "No actionable findings."

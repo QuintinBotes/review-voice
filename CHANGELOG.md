@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a test-adequacy rule: an added or changed test must name the smallest
+  production mutation that makes it fail, otherwise its permissive assertion
+  or setup is reported as `test_coverage`; the verifier traces that mutation
+  independently. (#92)
+- Repeated dependency calls now treat any-argument mock setups as inadequate
+  when later arguments depend on earlier results and no exact sequential setup
+  or verification catches a lost cursor, key or page. (#93)
+- Contract-test adequacy now checks concrete examples and provider state,
+  bounded enum matchers, nondeterministic values, copied clients, header- and
+  idempotency-driven behavior, and whether CI runs contract projects. (#99)
 - `diff --out` writes a `structure` block to `files.json` and its summary.
   `structure.sizeCrossings` lists the production files the change grows past
   `review.structure.max_file_lines` (default 1000), with both line counts and
@@ -57,6 +67,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Completeness findings now enumerate every in-scope call site and name every
   miss in one candidate; a partial search cannot support an `every` claim.
   (#103)
+- The analyst and verifier now enumerate degenerate inputs for changed parsers,
+  mappers and validators before trusting their ordinary path. A finding must
+  show that the case becomes a valid value or silent no-op, and replacement
+  types are checked for dropped fields. (#95)
+- Metric review now traces every emitted label value to the final outcome,
+  compares the value list with the pull-request description, and checks
+  filtering, cancellation and outcome types. (#97)
+- Endpoint metadata that can affect routing or rejection, including content,
+  route and version constraints, is checked against filters and middleware that
+  answer the same request condition, so a documentation-only annotation does
+  not silently change a response. (#104)
+- Alert routing-map keys now require evidence of matching series, relabels call
+  out any manual reassignment, and thresholds shared across different alert
+  meanings are flagged. (#105)
+- New and tightened read endpoints are reviewed in one pass for narrow
+  authorization, negative-role tests, payload exposure, description accuracy
+  and current callers. Claims that an equivalent boundary already exists
+  elsewhere now need a source citation. (#106)
+
+- `score --severity <candidate_id>=<tier>` lets an owner explicitly lower a
+  computed tier when reach overstates the case. It refuses raises and no-op
+  restatements, writes the override into the score reason, and keeps
+  `validate-output` and recorded scores strict. (#90)
+
+### Fixed
+
+- `trust_boundary` now needs the verifier to trace impact before `score` raises
+  it above the analyst's requested tier, so a non-security control boundary
+  cannot jump to blocking on repository reach alone. `no-exposure` continues
+  to hold a boundary finding at the requested tier. (#89)
+- `check-verification` rejects second-pass `verdict`/`confidence` entries and
+  tells the verifier to use `verified`/`technical_confidence`, rather than
+  accepting a shape that `score` would ignore and fall back to the analyst's
+  self-report. (#91)
 - The analyst and evidence verifier now apply a structural lens to thin
   pass-through wrappers, threaded modes, copied logic, independent serialized
   awaits, feature branches in shared modules and silent fallbacks. Each needs

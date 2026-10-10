@@ -412,7 +412,9 @@ runs the checks `score` runs on the same file and names the entry and field it
 refuses, such as an `evidence_quality` outside `high`, `medium` and `low`. If it
 exits 2, **relaunch the verifier once with the schema restated**, while its
 context is still warm, and do not translate its output by hand. If the second
-attempt is also malformed, say so and stop.
+attempt is also malformed, say so and stop. The evidence verifier writes
+`verified` and `technical_confidence`; `verdict` and `confidence` belong to the
+second pass and are refused here.
 
 Keep `fix_verdict`, `fix_confidence`, `fix_reason` and `fix_direction` in
 `verification.json` with every other verifier field. They verify a suggested
@@ -502,9 +504,16 @@ any. Its `eligible[]` entry carries
 
 `score` reports a finding above the analyst's requested tier only when the
 verifier set `impact_traced` and reported confidence of at least 0.85, and caps
-a question-framed claim at minor; boundary categories are exempt. A boundary
-category keeps its tier unless the verifier set `impact_class: "no-exposure"`,
-in which case it is held at the tier the analyst asked for.
+a question-framed claim at minor. `security`, `authorization` and
+`authentication` categories are exempt; `trust_boundary` needs the same traced
+impact before it can rise. A boundary finding with
+`impact_class: "no-exposure"` is held at the tier the analyst asked for.
+
+When the owner has a narrower judgement than the computed reach supports, rerun
+`score` with `--severity <candidate_id>=<tier>`. It accepts only a lower
+ordinary tier, writes the explicit owner override into the severity reason, and
+the resulting scores must still drive `validate-output` and `record --scores`.
+Do not edit a score file by hand.
 
 **A `question` is eligible when its premises are verified, even if its answer
 is not.** It is the one kind of candidate that can reach the editor without a
