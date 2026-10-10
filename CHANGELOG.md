@@ -113,6 +113,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tells the verifier to use `verified`/`technical_confidence`, rather than
   accepting a shape that `score` would ignore and fall back to the analyst's
   self-report. (#91)
+- The analyst and evidence verifier now apply a structural lens to thin
+  pass-through wrappers, threaded modes, copied logic, independent serialized
+  awaits, feature branches in shared modules and silent fallbacks. Each needs
+  cited shape evidence and a nameable `and so` consequence; the verifier checks
+  that evidence before keeping the finding. (#112)
 
 ## [1.14.0] - 2026-10-08
 
