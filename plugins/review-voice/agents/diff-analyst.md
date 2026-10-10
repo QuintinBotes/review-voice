@@ -271,6 +271,31 @@ persistence and transaction ordering · retry and idempotency behavior ·
 concurrency and resource lifecycle · CI, release and packaging correctness ·
 public API and user-visible behavior.
 
+**Read-decide-write handlers.** When a handler reads state to choose a next
+value or decide it is unused, then writes it, inspect the model, migrations and
+write for a unique index, concurrency token or conditional update. Flag a
+missing guard with the concrete two-caller interleaving; ask for a test that
+holds two independent contexts until both reads finish, then releases both.
+Also flag a catch that turns every save failure into a conflict unless it
+re-reads and proves a rival write.
+
+**Best-effort and shadow paths.** For code described as best-effort, shadow,
+probe, check, fire-and-forget or non-fatal, trace every statement after entry,
+including flag reads, option parsing, metric recording, tracing and logging:
+each must be guarded or proven unable to throw, and a cached value must be
+validated before its write. Locate the production counterpart and compare timer
+start and stop, concurrency and timeout or budget; for a cancellation-token
+budget, name each awaited call that does not observe it. Do not flag a
+documented intentional difference without a concrete consequence.
+
+**Service boundaries.** For a changed request or response shape, inspect both
+deployed versions when available: what the old peer does with a new field, what
+the new peer does with an old request, and what null and absent mean. Flag a
+required rollout order that is only prose rather than a compatible default,
+draft or blocking label. Also flag copied cross-service constants and comments
+that claim a compile-time link across repositories. If the peer is not
+readable, make unproved semantics a question rather than inventing them.
+
 ## Anchors
 
 `line` is the 1-based line number in the file at the head of the diff. Put it

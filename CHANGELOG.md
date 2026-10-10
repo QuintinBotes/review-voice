@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The analyst and verifier check read-decide-write handlers for a unique or
+  concurrency guard, a held two-caller test, and catch-all save failures
+  presented as conflicts without proving a rival write. (#94)
+- The analyst and verifier trace best-effort and shadow paths through their
+  guard and require cached values to be validated before they are written.
+  (#96)
+- The analyst and verifier check cross-service request and response changes for
+  peer compatibility, null and absent semantics, rollout enforcement, and
+  copied constants or claimed compile-time links. (#100)
+- The analyst and verifier compare probe, check and shadow timing, concurrency
+  and budgets with production, including awaited calls that ignore
+  cancellation. (#107)
 - `diff --out` writes a `structure` block to `files.json` and its summary.
   `structure.sizeCrossings` lists the production files the change grows past
   `review.structure.max_file_lines` (default 1000), with both line counts and

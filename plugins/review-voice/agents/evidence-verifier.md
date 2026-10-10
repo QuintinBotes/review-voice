@@ -144,6 +144,28 @@ Such a finding can still be reported at `nit`, and only at `nit`.
 
 ## Reject unless every condition holds
 
+**Read-decide-write handlers.** Check the model, migrations and write for the
+claimed unique index, concurrency token or conditional update. A two-caller
+test establishes the race only when independent contexts are held until both
+reads finish before either writes; merely starting two calls is not enough.
+Confirm a save-exception finding only when the catch covers failures beyond a
+known conflict and no re-read proves a rival write.
+
+**Best-effort and shadow paths.** Follow every statement after entry, including
+flags, options, metrics, tracing and logging, to confirm it is guarded or
+cannot throw, and confirm cached data is validated before its write. Read the
+production counterpart to compare timer start and stop, concurrency and timeout
+or budget; for cancellation-token budgets, identify each awaited call that does
+not receive or observe the token. Reject a claimed mismatch when the code or
+context establishes an intentional difference without the stated consequence.
+
+**Service boundaries.** Verify old and new peer behaviour, including null and
+absent semantics, against peer code or a versioned contract rather than prose.
+Confirm a rollout order is enforced by a compatible default, draft or blocking
+label, and check alleged shared constants or compile-time links across
+repositories. When the peer cannot be read, list it in `required_context_missing`
+instead of accepting a claim about its behaviour.
+
 - The path and line are changed by, or directly causally affected by, the diff.
 - The candidate makes a concrete technical claim.
 - The failure mode is plausible and material.
