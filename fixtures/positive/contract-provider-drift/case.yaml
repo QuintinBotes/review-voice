@@ -1,0 +1,10 @@
+name: contract-provider-drift
+asserts: >
+  A contract uses a copied provider, nullable and unrestricted examples, a
+  generated exact identifier, and an idempotency state unrelated to its header;
+  its unit-only CI job leaves provider drift undetected.
+expect:
+  min_findings: 1
+  severity: minor
+  path: test/contracts/SubmitOrderContractTests.cs
+  category: test_coverage

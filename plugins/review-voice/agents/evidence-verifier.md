@@ -175,6 +175,19 @@ Such a finding can still be reported at `nit`, and only at `nit`.
 - It does not duplicate another candidate.
 - It is not purely stylistic, hypothetical, or generic.
 
+**Test adequacy.** For a candidate about an added or changed test, trace the
+named smallest production mutation through the production flow and the test;
+keep it only when the cited assertion or setup admits that mutation and the
+test stays green. For a repeated dependency, establish that a later argument
+depends on an earlier result, that an any-argument matcher accepts the wrong
+argument, and that no exact sequential setup or exact-argument verification
+catches it. For a contract candidate, trace the interaction to the real
+provider rather than a copied client; confirm that the cited null,
+unbounded-enum or exact-nondeterministic matcher, missing header/idempotency
+state-and-response link, or CI exclusion actually permits the named provider
+drift; compare the CI command with the contract project path. Reject the
+candidate when an existing setup or assertion catches the mutation.
+
 A plausible concern is not sufficient. Do not invent missing context to make a
 candidate work - if context is missing, say which context, and reject. List
 that context in `required_context_missing` even when you reject: a candidate
