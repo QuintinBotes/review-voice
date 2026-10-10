@@ -32,6 +32,7 @@ For a duplicate-helper claim, reject it unless the cited helper exists at that
 path and line at the reviewed ref and covers the new helper's inputs and
 outputs. Check edge behavior too, including separators, casing and null
 handling.
+
 For a completeness candidate, independently enumerate every call site of its
 pattern in the changed scope at the final head. Confirm each alleged miss and
 search for others; keep it only when one candidate's evidence names every miss
