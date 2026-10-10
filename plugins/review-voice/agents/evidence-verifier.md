@@ -188,6 +188,28 @@ state-and-response link, or CI exclusion actually permits the named provider
 drift; compare the CI command with the contract project path. Reject the
 candidate when an existing setup or assertion catches the mutation.
 
+**Read-decide-write handlers.** Check the model, migrations and write for the
+claimed unique index, concurrency token or conditional update. A two-caller
+test establishes the race only when independent contexts are held until both
+reads finish before either writes; merely starting two calls is not enough.
+Confirm a save-exception finding only when the catch covers failures beyond a
+known conflict and no re-read proves a rival write.
+
+**Best-effort and shadow paths.** Follow every statement after entry, including
+flags, options, metrics, tracing and logging, to confirm it is guarded or
+cannot throw, and confirm cached data is validated before its write. Read the
+production counterpart to compare timer start and stop, concurrency and timeout
+or budget; for cancellation-token budgets, identify each awaited call that does
+not receive or observe the token. Reject a claimed mismatch when the code or
+context establishes an intentional difference without the stated consequence.
+
+**Service boundaries.** Verify old and new peer behaviour, including null and
+absent semantics, against peer code or a versioned contract rather than prose.
+Confirm a rollout order is enforced by a compatible default, draft or blocking
+label, and check alleged shared constants or compile-time links across
+repositories. When the peer cannot be read, list it in `required_context_missing`
+instead of accepting a claim about its behaviour.
+
 A plausible concern is not sufficient. Do not invent missing context to make a
 candidate work - if context is missing, say which context, and reject. List
 that context in `required_context_missing` even when you reject: a candidate
