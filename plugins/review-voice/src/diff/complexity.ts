@@ -258,21 +258,14 @@ function exclusionMatchers(key: string, globs: readonly string[], candidates: re
 }
 
 /**
- * `markedGenerated` holds the paths the repository's `.gitattributes` marks
- * `linguist-generated`; the caller reads them, so this stays a function of
- * its arguments.
+ * The kind of every reviewed file. Exclusion globs that would leave out
+ * ordinary source are ignored, with a clause in `reasons` saying so.
  */
-export function assessComplexity(
-  diff: string,
+function reviewedKinds(
   files: readonly ChangedFile[],
-  partial?: Partial<HumanReviewConfig>,
-  markedGenerated: ReadonlySet<string> = new Set(),
-): ComplexityAssessment {
-  const limits = config(partial);
-
-  // Decision points count only in production source (amended 2026-10-06).
-  // Everything else the review reads is left out of the count, and counted
-  // as left out, so the assessment can say what it did not measure.
+  limits: HumanReviewConfig,
+  markedGenerated: ReadonlySet<string>,
+): { kinds: Map<string, Kind>; reasons: string[] } {
   const reasons: string[] = [];
   const candidates = files
     .filter((file) => file.reviewed && file.class === 'source' && !isDocumentation(file.path))
@@ -290,6 +283,40 @@ export function assessComplexity(
   for (const file of files) {
     if (file.reviewed) kinds.set(file.path, kindOf(file));
   }
+  return { kinds, reasons };
+}
+
+/**
+ * The reviewed production source files, by the same test, generated and
+ * documentation rules the decision-point count uses, so every structural
+ * signal measures the same files.
+ */
+export function productionPaths(
+  files: readonly ChangedFile[],
+  partial?: Partial<HumanReviewConfig>,
+  markedGenerated: ReadonlySet<string> = new Set(),
+): string[] {
+  const { kinds } = reviewedKinds(files, config(partial), markedGenerated);
+  return [...kinds].filter(([, kind]) => kind === 'production').map(([path]) => path);
+}
+
+/**
+ * `markedGenerated` holds the paths the repository's `.gitattributes` marks
+ * `linguist-generated`; the caller reads them, so this stays a function of
+ * its arguments.
+ */
+export function assessComplexity(
+  diff: string,
+  files: readonly ChangedFile[],
+  partial?: Partial<HumanReviewConfig>,
+  markedGenerated: ReadonlySet<string> = new Set(),
+): ComplexityAssessment {
+  const limits = config(partial);
+
+  // Decision points count only in production source (amended 2026-10-06).
+  // Everything else the review reads is left out of the count, and counted
+  // as left out, so the assessment can say what it did not measure.
+  const { kinds, reasons } = reviewedKinds(files, limits, markedGenerated);
   const allHunks = countHunks(diff, new Set(kinds.keys()));
   const hunks = allHunks.filter((hunk) => kinds.get(hunk.path) === 'production');
   const ofKind = (kind: Kind): number => [...kinds.values()].filter((value) => value === kind).length;

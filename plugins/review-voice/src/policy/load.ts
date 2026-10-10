@@ -5,6 +5,7 @@ import { parse as parseYaml } from 'yaml';
 import type { PolicyLayer, ScopeType } from './schema.ts';
 import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publish/ci.ts';
 import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
+import { DEFAULT_STRUCTURE, type StructureConfig } from '../diff/structure.ts';
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
@@ -38,6 +39,8 @@ export interface LoadedConfig {
   };
   /** When a change is raised for a human's approval; see docs/adr/0012. */
   humanReview: HumanReviewConfig;
+  /** Limits for the structural evidence `diff --out` collects for the analyst. */
+  structure: StructureConfig;
   layers: PolicyLayer[];
   /** Repository-supplied layers awaiting owner approval. */
   unapproved: { source: string; contentHash: string }[];
@@ -85,6 +88,17 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
   result.humanReview.sensitiveExemptPaths = globs('sensitive_exempt_paths') ?? result.humanReview.sensitiveExemptPaths;
   result.humanReview.testPaths = globs('test_paths') ?? result.humanReview.testPaths;
   result.humanReview.generatedPaths = globs('generated_paths') ?? result.humanReview.generatedPaths;
+}
+
+/** Same rule as the human-review limits: a limit must be a whole number above zero. */
+function readStructure(block: Record<string, unknown> | null, result: LoadedConfig): void {
+  if (block === null || block['max_file_lines'] === undefined) return;
+  const value = block['max_file_lines'];
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    result.structure.maxFileLines = value;
+    return;
+  }
+  result.warnings.push('review.structure.max_file_lines must be a whole number above zero; using the default.');
 }
 
 /** Words that appear in nearly every failure, so alone they would turn every failure into a rerun. */
@@ -229,6 +243,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
       testPaths: [...DEFAULT_HUMAN_REVIEW.testPaths],
       generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths],
     },
+    structure: { ...DEFAULT_STRUCTURE },
     layers: [],
     unapproved: [],
     warnings: [],
@@ -307,6 +322,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
         if (review !== null) {
           // The user's own config is trusted: they wrote it, in their checkout.
           readHumanReview(asRecord(review['human_review']), result);
+          readStructure(asRecord(review['structure']), result);
           result.layers.push({
             scope: { type: 'repository', key: repositoryRoot },
             source: '.review-voice/config.yaml',

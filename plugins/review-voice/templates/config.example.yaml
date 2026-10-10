@@ -39,6 +39,11 @@ review:
   final_score_threshold: 0.78
   no_findings_response: "No actionable findings."
   suppress_hedge_phrases: true
+  # Structural evidence for the analyst. It never affects the verdict.
+  structure:
+    # A production file this change grows from at most this many lines to
+    # more is listed in the diff manifest; a whole number above zero.
+    max_file_lines: 1000
   # A change over any of these is raised for a human and never approved by
   # Review Voice (docs/adr/0012). The review still runs and posts its findings.
   # Defaults are shown; a limit must be a whole number above zero.

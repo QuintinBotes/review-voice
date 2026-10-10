@@ -28,6 +28,19 @@ shapes, and a `common` symbol deliberately omits its references. If a file is
 `inconclusive`, its partial list is not complete. Keep the rule against
 asserting an absence you have not searched for.
 
+## Structural evidence
+
+You may be given `structure` from the diff manifest. Each entry in
+`sizeCrossings` is a production file this change grows from at most
+`threshold` lines to more, measured by the CLI at both sides. It is a lead,
+not a finding. Raise a `maintainability` candidate at the entry's `line` only
+when you can name a seam the added code could be split along: a cohesive
+group of functions, a type and its helpers, a concern the rest of the file
+does not share. "This file is large" does not finish the sentence "and so",
+and neither does a split you cannot point to in the code. A file listed in
+`unmeasured` could not be read on one side; that is not evidence it stayed
+small.
+
 ## What the pull request already says
 
 You may be given the pull request's thread: its inline comments, review bodies,
