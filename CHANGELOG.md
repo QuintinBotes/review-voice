@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the first added line as the anchor. The
   analyst may raise a `maintainability` finding when the new branches belong
   somewhere else and it can say where. The verdict is unchanged. (#109)
+- `structure.typeEscapes` lists escape hatches from the type system on the lines
+  a change adds to production source, as `{ path, line, kind }`: `any`, double
+  casts, non-null assertions and `@ts-ignore`-style directives in TypeScript and
+  JavaScript; `dynamic`, `(object)` casts, null-forgiving `!` and nullable
+  warning suppressions in C#; `# type: ignore`, `cast(` and `Any` in Python. At
+  most 20 per file; other languages get none. The analyst may raise a finding
+  only when it names the invariant being hidden and the type that would carry
+  it. The verdict is unchanged. (#110)
 - `symbols` now lists up to eight new function or method declarations per file
   in `declared`, with up to three lexical `possibleExisting` helpers found by
   two-token name similarity. The evidence is a reading hint, can be

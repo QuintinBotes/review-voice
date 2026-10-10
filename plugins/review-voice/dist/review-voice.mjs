@@ -1588,6 +1588,7 @@ function countHunks(diff, wanted) {
           replacing = false;
         }
         record(current, text, false);
+        current.added.push({ line: newLine, text });
         remainingNew -= 1;
         newLine += 1;
         continue;
@@ -1627,7 +1628,7 @@ function countHunks(diff, wanted) {
     if (header !== null && path !== null) {
       remainingOld = header[1] === void 0 ? 1 : Number(header[1]);
       remainingNew = header[3] === void 0 ? 1 : Number(header[3]);
-      current = { path, line: Number(header[2]), decisionPoints: 0, branches: [] };
+      current = { path, line: Number(header[2]), decisionPoints: 0, branches: [], added: [] };
       newLine = Number(header[2]);
       scope = declarationIn((header[4] ?? "").trim());
       replacing = false;
@@ -1868,6 +1869,137 @@ function parseComplexity(value) {
 import { execFileSync as execFileSync3 } from "node:child_process";
 import { readFileSync as readFileSync3 } from "node:fs";
 import { join as join3 } from "node:path";
+
+// plugins/review-voice/src/diff/type-escapes.ts
+import { extname } from "node:path";
+var MAX_PER_FILE = 20;
+var POSTFIX_BANG = /[\w$)\]]!(?=[.[)\],;:])/g;
+var TYPESCRIPT = {
+  quotes: "'\"`",
+  lineComment: "//",
+  blockComments: true,
+  rules: [
+    { kind: "any", in: "code", pattern: /:\s*any\b|\bas\s+any\b|<any>/g },
+    { kind: "double-cast", in: "code", pattern: /\bas\s+unknown\s+as\b/g },
+    { kind: "non-null", in: "code", pattern: POSTFIX_BANG },
+    { kind: "ts-ignore", in: "comment", pattern: /@ts-ignore\b/g },
+    { kind: "ts-expect-error", in: "comment", pattern: /@ts-expect-error\b/g },
+    {
+      kind: "lint-disable",
+      in: "comment",
+      pattern: /\beslint-disable(?:-next-line|-line)?(?![\w-])([^]*)/g,
+      // Names no rule (disables them all), or names one from the type-aware set.
+      accept: (match) => {
+        const rules = (match[1] ?? "").replace(/\*\/[^]*$/, "").split(/\s--\s/)[0].trim();
+        return rules === "" || rules.includes("@typescript-eslint/");
+      }
+    }
+  ]
+};
+var CSHARP = {
+  quotes: `'"`,
+  lineComment: "//",
+  blockComments: true,
+  rules: [
+    { kind: "null-forgiving", in: "code", pattern: POSTFIX_BANG },
+    { kind: "dynamic", in: "code", pattern: /\bdynamic\b/g },
+    { kind: "object-cast", in: "code", pattern: /\(object\)\s*[\w@$("']/g },
+    { kind: "nullable-disable", in: "code", pattern: /^\s*#\s*nullable\s+disable\b/g },
+    {
+      kind: "nullable-disable",
+      in: "code",
+      pattern: /^\s*#\s*pragma\s+warning\s+disable\b(.*)$/g,
+      accept: (match) => /\bCS8[67]\d\d\b|\bnullable\b/i.test(match[1] ?? "")
+    }
+  ]
+};
+var PYTHON = {
+  quotes: `'"`,
+  lineComment: "#",
+  blockComments: false,
+  skip: /^\s*(?:import\s|from\s+\S+\s+import\b)/,
+  rules: [
+    { kind: "type-ignore", in: "comment", pattern: /type:\s*ignore\b/g },
+    { kind: "cast", in: "code", pattern: /\bcast\(/g },
+    { kind: "any", in: "code", pattern: /\bAny\b/g }
+  ]
+};
+var LANGUAGES2 = {
+  ...Object.fromEntries([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, TYPESCRIPT])),
+  ".cs": CSHARP,
+  ".py": PYTHON,
+  ".pyi": PYTHON
+};
+function splitLine(text, language) {
+  if (language.blockComments && text.trimStart().startsWith("*")) return { code: "", comment: text };
+  let code = "";
+  let comment = "";
+  let quote2 = null;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote2 !== null) {
+      if (char === "\\") {
+        code += "  ";
+        index += 1;
+      } else if (char === quote2) {
+        quote2 = null;
+        code += char;
+      } else {
+        code += " ";
+      }
+    } else if (language.quotes.includes(char)) {
+      quote2 = char;
+      code += char;
+    } else if (text.startsWith(language.lineComment, index)) {
+      comment += text.slice(index);
+      break;
+    } else if (language.blockComments && text.startsWith("/*", index)) {
+      const end = text.indexOf("*/", index + 2);
+      comment += `${text.slice(index, end === -1 ? void 0 : end + 2)} `;
+      if (end === -1) break;
+      index = end + 1;
+    } else {
+      code += char;
+    }
+  }
+  return { code, comment };
+}
+function kindsIn(text, language) {
+  const { code, comment } = splitLine(text, language);
+  const kinds = [];
+  for (const rule of language.rules) {
+    if (rule.in === "code" && language.skip?.test(code)) continue;
+    const source = rule.in === "code" ? code : comment;
+    for (const match of source.matchAll(rule.pattern)) {
+      if (rule.accept === void 0 || rule.accept(match)) kinds.push(rule.kind);
+    }
+  }
+  return kinds;
+}
+function findTypeEscapes(diff, paths) {
+  const found = [];
+  for (const hunk of countHunks(diff, new Set(paths))) {
+    const language = LANGUAGES2[extname(hunk.path).toLowerCase()];
+    if (language === void 0) continue;
+    for (const { line, text } of hunk.added) {
+      for (const kind of kindsIn(text, language)) found.push({ path: hunk.path, line, kind });
+    }
+  }
+  const byPathLineKind = (a, b) => {
+    if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+    if (a.line !== b.line) return a.line - b.line;
+    return a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0;
+  };
+  found.sort(byPathLineKind);
+  const perFile = /* @__PURE__ */ new Map();
+  return found.filter((escape) => {
+    const seen = perFile.get(escape.path) ?? 0;
+    perFile.set(escape.path, seen + 1);
+    return seen < MAX_PER_FILE;
+  });
+}
+
+// plugins/review-voice/src/diff/structure.ts
 var DEFAULT_STRUCTURE = { maxFileLines: 1e3, maxAddedBranchesPerFunction: 3 };
 var MAX_UNMEASURED_LISTED = 20;
 function countLines(content) {
@@ -1995,6 +2127,7 @@ function findStructureSignals(diff, paths, counts, limits = DEFAULT_STRUCTURE) {
   return {
     sizeCrossings,
     branchGrowth: findBranchGrowth(diff, paths, limits.maxAddedBranchesPerFunction),
+    typeEscapes: findTypeEscapes(diff, paths),
     unmeasured: { count: unmeasured.length, paths: unmeasured.slice(0, MAX_UNMEASURED_LISTED) }
   };
 }
@@ -12771,7 +12904,7 @@ function signal(tool, kind, path, line, claim, raw) {
   };
 }
 var TSC = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.*)$/;
-var PYTHON = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/;
+var PYTHON2 = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/;
 var DOTNET = /^\s*(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+([A-Z]+\d+):\s+(.*?)(?:\s+\[.*\])?$/;
 var ADAPTERS = [
   {
@@ -12791,7 +12924,7 @@ var ADAPTERS = [
   {
     name: "python",
     matches: (command) => /mypy|ruff|flake8|pylint|pytest/i.test(command),
-    parse: (output, tool) => output.split("\n").map((line) => PYTHON.exec(line)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(
+    parse: (output, tool) => output.split("\n").map((line) => PYTHON2.exec(line)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(
       (match) => signal(tool, "lint_or_type_error", match[1], Number(match[2]), `${match[4]}: ${match[5]}`, match[0])
     )
   },

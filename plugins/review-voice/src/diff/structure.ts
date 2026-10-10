@@ -5,6 +5,7 @@ import { attributeSource, repositoryRoot, type ChangedFile, type DiffResult } fr
 import { parseHunks } from './hunks.ts';
 import { countHunks } from './complexity.ts';
 import type { ReviewScope } from './incremental.ts';
+import { findTypeEscapes, type TypeEscape } from './type-escapes.ts';
 
 /**
  * Structural facts about a change that the CLI can measure and a reader pays
@@ -51,6 +52,8 @@ export interface BranchGrowth {
 export interface StructureSignals {
   sizeCrossings: SizeCrossing[];
   branchGrowth: BranchGrowth[];
+  /** Escape hatches from the type system on added lines, at most 20 per file. */
+  typeEscapes: TypeEscape[];
   /**
    * Production files whose base or head could not be read, so whether they
    * crossed is unknown rather than no. Paths are capped at 20, sorted.
@@ -261,6 +264,7 @@ export function findStructureSignals(
   return {
     sizeCrossings,
     branchGrowth: findBranchGrowth(diff, paths, limits.maxAddedBranchesPerFunction),
+    typeEscapes: findTypeEscapes(diff, paths),
     unmeasured: { count: unmeasured.length, paths: unmeasured.slice(0, MAX_UNMEASURED_LISTED) },
   };
 }
