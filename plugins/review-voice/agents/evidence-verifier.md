@@ -28,6 +28,17 @@ consumers: extraction recognises only distinctive identifier shapes, and a
 only partial results. Keep the requirement to search before accepting an
 absence.
 
+For a duplicate-helper claim, reject it unless the cited helper exists at that
+path and line at the reviewed ref and covers the new helper's inputs and
+outputs. Check edge behavior too, including separators, casing and null
+handling.
+
+For a completeness candidate, independently enumerate every call site of its
+pattern in the changed scope at the final head. Confirm each alleged miss and
+search for others; keep it only when one candidate's evidence names every miss
+as `path:line`. A partial or inconclusive search cannot support an `every` or
+completeness claim.
+
 ## Repository conventions
 
 You are given the repository's own convention documents: `CLAUDE.md`,
@@ -113,6 +124,17 @@ description is grounds to reject or downgrade a candidate that calls it a
 defect, unless the finding shows that the intent itself is wrong or causes harm
 the description does not account for. When you keep such a finding, say which
 sentence of the description it contradicts.
+
+**Factual claims.** For a description, changed comment or documentation
+candidate, check every stated factual claim against the final head, diff,
+configuration and CI. Compare base and head before accepting a present-tense
+claim about delivered behaviour: behaviour introduced only by the open change
+is not live, flag-gated behaviour is conditional, and environment-specific
+behaviour is not universal. When a claim changed, search its key terms in all
+changed and sibling files and the entry-point file; verify every listed
+mismatch and that the final head has not corrected it. Keep one consolidated
+candidate only when its evidence gives every remaining mismatch as `path:line`;
+otherwise reject it for incomplete evidence.
 
 ## Search before you accept an absence
 

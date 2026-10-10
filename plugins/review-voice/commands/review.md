@@ -369,6 +369,10 @@ If there are no candidates, output exactly `No actionable findings.` and stop.
 Launch the `evidence-verifier` agent with the candidates, the same diff, the
 same convention `documents`, and `symbols.json`.
 
+On a `--pr` run, give it the same `thread.json` too. It must be able to check
+factual claims in the description against the final head, not merely a
+candidate's excerpt of them.
+
 Discard every candidate it does not verify, with two exceptions that step 4
 decides:
 

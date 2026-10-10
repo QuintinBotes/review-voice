@@ -19,7 +19,14 @@ import { checkSeverityAgainstScores, scoredEntries } from './contract/severity-c
 import { checkUnbackedAbsolutes } from './contract/backing-check.ts';
 import { DEFAULT_LIMITS, SEVERITY_ORDER, totalWordBudget, type ContractLimits, type Severity } from './contract/limits.ts';
 import { acquireDiff, attributeSource, GitError, linguistGeneratedPaths, type ChangedFile } from './diff/acquire.ts';
-import { assessComplexity, humanReviewNote, parseComplexity, productionPaths, type ComplexityAssessment } from './diff/complexity.ts';
+import {
+  applyStructureHumanReviewCap,
+  assessComplexity,
+  humanReviewNote,
+  parseComplexity,
+  productionPaths,
+  type ComplexityAssessment,
+} from './diff/complexity.ts';
 import { collectStructure, type StructureSignals } from './diff/structure.ts';
 import { acquirePullRequestDiff, applyReviewScope, type SuspectedWrongBase } from './diff/pull-request.ts';
 import { isReviewable } from './diff/classify.ts';
@@ -503,7 +510,7 @@ interface EmittedDiff {
   /** Added by `emitDiff`; see docs/adr/0012. */
   complexity?: ComplexityAssessment;
   humanReviewNote?: string | null;
-  /** Added by `emitDiff`: structural evidence for the analyst, never an input to the verdict. */
+  /** Structural evidence for the analyst; enabled human-review settings may also cap an approval. */
   structure?: StructureSignals;
   refs?: {
     base: { sha: string; available: boolean };
@@ -646,13 +653,15 @@ function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
   // the summary say the same thing and `record --files` carries it forward.
   const config = repositoryConfig();
   const generated = markedGenerated(acquired);
-  const complexity = assessComplexity(acquired.diff, acquired.files ?? [], config?.humanReview, generated);
+  const assessed = assessComplexity(acquired.diff, acquired.files ?? [], config?.humanReview, generated);
   const production = productionPaths(acquired.files ?? [], config?.humanReview, generated);
+  const structure = collectStructure(process.cwd(), acquired, production, config?.structure);
+  const complexity = applyStructureHumanReviewCap(assessed, structure, config?.humanReview);
   const result: EmittedDiff = {
     ...acquired,
     complexity,
     humanReviewNote: humanReviewNote(complexity),
-    structure: collectStructure(process.cwd(), acquired, production, config?.structure),
+    structure,
   };
 
   if (outDir === null) {

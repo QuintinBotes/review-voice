@@ -1529,7 +1529,8 @@ var DEFAULT_HUMAN_REVIEW = {
   sensitivePaths: DEFAULT_SENSITIVE_PATHS,
   sensitiveExemptPaths: [],
   testPaths: DEFAULT_TEST_PATHS,
-  generatedPaths: []
+  generatedPaths: [],
+  structure: { fileLineCrossing: false, branchGrowth: false }
 };
 var NOTHING_EXCLUDED = {
   documentationFiles: 0,
@@ -1644,7 +1645,11 @@ function config(partial) {
     sensitivePaths: partial?.sensitivePaths ?? DEFAULT_HUMAN_REVIEW.sensitivePaths,
     sensitiveExemptPaths: partial?.sensitiveExemptPaths ?? DEFAULT_HUMAN_REVIEW.sensitiveExemptPaths,
     testPaths: partial?.testPaths ?? DEFAULT_HUMAN_REVIEW.testPaths,
-    generatedPaths: partial?.generatedPaths ?? DEFAULT_HUMAN_REVIEW.generatedPaths
+    generatedPaths: partial?.generatedPaths ?? DEFAULT_HUMAN_REVIEW.generatedPaths,
+    structure: {
+      fileLineCrossing: partial?.structure?.fileLineCrossing ?? DEFAULT_HUMAN_REVIEW.structure.fileLineCrossing,
+      branchGrowth: partial?.structure?.branchGrowth ?? DEFAULT_HUMAN_REVIEW.structure.branchGrowth
+    }
   };
 }
 var matchesAny = (matchers, path) => matchers.some((matcher) => matcher.test(path));
@@ -1756,8 +1761,47 @@ function assessComplexity(diff, files, partial, markedGenerated2 = /* @__PURE__ 
     sensitivePaths: listed,
     sensitiveMatches: matches,
     sensitiveExempted: exempted.slice(0, MAX_SENSITIVE_LISTED),
-    limits: { ...limits }
+    // Structural-cap switches are deliberately not recorded here: when both
+    // are off, this assessment must remain byte-for-byte compatible with the
+    // output before they existed. An enabled signal is represented by its
+    // recorded reason instead.
+    limits: {
+      maxDecisionPoints: limits.maxDecisionPoints,
+      maxHunkDecisionPoints: limits.maxHunkDecisionPoints,
+      sensitivePaths: limits.sensitivePaths,
+      sensitiveExemptPaths: limits.sensitiveExemptPaths,
+      testPaths: limits.testPaths,
+      generatedPaths: limits.generatedPaths
+    }
   };
+}
+var MAX_STRUCTURE_LISTED = 3;
+function listedStructure(items, describe) {
+  const shown = items.slice(0, MAX_STRUCTURE_LISTED).map(describe).join(", ");
+  const more = items.length - Math.min(items.length, MAX_STRUCTURE_LISTED);
+  return `${shown}${more > 0 ? `, +${more} more` : ""}`;
+}
+function applyStructureHumanReviewCap(assessment, signals, partial) {
+  const enabled = config(partial).structure;
+  const reasons = [...assessment.reasons];
+  if (enabled.fileLineCrossing && signals.sizeCrossings.length > 0) {
+    reasons.push(
+      `file-line crossing signal (structure.sizeCrossings): ${listedStructure(
+        signals.sizeCrossings,
+        (crossing) => `${crossing.path} (${crossing.baseLines} to ${crossing.headLines} lines; threshold ${crossing.threshold})`
+      )}`
+    );
+  }
+  if (enabled.branchGrowth && signals.branchGrowth.length > 0) {
+    reasons.push(
+      `branch-growth signal (structure.branchGrowth): ${listedStructure(
+        signals.branchGrowth,
+        (growth) => `${growth.path}:${growth.line} (${growth.function}; ${growth.addedDecisionPoints} added decision points; threshold ${growth.threshold})`
+      )}`
+    );
+  }
+  if (reasons.length === assessment.reasons.length) return assessment;
+  return { ...assessment, level: "high", reasons };
 }
 var plural2 = (count3, noun) => `${count3} ${noun}${count3 === 1 ? "" : "s"}`;
 function notCounted(excluded) {
@@ -4344,6 +4388,36 @@ var gitGrepPaths = (symbol, cwd, ref, timeoutMs) => {
     throw error;
   }
 };
+var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
+  const [first, second] = patterns;
+  const args = ref === null ? ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second] : ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second, ref];
+  try {
+    const output = execFileSync7("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: Math.min(1e4, timeoutMs ?? 1e4),
+      maxBuffer: 32 * 1024 * 1024
+    });
+    const prefix = ref === null ? "" : `${ref}:`;
+    const lines2 = [];
+    for (const record of output.split("\n")) {
+      const [rawPath = "", number = "", ...rest] = record.split("\0");
+      const line = Number(number);
+      const text = rest.join("\0");
+      if (!Number.isSafeInteger(line) || line < 1) continue;
+      lines2.push({
+        path: prefix !== "" && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
+        line,
+        text
+      });
+    }
+    return lines2;
+  } catch (error) {
+    if (error.status === 1) return [];
+    throw error;
+  }
+};
 var RESOURCE_PATHSPECS = [
   ":(glob)**/*.resx",
   ":(glob)**/*.resw",
@@ -4424,15 +4498,195 @@ function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository =
   return { found, checked, inconclusive: false, searchedRef };
 }
 
+// plugins/review-voice/src/diff/declarations.ts
+var IDENTIFIER = "[A-Za-z_$][A-Za-z0-9_$]*";
+var PREFIX = "(?:(?:export|default|declare|public|private|protected|static|abstract|override|readonly)\\s+)*";
+var METHOD_PREFIX = "(?:(?:public|private|protected|internal|static|override|async|abstract|readonly|get|set)\\s+)*";
+var TYPE = "[A-Za-z_$][A-Za-z0-9_$]*(?:\\s*<[^>{}()]*>)?(?:\\s*\\[\\])?(?:\\?)?(?:\\s*\\.\\s*[A-Za-z_$][A-Za-z0-9_$]*)*";
+var TS_FUNCTION = new RegExp(`^\\s*${PREFIX}(?:async\\s+)?function\\s+(${IDENTIFIER})\\s*\\(`);
+var VARIABLE_FUNCTION = new RegExp(
+  `^\\s*${PREFIX}(?:const|let|var)\\s+(${IDENTIFIER})(?:\\s*:\\s*[^=]+)?\\s*=\\s*(?:async\\b|function\\b|\\(|${IDENTIFIER}\\s*=>)`
+);
+var PYTHON_FUNCTION = new RegExp(`^\\s*(?:async\\s+)?def\\s+(${IDENTIFIER})\\s*\\(`);
+var GO_FUNCTION = new RegExp(`^\\s*func\\s+(?:\\([^)]*\\)\\s+)?(${IDENTIFIER})\\s*\\(`);
+var RUST_FUNCTION = new RegExp(`^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?(?:async\\s+)?fn\\s+(${IDENTIFIER})\\s*\\(`);
+var MODIFIED_METHOD = new RegExp(
+  `^\\s*(?:(?:public|private|protected|internal|static|override|async|fun)\\s+)+(?:${TYPE})\\s+(${IDENTIFIER})(?:\\s*<[^>{}()]*>)?\\s*\\(`
+);
+var KOTLIN_FUNCTION = new RegExp(
+  `^\\s*(?:(?:public|private|protected|internal|override|async|static)\\s+)*fun\\s+(?:<[^>{}()]*>\\s+)?(?:${TYPE}\\s*\\.\\s*)?(${IDENTIFIER})(?:\\s*<[^>{}()]*>)?\\s*\\(`
+);
+var CLASS_METHOD = new RegExp(
+  `^\\s+${METHOD_PREFIX}(${IDENTIFIER})(?:\\s*<[^>{}()]*>)?\\s*\\([^)]*\\)\\s*(?::\\s*[^{}]+)?\\{`
+);
+var STATEMENT_KEYWORDS = /* @__PURE__ */ new Set([
+  "if",
+  "else",
+  "for",
+  "foreach",
+  "while",
+  "switch",
+  "case",
+  "catch",
+  "return",
+  "throw",
+  "try",
+  "finally",
+  "do",
+  "break",
+  "continue",
+  "await",
+  "when",
+  "with",
+  "match",
+  "loop",
+  "function",
+  "def",
+  "fn",
+  "class",
+  "interface",
+  "enum",
+  "new"
+]);
+var STOP_TOKENS = /* @__PURE__ */ new Set([
+  "to",
+  "from",
+  "get",
+  "set",
+  "is",
+  "has",
+  "do",
+  "make",
+  "create",
+  "build",
+  "new",
+  "the",
+  "a",
+  "an",
+  "of",
+  "for",
+  "by",
+  "with",
+  "on",
+  "in",
+  "at",
+  "as",
+  "and",
+  "or",
+  "util",
+  "utils",
+  "helper",
+  "helpers"
+]);
+function declarationName(text) {
+  for (const pattern of [
+    TS_FUNCTION,
+    VARIABLE_FUNCTION,
+    PYTHON_FUNCTION,
+    GO_FUNCTION,
+    RUST_FUNCTION,
+    MODIFIED_METHOD,
+    KOTLIN_FUNCTION
+  ]) {
+    const match = pattern.exec(text);
+    if (match?.[1] !== void 0) return match[1];
+  }
+  const method = CLASS_METHOD.exec(text);
+  const name = method?.[1];
+  if (name === void 0 || STATEMENT_KEYWORDS.has(name.toLowerCase())) return null;
+  return name;
+}
+function declarationTokens(name) {
+  const words = name.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").replace(/([A-Za-z])([0-9])/g, "$1 $2").replace(/([0-9])([A-Za-z])/g, "$1 $2").split(/[_\-\s]+/).map((word) => word.toLowerCase()).filter((word) => word.length > 0 && !STOP_TOKENS.has(word));
+  return [...new Set(words)];
+}
+function declarationSearchTokens(name) {
+  const tokens = declarationTokens(name);
+  if (tokens.length < 2) return null;
+  const longest = tokens.map((token, index) => ({ token, index })).sort((left, right) => right.token.length - left.token.length || left.index - right.index).slice(0, 2);
+  const first = longest[0]?.token;
+  const second = longest[1]?.token;
+  return first === void 0 || second === void 0 ? null : [first, second];
+}
+function normalisePath2(path) {
+  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+}
+function headerPath3(raw) {
+  const field = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
+  const path = unquoteGitPath(field.trimEnd());
+  if (path === "/dev/null") return null;
+  return normalisePath2(path.replace(/^[ab]\//, ""));
+}
+function hunkHeader2(line) {
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+  if (match === null) return null;
+  const oldLine = Number(match[1]);
+  const newLine = Number(match[3]);
+  const remainingOld = Number(match[2] ?? 1);
+  const remainingNew = Number(match[4] ?? 1);
+  if (![oldLine, newLine, remainingOld, remainingNew].every(Number.isSafeInteger)) return null;
+  return { oldLine, newLine, remainingOld, remainingNew };
+}
+function declarationsFromDiff(diff) {
+  const found = [];
+  let path = null;
+  let active = null;
+  const finishWhenCounted = () => {
+    if (active !== null && active.remainingOld <= 0 && active.remainingNew <= 0) active = null;
+  };
+  for (const raw of diff.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (active !== null) {
+      if (line === "\\ No newline at end of file") continue;
+      if (line.startsWith("+")) {
+        const name = declarationName(line.slice(1));
+        if (path !== null && name !== null) found.push({ path, name, line: active.newLine, added: true });
+        active.newLine += 1;
+        active.remainingNew -= 1;
+        finishWhenCounted();
+        continue;
+      }
+      if (line.startsWith("-")) {
+        const name = declarationName(line.slice(1));
+        if (path !== null && name !== null) found.push({ path, name, line: active.oldLine, added: false });
+        active.oldLine += 1;
+        active.remainingOld -= 1;
+        finishWhenCounted();
+        continue;
+      }
+      if (line.startsWith(" ") || line === "" && active.remainingOld > 0 && active.remainingNew > 0) {
+        active.oldLine += 1;
+        active.newLine += 1;
+        active.remainingOld -= 1;
+        active.remainingNew -= 1;
+        finishWhenCounted();
+        continue;
+      }
+      active = null;
+    }
+    if (line.startsWith("diff --git ")) {
+      path = null;
+      continue;
+    }
+    if (line.startsWith("+++ ")) {
+      path = headerPath3(line.slice(4));
+      continue;
+    }
+    const header = hunkHeader2(line);
+    if (header !== null) active = header;
+  }
+  return found;
+}
+
 // plugins/review-voice/src/scoring/reach.ts
 function symbolsFromHunks(diff, changedPath) {
-  const wanted = changedPath === null ? null : normalisePath2(changedPath);
+  const wanted = changedPath === null ? null : normalisePath3(changedPath);
   const found = /* @__PURE__ */ new Set();
   let inFile = false;
   for (const raw of diff.split(/\r?\n/)) {
     if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
       const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
-      if (match?.[1] !== void 0) inFile = wanted === null || normalisePath2(match[1]) === wanted;
+      if (match?.[1] !== void 0) inFile = wanted === null || normalisePath3(match[1]) === wanted;
       else if (raw.startsWith("diff --git ")) inFile = false;
       continue;
     }
@@ -4456,11 +4710,11 @@ var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
   /^(?:package\.json|Makefile|GNUmakefile|justfile|Taskfile\.ya?ml|turbo\.json|nx\.json)$/i,
   /^(?:scripts|tools|build|bin)\//i
 ];
-function normalisePath2(path) {
+function normalisePath3(path) {
   return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
 }
 function directoryOf(path) {
-  const parts = normalisePath2(path).split("/");
+  const parts = normalisePath3(path).split("/");
   parts.pop();
   return parts.join("/");
 }
@@ -4469,11 +4723,11 @@ function directoryCount(paths) {
 }
 var PROSE_EXTENSIONS = /* @__PURE__ */ new Set(["md", "markdown", "mdx", "txt", "rst", "adoc"]);
 function isCode(path) {
-  const name = normalisePath2(path).split("/").pop() ?? "";
+  const name = normalisePath3(path).split("/").pop() ?? "";
   const dot = name.lastIndexOf(".");
   const extension = dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
   if (PROSE_EXTENSIONS.has(extension)) return false;
-  return classify(normalisePath2(path)) === "source";
+  return classify(normalisePath3(path)) === "source";
 }
 var NON_DISCRIMINATING_DIRECTORIES = 12;
 var IMPORT_LINE = [
@@ -4483,13 +4737,13 @@ var IMPORT_LINE = [
   /^import\s+(?:static\s+)?[\w.]+(?:\.\*)?;?$/
 ];
 function isImportOnlyChange(diff, changedPath) {
-  const wanted = normalisePath2(changedPath);
+  const wanted = normalisePath3(changedPath);
   let inFile = false;
   let imports = 0;
   for (const raw of diff.split(/\r?\n/)) {
     if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
       const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
-      if (match?.[1] !== void 0) inFile = normalisePath2(match[1]) === wanted;
+      if (match?.[1] !== void 0) inFile = normalisePath3(match[1]) === wanted;
       else if (raw.startsWith("diff --git ")) inFile = false;
       continue;
     }
@@ -4504,11 +4758,11 @@ function isImportOnlyChange(diff, changedPath) {
 }
 function withinSubtree(path, changedDirectory) {
   if (changedDirectory === "") return false;
-  const normalised = normalisePath2(path);
+  const normalised = normalisePath3(path);
   return normalised === changedDirectory || normalised.startsWith(`${changedDirectory}/`);
 }
 function isRepositoryWideToolchainPath(path) {
-  const normalised = normalisePath2(path);
+  const normalised = normalisePath3(path);
   return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
 }
 function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
@@ -4521,12 +4775,12 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
   const ignored = [];
   const hits = /* @__PURE__ */ new Set();
   let usedModuleFallback = false;
-  const normalisedChangedPath = normalisePath2(changedPath);
+  const normalisedChangedPath = normalisePath3(changedPath);
   const changedDirectory = directoryOf(changedPath);
   const result = (reach, inconclusive) => {
     const counted2 = [...hits].filter(isCode).sort();
     const outside = counted2.filter(
-      (path) => normalisePath2(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
+      (path) => normalisePath3(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
     );
     return {
       reach,
@@ -4553,7 +4807,7 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
       return result(null, true);
     }
     const code = found.filter(isCode);
-    if (source !== "diff" && !code.some((path) => normalisePath2(path) === normalisedChangedPath)) {
+    if (source !== "diff" && !code.some((path) => normalisePath3(path) === normalisedChangedPath)) {
       ignored.push(symbol);
       continue;
     }
@@ -4566,7 +4820,7 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
   if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
   let counted = [...hits].filter(isCode);
   if (counted.length === 0 && source !== "claim") {
-    const moduleName = normalisePath2(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
+    const moduleName = normalisePath3(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
     if (moduleName !== void 0 && moduleName.length >= 4) {
       searched.push(moduleName);
       try {
@@ -4579,12 +4833,12 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
     }
   }
   if (counted.length === 0) return result(null, false);
-  if (counted.every((path) => normalisePath2(path) === normalisedChangedPath)) {
+  if (counted.every((path) => normalisePath3(path) === normalisedChangedPath)) {
     return result("local", false);
   }
   const outsideDirectories = directoryCount(
     counted.filter(
-      (path) => normalisePath2(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
+      (path) => normalisePath3(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
     )
   );
   if (outsideDirectories >= 2) return result("repository", false);
@@ -4595,11 +4849,83 @@ function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths,
 var DEFAULT_MAX_MS = 6e4;
 var MAX_SYMBOLS_PER_FILE = 12;
 var MAX_REFERENCES_PER_SYMBOL = 8;
-function normalisePath3(path) {
+var MAX_DECLARATIONS_PER_FILE = 8;
+var MAX_POSSIBLE_EXISTING = 3;
+var TEST_PATHS = DEFAULT_TEST_PATHS.map((glob) => globToRegExp(glob));
+function normalisePath4(path) {
   return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
 }
 function directoryCount2(paths) {
-  return new Set([...paths].map((path) => normalisePath3(path).split("/").slice(0, -1).join("/"))).size;
+  return new Set([...paths].map((path) => normalisePath4(path).split("/").slice(0, -1).join("/"))).size;
+}
+function isTestPath(path) {
+  return TEST_PATHS.some((pattern) => pattern.test(normalisePath4(path)));
+}
+function declarationsByPath(declarations) {
+  const addedNames = new Set(declarations.filter((declaration) => declaration.added).map((declaration) => declaration.name));
+  const removedNames = /* @__PURE__ */ new Map();
+  for (const declaration of declarations) {
+    if (declaration.added) continue;
+    const names = removedNames.get(declaration.path) ?? /* @__PURE__ */ new Set();
+    names.add(declaration.name);
+    removedNames.set(declaration.path, names);
+  }
+  const byPath = /* @__PURE__ */ new Map();
+  for (const declaration of declarations) {
+    if (!declaration.added || removedNames.get(declaration.path)?.has(declaration.name)) continue;
+    const searchTokens = declarationSearchTokens(declaration.name);
+    if (searchTokens === null) continue;
+    const candidates = byPath.get(declaration.path) ?? [];
+    candidates.push({
+      name: declaration.name,
+      line: declaration.line,
+      searchTokens,
+      tokens: declarationTokens(declaration.name)
+    });
+    byPath.set(declaration.path, candidates);
+  }
+  for (const [path, candidates] of byPath) {
+    candidates.sort((left, right) => left.line - right.line || left.name.localeCompare(right.name));
+    byPath.set(path, candidates.slice(0, MAX_DECLARATIONS_PER_FILE));
+  }
+  return { addedNames, byPath };
+}
+function possibleExisting(declaration, hits, addedNames) {
+  const matches = [];
+  for (const hit of hits) {
+    const path = normalisePath4(hit.path);
+    if (!isCode(path) || isTestPath(path)) continue;
+    const name = declarationName(hit.text);
+    if (name === null || addedNames.has(name)) continue;
+    const hitTokens = new Set(declarationTokens(name));
+    const overlap2 = declaration.tokens.filter((token) => hitTokens.has(token)).length;
+    const union = (/* @__PURE__ */ new Set([...declaration.tokens, ...hitTokens])).size;
+    const score = union === 0 ? 0 : overlap2 / union;
+    if (overlap2 >= 2 && score >= 0.5) matches.push({ path, line: hit.line, name, score });
+  }
+  return matches.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path) || left.line - right.line).slice(0, MAX_POSSIBLE_EXISTING).map(({ path, line, name }) => ({ path, line, name }));
+}
+function timeBudgetDeclaration(declaration) {
+  return {
+    name: declaration.name,
+    line: declaration.line,
+    possibleExisting: [],
+    inconclusive: true,
+    reason: "time-budget"
+  };
+}
+function unfinishedFile(path, declarations) {
+  const declared = declarations.map(timeBudgetDeclaration);
+  return {
+    file: {
+      path,
+      symbols: [],
+      ...declared.length === 0 ? {} : { declared },
+      inconclusive: true,
+      reason: "time-budget"
+    },
+    references: /* @__PURE__ */ new Set()
+  };
 }
 function pathsWithHunks2(diff) {
   const paths = [];
@@ -4608,7 +4934,7 @@ function pathsWithHunks2(diff) {
   let hasHunkLine = false;
   const keepCurrent = () => {
     if (path === null || !hasHunkLine) return;
-    const normalised = normalisePath3(path);
+    const normalised = normalisePath4(path);
     if (seen.has(normalised)) return;
     seen.add(normalised);
     paths.push(normalised);
@@ -4631,28 +4957,35 @@ function pathsWithHunks2(diff) {
   keepCurrent();
   return paths;
 }
-function reportFile(diff, path, cwd, ref, search, remaining) {
+function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declarations, addedNames) {
   const allSymbols = symbolsFromHunks(diff, path);
   const omitted = Math.max(0, allSymbols.length - MAX_SYMBOLS_PER_FILE);
   const symbols = [];
+  const declared = [];
   const references = /* @__PURE__ */ new Set();
-  const normalisedPath = normalisePath3(path);
+  const normalisedPath = normalisePath4(path);
+  let incomplete = false;
   const file = (inconclusive, reason2) => ({
     path,
     symbols,
+    ...declared.length === 0 ? {} : { declared },
     ...omitted === 0 ? {} : { moreSymbols: omitted },
     ...inconclusive ? { inconclusive: true } : {},
     ...reason2 === void 0 ? {} : { reason: reason2 }
   });
   for (const symbol of allSymbols.slice(0, MAX_SYMBOLS_PER_FILE)) {
-    if (remaining() <= 0) return { file: file(true, "time-budget"), references };
+    if (remaining() <= 0) {
+      declared.push(...declarations.map(timeBudgetDeclaration));
+      return { file: file(true, "time-budget"), references };
+    }
     let found;
     try {
       found = search(symbol, cwd, ref, remaining());
     } catch {
-      return { file: file(true), references };
+      incomplete = true;
+      break;
     }
-    const code = new Set(found.filter(isCode).map(normalisePath3));
+    const code = new Set(found.filter(isCode).map(normalisePath4));
     if (directoryCount2(code) > NON_DISCRIMINATING_DIRECTORIES) {
       symbols.push({ symbol, common: true });
       continue;
@@ -4666,23 +4999,59 @@ function reportFile(diff, path, cwd, ref, search, remaining) {
       ...paths.length > MAX_REFERENCES_PER_SYMBOL ? { truncated: true } : {}
     });
   }
-  return { file: file(false), references };
+  for (let index = 0; index < declarations.length; index += 1) {
+    if (remaining() <= 0) {
+      declared.push(...declarations.slice(index).map(timeBudgetDeclaration));
+      return { file: file(true, "time-budget"), references };
+    }
+    const declaration = declarations[index];
+    try {
+      const hits = lineSearch(declaration.searchTokens, cwd, ref, remaining());
+      declared.push({
+        name: declaration.name,
+        line: declaration.line,
+        possibleExisting: possibleExisting(declaration, hits, addedNames)
+      });
+    } catch {
+      incomplete = true;
+      declared.push({
+        name: declaration.name,
+        line: declaration.line,
+        possibleExisting: [],
+        inconclusive: true
+      });
+    }
+  }
+  return { file: file(incomplete), references };
 }
 function collectSymbolContext(options) {
   const search = options.search ?? gitGrepPaths;
+  const lineSearch = options.lineSearch ?? gitGrepLines;
   const now = options.now ?? Date.now;
   const maxMs = options.maxMs ?? DEFAULT_MAX_MS;
   const started = now();
   const remaining = () => maxMs - (now() - started);
   const paths = pathsWithHunks2(options.diff);
-  const records = paths.map(
-    (path) => remaining() <= 0 ? { file: { path, symbols: [], inconclusive: true, reason: "time-budget" }, references: /* @__PURE__ */ new Set() } : reportFile(options.diff, path, options.cwd, options.ref, search, remaining)
-  );
-  const changed = new Set(paths.map(normalisePath3));
+  const declarationContext = declarationsByPath(declarationsFromDiff(options.diff));
+  const records = paths.map((path) => {
+    const declarations = declarationContext.byPath.get(normalisePath4(path)) ?? [];
+    return remaining() <= 0 ? unfinishedFile(path, declarations) : reportFile(
+      options.diff,
+      path,
+      options.cwd,
+      options.ref,
+      search,
+      lineSearch,
+      remaining,
+      declarations,
+      declarationContext.addedNames
+    );
+  });
+  const changed = new Set(paths.map(normalisePath4));
   const downstream = /* @__PURE__ */ new Set();
   for (const record of records) {
     for (const path of record.references) {
-      if (!changed.has(normalisePath3(path))) downstream.add(path);
+      if (!changed.has(normalisePath4(path))) downstream.add(path);
     }
   }
   records.sort(
@@ -12282,6 +12651,22 @@ function readHumanReview(block, result) {
   result.humanReview.sensitiveExemptPaths = globs("sensitive_exempt_paths") ?? result.humanReview.sensitiveExemptPaths;
   result.humanReview.testPaths = globs("test_paths") ?? result.humanReview.testPaths;
   result.humanReview.generatedPaths = globs("generated_paths") ?? result.humanReview.generatedPaths;
+  const structure = block["structure"];
+  if (structure === void 0) return;
+  const signals = asRecord(structure);
+  if (signals === null) {
+    result.warnings.push("review.human_review.structure must be a mapping; using the defaults.");
+    return;
+  }
+  const enabled = (key) => {
+    const value = signals[key];
+    if (value === void 0) return void 0;
+    if (typeof value === "boolean") return value;
+    result.warnings.push(`review.human_review.structure.${key} must be true or false; using the default.`);
+    return void 0;
+  };
+  result.humanReview.structure.fileLineCrossing = enabled("file_line_crossing") ?? result.humanReview.structure.fileLineCrossing;
+  result.humanReview.structure.branchGrowth = enabled("branch_growth") ?? result.humanReview.structure.branchGrowth;
 }
 function readStructure(block, result) {
   if (block === null) return;
@@ -12424,7 +12809,8 @@ function loadConfig(repositoryRoot2) {
       sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths],
       sensitiveExemptPaths: [...DEFAULT_HUMAN_REVIEW.sensitiveExemptPaths],
       testPaths: [...DEFAULT_HUMAN_REVIEW.testPaths],
-      generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths]
+      generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths],
+      structure: { ...DEFAULT_HUMAN_REVIEW.structure }
     },
     structure: { ...DEFAULT_STRUCTURE },
     layers: [],
@@ -16224,13 +16610,15 @@ function markedGenerated(acquired) {
 function emitDiff(acquired, outDir) {
   const config2 = repositoryConfig();
   const generated = markedGenerated(acquired);
-  const complexity = assessComplexity(acquired.diff, acquired.files ?? [], config2?.humanReview, generated);
+  const assessed = assessComplexity(acquired.diff, acquired.files ?? [], config2?.humanReview, generated);
   const production = productionPaths(acquired.files ?? [], config2?.humanReview, generated);
+  const structure = collectStructure(process.cwd(), acquired, production, config2?.structure);
+  const complexity = applyStructureHumanReviewCap(assessed, structure, config2?.humanReview);
   const result = {
     ...acquired,
     complexity,
     humanReviewNote: humanReviewNote(complexity),
-    structure: collectStructure(process.cwd(), acquired, production, config2?.structure)
+    structure
   };
   if (outDir === null) {
     console.log(JSON.stringify(result, null, 2));

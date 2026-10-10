@@ -1,0 +1,7 @@
+name: factual-claim-stated-conditionally
+asserts: >
+  Documentation and the description accurately say duplicate rejection is
+  pending and requires its flag, so a corrected factual claim is not raised
+  again.
+expect:
+  output: "No actionable findings."
