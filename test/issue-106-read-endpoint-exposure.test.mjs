@@ -42,7 +42,7 @@ test('the verifier receives the pull-request description it must compare', () =>
   const review = read('plugins/review-voice/commands/review.md');
   const step = review.slice(review.indexOf('## Step 3 - Verify'), review.indexOf('## Step 3b'));
   assert.match(step, /same `thread\.json`/);
-  assert.match(step, /pull-request\s+description/);
+  assert.match(step, /claims in the description/);
 });
 
 test('the corpus distinguishes broad, data-bearing reads from a constrained status route', () => {

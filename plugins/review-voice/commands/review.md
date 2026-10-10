@@ -367,9 +367,7 @@ If there are no candidates, output exactly `No actionable findings.` and stop.
 ## Step 3 - Verify
 
 Launch the `evidence-verifier` agent with the candidates, the same diff, the
-same convention `documents`, and `symbols.json`. On a `--pr` run, also give it
-the same `thread.json`, so it can verify claims about the pull-request
-description rather than treating an excerpt as proof.
+same convention `documents`, and `symbols.json`.
 
 On a `--pr` run, give it the same `thread.json` too. It must be able to check
 factual claims in the description against the final head, not merely a
