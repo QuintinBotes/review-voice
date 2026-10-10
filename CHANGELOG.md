@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a test-adequacy rule: an added or changed test must name the smallest
+  production mutation that makes it fail, otherwise its permissive assertion
+  or setup is reported as `test_coverage`; the verifier traces that mutation
+  independently. (#92)
+- Repeated dependency calls now treat any-argument mock setups as inadequate
+  when later arguments depend on earlier results and no exact sequential setup
+  or verification catches a lost cursor, key or page. (#93)
+- Contract-test adequacy now checks concrete examples and provider state,
+  bounded enum matchers, nondeterministic values, copied clients, header- and
+  idempotency-driven behavior, and whether CI runs contract projects. (#99)
 - `diff --out` writes a `structure` block to `files.json` and its summary.
   `structure.sizeCrossings` lists the production files the change grows past
   `review.structure.max_file_lines` (default 1000), with both line counts and
@@ -75,6 +85,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authorization, negative-role tests, payload exposure, description accuracy
   and current callers. Claims that an equivalent boundary already exists
   elsewhere now need a source citation. (#106)
+
+- `score --severity <candidate_id>=<tier>` lets an owner explicitly lower a
+  computed tier when reach overstates the case. It refuses raises and no-op
+  restatements, writes the override into the score reason, and keeps
+  `validate-output` and recorded scores strict. (#90)
+
+### Fixed
+
+- `trust_boundary` now needs the verifier to trace impact before `score` raises
+  it above the analyst's requested tier, so a non-security control boundary
+  cannot jump to blocking on repository reach alone. `no-exposure` continues
+  to hold a boundary finding at the requested tier. (#89)
+- `check-verification` rejects second-pass `verdict`/`confidence` entries and
+  tells the verifier to use `verified`/`technical_confidence`, rather than
+  accepting a shape that `score` would ignore and fall back to the analyst's
+  self-report. (#91)
 
 ## [1.14.0] - 2026-10-08
 
