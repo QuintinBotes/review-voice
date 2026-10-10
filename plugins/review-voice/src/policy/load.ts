@@ -92,13 +92,17 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
 
 /** Same rule as the human-review limits: a limit must be a whole number above zero. */
 function readStructure(block: Record<string, unknown> | null, result: LoadedConfig): void {
-  if (block === null || block['max_file_lines'] === undefined) return;
-  const value = block['max_file_lines'];
-  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
-    result.structure.maxFileLines = value;
-    return;
-  }
-  result.warnings.push('review.structure.max_file_lines must be a whole number above zero; using the default.');
+  if (block === null) return;
+  const limit = (key: string): number | undefined => {
+    const value = block[key];
+    if (value === undefined) return undefined;
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
+    result.warnings.push(`review.structure.${key} must be a whole number above zero; using the default.`);
+    return undefined;
+  };
+  result.structure.maxFileLines = limit('max_file_lines') ?? result.structure.maxFileLines;
+  result.structure.maxAddedBranchesPerFunction =
+    limit('max_added_branches_per_function') ?? result.structure.maxAddedBranchesPerFunction;
 }
 
 /** Words that appear in nearly every failure, so alone they would turn every failure into a rerun. */

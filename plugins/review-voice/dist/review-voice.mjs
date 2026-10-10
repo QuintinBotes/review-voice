@@ -1542,7 +1542,10 @@ var MAX_SENSITIVE_LISTED = 20;
 var KEYWORDS = /\b(?:if|elif|for|foreach|while|case|catch|except|when)\b/g;
 var TERNARY = / \? /g;
 var COMMENT_START = /^(?:\/\/|#|\*|\/\*|--)/;
-var HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+var HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/;
+var DECLARATION = /^[A-Za-z_$]/;
+var STATEMENT = /^(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|when)\b/;
+var MAX_SCOPE_LENGTH = 80;
 function count(text, pattern) {
   return text.match(pattern)?.length ?? 0;
 }
@@ -1550,6 +1553,9 @@ function decisionPointsIn(text) {
   const trimmed = text.trim();
   if (trimmed.length === 0 || COMMENT_START.test(trimmed)) return 0;
   return count(trimmed, KEYWORDS) + count(trimmed, /&&/g) + count(trimmed, /\|\|/g) + count(trimmed, TERNARY);
+}
+function declarationIn(text) {
+  return DECLARATION.test(text) && !STATEMENT.test(text) ? text.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
 }
 function headerPath2(raw) {
   const text = raw.replace(/\t.*$/, "");
@@ -1561,23 +1567,47 @@ function countHunks(diff, wanted) {
   const hunks = [];
   let path = null;
   let current = null;
+  let scope = null;
+  let replacing = false;
   let remainingOld = 0;
   let remainingNew = 0;
+  let newLine = 0;
+  const record = (hunk, text, removed) => {
+    const decisionPoints = decisionPointsIn(text);
+    if (decisionPoints === 0) return;
+    if (!removed) hunk.decisionPoints += decisionPoints;
+    hunk.branches.push({ scope, line: newLine, decisionPoints, removed });
+  };
   for (const raw of diff.split("\n")) {
     const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (current !== null && (remainingOld > 0 || remainingNew > 0)) {
+      const text = line.slice(1);
       if (line.startsWith("+")) {
-        current.decisionPoints += decisionPointsIn(line.slice(1));
+        if (declarationIn(text) !== null) {
+          if (!replacing) scope = null;
+          replacing = false;
+        }
+        record(current, text, false);
         remainingNew -= 1;
+        newLine += 1;
         continue;
       }
       if (line.startsWith("-")) {
+        const declaration = declarationIn(text);
+        if (declaration !== null) {
+          scope = declaration;
+          replacing = true;
+        }
+        record(current, text, true);
         remainingOld -= 1;
         continue;
       }
       if (line.startsWith(" ") || line === "") {
+        scope = declarationIn(text) ?? scope;
+        replacing = false;
         remainingOld -= 1;
         remainingNew -= 1;
+        newLine += 1;
         continue;
       }
       if (line.startsWith("\\")) continue;
@@ -1597,7 +1627,10 @@ function countHunks(diff, wanted) {
     if (header !== null && path !== null) {
       remainingOld = header[1] === void 0 ? 1 : Number(header[1]);
       remainingNew = header[3] === void 0 ? 1 : Number(header[3]);
-      current = { path, line: Number(header[2]), decisionPoints: 0 };
+      current = { path, line: Number(header[2]), decisionPoints: 0, branches: [] };
+      newLine = Number(header[2]);
+      scope = declarationIn((header[4] ?? "").trim());
+      replacing = false;
       if (wanted.has(path)) hunks.push(current);
     }
   }
@@ -1835,7 +1868,7 @@ function parseComplexity(value) {
 import { execFileSync as execFileSync3 } from "node:child_process";
 import { readFileSync as readFileSync3 } from "node:fs";
 import { join as join3 } from "node:path";
-var DEFAULT_STRUCTURE = { maxFileLines: 1e3 };
+var DEFAULT_STRUCTURE = { maxFileLines: 1e3, maxAddedBranchesPerFunction: 3 };
 var MAX_UNMEASURED_LISTED = 20;
 function countLines(content) {
   let lines2 = 0;
@@ -1920,6 +1953,24 @@ function measureLines(root, files, paths, sides) {
   }
   return counts;
 }
+function findBranchGrowth(diff, paths, threshold) {
+  const grown = /* @__PURE__ */ new Map();
+  for (const hunk of countHunks(diff, new Set(paths))) {
+    for (const branch of hunk.branches) {
+      if (branch.scope === null) continue;
+      const key = `${hunk.path}\0${branch.scope}`;
+      const entry = grown.get(key) ?? { path: hunk.path, scope: branch.scope, net: 0, line: null };
+      entry.net += branch.removed ? -branch.decisionPoints : branch.decisionPoints;
+      if (!branch.removed) entry.line = Math.min(entry.line ?? branch.line, branch.line);
+      grown.set(key, entry);
+    }
+  }
+  const byPathThenLine = (a, b) => {
+    if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+    return a.line - b.line;
+  };
+  return [...grown.values()].filter((entry) => entry.line !== null && entry.net >= threshold).map((entry) => ({ path: entry.path, function: entry.scope, addedDecisionPoints: entry.net, threshold, line: entry.line })).sort(byPathThenLine);
+}
 function findStructureSignals(diff, paths, counts, limits = DEFAULT_STRUCTURE) {
   const hunks = parseHunks(diff);
   const threshold = limits.maxFileLines;
@@ -1943,6 +1994,7 @@ function findStructureSignals(diff, paths, counts, limits = DEFAULT_STRUCTURE) {
   }
   return {
     sizeCrossings,
+    branchGrowth: findBranchGrowth(diff, paths, limits.maxAddedBranchesPerFunction),
     unmeasured: { count: unmeasured.length, paths: unmeasured.slice(0, MAX_UNMEASURED_LISTED) }
   };
 }
@@ -12093,13 +12145,16 @@ function readHumanReview(block, result) {
   result.humanReview.generatedPaths = globs("generated_paths") ?? result.humanReview.generatedPaths;
 }
 function readStructure(block, result) {
-  if (block === null || block["max_file_lines"] === void 0) return;
-  const value = block["max_file_lines"];
-  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
-    result.structure.maxFileLines = value;
-    return;
-  }
-  result.warnings.push("review.structure.max_file_lines must be a whole number above zero; using the default.");
+  if (block === null) return;
+  const limit = (key) => {
+    const value = block[key];
+    if (value === void 0) return void 0;
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+    result.warnings.push(`review.structure.${key} must be a whole number above zero; using the default.`);
+    return void 0;
+  };
+  result.structure.maxFileLines = limit("max_file_lines") ?? result.structure.maxFileLines;
+  result.structure.maxAddedBranchesPerFunction = limit("max_added_branches_per_function") ?? result.structure.maxAddedBranchesPerFunction;
 }
 var GENERIC_SIGNATURE_WORDS = /* @__PURE__ */ new Set([
   "error",

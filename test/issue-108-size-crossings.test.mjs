@@ -40,7 +40,7 @@ function patchAdding(path, start, count) {
   ].join('\n');
 }
 
-const limits = { maxFileLines: 1000 };
+const limits = { maxFileLines: 1000, maxAddedBranchesPerFunction: 3 };
 
 test('a file crossing the threshold is listed, anchored at its first added line past it', () => {
   const diff = patchAdding('src/big.ts', 951, 100);
@@ -257,7 +257,7 @@ test('a deleted file is neither a crossing nor unmeasured', async () => {
     rmSync(join(scratch.repo, 'src/big.ts'));
     const files = [{ path: 'src/big.ts', status: 'deleted', class: 'source', language: 'typescript', additions: 0, deletions: 950, reviewed: true }];
     const signals = collectStructure(scratch.repo, { mode: 'worktree', base: null, head: scratch.git('rev-parse', 'HEAD'), diff: '', files }, ['src/big.ts']);
-    assert.deepEqual(signals, { sizeCrossings: [], unmeasured: { count: 0, paths: [] } });
+    assert.deepEqual(signals, { sizeCrossings: [], branchGrowth: [], unmeasured: { count: 0, paths: [] } });
   } finally {
     scratch.cleanup();
   }

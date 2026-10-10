@@ -127,7 +127,17 @@ const KEYWORDS = /\b(?:if|elif|for|foreach|while|case|catch|except|when)\b/g;
 // A space either side keeps `?.`, `??` and an optional `?:` out of the count.
 const TERNARY = / \? /g;
 const COMMENT_START = /^(?:\/\/|#|\*|\/\*|--)/;
-const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/;
+/**
+ * A line git's default hunk-header heuristic would name as a function: one
+ * that starts in the first column with a letter, `_` or `$`. A statement
+ * keyword in that column is top-level code, not a declaration. Git cuts the
+ * name it puts in a header at 80 bytes, so names are cut the same way here and
+ * a function compares equal however it was found.
+ */
+const DECLARATION = /^[A-Za-z_$]/;
+const STATEMENT = /^(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|when)\b/;
+const MAX_SCOPE_LENGTH = 80;
 
 function count(text: string, pattern: RegExp): number {
   return text.match(pattern)?.length ?? 0;
@@ -144,10 +154,32 @@ function decisionPointsIn(text: string): number {
   return count(trimmed, KEYWORDS) + count(trimmed, /&&/g) + count(trimmed, /\|\|/g) + count(trimmed, TERNARY);
 }
 
-interface HunkCount {
-  path: string;
+/** A branch a hunk adds or removes, under the declaration that encloses it. */
+export interface Branch {
+  /**
+   * The enclosing declaration, as git's hunk header, a context line or a
+   * removed line names it, so it exists at the base. Null when the hunk has
+   * no header context, or after an added line declares something new.
+   */
+  scope: string | null;
+  /** The added line, or the new-side line a removed one stood before. */
   line: number;
   decisionPoints: number;
+  removed: boolean;
+}
+
+export interface HunkCount {
+  path: string;
+  line: number;
+  /** Decision points on added lines: what the complexity assessment counts. */
+  decisionPoints: number;
+  /** Every line of the hunk with a decision point, added or removed. */
+  branches: Branch[];
+}
+
+/** The declaration a line names, cut as git cuts it, or null. Indentation is the caller's to keep or strip. */
+function declarationIn(text: string): string | null {
+  return DECLARATION.test(text) && !STATEMENT.test(text) ? text.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
 }
 
 /** The new-side path of a `+++` header, or null for a deletion. */
@@ -162,30 +194,62 @@ function headerPath(raw: string): string | null {
  * Decision points per hunk, for the files asked about. The header's line
  * counts say where a hunk ends, so an added line whose text starts with `++ `
  * is still a line of the hunk rather than a file header.
+ *
+ * Each line with a decision point is also attributed to its enclosing
+ * declaration, the way git names one in a hunk header: no parser, so an
+ * indented method is attributed to the class or function around it, as git
+ * would. A declaration the change removes and adds back, such as a changed
+ * signature, keeps its base name; one it only adds starts something new.
  */
-function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount[] {
+export function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount[] {
   const hunks: HunkCount[] = [];
   let path: string | null = null;
   let current: HunkCount | null = null;
+  let scope: string | null = null;
+  // A removed declaration the next added one replaces rather than follows.
+  let replacing = false;
   let remainingOld = 0;
   let remainingNew = 0;
+  let newLine = 0;
+
+  const record = (hunk: HunkCount, text: string, removed: boolean): void => {
+    const decisionPoints = decisionPointsIn(text);
+    if (decisionPoints === 0) return;
+    if (!removed) hunk.decisionPoints += decisionPoints;
+    hunk.branches.push({ scope, line: newLine, decisionPoints, removed });
+  };
 
   for (const raw of diff.split('\n')) {
     const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
 
     if (current !== null && (remainingOld > 0 || remainingNew > 0)) {
+      const text = line.slice(1);
       if (line.startsWith('+')) {
-        current.decisionPoints += decisionPointsIn(line.slice(1));
+        if (declarationIn(text) !== null) {
+          if (!replacing) scope = null;
+          replacing = false;
+        }
+        record(current, text, false);
         remainingNew -= 1;
+        newLine += 1;
         continue;
       }
       if (line.startsWith('-')) {
+        const declaration = declarationIn(text);
+        if (declaration !== null) {
+          scope = declaration;
+          replacing = true;
+        }
+        record(current, text, true);
         remainingOld -= 1;
         continue;
       }
       if (line.startsWith(' ') || line === '') {
+        scope = declarationIn(text) ?? scope;
+        replacing = false;
         remainingOld -= 1;
         remainingNew -= 1;
+        newLine += 1;
         continue;
       }
       if (line.startsWith('\\')) continue;
@@ -206,7 +270,11 @@ function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount[] {
     if (header !== null && path !== null) {
       remainingOld = header[1] === undefined ? 1 : Number(header[1]);
       remainingNew = header[3] === undefined ? 1 : Number(header[3]);
-      current = { path, line: Number(header[2]), decisionPoints: 0 };
+      current = { path, line: Number(header[2]), decisionPoints: 0, branches: [] };
+      newLine = Number(header[2]);
+      // A language diff driver may name an indented method; keep it, minus the indent.
+      scope = declarationIn((header[4] ?? '').trim());
+      replacing = false;
       if (wanted.has(path)) hunks.push(current);
     }
   }

@@ -41,6 +41,18 @@ and neither does a split you cannot point to in the code. A file listed in
 `unmeasured` could not be read on one side; that is not evidence it stayed
 small.
 
+Each entry in `branchGrowth` is a declaration that exists at the base, as git
+names it in a hunk header, to which the change adds `addedDecisionPoints` more
+branches than it removes. It is the shape of a special case bolted onto an
+existing flow. Read
+the function: if the new branches serve a concern the function did not already
+own, raise a `maintainability` candidate at the entry's `line` that names where
+the logic belongs instead - its own helper, a policy object, a dispatcher, the
+module that owns the concept. Branches that are the function's own job, such as
+validating its own input, are not a finding. The attribution is lexical: an
+indented method is reported under the class or function around it, so check
+which function the lines are really in before anchoring.
+
 ## What the pull request already says
 
 You may be given the pull request's thread: its inline comments, review bodies,
