@@ -52,6 +52,16 @@ validating its own input, are not a finding. The attribution is lexical: an
 indented method is reported under the class or function around it, so check
 which function the lines are really in before anchoring.
 
+Each entry in `typeEscapes` is an escape from the type system on a line this
+change adds: an `any`, a double cast, a non-null or null-forgiving assertion, a
+suppression directive. It is a lead, not a finding. Read the code around it and
+ask whether a typed model or an explicit boundary would remove the escape. A
+candidate must name the invariant being hidden and the type that would carry it.
+Use `maintainability`, or `correctness` when the diff itself violates the
+hidden invariant. A single justified cast at an interop edge, such as an
+untyped library or a JSON parse boundary that is validated, is not a finding.
+The match is lexical, so confirm the line really is code before citing it.
+
 ## What the pull request already says
 
 You may be given the pull request's thread: its inline comments, review bodies,

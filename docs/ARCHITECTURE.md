@@ -192,6 +192,21 @@ it, as git would; the analyst is told to check. One counter serves both uses,
 so the complexity assessment and this signal cannot disagree about what a
 decision point is.
 
+The third is `typeEscapes`: `{ path, line, kind }` for each escape from the type
+system on a line the change adds to production source, found by a small
+per-language pattern table in `diff/type-escapes.ts`. TypeScript and JavaScript
+get `any`, `double-cast`, `non-null`, `ts-ignore`, `ts-expect-error` and
+`lint-disable` (an `eslint-disable` that names a `@typescript-eslint/` rule or
+no rule); C# gets `null-forgiving`, `dynamic`, `object-cast` and
+`nullable-disable`; Python gets `type-ignore`, `cast` and `any`. Only added
+lines count, at their new-side line numbers, at most 20 per file, earliest
+first. Each line is split into code and comment by a scanner that tracks quotes
+and comment markers, so a pattern in a string never matches, code patterns
+ignore comments, and directives are read from comments only. It works a line at
+a time and does not follow multi-line strings. A file with any other extension
+gets no entries rather than a guess. The analyst treats an entry as a lead and
+needs to name the hidden invariant and the type that would carry it.
+
 ### Retrieval
 
 No embedding model ships with the plugin. A downloaded model would break
