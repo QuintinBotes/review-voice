@@ -31,6 +31,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only when it names the invariant being hidden and the type that would carry
   it. The verdict is unchanged. (#110)
 
+### Fixed
+
+- The analyst and verifier now check factual claims in a pull-request
+  description and changed comments against the final head, diff, configuration
+  and CI, consolidating every remaining mismatch with file-and-line evidence
+  instead of re-raising a claim the head already corrects. (#98)
+- Present-tense documentation and comments now distinguish behaviour that is
+  only in the open change, requires a flag, or varies by environment from
+  behaviour already delivered, with conditional wording or a maintained source
+  of truth as the correction. (#101)
+- When a factual claim changes, the analyst and verifier search changed and
+  sibling files plus the entry point, and a docs-only change checks every claim
+  in its first pass rather than finding contradictions one review round at a
+  time. (#102)
+- Completeness findings now enumerate every in-scope call site and name every
+  miss in one candidate; a partial search cannot support an `every` claim.
+  (#103)
+
 ## [1.14.0] - 2026-10-08
 
 ### Fixed
