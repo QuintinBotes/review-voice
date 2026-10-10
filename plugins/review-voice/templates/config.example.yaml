@@ -44,6 +44,9 @@ review:
     # A production file this change grows from at most this many lines to
     # more is listed in the diff manifest; a whole number above zero.
     max_file_lines: 1000
+    # An existing function, as git names it in a hunk header, that gains at
+    # least this many decision points is listed; a whole number above zero.
+    max_added_branches_per_function: 3
   # A change over any of these is raised for a human and never approved by
   # Review Voice (docs/adr/0012). The review still runs and posts its findings.
   # Defaults are shown; a limit must be a whole number above zero.

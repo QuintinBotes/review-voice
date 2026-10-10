@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { attributeSource, repositoryRoot, type ChangedFile, type DiffResult } from './acquire.ts';
 import { parseHunks } from './hunks.ts';
+import { countHunks } from './complexity.ts';
 import type { ReviewScope } from './incremental.ts';
 
 /**
@@ -13,9 +14,11 @@ import type { ReviewScope } from './incremental.ts';
 export interface StructureConfig {
   /** A production file that grows from at most this many lines to more is listed. */
   maxFileLines: number;
+  /** An existing function that gains at least this many decision points is listed. */
+  maxAddedBranchesPerFunction: number;
 }
 
-export const DEFAULT_STRUCTURE: StructureConfig = { maxFileLines: 1000 };
+export const DEFAULT_STRUCTURE: StructureConfig = { maxFileLines: 1000, maxAddedBranchesPerFunction: 3 };
 
 export interface SizeCrossing {
   path: string;
@@ -30,8 +33,24 @@ export interface SizeCrossing {
   line: number | null;
 }
 
+/**
+ * Branching added inside a declaration that exists at the base: a special
+ * case bolted onto an existing flow, rather than a new unit that owns it.
+ */
+export interface BranchGrowth {
+  path: string;
+  /** The enclosing declaration's line as git names it, cut at 80 characters as git cuts it. */
+  function: string;
+  /** Added minus removed, inside this declaration. */
+  addedDecisionPoints: number;
+  threshold: number;
+  /** The first added line in it with a decision point. */
+  line: number;
+}
+
 export interface StructureSignals {
   sizeCrossings: SizeCrossing[];
+  branchGrowth: BranchGrowth[];
   /**
    * Production files whose base or head could not be read, so whether they
    * crossed is unknown rather than no. Paths are capped at 20, sorted.
@@ -180,7 +199,37 @@ export function measureLines(
   return counts;
 }
 
-/** Files that grow from at most the threshold to more, anchored on the patch. */
+/**
+ * Existing declarations the change adds at least the threshold of decision
+ * points to, net of the ones it removes from them, summed across hunks. A
+ * rewrite that swaps one branch for another is not growth. A hunk without
+ * header context, and code after a declaration the change adds, are not
+ * attributed to anything. Two declarations with the same text in one file
+ * are counted together.
+ */
+function findBranchGrowth(diff: string, paths: readonly string[], threshold: number): BranchGrowth[] {
+  const grown = new Map<string, { path: string; scope: string; net: number; line: number | null }>();
+  for (const hunk of countHunks(diff, new Set(paths))) {
+    for (const branch of hunk.branches) {
+      if (branch.scope === null) continue;
+      const key = `${hunk.path}\0${branch.scope}`;
+      const entry = grown.get(key) ?? { path: hunk.path, scope: branch.scope, net: 0, line: null };
+      entry.net += branch.removed ? -branch.decisionPoints : branch.decisionPoints;
+      if (!branch.removed) entry.line = Math.min(entry.line ?? branch.line, branch.line);
+      grown.set(key, entry);
+    }
+  }
+  const byPathThenLine = (a: BranchGrowth, b: BranchGrowth): number => {
+    if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+    return a.line - b.line;
+  };
+  return [...grown.values()]
+    .filter((entry) => entry.line !== null && entry.net >= threshold)
+    .map((entry) => ({ path: entry.path, function: entry.scope, addedDecisionPoints: entry.net, threshold, line: entry.line! }))
+    .sort(byPathThenLine);
+}
+
+/** Files that grow from at most the threshold to more, anchored on the patch, and existing functions that gain branches. */
 export function findStructureSignals(
   diff: string,
   paths: readonly string[],
@@ -211,6 +260,7 @@ export function findStructureSignals(
 
   return {
     sizeCrossings,
+    branchGrowth: findBranchGrowth(diff, paths, limits.maxAddedBranchesPerFunction),
     unmeasured: { count: unmeasured.length, paths: unmeasured.slice(0, MAX_UNMEASURED_LISTED) },
   };
 }

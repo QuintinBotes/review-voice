@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   be read are listed in `structure.unmeasured`. The analyst may raise a
   `maintainability` finding on a crossing only when it names where the file
   could be split. The verdict is unchanged. (#108)
+- `structure.branchGrowth` lists existing functions, as git names them in hunk
+  headers, that gain at least `review.structure.max_added_branches_per_function`
+  (default 3) decision points net of the ones the change removes from them,
+  with the first added line as the anchor. The
+  analyst may raise a `maintainability` finding when the new branches belong
+  somewhere else and it can say where. The verdict is unchanged. (#109)
 
 ## [1.14.0] - 2026-10-08
 

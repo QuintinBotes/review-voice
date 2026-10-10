@@ -173,6 +173,25 @@ plays no part in the verdict. The analyst gets it as a lead and still has to
 name a seam the added code could be split along, so "this file is large" on its
 own is never a finding.
 
+The second is `branchGrowth`: declarations that exist at the base and gain at
+least `review.structure.max_added_branches_per_function` (default 3) decision
+points, summed over the change and net of the ones it removes from them, so a
+rewrite that swaps one branch for another is not growth. The decision-point counter of
+[adr/0012](adr/0012-complex-changes-need-human-approval.md) attributes each
+added branch to its enclosing declaration the way git names one in a hunk
+header: the header's context, then any context line inside the hunk that
+starts in the first column with a letter, `_` or `$` and is not a statement
+keyword. Both come from the base side, so the declaration already existed.
+Names are cut at 80 bytes, as git cuts them in a header, so one function is one
+name however it was found. An added line of that shape starts something new,
+and branches after it are not attributed, unless it replaces a declaration the
+hunk removed, such as a changed signature, which keeps the base name. Branches
+in a hunk without header context are not attributed either. There is no
+parser, so an indented method is attributed to the class or function around
+it, as git would; the analyst is told to check. One counter serves both uses,
+so the complexity assessment and this signal cannot disagree about what a
+decision point is.
+
 ### Retrieval
 
 No embedding model ships with the plugin. A downloaded model would break
