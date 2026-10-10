@@ -1,0 +1,7 @@
+name: shadow-path-parity
+asserts: >
+  A non-fatal shadow path reads its flag before its guard, caches unvalidated
+  results, and measures a different concurrent execution from production.
+expect:
+  min_findings: 1
+  path: src/orders/shadow.ts
