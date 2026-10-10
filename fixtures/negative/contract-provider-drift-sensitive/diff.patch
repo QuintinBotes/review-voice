@@ -1,0 +1,37 @@
+diff --git a/test/contracts/SubmitOrderContractTests.cs b/test/contracts/SubmitOrderContractTests.cs
+--- a/test/contracts/SubmitOrderContractTests.cs
++++ b/test/contracts/SubmitOrderContractTests.cs
+@@ -1,3 +1,26 @@
++[Fact]
++public async Task Submit_order_honors_idempotency_key() {
++    var provider = ProviderHarness.For<OrderApi>();
++
++    await provider.VerifyInteraction(new ProviderInteraction {
++        Given = "order with idempotency key repeat-key has id order-42",
++        Request = new ContractRequest {
++            Method = "POST",
++            Path = "/orders",
++            Headers = new Dictionary<string, string> {
++                ["Idempotency-Key"] = "repeat-key",
++            },
++        },
++        Response = new ContractResponse {
++            Status = 200,
++            Body = new {
++                id = "order-42",
++                state = Match.OneOf("Accepted", "Pending"),
++                parentId = "parent-7",
++                createdAt = Match.Iso8601DateTime(),
++            },
++        },
++    });
++}
+diff --git a/.ci/verify.yml b/.ci/verify.yml
+--- a/.ci/verify.yml
++++ b/.ci/verify.yml
+@@ -1,3 +1,8 @@
++jobs:
++  test:
++    runs-on: linux
++    steps:
++      - run: dotnet test test/contracts/Contracts.csproj

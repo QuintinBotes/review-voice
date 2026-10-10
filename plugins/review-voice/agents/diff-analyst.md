@@ -117,6 +117,22 @@ A candidate is valid only if it has all four:
 - evidence drawn from the diff or the supplied static analysis;
 - a plausible, material impact.
 
+**Test adequacy.** For each added or changed test, name the smallest production
+mutation that should turn it red; if none does, raise a `test_coverage`
+candidate at the test line and name the assertion or setup that leaves it
+green. Shared tracked read-backs, nullable negative-only or subset assertions,
+mocks above the unit, `nameof` wire values and fixtures that reuse the asserted
+value are leads, not automatic findings: trace the mutation. On a dependency
+called more than once with later arguments derived from earlier results, an
+any-argument setup is inadequate unless exact sequential setups or
+exact-argument verification catches a dropped cursor, key or page. Apply the
+same check to contract interactions: null examples, enum matchers accepting
+arbitrary strings, exact nondeterministic values, a copied client, or a
+header/idempotency interaction without provider state tying the header to an
+observable response can hide drift; check that CI runs the contract project.
+Without a concrete mutation that stays green, a different test is only a
+preference, not a finding.
+
 ## Low-stakes findings are still findings
 
 A real observation the author may reasonably decline is a `nit`, not something
