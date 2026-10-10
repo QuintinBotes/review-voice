@@ -3370,8 +3370,8 @@ async function readThreadStates(client, repository, pullNumber) {
 
 // plugins/review-voice/src/scoring/severity.ts
 var LEGACY_BY_CATEGORY = {
-  // Reserved for categories that are severe by their nature rather than by
-  // circumstance. The confidence gate already keeps anything under 0.8 out.
+  // Fixed security and authorization categories. `trust_boundary` keeps its
+  // legacy tier here, then score.ts applies its traced-impact bound.
   security: "blocking",
   trust_boundary: "blocking",
   authorization: "blocking",
@@ -3405,7 +3405,7 @@ var atEveryReach = (severity) => ({
   repository: severity
 });
 var BY_CATEGORY_AND_REACH = {
-  // The boundary categories. These four, and no others.
+  // Boundary categories. `trust_boundary` is evidence-bounded by score.ts.
   security: atEveryReach("blocking"),
   trust_boundary: atEveryReach("blocking"),
   authorization: atEveryReach("blocking"),
@@ -3601,6 +3601,11 @@ var BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
   "authorization",
   "authentication"
 ]);
+var FIXED_BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
+  "security",
+  "authorization",
+  "authentication"
+]);
 var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
 function isInterrogativeClaim(claim) {
   const text = claim.trim();
@@ -3608,8 +3613,8 @@ function isInterrogativeClaim(claim) {
   return text.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
 }
 function boundSeverityByEvidence(derived, candidate, verification2) {
-  if (BOUNDARY_CATEGORIES.has(candidate.category)) {
-    if (verification2?.impactClass !== "no-exposure" || candidate.severity === "question") return derived;
+  if (BOUNDARY_CATEGORIES.has(candidate.category) && verification2?.impactClass === "no-exposure") {
+    if (candidate.severity === "question") return derived;
     const asked2 = TIER_ORDER.indexOf(candidate.severity);
     const got2 = TIER_ORDER.indexOf(derived.severity);
     if (asked2 === -1 || got2 === -1 || asked2 >= got2) return derived;
@@ -3619,6 +3624,7 @@ function boundSeverityByEvidence(derived, candidate, verification2) {
       reason: `${derived.reason}, held at ${candidate.severity} because the verifier found no exposure`
     };
   }
+  if (FIXED_BOUNDARY_CATEGORIES.has(candidate.category)) return derived;
   if (candidate.severity === "question" || derived.severity === "question") return derived;
   let result = derived;
   if ((result.severity === "important" || result.severity === "blocking") && isInterrogativeClaim(candidate.claim)) {
@@ -15782,6 +15788,7 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice check-verification",
       "  Validate verifier output the way score would read it. Takes no flags.",
+      "  Use verified and technical_confidence; verdict and confidence belong to the second pass.",
       "",
       "Reads: the evidence-verifier output on stdin.",
       "Writes: JSON on stdout.",
@@ -15960,6 +15967,7 @@ var COMMAND_HELP = {
       "  --thread <path>           Existing pull-request comments",
       "  --diff-file <path>        Diff for reach and anchor checks",
       "  --min-score <n>           Final score gate (default 0.68)",
+      "  --severity <id>=<tier>    Explicit owner downgrade (blocking, important, minor or nit; repeatable)",
       "  --repository <name>       Prefer precedents from this repository",
       "  --owner <login>           Owner whose precedents count; default from config",
       "Reads: candidates JSON on stdin.",
@@ -17117,6 +17125,44 @@ function containsCut(before, after) {
 function anchorFor(hunks, candidate) {
   return candidateAnchor(hunks, candidate);
 }
+var OWNER_OVERRIDE_SEVERITIES = ["blocking", "important", "minor", "nit"];
+function ownerSeverityOverrides(argv, candidates) {
+  const overrides = /* @__PURE__ */ new Map();
+  const known = new Set(candidates.map((candidate) => candidate.candidateId));
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== "--severity") continue;
+    const value = argv[index + 1];
+    if (value === void 0 || value.startsWith("--")) {
+      return "--severity needs candidate_id=tier, for example cand_001=minor.";
+    }
+    const separator = value.indexOf("=");
+    if (separator < 1 || separator !== value.lastIndexOf("=")) {
+      return `--severity ${JSON.stringify(value)} must be candidate_id=tier.`;
+    }
+    const candidateId = value.slice(0, separator);
+    const severity = value.slice(separator + 1);
+    if (!known.has(candidateId)) return `--severity names unknown candidate ${JSON.stringify(candidateId)}.`;
+    if (!OWNER_OVERRIDE_SEVERITIES.includes(severity)) {
+      return `--severity ${JSON.stringify(value)} must use one of ${OWNER_OVERRIDE_SEVERITIES.join(", ")}.`;
+    }
+    if (overrides.has(candidateId)) return `--severity names ${JSON.stringify(candidateId)} more than once.`;
+    overrides.set(candidateId, severity);
+  }
+  return overrides;
+}
+function applyOwnerSeverityOverride(breakdown, override) {
+  const current = breakdown.severity.severity;
+  if (current === "question") return `--severity cannot override question for ${breakdown.candidateId}.`;
+  if (SEVERITY_ORDER[override] <= SEVERITY_ORDER[current]) {
+    return `--severity ${breakdown.candidateId}=${override} must lower the scored ${current} tier; owner overrides cannot raise or restate a severity.`;
+  }
+  breakdown.severity = {
+    ...breakdown.severity,
+    severity: override,
+    reason: `${breakdown.severity.reason}, held at ${override} by an explicit owner override`
+  };
+  return null;
+}
 function scoreCommand(argv) {
   let candidates;
   try {
@@ -17131,6 +17177,11 @@ function scoreCommand(argv) {
       return 2;
     }
     console.error('Expected {"candidates": [...]} on stdin.');
+    return 2;
+  }
+  const severityOverrides = ownerSeverityOverrides(argv, candidates);
+  if (typeof severityOverrides === "string") {
+    console.error(severityOverrides);
     return 2;
   }
   const thresholds = {
@@ -17299,6 +17350,14 @@ function scoreCommand(argv) {
         thresholds,
         verifications.get(candidate.candidateId)
       );
+      const override = severityOverrides.get(candidate.candidateId);
+      if (override !== void 0) {
+        const problem = applyOwnerSeverityOverride(breakdown, override);
+        if (problem !== null) {
+          console.error(problem);
+          return 2;
+        }
+      }
       let absence = null;
       if (searchRoot !== null) {
         try {
@@ -18697,6 +18756,9 @@ function verificationProblem(list) {
     const id = entry["candidate_id"] ?? entry["candidateId"];
     const who = `entry ${index} (${typeof id === "string" ? id : "no candidate id"})`;
     if (typeof id !== "string" || id === "") return `${who}: candidate_id must be a non-empty string.`;
+    if (Object.hasOwn(entry, "verdict") || Object.hasOwn(entry, "confidence")) {
+      return `${who}: use verified (boolean) and technical_confidence (0 to 1), not verdict or confidence; those are second-pass fields.`;
+    }
     const quality = entry["evidence_quality"] ?? entry["evidenceQuality"];
     if (quality !== void 0 && !EVIDENCE_QUALITIES.includes(quality)) {
       return `${who}: evidence_quality must be one of ${EVIDENCE_QUALITIES.join(", ")}, not ${JSON.stringify(quality)}.`;

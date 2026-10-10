@@ -119,6 +119,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     body: lines(
       'review-voice check-verification',
       '  Validate verifier output the way score would read it. Takes no flags.',
+      '  Use verified and technical_confidence; verdict and confidence belong to the second pass.',
       '',
       'Reads: the evidence-verifier output on stdin.',
       'Writes: JSON on stdout.',
@@ -297,6 +298,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  --thread <path>           Existing pull-request comments',
       '  --diff-file <path>        Diff for reach and anchor checks',
       '  --min-score <n>           Final score gate (default 0.68)',
+      '  --severity <id>=<tier>    Explicit owner downgrade (blocking, important, minor or nit; repeatable)',
       '  --repository <name>       Prefer precedents from this repository',
       '  --owner <login>           Owner whose precedents count; default from config',
       'Reads: candidates JSON on stdin.',
