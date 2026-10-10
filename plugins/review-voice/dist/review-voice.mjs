@@ -1529,7 +1529,8 @@ var DEFAULT_HUMAN_REVIEW = {
   sensitivePaths: DEFAULT_SENSITIVE_PATHS,
   sensitiveExemptPaths: [],
   testPaths: DEFAULT_TEST_PATHS,
-  generatedPaths: []
+  generatedPaths: [],
+  structure: { fileLineCrossing: false, branchGrowth: false }
 };
 var NOTHING_EXCLUDED = {
   documentationFiles: 0,
@@ -1644,7 +1645,11 @@ function config(partial) {
     sensitivePaths: partial?.sensitivePaths ?? DEFAULT_HUMAN_REVIEW.sensitivePaths,
     sensitiveExemptPaths: partial?.sensitiveExemptPaths ?? DEFAULT_HUMAN_REVIEW.sensitiveExemptPaths,
     testPaths: partial?.testPaths ?? DEFAULT_HUMAN_REVIEW.testPaths,
-    generatedPaths: partial?.generatedPaths ?? DEFAULT_HUMAN_REVIEW.generatedPaths
+    generatedPaths: partial?.generatedPaths ?? DEFAULT_HUMAN_REVIEW.generatedPaths,
+    structure: {
+      fileLineCrossing: partial?.structure?.fileLineCrossing ?? DEFAULT_HUMAN_REVIEW.structure.fileLineCrossing,
+      branchGrowth: partial?.structure?.branchGrowth ?? DEFAULT_HUMAN_REVIEW.structure.branchGrowth
+    }
   };
 }
 var matchesAny = (matchers, path) => matchers.some((matcher) => matcher.test(path));
@@ -1756,8 +1761,47 @@ function assessComplexity(diff, files, partial, markedGenerated2 = /* @__PURE__ 
     sensitivePaths: listed,
     sensitiveMatches: matches,
     sensitiveExempted: exempted.slice(0, MAX_SENSITIVE_LISTED),
-    limits: { ...limits }
+    // Structural-cap switches are deliberately not recorded here: when both
+    // are off, this assessment must remain byte-for-byte compatible with the
+    // output before they existed. An enabled signal is represented by its
+    // recorded reason instead.
+    limits: {
+      maxDecisionPoints: limits.maxDecisionPoints,
+      maxHunkDecisionPoints: limits.maxHunkDecisionPoints,
+      sensitivePaths: limits.sensitivePaths,
+      sensitiveExemptPaths: limits.sensitiveExemptPaths,
+      testPaths: limits.testPaths,
+      generatedPaths: limits.generatedPaths
+    }
   };
+}
+var MAX_STRUCTURE_LISTED = 3;
+function listedStructure(items, describe) {
+  const shown = items.slice(0, MAX_STRUCTURE_LISTED).map(describe).join(", ");
+  const more = items.length - Math.min(items.length, MAX_STRUCTURE_LISTED);
+  return `${shown}${more > 0 ? `, +${more} more` : ""}`;
+}
+function applyStructureHumanReviewCap(assessment, signals, partial) {
+  const enabled = config(partial).structure;
+  const reasons = [...assessment.reasons];
+  if (enabled.fileLineCrossing && signals.sizeCrossings.length > 0) {
+    reasons.push(
+      `file-line crossing signal (structure.sizeCrossings): ${listedStructure(
+        signals.sizeCrossings,
+        (crossing) => `${crossing.path} (${crossing.baseLines} to ${crossing.headLines} lines; threshold ${crossing.threshold})`
+      )}`
+    );
+  }
+  if (enabled.branchGrowth && signals.branchGrowth.length > 0) {
+    reasons.push(
+      `branch-growth signal (structure.branchGrowth): ${listedStructure(
+        signals.branchGrowth,
+        (growth) => `${growth.path}:${growth.line} (${growth.function}; ${growth.addedDecisionPoints} added decision points; threshold ${growth.threshold})`
+      )}`
+    );
+  }
+  if (reasons.length === assessment.reasons.length) return assessment;
+  return { ...assessment, level: "high", reasons };
 }
 var plural2 = (count3, noun) => `${count3} ${noun}${count3 === 1 ? "" : "s"}`;
 function notCounted(excluded) {
@@ -12276,6 +12320,22 @@ function readHumanReview(block, result) {
   result.humanReview.sensitiveExemptPaths = globs("sensitive_exempt_paths") ?? result.humanReview.sensitiveExemptPaths;
   result.humanReview.testPaths = globs("test_paths") ?? result.humanReview.testPaths;
   result.humanReview.generatedPaths = globs("generated_paths") ?? result.humanReview.generatedPaths;
+  const structure = block["structure"];
+  if (structure === void 0) return;
+  const signals = asRecord(structure);
+  if (signals === null) {
+    result.warnings.push("review.human_review.structure must be a mapping; using the defaults.");
+    return;
+  }
+  const enabled = (key) => {
+    const value = signals[key];
+    if (value === void 0) return void 0;
+    if (typeof value === "boolean") return value;
+    result.warnings.push(`review.human_review.structure.${key} must be true or false; using the default.`);
+    return void 0;
+  };
+  result.humanReview.structure.fileLineCrossing = enabled("file_line_crossing") ?? result.humanReview.structure.fileLineCrossing;
+  result.humanReview.structure.branchGrowth = enabled("branch_growth") ?? result.humanReview.structure.branchGrowth;
 }
 function readStructure(block, result) {
   if (block === null) return;
@@ -12418,7 +12478,8 @@ function loadConfig(repositoryRoot2) {
       sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths],
       sensitiveExemptPaths: [...DEFAULT_HUMAN_REVIEW.sensitiveExemptPaths],
       testPaths: [...DEFAULT_HUMAN_REVIEW.testPaths],
-      generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths]
+      generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths],
+      structure: { ...DEFAULT_HUMAN_REVIEW.structure }
     },
     structure: { ...DEFAULT_STRUCTURE },
     layers: [],
@@ -16216,13 +16277,15 @@ function markedGenerated(acquired) {
 function emitDiff(acquired, outDir) {
   const config2 = repositoryConfig();
   const generated = markedGenerated(acquired);
-  const complexity = assessComplexity(acquired.diff, acquired.files ?? [], config2?.humanReview, generated);
+  const assessed = assessComplexity(acquired.diff, acquired.files ?? [], config2?.humanReview, generated);
   const production = productionPaths(acquired.files ?? [], config2?.humanReview, generated);
+  const structure = collectStructure(process.cwd(), acquired, production, config2?.structure);
+  const complexity = applyStructureHumanReviewCap(assessed, structure, config2?.humanReview);
   const result = {
     ...acquired,
     complexity,
     humanReviewNote: humanReviewNote(complexity),
-    structure: collectStructure(process.cwd(), acquired, production, config2?.structure)
+    structure
   };
   if (outDir === null) {
     console.log(JSON.stringify(result, null, 2));

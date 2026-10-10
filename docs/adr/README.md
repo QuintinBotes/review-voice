@@ -22,7 +22,7 @@ after that gate.
 | [0009](0009-severity-from-computed-reach.md) | Severity from category and computed reach | Accepted, amended 2026-10-06 |
 | [0010](0010-review-verdict-posting.md) | Posting a review with its verdict | Accepted, amended by 0012, 0013, 0017 and 0018 |
 | [0011](0011-severity-escalation-needs-traced-impact.md) | Severity escalation needs traced impact | Accepted |
-| [0012](0012-complex-changes-need-human-approval.md) | Complex changes are raised for a human's approval | Accepted, amended 2026-10-06 (posted body; production-source count; would-have verdict and stale request for changes) |
+| [0012](0012-complex-changes-need-human-approval.md) | Complex changes are raised for a human's approval | Accepted, amended 2026-10-06 (posted body; production-source count; would-have verdict and stale request for changes), and by 0020 |
 | [0013](0013-ci-needs-rerun.md) | CI that needs a rerun holds every event | Accepted, amended 2026-10-06 |
 | [0014](0014-verifier-tie-break.md) | A tie-break settles a disputed traced impact | Accepted, amended 2026-10-06 and by 0019 |
 | [0015](0015-untraced-document-consumers.md) | A stale document may be reported untraced at nit | Accepted |
@@ -30,3 +30,4 @@ after that gate.
 | [0017](0017-moving-a-verified-anchor.md) | Moving a verified candidate's anchor | Accepted |
 | [0018](0018-read-only-graphql-thread-state.md) | Reading review-thread state through a GraphQL query | Accepted |
 | [0019](0019-cross-check-may-raise-through-tie-break.md) | A cross-check may raise a severity only through the tie-break | Accepted |
+| [0020](0020-structural-signals-may-opt-into-human-review.md) | Structural signals may opt into human review | Accepted |

@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   most 20 per file; other languages get none. The analyst may raise a finding
   only when it names the invariant being hidden and the type that would carry
   it. The verdict is unchanged. (#110)
+- `review.human_review.structure.file_line_crossing` and `.branch_growth`
+  default to false. When enabled, a matching `structure.sizeCrossings` or
+  `structure.branchGrowth` signal joins the ADR 0012 human-review cap: only an
+  APPROVE becomes COMMENT, with the signal named locally. The posted review and
+  GitHub writes are unchanged. (#114)
 
 ## [1.14.0] - 2026-10-08
 

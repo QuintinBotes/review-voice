@@ -88,6 +88,24 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
   result.humanReview.sensitiveExemptPaths = globs('sensitive_exempt_paths') ?? result.humanReview.sensitiveExemptPaths;
   result.humanReview.testPaths = globs('test_paths') ?? result.humanReview.testPaths;
   result.humanReview.generatedPaths = globs('generated_paths') ?? result.humanReview.generatedPaths;
+
+  const structure = block['structure'];
+  if (structure === undefined) return;
+  const signals = asRecord(structure);
+  if (signals === null) {
+    result.warnings.push('review.human_review.structure must be a mapping; using the defaults.');
+    return;
+  }
+  const enabled = (key: string): boolean | undefined => {
+    const value = signals[key];
+    if (value === undefined) return undefined;
+    if (typeof value === 'boolean') return value;
+    result.warnings.push(`review.human_review.structure.${key} must be true or false; using the default.`);
+    return undefined;
+  };
+  result.humanReview.structure.fileLineCrossing =
+    enabled('file_line_crossing') ?? result.humanReview.structure.fileLineCrossing;
+  result.humanReview.structure.branchGrowth = enabled('branch_growth') ?? result.humanReview.structure.branchGrowth;
 }
 
 /** Same rule as the human-review limits: a limit must be a whole number above zero. */
@@ -246,6 +264,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
       sensitiveExemptPaths: [...DEFAULT_HUMAN_REVIEW.sensitiveExemptPaths],
       testPaths: [...DEFAULT_HUMAN_REVIEW.testPaths],
       generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths],
+      structure: { ...DEFAULT_HUMAN_REVIEW.structure },
     },
     structure: { ...DEFAULT_STRUCTURE },
     layers: [],
