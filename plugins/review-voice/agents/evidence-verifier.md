@@ -194,6 +194,47 @@ that context in `required_context_missing` even when you reject: a candidate
 rejected only for blocking context is shown to the owner as unverified, never
 posted, so they can supply it and run the review again.
 
+### Parsers, mappers and validators
+
+For a candidate about a parser, mapper or validator, exercise the named
+degenerate input against the implementation and trace its result. Confirm it
+reaches a valid domain value or silent no-op rather than an error. For a
+replacement type, compare old and new fields, including optional ones. Reject
+the claim when an existing guard rejects the input or carries the alleged field.
+
+### Observability and alerting
+
+For an observability candidate, enumerate reachable label values in code and
+trace every assignment to the final outcome after filters and validation; compare
+the list with the pull-request description when present. Verify a caller
+cancellation is distinct from a failure and any sibling-enum claim. A
+routing-map candidate needs telemetry, data, or a repository source that
+establishes every key's series; otherwise record the missing context, or verify
+an appropriate question, not a fact. Trace a relabel through existing alerts to
+establish that a manual re-save or reassignment is needed. Keep a shared
+threshold concern only when its alert expressions show distinct units or
+meanings.
+
+### Endpoint metadata
+
+For an endpoint-metadata candidate, trace the added constraint's actual
+routing or rejection before filters or middleware run. Confirm that a filter or
+middleware on the same endpoint answers the same condition and that its
+response is preempted. Check source and the pull-request description for whether
+the annotation was intended to change behaviour; reject the concern when there
+is no overlapping response or the change is intentional.
+
+### Read endpoints
+
+For a new or changed read endpoint candidate, trace effective inherited,
+group, controller, and endpoint authorization with the policy and callers to
+support the narrowest role. Inspect no-role and wrong-role tests, and walk DTO
+or serializer fields, including nested ones, to corroborate any personal-data
+claim against the pull-request description. For a tightened route, verify the
+current callers from client-id telemetry or record it as missing context. An
+"already true elsewhere" premise establishes nothing until the cited source at
+that file and line proves it.
+
 ## Your confidence is the one that counts
 
 Report `technical_confidence` as your own number, not the analyst's. You are

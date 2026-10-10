@@ -319,6 +319,46 @@ persistence and transaction ordering · retry and idempotency behavior ·
 concurrency and resource lifecycle · CI, release and packaging correctness ·
 public API and user-visible behavior.
 
+### Parsers, mappers and validators
+
+Before reviewing its ordinary path, enumerate for each parser, mapper or
+validator the diff adds or changes: blank, separators only, zero or empty
+identifier, empty list, null, missing root, wrong case, trailing whitespace or
+newline, and a repeated element. Flag any case that resolves to a valid domain
+value or a silent no-op rather than an error. When a new type replaces an old
+one, compare every field, including optional ones, and flag a drop.
+
+### Observability and alerting
+
+For metrics and alert configuration, every label value must come from evidence
+of the final outcome, not a default or an earlier stage. Enumerate each value a
+label can emit in code, compare the list with the pull-request description, and
+trace it past filters and validation. Flag a free-text outcome where siblings
+use an enum, recording before those gates, or caller cancellation counted as a
+failure. For every label-to-route key, seek evidence of a matching series; if
+telemetry is outside the repository, ask a question rather than invent it. Flag
+a relabel that needs a manual re-save or reassignment but omits that step, and a
+threshold reused by alerts with distinct units or meanings; name a separately
+scoped threshold per alert.
+
+### Endpoint metadata
+
+For endpoint metadata added in the diff, including `Accepts`, consumes or
+produces constraints, route constraints, and versioning attributes, trace what
+the framework routes or rejects. If a filter or middleware on that endpoint
+answers the same condition, flag the response the metadata preempts and ask
+whether the annotation is meant to change behaviour or only document it.
+
+### Read endpoints
+
+Review every new or changed read endpoint in one pass: trace inherited and
+endpoint-specific authorization to the narrowest role, check no-role and
+wrong-role tests, walk the serialized payload for personal data, and compare it
+with the pull-request description. When an existing route is tightened, inspect
+its current callers from client-id telemetry. Do not accept "already true
+elsewhere" as a security or privacy premise without a source at an exact file
+and line; if it is unavailable, ask a question rather than state it.
+
 ## Anchors
 
 `line` is the 1-based line number in the file at the head of the diff. Put it

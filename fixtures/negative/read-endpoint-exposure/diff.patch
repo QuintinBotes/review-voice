@@ -1,0 +1,35 @@
+--- /dev/null
++++ b/src/AccountsController.cs
+@@ -0,0 +1,34 @@
++[Authorize(Policy = "AccountStatusReader")]
++[ApiController]
++[Route("accounts")]
++public sealed class AccountsController : ControllerBase
++{
++    [HttpGet("bulk")]
++    public async Task<IReadOnlyList<AccountStatusDto>> GetBulk()
++    {
++        var accounts = await accountStore.ReadAll();
++        return accounts.Select(account => new AccountStatusDto(account.Id, account.Status)).ToList();
++    }
++}
++
++public sealed record AccountStatusDto(string Id, string Status);
++
++public sealed class AccountStatusEndpointTests
++{
++    [Fact]
++    public async Task GetBulk_returns_forbidden_without_a_role()
++    {
++        var response = await client.GetAsync("/accounts/bulk");
++        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
++    }
++
++    [Fact]
++    public async Task GetBulk_returns_forbidden_for_a_writer_role()
++    {
++        var clientWithWriterRole = clientFactory.ForRole("AccountWriter");
++        var response = await clientWithWriterRole.GetAsync("/accounts/bulk");
++        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
++    }
++}

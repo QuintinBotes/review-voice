@@ -1,0 +1,9 @@
+name: metric-label-evidence
+asserts: >
+  A metric label assigned before filtering, defaulted without a final decision,
+  and used to count caller cancellation as failure is flagged.
+expect:
+  min_findings: 1
+  severity: nit
+  path: src/dispatch.ts
+  category: observability

@@ -67,6 +67,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Completeness findings now enumerate every in-scope call site and name every
   miss in one candidate; a partial search cannot support an `every` claim.
   (#103)
+- The analyst and verifier now enumerate degenerate inputs for changed parsers,
+  mappers and validators before trusting their ordinary path. A finding must
+  show that the case becomes a valid value or silent no-op, and replacement
+  types are checked for dropped fields. (#95)
+- Metric review now traces every emitted label value to the final outcome,
+  compares the value list with the pull-request description, and checks
+  filtering, cancellation and outcome types. (#97)
+- Endpoint metadata that can affect routing or rejection, including content,
+  route and version constraints, is checked against filters and middleware that
+  answer the same request condition, so a documentation-only annotation does
+  not silently change a response. (#104)
+- Alert routing-map keys now require evidence of matching series, relabels call
+  out any manual reassignment, and thresholds shared across different alert
+  meanings are flagged. (#105)
+- New and tightened read endpoints are reviewed in one pass for narrow
+  authorization, negative-role tests, payload exposure, description accuracy
+  and current callers. Claims that an equivalent boundary already exists
+  elsewhere now need a source citation. (#106)
 
 - `score --severity <candidate_id>=<tier>` lets an owner explicitly lower a
   computed tier when reach overstates the case. It refuses raises and no-op
