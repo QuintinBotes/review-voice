@@ -175,6 +175,8 @@ export interface HunkCount {
   decisionPoints: number;
   /** Every line of the hunk with a decision point, added or removed. */
   branches: Branch[];
+  /** Every added line with its new-side line number, for lexical signals. */
+  added: { line: number; text: string }[];
 }
 
 /** The declaration a line names, cut as git cuts it, or null. Indentation is the caller's to keep or strip. */
@@ -230,6 +232,7 @@ export function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount
           replacing = false;
         }
         record(current, text, false);
+        current.added.push({ line: newLine, text });
         remainingNew -= 1;
         newLine += 1;
         continue;
@@ -270,7 +273,7 @@ export function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount
     if (header !== null && path !== null) {
       remainingOld = header[1] === undefined ? 1 : Number(header[1]);
       remainingNew = header[3] === undefined ? 1 : Number(header[3]);
-      current = { path, line: Number(header[2]), decisionPoints: 0, branches: [] };
+      current = { path, line: Number(header[2]), decisionPoints: 0, branches: [], added: [] };
       newLine = Number(header[2]);
       // A language diff driver may name an indented method; keep it, minus the indent.
       scope = declarationIn((header[4] ?? '').trim());
