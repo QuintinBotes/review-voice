@@ -147,6 +147,15 @@ large diff must not stall the review. A file the budget did not reach is listed
 as inconclusive with `reason: "time-budget"`, and the files finished so far are
 still written.
 
+Added-line functions and methods also receive lexical `declared` context. Their
+names are split into meaningful tokens; names with fewer than two are omitted,
+while the two longest tokens drive one same-line fixed-string grep. A hit is a
+possible existing helper only when its declaration shares at least two tokens
+at Jaccard 0.5 or higher. There are at most eight declarations per file and
+three helpers per declaration. These searches run after reference collection
+under the same budget; a failed query or exhausted budget is inconclusive, not
+evidence that no helper exists.
+
 ### Structural evidence
 
 `diff --out` also writes a `structure` block to `files.json` and its summary:
