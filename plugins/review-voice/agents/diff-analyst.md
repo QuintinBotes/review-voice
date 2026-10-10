@@ -359,6 +359,8 @@ its current callers from client-id telemetry. Do not accept "already true
 elsewhere" as a security or privacy premise without a source at an exact file
 and line; if it is unavailable, ask a question rather than state it.
 
+### Concurrency, shadow paths and service boundaries
+
 **Read-decide-write handlers.** When a handler reads state to choose a next
 value or decide it is unused, then writes it, inspect the model, migrations and
 write for a unique index, concurrency token or conditional update. Flag a
