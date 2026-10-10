@@ -39,6 +39,14 @@ review:
   final_score_threshold: 0.78
   no_findings_response: "No actionable findings."
   suppress_hedge_phrases: true
+  # Structural evidence for the analyst. It never affects the verdict.
+  structure:
+    # A production file this change grows from at most this many lines to
+    # more is listed in the diff manifest; a whole number above zero.
+    max_file_lines: 1000
+    # An existing function, as git names it in a hunk header, that gains at
+    # least this many decision points is listed; a whole number above zero.
+    max_added_branches_per_function: 3
   # A change over any of these is raised for a human and never approved by
   # Review Voice (docs/adr/0012). The review still runs and posts its findings.
   # Defaults are shown; a limit must be a whole number above zero.
@@ -51,6 +59,58 @@ review:
       - "**/migrations/**"
       - "**/auth/**"
       - "**/security/**"
+      - ".review-voice/**"
+    # Opt-in: a changed path matching a sensitive glob and one of these is not
+    # sensitive, e.g. "**/auth/src/layouts/**" for a UI subtree of an auth
+    # module. It cannot exempt .review-voice/** or .github/workflows/**.
+    sensitive_exempt_paths: []
+    # Decision points count in production source only. Documentation is
+    # always left out; so are tests and fixtures matching these globs. A list
+    # here replaces the defaults; an empty list counts tests again. A glob
+    # broad enough to match ordinary source files (such as "**") is ignored,
+    # and the assessment says so.
+    test_paths:
+      - "**/test/**"
+      - "**/tests/**"
+      - "**/__tests__/**"
+      - "**/fixtures/**"
+      - "**/__fixtures__/**"
+      - "**/testdata/**"
+      - "**/*.test.*"
+      - "**/*.spec.*"
+      - "**/*_test.go"
+      - "**/spec/**/*.rb"
+      - "**/*_spec.rb"
+      - "**/*.Tests/**"
+      - "**/*.UnitTests/**"
+      - "**/*.IntegrationTests/**"
+    # Generated output is left out too: files classified as generated, files
+    # marked `linguist-generated` in .gitattributes, and these globs (none by
+    # default), e.g. what a generator in this repository writes.
+    generated_paths: []
+
+ci:
+  # Checks that fail by design until something else happens. `name` is a glob
+  # over the check name; `summary` is an optional phrase the check must contain.
+  gate_checks: []
+  # A check queued or running longer than this is taken as stuck, and the
+  # verdict waits for a rerun (docs/adr/0013). A whole number above zero.
+  stuck_after_minutes: 60
+  # Per check name, for suites that routinely run long. The first match wins.
+  stuck_after_overrides: []
+  # Example:
+  #   - name: "backend / integration*"
+  #     minutes: 150
+  # A failed check whose output title or summary, or whose runner annotations,
+  # contain one of these phrases (ignoring case) needs a rerun rather than
+  # counting as red, unless another failure annotation matches none. At least
+  # 8 characters, and not one generic word like "error". They add to a short
+  # built-in list: a lost runner or agent, the platform's time
+  # limit, a full disk, ECONNRESET, "other side closed", "429 Too Many
+  # Requests" and "503 Service Unavailable".
+  rerun_signatures: []
+  # Set to false to use only the phrases listed above.
+  builtin_rerun_signatures: true
 
 static_evidence:
   # Commands are opt-in. Review Voice will suggest what it detects but never
@@ -76,7 +136,13 @@ verification:
   #   {"verdict": "confirmed" | "rejected" | "uncertain",
   #    "confidence": 0.0-1.0,
   #    "reason": "...",
-  #    "suggested_severity": "minor"}      # optional, may only weaken
+  #    "suggested_severity": "minor",      # optional; see below
+  #    "decisive_evidence": [               # optional: the lines it turns on
+  #      {"path": "src/a.ts", "line": 12, "why": "..."}]}
+  #
+  # A weaker suggested_severity applies. A stronger one, on a confirmed
+  # verdict with decisive_evidence, is only proposed: the tie-break settles it
+  # (docs/adr/0019). Any other verdict label counts as no verdict.
   #
   # Narration around the JSON is fine; the last JSON object wins.
   enabled: false

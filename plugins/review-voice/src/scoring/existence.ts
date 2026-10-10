@@ -28,7 +28,7 @@ const ASSERTS_ABSENCE = [
  * Decided from the claim's grammar rather than from how a place is spelled. A
  * list of name shapes could not work: the same pattern that read "in acme-web"
  * as somewhere else, so a claim about this very repository went unchecked, also
- * left a bare path like `packages/commander/modules/eventing` unprotected, so a
+ * left a bare path like `packages/storefront/modules/catalog` unprotected, so a
  * true scoped claim was deleted. Hyphenation, backticks and capitalisation say
  * nothing about whether a claim is bounded.
  *
@@ -176,12 +176,19 @@ export interface ExistenceCheck {
    * evaluate it.
    */
   searchedRef: string;
+  /** Why the check concluded nothing, when that is not simply a failed search. */
+  reason?: string | undefined;
 }
 
 export type Searcher = (symbol: string, cwd: string, ref: string | null) => boolean;
 
 /** A repository search that reports every path containing the literal token. */
-export type PathSearcher = (symbol: string, cwd: string, ref: string | null) => string[];
+/**
+ * `timeoutMs` caps this one search below its own default, for a caller that
+ * has a budget for the whole collection. A search cut short throws, which is
+ * how callers already learn a search did not complete.
+ */
+export type PathSearcher = (symbol: string, cwd: string, ref: string | null, timeoutMs?: number) => string[];
 
 /**
  * Whether the repository contains a literal token.
@@ -224,13 +231,13 @@ export const gitGrep: Searcher = (symbol, cwd, ref) => {
  * is re-thrown so callers cannot mistake an unanswered search for a narrow
  * result. `-z` keeps filenames with whitespace or newlines unambiguous.
  */
-export const gitGrepPaths: PathSearcher = (symbol, cwd, ref) => {
+export const gitGrepPaths: PathSearcher = (symbol, cwd, ref, timeoutMs) => {
   const args =
     ref === null
       ? ['grep', '--fixed-strings', '--full-name', '-l', '-z', '-e', symbol]
       : ['grep', '--fixed-strings', '--full-name', '-l', '-z', '-e', symbol, ref];
   try {
-    const output = execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 });
+    const output = execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: Math.min(10_000, timeoutMs ?? 10_000) });
     // `git grep -l <ref>` prefixes every line with `<ref>:`. Left on, every
     // path compares unequal to the changed file and sits outside its subtree,
     // so `local` becomes unreachable and everything reads as repository-wide.
@@ -249,6 +256,72 @@ export const gitGrepPaths: PathSearcher = (symbol, cwd, ref) => {
     throw error;
   }
 };
+
+/**
+ * Tracked files a localisation or resource generator reads.
+ *
+ * A key defined in one of these surfaces in code through an accessor written
+ * at build time - a `.resx` designer class, Android's `R`, a Flutter `l10n`
+ * class - and that accessor is usually not tracked. Searching for the name then
+ * finds nothing, which reads as the guard confirming an absence it cannot see.
+ */
+const RESOURCE_PATHSPECS = [
+  ':(glob)**/*.resx',
+  ':(glob)**/*.resw',
+  ':(glob)**/*.po',
+  ':(glob)**/*.xlf',
+  ':(glob)**/*.xliff',
+  ':(glob)**/*.arb',
+  ':(glob)**/locales/**',
+  ':(glob)**/i18n/**',
+];
+
+/** Lists tracked resource sources; an empty list when there are none or git could not say. */
+export type ResourceLister = (cwd: string) => string[];
+
+/**
+ * One `git ls-files` for every resource pathspec. The index, not the reviewed
+ * ref: the question is whether this repository has a generator at all, which
+ * does not turn on one commit. A failure is an empty answer, which leaves the
+ * check exactly as it was before this existed.
+ */
+export const gitResourceSources: ResourceLister = (cwd) => {
+  try {
+    const output = execFileSync('git', ['ls-files', '-z', '--', ...RESOURCE_PATHSPECS], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 10_000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return output.split('\0').filter((path) => path.length > 0);
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * Names shaped like an accessor a resource generator writes: `R.string.x`,
+ * `Strings.Title`, `Properties.Resources.Title`, `L10n.title`,
+ * `AppLocalizations.of(context).title`. Shape alone is enough, because the
+ * generated class is rarely tracked and the search cannot see it either way.
+ *
+ * Member names start upper case where the generator writes them that way, and
+ * a file name is never an accessor: `Strings.ts` names a file a search can
+ * settle.
+ */
+const GENERATED_ACCESSOR = [
+  /^R\.[a-z]+\.[a-z_]\w*$/,
+  /^(?:\w+\.)*\w*(?:Resources|Resource|Strings)\.[A-Z]\w*$/,
+  /^(?:S|AppLocalizations)\.of\([^)]*\)\.\w+$/,
+  /^(?:L10n|l10n)\.[A-Za-z_]\w*$/,
+];
+
+const FILE_NAME = /\.(?:tsx?|jsx?|mjs|cjs|cs|py|go|rb|java|kt|rs|swift|dart|json|ya?ml|md|xml|resx|resw|po|xlf|xliff|arb)$/i;
+
+function generatedAccessor(symbol: string): boolean {
+  return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
+}
 
 /**
  * Checks a claim of absence against the repository.
@@ -272,6 +345,7 @@ export function checkAbsenceClaim(
   ref: string | null = null,
   search: Searcher = gitGrep,
   repository: string | null = null,
+  resources: ResourceLister = gitResourceSources,
 ): ExistenceCheck | null {
   const searchedRefLabel = ref ?? 'working tree';
 
@@ -313,6 +387,29 @@ export function checkAbsenceClaim(
       // A search that could not run is not an answer. A missing ref exits
       // 128, which must never be read as "the symbol is absent".
       return { found: [], checked, inconclusive: true, searchedRef };
+    }
+  }
+
+  // Found nowhere tracked is corroboration only when nothing could have
+  // generated the name. Asked last and only then, so a claim the search
+  // already refutes costs no extra process.
+  if (found.length === 0) {
+    const accessor = checked.find(generatedAccessor);
+    const sources = accessor === undefined ? resources(cwd) : [];
+    if (accessor !== undefined || sources.length > 0) {
+      const why =
+        accessor !== undefined
+          ? `\`${accessor}\` is shaped like a generated resource accessor`
+          : `the repository tracks resource sources (${sources.slice(0, 3).join(', ')}${sources.length > 3 ? ', ...' : ''})`;
+      return {
+        found,
+        checked,
+        inconclusive: true,
+        searchedRef,
+        reason:
+          `${why}, so the name may be generated at build time; ` +
+          'finding it nowhere tracked does not show it is absent',
+      };
     }
   }
 

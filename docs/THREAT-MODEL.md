@@ -96,7 +96,12 @@ writes to GitHub.
 confirmation before adding a repository and before the first sync. Read-only
 enforced in the client by rejecting non-GET requests, covered by test. No
 credential storage - `gh` holds the token
-([adr/0002](adr/0002-github-auth-model.md)).
+([adr/0002](adr/0002-github-auth-model.md)). The one exception is a GraphQL
+query, sent as a POST because GitHub's GraphQL endpoint takes nothing else:
+only a document that is exactly one of a fixed set of queries is sent, with
+only the variables it declares, and the repository it names always comes from
+the allowlist, so it can neither write nor reach another repository
+([adr/0018](adr/0018-read-only-graphql-thread-state.md)).
 
 Since [adr/0010](adr/0010-review-verdict-posting.md) there is one write, and
 it is bounded the same way. A separate writer can only create a review on a

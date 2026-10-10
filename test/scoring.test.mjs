@@ -1358,12 +1358,15 @@ const question = (over = {}) =>
     0,
   );
 
+// A question is only eligible when the verifier backed its premises (#54).
+const premisesBacked = { candidateId: 'cand_q', premisesVerified: true };
+
 test('a question is not cut by a confidence floor, because it asserts nothing', () => {
   // Four questions were filed across the programme at 0.40, 0.30 and 0.40, and
   // not one ever reached output: every survivor was cut by the analyst-only
   // floor. A question is raised because something could not be verified, so
   // low confidence is its content rather than a defect in it.
-  const breakdown = scoreCandidate(question(), [], [], DEFAULT_THRESHOLDS);
+  const breakdown = scoreCandidate(question(), [], [], DEFAULT_THRESHOLDS, premisesBacked);
 
   assert.equal(breakdown.severity.severity, 'question');
   assert.equal(breakdown.eligible, true, breakdown.rejectedBecause ?? '');
@@ -1379,7 +1382,7 @@ test('an assertion at the same confidence is still cut', () => {
 
 test('a review may ask a couple of questions, not a list of them', () => {
   const outcomes = [question(), question(), question()].map((candidate) =>
-    scoreCandidate(candidate, [], [], DEFAULT_THRESHOLDS),
+    scoreCandidate(candidate, [], [], DEFAULT_THRESHOLDS, premisesBacked),
   );
   applyQuestionCap(outcomes);
 
@@ -1408,7 +1411,7 @@ test('which questions a review asks does not depend on the order they were filed
   ];
 
   const emitted = (candidates) => {
-    const scored = candidates.map((c) => scoreCandidate(c, [], [], DEFAULT_THRESHOLDS));
+    const scored = candidates.map((c) => scoreCandidate(c, [], [], DEFAULT_THRESHOLDS, premisesBacked));
     applyQuestionCap(scored);
     return scored.filter((b) => b.eligible).map((b) => b.candidateId).sort();
   };
@@ -1455,7 +1458,7 @@ test('a question the owner has dismissed the like of before is not asked again',
   // question ignored precedent entirely and feedback could never reach a third
   // of the output. Measured: a question at 0.6452 shipped while a nit at the
   // higher 0.6756 was rejected.
-  const withPrecedent = scoreCandidate(question(), [dismissedPrecedent()], [], DEFAULT_THRESHOLDS);
+  const withPrecedent = scoreCandidate(question(), [dismissedPrecedent()], [], DEFAULT_THRESHOLDS, premisesBacked);
 
   assert.equal(withPrecedent.eligible, false);
   assert.match(withPrecedent.rejectedBecause, /owner precedent is against asking this/);
@@ -1464,7 +1467,7 @@ test('a question the owner has dismissed the like of before is not asked again',
 test('a question with no precedent either way is still asked', () => {
   // Neutral must mean "nothing is known", not "nothing was retrieved, so drop
   // it" - otherwise restoring precedent would re-suppress what 1.3.3 freed.
-  const neutral = scoreCandidate(question(), [], [], DEFAULT_THRESHOLDS);
+  const neutral = scoreCandidate(question(), [], [], DEFAULT_THRESHOLDS, premisesBacked);
 
   assert.equal(neutral.ownerAlignment, NEUTRAL_ALIGNMENT);
   assert.equal(neutral.eligible, true, neutral.rejectedBecause ?? '');
@@ -1476,6 +1479,7 @@ test('a question the owner has welcomed before is still asked', () => {
     [dismissedPrecedent({ eventId: 'e_pos', outcome: 'accepted', weight: 1.5 })],
     [],
     DEFAULT_THRESHOLDS,
+    premisesBacked,
   );
 
   assert.ok(welcomed.ownerAlignment > NEUTRAL_ALIGNMENT);
@@ -1486,7 +1490,7 @@ test('a question is still not gated on the confidence it could not have', () => 
   // The point of 1.3.3, which restoring precedent must not undo: 0.35 of the
   // final score is confidence, so reinstating the whole score would re-block
   // every question it freed.
-  const low = scoreCandidate(question({ technical_confidence: 0.2 }), [], [], DEFAULT_THRESHOLDS);
+  const low = scoreCandidate(question({ technical_confidence: 0.2 }), [], [], DEFAULT_THRESHOLDS, premisesBacked);
 
   assert.equal(low.eligible, true, low.rejectedBecause ?? '');
   assert.ok(low.finalScore < DEFAULT_THRESHOLDS.finalScore, 'and its score is below the gate it skips');

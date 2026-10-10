@@ -3,7 +3,7 @@ import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { SEVERITIES, type Severity } from '../contract/limits.ts';
 import type { RunDetail } from '../store/runs.ts';
 import type { ReviewComment, ReviewEvent, ReviewPayload } from '../github/writer.ts';
-import type { CiState } from './ci.ts';
+import type { CiEntry, CiState } from './ci.ts';
 
 export type { ReviewEvent, ReviewPayload };
 
@@ -75,12 +75,34 @@ export function reviewFindings(output: string): ReviewFinding[] {
 
 export type RunLoader = (runId: string) => RunDetail | null;
 
-interface ScoreLike {
+export interface ScoreLike {
   path?: unknown;
   line?: unknown;
   confidenceSource?: unknown;
   eligible?: unknown;
   severity?: { severity?: unknown } | null;
+  anchor?: unknown;
+  anchorCheck?: { kind?: unknown } | null;
+}
+
+/**
+ * Whether a score is for a finding about unchanged code the change made
+ * wrong. Read from either field, so a score taken without `--diff-file` still
+ * says so.
+ */
+export function isStaleConsumer(score: ScoreLike): boolean {
+  return score.anchor === 'stale-consumer' || score.anchorCheck?.kind === 'stale-consumer';
+}
+
+/**
+ * The scores recorded at a location. Shared by the post-time matcher and the
+ * render-time severity check so the two cannot disagree about what "the score
+ * for this finding" means. A null line matches any line in the file.
+ */
+export function scoresAtLocation(scores: readonly unknown[], path: string, line: number | null): ScoreLike[] {
+  return (scores as ScoreLike[]).filter(
+    (score) => typeof score === 'object' && score !== null && score.path === path && (line === null || score.line === line),
+  );
 }
 
 /** How far a carried finding's history is followed back. Carries do not chain deeper in practice. */
@@ -106,7 +128,7 @@ export function verification(
   run: RunDetail,
   loadRun: RunLoader,
   used: Set<object> = new Set(),
-): { verified: boolean; reason: string; runId: string } {
+): { verified: boolean; reason: string; runId: string; staleConsumer?: boolean } {
   if (finding.path === null || finding.severity === null) {
     return { verified: false, reason: 'it names no file, so no score can be matched to it', runId: run.reviewRunId };
   }
@@ -118,15 +140,18 @@ export function verification(
   let reason = 'no score was recorded for it';
 
   for (let depth = 0; depth <= MAX_CARRY_DEPTH; depth += 1) {
-    const scores = (Array.isArray(current.scores) ? current.scores : []) as ScoreLike[];
-    const here = scores.filter(
-      (score) => typeof score === 'object' && score !== null && score.path === path && (line === null || score.line === line),
-    );
+    const scores = Array.isArray(current.scores) ? current.scores : [];
+    const here = scoresAtLocation(scores, path, line);
     const same = here.filter((score) => score.severity?.severity === severity && !used.has(score));
     const backing = same.find((score) => score.confidenceSource === 'verifier' && score.eligible === true);
     if (backing !== undefined) {
       used.add(backing);
-      return { verified: true, reason: 'established by the verifier', runId: current.reviewRunId };
+      return {
+        verified: true,
+        reason: 'established by the verifier',
+        runId: current.reviewRunId,
+        ...(isStaleConsumer(backing) ? { staleConsumer: true } : {}),
+      };
     }
     if (same.some((score) => score.confidenceSource === 'verifier')) {
       reason = 'the verifier scored it, but it did not clear the gates';
@@ -167,7 +192,10 @@ export interface HeldBack {
 export interface PlannedFindings {
   /** Verified and anchored: each becomes an inline comment. */
   inline: ReviewFinding[];
-  /** Verified but with no line: the only findings that go in the body. */
+  /**
+   * Verified but with no line to comment on: a finding that names none, or a
+   * stale consumer, whose line is unchanged code GitHub cannot anchor on.
+   */
   unanchored: ReviewFinding[];
   held: HeldBack[];
   /** The event the posted findings call for, before CI is considered. */
@@ -222,7 +250,10 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
       heldSeverities.push(finding.severity ?? 'minor');
       continue;
     }
-    (finding.path !== null && finding.line !== null ? inline : unanchored).push(finding);
+    // A stale consumer keeps its `path:line` in the body text: the reader still
+    // needs to know where, and an inline comment there would be refused.
+    const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true;
+    (anchorable ? inline : unanchored).push(finding);
   }
 
   const posted = [...inline, ...unanchored].map((finding) => finding.severity as Severity);
@@ -236,10 +267,14 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
 export type Action = 'post' | 'wait' | 'refuse';
 
 export interface Decision {
-  event: ReviewEvent;
+  /** Null when no event may be sent at all until CI is rerun. */
+  event: ReviewEvent | null;
   action: Action;
   reasons: string[];
-  /** 0 ready, 2 nothing to recheck, 3 head moved, 4 CI still running, 5 CI red on a recheck. */
+  /**
+   * 0 ready, 2 nothing to recheck, 3 head moved, 4 CI still running, 5 CI red
+   * on a recheck, 6 CI needs a rerun.
+   */
   exitCode: number;
   cappedByCi: boolean;
 }
@@ -256,10 +291,17 @@ export function decide(input: {
   mapped: ReviewEvent;
   headMoved: boolean;
   ci: CiState['state'] | null;
+  /** The checks behind a needs-rerun state, named in the reasons. */
+  rerun?: readonly CiEntry[] | undefined;
   recheck: boolean;
   heldBackApproval?: boolean;
   /** The change was assessed high-complexity, so a person, not this tool, approves it. */
   needsHuman?: boolean;
+  /**
+   * The run carried candidates to this head without a review of the commits
+   * in between, or with a candidate refused (docs/adr/0017).
+   */
+  uncoveredCarry?: boolean;
 }): Decision {
   const reasons: string[] = [];
   if (input.heldBackApproval === true) {
@@ -273,6 +315,31 @@ export function decide(input: {
       exitCode: 3,
       cappedByCi: false,
     };
+  }
+
+  // A check CI never finished says nothing about the change, so no event is
+  // fair: an approval would skip it and a comment or request for changes
+  // would be posted on a head nobody has tested. Before every other guard, so
+  // it holds for every mapped event and for a re-check (docs/adr/0013).
+  if (input.ci === 'needs-rerun') {
+    const named = (input.rerun ?? []).map((entry) => `${entry.name} (${entry.detail})`);
+    return {
+      event: null,
+      action: 'wait',
+      reasons: [...reasons, `CI needs a rerun${named.length > 0 ? `: ${named.join(', ')}` : ''}`],
+      exitCode: 6,
+      cappedByCi: false,
+    };
+  }
+
+  // Code nobody analysed is not approved. The reason stays local: the posted
+  // body says only that this is not an approval yet (docs/adr/0017).
+  if (input.uncoveredCarry === true && input.mapped === 'APPROVE') {
+    const why = 'candidates were carried to this head without a review of the commits since, so this comments rather than approves';
+    if (input.recheck) {
+      return { event: 'COMMENT', action: 'refuse', reasons: [...reasons, why], exitCode: 2, cappedByCi: false };
+    }
+    return { event: 'COMMENT', action: 'post', reasons: [...reasons, why], exitCode: 0, cappedByCi: false };
   }
 
   // Before the CI guard, so pending CI cannot turn a capped approval into a
@@ -366,9 +433,7 @@ export function summaryLine(
     return count === 0 ? 'Not approving yet.' : `${plural(count, 'nit')}; not approving yet.`;
   }
   if (cappedBy === 'complexity') {
-    return count === 0
-      ? 'No problems found; leaving approval to a human reviewer.'
-      : `${plural(count, 'nit')}; leaving approval to a human reviewer.`;
+    return count === 0 ? 'No problems found.' : `${plural(count, 'nit')}.`;
   }
   if (event === 'APPROVE') {
     return count === 0 ? 'No problems found.' : `Approved, with ${plural(count, 'nit')}.`;
@@ -377,6 +442,28 @@ export function summaryLine(
     return `Changes requested: ${plural(count, 'comment')}, the highest ${highest}.`;
   }
   return `${plural(count, 'comment')}, the highest ${highest}.`;
+}
+
+/**
+ * The verdict the findings call for without the complexity cap, in one line,
+ * so the person who now has to approve has somewhere to start. For the agent
+ * only: never in the posted review (docs/adr/0012).
+ */
+export function wouldHaveSummary(planned: PlannedFindings): string {
+  const posted = [...planned.inline, ...planned.unanchored];
+  const count = posted.length;
+  const highest = posted.map((finding) => finding.severity as Severity).sort((a, b) => RANK[a] - RANK[b])[0];
+  if (planned.mapped === 'APPROVE') {
+    return count === 0 ? 'Would have approved: no problems found.' : `Would have approved, with ${plural(count, 'nit')}.`;
+  }
+  if (planned.mapped === 'REQUEST_CHANGES') {
+    return `Would have requested changes: ${plural(count, 'comment')}, the highest ${highest}.`;
+  }
+  if (planned.heldBackApproval) {
+    const nits = count === 0 ? '' : `, with ${plural(count, 'nit')}`;
+    return `Would have commented: an unverified finding above a nit was held back${nits}.`;
+  }
+  return `Would have commented: ${plural(count, 'comment')}, the highest ${highest}.`;
 }
 
 function inlineComment(finding: ReviewFinding): ReviewComment {
@@ -393,21 +480,18 @@ function inlineComment(finding: ReviewFinding): ReviewComment {
 /**
  * The create-review request body. Every anchored finding is an inline comment
  * on its line; the body is the one-line verdict plus only the findings with no
- * line to sit on. Never one global block of findings.
+ * line to sit on, which includes a stale consumer on unchanged code. Never one
+ * global block of findings.
  */
 export function buildPayload(input: {
   head: string;
   event: ReviewEvent;
   planned: PlannedFindings;
   cappedBy: 'ci' | 'held' | 'complexity' | null;
-  /** The one line naming why a person should look; the second paragraph for every event. */
-  humanReviewNote?: string | null | undefined;
 }): ReviewPayload {
   const posted = [...input.planned.inline, ...input.planned.unanchored];
-  const note = input.humanReviewNote ?? null;
   const body = [
     summaryLine(input.event, posted, input.cappedBy),
-    ...(note === null ? [] : [note]),
     ...input.planned.unanchored.map((finding) => finding.raw),
   ].join('\n\n');
   return {

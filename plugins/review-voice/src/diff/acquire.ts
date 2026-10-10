@@ -93,6 +93,73 @@ function untrackedFiles(root: string): string[] {
     .filter((path) => path.length > 0);
 }
 
+function hasCommitLocally(commit: string, root: string): boolean {
+  try {
+    git(['cat-file', '-e', `${commit}^{commit}`], root);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The commit whose `.gitattributes` decides what counts as generated: the
+ * side the change starts from, never the side it ends on. Read at the head, a
+ * pull request adding `src/** linguist-generated` would exempt its own code.
+ * A working-tree or staged change starts from HEAD; a branch or pull request
+ * from its merge base, or its base when there is none. Null when that commit
+ * is not available here.
+ */
+export function attributeSource(
+  root: string,
+  diff: { mode: DiffResult['mode']; base: string | null; head: string },
+): string | null {
+  if (diff.mode === 'worktree' || diff.mode === 'staged') {
+    return hasCommitLocally(diff.head, root) ? diff.head : null;
+  }
+  if (diff.base === null) return null;
+  try {
+    const mergeBase = git(['merge-base', diff.base, diff.head], root).trim();
+    if (mergeBase.length > 0) return mergeBase;
+  } catch {
+    // The head is not here, or the histories are unrelated: use the base.
+  }
+  return hasCommitLocally(diff.base, root) ? diff.base : null;
+}
+
+/**
+ * Paths marked `linguist-generated` in `.gitattributes` as of `source`.
+ *
+ * There is no working-tree fallback: the working tree may hold the change
+ * under review. With no source, or when git cannot answer, nothing is marked;
+ * the attribute only refines the complexity count.
+ */
+export function linguistGeneratedPaths(root: string, paths: readonly string[], source: string | null): Set<string> {
+  const marked = new Set<string>();
+  // An unknown source reads as no attributes rather than as an error, so its
+  // presence is checked first.
+  if (paths.length === 0 || source === null || !hasCommitLocally(source, root)) return marked;
+  let raw: string;
+  try {
+    raw = execFileSync('git', ['check-attr', '--source', source, '-z', '--stdin', 'linguist-generated'], {
+      cwd: root,
+      encoding: 'utf8',
+      input: `${paths.join('\0')}\0`,
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch {
+    return marked;
+  }
+  // NUL-separated triples: path, attribute, value.
+  const fields = raw.split('\0');
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    const value = fields[i + 2];
+    if (value === 'set' || value === 'true') marked.add(fields[i]!);
+  }
+  return marked;
+}
+
 export function repositoryRoot(cwd: string): string {
   // Resolving the root means the command works from any subdirectory, which is
   // where people actually run it.

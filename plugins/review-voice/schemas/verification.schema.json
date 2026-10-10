@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/QuintinBotes/review-voice/schemas/verification.schema.json",
+  "title": "Verification entry",
+  "description": "One entry of the evidence-verifier agent's output. The CLI also accepts the camelCase spelling of every field name (candidateId, evidenceQuality, technicalConfidence, fixVerdict, fixConfidence, fixReason, fixDirection, impactTraced, impactClass, premisesVerified, requiredContextMissing, partlyAddressed). Keep the checks in `verificationProblem` in src/cli.ts in step with this file.",
+  "type": "object",
+  "required": [
+    "candidate_id"
+  ],
+  "properties": {
+    "candidate_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "verified": {
+      "type": "boolean",
+      "description": "The verifier's verdict on the claim. false rejects anything but a question; such a candidate reaches scoring only to be listed as unverified when blocking context was missing."
+    },
+    "evidence_quality": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ]
+    },
+    "technical_confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "fix_verdict": {
+      "enum": [
+        "verified",
+        "partial",
+        "refuted",
+        "absent"
+      ]
+    },
+    "fix_confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "fix_reason": {
+      "type": "string"
+    },
+    "fix_direction": {
+      "type": "string"
+    },
+    "impact_traced": {
+      "type": "boolean"
+    },
+    "impact_class": {
+      "enum": [
+        "no-exposure",
+        "data-exposure",
+        "privilege-escalation"
+      ],
+      "description": "For a security, trust_boundary, authorization or authentication finding: what the defect exposes, as traced. no-exposure only when the boundary still holds elsewhere (the server rejects the request); the finding is then held at the requested tier instead of its boundary tier. Omit when unsure: any other value, or none, keeps the boundary tier."
+    },
+    "premises_verified": {
+      "type": "boolean",
+      "description": "For a question: whether the facts it rests on hold. A question is eligible without a verified answer, but only when this is true (or `verified` is true); false or omitted rejects it."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Why the verifier reached its verdict. Quoted when a question is rejected."
+    },
+    "required_context_missing": {
+      "type": "array",
+      "description": "Context the verifier needed and could not obtain. A string, or an object without `kind`, is blocking: the claim depends on it and cannot ship. `cosmetic` context would only sharpen the wording, and does not hold the claim back.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "required": [
+              "context"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "blocking",
+                  "cosmetic"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "partly_addressed": {
+      "description": "Only for a candidate whose possibleRepeatOf is the owner's own comment, when the author fixed part of what that comment raised and part is still open. remaining lists the open points, addressed the fixed ones.",
+      "type": "object",
+      "required": [
+        "remaining",
+        "addressed"
+      ],
+      "properties": {
+        "remaining": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "addressed": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

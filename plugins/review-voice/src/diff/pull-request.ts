@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { GitHubClient } from '../github/client.ts';
 import { classify, findHandEdited, isReviewable, languageOf } from './classify.ts';
 import type { ChangedFile, DiffResult } from './acquire.ts';
-import { topPathspecs, type ReviewScope } from './incremental.ts';
+import { gitFailure, topPathspecs, type ReviewScope } from './incremental.ts';
 import { parseHunks } from './hunks.ts';
 
 interface RawFile {
@@ -20,6 +20,7 @@ interface RawPull {
   base: { sha: string; ref: string };
   head: { sha: string; ref: string };
   changed_files: number;
+  commits: number;
   additions: number;
   deletions: number;
 }
@@ -74,6 +75,13 @@ const GITHUB_MAX_FILES = 3000;
 export interface RefAvailability {
   base: { sha: string; available: boolean };
   head: { sha: string; available: boolean };
+  /**
+   * The commit the pull request branched from: `git merge-base base head`.
+   * `base` is the base branch's tip, which is not an ancestor of the head once
+   * that branch has moved on, so `git diff base head` shows the branch's own
+   * changes reversed. Null when either commit is missing or git finds no base.
+   */
+  mergeBase: string | null;
   /** True only when this call fetched. Never inferred from an exit status. */
   fetched: boolean;
   note: string | null;
@@ -96,6 +104,15 @@ function hasCommit(sha: string, cwd: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function mergeBaseOf(base: string, head: string, cwd: string): string | null {
+  try {
+    return git(['merge-base', base, head], cwd, 10_000).trim() || null;
+  } catch {
+    // No common ancestor, or a shallow clone too short to find it.
+    return null;
   }
 }
 
@@ -136,6 +153,7 @@ function ensureRefs(options: {
   const result = (fetched: boolean, note: string | null): RefAvailability => ({
     base: { sha: options.base, available: present.base },
     head: { sha: options.head, available: present.head },
+    mergeBase: present.base && present.head ? mergeBaseOf(options.base, options.head, options.cwd) : null,
     fetched,
     note,
   });
@@ -171,6 +189,20 @@ function ensureRefs(options: {
   }
 
   present = check();
+
+  // `pull/<n>/head` brings the base only while it is still an ancestor of the
+  // head. Once the base branch moves on, the sha GitHub reports is reachable
+  // from no pull ref, and anything that reads the base (`score --base`) fails.
+  // Ask for that one commit by sha; it is not fatal for the same reason.
+  if (!present.base) {
+    try {
+      git(['fetch', '--no-tags', '--quiet', 'origin', options.base], options.cwd);
+    } catch {
+      // The server may refuse a fetch by sha. The note below says so.
+    }
+    present = check();
+  }
+
   if (present.base && present.head) {
     return result(true, null);
   }
@@ -194,6 +226,17 @@ export interface PullRequestDiff extends DiffResult {
   truncationNote: string | null;
   /** Whether the pull request's commits can actually be read locally. */
   refs: RefAvailability;
+  /** Set when most commits are already on the default branch; null when not suspected or not checkable. */
+  suspectedWrongBase: SuspectedWrongBase | null;
+}
+
+export interface SuspectedWrongBase {
+  base: string;
+  otherBranch: string;
+  commits: number;
+  alreadyOn: number;
+  files: number;
+  note: string;
 }
 
 /** A pull-request diff with the exact boundary the caller will review. */
@@ -224,9 +267,11 @@ function scopeNote(scope: Exclude<ReviewScope, { kind: 'full' }>): string {
         `${earlierReview(scope)} still applies.`
       );
     case 'interdiff':
+      // The detail says which conflicted files were cut to their resolution
+      // and which were read whole, so a reader knows what the review covered.
       return (
         `Reviewed changes to this pull request's own diff since ${scope.since.slice(0, 7)}; ` +
-        'base-branch changes merged in were not reviewed.'
+        `base-branch changes merged in were not reviewed${scope.detail === undefined ? '' : `; ${scope.detail}`}.`
       );
   }
 }
@@ -257,18 +302,31 @@ export function applyReviewScope(
   scope: ReviewScope,
   cwd: string,
   readIncrementalDiff: (since: string, head: string, files: string[], cwd: string) => string =
-    (since, head, files, root) =>
-      git(['diff', '--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', since, head, '--', ...topPathspecs(files)], root),
+    (since, head, files, root) => {
+      const args = ['diff', '--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', since, head, '--', ...topPathspecs(files)];
+      try {
+        return execFileSync('git', args, {
+          cwd: root,
+          encoding: 'utf8',
+          maxBuffer: 64 * 1024 * 1024,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: 60_000,
+        });
+      } catch (error) {
+        throw new Error(gitFailure(args, error));
+      }
+    },
   interdiffPatch: string | null = null,
 ): ScopedPullRequestDiff {
   if (scope.kind === 'full') return fullScopeResult(result, pullNumber, scope);
 
-  const fallBack = (): ScopedPullRequestDiff =>
+  const fallBack = (detail: string): ScopedPullRequestDiff =>
     fullScopeResult(result, pullNumber, {
       kind: 'full',
       cause: 'compare-unavailable',
       since: scope.since,
       priorRunId: scope.priorRunId,
+      detail,
     });
 
   let diff: string;
@@ -279,27 +337,33 @@ export function applyReviewScope(
   } else if (scope.kind === 'interdiff') {
     // Only the planner can produce this patch; without it there is nothing
     // narrower that is known to be safe.
-    if (interdiffPatch === null) return fallBack();
+    if (interdiffPatch === null) return fallBack('an interdiff scope came with no interdiff patch');
     diff = interdiffPatch;
     included = new Set(scope.files);
   } else {
     try {
       diff = readIncrementalDiff(scope.since, result.head, scope.files, cwd);
-    } catch {
+    } catch (error) {
       // The planner's probes passed, but the final range read can still lose a
       // race with local object cleanup. Do not present an incomplete patch as a
       // narrowed review; retain the API patch and name the uncertainty instead.
-      return fallBack();
+      return fallBack(`reading the incremental diff failed: ${(error instanceof Error ? error.message : String(error)).split('\n')[0]}`);
     }
     included = new Set(scope.files);
   }
 
   const excludedBecause = `unchanged since the last review (${scope.since.slice(0, 7)})`;
-  const files = result.files.map((file) =>
-    file.reviewed && !included.has(file.path)
-      ? { ...file, reviewed: false, excludedBecause }
-      : file,
-  );
+  const files = result.files.map((file) => {
+    if (file.reviewed && !included.has(file.path)) return { ...file, reviewed: false, excludedBecause };
+    // A full read skips a deletion, but an interdiff that holds one is the
+    // change since the review: counted as unreviewed, a follow-up that only
+    // deletes a file would read as nothing to review.
+    if (scope.kind === 'interdiff' && file.status === 'deleted' && included.has(file.path)) {
+      const { excludedBecause: _skipped, ...rest } = file;
+      return { ...rest, reviewed: true };
+    }
+    return file;
+  });
   const hunkPaths = pathsWithHunks(diff);
   const reviewedFileCount = files.filter((file) => file.reviewed).length;
 
@@ -314,6 +378,46 @@ export function applyReviewScope(
     excludedFileCount: files.length - reviewedFileCount,
     diff,
   };
+}
+
+// Suspect a wrong base when at least this many commits, and more than half of
+// them, are already on the default branch; the floor keeps tiny PRs quiet.
+const WRONG_BASE_MIN_COMMITS = 5;
+const WRONG_BASE_MAJORITY = 0.5;
+
+/**
+ * A branch cut from the default branch but opened against a release branch
+ * carries the default branch's history. Optional read: any failure means
+ * "could not check", never a failed diff.
+ */
+async function detectWrongBase(client: GitHubClient, repository: string, pull: RawPull): Promise<SuspectedWrongBase | null> {
+  try {
+    if (!Number.isInteger(pull.commits)) return null;
+    const { data: repo } = await client.get<{ default_branch?: string }>(`/repos/${repository}`);
+    const other = repo.default_branch;
+    // From the default branch itself, carrying its history is the point: a
+    // promotion, not a mistake.
+    if (typeof other !== 'string' || other === '' || pull.base.ref === other || pull.head.ref === other) return null;
+    const { data: compare } = await client.get<{ ahead_by?: number }>(
+      `/repos/${repository}/compare/${encodeURIComponent(other)}...${pull.head.sha}`,
+    );
+    if (typeof compare.ahead_by !== 'number') return null;
+    const alreadyOn = Math.max(0, pull.commits - compare.ahead_by);
+    if (alreadyOn < WRONG_BASE_MIN_COMMITS || alreadyOn <= pull.commits * WRONG_BASE_MAJORITY) return null;
+    return {
+      base: pull.base.ref,
+      otherBranch: other,
+      commits: pull.commits,
+      alreadyOn,
+      files: pull.changed_files,
+      note:
+        `${alreadyOn} of the pull request's ${pull.commits} commits are already on ${other}, which suggests it was ` +
+        `opened against ${pull.base.ref} by mistake (a branch cut from ${other}). Ask about the base before reviewing ` +
+        `the whole patch, unless bringing ${other}'s commits into ${pull.base.ref} is the intent.`,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function acquirePullRequestDiff(options: {
@@ -431,5 +535,6 @@ export async function acquirePullRequestDiff(options: {
       head: pull.head.sha,
       cwd,
     }),
+    suspectedWrongBase: await detectWrongBase(client, options.repository, pull),
   };
 }

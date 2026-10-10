@@ -1,6 +1,7 @@
 # 0009 - Severity from category and computed reach
 
 **Status:** Accepted · **Date:** 2026-09-17
+**Amended:** 2026-10-06 - an import-only change has no reach (see the end).
 
 ## Context
 
@@ -94,3 +95,18 @@ changed file is layout-independent; counting only code removes the prose.
 
 **Re-tune the per-category constants.** Rejected: it cannot express a category
 whose members genuinely differ in reach, which is the actual defect.
+
+## Amendment 2026-10-06 - an import-only change has no reach
+
+A one-line import change was scored at `repository` reach. Reach searched the
+names on the changed lines, and an import line names things used all over the
+repository; when the imported name was new, the module fallback searched for
+the file's own name instead. Either way the spread belonged to the imported
+code or to the module's importers, not to a change of what this file depends on.
+
+When every added or removed line in the changed file is a one-line import
+(JS/TS, Python, Java and Kotlin forms; a multi-line import or a re-export is
+not), reach is absent, and absent reach keeps the category's own tier. It is not
+`local`: a wrong import path breaks the file's build, and that is the category's
+call to make, not an extent. Any other line in the file's hunks restores the
+measurement as before.
