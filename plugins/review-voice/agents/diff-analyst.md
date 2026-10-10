@@ -34,6 +34,7 @@ not none. Raise a `maintainability` candidate only after reading the existing
 helper and seeing that it does the same job for the same inputs. Anchor it at
 the new declaration's line and cite the existing `path:line` in the evidence.
 A same-named helper with different semantics is not a finding.
+
 A completeness finding is a claim about a complete set. When it says every
 call, guard, validation or similar instance must be handled, search the final
 head for every call site of that pattern in the changed scope instead of
