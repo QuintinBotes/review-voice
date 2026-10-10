@@ -1,0 +1,6 @@
+name: alert-threshold-meaning
+asserts: >
+  Separate, named settings for a ratio sample floor and queue-depth threshold
+  do not produce a threshold-reuse finding.
+expect:
+  output: "No actionable findings."

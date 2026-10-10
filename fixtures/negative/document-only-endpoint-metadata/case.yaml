@@ -1,0 +1,6 @@
+name: document-only-endpoint-metadata
+asserts: >
+  A documentation-only operation description that leaves the endpoint's
+  content-type filter in control does not produce a metadata finding.
+expect:
+  output: "No actionable findings."
