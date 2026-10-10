@@ -19,7 +19,8 @@ import { checkSeverityAgainstScores, scoredEntries } from './contract/severity-c
 import { checkUnbackedAbsolutes } from './contract/backing-check.ts';
 import { DEFAULT_LIMITS, totalWordBudget, type ContractLimits } from './contract/limits.ts';
 import { acquireDiff, attributeSource, GitError, linguistGeneratedPaths, type ChangedFile } from './diff/acquire.ts';
-import { assessComplexity, humanReviewNote, parseComplexity, type ComplexityAssessment } from './diff/complexity.ts';
+import { assessComplexity, humanReviewNote, parseComplexity, productionPaths, type ComplexityAssessment } from './diff/complexity.ts';
+import { collectStructure, type StructureSignals } from './diff/structure.ts';
 import { acquirePullRequestDiff, applyReviewScope, type SuspectedWrongBase } from './diff/pull-request.ts';
 import { isReviewable } from './diff/classify.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
@@ -502,6 +503,8 @@ interface EmittedDiff {
   /** Added by `emitDiff`; see docs/adr/0012. */
   complexity?: ComplexityAssessment;
   humanReviewNote?: string | null;
+  /** Added by `emitDiff`: structural evidence for the analyst, never an input to the verdict. */
+  structure?: StructureSignals;
   refs?: {
     base: { sha: string; available: boolean };
     head: { sha: string; available: boolean };
@@ -544,6 +547,7 @@ export function diffSummary(result: EmittedDiff): {
   noLongerChanged: string[];
   complexity: ComplexityAssessment | null;
   humanReviewNote: string | null;
+  structure: StructureSignals | null;
   truncated: boolean;
   truncationNote: string | null;
   /** A pull request whose commits mostly sit on the default branch; see `acquirePullRequestDiff`. */
@@ -598,6 +602,7 @@ export function diffSummary(result: EmittedDiff): {
         : [],
     complexity: result.complexity ?? null,
     humanReviewNote: result.humanReviewNote ?? null,
+    structure: result.structure ?? null,
     truncated: result.truncated ?? false,
     truncationNote: result.truncationNote ?? null,
     suspectedWrongBase: result.suspectedWrongBase ?? null,
@@ -639,13 +644,16 @@ function markedGenerated(acquired: EmittedDiff): Set<string> {
 function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
   // Assessed here, from the diff the analyst will read, so the manifest and
   // the summary say the same thing and `record --files` carries it forward.
-  const complexity = assessComplexity(
-    acquired.diff,
-    acquired.files ?? [],
-    repositoryConfig()?.humanReview,
-    markedGenerated(acquired),
-  );
-  const result: EmittedDiff = { ...acquired, complexity, humanReviewNote: humanReviewNote(complexity) };
+  const config = repositoryConfig();
+  const generated = markedGenerated(acquired);
+  const complexity = assessComplexity(acquired.diff, acquired.files ?? [], config?.humanReview, generated);
+  const production = productionPaths(acquired.files ?? [], config?.humanReview, generated);
+  const result: EmittedDiff = {
+    ...acquired,
+    complexity,
+    humanReviewNote: humanReviewNote(complexity),
+    structure: collectStructure(process.cwd(), acquired, production, config?.structure),
+  };
 
   if (outDir === null) {
     console.log(JSON.stringify(result, null, 2));

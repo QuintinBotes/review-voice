@@ -147,6 +147,32 @@ large diff must not stall the review. A file the budget did not reach is listed
 as inconclusive with `reason: "time-budget"`, and the files finished so far are
 still written.
 
+### Structural evidence
+
+`diff --out` also writes a `structure` block to `files.json` and its summary:
+facts about the shape of the change that a reader pays for and the CLI can
+measure. The first is `sizeCrossings`, the production files the change grows
+from at most `review.structure.max_file_lines` (default 1000) to more. Each
+entry carries both line counts and an anchor, the first added line past the
+threshold, so a finding about it lands on code the change wrote.
+
+Both sides are read with one `git cat-file --batch`. The base is the commit the
+change starts from, the same one `.gitattributes` is read at, and a renamed
+file is measured at its previous path. A follow-up review starts from the head
+it last reviewed, so a crossing an earlier push made is not raised again, and
+a deleted file is not measured at all. The head is the working tree, the index
+or the head commit, depending on the mode. A side that cannot be read, such as
+a pull request whose head was not fetched, puts the file in `unmeasured`
+instead of treating it as small. "Production" means what the decision-point
+count means by it, from the same classification: tests, documentation and
+generated files are left out.
+
+This is a fact about a file, not about the diff: it is not the size signal
+[adr/0012](adr/0012-complex-changes-need-human-approval.md) rejected, and it
+plays no part in the verdict. The analyst gets it as a lead and still has to
+name a seam the added code could be split along, so "this file is large" on its
+own is never a finding.
+
 ### Retrieval
 
 No embedding model ships with the plugin. A downloaded model would break

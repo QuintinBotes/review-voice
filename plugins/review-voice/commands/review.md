@@ -288,8 +288,11 @@ wrap it in a kill timer; a hung step is reported, not worked around.
 ## Step 2 - Generate candidates
 
 Launch the `diff-analyst` agent with the `diff` field, the `files` list and the
-convention `documents`, plus `symbols.json` and, on a `--pr` run, `thread.json`.
-A point already made in the thread is not a candidate.
+convention `documents`, plus `symbols.json`, the manifest's `structure` block
+and, on a `--pr` run, `thread.json`. A point already made in the thread is not
+a candidate. `structure` is evidence, never a finding: do not report a size
+crossing yourself, and do not mention it to the user unless a verified finding
+rests on it.
 
 It returns JSON matching `schemas/candidate.schema.json`. `{"candidates": []}`
 is a correct and common answer.

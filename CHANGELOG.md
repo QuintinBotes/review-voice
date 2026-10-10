@@ -5,6 +5,18 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `diff --out` writes a `structure` block to `files.json` and its summary.
+  `structure.sizeCrossings` lists the production files the change grows past
+  `review.structure.max_file_lines` (default 1000), with both line counts and
+  the first added line past the threshold. Files whose base or head could not
+  be read are listed in `structure.unmeasured`. The analyst may raise a
+  `maintainability` finding on a crossing only when it names where the file
+  could be split. The verdict is unchanged. (#108)
+
 ## [1.14.0] - 2026-10-08
 
 ### Fixed
