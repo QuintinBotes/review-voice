@@ -1,0 +1,24 @@
+--- /dev/null
++++ b/alerts/delivery.tf
+@@ -0,0 +1,24 @@
++locals {
++  team_routing = {
++    payments = "primary"
++    archive  = "secondary"
++  }
++  min_calls = 30
++}
++
++resource "alert_rule" "delivery_ratio" {
++  name         = "delivery-ratio"
++  routing_key  = local.team_routing["payments"]
++  sample_floor = local.min_calls
++  expression   = "failed_deliveries / total_deliveries"
++}
++
++resource "alert_rule" "queue_depth" {
++  name        = "queue-depth"
++  routing_key = local.team_routing["archive"]
++  threshold   = local.min_calls
++  expression  = "pending_deliveries"
++}

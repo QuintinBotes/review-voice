@@ -1,0 +1,6 @@
+name: validated-parser-input
+asserts: >
+  A parser that rejects blank, separator-only, and repeated scope values does
+  not produce a speculative degenerate-input finding.
+expect:
+  output: "No actionable findings."
