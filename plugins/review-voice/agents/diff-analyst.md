@@ -44,9 +44,8 @@ small.
 Each entry in `branchGrowth` is a declaration that exists at the base, as git
 names it in a hunk header, to which the change adds `addedDecisionPoints` more
 branches than it removes. It is the shape of a special case bolted onto an
-existing flow. Read
-the function: if the new branches serve a concern the function did not already
-own, raise a `maintainability` candidate at the entry's `line` that names where
+existing flow. Read the function: if the new branches serve a concern the
+function did not already own, raise a `maintainability` candidate at the entry's `line` that names where
 the logic belongs instead - its own helper, a policy object, a dispatcher, the
 module that owns the concept. Branches that are the function's own job, such as
 validating its own input, are not a finding. The attribution is lexical: an
