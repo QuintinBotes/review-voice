@@ -28,6 +28,13 @@ shapes, and a `common` symbol deliberately omits its references. If a file is
 `inconclusive`, its partial list is not complete. Keep the rule against
 asserting an absence you have not searched for.
 
+`declared[].possibleExisting` is a reading hint, never proof that the new
+declaration duplicates a helper. An inconclusive declaration means unknown,
+not none. Raise a `maintainability` candidate only after reading the existing
+helper and seeing that it does the same job for the same inputs. Anchor it at
+the new declaration's line and cite the existing `path:line` in the evidence.
+A same-named helper with different semantics is not a finding.
+
 ## Structural evidence
 
 You may be given `structure` from the diff manifest. Each entry in

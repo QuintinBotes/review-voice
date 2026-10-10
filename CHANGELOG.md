@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the first added line as the anchor. The
   analyst may raise a `maintainability` finding when the new branches belong
   somewhere else and it can say where. The verdict is unchanged. (#109)
+- `symbols` now lists up to eight new function or method declarations per file
+  in `declared`, with up to three lexical `possibleExisting` helpers found by
+  two-token name similarity. The evidence is a reading hint, can be
+  inconclusive, and does not change the verdict. (#111)
 
 ## [1.14.0] - 2026-10-08
 

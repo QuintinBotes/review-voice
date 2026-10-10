@@ -190,6 +190,21 @@ export type Searcher = (symbol: string, cwd: string, ref: string | null) => bool
  */
 export type PathSearcher = (symbol: string, cwd: string, ref: string | null, timeoutMs?: number) => string[];
 
+/** One code line whose text contains every literal pattern a search asked for. */
+export interface GrepLine {
+  path: string;
+  line: number;
+  text: string;
+}
+
+/** A bounded, literal line search used for possible existing declarations. */
+export type LineSearcher = (
+  patterns: readonly [string, string],
+  cwd: string,
+  ref: string | null,
+  timeoutMs?: number,
+) => GrepLine[];
+
 /**
  * Whether the repository contains a literal token.
  *
@@ -252,6 +267,51 @@ export const gitGrepPaths: PathSearcher = (symbol, cwd, ref, timeoutMs) => {
     // Match `gitGrep`: only git's documented no-match exit answers the
     // question. In particular, a missing ref exits 128 and must remain an
     // error for reach to mark inconclusive.
+    if ((error as { status?: number }).status === 1) return [];
+    throw error;
+  }
+};
+
+/**
+ * Lists tracked lines that contain both fixed-string patterns.
+ *
+ * Like `gitGrepPaths`, `-e` keeps a pattern beginning with a dash from being
+ * parsed as an option, and the ref stays after every pattern instead of after
+ * `--`, where git would read it as a pathspec. `-z` makes the filename, line
+ * number and text fields unambiguous even when a path contains whitespace.
+ */
+export const gitGrepLines: LineSearcher = (patterns, cwd, ref, timeoutMs) => {
+  const [first, second] = patterns;
+  const args =
+    ref === null
+      ? ['grep', '-n', '-z', '-I', '-i', '--full-name', '-F', '-e', first, '--and', '-e', second]
+      : ['grep', '-n', '-z', '-I', '-i', '--full-name', '-F', '-e', first, '--and', '-e', second, ref];
+  try {
+    const output = execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: Math.min(10_000, timeoutMs ?? 10_000),
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    const fields = output.split('\0');
+    const prefix = ref === null ? '' : `${ref}:`;
+    const lines: GrepLine[] = [];
+    for (let index = 0; index + 2 < fields.length; index += 3) {
+      const rawPath = fields[index] ?? '';
+      const line = Number(fields[index + 1]);
+      const text = fields[index + 2] ?? '';
+      if (!Number.isSafeInteger(line) || line < 1) continue;
+      lines.push({
+        path: prefix !== '' && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
+        line,
+        text,
+      });
+    }
+    return lines;
+  } catch (error) {
+    // As with the path search, exit 1 is the only empty answer. A bad ref or
+    // timeout is not evidence that no helper exists and has to stay visible.
     if ((error as { status?: number }).status === 1) return [];
     throw error;
   }

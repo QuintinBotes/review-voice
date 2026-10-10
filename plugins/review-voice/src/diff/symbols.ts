@@ -1,4 +1,18 @@
-import { gitGrepPaths, type PathSearcher } from '../scoring/existence.ts';
+import {
+  gitGrepLines,
+  gitGrepPaths,
+  type LineSearcher,
+  type PathSearcher,
+} from '../scoring/existence.ts';
+import {
+  declarationName,
+  declarationSearchTokens,
+  declarationTokens,
+  declarationsFromDiff,
+  type LexicalDeclaration,
+} from './declarations.ts';
+import { globToRegExp } from '../conventions/globs.ts';
+import { DEFAULT_TEST_PATHS } from './complexity.ts';
 import {
   isCode,
   NON_DISCRIMINATING_DIRECTORIES,
@@ -23,9 +37,23 @@ export interface CommonSymbol {
 
 export type SymbolContext = SymbolReferences | CommonSymbol;
 
+/** A function or method the patch introduces, with possible existing helpers. */
+export interface NewDeclaration {
+  name: string;
+  /** The new-side line that declares this name. */
+  line: number;
+  /** Similar declarations to read before deciding whether work was duplicated. */
+  possibleExisting: { path: string; line: number; name: string }[];
+  /** The search failed or the budget ended, so no match is not a conclusion. */
+  inconclusive?: true;
+  reason?: 'time-budget';
+}
+
 export interface SymbolContextFile {
   path: string;
   symbols: SymbolContext[];
+  /** New, sufficiently specific declarations in this changed file. */
+  declared?: NewDeclaration[];
   /** Distinctive symbols present in the hunk but omitted by the symbol cap. */
   moreSymbols?: number;
   /** A grep failed or the time budget ran out, so this file's evidence is partial. */
@@ -57,6 +85,8 @@ export interface CollectSymbolContextOptions {
   ref: string | null;
   /** Injectable because search failure is evidence too, and needs a cheap test. */
   search?: PathSearcher;
+  /** Injectable for the bounded same-line search for possible existing helpers. */
+  lineSearch?: LineSearcher;
   /** Time budget for the whole collection, enforced between and within searches. */
   maxMs?: number;
   /** Injectable clock, so a budget needs no real waiting to test. */
@@ -67,6 +97,16 @@ export const DEFAULT_MAX_MS = 60_000;
 
 const MAX_SYMBOLS_PER_FILE = 12;
 const MAX_REFERENCES_PER_SYMBOL = 8;
+const MAX_DECLARATIONS_PER_FILE = 8;
+const MAX_POSSIBLE_EXISTING = 3;
+const TEST_PATHS = DEFAULT_TEST_PATHS.map((glob) => globToRegExp(glob));
+
+interface DeclarationCandidate {
+  name: string;
+  line: number;
+  searchTokens: [string, string];
+  tokens: string[];
+}
 
 function normalisePath(path: string): string {
   return path.replaceAll('\\', '/').replace(/^\.\/+/, '').replace(/\/+$/, '');
@@ -74,6 +114,96 @@ function normalisePath(path: string): string {
 
 function directoryCount(paths: Iterable<string>): number {
   return new Set([...paths].map((path) => normalisePath(path).split('/').slice(0, -1).join('/'))).size;
+}
+
+function isTestPath(path: string): boolean {
+  return TEST_PATHS.some((pattern) => pattern.test(normalisePath(path)));
+}
+
+function declarationsByPath(declarations: LexicalDeclaration[]): {
+  addedNames: Set<string>;
+  byPath: Map<string, DeclarationCandidate[]>;
+} {
+  const addedNames = new Set(declarations.filter((declaration) => declaration.added).map((declaration) => declaration.name));
+  const removedNames = new Map<string, Set<string>>();
+  for (const declaration of declarations) {
+    if (declaration.added) continue;
+    const names = removedNames.get(declaration.path) ?? new Set<string>();
+    names.add(declaration.name);
+    removedNames.set(declaration.path, names);
+  }
+
+  const byPath = new Map<string, DeclarationCandidate[]>();
+  for (const declaration of declarations) {
+    if (!declaration.added || removedNames.get(declaration.path)?.has(declaration.name)) continue;
+    const searchTokens = declarationSearchTokens(declaration.name);
+    if (searchTokens === null) continue;
+    const candidates = byPath.get(declaration.path) ?? [];
+    candidates.push({
+      name: declaration.name,
+      line: declaration.line,
+      searchTokens,
+      tokens: declarationTokens(declaration.name),
+    });
+    byPath.set(declaration.path, candidates);
+  }
+
+  for (const [path, candidates] of byPath) {
+    candidates.sort((left, right) => left.line - right.line || left.name.localeCompare(right.name));
+    byPath.set(path, candidates.slice(0, MAX_DECLARATIONS_PER_FILE));
+  }
+  return { addedNames, byPath };
+}
+
+function possibleExisting(
+  declaration: DeclarationCandidate,
+  hits: ReturnType<LineSearcher>,
+  addedNames: Set<string>,
+): NewDeclaration['possibleExisting'] {
+  const matches: { path: string; line: number; name: string; score: number }[] = [];
+  for (const hit of hits) {
+    const path = normalisePath(hit.path);
+    if (!isCode(path) || isTestPath(path)) continue;
+    const name = declarationName(hit.text);
+    if (name === null || addedNames.has(name)) continue;
+    const hitTokens = new Set(declarationTokens(name));
+    const overlap = declaration.tokens.filter((token) => hitTokens.has(token)).length;
+    const union = new Set([...declaration.tokens, ...hitTokens]).size;
+    const score = union === 0 ? 0 : overlap / union;
+    if (overlap >= 2 && score >= 0.5) matches.push({ path, line: hit.line, name, score });
+  }
+
+  return matches
+    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path) || left.line - right.line)
+    .slice(0, MAX_POSSIBLE_EXISTING)
+    .map(({ path, line, name }) => ({ path, line, name }));
+}
+
+function timeBudgetDeclaration(declaration: DeclarationCandidate): NewDeclaration {
+  return {
+    name: declaration.name,
+    line: declaration.line,
+    possibleExisting: [],
+    inconclusive: true,
+    reason: 'time-budget',
+  };
+}
+
+function unfinishedFile(path: string, declarations: readonly DeclarationCandidate[]): {
+  file: SymbolContextFile;
+  references: Set<string>;
+} {
+  const declared = declarations.map(timeBudgetDeclaration);
+  return {
+    file: {
+      path,
+      symbols: [],
+      ...(declared.length === 0 ? {} : { declared }),
+      inconclusive: true,
+      reason: 'time-budget',
+    },
+    references: new Set<string>(),
+  };
 }
 
 /**
@@ -130,17 +260,23 @@ function reportFile(
   cwd: string,
   ref: string | null,
   search: PathSearcher,
+  lineSearch: LineSearcher,
   remaining: () => number,
+  declarations: readonly DeclarationCandidate[],
+  addedNames: Set<string>,
 ): { file: SymbolContextFile; references: Set<string> } {
   const allSymbols = symbolsFromHunks(diff, path);
   const omitted = Math.max(0, allSymbols.length - MAX_SYMBOLS_PER_FILE);
   const symbols: SymbolContext[] = [];
+  const declared: NewDeclaration[] = [];
   const references = new Set<string>();
   const normalisedPath = normalisePath(path);
+  let incomplete = false;
 
   const file = (inconclusive: boolean, reason?: 'time-budget'): SymbolContextFile => ({
     path,
     symbols,
+    ...(declared.length === 0 ? {} : { declared }),
     ...(omitted === 0 ? {} : { moreSymbols: omitted }),
     ...(inconclusive ? { inconclusive: true } : {}),
     ...(reason === undefined ? {} : { reason }),
@@ -149,15 +285,20 @@ function reportFile(
   for (const symbol of allSymbols.slice(0, MAX_SYMBOLS_PER_FILE)) {
     // Checked before every search: a search is the only slow step, and the
     // budget has to hold however many symbols and files precede this one.
-    if (remaining() <= 0) return { file: file(true, 'time-budget'), references };
+    if (remaining() <= 0) {
+      declared.push(...declarations.map(timeBudgetDeclaration));
+      return { file: file(true, 'time-budget'), references };
+    }
     let found: string[];
     try {
       found = search(symbol, cwd, ref, remaining());
     } catch {
       // A failed grep is not an empty grep. Leave the symbol that failed out
       // altogether, retain evidence from earlier successful searches, and
-      // make the file's incomplete state explicit to its readers.
-      return { file: file(true), references };
+      // make the file's incomplete state explicit to its readers. The
+      // declaration searches are independent evidence, so they may continue.
+      incomplete = true;
+      break;
     }
 
     const code = new Set(found.filter(isCode).map(normalisePath));
@@ -180,7 +321,34 @@ function reportFile(
     });
   }
 
-  return { file: file(false), references };
+  for (let index = 0; index < declarations.length; index += 1) {
+    if (remaining() <= 0) {
+      declared.push(...declarations.slice(index).map(timeBudgetDeclaration));
+      return { file: file(true, 'time-budget'), references };
+    }
+
+    const declaration = declarations[index]!;
+    try {
+      const hits = lineSearch(declaration.searchTokens, cwd, ref, remaining());
+      declared.push({
+        name: declaration.name,
+        line: declaration.line,
+        possibleExisting: possibleExisting(declaration, hits, addedNames),
+      });
+    } catch {
+      // A failed declaration query leaves that one unknown. Continuing gives
+      // later, independent declarations a chance to remain useful context.
+      incomplete = true;
+      declared.push({
+        name: declaration.name,
+        line: declaration.line,
+        possibleExisting: [],
+        inconclusive: true,
+      });
+    }
+  }
+
+  return { file: file(incomplete), references };
 }
 
 /**
@@ -193,18 +361,31 @@ function reportFile(
  */
 export function collectSymbolContext(options: CollectSymbolContextOptions): SymbolContextReport {
   const search = options.search ?? gitGrepPaths;
+  const lineSearch = options.lineSearch ?? gitGrepLines;
   const now = options.now ?? Date.now;
   const maxMs = options.maxMs ?? DEFAULT_MAX_MS;
   const started = now();
   const remaining = () => maxMs - (now() - started);
   const paths = pathsWithHunks(options.diff);
+  const declarationContext = declarationsByPath(declarationsFromDiff(options.diff));
   // Files the budget never reached are still listed: a missing file reads as
   // "nothing to find", and an unfinished one is not that.
-  const records = paths.map((path) =>
-    remaining() <= 0
-      ? { file: { path, symbols: [], inconclusive: true, reason: 'time-budget' } as SymbolContextFile, references: new Set<string>() }
-      : reportFile(options.diff, path, options.cwd, options.ref, search, remaining),
-  );
+  const records = paths.map((path) => {
+    const declarations = declarationContext.byPath.get(normalisePath(path)) ?? [];
+    return remaining() <= 0
+      ? unfinishedFile(path, declarations)
+      : reportFile(
+        options.diff,
+        path,
+        options.cwd,
+        options.ref,
+        search,
+        lineSearch,
+        remaining,
+        declarations,
+        declarationContext.addedNames,
+      );
+  });
   const changed = new Set(paths.map(normalisePath));
   const downstream = new Set<string>();
 
