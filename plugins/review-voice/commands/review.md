@@ -371,6 +371,10 @@ same convention `documents`, and `symbols.json`. On a `--pr` run, also give it
 the same `thread.json`, so it can verify claims about the pull-request
 description rather than treating an excerpt as proof.
 
+On a `--pr` run, give it the same `thread.json` too. It must be able to check
+factual claims in the description against the final head, not merely a
+candidate's excerpt of them.
+
 Discard every candidate it does not verify, with two exceptions that step 4
 decides:
 
