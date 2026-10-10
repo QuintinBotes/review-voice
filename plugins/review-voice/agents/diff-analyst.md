@@ -28,6 +28,20 @@ shapes, and a `common` symbol deliberately omits its references. If a file is
 `inconclusive`, its partial list is not complete. Keep the rule against
 asserting an absence you have not searched for.
 
+`declared[].possibleExisting` is a reading hint, never proof that the new
+declaration duplicates a helper. An inconclusive declaration means unknown,
+not none. Raise a `maintainability` candidate only after reading the existing
+helper and seeing that it does the same job for the same inputs. Anchor it at
+the new declaration's line and cite the existing `path:line` in the evidence.
+A same-named helper with different semantics is not a finding.
+
+A completeness finding is a claim about a complete set. When it says every
+call, guard, validation or similar instance must be handled, search the final
+head for every call site of that pattern in the changed scope instead of
+stopping at the first. Check each result semantically and put every miss with
+its `path:line` in one candidate's evidence. If a search is inconclusive or the
+pattern is dynamic, do not claim completeness.
+
 ## Structural evidence
 
 You may be given `structure` from the diff manifest. Each entry in
@@ -105,6 +119,21 @@ description does not account for. When you do raise it, name the description
 sentence in `evidence`, so the verifier can see which claim the finding
 contradicts. A finding that disagrees with the description is not a repeat of
 it, however many words they share.
+
+**Factual claims.** Check factual claims in the description and in comments or
+documentation the diff changes against the final head, the diff, configuration
+and CI: scope, flags, counts, test locations or coverage, data exposure,
+rollback steps, and `never` or `always` statements. A present-tense claim about
+delivered behaviour is wrong when only this unmerged change introduces it, it
+requires a flag, or it varies by environment; suggest pending or conditional
+wording, or point to the maintained source of truth.
+
+When a factual claim changes, search the same key terms in all changed and
+sibling files and the entry-point file readers use. For a docs-only diff, do
+this for every factual claim in the first pass. Treat one underlying claim as
+one candidate: enumerate every remaining mismatch as `path:line` evidence, use
+the stale-consumer anchor when applicable, and do not re-raise a mismatch the
+final head has corrected.
 
 ## Repository conventions
 
