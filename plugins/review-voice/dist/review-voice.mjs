@@ -621,6 +621,7 @@ function abstraction(value) {
   }
   return { value: { path: path.value, line: at.value, name: name.value }, problem: null };
 }
+var MAX_NAME_CHARS = 80;
 function parseSimplificationCandidate(value) {
   const document = record(value);
   if (document === null) return { value: null, problem: 'expected {"simplification": ...}' };
@@ -651,6 +652,15 @@ function parseSimplificationCandidate(value) {
   }
   const existing = abstraction(candidate["abstraction"]);
   if (existing.problem !== null) return { value: null, problem: existing.problem };
+  const posted = [claim.value, ...removes.map((removed) => removed.element), existing.value.name];
+  if (posted.some((part) => part.length > MAX_NAME_CHARS && part !== claim.value)) {
+    return { value: null, problem: `simplification element and abstraction names must be at most ${MAX_NAME_CHARS} characters` };
+  }
+  if (posted.some((part) => /[\u2013\u2014]/u.test(part))) {
+    return { value: null, problem: "simplification text contains an em or en dash; use a comma, a full stop, or a plain hyphen" };
+  }
+  const hedges = posted.flatMap((part) => findForbiddenPhrases(part, DEFAULT_LIMITS.forbiddenPhrases));
+  if (hedges.length > 0) return { value: null, problem: `simplification text contains "${hedges[0]}"; state the problem rather than hedging` };
   return {
     value: { category: "maintainability", claim: claim.value, removes, abstraction: existing.value },
     problem: null
