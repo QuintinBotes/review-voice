@@ -47,7 +47,7 @@ function escapeRegExp(value: string): string {
  * prompt, and an editor that fixes one phrase only to be rejected for the next
  * one burns a round trip per word.
  */
-function findForbiddenPhrases(prose: string, phrases: readonly string[]): string[] {
+export function findForbiddenPhrases(prose: string, phrases: readonly string[]): string[] {
   return phrases.filter((phrase) =>
     new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(phrase)}(?![\\p{L}\\p{N}])`, 'iu').test(prose),
   );

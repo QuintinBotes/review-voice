@@ -392,6 +392,22 @@ Contract compliance is measured by running recorded output back through the
 validator, not asserted from the fact that validation happened. If output ever
 reaches the store by a path that skipped the gate, this is what notices.
 
+## Measuring opt-in simplification-pass cost
+
+No token-cost figure is published for the opt-in simplification pass yet. Do
+not infer one from latency or from a provider's context-window size. When the
+pass runs, record the provider-reported counts in `--stages` under
+`simplification-analyst` and, only when the analyst returned a non-null
+candidate, `simplification-verifier`.
+
+For each review, its observed incremental token cost is the sum of the
+available `tokens` values for those two stage names. Keep missing provider
+counts missing rather than writing zero. To report an offline measurement,
+state the sample size, how many runs reached the verifier, which provider/model
+was used, and a distribution (for example median and percentile) of observed
+per-review sums. Compare runs of the same fixtures or diffs with the option off
+and on when isolating the pass from ordinary-review variation.
+
 ## Running it
 
 ```bash

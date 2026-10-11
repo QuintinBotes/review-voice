@@ -4,6 +4,7 @@ import { SEVERITIES, type Severity } from '../contract/limits.ts';
 import type { RunDetail } from '../store/runs.ts';
 import type { ReviewComment, ReviewEvent, ReviewPayload } from '../github/writer.ts';
 import type { CiEntry, CiState } from './ci.ts';
+import { renderSimplification, type VerifiedSimplification } from '../simplification.ts';
 
 export type { ReviewEvent, ReviewPayload };
 
@@ -488,11 +489,14 @@ export function buildPayload(input: {
   event: ReviewEvent;
   planned: PlannedFindings;
   cappedBy: 'ci' | 'held' | 'complexity' | null;
+  /** Optional advice that was separately verified but never enters the verdict. */
+  bodyFindings?: readonly VerifiedSimplification[];
 }): ReviewPayload {
   const posted = [...input.planned.inline, ...input.planned.unanchored];
   const body = [
     summaryLine(input.event, posted, input.cappedBy),
     ...input.planned.unanchored.map((finding) => finding.raw),
+    ...(input.bodyFindings ?? []).map(renderSimplification),
   ].join('\n\n');
   return {
     commit_id: input.head,

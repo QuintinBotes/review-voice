@@ -39,7 +39,7 @@ export interface LoadedConfig {
   };
   /** When a change is raised for a human's approval; see docs/adr/0012. */
   humanReview: HumanReviewConfig;
-  /** Limits for the structural evidence `diff --out` collects for the analyst. */
+  /** Limits and opt-ins for structural review. */
   structure: StructureConfig;
   layers: PolicyLayer[];
   /** Repository-supplied layers awaiting owner approval. */
@@ -121,6 +121,12 @@ function readStructure(block: Record<string, unknown> | null, result: LoadedConf
   result.structure.maxFileLines = limit('max_file_lines') ?? result.structure.maxFileLines;
   result.structure.maxAddedBranchesPerFunction =
     limit('max_added_branches_per_function') ?? result.structure.maxAddedBranchesPerFunction;
+
+  const simplify = block['simplify'];
+  if (simplify !== undefined) {
+    if (typeof simplify === 'boolean') result.structure.simplify = simplify;
+    else result.warnings.push('review.structure.simplify must be true or false; using the default.');
+  }
 }
 
 /** Words that appear in nearly every failure, so alone they would turn every failure into a rerun. */

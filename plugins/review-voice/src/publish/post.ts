@@ -319,6 +319,7 @@ export async function computeVerdict(
       head,
       event: decision.event,
       planned,
+      bodyFindings: run.bodyFindings,
       // One plain summary line whichever cap applies: CI first, then a held
       // finding or an uncovered carry, then complexity. None of them names
       // human review or the carry in the posted body.

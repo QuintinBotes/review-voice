@@ -89,6 +89,42 @@ consequence; reject a preference with no nameable consequence. These are
   Keep it only when the stated invariant makes the fallback hide a real
   violation; legitimate optional input or expected error handling refutes it.
 
+## Opt-in simplification verification
+
+Follow this section only when the request explicitly labels this a
+**simplification verification** and supplies one specialised simplification
+candidate. It is not an ordinary finding and this output replaces the normal
+Output section below.
+
+Check every listed removal independently. For each `path:line`, establish that
+the head-side location is a changed line in the supplied diff and that it is
+the concrete parameter, branch, helper, wrapper, or other element named by
+the analyst. Read the named existing abstraction at its `path:line`; confirm
+it exists, covers the same behaviour, and does not lose a served path. Reject
+the proposal if behavior cannot be established, any listed element is absent
+from the diff, any concrete disappearance was left unlisted, or it merely
+moves/renames code or shifts the same concepts elsewhere.
+
+Return JSON only in exactly this shape, listing one `elements` entry for every
+candidate removal in the same order:
+
+```json
+{
+  "verified": true,
+  "elements": [
+    { "path": "src/notify/send.ts", "line": 18, "exists_in_diff": true }
+  ],
+  "behavior_preserved": true,
+  "removes_concepts": true,
+  "reason": "dispatchNotice already selects the delivery strategy and preserves the existing delivery behavior."
+}
+```
+
+Set `verified` to `false` for any rejection. In particular,
+`removes_concepts` must be `false` for a code move, even if that move preserves
+behavior. Do not return ordinary candidate ids, confidence, severity, or
+commentary in this mode.
+
 ## A candidate that may repeat a comment
 
 A candidate carrying `possibleRepeatOf` sits near an existing comment on the
@@ -354,6 +390,9 @@ For every candidate, return these fields in addition to the defect fields:
 | `fix_direction` | string, optional | One imperative clause with no specifics or hedging, only for `partial` |
 
 ## Output
+
+This section applies only when the request did not explicitly label a
+simplification verification; that mode uses the specialised output above.
 
 JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `technical_confidence`, `contradictions`, `required_context_missing`, `reason`,

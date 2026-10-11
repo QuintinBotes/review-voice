@@ -1,0 +1,20 @@
+--- a/src/notifications/send-update.ts
++++ b/src/notifications/send-update.ts
+@@ -1,11 +1,13 @@
+-export function retryOrderUpdate(order: Order): Promise<void> {
+-  return sendOrderUpdate(order);
++export function retryOrderUpdate(order: Order, receipt: boolean): Promise<void> {
++  return sendOrderUpdate(order, receipt);
+ }
+ 
+-export function sendOrderUpdate(order: Order): Promise<void> {
+-  return sendEmail(order);
++export function sendOrderUpdate(order: Order, receipt: boolean): Promise<void> {
++  return sendEmail(order, receipt);
+ }
+ 
+-function sendEmail(order: Order): Promise<void> {
++function sendEmail(order: Order, receipt: boolean): Promise<void> {
++  if (receipt) return sendReceiptEmail(order);
+   return sendShipmentEmail(order);
+ }
