@@ -3945,50 +3945,10 @@ function possiblyRepeatsDescription(candidate, thread) {
   if (mine.size === 0) return null;
   for (const comment of thread) {
     if (comment.kind !== "description") continue;
-    if (!descriptionMatchesCandidate(candidate, mine, comment.body)) continue;
+    if (overlap(mine, significantWords(comment.body)) < UNANCHORED_DUPLICATE_OVERLAP) continue;
     return { comment, excerpt: overlappingExcerpt(mine, comment.body) };
   }
   return null;
-}
-function descriptionMatchesCandidate(candidate, combined, body) {
-  if (overlap(combined, significantWords(body)) >= UNANCHORED_DUPLICATE_OVERLAP) return true;
-  const descriptionParts = [body, ...body.split(/(?<=[.!?])\s+|\n+/u)];
-  const candidateParts = [candidate.claim, `${candidate.claim} ${candidate.failureMode}`];
-  return candidateParts.some((candidatePart) => {
-    const mine = descriptionWords(candidatePart);
-    return descriptionParts.some((descriptionPart) => descriptionOverlap(mine, descriptionWords(descriptionPart)));
-  });
-}
-var TEST_WORDS = /* @__PURE__ */ new Set(["test", "tests", "testing", "tested", "untested"]);
-var COVERAGE_WORDS = /* @__PURE__ */ new Set(["cover", "covers", "covered", "covering", "coverage"]);
-var TEST_COVERAGE = "test-coverage";
-function descriptionWords(text2) {
-  const raw = significantWords(text2);
-  const words = /* @__PURE__ */ new Set();
-  let hasTest = false;
-  let hasCoverage = false;
-  for (const word of raw) {
-    if (TEST_WORDS.has(word)) {
-      hasTest = true;
-      words.add("test");
-    } else if (COVERAGE_WORDS.has(word)) {
-      hasCoverage = true;
-      words.add("cover");
-    } else {
-      words.add(word);
-    }
-  }
-  const missingCoverage = /\b(?:no|not|without|lack(?:s|ing)?|missing|uncovered)\b/iu.test(text2);
-  if (raw.has("untested") || hasTest && hasCoverage || hasCoverage && missingCoverage) {
-    words.add(TEST_COVERAGE);
-  }
-  return words;
-}
-function descriptionOverlap(mine, theirs) {
-  if (mine.size === 0) return false;
-  const shared = [...mine].filter((word) => theirs.has(word));
-  if (shared.length / mine.size < UNANCHORED_DUPLICATE_OVERLAP) return false;
-  return shared.length >= 3 || shared.length >= 2 && shared.includes(TEST_COVERAGE);
 }
 function overlappingExcerpt(mine, body) {
   const sentences = body.split(/(?<=[.!?])\s+|\n+/u).map((sentence) => sentence.trim()).filter((sentence) => sentence.length > 0);
