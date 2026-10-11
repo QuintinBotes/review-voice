@@ -17,9 +17,15 @@ export interface StructureConfig {
   maxFileLines: number;
   /** An existing function that gains at least this many decision points is listed. */
   maxAddedBranchesPerFunction: number;
+  /** Run the optional, body-only simplification pass after ordinary verification. */
+  simplify: boolean;
 }
 
-export const DEFAULT_STRUCTURE: StructureConfig = { maxFileLines: 1000, maxAddedBranchesPerFunction: 3 };
+export const DEFAULT_STRUCTURE: StructureConfig = {
+  maxFileLines: 1000,
+  maxAddedBranchesPerFunction: 3,
+  simplify: false,
+};
 
 export interface SizeCrossing {
   path: string;

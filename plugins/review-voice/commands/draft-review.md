@@ -48,9 +48,11 @@ needs a rerun.
   review from approving.
 - **Every anchored finding is an inline comment** on its line. The body is one
   line stating the verdict, plus only verified findings with no line to sit
-  on (matched by path and severity). A comment an earlier post already put on
-  this head is not sent again (`alreadyInline`), so an approval that follows a
-  comment while CI was red carries the summary only.
+  on (matched by path and severity) and any separately verified opt-in
+  simplification advice. That advice is never an inline comment and never
+  affects the event. A comment an earlier post already put on this head is not
+  sent again (`alreadyInline`), so an approval that follows a comment while CI
+  was red carries the summary only.
 - **The head guard.** If the pull request's head is no longer `--head`, exit 3.
   Review the new head instead, or carry the verified candidates to it with
   `carry-candidates` as `/review-voice:review` describes.

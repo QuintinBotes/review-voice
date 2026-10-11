@@ -28,6 +28,13 @@ import {
   type ComplexityAssessment,
 } from './diff/complexity.ts';
 import { collectStructure, type StructureSignals } from './diff/structure.ts';
+import {
+  parseSimplificationCandidate,
+  parseSimplificationVerification,
+  parseVerifiedSimplification,
+  simplificationDiffProblem,
+  type VerifiedSimplification,
+} from './simplification.ts';
 import { acquirePullRequestDiff, applyReviewScope, type SuspectedWrongBase } from './diff/pull-request.ts';
 import { isReviewable } from './diff/classify.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
@@ -146,6 +153,7 @@ import { commandHelp, topLevelHelp } from './help.ts';
 const STDIN_INPUT: Record<string, string> = {
   'check-candidates': 'candidates JSON',
   'check-verification': 'the evidence-verifier output',
+  'check-simplification': 'the simplification candidate or verifier output',
   score: 'candidates JSON',
   record: 'the validated review',
   'validate-output': 'the review text',
@@ -840,6 +848,9 @@ function contextCommand(): number {
           ownerReviewer: config.ownerReviewer,
           allowlist: config.allowlist,
           staticEvidence: config.staticEvidence,
+          // The review command needs the structural opt-ins after resolving
+          // config, including the optional simplification pass.
+          structure: config.structure,
           // Reported whether or not it is configured. A config written before
           // second-pass verification existed has no `verification:` block at
           // all, so an upgrading user silently got none of it and nothing in
@@ -2248,6 +2259,49 @@ function recordCommand(argv: string[]): number {
     );
   }
 
+  // This is deliberately separate from normal candidates and scores. A
+  // simplification is advice in the review body, never an inline finding or a
+  // reason to alter the review event. Parse it here, before opening the store,
+  // so a hand-edited body-only suggestion cannot bypass its diff and verifier
+  // checks.
+  const bodyFindingsFile = flag(argv, '--body-findings');
+  let bodyFindings: VerifiedSimplification[] = [];
+  if (argv.includes('--body-findings')) {
+    if (bodyFindingsFile === null) {
+      console.error('--body-findings needs a JSON path from check-simplification.');
+      return 2;
+    }
+    if (diffFile === null) {
+      console.error('--body-findings needs --diff-file, so every listed removal can be checked against the diff.');
+      return 2;
+    }
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(bodyFindingsFile, 'utf8'));
+      const list = Array.isArray(parsed)
+        ? parsed
+        : typeof parsed === 'object' && parsed !== null && Array.isArray((parsed as { bodyFindings?: unknown }).bodyFindings)
+          ? (parsed as { bodyFindings: unknown[] }).bodyFindings
+          : null;
+      if (list === null) throw new Error('expected an array or {"bodyFindings": [...]}');
+      if (list.length > 1) throw new Error('at most one body-only simplification is allowed per review');
+      const hunks = parseHunks(diff);
+      bodyFindings = list.map((entry, index) => {
+        const checked = parseVerifiedSimplification(entry, hunks);
+        if (checked.problem !== null || checked.value === null) {
+          throw new Error(`entry ${index}: ${checked.problem ?? 'not a verified simplification'}`);
+        }
+        return checked.value;
+      });
+    } catch (error) {
+      console.error(
+        `Cannot read body-only simplification from ${bodyFindingsFile}: ${
+          error instanceof Error ? error.message : String(error)
+        }.`,
+      );
+      return 2;
+    }
+  }
+
   // Scope comes from the manifest written beside the patch, so the record is
   // tied to the exact boundary the analyst saw rather than to a later lookup.
   const filesFile = flag(argv, '--files');
@@ -2535,6 +2589,7 @@ function recordCommand(argv: string[]): number {
       verdicts,
       tieBreaks,
       held,
+      ...(bodyFindings.length === 0 ? {} : { bodyFindings }),
       carried,
       ...(carry === undefined ? {} : { carry }),
       followUps,
@@ -3533,6 +3588,113 @@ function checkVerificationCommand(): number {
   return 0;
 }
 
+/**
+ * Validates the two short-lived documents of the opt-in simplification pass.
+ *
+ * Without --candidate this checks the analyst's one optional candidate. With
+ * it, stdin is the evidence-verifier's response and the command emits the
+ * separately persisted, body-only result. Keeping this outside the ordinary
+ * candidate schema prevents it from becoming an inline comment or affecting a
+ * verdict by accident.
+ */
+function checkSimplificationCommand(argv: string[]): number {
+  const diffFile = flag(argv, '--diff-file');
+  if (diffFile === null) {
+    console.error('--diff-file needs the patch the simplification pass reviewed.');
+    return 2;
+  }
+  const candidateFile = flag(argv, '--candidate');
+  if (argv.includes('--candidate') && candidateFile === null) {
+    console.error('--candidate needs the checked analyst output.');
+    return 2;
+  }
+
+  let hunks: Map<string, FileHunks>;
+  try {
+    hunks = parseHunks(readFileSync(diffFile, 'utf8'));
+  } catch (error) {
+    console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+
+  let document: unknown;
+  try {
+    document = JSON.parse(readStdin()) as unknown;
+  } catch {
+    console.error('Expected simplification JSON on stdin.');
+    return 2;
+  }
+
+  if (candidateFile === null) {
+    const candidate = parseSimplificationCandidate(document);
+    if (candidate.problem !== null) {
+      console.error(`Malformed simplification candidate - ${candidate.problem}.`);
+      console.error('Re-run the analyst with the simplification schema restated. Do not hand-translate its output.');
+      return 2;
+    }
+    if (candidate.value !== null) {
+      const problem = simplificationDiffProblem(candidate.value, hunks);
+      if (problem !== null) {
+        console.error(`Invalid simplification candidate - ${problem}.`);
+        console.error('Re-run the analyst with the changed locations from the patch. Do not hand-translate its output.');
+        return 2;
+      }
+    }
+    console.log(JSON.stringify({ simplification: candidate.value }, null, 2));
+    return 0;
+  }
+
+  let candidateDocument: unknown;
+  try {
+    candidateDocument = JSON.parse(readFileSync(candidateFile, 'utf8')) as unknown;
+  } catch (error) {
+    console.error(`Cannot read ${candidateFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const candidate = parseSimplificationCandidate(candidateDocument);
+  if (candidate.problem !== null || candidate.value === null) {
+    console.error(
+      `Cannot verify ${candidateFile}: ${candidate.problem ?? 'it contains no simplification candidate'}.`,
+    );
+    return 2;
+  }
+  const candidateProblem = simplificationDiffProblem(candidate.value, hunks);
+  if (candidateProblem !== null) {
+    console.error(`Cannot verify ${candidateFile}: ${candidateProblem}.`);
+    return 2;
+  }
+
+  const verification = parseSimplificationVerification(document, candidate.value);
+  if (verification.problem !== null || verification.value === null) {
+    console.error(`Malformed simplification verification - ${verification.problem ?? 'missing verification'}.`);
+    console.error('Re-run the verifier with the simplification schema restated. Do not hand-translate its output.');
+    return 2;
+  }
+  // Keep the checker output in the verifier's wire format. `record` parses it
+  // back to the internal camel-case representation before persistence, so this
+  // handoff remains as strict as the verifier response it checked.
+  const bodyFindings = verification.value.verified
+    ? [
+        {
+          candidate: candidate.value,
+          verification: {
+            verified: verification.value.verified,
+            elements: verification.value.elements.map((element) => ({
+              path: element.path,
+              line: element.line,
+              exists_in_diff: element.existsInDiff,
+            })),
+            behavior_preserved: verification.value.behaviorPreserved,
+            removes_concepts: verification.value.removesConcepts,
+            reason: verification.value.reason,
+          },
+        },
+      ]
+    : [];
+  console.log(JSON.stringify({ bodyFindings }, null, 2));
+  return 0;
+}
+
 /** A string, or `{context, kind?}` with a non-empty context and a known kind. */
 function isMissingContext(item: unknown): boolean {
   if (typeof item === 'string') return true;
@@ -4098,6 +4260,9 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'check-verification':
       return checkVerificationCommand();
+
+    case 'check-simplification':
+      return checkSimplificationCommand(argv.slice(1));
 
     case 'conventions':
       return conventionsCommand(argv.slice(1));

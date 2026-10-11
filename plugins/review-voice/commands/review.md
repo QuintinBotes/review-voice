@@ -1,6 +1,6 @@
 ---
 description: Review the current diff and report only concrete, evidence-backed problems
-argument-hint: "[--base <ref>] [--staged] [--pr <number>] [--full] [--include-generated]"
+argument-hint: "[--base <ref>] [--staged] [--pr <number>] [--full] [--include-generated] [--simplify]"
 allowed-tools: Bash(node:*), Bash(git:*), Read, Grep, Glob, Task
 ---
 
@@ -29,7 +29,9 @@ the defect.
 
 ## Step 1 - Acquire the diff
 
-Run `RV diff $ARGUMENTS --out <tmpdir>` with a temporary directory.
+Run `RV diff $ARGUMENTS --out <tmpdir>` with a temporary directory. `--simplify`
+is a review-command switch, not a diff switch: remove that one argument before
+you invoke `RV diff`, while preserving every actual diff argument.
 
 That writes `diff.patch` and `files.json` separately and prints their paths
 with a compact `summary`. Read the summary for the review mode, refs, scope,
@@ -215,6 +217,13 @@ Skip it when not reviewing a pull request; there is no thread to read.
 
 Run `RV context`.
 
+Set `simplificationEnabled` only when `context.structure.simplify` is `true`
+or `$ARGUMENTS` contains `--simplify`. It is false by default. When it is
+false, do not launch a simplification analyst or verifier, do not create or
+pass a body-findings file, and do not add any text or stage entry: the review
+and its stored/postable output must be identical to a review that predates this
+option.
+
 Apply `policy.maxFindings`, `policy.maxWordsPerFinding` and
 `policy.maxTotalWords` when you validate in step 6, passing them as flags.
 
@@ -362,7 +371,12 @@ and largely shares its wording; the mark carries the held finding's `path` and
 `line`. If the prior run cannot be read the command says so on stderr and
 keeps every candidate.
 
-If there are no candidates, output exactly `No actionable findings.` and stop.
+If there are no ordinary candidates and `simplificationEnabled` is false,
+output exactly `No actionable findings.` and stop. When it is true, retain the
+empty ordinary candidate and verification lists, skip ordinary verification
+and steps 3b and 3c, and continue directly to step 3d. The optional pass is
+still allowed to find one body-only restructuring; do not manufacture an
+ordinary candidate merely to reach it.
 
 ## Step 3 - Verify
 
@@ -423,8 +437,11 @@ Keep `impact_traced` there too: scoring reads it to decide whether a finding may
 be reported above the tier the analyst asked for. Keep `impact_class` as well.
 
 If nothing survives and nothing was set aside, output exactly
-`No actionable findings.` and stop. If only set-aside candidates remain, skip
-to step 4 so they are listed.
+`No actionable findings.` and stop only when `simplificationEnabled` is false.
+When it is true, retain the empty ordinary lists and continue to step 3d. If
+only set-aside candidates remain, continue to step 4 after step 3d so they are
+listed. With no survivor or set-aside candidate, skip steps 3b and 3c rather
+than launching ordinary verification over an empty list.
 
 ## Step 3b - Second-pass verification
 
@@ -482,7 +499,57 @@ Write that second output to `<tmpdir>/reconciled.json` and keep it for step 6:
 its `tieBreaks` mark which rulings settled a dispute, and `raised` the tier an
 upgrade raised to, and a ruling on a candidate nobody disputed is ignored.
 
+## Step 3d - Optional simplification pass
+
+Run this step only when `simplificationEnabled` is true, after every ordinary
+verification step that applied. It is a separate, opt-in analyst pass, not a
+second way to produce ordinary findings. Launch `diff-analyst` with the same
+diff, files, conventions, symbols and structural evidence, but explicitly
+label the request **simplification pass**. Ask for the specialised JSON shape
+in its prompt, not `schemas/candidate.schema.json`. It may return `null`, or
+at most one `maintainability` restructuring that makes concepts disappear.
+
+Write the analyst output to `<tmpdir>/simplification-analyst.json`, then run:
+
+```
+RV check-simplification --diff-file <tmpdir>/diff.patch \
+  < <tmpdir>/simplification-analyst.json > <tmpdir>/simplification-candidate.json
+```
+
+The candidate must enumerate every concrete element that disappears as a
+changed `path:line`, name the existing abstraction it will lean on, and remove
+concepts rather than merely move code. On exit 2, relaunch that analyst once
+with the specialised schema restated; never repair its JSON by hand. If its
+checked candidate is `{"simplification": null}`, stop this optional step:
+do not launch the verifier and do not create a body finding.
+
+For a non-null candidate, launch `evidence-verifier` once more with the same
+evidence and explicitly label it **simplification verification**. It must
+confirm every enumerated element occurs in the diff, confirm the named
+abstraction exists and preserves behaviour, and reject a proposal that only
+relocates code. Write its response to
+`<tmpdir>/simplification-verification.json`, then run:
+
+```
+RV check-simplification --diff-file <tmpdir>/diff.patch \
+  --candidate <tmpdir>/simplification-candidate.json \
+  < <tmpdir>/simplification-verification.json > <tmpdir>/simplification-body.json
+```
+
+On exit 2, relaunch that verifier once with its specialised schema restated;
+never translate its response by hand. A verifier rejection writes an empty
+`bodyFindings` array. Do not seek a replacement suggestion: one candidate is
+the review-wide maximum. A non-empty array is body-only advice: never send it
+to scoring, reconciliation, the concise editor, output validation, or a
+verdict calculation. It is recorded separately and later rendered in the
+review body, never as an inline comment.
+
 ## Step 4 - Score against precedent
+
+When the ordinary candidate set is empty, skip steps 4 and 5 and use exactly
+`No actionable findings.` as the review text for step 6. A verified
+simplification is not an ordinary finding and does not change that text,
+severity, score, or event.
 
 Pipe the verified candidates - step 3c's `candidates` when it ran - plus those
 set aside in step 3, as `{"candidates": [...]}` into
@@ -688,7 +755,9 @@ stray directory and another project's notes took the reviewed count from 11 to
   record it. Write the scored candidates to a temporary file and pass it:
   `RV record --repository <owner/repo> --base <ref> --head <sha> --candidates <file>
   --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --stages <file>` with the validated output on
-  stdin.
+  stdin. Only when step 3d produced a non-empty `bodyFindings` array, add
+  `--body-findings <tmpdir>/simplification-body.json`. Never pass that flag
+  for an off, null, or rejected simplification pass.
 
   **`--repository` is `owner/repo`, the same name `RV diff --pr` read the pull
   request from.** The next review of that pull request finds this run by that
@@ -704,6 +773,12 @@ stray directory and another project's notes took the reviewed count from 11 to
   never post it or put it in the review. A review measured once took about twenty-five
   minutes against a sweep that runs every ten, and whether that holds is a
   distribution nobody has yet.
+
+  When the optional pass ran, record `simplification-analyst` and, only when
+  there was a non-null candidate, `simplification-verifier` as separate stage
+  names. Put provider-reported token counts in `tokens`; do not estimate them.
+  Its per-review token cost is the sum of the observed `tokens` for those two
+  names, with missing counts reported as missing rather than zero.
 
   **`--files` is what carries the complexity assessment to `verdict`.** Without
   it the run records no assessment, and a high-complexity change would then be

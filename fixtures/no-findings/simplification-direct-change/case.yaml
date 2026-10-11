@@ -1,0 +1,8 @@
+name: simplification-direct-change
+asserts: >
+  A direct new dispatcher call introduces neither a threaded flag nor a
+  redundant wrapper or branch to remove, so the opt-in simplification pass
+  declines it instead of suggesting a code move.
+expect:
+  output: "No actionable findings."
+  simplification: null

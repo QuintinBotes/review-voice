@@ -138,12 +138,12 @@ function splitFindings(output) {
   const lines2 = output.split("\n");
   const blocks = [];
   let current = null;
-  lines2.forEach((line, index) => {
-    if (OPENS_FINDING.test(line)) {
+  lines2.forEach((line2, index) => {
+    if (OPENS_FINDING.test(line2)) {
       if (current) blocks.push({ raw: current.raw.join("\n").trim(), startLine: current.startLine });
-      current = { raw: [line], startLine: index + 1 };
+      current = { raw: [line2], startLine: index + 1 };
     } else if (current) {
-      current.raw.push(line);
+      current.raw.push(line2);
     }
   });
   if (current) {
@@ -305,6 +305,436 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
 
 // plugins/review-voice/src/publish/verdict.ts
 import { createHash } from "node:crypto";
+
+// plugins/review-voice/src/diff/hunks.ts
+function normalisePath(path) {
+  return path.replaceAll("\\", "/").replace(/^\.\/+/, "");
+}
+function blankFileHunks() {
+  return {
+    added: /* @__PURE__ */ new Set(),
+    context: /* @__PURE__ */ new Set(),
+    deletionSites: /* @__PURE__ */ new Set(),
+    ranges: [],
+    patchLines: /* @__PURE__ */ new Map()
+  };
+}
+var C_ESCAPES = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+function unquoteGitPath(raw) {
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw;
+  const body = raw.slice(1, -1);
+  const bytes = [];
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index];
+    if (char !== "\\") {
+      bytes.push(...Buffer.from(char, "utf8"));
+      continue;
+    }
+    const next = body[index + 1] ?? "";
+    const octal = /^[0-7]{3}/.exec(body.slice(index + 1));
+    if (octal !== null) {
+      bytes.push(Number.parseInt(octal[0], 8));
+      index += 3;
+    } else if (next in C_ESCAPES) {
+      bytes.push(C_ESCAPES[next]);
+      index += 1;
+    } else {
+      bytes.push(92);
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+function headerPath(raw) {
+  const field = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
+  const path = unquoteGitPath(field.trimEnd());
+  if (path === "/dev/null") return null;
+  return path.replace(/^[ab]\//, "").replace(/^\.\/+/, "");
+}
+function diffGitPath(line2) {
+  const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line2);
+  if (quoted !== null) return headerPath(quoted[1]);
+  const match = /^diff --git (?:a\/)?(.+?) (?:b\/)?(.+)$/.exec(line2);
+  return match === null ? null : headerPath(match[2]);
+}
+function hunkHeader(line2) {
+  const match = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line2);
+  if (match === null) return null;
+  const oldCount = match[1] === void 0 ? 1 : Number(match[1]);
+  const start = Number(match[2]);
+  const count3 = match[3] === void 0 ? 1 : Number(match[3]);
+  if (!Number.isSafeInteger(oldCount) || !Number.isSafeInteger(start) || !Number.isSafeInteger(count3) || oldCount < 0 || start < 0 || count3 < 0) return null;
+  return { oldCount, start, count: count3 };
+}
+function settleDeletion(hunk, nextRightLine) {
+  if (!hunk.deleting) return;
+  const site = nextRightLine ?? hunk.lastRightLine;
+  if (site !== null && site > 0) hunk.file.deletionSites.add(site);
+  hunk.deleting = false;
+}
+function parseHunks(diff) {
+  const files = /* @__PURE__ */ new Map();
+  let current = null;
+  let provisionalPath = null;
+  let active = null;
+  const finishHunk = () => {
+    if (active === null) return;
+    settleDeletion(active, null);
+    active = null;
+  };
+  const finishWhenCounted = () => {
+    if (active?.remainingOld === 0 && active.remainingRight === 0) finishHunk();
+  };
+  const selectPath = (path, provisional) => {
+    finishHunk();
+    if (provisionalPath !== null && provisionalPath !== path) files.delete(provisionalPath);
+    provisionalPath = provisional ? path : null;
+    current = path === null ? null : blankFileHunks();
+    if (path !== null && current !== null) files.set(path, current);
+  };
+  for (const [index, raw] of diff.split("\n").entries()) {
+    const line2 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const patchLine = index + 1;
+    if (line2.startsWith("diff --git ")) {
+      selectPath(diffGitPath(line2), true);
+      continue;
+    }
+    const header = hunkHeader(line2);
+    if (header !== null) {
+      finishHunk();
+      const file = current;
+      if (file !== null) {
+        file.ranges.push({ start: header.start, end: header.start + header.count - 1 });
+        active = {
+          file,
+          nextRightLine: header.start,
+          lastRightLine: null,
+          deleting: false,
+          remainingOld: header.oldCount,
+          remainingRight: header.count
+        };
+      }
+      continue;
+    }
+    if (active !== null) {
+      if (line2 === "\\ No newline at end of file") continue;
+      if (line2.startsWith("+")) {
+        settleDeletion(active, active.nextRightLine);
+        active.file.added.add(active.nextRightLine);
+        active.file.patchLines.set(patchLine, active.nextRightLine);
+        active.lastRightLine = active.nextRightLine;
+        active.nextRightLine += 1;
+        active.remainingRight -= 1;
+        finishWhenCounted();
+        continue;
+      }
+      if (line2.startsWith("-")) {
+        active.deleting = true;
+        active.remainingOld -= 1;
+        finishWhenCounted();
+        continue;
+      }
+      if (line2.startsWith(" ") || line2 === "" && active.remainingRight > 0 && active.remainingOld > 0) {
+        settleDeletion(active, active.nextRightLine);
+        active.file.context.add(active.nextRightLine);
+        active.file.patchLines.set(patchLine, active.nextRightLine);
+        active.lastRightLine = active.nextRightLine;
+        active.nextRightLine += 1;
+        active.remainingOld -= 1;
+        active.remainingRight -= 1;
+        finishWhenCounted();
+        continue;
+      }
+      finishHunk();
+    }
+    if (line2.startsWith("+++ ")) {
+      selectPath(headerPath(line2.slice(4)), false);
+      continue;
+    }
+    if (line2.startsWith("--- ")) continue;
+  }
+  finishHunk();
+  return files;
+}
+function changedLines(file, line2) {
+  const byDistance = [.../* @__PURE__ */ new Set([...file.added, ...file.deletionSites])].sort(
+    (left, right) => Math.abs(left - line2) - Math.abs(right - line2) || left - right
+  );
+  const near = byDistance.filter((changed) => Math.abs(changed - line2) <= 3);
+  return near.length > 0 ? near : byDistance.slice(0, 1);
+}
+function patchLineFor(hunks, line2) {
+  for (const [path, file] of hunks) {
+    const fileLine = file.patchLines.get(line2);
+    if (fileLine !== void 0 && file.added.has(fileLine)) return { path, line: fileLine };
+  }
+  return null;
+}
+function classifyAnchor(hunks, path, line2) {
+  const literal = path.replace(/^\.\/+/, "");
+  const normalised = hunks.has(literal) ? literal : normalisePath(path);
+  const file = hunks.get(normalised);
+  const patchLine = patchLineFor(hunks, line2);
+  if (file === void 0) {
+    return { path: normalised, line: line2, kind: "file-not-in-diff", ok: false, nearest: [], patchLine, beyondHunks: false };
+  }
+  const kind = file.added.has(line2) ? "added" : file.deletionSites.has(line2) ? "deletion-site" : file.context.has(line2) ? "context" : "outside-hunk";
+  return {
+    path: normalised,
+    line: line2,
+    kind,
+    ok: kind === "added" || kind === "deletion-site",
+    nearest: changedLines(file, line2),
+    patchLine,
+    beyondHunks: file.ranges.length > 0 && file.ranges.every((range) => line2 > range.end)
+  };
+}
+function classifyStaleConsumer(hunks, path, line2, causedBy) {
+  const consumer = path.replace(/^\.\/+/, "");
+  const consumerKind = classifyAnchor(hunks, path, line2).kind;
+  if (causedBy === null) {
+    return {
+      path: consumer,
+      line: line2,
+      kind: "stale-consumer",
+      ok: false,
+      nearest: [],
+      patchLine: null,
+      beyondHunks: false,
+      causedBy: null,
+      consumerKind
+    };
+  }
+  const cause = classifyAnchor(hunks, causedBy.path, causedBy.line);
+  return {
+    path: consumer,
+    line: line2,
+    kind: "stale-consumer",
+    ok: cause.ok,
+    nearest: cause.nearest,
+    patchLine: cause.patchLine,
+    beyondHunks: cause.beyondHunks,
+    causedBy: { path: cause.path, line: cause.line, kind: cause.kind },
+    consumerKind
+  };
+}
+function reason(anchor) {
+  const { path, line: line2 } = anchor;
+  if (anchor.kind === "stale-consumer") return staleConsumerReason(anchor);
+  let detail;
+  switch (anchor.kind) {
+    case "added":
+      detail = "an added line";
+      break;
+    case "deletion-site":
+      detail = "the right-side location of removed code";
+      break;
+    case "context":
+      detail = "an unchanged context line";
+      break;
+    case "outside-hunk":
+      detail = anchor.beyondHunks ? "past every hunk in that file" : "outside every hunk in that file";
+      break;
+    case "file-not-in-diff":
+      detail = "in a file the diff does not touch";
+      break;
+  }
+  let rendered = `anchors on ${path}:${line2}, ${detail}`;
+  if (!anchor.ok && anchor.nearest.length > 0) {
+    rendered += anchor.nearest.length === 1 ? `; the nearest changed line is ${anchor.nearest[0]}` : `; the nearest changed lines are ${anchor.nearest.join(", ")}`;
+  }
+  if (!anchor.ok && anchor.patchLine !== null) {
+    return `${rendered}; line ${line2} of diff.patch is ${anchor.patchLine.path}:${anchor.patchLine.line} - was that the line meant?`;
+  }
+  return `${rendered}.`;
+}
+function ordinaryFindingHint(anchor) {
+  if (anchor.kind !== "stale-consumer") return null;
+  if (anchor.consumerKind !== "added" && anchor.consumerKind !== "deletion-site") return null;
+  const where = anchor.consumerKind === "added" ? "an added line" : "a deletion site";
+  return `${anchor.path}:${anchor.line} is itself ${where} in this diff, so it is an ordinary finding: drop anchor and caused_by and keep the path and line.`;
+}
+function staleConsumerReason(anchor) {
+  const hint = ordinaryFindingHint(anchor);
+  const body = staleConsumerBody(anchor);
+  return hint === null ? body : `${body} ${hint}`;
+}
+function staleConsumerBody(anchor) {
+  const consumer = `${anchor.path}:${anchor.line}`;
+  const cause = anchor.causedBy ?? null;
+  if (cause === null) {
+    return `anchors on ${consumer} as a stale consumer but names no caused_by; name the added line or deletion site that made it wrong.`;
+  }
+  const at = `${cause.path}:${cause.line}`;
+  if (anchor.ok) {
+    return `anchors on ${consumer}, an unchanged consumer made wrong by the change at ${at}; it is posted in the review body.`;
+  }
+  let detail = "not a changed line";
+  if (cause.kind === "context") detail = "an unchanged context line";
+  else if (cause.kind === "outside-hunk") detail = "outside every hunk in that file";
+  else if (cause.kind === "file-not-in-diff") detail = "in a file the diff does not touch";
+  let rendered = `anchors on ${consumer} as a stale consumer, but its caused_by ${at} is ${detail}; the cause must be an added line or deletion site`;
+  if (anchor.nearest.length > 0) {
+    rendered += anchor.nearest.length === 1 ? `; the nearest changed line is ${anchor.nearest[0]}` : `; the nearest changed lines are ${anchor.nearest.join(", ")}`;
+  }
+  return `${rendered}.`;
+}
+
+// plugins/review-voice/src/simplification.ts
+function record(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function onlyKeys(value, keys) {
+  const unexpected = Object.keys(value).find((key) => !keys.includes(key));
+  return unexpected === void 0 ? null : `has an unexpected ${JSON.stringify(unexpected)} field`;
+}
+function text(value, name) {
+  if (typeof value !== "string" || value.trim().length === 0) return { value: null, problem: `${name} must be non-empty text` };
+  return { value: value.trim(), problem: null };
+}
+function line(value, name) {
+  if (!Number.isSafeInteger(value) || value < 1) return { value: null, problem: `${name} must be a positive line number` };
+  return { value, problem: null };
+}
+function element(value, index) {
+  const entry = record(value);
+  if (entry === null) return { value: null, problem: `removes[${index}] must be an object` };
+  const extra = onlyKeys(entry, ["path", "line", "element"]);
+  if (extra !== null) return { value: null, problem: `removes[${index}] ${extra}` };
+  const path = text(entry["path"], `removes[${index}].path`);
+  const at = line(entry["line"], `removes[${index}].line`);
+  const name = text(entry["element"], `removes[${index}].element`);
+  if (path.problem !== null || at.problem !== null || name.problem !== null) {
+    return { value: null, problem: path.problem ?? at.problem ?? name.problem };
+  }
+  return { value: { path: path.value, line: at.value, element: name.value }, problem: null };
+}
+function abstraction(value) {
+  const entry = record(value);
+  if (entry === null) return { value: null, problem: "abstraction must be an object" };
+  const extra = onlyKeys(entry, ["path", "line", "name"]);
+  if (extra !== null) return { value: null, problem: `abstraction ${extra}` };
+  const path = text(entry["path"], "abstraction.path");
+  const at = line(entry["line"], "abstraction.line");
+  const name = text(entry["name"], "abstraction.name");
+  if (path.problem !== null || at.problem !== null || name.problem !== null) {
+    return { value: null, problem: path.problem ?? at.problem ?? name.problem };
+  }
+  return { value: { path: path.value, line: at.value, name: name.value }, problem: null };
+}
+function parseSimplificationCandidate(value) {
+  const document = record(value);
+  if (document === null) return { value: null, problem: 'expected {"simplification": ...}' };
+  const extra = onlyKeys(document, ["simplification"]);
+  if (extra !== null) return { value: null, problem: `simplification output ${extra}` };
+  const raw = document["simplification"];
+  if (raw === null) return { value: null, problem: null };
+  const candidate = record(raw);
+  if (candidate === null) return { value: null, problem: "simplification must be an object or null" };
+  const candidateExtra = onlyKeys(candidate, ["category", "claim", "removes", "abstraction"]);
+  if (candidateExtra !== null) return { value: null, problem: `simplification ${candidateExtra}` };
+  if (candidate["category"] !== "maintainability") {
+    return { value: null, problem: 'simplification.category must be "maintainability"' };
+  }
+  const claim = text(candidate["claim"], "simplification.claim");
+  if (claim.problem !== null) return { value: null, problem: claim.problem };
+  if (!Array.isArray(candidate["removes"]) || candidate["removes"].length === 0 || candidate["removes"].length > 50) {
+    return { value: null, problem: "simplification.removes must list between 1 and 50 concrete elements" };
+  }
+  const removes = [];
+  for (const [index, rawElement] of candidate["removes"].entries()) {
+    const parsed = element(rawElement, index);
+    if (parsed.problem !== null) return { value: null, problem: parsed.problem };
+    removes.push(parsed.value);
+  }
+  const existing = abstraction(candidate["abstraction"]);
+  if (existing.problem !== null) return { value: null, problem: existing.problem };
+  return {
+    value: { category: "maintainability", claim: claim.value, removes, abstraction: existing.value },
+    problem: null
+  };
+}
+function simplificationDiffProblem(candidate, hunks) {
+  for (const removed of candidate.removes) {
+    const anchor = classifyAnchor(hunks, removed.path, removed.line);
+    if (!anchor.ok) {
+      return `${removed.path}:${removed.line} is not a changed line in the diff (${anchor.kind})`;
+    }
+  }
+  return null;
+}
+function parseSimplificationVerification(value, candidate) {
+  const verification2 = record(value);
+  if (verification2 === null) return { value: null, problem: "simplification verification must be an object" };
+  const extra = onlyKeys(verification2, ["verified", "elements", "behavior_preserved", "removes_concepts", "reason"]);
+  if (extra !== null) return { value: null, problem: `simplification verification ${extra}` };
+  if (typeof verification2["verified"] !== "boolean") return { value: null, problem: "simplification verification.verified must be true or false" };
+  if (typeof verification2["behavior_preserved"] !== "boolean") {
+    return { value: null, problem: "simplification verification.behavior_preserved must be true or false" };
+  }
+  if (typeof verification2["removes_concepts"] !== "boolean") {
+    return { value: null, problem: "simplification verification.removes_concepts must be true or false" };
+  }
+  const reason2 = text(verification2["reason"], "simplification verification.reason");
+  if (reason2.problem !== null) return { value: null, problem: reason2.problem };
+  if (!Array.isArray(verification2["elements"]) || verification2["elements"].length !== candidate.removes.length) {
+    return { value: null, problem: "simplification verification.elements must account for every listed removal" };
+  }
+  const elements = [];
+  for (const [index, rawElement] of verification2["elements"].entries()) {
+    const entry = record(rawElement);
+    if (entry === null) return { value: null, problem: `simplification verification.elements[${index}] must be an object` };
+    const elementExtra = onlyKeys(entry, ["path", "line", "exists_in_diff"]);
+    if (elementExtra !== null) return { value: null, problem: `simplification verification.elements[${index}] ${elementExtra}` };
+    const path = text(entry["path"], `simplification verification.elements[${index}].path`);
+    const at = line(entry["line"], `simplification verification.elements[${index}].line`);
+    if (path.problem !== null || at.problem !== null) return { value: null, problem: path.problem ?? at.problem };
+    if (typeof entry["exists_in_diff"] !== "boolean") {
+      return { value: null, problem: `simplification verification.elements[${index}].exists_in_diff must be true or false` };
+    }
+    const expected = candidate.removes[index];
+    if (path.value !== expected.path || at.value !== expected.line) {
+      return { value: null, problem: `simplification verification.elements[${index}] does not match ${expected.path}:${expected.line}` };
+    }
+    elements.push({ path: path.value, line: at.value, existsInDiff: entry["exists_in_diff"] });
+  }
+  const parsed = {
+    verified: verification2["verified"],
+    elements,
+    behaviorPreserved: verification2["behavior_preserved"],
+    removesConcepts: verification2["removes_concepts"],
+    reason: reason2.value
+  };
+  if (parsed.verified && (!parsed.behaviorPreserved || !parsed.removesConcepts || parsed.elements.some((element2) => !element2.existsInDiff))) {
+    return {
+      value: null,
+      problem: "a verified simplification needs every element in the diff, preserved behavior, and a removal rather than a move"
+    };
+  }
+  return { value: parsed, problem: null };
+}
+function parseVerifiedSimplification(value, hunks) {
+  const entry = record(value);
+  if (entry === null) return { value: null, problem: "body finding must be an object" };
+  const extra = onlyKeys(entry, ["candidate", "verification"]);
+  if (extra !== null) return { value: null, problem: `body finding ${extra}` };
+  const candidate = parseSimplificationCandidate({ simplification: entry["candidate"] });
+  if (candidate.problem !== null || candidate.value === null) {
+    return { value: null, problem: candidate.problem ?? "body finding needs a simplification candidate" };
+  }
+  const inDiff = simplificationDiffProblem(candidate.value, hunks);
+  if (inDiff !== null) return { value: null, problem: inDiff };
+  const verification2 = parseSimplificationVerification(entry["verification"], candidate.value);
+  if (verification2.problem !== null) return { value: null, problem: verification2.problem };
+  if (!verification2.value.verified) return { value: null, problem: "body finding verification must be verified" };
+  return { value: { candidate: candidate.value, verification: verification2.value }, problem: null };
+}
+function renderSimplification(finding) {
+  const removed = finding.candidate.removes.map((element2) => `\`${element2.path}:${element2.line}\` (${element2.element})`).join(", ");
+  const abstraction2 = finding.candidate.abstraction;
+  return `**maintainability** - ${finding.candidate.claim} Remove ${removed}; use \`${abstraction2.path}:${abstraction2.line}\` (${abstraction2.name}).`;
+}
+
+// plugins/review-voice/src/publish/verdict.ts
 function eventFor(severities) {
   if (severities.some((severity) => severity === "blocking" || severity === "important")) return "REQUEST_CHANGES";
   if (severities.some((severity) => severity === "minor" || severity === "question")) return "COMMENT";
@@ -345,9 +775,9 @@ function reviewFindings(output) {
 function isStaleConsumer(score) {
   return score.anchor === "stale-consumer" || score.anchorCheck?.kind === "stale-consumer";
 }
-function scoresAtLocation(scores, path, line) {
+function scoresAtLocation(scores, path, line2) {
   return scores.filter(
-    (score) => typeof score === "object" && score !== null && score.path === path && (line === null || score.line === line)
+    (score) => typeof score === "object" && score !== null && score.path === path && (line2 === null || score.line === line2)
   );
 }
 var MAX_CARRY_DEPTH = 8;
@@ -357,12 +787,12 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
   }
   let current = run;
   let path = finding.path;
-  let line = finding.line;
+  let line2 = finding.line;
   const severity = finding.severity;
   let reason2 = "no score was recorded for it";
   for (let depth = 0; depth <= MAX_CARRY_DEPTH; depth += 1) {
     const scores = Array.isArray(current.scores) ? current.scores : [];
-    const here = scoresAtLocation(scores, path, line);
+    const here = scoresAtLocation(scores, path, line2);
     const same = here.filter((score) => score.severity?.severity === severity && !used.has(score));
     const backing = same.find((score) => score.confidenceSource === "verifier" && score.eligible === true);
     if (backing !== void 0) {
@@ -379,11 +809,11 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
     } else if (same.length > 0) {
       reason2 = "its confidence is the analyst's own, not the verifier's";
     } else if (here.length > 0) {
-      reason2 = `no unused score at ${line === null ? path : `${path}:${line}`} was derived at ${severity}`;
+      reason2 = `no unused score at ${line2 === null ? path : `${path}:${line2}`} was derived at ${severity}`;
     }
-    if (line === null) break;
+    if (line2 === null) break;
     const stored = current.findings.find(
-      (candidate) => candidate.path === path && candidate.line === line && candidate.severity === severity
+      (candidate) => candidate.path === path && candidate.line === line2 && candidate.severity === severity
     );
     if (stored?.carriedFrom === void 0) break;
     const from = stored.carriedFrom;
@@ -395,7 +825,7 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
     }
     current = source;
     path = origin.path;
-    line = origin.line;
+    line2 = origin.line;
   }
   return { verified: false, reason: reason2, runId: current.reviewRunId };
 }
@@ -582,7 +1012,8 @@ function buildPayload(input) {
   const posted = [...input.planned.inline, ...input.planned.unanchored];
   const body = [
     summaryLine(input.event, posted, input.cappedBy),
-    ...input.planned.unanchored.map((finding) => finding.raw)
+    ...input.planned.unanchored.map((finding) => finding.raw),
+    ...(input.bodyFindings ?? []).map(renderSimplification)
   ].join("\n\n");
   return {
     commit_id: input.head,
@@ -636,10 +1067,10 @@ function severityOf(score) {
 function scoredEntries(parsed) {
   if (Array.isArray(parsed)) return parsed;
   if (typeof parsed !== "object" || parsed === null) return [];
-  const record = parsed;
-  if (Array.isArray(record["eligible"])) return record["eligible"];
-  if (Array.isArray(record["scores"])) {
-    return record["scores"].filter(
+  const record2 = parsed;
+  if (Array.isArray(record2["eligible"])) return record2["eligible"];
+  if (Array.isArray(record2["scores"])) {
+    return record2["scores"].filter(
       (entry) => typeof entry === "object" && entry !== null && entry.eligible === true
     );
   }
@@ -675,8 +1106,8 @@ function checkSeverityAgainstScores(output, scores) {
 // plugins/review-voice/src/contract/backing-check.ts
 var ABSOLUTES = ["every", "everyone", "everything", "everywhere", "always", "never", "all"];
 var WORD = /[a-z]+/g;
-function wordsOf(text) {
-  const prose = text.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ");
+function wordsOf(text2) {
+  const prose = text2.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ");
   return new Set(prose.toLowerCase().match(WORD) ?? []);
 }
 function backingText(entry) {
@@ -1053,8 +1484,8 @@ function acquireDiff(options) {
   const mode = options.base !== null ? "base" : options.staged ? "staged" : "worktree";
   const entries = parseNameStatus(git(["diff", "--name-status", "-z", ...range], root));
   const numstat = /* @__PURE__ */ new Map();
-  for (const line of git(["diff", "--numstat", ...range], root).split("\n")) {
-    const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
+  for (const line2 of git(["diff", "--numstat", ...range], root).split("\n")) {
+    const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line2);
     if (match === null) continue;
     numstat.set(match[3], {
       additions: match[1] === "-" ? 0 : Number(match[1]),
@@ -1128,279 +1559,6 @@ function acquireDiff(options) {
   };
 }
 
-// plugins/review-voice/src/diff/hunks.ts
-function normalisePath(path) {
-  return path.replaceAll("\\", "/").replace(/^\.\/+/, "");
-}
-function blankFileHunks() {
-  return {
-    added: /* @__PURE__ */ new Set(),
-    context: /* @__PURE__ */ new Set(),
-    deletionSites: /* @__PURE__ */ new Set(),
-    ranges: [],
-    patchLines: /* @__PURE__ */ new Map()
-  };
-}
-var C_ESCAPES = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
-function unquoteGitPath(raw) {
-  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw;
-  const body = raw.slice(1, -1);
-  const bytes = [];
-  for (let index = 0; index < body.length; index += 1) {
-    const char = body[index];
-    if (char !== "\\") {
-      bytes.push(...Buffer.from(char, "utf8"));
-      continue;
-    }
-    const next = body[index + 1] ?? "";
-    const octal = /^[0-7]{3}/.exec(body.slice(index + 1));
-    if (octal !== null) {
-      bytes.push(Number.parseInt(octal[0], 8));
-      index += 3;
-    } else if (next in C_ESCAPES) {
-      bytes.push(C_ESCAPES[next]);
-      index += 1;
-    } else {
-      bytes.push(92);
-    }
-  }
-  return Buffer.from(bytes).toString("utf8");
-}
-function headerPath(raw) {
-  const field = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
-  const path = unquoteGitPath(field.trimEnd());
-  if (path === "/dev/null") return null;
-  return path.replace(/^[ab]\//, "").replace(/^\.\/+/, "");
-}
-function diffGitPath(line) {
-  const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line);
-  if (quoted !== null) return headerPath(quoted[1]);
-  const match = /^diff --git (?:a\/)?(.+?) (?:b\/)?(.+)$/.exec(line);
-  return match === null ? null : headerPath(match[2]);
-}
-function hunkHeader(line) {
-  const match = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
-  if (match === null) return null;
-  const oldCount = match[1] === void 0 ? 1 : Number(match[1]);
-  const start = Number(match[2]);
-  const count3 = match[3] === void 0 ? 1 : Number(match[3]);
-  if (!Number.isSafeInteger(oldCount) || !Number.isSafeInteger(start) || !Number.isSafeInteger(count3) || oldCount < 0 || start < 0 || count3 < 0) return null;
-  return { oldCount, start, count: count3 };
-}
-function settleDeletion(hunk, nextRightLine) {
-  if (!hunk.deleting) return;
-  const site = nextRightLine ?? hunk.lastRightLine;
-  if (site !== null && site > 0) hunk.file.deletionSites.add(site);
-  hunk.deleting = false;
-}
-function parseHunks(diff) {
-  const files = /* @__PURE__ */ new Map();
-  let current = null;
-  let provisionalPath = null;
-  let active = null;
-  const finishHunk = () => {
-    if (active === null) return;
-    settleDeletion(active, null);
-    active = null;
-  };
-  const finishWhenCounted = () => {
-    if (active?.remainingOld === 0 && active.remainingRight === 0) finishHunk();
-  };
-  const selectPath = (path, provisional) => {
-    finishHunk();
-    if (provisionalPath !== null && provisionalPath !== path) files.delete(provisionalPath);
-    provisionalPath = provisional ? path : null;
-    current = path === null ? null : blankFileHunks();
-    if (path !== null && current !== null) files.set(path, current);
-  };
-  for (const [index, raw] of diff.split("\n").entries()) {
-    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-    const patchLine = index + 1;
-    if (line.startsWith("diff --git ")) {
-      selectPath(diffGitPath(line), true);
-      continue;
-    }
-    const header = hunkHeader(line);
-    if (header !== null) {
-      finishHunk();
-      const file = current;
-      if (file !== null) {
-        file.ranges.push({ start: header.start, end: header.start + header.count - 1 });
-        active = {
-          file,
-          nextRightLine: header.start,
-          lastRightLine: null,
-          deleting: false,
-          remainingOld: header.oldCount,
-          remainingRight: header.count
-        };
-      }
-      continue;
-    }
-    if (active !== null) {
-      if (line === "\\ No newline at end of file") continue;
-      if (line.startsWith("+")) {
-        settleDeletion(active, active.nextRightLine);
-        active.file.added.add(active.nextRightLine);
-        active.file.patchLines.set(patchLine, active.nextRightLine);
-        active.lastRightLine = active.nextRightLine;
-        active.nextRightLine += 1;
-        active.remainingRight -= 1;
-        finishWhenCounted();
-        continue;
-      }
-      if (line.startsWith("-")) {
-        active.deleting = true;
-        active.remainingOld -= 1;
-        finishWhenCounted();
-        continue;
-      }
-      if (line.startsWith(" ") || line === "" && active.remainingRight > 0 && active.remainingOld > 0) {
-        settleDeletion(active, active.nextRightLine);
-        active.file.context.add(active.nextRightLine);
-        active.file.patchLines.set(patchLine, active.nextRightLine);
-        active.lastRightLine = active.nextRightLine;
-        active.nextRightLine += 1;
-        active.remainingOld -= 1;
-        active.remainingRight -= 1;
-        finishWhenCounted();
-        continue;
-      }
-      finishHunk();
-    }
-    if (line.startsWith("+++ ")) {
-      selectPath(headerPath(line.slice(4)), false);
-      continue;
-    }
-    if (line.startsWith("--- ")) continue;
-  }
-  finishHunk();
-  return files;
-}
-function changedLines(file, line) {
-  const byDistance = [.../* @__PURE__ */ new Set([...file.added, ...file.deletionSites])].sort(
-    (left, right) => Math.abs(left - line) - Math.abs(right - line) || left - right
-  );
-  const near = byDistance.filter((changed) => Math.abs(changed - line) <= 3);
-  return near.length > 0 ? near : byDistance.slice(0, 1);
-}
-function patchLineFor(hunks, line) {
-  for (const [path, file] of hunks) {
-    const fileLine = file.patchLines.get(line);
-    if (fileLine !== void 0 && file.added.has(fileLine)) return { path, line: fileLine };
-  }
-  return null;
-}
-function classifyAnchor(hunks, path, line) {
-  const literal = path.replace(/^\.\/+/, "");
-  const normalised = hunks.has(literal) ? literal : normalisePath(path);
-  const file = hunks.get(normalised);
-  const patchLine = patchLineFor(hunks, line);
-  if (file === void 0) {
-    return { path: normalised, line, kind: "file-not-in-diff", ok: false, nearest: [], patchLine, beyondHunks: false };
-  }
-  const kind = file.added.has(line) ? "added" : file.deletionSites.has(line) ? "deletion-site" : file.context.has(line) ? "context" : "outside-hunk";
-  return {
-    path: normalised,
-    line,
-    kind,
-    ok: kind === "added" || kind === "deletion-site",
-    nearest: changedLines(file, line),
-    patchLine,
-    beyondHunks: file.ranges.length > 0 && file.ranges.every((range) => line > range.end)
-  };
-}
-function classifyStaleConsumer(hunks, path, line, causedBy) {
-  const consumer = path.replace(/^\.\/+/, "");
-  const consumerKind = classifyAnchor(hunks, path, line).kind;
-  if (causedBy === null) {
-    return {
-      path: consumer,
-      line,
-      kind: "stale-consumer",
-      ok: false,
-      nearest: [],
-      patchLine: null,
-      beyondHunks: false,
-      causedBy: null,
-      consumerKind
-    };
-  }
-  const cause = classifyAnchor(hunks, causedBy.path, causedBy.line);
-  return {
-    path: consumer,
-    line,
-    kind: "stale-consumer",
-    ok: cause.ok,
-    nearest: cause.nearest,
-    patchLine: cause.patchLine,
-    beyondHunks: cause.beyondHunks,
-    causedBy: { path: cause.path, line: cause.line, kind: cause.kind },
-    consumerKind
-  };
-}
-function reason(anchor) {
-  const { path, line } = anchor;
-  if (anchor.kind === "stale-consumer") return staleConsumerReason(anchor);
-  let detail;
-  switch (anchor.kind) {
-    case "added":
-      detail = "an added line";
-      break;
-    case "deletion-site":
-      detail = "the right-side location of removed code";
-      break;
-    case "context":
-      detail = "an unchanged context line";
-      break;
-    case "outside-hunk":
-      detail = anchor.beyondHunks ? "past every hunk in that file" : "outside every hunk in that file";
-      break;
-    case "file-not-in-diff":
-      detail = "in a file the diff does not touch";
-      break;
-  }
-  let rendered = `anchors on ${path}:${line}, ${detail}`;
-  if (!anchor.ok && anchor.nearest.length > 0) {
-    rendered += anchor.nearest.length === 1 ? `; the nearest changed line is ${anchor.nearest[0]}` : `; the nearest changed lines are ${anchor.nearest.join(", ")}`;
-  }
-  if (!anchor.ok && anchor.patchLine !== null) {
-    return `${rendered}; line ${line} of diff.patch is ${anchor.patchLine.path}:${anchor.patchLine.line} - was that the line meant?`;
-  }
-  return `${rendered}.`;
-}
-function ordinaryFindingHint(anchor) {
-  if (anchor.kind !== "stale-consumer") return null;
-  if (anchor.consumerKind !== "added" && anchor.consumerKind !== "deletion-site") return null;
-  const where = anchor.consumerKind === "added" ? "an added line" : "a deletion site";
-  return `${anchor.path}:${anchor.line} is itself ${where} in this diff, so it is an ordinary finding: drop anchor and caused_by and keep the path and line.`;
-}
-function staleConsumerReason(anchor) {
-  const hint = ordinaryFindingHint(anchor);
-  const body = staleConsumerBody(anchor);
-  return hint === null ? body : `${body} ${hint}`;
-}
-function staleConsumerBody(anchor) {
-  const consumer = `${anchor.path}:${anchor.line}`;
-  const cause = anchor.causedBy ?? null;
-  if (cause === null) {
-    return `anchors on ${consumer} as a stale consumer but names no caused_by; name the added line or deletion site that made it wrong.`;
-  }
-  const at = `${cause.path}:${cause.line}`;
-  if (anchor.ok) {
-    return `anchors on ${consumer}, an unchanged consumer made wrong by the change at ${at}; it is posted in the review body.`;
-  }
-  let detail = "not a changed line";
-  if (cause.kind === "context") detail = "an unchanged context line";
-  else if (cause.kind === "outside-hunk") detail = "outside every hunk in that file";
-  else if (cause.kind === "file-not-in-diff") detail = "in a file the diff does not touch";
-  let rendered = `anchors on ${consumer} as a stale consumer, but its caused_by ${at} is ${detail}; the cause must be an added line or deletion site`;
-  if (anchor.nearest.length > 0) {
-    rendered += anchor.nearest.length === 1 ? `; the nearest changed line is ${anchor.nearest[0]}` : `; the nearest changed lines are ${anchor.nearest.join(", ")}`;
-  }
-  return `${rendered}.`;
-}
-
 // plugins/review-voice/src/conventions/globs.ts
 function frontmatterPaths(content) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
@@ -1409,10 +1567,10 @@ function frontmatterPaths(content) {
   const paths = [];
   let inPaths = false;
   for (const raw of block.split(/\r?\n/)) {
-    const line = raw.trimEnd();
-    if (/^paths\s*:/.test(line)) {
+    const line2 = raw.trimEnd();
+    if (/^paths\s*:/.test(line2)) {
       inPaths = true;
-      const inline = line.slice(line.indexOf(":") + 1).trim();
+      const inline = line2.slice(line2.indexOf(":") + 1).trim();
       if (inline.startsWith("[")) {
         for (const item of inline.slice(1, -1).split(",")) paths.push(unquote(item));
         inPaths = false;
@@ -1420,11 +1578,11 @@ function frontmatterPaths(content) {
       continue;
     }
     if (!inPaths) continue;
-    if (/^\s*-\s+/.test(line)) {
-      paths.push(unquote(line.replace(/^\s*-\s+/, "")));
+    if (/^\s*-\s+/.test(line2)) {
+      paths.push(unquote(line2.replace(/^\s*-\s+/, "")));
       continue;
     }
-    if (/^\S/.test(line)) inPaths = false;
+    if (/^\S/.test(line2)) inPaths = false;
   }
   return paths.filter((glob) => glob.length > 0);
 }
@@ -1489,9 +1647,9 @@ function pointerTargets(content) {
   if (body.length === 0) return [];
   const targets = [];
   for (const raw of body.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (line.length === 0 || line.startsWith("<!--") || line.startsWith("#")) continue;
-    const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(line);
+    const line2 = raw.trim();
+    if (line2.length === 0 || line2.startsWith("<!--") || line2.startsWith("#")) continue;
+    const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(line2);
     if (match?.[1] === void 0) return [];
     targets.push(match[1]);
   }
@@ -1547,21 +1705,21 @@ var HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/;
 var DECLARATION = /^[A-Za-z_$]/;
 var STATEMENT = /^(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|when)\b/;
 var MAX_SCOPE_LENGTH = 80;
-function count(text, pattern) {
-  return text.match(pattern)?.length ?? 0;
+function count(text2, pattern) {
+  return text2.match(pattern)?.length ?? 0;
 }
-function decisionPointsIn(text) {
-  const trimmed = text.trim();
+function decisionPointsIn(text2) {
+  const trimmed = text2.trim();
   if (trimmed.length === 0 || COMMENT_START.test(trimmed)) return 0;
   return count(trimmed, KEYWORDS) + count(trimmed, /&&/g) + count(trimmed, /\|\|/g) + count(trimmed, TERNARY);
 }
-function declarationIn(text) {
-  return DECLARATION.test(text) && !STATEMENT.test(text) ? text.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
+function declarationIn(text2) {
+  return DECLARATION.test(text2) && !STATEMENT.test(text2) ? text2.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
 }
 function headerPath2(raw) {
-  const text = raw.replace(/\t.*$/, "");
-  if (text === "/dev/null") return null;
-  const unquoted = unquoteGitPath(text);
+  const text2 = raw.replace(/\t.*$/, "");
+  if (text2 === "/dev/null") return null;
+  const unquoted = unquoteGitPath(text2);
   return unquoted.startsWith("b/") ? unquoted.slice(2) : unquoted;
 }
 function countHunks(diff, wanted) {
@@ -1573,59 +1731,59 @@ function countHunks(diff, wanted) {
   let remainingOld = 0;
   let remainingNew = 0;
   let newLine = 0;
-  const record = (hunk, text, removed) => {
-    const decisionPoints = decisionPointsIn(text);
+  const record2 = (hunk, text2, removed) => {
+    const decisionPoints = decisionPointsIn(text2);
     if (decisionPoints === 0) return;
     if (!removed) hunk.decisionPoints += decisionPoints;
     hunk.branches.push({ scope, line: newLine, decisionPoints, removed });
   };
   for (const raw of diff.split("\n")) {
-    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const line2 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (current !== null && (remainingOld > 0 || remainingNew > 0)) {
-      const text = line.slice(1);
-      if (line.startsWith("+")) {
-        if (declarationIn(text) !== null) {
+      const text2 = line2.slice(1);
+      if (line2.startsWith("+")) {
+        if (declarationIn(text2) !== null) {
           if (!replacing) scope = null;
           replacing = false;
         }
-        record(current, text, false);
-        current.added.push({ line: newLine, text });
+        record2(current, text2, false);
+        current.added.push({ line: newLine, text: text2 });
         remainingNew -= 1;
         newLine += 1;
         continue;
       }
-      if (line.startsWith("-")) {
-        const declaration = declarationIn(text);
+      if (line2.startsWith("-")) {
+        const declaration = declarationIn(text2);
         if (declaration !== null) {
           scope = declaration;
           replacing = true;
         }
-        record(current, text, true);
+        record2(current, text2, true);
         remainingOld -= 1;
         continue;
       }
-      if (line.startsWith(" ") || line === "") {
-        scope = declarationIn(text) ?? scope;
+      if (line2.startsWith(" ") || line2 === "") {
+        scope = declarationIn(text2) ?? scope;
         replacing = false;
         remainingOld -= 1;
         remainingNew -= 1;
         newLine += 1;
         continue;
       }
-      if (line.startsWith("\\")) continue;
+      if (line2.startsWith("\\")) continue;
     }
-    if (line.startsWith("diff --git ")) {
+    if (line2.startsWith("diff --git ")) {
       path = null;
       current = null;
       remainingOld = 0;
       remainingNew = 0;
       continue;
     }
-    if (line.startsWith("+++ ")) {
-      path = headerPath2(line.slice(4));
+    if (line2.startsWith("+++ ")) {
+      path = headerPath2(line2.slice(4));
       continue;
     }
-    const header = HUNK_HEADER.exec(line);
+    const header = HUNK_HEADER.exec(line2);
     if (header !== null && path !== null) {
       remainingOld = header[1] === void 0 ? 1 : Number(header[1]);
       remainingNew = header[3] === void 0 ? 1 : Number(header[3]);
@@ -1974,13 +2132,13 @@ var LANGUAGES2 = {
   ".py": PYTHON,
   ".pyi": PYTHON
 };
-function splitLine(text, language) {
-  if (language.blockComments && text.trimStart().startsWith("*")) return { code: "", comment: text };
+function splitLine(text2, language) {
+  if (language.blockComments && text2.trimStart().startsWith("*")) return { code: "", comment: text2 };
   let code = "";
   let comment = "";
   let quote2 = null;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
+  for (let index = 0; index < text2.length; index += 1) {
+    const char = text2[index];
     if (quote2 !== null) {
       if (char === "\\") {
         code += "  ";
@@ -1994,12 +2152,12 @@ function splitLine(text, language) {
     } else if (language.quotes.includes(char)) {
       quote2 = char;
       code += char;
-    } else if (text.startsWith(language.lineComment, index)) {
-      comment += text.slice(index);
+    } else if (text2.startsWith(language.lineComment, index)) {
+      comment += text2.slice(index);
       break;
-    } else if (language.blockComments && text.startsWith("/*", index)) {
-      const end = text.indexOf("*/", index + 2);
-      comment += `${text.slice(index, end === -1 ? void 0 : end + 2)} `;
+    } else if (language.blockComments && text2.startsWith("/*", index)) {
+      const end = text2.indexOf("*/", index + 2);
+      comment += `${text2.slice(index, end === -1 ? void 0 : end + 2)} `;
       if (end === -1) break;
       index = end + 1;
     } else {
@@ -2008,8 +2166,8 @@ function splitLine(text, language) {
   }
   return { code, comment };
 }
-function kindsIn(text, language) {
-  const { code, comment } = splitLine(text, language);
+function kindsIn(text2, language) {
+  const { code, comment } = splitLine(text2, language);
   const kinds = [];
   for (const rule of language.rules) {
     if (rule.in === "code" && language.skip?.test(code)) continue;
@@ -2025,8 +2183,8 @@ function findTypeEscapes(diff, paths) {
   for (const hunk of countHunks(diff, new Set(paths))) {
     const language = LANGUAGES2[extname(hunk.path).toLowerCase()];
     if (language === void 0) continue;
-    for (const { line, text } of hunk.added) {
-      for (const kind of kindsIn(text, language)) found.push({ path: hunk.path, line, kind });
+    for (const { line: line2, text: text2 } of hunk.added) {
+      for (const kind of kindsIn(text2, language)) found.push({ path: hunk.path, line: line2, kind });
     }
   }
   const byPathLineKind = (a, b) => {
@@ -2044,7 +2202,11 @@ function findTypeEscapes(diff, paths) {
 }
 
 // plugins/review-voice/src/diff/structure.ts
-var DEFAULT_STRUCTURE = { maxFileLines: 1e3, maxAddedBranchesPerFunction: 3 };
+var DEFAULT_STRUCTURE = {
+  maxFileLines: 1e3,
+  maxAddedBranchesPerFunction: 3,
+  simplify: false
+};
 var MAX_UNMEASURED_LISTED = 20;
 function countLines(content) {
   let lines2 = 0;
@@ -2165,7 +2327,7 @@ function findStructureSignals(diff, paths, counts, limits = DEFAULT_STRUCTURE) {
       baseLines: lines2.base,
       headLines: lines2.head,
       threshold,
-      line: added.find((line) => line > threshold) ?? added[0] ?? null
+      line: added.find((line2) => line2 > threshold) ?? added[0] ?? null
     });
   }
   return {
@@ -2468,7 +2630,7 @@ function gitFailure(args, error) {
   const command = (end === -1 ? args : args.slice(0, end)).map((arg) => /^[0-9a-f]{40,64}$/.test(arg) ? arg.slice(0, 7) : arg).join(" ");
   const failure = error;
   const stderr = typeof failure.stderr === "string" ? failure.stderr : Buffer.isBuffer(failure.stderr) ? failure.stderr.toString("utf8") : "";
-  const said = stderr.split("\n").map((line) => line.trim()).find((line) => line.length > 0) ?? (typeof failure.status === "number" ? `exit status ${failure.status}` : String(failure.message ?? "unknown error").split("\n")[0]);
+  const said = stderr.split("\n").map((line2) => line2.trim()).find((line2) => line2.length > 0) ?? (typeof failure.status === "number" ? `exit status ${failure.status}` : String(failure.message ?? "unknown error").split("\n")[0]);
   return `${command} failed: ${said}`;
 }
 function firstLine(error) {
@@ -2574,17 +2736,17 @@ function changedReviewedFiles(files, changedPaths) {
 }
 function hunkKey(body) {
   const keep = /* @__PURE__ */ new Set();
-  body.forEach((line, index) => {
-    if (!line.startsWith("+") && !line.startsWith("-") && !line.startsWith("\\")) return;
+  body.forEach((line2, index) => {
+    if (!line2.startsWith("+") && !line2.startsWith("-") && !line2.startsWith("\\")) return;
     keep.add(index);
     if (index > 0 && body[index - 1].startsWith(" ")) keep.add(index - 1);
     if (index + 1 < body.length && body[index + 1].startsWith(" ")) keep.add(index + 1);
   });
   return [...keep].sort((x, y) => x - y).map((index) => body[index]).join("\n");
 }
-function gitHeaderPath(line) {
-  const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line);
-  const raw = quoted?.[1] ?? /^diff --git (?:a\/)?.+? (b\/.+)$/.exec(line)?.[1] ?? null;
+function gitHeaderPath(line2) {
+  const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line2);
+  const raw = quoted?.[1] ?? /^diff --git (?:a\/)?.+? (b\/.+)$/.exec(line2)?.[1] ?? null;
   return raw === null ? null : unquoteGitPath(raw).replace(/^b\//, "");
 }
 function ownDiffFiles(patch) {
@@ -2599,22 +2761,22 @@ function ownDiffFiles(patch) {
     hunk = null;
   };
   for (const raw of patch.split("\n")) {
-    const line = raw;
-    if (line.startsWith("diff --git ")) {
+    const line2 = raw;
+    if (line2.startsWith("diff --git ")) {
       closeHunk();
-      const path = gitHeaderPath(line.endsWith("\r") ? line.slice(0, -1) : line);
+      const path = gitHeaderPath(line2.endsWith("\r") ? line2.slice(0, -1) : line2);
       file = { hunks: [] };
       if (path !== null) files.set(path, file);
       continue;
     }
-    if (line.startsWith("@@ ")) {
+    if (line2.startsWith("@@ ")) {
       closeHunk();
-      hunk = [line];
+      hunk = [line2];
       continue;
     }
     if (hunk !== null) {
-      if (line.startsWith("+") || line.startsWith("-") || line.startsWith(" ") || line.startsWith("\\") || line === "") {
-        hunk.push(line);
+      if (line2.startsWith("+") || line2.startsWith("-") || line2.startsWith(" ") || line2.startsWith("\\") || line2 === "") {
+        hunk.push(line2);
         continue;
       }
       closeHunk();
@@ -2722,12 +2884,12 @@ function sectionHunks(section) {
   const parts = section.split(/^(?=@@ )/m);
   const header = parts[0].startsWith("@@ ") ? "" : parts.shift();
   const hunks = [];
-  for (const text of parts) {
-    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text);
+  for (const text2 of parts) {
+    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text2);
     if (numbers === null) return null;
     const start = Number(numbers[1]);
     const count3 = numbers[2] === void 0 ? 1 : Number(numbers[2]);
-    hunks.push({ text, first: start, last: count3 === 0 ? start + 1 : start + count3 - 1 });
+    hunks.push({ text: text2, first: start, last: count3 === 0 ? start + 1 : start + count3 - 1 });
   }
   return { header, hunks };
 }
@@ -3071,7 +3233,7 @@ async function acquirePullRequestDiff(options) {
           return null;
         }
       }
-      const added = (byName.get(path)?.patch ?? "").split("\n").filter((line) => line.startsWith("+")).map((line) => line.slice(1));
+      const added = (byName.get(path)?.patch ?? "").split("\n").filter((line2) => line2.startsWith("+")).map((line2) => line2.slice(1));
       return added.join("\n");
     }
   );
@@ -3218,10 +3380,10 @@ function isPlaceholder(value) {
 }
 function redact(input) {
   const counts = {};
-  let text = input;
+  let text2 = input;
   for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
     pattern.lastIndex = 0;
-    text = text.replace(pattern, (match, ...groups) => {
+    text2 = text2.replace(pattern, (match, ...groups) => {
       const captured = group === void 0 || group === 0 ? match : groups[group - 1];
       if (captured === void 0 || captured.length === 0) return match;
       if (isPlaceholder(captured)) return match;
@@ -3231,10 +3393,10 @@ function redact(input) {
     });
   }
   return {
-    text,
+    text: text2,
     counts,
     sourceHash: hash(input),
-    redactedHash: hash(text),
+    redactedHash: hash(text2),
     version: REDACTION_VERSION
   };
 }
@@ -3589,9 +3751,9 @@ function blockingContext(entries) {
 }
 var REASON_CAP = 200;
 function withVerifierReason(base, reason2) {
-  const text = reason2?.replace(/\s+/g, " ").trim() ?? "";
-  if (text.length === 0) return base;
-  const bounded = text.length > REASON_CAP ? `${text.slice(0, REASON_CAP - 1)}\u2026` : text;
+  const text2 = reason2?.replace(/\s+/g, " ").trim() ?? "";
+  if (text2.length === 0) return base;
+  const bounded = text2.length > REASON_CAP ? `${text2.slice(0, REASON_CAP - 1)}\u2026` : text2;
   return `${base}; the verifier said: "${bounded}"`;
 }
 var TIER_ORDER = ["nit", "minor", "important", "blocking"];
@@ -3608,9 +3770,9 @@ var FIXED_BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
 ]);
 var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
 function isInterrogativeClaim(claim) {
-  const text = claim.trim();
-  if (text.endsWith("?")) return true;
-  return text.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
+  const text2 = claim.trim();
+  if (text2.endsWith("?")) return true;
+  return text2.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
 }
 function boundSeverityByEvidence(derived, candidate, verification2) {
   if (BOUNDARY_CATEGORIES.has(candidate.category) && verification2?.impactClass === "no-exposure") {
@@ -3777,7 +3939,7 @@ function possiblyRepeatsDescription(candidate, thread) {
 }
 function overlappingExcerpt(mine, body) {
   const sentences = body.split(/(?<=[.!?])\s+|\n+/u).map((sentence) => sentence.trim()).filter((sentence) => sentence.length > 0);
-  const ranked = sentences.map((text, index) => ({ text, index, shared: [...significantWords(text)].filter((word) => mine.has(word)).length })).filter((sentence) => sentence.shared > 0).sort((a, b) => b.shared - a.shared || a.index - b.index);
+  const ranked = sentences.map((text2, index) => ({ text: text2, index, shared: [...significantWords(text2)].filter((word) => mine.has(word)).length })).filter((sentence) => sentence.shared > 0).sort((a, b) => b.shared - a.shared || a.index - b.index);
   const [best, ...rest] = ranked;
   if (best === void 0) return clip(body.trim());
   const chosen = [best];
@@ -3790,8 +3952,8 @@ function overlappingExcerpt(mine, body) {
   if (chosen.length === 1) return clip(best.text);
   return chosen.sort((a, b) => a.index - b.index).map((sentence) => sentence.text).join(" ");
 }
-function clip(text) {
-  return text.length <= DESCRIPTION_EXCERPT_CHARS ? text : `${text.slice(0, DESCRIPTION_EXCERPT_CHARS - 1)}\u2026`;
+function clip(text2) {
+  return text2.length <= DESCRIPTION_EXCERPT_CHARS ? text2 : `${text2.slice(0, DESCRIPTION_EXCERPT_CHARS - 1)}\u2026`;
 }
 var MalformedCandidate = class extends Error {
 };
@@ -3896,8 +4058,8 @@ function followUpOf(candidate, verification2, thread, owner) {
   return onThread ? { ...prior, remaining: partly.remaining, addressed: partly.addressed } : null;
 }
 var WORDS = /[^\p{L}\p{N}]+/u;
-function significantWords(text) {
-  return new Set(text.toLowerCase().split(WORDS).filter((word) => word.length > 3));
+function significantWords(text2) {
+  return new Set(text2.toLowerCase().split(WORDS).filter((word) => word.length > 3));
 }
 function overlap(mine, theirs) {
   if (mine.size === 0) return 0;
@@ -3971,10 +4133,10 @@ function novelty(candidate, kept, precedents) {
 var MAX_DIRECTION_LENGTH = 120;
 function isBareDirection(direction) {
   if (direction === null) return false;
-  const text = direction.trim();
-  if (text.length === 0 || text.length > MAX_DIRECTION_LENGTH) return false;
-  if (/[\r\n`]/.test(text)) return false;
-  return !/[.!?]\s+\S/.test(text);
+  const text2 = direction.trim();
+  if (text2.length === 0 || text2.length > MAX_DIRECTION_LENGTH) return false;
+  if (/[\r\n`]/.test(text2)) return false;
+  return !/[.!?]\s+\S/.test(text2);
 }
 function editorFix(fix) {
   if (fix.render === "fix") return { render: "fix", text: fix.suggested };
@@ -4313,9 +4475,9 @@ var ASSERTS_ABSENCE = [
 ];
 var DETERMINER = /^(?:the|this|that|these|those|our|your|their|its|his|her|my|a|an)\s+/i;
 function withoutDeterminer(complement) {
-  let text = complement.trim().replace(/[`'"]/g, "");
-  for (let i = 0; i < 3; i += 1) text = text.replace(DETERMINER, "");
-  return text.trim();
+  let text2 = complement.trim().replace(/[`'"]/g, "");
+  for (let i = 0; i < 3; i += 1) text2 = text2.replace(DETERMINER, "");
+  return text2.trim();
 }
 var GENERIC_REPOSITORY = /^(?:entire\s+|whole\s+)?(?:mono)?(?:repo|repository|code\s?base|project|tree)\b/i;
 var NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
@@ -4332,12 +4494,12 @@ function namesThisRepository(complement, repository) {
   );
 }
 var PROPERTY_NOT_PLACE = /\b(?:ex|im)ported\b|\bnot\s+(?:public|exposed|re-?exported)\b/i;
-function absenceScope(text, repository = null) {
-  if (PROPERTY_NOT_PLACE.test(text)) return "bounded";
-  if (/\b(?:anywhere|nowhere)\b/i.test(text)) return "repository";
-  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text);
+function absenceScope(text2, repository = null) {
+  if (PROPERTY_NOT_PLACE.test(text2)) return "bounded";
+  if (/\b(?:anywhere|nowhere)\b/i.test(text2)) return "repository";
+  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text2);
   if (assertion === null) return "repository";
-  const after = text.slice(assertion.index + assertion[0].length);
+  const after = text2.slice(assertion.index + assertion[0].length);
   const locative = LOCATIVE.exec(after);
   if (locative === null) return "repository";
   const complement = (locative[1] ?? "").trim();
@@ -4349,16 +4511,16 @@ function absenceScope(text, repository = null) {
   }
   return "bounded";
 }
-function namedSymbols(text) {
+function namedSymbols(text2) {
   const found = /* @__PURE__ */ new Set();
-  for (const match of text.matchAll(/`([^`]+)`/g)) {
+  for (const match of text2.matchAll(/`([^`]+)`/g)) {
     const token = (match[1] ?? "").trim();
     if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found.add(token);
   }
-  for (const match of text.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
+  for (const match of text2.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
     if (match[1] !== void 0) found.add(match[1]);
   }
-  for (const match of text.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
+  for (const match of text2.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
     if (match[1] !== void 0) found.add(match[1]);
   }
   for (const token of [...found]) {
@@ -4401,15 +4563,15 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
     });
     const prefix = ref === null ? "" : `${ref}:`;
     const lines2 = [];
-    for (const record of output.split("\n")) {
-      const [rawPath = "", number = "", ...rest] = record.split("\0");
-      const line = Number(number);
-      const text = rest.join("\0");
-      if (!Number.isSafeInteger(line) || line < 1) continue;
+    for (const record2 of output.split("\n")) {
+      const [rawPath = "", number = "", ...rest] = record2.split("\0");
+      const line2 = Number(number);
+      const text2 = rest.join("\0");
+      if (!Number.isSafeInteger(line2) || line2 < 1) continue;
       lines2.push({
         path: prefix !== "" && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
-        line,
-        text
+        line: line2,
+        text: text2
       });
     }
     return lines2;
@@ -4452,10 +4614,10 @@ var FILE_NAME = /\.(?:tsx?|jsx?|mjs|cjs|cs|py|go|rb|java|kt|rs|swift|dart|json|y
 function generatedAccessor(symbol) {
   return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
 }
-function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources) {
+function checkAbsenceClaim(text2, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources) {
   const searchedRefLabel = ref ?? "working tree";
-  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text))) return null;
-  const scope = absenceScope(text, repository);
+  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text2))) return null;
+  const scope = absenceScope(text2, repository);
   if (scope === "bounded") return null;
   if (scope === "elsewhere") {
     return {
@@ -4468,7 +4630,7 @@ function checkAbsenceClaim(text, cwd, ref = null, search = gitGrep, repository =
       searchedRef: searchedRefLabel
     };
   }
-  const symbols = namedSymbols(text);
+  const symbols = namedSymbols(text2);
   if (symbols.length === 0) return null;
   const searchedRef = ref ?? "working tree";
   const found = [];
@@ -4578,7 +4740,7 @@ var STOP_TOKENS = /* @__PURE__ */ new Set([
   "helper",
   "helpers"
 ]);
-function declarationName(text) {
+function declarationName(text2) {
   for (const pattern of [
     TS_FUNCTION,
     VARIABLE_FUNCTION,
@@ -4588,10 +4750,10 @@ function declarationName(text) {
     MODIFIED_METHOD,
     KOTLIN_FUNCTION
   ]) {
-    const match = pattern.exec(text);
+    const match = pattern.exec(text2);
     if (match?.[1] !== void 0) return match[1];
   }
-  const method = CLASS_METHOD.exec(text);
+  const method = CLASS_METHOD.exec(text2);
   const name = method?.[1];
   if (name === void 0 || STATEMENT_KEYWORDS.has(name.toLowerCase())) return null;
   return name;
@@ -4617,8 +4779,8 @@ function headerPath3(raw) {
   if (path === "/dev/null") return null;
   return normalisePath2(path.replace(/^[ab]\//, ""));
 }
-function hunkHeader2(line) {
-  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+function hunkHeader2(line2) {
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line2);
   if (match === null) return null;
   const oldLine = Number(match[1]);
   const newLine = Number(match[3]);
@@ -4635,26 +4797,26 @@ function declarationsFromDiff(diff) {
     if (active !== null && active.remainingOld <= 0 && active.remainingNew <= 0) active = null;
   };
   for (const raw of diff.split("\n")) {
-    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const line2 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (active !== null) {
-      if (line === "\\ No newline at end of file") continue;
-      if (line.startsWith("+")) {
-        const name = declarationName(line.slice(1));
+      if (line2 === "\\ No newline at end of file") continue;
+      if (line2.startsWith("+")) {
+        const name = declarationName(line2.slice(1));
         if (path !== null && name !== null) found.push({ path, name, line: active.newLine, added: true });
         active.newLine += 1;
         active.remainingNew -= 1;
         finishWhenCounted();
         continue;
       }
-      if (line.startsWith("-")) {
-        const name = declarationName(line.slice(1));
+      if (line2.startsWith("-")) {
+        const name = declarationName(line2.slice(1));
         if (path !== null && name !== null) found.push({ path, name, line: active.oldLine, added: false });
         active.oldLine += 1;
         active.remainingOld -= 1;
         finishWhenCounted();
         continue;
       }
-      if (line.startsWith(" ") || line === "" && active.remainingOld > 0 && active.remainingNew > 0) {
+      if (line2.startsWith(" ") || line2 === "" && active.remainingOld > 0 && active.remainingNew > 0) {
         active.oldLine += 1;
         active.newLine += 1;
         active.remainingOld -= 1;
@@ -4664,15 +4826,15 @@ function declarationsFromDiff(diff) {
       }
       active = null;
     }
-    if (line.startsWith("diff --git ")) {
+    if (line2.startsWith("diff --git ")) {
       path = null;
       continue;
     }
-    if (line.startsWith("+++ ")) {
-      path = headerPath3(line.slice(4));
+    if (line2.startsWith("+++ ")) {
+      path = headerPath3(line2.slice(4));
       continue;
     }
-    const header = hunkHeader2(line);
+    const header = hunkHeader2(line2);
     if (header !== null) active = header;
   }
   return found;
@@ -4693,8 +4855,8 @@ function symbolsFromHunks(diff, changedPath) {
     if (!inFile) continue;
     if (raw.startsWith("--- ")) continue;
     if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
-    const text = raw.slice(1);
-    for (const m of text.matchAll(
+    const text2 = raw.slice(1);
+    for (const m of text2.matchAll(
       /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g
     )) {
       if (m[1] !== void 0) found.add(m[1]);
@@ -4749,9 +4911,9 @@ function isImportOnlyChange(diff, changedPath) {
     }
     if (!inFile || raw.startsWith("--- ")) continue;
     if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
-    const text = raw.slice(1).trim();
-    if (text === "") continue;
-    if (!IMPORT_LINE.some((pattern) => pattern.test(text))) return false;
+    const text2 = raw.slice(1).trim();
+    if (text2 === "") continue;
+    if (!IMPORT_LINE.some((pattern) => pattern.test(text2))) return false;
     imports += 1;
   }
   return imports > 0;
@@ -4765,12 +4927,12 @@ function isRepositoryWideToolchainPath(path) {
   const normalised = normalisePath3(path);
   return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
 }
-function computeReach(text, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
+function computeReach(text2, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
   const searchedRef = ref ?? "working tree";
   const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
   const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
   const source = ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
-  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text)).slice(0, 12);
+  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text2)).slice(0, 12);
   const searched = [];
   const ignored = [];
   const hits = /* @__PURE__ */ new Set();
@@ -4903,7 +5065,7 @@ function possibleExisting(declaration, hits, addedNames) {
     const score = union === 0 ? 0 : overlap2 / union;
     if (overlap2 >= 2 && score >= 0.5) matches.push({ path, line: hit.line, name, score });
   }
-  return matches.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path) || left.line - right.line).slice(0, MAX_POSSIBLE_EXISTING).map(({ path, line, name }) => ({ path, line, name }));
+  return matches.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path) || left.line - right.line).slice(0, MAX_POSSIBLE_EXISTING).map(({ path, line: line2, name }) => ({ path, line: line2, name }));
 }
 function timeBudgetDeclaration(declaration) {
   return {
@@ -5049,8 +5211,8 @@ function collectSymbolContext(options) {
   });
   const changed = new Set(paths.map(normalisePath4));
   const downstream = /* @__PURE__ */ new Set();
-  for (const record of records) {
-    for (const path of record.references) {
+  for (const record2 of records) {
+    for (const path of record2.references) {
       if (!changed.has(normalisePath4(path))) downstream.add(path);
     }
   }
@@ -5059,12 +5221,12 @@ function collectSymbolContext(options) {
   );
   return {
     searchedRef: options.ref ?? "working tree",
-    files: records.map((record) => record.file),
+    files: records.map((record2) => record2.file),
     downstreamFiles: downstream.size,
     budget: {
       maxMs,
       elapsedMs: Math.max(0, now() - started),
-      exhausted: records.some((record) => record.file.reason === "time-budget")
+      exhausted: records.some((record2) => record2.file.reason === "time-budget")
     }
   };
 }
@@ -5422,8 +5584,8 @@ function commitReadable(ref, cwd) {
 }
 function oldSideHunks(patch) {
   const hunks = [];
-  for (const line of patch.split("\n")) {
-    const match = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+  for (const line2 of patch.split("\n")) {
+    const match = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line2);
     if (match === null) continue;
     hunks.push({
       oldStart: Number(match[1]),
@@ -5433,9 +5595,9 @@ function oldSideHunks(patch) {
   }
   return hunks;
 }
-function remapLine(hunks, line) {
-  const low = line - NEIGHBOURHOOD;
-  const high = line + NEIGHBOURHOOD;
+function remapLine(hunks, line2) {
+  const low = line2 - NEIGHBOURHOOD;
+  const high = line2 + NEIGHBOURHOOD;
   let shift = 0;
   for (const hunk of hunks) {
     const first = hunk.oldStart;
@@ -5443,7 +5605,7 @@ function remapLine(hunks, line) {
     if (last >= low && first <= high) return { reason: "anchor or its neighbours changed" };
     if (last < low) shift += hunk.newCount - hunk.oldCount;
   }
-  return { line: line + shift };
+  return { line: line2 + shift };
 }
 var CarryError = class extends Error {
 };
@@ -5467,16 +5629,16 @@ function existsAt(ref, path, cwd) {
     return false;
   }
 }
-function followLine(previousHead, head, path, line, cwd) {
+function followLine(previousHead, head, path, line2, cwd) {
   if (!existsAt(head, path, cwd)) return { reason: "file deleted or renamed" };
   const patch = gitOut(
     ["diff", "--unified=0", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", previousHead, head, "--", ...topPathspecs([path])],
     cwd
   );
-  return remapLine(oldSideHunks(patch), line);
+  return remapLine(oldSideHunks(patch), line2);
 }
-function rewriteAnchor(text, path, oldLine, line) {
-  return text.replace(`\`${path}:${oldLine}\``, `\`${path}:${line}\``);
+function rewriteAnchor(text2, path, oldLine, line2) {
+  return text2.replace(`\`${path}:${oldLine}\``, `\`${path}:${line2}\``);
 }
 function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map()) {
   for (const ref of [previousHead, head]) {
@@ -5519,8 +5681,8 @@ function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */
   const output = findings.length === 0 ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join("\n\n");
   return { carried, notCarried, heldBack, output };
 }
-function findingBody(text) {
-  const joined = text.replace(/\s+/g, " ").trim();
+function findingBody(text2) {
+  const joined = text2.replace(/\s+/g, " ").trim();
   const match = /^\[[a-z_]+\]\s+`[^`]+:\d+`\s*(.*)$/i.exec(joined);
   return match === null ? joined : match[1] ?? "";
 }
@@ -5550,10 +5712,10 @@ function changedFiles(previousHead, head, cwd) {
 function escapeRegExp2(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function namesFile(text, path) {
-  if (text.includes(path)) return true;
+function namesFile(text2, path) {
+  if (text2.includes(path)) return true;
   const name = path.split("/").pop() ?? path;
-  return new RegExp(`(^|[^\\w./-])${escapeRegExp2(name)}($|[^\\w-])`).test(text);
+  return new RegExp(`(^|[^\\w./-])${escapeRegExp2(name)}($|[^\\w-])`).test(text2);
 }
 function carryCandidates(candidates, previousHead, head, hunks, cwd) {
   for (const ref of [previousHead, head]) {
@@ -5575,7 +5737,7 @@ function carryCandidates(candidates, previousHead, head, hunks, cwd) {
       refuse(`the file of its cause, ${cause.path}, changed between the two heads`);
       continue;
     }
-    const named = [...changed].find((path) => (candidate.texts ?? []).some((text) => namesFile(text, path)));
+    const named = [...changed].find((path) => (candidate.texts ?? []).some((text2) => namesFile(text2, path)));
     if (named !== void 0) {
       refuse(`its claim, evidence or verification names ${named}, which changed between the two heads`);
       continue;
@@ -5717,6 +5879,9 @@ function hashDiff(diff) {
   return createHash3("sha256").update(diff).digest("hex").slice(0, 32);
 }
 function recordRun(db, input) {
+  if ((input.bodyFindings?.length ?? 0) > 1) {
+    throw new Error("A review may record at most one body-only simplification finding.");
+  }
   const reviewRunId = randomUUID2();
   const findings = assignIds(input.output, input.candidates ?? []);
   if (input.carried !== void 0) {
@@ -5750,6 +5915,7 @@ function recordRun(db, input) {
       verdicts: input.verdicts ?? [],
       tieBreaks: input.tieBreaks ?? [],
       held: input.held ?? [],
+      ...input.bodyFindings === void 0 || input.bodyFindings.length === 0 ? {} : { bodyFindings: input.bodyFindings },
       ...input.carry === void 0 ? {} : { carry: input.carry },
       ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps }
     }),
@@ -5801,6 +5967,7 @@ function runDetail(db, reviewRunId) {
     held: Array.isArray(parsed.held) ? parsed.held : [],
     carry: parseCarryMarker(parsed.carry),
     followUps: Array.isArray(parsed.followUps) ? parsed.followUps : [],
+    bodyFindings: Array.isArray(parsed.bodyFindings) ? parsed.bodyFindings : [],
     // Older rows predate the column, so absence is normal rather than an error.
     stages: (() => {
       const raw = row["stages_json"];
@@ -5853,10 +6020,10 @@ function latestRun(db) {
 
 // plugins/review-voice/src/diff/held.ts
 var QUOTE_LIMIT = 200;
-function parseThreadFile(text, file, run) {
+function parseThreadFile(text2, file, run) {
   let parsed;
   try {
-    const raw = JSON.parse(text);
+    const raw = JSON.parse(text2);
     if (typeof raw !== "object" || raw === null || Array.isArray(raw) || !Array.isArray(raw["comments"])) {
       throw new Error("expected the thread.json that `RV thread` wrote");
     }
@@ -5890,8 +6057,8 @@ function postedReviewIds(db, runId) {
   }
   return reviewIds;
 }
-function quote(text) {
-  const flat = text.replace(/\s+/g, " ").trim();
+function quote(text2) {
+  const flat = text2.replace(/\s+/g, " ").trim();
   return `"${flat.length > QUOTE_LIMIT ? `${flat.slice(0, QUOTE_LIMIT)}...` : flat}"`;
 }
 function postedComment2(finding, thread, run, reviewIds) {
@@ -6386,13 +6553,13 @@ var Directives = class _Directives {
    * @param onError - May be called even if the action was successful
    * @returns `true` on success
    */
-  add(line, onError) {
+  add(line2, onError) {
     if (this.atNextDocument) {
       this.yaml = { explicit: _Directives.defaultYaml.explicit, version: "1.1" };
       this.tags = Object.assign({}, _Directives.defaultTags);
       this.atNextDocument = false;
     }
-    const parts = line.trim().split(/[ \t]+/);
+    const parts = line2.trim().split(/[ \t]+/);
     const name = parts.shift();
     switch (name) {
       case "%TAG": {
@@ -6998,14 +7165,14 @@ var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(c
 var FOLD_FLOW = "flow";
 var FOLD_BLOCK = "block";
 var FOLD_QUOTED = "quoted";
-function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
+function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
   if (!lineWidth || lineWidth < 0)
-    return text;
+    return text2;
   if (lineWidth < minContentWidth)
     minContentWidth = 0;
   const endStep = Math.max(1 + minContentWidth, 1 + lineWidth - indent.length);
-  if (text.length <= endStep)
-    return text;
+  if (text2.length <= endStep)
+    return text2;
   const folds = [];
   const escapedFolds = {};
   let end = lineWidth - indent.length;
@@ -7022,14 +7189,14 @@ function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth =
   let escStart = -1;
   let escEnd = -1;
   if (mode === FOLD_BLOCK) {
-    i = consumeMoreIndentedLines(text, i, indent.length);
+    i = consumeMoreIndentedLines(text2, i, indent.length);
     if (i !== -1)
       end = i + endStep;
   }
-  for (let ch; ch = text[i += 1]; ) {
+  for (let ch; ch = text2[i += 1]; ) {
     if (mode === FOLD_QUOTED && ch === "\\") {
       escStart = i;
-      switch (text[i + 1]) {
+      switch (text2[i + 1]) {
         case "x":
           i += 3;
           break;
@@ -7046,12 +7213,12 @@ function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth =
     }
     if (ch === "\n") {
       if (mode === FOLD_BLOCK)
-        i = consumeMoreIndentedLines(text, i, indent.length);
+        i = consumeMoreIndentedLines(text2, i, indent.length);
       end = i + indent.length + endStep;
       split = void 0;
     } else {
       if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
-        const next = text[i + 1];
+        const next = text2[i + 1];
         if (next && next !== " " && next !== "\n" && next !== "	")
           split = i;
       }
@@ -7063,12 +7230,12 @@ function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth =
         } else if (mode === FOLD_QUOTED) {
           while (prev === " " || prev === "	") {
             prev = ch;
-            ch = text[i += 1];
+            ch = text2[i += 1];
             overflow = true;
           }
           const j = i > escEnd + 1 ? i - 2 : escStart - 1;
           if (escapedFolds[j])
-            return text;
+            return text2;
           folds.push(j);
           escapedFolds[j] = true;
           end = j + endStep;
@@ -7083,39 +7250,39 @@ function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth =
   if (overflow && onOverflow)
     onOverflow();
   if (folds.length === 0)
-    return text;
+    return text2;
   if (onFold)
     onFold();
-  let res = text.slice(0, folds[0]);
+  let res = text2.slice(0, folds[0]);
   for (let i2 = 0; i2 < folds.length; ++i2) {
     const fold = folds[i2];
-    const end2 = folds[i2 + 1] || text.length;
+    const end2 = folds[i2 + 1] || text2.length;
     if (fold === 0)
       res = `
-${indent}${text.slice(0, end2)}`;
+${indent}${text2.slice(0, end2)}`;
     else {
       if (mode === FOLD_QUOTED && escapedFolds[fold])
-        res += `${text[fold]}\\`;
+        res += `${text2[fold]}\\`;
       res += `
-${indent}${text.slice(fold + 1, end2)}`;
+${indent}${text2.slice(fold + 1, end2)}`;
     }
   }
   return res;
 }
-function consumeMoreIndentedLines(text, i, indent) {
+function consumeMoreIndentedLines(text2, i, indent) {
   let end = i;
   let start = i + 1;
-  let ch = text[start];
+  let ch = text2[start];
   while (ch === " " || ch === "	") {
     if (i < start + indent) {
-      ch = text[++i];
+      ch = text2[++i];
     } else {
       do {
-        ch = text[++i];
+        ch = text2[++i];
       } while (ch && ch !== "\n");
       end = i;
       start = i + 1;
-      ch = text[start];
+      ch = text2[start];
     }
   }
   return end;
@@ -7813,9 +7980,9 @@ function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, fl
   } else {
     str = lines2[0];
     for (let i = 1; i < lines2.length; ++i) {
-      const line = lines2[i];
-      str += line ? `
-${indent}${line}` : "\n";
+      const line2 = lines2[i];
+      str += line2 ? `
+${indent}${line2}` : "\n";
     }
   }
   if (comment) {
@@ -7873,7 +8040,7 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
       str += ",";
     } else if (ctx.options.trailingComma) {
       if (ctx.options.lineWidth > 0) {
-        reqNewline || (reqNewline = lines2.reduce((sum, line) => sum + line.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
+        reqNewline || (reqNewline = lines2.reduce((sum, line2) => sum + line2.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
       }
       if (reqNewline) {
         str += ",";
@@ -7889,14 +8056,14 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
     return start + end;
   } else {
     if (!reqNewline) {
-      const len = lines2.reduce((sum, line) => sum + line.length + 2, 2);
+      const len = lines2.reduce((sum, line2) => sum + line2.length + 2, 2);
       reqNewline = ctx.options.lineWidth > 0 && len > ctx.options.lineWidth;
     }
     if (reqNewline) {
       let str = start;
-      for (const line of lines2)
-        str += line ? `
-${indentStep}${indent}${line}` : "\n";
+      for (const line2 of lines2)
+        str += line2 ? `
+${indentStep}${indent}${line2}` : "\n";
       return `${str}
 ${indent}${end}`;
     } else {
@@ -9361,10 +9528,10 @@ var prettifyError = (src, lc) => (error) => {
   if (error.pos[0] === -1)
     return;
   error.linePos = error.pos.map((pos) => lc.linePos(pos));
-  const { line, col } = error.linePos[0];
-  error.message += ` at line ${line}, column ${col}`;
+  const { line: line2, col } = error.linePos[0];
+  error.message += ` at line ${line2}, column ${col}`;
   let ci = col - 1;
-  let lineStr = src.substring(lc.lineStarts[line - 1], lc.lineStarts[line]).replace(/[\n\r]+$/, "");
+  let lineStr = src.substring(lc.lineStarts[line2 - 1], lc.lineStarts[line2]).replace(/[\n\r]+$/, "");
   if (ci >= 60 && lineStr.length > 80) {
     const trimStart = Math.min(ci - 39, lineStr.length - 79);
     lineStr = "\u2026" + lineStr.substring(trimStart);
@@ -9372,8 +9539,8 @@ var prettifyError = (src, lc) => (error) => {
   }
   if (lineStr.length > 80)
     lineStr = lineStr.substring(0, 79) + "\u2026";
-  if (line > 1 && /^ *$/.test(lineStr.substring(0, ci))) {
-    let prev = src.substring(lc.lineStarts[line - 2], lc.lineStarts[line - 1]);
+  if (line2 > 1 && /^ *$/.test(lineStr.substring(0, ci))) {
+    let prev = src.substring(lc.lineStarts[line2 - 2], lc.lineStarts[line2 - 1]);
     if (prev.length > 80)
       prev = prev.substring(0, 79) + "\u2026\n";
     lineStr = prev + lineStr;
@@ -9381,7 +9548,7 @@ var prettifyError = (src, lc) => (error) => {
   if (/[^ ]/.test(lineStr)) {
     let count3 = 1;
     const end = error.linePos[1];
-    if (end?.line === line && end.col > col) {
+    if (end?.line === line2 && end.col > col) {
       count3 = Math.max(1, Math.min(end.col - col, 80 - ci));
     }
     const pointer = " ".repeat(ci) + "^".repeat(count3);
@@ -10232,8 +10399,8 @@ function singleQuotedValue(source, onError) {
   return unfoldLines(source.slice(1, -1)).replace(/''/g, "'");
 }
 function unfoldLines(source) {
-  const line = /(.*?)\r?\n/sy;
-  let match = line.exec(source);
+  const line2 = /(.*?)\r?\n/sy;
+  let match = line2.exec(source);
   if (!match)
     return source;
   let trimEnd, trimBoth;
@@ -10246,8 +10413,8 @@ function unfoldLines(source) {
   }
   let res = match[1].replace(trimEnd, "");
   let sep2 = " ";
-  let pos = line.lastIndex;
-  while (match = line.exec(source)) {
+  let pos = line2.lastIndex;
+  while (match = line2.exec(source)) {
     const lm = match[1].replace(trimBoth, "");
     if (lm === "") {
       if (sep2 === "\n")
@@ -10258,7 +10425,7 @@ function unfoldLines(source) {
       res += sep2 + lm;
       sep2 = " ";
     }
-    pos = line.lastIndex;
+    pos = line2.lastIndex;
   }
   const last = /[ \t]*(.*)/sy;
   last.lastIndex = pos;
@@ -11038,40 +11205,40 @@ var Lexer = class {
     }
   }
   *parseStream() {
-    let line = this.getLine();
-    if (line === null)
+    let line2 = this.getLine();
+    if (line2 === null)
       return this.setNext("stream");
-    if (line[0] === BOM) {
+    if (line2[0] === BOM) {
       yield* this.pushCount(1);
-      line = line.substring(1);
+      line2 = line2.substring(1);
     }
-    if (line[0] === "%") {
-      let dirEnd = line.length;
-      let cs = line.indexOf("#");
+    if (line2[0] === "%") {
+      let dirEnd = line2.length;
+      let cs = line2.indexOf("#");
       while (cs !== -1) {
-        const ch = line[cs - 1];
+        const ch = line2[cs - 1];
         if (ch === " " || ch === "	") {
           dirEnd = cs - 1;
           break;
         } else {
-          cs = line.indexOf("#", cs + 1);
+          cs = line2.indexOf("#", cs + 1);
         }
       }
       while (true) {
-        const ch = line[dirEnd - 1];
+        const ch = line2[dirEnd - 1];
         if (ch === " " || ch === "	")
           dirEnd -= 1;
         else
           break;
       }
       const n = (yield* this.pushCount(dirEnd)) + (yield* this.pushSpaces(true));
-      yield* this.pushCount(line.length - n);
+      yield* this.pushCount(line2.length - n);
       this.pushNewline();
       return "stream";
     }
     if (this.atLineEnd()) {
       const sp = yield* this.pushSpaces(true);
-      yield* this.pushCount(line.length - sp);
+      yield* this.pushCount(line2.length - sp);
       yield* this.pushNewline();
       return "stream";
     }
@@ -11112,13 +11279,13 @@ var Lexer = class {
   }
   *parseDocument() {
     yield* this.pushSpaces(true);
-    const line = this.getLine();
-    if (line === null)
+    const line2 = this.getLine();
+    if (line2 === null)
       return this.setNext("doc");
     let n = yield* this.pushIndicators();
-    switch (line[n]) {
+    switch (line2[n]) {
       case "#":
-        yield* this.pushCount(line.length - n);
+        yield* this.pushCount(line2.length - n);
       // fallthrough
       case void 0:
         yield* this.pushNewline();
@@ -11143,7 +11310,7 @@ var Lexer = class {
       case ">":
         n += yield* this.parseBlockScalarHeader();
         n += yield* this.pushSpaces(true);
-        yield* this.pushCount(line.length - n);
+        yield* this.pushCount(line2.length - n);
         yield* this.pushNewline();
         return yield* this.parseBlockScalar();
       default:
@@ -11163,11 +11330,11 @@ var Lexer = class {
       }
       sp += yield* this.pushSpaces(true);
     } while (nl + sp > 0);
-    const line = this.getLine();
-    if (line === null)
+    const line2 = this.getLine();
+    if (line2 === null)
       return this.setNext("flow");
-    if (indent !== -1 && indent < this.indentNext && line[0] !== "#" || indent === 0 && (line.startsWith("---") || line.startsWith("...")) && isEmpty(line[3])) {
-      const atFlowEndMarker = indent === this.indentNext - 1 && this.flowLevel === 1 && (line[0] === "]" || line[0] === "}");
+    if (indent !== -1 && indent < this.indentNext && line2[0] !== "#" || indent === 0 && (line2.startsWith("---") || line2.startsWith("...")) && isEmpty(line2[3])) {
+      const atFlowEndMarker = indent === this.indentNext - 1 && this.flowLevel === 1 && (line2[0] === "]" || line2[0] === "}");
       if (!atFlowEndMarker) {
         this.flowLevel = 0;
         yield FLOW_END;
@@ -11175,17 +11342,17 @@ var Lexer = class {
       }
     }
     let n = 0;
-    while (line[n] === ",") {
+    while (line2[n] === ",") {
       n += yield* this.pushCount(1);
       n += yield* this.pushSpaces(true);
       this.flowKey = false;
     }
     n += yield* this.pushIndicators();
-    switch (line[n]) {
+    switch (line2[n]) {
       case void 0:
         return "flow";
       case "#":
-        yield* this.pushCount(line.length - n);
+        yield* this.pushCount(line2.length - n);
         return "flow";
       case "{":
       case "[":
@@ -12472,10 +12639,10 @@ function nameGlob(glob) {
   const source = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
   return new RegExp(`^${source}$`, "i");
 }
-function matchingGate(name, text, gates) {
+function matchingGate(name, text2, gates) {
   for (const gate of gates) {
     if (!nameGlob(gate.name).test(name)) continue;
-    if (gate.summary !== void 0 && !text.toLowerCase().includes(gate.summary.toLowerCase())) continue;
+    if (gate.summary !== void 0 && !text2.toLowerCase().includes(gate.summary.toLowerCase())) continue;
     return gate;
   }
   return null;
@@ -12492,7 +12659,7 @@ var EXIT_CODE_NOTE = /^Process completed with exit code \d+\.?$/;
 var neutral = (annotation) => fromRunner(annotation) && EXIT_CODE_NOTE.test((annotation.message ?? "").trim());
 function infrastructureSignature(run, signatures) {
   const find = (...texts) => {
-    const haystack = texts.filter((text) => typeof text === "string").join("\n").toLowerCase();
+    const haystack = texts.filter((text2) => typeof text2 === "string").join("\n").toLowerCase();
     if (haystack.length === 0) return null;
     return signatures.find((signature) => signature.length > 0 && haystack.includes(signature.toLowerCase())) ?? null;
   };
@@ -12536,16 +12703,16 @@ function summariseCi(checkRuns, statuses, gates = [], reading = {}, rules = {}) 
         detail = `failure, matched "${matched}"`;
       }
     }
-    const text = `${run.output?.title ?? ""}
+    const text2 = `${run.output?.title ?? ""}
 ${run.output?.summary ?? ""}`;
-    entries.push({ entry: { name: run.name ?? "", source: "check-run", result, detail }, text });
+    entries.push({ entry: { name: run.name ?? "", source: "check-run", result, detail }, text: text2 });
   }
   for (const status of statuses) {
     const { result, detail } = classifyStatus(status);
     entries.push({ entry: { name: status.context ?? "", source: "status", result, detail }, text: status.description ?? "" });
   }
   const state = { state: "green", passed: 0, failed: [], rerun: [], pending: [], ignored: [], gates: [] };
-  for (const { entry, text } of entries) {
+  for (const { entry, text: text2 } of entries) {
     if (entry.result === "passed") {
       state.passed += 1;
       continue;
@@ -12554,7 +12721,7 @@ ${run.output?.summary ?? ""}`;
       state.ignored.push(entry);
       continue;
     }
-    const gate = matchingGate(entry.name, text, gates);
+    const gate = matchingGate(entry.name, text2, gates);
     if (gate !== null) {
       state.gates.push({ ...entry, gate: gate.name });
     } else if (entry.result === "failed") {
@@ -12679,6 +12846,11 @@ function readStructure(block, result) {
   };
   result.structure.maxFileLines = limit("max_file_lines") ?? result.structure.maxFileLines;
   result.structure.maxAddedBranchesPerFunction = limit("max_added_branches_per_function") ?? result.structure.maxAddedBranchesPerFunction;
+  const simplify = block["simplify"];
+  if (simplify !== void 0) {
+    if (typeof simplify === "boolean") result.structure.simplify = simplify;
+    else result.warnings.push("review.structure.simplify must be true or false; using the default.");
+  }
 }
 var GENERIC_SIGNATURE_WORDS = /* @__PURE__ */ new Set([
   "error",
@@ -12771,11 +12943,11 @@ function readCiRules(block, result) {
     result.ciRules.rerunSignatures = [...builtin === false ? [] : BUILTIN_RERUN_SIGNATURES, ...added];
   }
 }
-function contentHash(text) {
-  return createHash4("sha256").update(text).digest("hex").slice(0, 16);
+function contentHash(text2) {
+  return createHash4("sha256").update(text2).digest("hex").slice(0, 16);
 }
-function layerFromPolicyFile(text, source, fallbackKey) {
-  const doc = asRecord(parse(text));
+function layerFromPolicyFile(text2, source, fallbackKey) {
+  const doc = asRecord(parse(text2));
   if (doc === null) return null;
   const scope = asRecord(doc["scope"]);
   const type = typeof scope?.["type"] === "string" ? scope["type"] : "repository";
@@ -12898,10 +13070,10 @@ function loadConfig(repositoryRoot2) {
   const policyPath = join5(repositoryRoot2, ".review-voice", "policy.yaml");
   if (existsSync(policyPath)) {
     try {
-      const text = readFileSync4(policyPath, "utf8");
-      const layer = layerFromPolicyFile(text, ".review-voice/policy.yaml", repositoryRoot2);
+      const text2 = readFileSync4(policyPath, "utf8");
+      const layer = layerFromPolicyFile(text2, ".review-voice/policy.yaml", repositoryRoot2);
       if (layer !== null) {
-        result.unapproved.push({ source: ".review-voice/policy.yaml", contentHash: contentHash(text) });
+        result.unapproved.push({ source: ".review-voice/policy.yaml", contentHash: contentHash(text2) });
       }
     } catch (error) {
       result.warnings.push(`.review-voice/policy.yaml could not be parsed: ${String(error)}`);
@@ -12956,11 +13128,11 @@ function resolvePolicy(layers) {
 import { spawnSync } from "node:child_process";
 
 // plugins/review-voice/src/evidence/parsers.ts
-function signal(tool, kind, path, line, claim, raw) {
+function signal(tool, kind, path, line2, claim, raw) {
   return {
     kind,
     path,
-    line,
+    line: line2,
     claim,
     evidence: [raw.trim()],
     // A compiler or type checker reporting a concrete diagnostic is about as
@@ -12976,21 +13148,21 @@ var ADAPTERS = [
   {
     name: "typescript",
     matches: (command, output) => /tsc|typecheck|tsgo/i.test(command) || TSC.test(output.split("\n")[0] ?? ""),
-    parse: (output, tool) => output.split("\n").map((line) => TSC.exec(line)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
+    parse: (output, tool) => output.split("\n").map((line2) => TSC.exec(line2)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
       (match) => signal(tool, "type_error", match[1], Number(match[2]), `${match[5]}: ${match[6]}`, match[0])
     )
   },
   {
     name: "dotnet",
     matches: (command) => /dotnet|msbuild|csc\b/i.test(command),
-    parse: (output, tool) => output.split("\n").map((line) => DOTNET.exec(line)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
+    parse: (output, tool) => output.split("\n").map((line2) => DOTNET.exec(line2)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
       (match) => signal(tool, "compile_error", match[1], Number(match[2]), `${match[5]}: ${match[6]}`, match[0])
     ).filter((current, index, all) => all.findIndex((other) => other.claim === current.claim && other.path === current.path && other.line === current.line) === index)
   },
   {
     name: "python",
     matches: (command) => /mypy|ruff|flake8|pylint|pytest/i.test(command),
-    parse: (output, tool) => output.split("\n").map((line) => PYTHON2.exec(line)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(
+    parse: (output, tool) => output.split("\n").map((line2) => PYTHON2.exec(line2)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(
       (match) => signal(tool, "lint_or_type_error", match[1], Number(match[2]), `${match[4]}: ${match[5]}`, match[0])
     )
   },
@@ -13000,14 +13172,14 @@ var ADAPTERS = [
     parse: (output, tool) => {
       const signals = [];
       let file = null;
-      for (const line of output.split("\n")) {
-        if (/^\S.*\.(ts|tsx|js|jsx|mjs|cjs)$/.test(line.trim())) {
-          file = line.trim();
+      for (const line2 of output.split("\n")) {
+        if (/^\S.*\.(ts|tsx|js|jsx|mjs|cjs)$/.test(line2.trim())) {
+          file = line2.trim();
           continue;
         }
-        const match = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/.exec(line);
+        const match = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/.exec(line2);
         if (match !== null && match[3] === "error") {
-          signals.push(signal(tool, "lint_error", file, Number(match[1]), `${match[5]}: ${match[4]}`, line));
+          signals.push(signal(tool, "lint_error", file, Number(match[1]), `${match[5]}: ${match[4]}`, line2));
         }
       }
       return signals;
@@ -13090,14 +13262,14 @@ function decisiveEvidence(raw) {
     return typeof e["path"] === "string" && e["path"].length > 0 && Number.isInteger(e["line"]) && e["line"] > 0 && typeof e["why"] === "string" && e["why"].trim().length > 0;
   }).slice(0, MAX_DECISIVE_EVIDENCE).map((entry) => ({ path: entry.path, line: entry.line, why: entry.why }));
 }
-function jsonCandidates(text) {
+function jsonCandidates(text2) {
   const found = [];
   let depth = 0;
   let start = -1;
   let inString = false;
   let escaped = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
+  for (let i = 0; i < text2.length; i += 1) {
+    const ch = text2[i];
     if (inString) {
       if (escaped) escaped = false;
       else if (ch === "\\") escaped = true;
@@ -13111,7 +13283,7 @@ function jsonCandidates(text) {
     } else if (ch === "}") {
       depth -= 1;
       if (depth === 0 && start !== -1) {
-        found.push(text.slice(start, i + 1));
+        found.push(text2.slice(start, i + 1));
         start = -1;
       } else if (depth < 0) {
         depth = 0;
@@ -13557,9 +13729,9 @@ var AUTOMATION_STATUS = [
 var STRUCTURE_LINE = /^\s*(?:-\s*\[[ x]\]\s|#{1,3}\s|\|.*\||-{3,}\s*$)/i;
 var TEMPLATE_HEADING = /^\s*#{1,3}\s*(description|checklist|type of change|how has this been tested)/im;
 function isTemplate(body) {
-  const lines2 = body.split("\n").filter((line) => line.trim().length > 0);
+  const lines2 = body.split("\n").filter((line2) => line2.trim().length > 0);
   if (lines2.length === 0) return true;
-  const structural = lines2.filter((line) => STRUCTURE_LINE.test(line)).length;
+  const structural = lines2.filter((line2) => STRUCTURE_LINE.test(line2)).length;
   const structureRatio = structural / lines2.length;
   if (TEMPLATE_HEADING.test(body) && structureRatio >= 0.4) return true;
   return structureRatio >= 0.6;
@@ -13839,7 +14011,7 @@ function truncationMarker(bytes, included) {
 [Truncated by Review Voice: ${included} of ${bytes} bytes shown. The rest of this document was not read.]
 `;
 }
-function sections(text) {
+function sections(text2) {
   const out = [];
   let heading = "";
   let buffer = [];
@@ -13848,14 +14020,14 @@ function sections(text) {
       out.push({ heading, body: buffer.join("\n") });
     }
   };
-  for (const line of text.split(/\r?\n/)) {
-    if (/^#{1,3} /.test(line)) {
+  for (const line2 of text2.split(/\r?\n/)) {
+    if (/^#{1,3} /.test(line2)) {
       flush();
-      heading = line;
+      heading = line2;
       buffer = [];
       continue;
     }
-    buffer.push(line);
+    buffer.push(line2);
   }
   flush();
   return out;
@@ -13873,8 +14045,8 @@ function changeVocabulary(changedPaths) {
   }
   return words;
 }
-function relevantSections(text, changedPaths, budget) {
-  const parts = sections(text);
+function relevantSections(text2, changedPaths, budget) {
+  const parts = sections(text2);
   if (parts.length < 2 || changedPaths.length === 0) return null;
   const vocabulary = changeVocabulary(changedPaths);
   if (vocabulary.size === 0) return null;
@@ -13931,17 +14103,17 @@ function readBounded(absolute, changedPaths = []) {
   const buffer = Buffer.from(raw, "utf8");
   let end = Math.min(budget, buffer.length);
   const decoder = new TextDecoder("utf8", { fatal: true });
-  let text = "";
+  let text2 = "";
   for (; end > 0; end -= 1) {
     try {
-      text = decoder.decode(buffer.subarray(0, end));
+      text2 = decoder.decode(buffer.subarray(0, end));
       break;
     } catch {
     }
   }
-  const lastBreak = text.lastIndexOf("\n");
-  if (lastBreak > 0) text = text.slice(0, lastBreak);
-  const content = `${text}${truncationMarker(bytes, Buffer.byteLength(text, "utf8"))}`;
+  const lastBreak = text2.lastIndexOf("\n");
+  if (lastBreak > 0) text2 = text2.slice(0, lastBreak);
+  const content = `${text2}${truncationMarker(bytes, Buffer.byteLength(text2, "utf8"))}`;
   return {
     content,
     bytes,
@@ -14241,7 +14413,7 @@ function checkCitation(candidatePath, cwd, ref, diff) {
   let tracked;
   try {
     const args = ref === null ? ["ls-files"] : ["ls-tree", "-r", "--name-only", ref];
-    tracked = git4(args, cwd).split("\n").filter((line) => line.length > 0);
+    tracked = git4(args, cwd).split("\n").filter((line2) => line2.length > 0);
   } catch {
     return { resolves: false, suggestion: null, inconclusive: true };
   }
@@ -14544,8 +14716,8 @@ function eventWeight(parts) {
 }
 
 // plugins/review-voice/src/retrieval/retrieve.ts
-function toMatchQuery(text) {
-  const terms = text.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((term) => term.length > 2 && !STOPWORDS.has(term));
+function toMatchQuery(text2) {
+  const terms = text2.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((term) => term.length > 2 && !STOPWORDS.has(term));
   const unique = [...new Set(terms)].slice(0, 24);
   return unique.map((term) => `"${term}"`).join(" OR ");
 }
@@ -15038,10 +15210,10 @@ function candidateSetAgreement(db) {
     }
     const list = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
     const located = list.map((candidate) => {
-      const line = Number(candidate["line"]);
+      const line2 = Number(candidate["line"]);
       return {
         path: String(candidate["path"] ?? ""),
-        line: Number.isFinite(line) ? line : null
+        line: Number.isFinite(line2) ? line2 : null
       };
     }).filter((entry) => entry.path !== "");
     if (located.length === 0) continue;
@@ -15220,11 +15392,11 @@ var ReviewWriter = class {
     }
     assertPayload(payload);
     const data = await this.request("POST", `/repos/${repository}/pulls/${pullNumber}/reviews`, payload);
-    const record = typeof data === "object" && data !== null ? data : {};
+    const record2 = typeof data === "object" && data !== null ? data : {};
     return {
-      id: typeof record["id"] === "number" ? record["id"] : null,
-      htmlUrl: typeof record["html_url"] === "string" ? record["html_url"] : null,
-      state: typeof record["state"] === "string" ? record["state"] : null
+      id: typeof record2["id"] === "number" ? record2["id"] : null,
+      htmlUrl: typeof record2["html_url"] === "string" ? record2["html_url"] : null,
+      state: typeof record2["state"] === "string" ? record2["state"] : null
     };
   }
   /**
@@ -15293,8 +15465,8 @@ function assertPayload(payload) {
 
 // plugins/review-voice/src/publish/post.ts
 var SHA2 = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-function normalise2(text) {
-  return text.replace(/\r\n/g, "\n").trim();
+function normalise2(text2) {
+  return text2.replace(/\r\n/g, "\n").trim();
 }
 function subjectId(repository, pullNumber) {
   return `${repository.toLowerCase()}#${pullNumber}`;
@@ -15446,6 +15618,7 @@ async function computeVerdict(options) {
       head,
       event: decision.event,
       planned,
+      bodyFindings: run.bodyFindings,
       // One plain summary line whichever cap applies: CI first, then a held
       // finding or an uncovered carry, then complexity. None of them names
       // human review or the carry in the posted body.
@@ -15795,6 +15968,22 @@ var COMMAND_HELP = {
       "Exit codes: 0 valid, 2 malformed or bad invocation."
     )
   },
+  "check-simplification": {
+    summary: "Validate the opt-in, body-only simplification pass",
+    body: lines(
+      "review-voice check-simplification --diff-file <path> [--candidate <path>]",
+      "  Validate the one optional simplification candidate or its verifier response.",
+      "  Without --candidate, stdin is the analyst output. With --candidate, stdin is",
+      "  the verifier response and stdout contains bodyFindings for record.",
+      "",
+      "Flags:",
+      "  --diff-file <path>     Unified diff every listed removal must occur in (required)",
+      "  --candidate <path>     Checked analyst output, when validating the verifier response",
+      "Reads: the simplification candidate or verifier JSON on stdin.",
+      "Writes: checked candidate JSON, or {bodyFindings:[...]} for record.",
+      "Exit codes: 0 valid (a rejected candidate writes no body finding), 2 malformed or bad invocation."
+    )
+  },
   context: {
     summary: "Resolve config and the active policy stack as JSON",
     body: lines(
@@ -16097,6 +16286,7 @@ var COMMAND_HELP = {
       "  --verdicts <path>      Verification verdicts, including findings that were dropped",
       "  --tie-breaks <path>    reconcile's output, with the rulings it applied",
       '  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]',
+      "  --body-findings <path> One verified simplification from check-simplification; requires --diff-file",
       "  --carried-from <run>   Validate findings carried by `carry` (needs --head; run in its clone)",
       "  --carry <path>         carry.json of carry-candidates (needs --head)",
       "  --thread <path>        thread.json; a follow-up whose comment thread is resolved is settled,",
@@ -16257,7 +16447,7 @@ function commandHelp(command) {
   return Object.hasOwn(COMMAND_HELP, command) ? COMMAND_HELP[command].body : null;
 }
 function topLevelHelp() {
-  const list = COMMAND_ORDER.map((name) => `  ${name.padEnd(20)}${COMMAND_HELP[name].summary}`);
+  const list = COMMAND_ORDER.map((name) => `  ${name.padEnd(21)}${COMMAND_HELP[name].summary}`);
   const reference = COMMAND_ORDER.map((name) => COMMAND_HELP[name].body);
   return [
     "review-voice <command>",
@@ -16281,6 +16471,7 @@ function topLevelHelp() {
 var STDIN_INPUT = {
   "check-candidates": "candidates JSON",
   "check-verification": "the evidence-verifier output",
+  "check-simplification": "the simplification candidate or verifier output",
   score: "candidates JSON",
   record: "the validated review",
   "validate-output": "the review text",
@@ -16408,8 +16599,8 @@ function remoteRepositories(cwd) {
     return [];
   }
   const slugs = [];
-  for (const line of out.split("\n")) {
-    const match = /^remote\.(.+)\.url\s+.*github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(line.trim());
+  for (const line2 of out.split("\n")) {
+    const match = /^remote\.(.+)\.url\s+.*github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(line2.trim());
     if (match === null) continue;
     if (match[1] === "origin") slugs.unshift(match[2]);
     else slugs.push(match[2]);
@@ -16767,6 +16958,9 @@ function contextCommand() {
           ownerReviewer: config2.ownerReviewer,
           allowlist: config2.allowlist,
           staticEvidence: config2.staticEvidence,
+          // The review command needs the structural opt-ins after resolving
+          // config, including the optional simplification pass.
+          structure: config2.structure,
           // Reported whether or not it is configured. A config written before
           // second-pass verification existed has no `verification:` block at
           // all, so an upgrading user silently got none of it and nothing in
@@ -17614,15 +17808,15 @@ function policyCommand(argv) {
   }
 }
 function retrieveCommand(argv) {
-  const text = flag(argv, "--text");
-  if (text === null) {
+  const text2 = flag(argv, "--text");
+  if (text2 === null) {
     console.error('retrieve needs --text "<claim and failure mode>".');
     return 2;
   }
   const db = openDatabase();
   try {
     const precedents = retrievePrecedents(db, {
-      text,
+      text: text2,
       repository: flag(argv, "--repository") ?? void 0,
       filePath: flag(argv, "--path") ?? void 0,
       language: flag(argv, "--language") ?? void 0,
@@ -17847,6 +18041,37 @@ function recordCommand(argv) {
     console.error(
       "No --diff-file, so this run cannot be compared with another run of the same diff. Pass the patch that `diff --out` wrote. Recording anyway."
     );
+  }
+  const bodyFindingsFile = flag(argv, "--body-findings");
+  let bodyFindings = [];
+  if (argv.includes("--body-findings")) {
+    if (bodyFindingsFile === null) {
+      console.error("--body-findings needs a JSON path from check-simplification.");
+      return 2;
+    }
+    if (diffFile === null) {
+      console.error("--body-findings needs --diff-file, so every listed removal can be checked against the diff.");
+      return 2;
+    }
+    try {
+      const parsed = JSON.parse(readFileSync6(bodyFindingsFile, "utf8"));
+      const list = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null && Array.isArray(parsed.bodyFindings) ? parsed.bodyFindings : null;
+      if (list === null) throw new Error('expected an array or {"bodyFindings": [...]}');
+      if (list.length > 1) throw new Error("at most one body-only simplification is allowed per review");
+      const hunks = parseHunks(diff);
+      bodyFindings = list.map((entry, index) => {
+        const checked = parseVerifiedSimplification(entry, hunks);
+        if (checked.problem !== null || checked.value === null) {
+          throw new Error(`entry ${index}: ${checked.problem ?? "not a verified simplification"}`);
+        }
+        return checked.value;
+      });
+    } catch (error) {
+      console.error(
+        `Cannot read body-only simplification from ${bodyFindingsFile}: ${error instanceof Error ? error.message : String(error)}.`
+      );
+      return 2;
+    }
   }
   const filesFile = flag(argv, "--files");
   let pullNumber;
@@ -18077,6 +18302,7 @@ function recordCommand(argv) {
       verdicts,
       tieBreaks,
       held,
+      ...bodyFindings.length === 0 ? {} : { bodyFindings },
       carried,
       ...carry === void 0 ? {} : { carry },
       followUps,
@@ -18138,13 +18364,13 @@ function carryForRun(db, runId, head, repository, threadFile = null) {
   }
   let hold;
   if (threadFile !== null) {
-    let text;
+    let text2;
     try {
-      text = readFileSync6(threadFile, "utf8");
+      text2 = readFileSync6(threadFile, "utf8");
     } catch (error) {
       throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const thread = parseThreadFile(text, threadFile, detail);
+    const thread = parseThreadFile(text2, threadFile, detail);
     hold = heldBackFindings(detail.findings, thread, detail, postedReviewIds(db, runId));
   }
   return carryFindings(detail.findings, detail.headRef, head, root, hold);
@@ -18208,10 +18434,10 @@ function carryCommand(argv) {
 }
 function reanchorCommand(argv) {
   const candidateId = flag(argv, "--candidate");
-  const line = Number(flag(argv, "--line"));
+  const line2 = Number(flag(argv, "--line"));
   const scoresFile = flag(argv, "--scores");
   const diffFile = flag(argv, "--diff-file");
-  if (candidateId === null || !Number.isInteger(line) || line < 1 || scoresFile === null || diffFile === null) {
+  if (candidateId === null || !Number.isInteger(line2) || line2 < 1 || scoresFile === null || diffFile === null) {
     console.error("Usage: reanchor --candidate <id> --line <n> [--path <p>] --scores <file> --diff-file <patch> [--candidates <file>]");
     return 2;
   }
@@ -18229,7 +18455,7 @@ function reanchorCommand(argv) {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
-  const result = reanchorScores(scores, candidateId, { path: flag(argv, "--path"), line }, hunks);
+  const result = reanchorScores(scores, candidateId, { path: flag(argv, "--path"), line: line2 }, hunks);
   if (!result.ok) {
     console.error(`Not re-anchored: ${result.refused}`);
     return 1;
@@ -18270,10 +18496,10 @@ function reanchorCommand(argv) {
 function listIn(parsed, keys) {
   if (Array.isArray(parsed)) return { list: parsed, rebuild: (list) => list };
   if (typeof parsed !== "object" || parsed === null) return null;
-  const record = parsed;
-  const key = keys.find((k) => Array.isArray(record[k]));
+  const record2 = parsed;
+  const key = keys.find((k) => Array.isArray(record2[k]));
   if (key === void 0) return null;
-  return { list: record[key], rebuild: (list) => ({ ...record, [key]: list }) };
+  return { list: record2[key], rebuild: (list) => ({ ...record2, [key]: list }) };
 }
 function stringsIn(value) {
   if (typeof value === "string") return [value];
@@ -18418,9 +18644,9 @@ function carryCandidatesCommand(argv) {
     );
     for (const entry of heldIn?.list ?? []) {
       const path = entry["path"];
-      const line = entry["line"];
-      const moved = followLine(since, head, path, line, process.cwd());
-      if ("reason" in moved) heldDropped.push({ path, line, reason: moved.reason });
+      const line2 = entry["line"];
+      const moved = followLine(since, head, path, line2, process.cwd());
+      if ("reason" in moved) heldDropped.push({ path, line: line2, reason: moved.reason });
       else heldKept.push({ ...entry, line: moved.line });
     }
   } catch (error) {
@@ -18467,7 +18693,7 @@ function carryCandidatesCommand(argv) {
   };
   const interdiffCandidates = (interdiff?.candidates ?? []).map((raw) => withId(raw, rename(idOfEntry(raw))));
   const interdiffVerification = (interdiff?.verification ?? []).map((v) => withId(v, renamed[idOfEntry(v)] ?? idOfEntry(v)));
-  const record = {
+  const record2 = {
     since,
     head,
     carried: result.carried,
@@ -18489,7 +18715,7 @@ function carryCandidatesCommand(argv) {
     );
     if (heldIn !== null) writeFileSync(join7(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
 `);
-    writeFileSync(join7(outDir, "carry.json"), `${JSON.stringify(record, null, 2)}
+    writeFileSync(join7(outDir, "carry.json"), `${JSON.stringify(record2, null, 2)}
 `);
   } catch (error) {
     console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -18812,6 +19038,93 @@ function checkVerificationCommand() {
   console.log(JSON.stringify({ valid: true, verifications: list.length }, null, 2));
   return 0;
 }
+function checkSimplificationCommand(argv) {
+  const diffFile = flag(argv, "--diff-file");
+  if (diffFile === null) {
+    console.error("--diff-file needs the patch the simplification pass reviewed.");
+    return 2;
+  }
+  const candidateFile = flag(argv, "--candidate");
+  if (argv.includes("--candidate") && candidateFile === null) {
+    console.error("--candidate needs the checked analyst output.");
+    return 2;
+  }
+  let hunks;
+  try {
+    hunks = parseHunks(readFileSync6(diffFile, "utf8"));
+  } catch (error) {
+    console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  let document;
+  try {
+    document = JSON.parse(readStdin());
+  } catch {
+    console.error("Expected simplification JSON on stdin.");
+    return 2;
+  }
+  if (candidateFile === null) {
+    const candidate2 = parseSimplificationCandidate(document);
+    if (candidate2.problem !== null) {
+      console.error(`Malformed simplification candidate - ${candidate2.problem}.`);
+      console.error("Re-run the analyst with the simplification schema restated. Do not hand-translate its output.");
+      return 2;
+    }
+    if (candidate2.value !== null) {
+      const problem = simplificationDiffProblem(candidate2.value, hunks);
+      if (problem !== null) {
+        console.error(`Invalid simplification candidate - ${problem}.`);
+        console.error("Re-run the analyst with the changed locations from the patch. Do not hand-translate its output.");
+        return 2;
+      }
+    }
+    console.log(JSON.stringify({ simplification: candidate2.value }, null, 2));
+    return 0;
+  }
+  let candidateDocument;
+  try {
+    candidateDocument = JSON.parse(readFileSync6(candidateFile, "utf8"));
+  } catch (error) {
+    console.error(`Cannot read ${candidateFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const candidate = parseSimplificationCandidate(candidateDocument);
+  if (candidate.problem !== null || candidate.value === null) {
+    console.error(
+      `Cannot verify ${candidateFile}: ${candidate.problem ?? "it contains no simplification candidate"}.`
+    );
+    return 2;
+  }
+  const candidateProblem = simplificationDiffProblem(candidate.value, hunks);
+  if (candidateProblem !== null) {
+    console.error(`Cannot verify ${candidateFile}: ${candidateProblem}.`);
+    return 2;
+  }
+  const verification2 = parseSimplificationVerification(document, candidate.value);
+  if (verification2.problem !== null || verification2.value === null) {
+    console.error(`Malformed simplification verification - ${verification2.problem ?? "missing verification"}.`);
+    console.error("Re-run the verifier with the simplification schema restated. Do not hand-translate its output.");
+    return 2;
+  }
+  const bodyFindings = verification2.value.verified ? [
+    {
+      candidate: candidate.value,
+      verification: {
+        verified: verification2.value.verified,
+        elements: verification2.value.elements.map((element2) => ({
+          path: element2.path,
+          line: element2.line,
+          exists_in_diff: element2.existsInDiff
+        })),
+        behavior_preserved: verification2.value.behaviorPreserved,
+        removes_concepts: verification2.value.removesConcepts,
+        reason: verification2.value.reason
+      }
+    }
+  ] : [];
+  console.log(JSON.stringify({ bodyFindings }, null, 2));
+  return 0;
+}
 function isMissingContext(item) {
   if (typeof item === "string") return true;
   if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
@@ -18823,9 +19136,9 @@ function isMissingContext(item) {
 function verdictList(parsed) {
   if (Array.isArray(parsed)) return parsed;
   if (typeof parsed !== "object" || parsed === null) return [];
-  const record = parsed;
+  const record2 = parsed;
   for (const key of VERDICT_KEYS) {
-    if (Array.isArray(record[key])) return record[key];
+    if (Array.isArray(record2[key])) return record2[key];
   }
   return [];
 }
@@ -18859,7 +19172,7 @@ function namesHeldPath(candidate, entry) {
   const base = entry.path.slice(entry.path.lastIndexOf("/") + 1);
   const names = base.includes(".") && base.length >= 6 ? [entry.path, base] : [entry.path];
   return [candidate.claim, candidate.failureMode, ...candidate.evidence].some(
-    (text) => typeof text === "string" && names.some((name) => text.includes(name))
+    (text2) => typeof text2 === "string" && names.some((name) => text2.includes(name))
   );
 }
 function matchHeld(candidate, held) {
@@ -19207,6 +19520,8 @@ ${topLevelHelp()}`);
       return checkCandidatesCommand(argv.slice(1));
     case "check-verification":
       return checkVerificationCommand();
+    case "check-simplification":
+      return checkSimplificationCommand(argv.slice(1));
     case "conventions":
       return conventionsCommand(argv.slice(1));
     case "evidence":

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `review.structure.simplify` (default false), or `/review-voice:review
+  --simplify`, enables one post-verification, body-only maintainability
+  suggestion. It must enumerate each changed element it removes and an existing
+  abstraction, is separately verified for preserved behaviour and a real
+  concept removal, never appears inline, and never affects the verdict. (#113)
 - Added a test-adequacy rule: an added or changed test must name the smallest
   production mutation that makes it fail, otherwise its permissive assertion
   or setup is reported as `test_coverage`; the verifier traces that mutation

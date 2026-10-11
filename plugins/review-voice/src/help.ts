@@ -126,6 +126,22 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       'Exit codes: 0 valid, 2 malformed or bad invocation.',
     ),
   },
+  'check-simplification': {
+    summary: 'Validate the opt-in, body-only simplification pass',
+    body: lines(
+      'review-voice check-simplification --diff-file <path> [--candidate <path>]',
+      '  Validate the one optional simplification candidate or its verifier response.',
+      '  Without --candidate, stdin is the analyst output. With --candidate, stdin is',
+      '  the verifier response and stdout contains bodyFindings for record.',
+      '',
+      'Flags:',
+      '  --diff-file <path>     Unified diff every listed removal must occur in (required)',
+      '  --candidate <path>     Checked analyst output, when validating the verifier response',
+      'Reads: the simplification candidate or verifier JSON on stdin.',
+      'Writes: checked candidate JSON, or {bodyFindings:[...]} for record.',
+      'Exit codes: 0 valid (a rejected candidate writes no body finding), 2 malformed or bad invocation.',
+    ),
+  },
   context: {
     summary: 'Resolve config and the active policy stack as JSON',
     body: lines(
@@ -428,6 +444,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  --verdicts <path>      Verification verdicts, including findings that were dropped',
       '  --tie-breaks <path>    reconcile\'s output, with the rulings it applied',
       '  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]',
+      '  --body-findings <path> One verified simplification from check-simplification; requires --diff-file',
       '  --carried-from <run>   Validate findings carried by `carry` (needs --head; run in its clone)',
       '  --carry <path>         carry.json of carry-candidates (needs --head)',
       '  --thread <path>        thread.json; a follow-up whose comment thread is resolved is settled,',
@@ -593,7 +610,9 @@ export function commandHelp(command: string): string | null {
 }
 
 export function topLevelHelp(): string {
-  const list = COMMAND_ORDER.map((name) => `  ${name.padEnd(20)}${COMMAND_HELP[name]!.summary}`);
+  // Keep at least one delimiter after the longest command name. The command
+  // list is parsed by terminals and tests as well as read by people.
+  const list = COMMAND_ORDER.map((name) => `  ${name.padEnd(21)}${COMMAND_HELP[name]!.summary}`);
   const reference = COMMAND_ORDER.map((name) => COMMAND_HELP[name]!.body);
   return [
     'review-voice <command>',

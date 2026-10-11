@@ -104,6 +104,47 @@ proof of duplication; `inconclusive` means unknown.
   value every caller sets. Name the invariant and what the fallback hides, and
   so its violation becomes ordinary output or success rather than a signal.
 
+## Opt-in simplification pass
+
+Follow this section only when the request explicitly labels this a
+**simplification pass**. It is a separate pass after ordinary verification,
+not another ordinary candidate. Do not use it during a normal analyst call,
+and do not restate a structural concern already eligible for the ordinary
+candidate schema.
+
+Ask one narrower question: what behaviour-preserving restructuring removes
+concepts from the changed code by leaning on an existing abstraction? Return
+at most one proposal. It must delete real parameters, branches, helpers,
+wrappers, modes, or other concrete elements; moving their bodies, renaming
+them, or relocating the same conditional logic is not simplification. Return
+`null` when no proposal can eliminate concepts without changing behaviour.
+
+For a proposal, enumerate **every** concrete element that would disappear as
+`path`, head-side `line`, and a short `element` description. Each location must
+be a changed line in the supplied diff; do not use `and so on` or leave a
+threaded parameter or branch implicit. Name the existing abstraction that
+takes over with its `path`, `line`, and `name`. The category is always exactly
+`maintainability`.
+
+When this special pass is requested, this output replaces the normal Output
+section below. Return JSON only in exactly this shape:
+
+```json
+{
+  "simplification": {
+    "category": "maintainability",
+    "claim": "Use the existing dispatcher so the mode is no longer threaded through the delivery helpers.",
+    "removes": [
+      { "path": "src/notify/send.ts", "line": 18, "element": "urgent parameter" }
+    ],
+    "abstraction": { "path": "src/notify/dispatch.ts", "line": 12, "name": "dispatchNotice" }
+  }
+}
+```
+
+Or return exactly `{"simplification": null}`. Do not include ordinary
+`candidates`, a severity, a score, or commentary in this mode.
+
 ## What the pull request already says
 
 You may be given the pull request's thread: its inline comments, review bodies,
@@ -448,6 +489,9 @@ describes the old way - has no runtime break to trace. File it in category
 at.
 
 ## Output
+
+This section applies only when the request did not explicitly label a
+simplification pass; that mode uses the specialised output above.
 
 JSON matching `schemas/candidate.schema.json`. No summary, no praise, no
 commentary. Return `{"candidates": []}` when nothing qualifies - that is a

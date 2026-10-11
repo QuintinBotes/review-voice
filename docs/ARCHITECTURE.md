@@ -226,6 +226,21 @@ a time and does not follow multi-line strings. A file with any other extension
 gets no entries rather than a guess. The analyst treats an entry as a lead and
 needs to name the hidden invariant and the type that would carry it.
 
+`review.structure.simplify` defaults to `false`. When it is `true` (or a review
+is invoked with `--simplify`), the review command runs one additional analyst
+pass only after ordinary verification. It may propose at most one
+`maintainability` restructuring, and must list every concrete changed
+`path:line` that would disappear plus the existing abstraction it uses. A
+separate verifier checks each listed location is in the diff, that behaviour is
+preserved, and that the suggestion removes concepts rather than merely moving
+code. A rejection produces nothing.
+
+The verified result is stored separately from ordinary candidates and scores.
+It is appended only to the GitHub review body, never sent as an inline comment,
+and never participates in validation, scoring, or the review event. With the
+option off, no extra agent call or stored/output artifact is made; the normal
+review is unchanged.
+
 ### Retrieval
 
 No embedding model ships with the plugin. A downloaded model would break

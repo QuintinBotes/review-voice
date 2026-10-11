@@ -47,6 +47,10 @@ review:
     # An existing function, as git names it in a hunk header, that gains at
     # least this many decision points is listed; a whole number above zero.
     max_added_branches_per_function: 3
+    # Opt in to one post-verification, body-only restructuring suggestion.
+    # It must remove concepts through an existing abstraction; it never changes
+    # the verdict or becomes an inline comment.
+    simplify: false
   # A change over any of these is raised for a human and never approved by
   # Review Voice (docs/adr/0012). The review still runs and posts its findings.
   # Defaults are shown; a limit must be a whole number above zero.
