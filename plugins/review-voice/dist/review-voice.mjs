@@ -637,6 +637,9 @@ function parseSimplificationCandidate(value) {
   }
   const claim = text(candidate["claim"], "simplification.claim");
   if (claim.problem !== null) return { value: null, problem: claim.problem };
+  if (countWords(claim.value) > DEFAULT_LIMITS.maxWordsPerFinding) {
+    return { value: null, problem: `simplification.claim must be at most ${DEFAULT_LIMITS.maxWordsPerFinding} words, like any finding` };
+  }
   if (!Array.isArray(candidate["removes"]) || candidate["removes"].length === 0 || candidate["removes"].length > 50) {
     return { value: null, problem: "simplification.removes must list between 1 and 50 concrete elements" };
   }
