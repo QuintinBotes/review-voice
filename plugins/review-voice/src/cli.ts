@@ -7,7 +7,7 @@
  * (candidate generation, verification, wording) live in the plugin's agents.
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
-import { readFileSync, readSync, writeFileSync, mkdirSync, statSync, renameSync, rmSync } from 'node:fs';
+import { readFileSync, readSync, writeFileSync, mkdirSync, statSync, renameSync, rmSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
@@ -660,6 +660,7 @@ function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
   // Assessed here, from the diff the analyst will read, so the manifest and
   // the summary say the same thing and `record --files` carries it forward.
   const config = repositoryConfig();
+  for (const warning of config?.warnings ?? []) console.error(`Warning: ${warning}`);
   const generated = markedGenerated(acquired);
   const assessed = assessComplexity(acquired.diff, acquired.files ?? [], config?.humanReview, generated);
   const production = productionPaths(acquired.files ?? [], config?.humanReview, generated);
@@ -840,6 +841,7 @@ function contextCommand(): number {
   try {
     const root = repositoryRoot(process.cwd());
     const config = loadConfig(root);
+    const configPath = join(root, '.review-voice', 'config.yaml');
     const policy = resolvePolicy(config.layers);
     console.log(
       JSON.stringify(
@@ -870,12 +872,19 @@ function contextCommand(): number {
           warnings:
             config.verification.blockPresent || config.warnings.length > 0
             ? config.warnings
-            : [
-                ...config.warnings,
-                'No verification block in .review-voice/config.yaml, so the second-pass ' +
-                  'verifier never runs. Configs written before it existed do not have one. ' +
-                  'See the second-pass verification section of the README.',
-              ],
+            : existsSync(configPath)
+              ? [
+                  ...config.warnings,
+                  'No verification block in .review-voice/config.yaml, so the second-pass ' +
+                    'verifier never runs. Configs written before it existed do not have one. ' +
+                    'See the second-pass verification section of the README.',
+                ]
+              : [
+                  ...config.warnings,
+                  'Second-pass verification is off by default. To enable it, create ' +
+                    '.review-voice/config.yaml with a verification: block that sets enabled: true ' +
+                    'and command. See the second-pass verification section of the README.',
+                ],
         },
         null,
         2,
@@ -3273,10 +3282,10 @@ function explainCommand(argv: string[]): number {
     const shown = wanted === undefined ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
     // A run that posted nothing can still have held findings - below-gate
     // ones especially - and they are the only account of what it found.
-    if (shown.length === 0 && wanted === undefined) {
+    if (shown.length === 0 && wanted === undefined && detail.bodyFindings.length === 0) {
       console.log('No findings were recorded.');
       console.log('');
-    } else if (shown.length === 0) {
+    } else if (shown.length === 0 && wanted !== undefined) {
       console.log(`No finding ${wanted}. Available: ${detail.findings.map((f) => f.findingId).join(', ') || 'none'}.`);
       return 1;
     }
@@ -3366,6 +3375,25 @@ function explainCommand(argv: string[]): number {
               `${ruling.raised === undefined ? '' : ` (raised to ${ruling.raised})`} - ${ruling.reason}`,
           );
         }
+      }
+      console.log('');
+    }
+
+    if (detail.bodyFindings.length > 0 && wanted === undefined) {
+      console.log(`Body-only simplifications (${detail.bodyFindings.length}):`);
+      for (const finding of detail.bodyFindings) {
+        const { candidate } = finding;
+        console.log(`  ${candidate.claim}`);
+        console.log(
+          `  removes           ${candidate.removes
+            .map((element) => `${element.path}:${element.line} (${element.element})`)
+            .join('; ')}`,
+        );
+        console.log(
+          `  uses              ${candidate.abstraction.path}:${candidate.abstraction.line} ` +
+            `(${candidate.abstraction.name})`,
+        );
+        console.log('  verdict           never affects the verdict');
       }
       console.log('');
     }

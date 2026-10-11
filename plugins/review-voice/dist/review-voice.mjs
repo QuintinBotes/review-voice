@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync6, readSync, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2, renameSync, rmSync } from "node:fs";
+import { readFileSync as readFileSync6, readSync, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2, renameSync, rmSync, existsSync as existsSync3 } from "node:fs";
 import { dirname as dirname4, join as join7 } from "node:path";
 import { execFileSync as execFileSync11 } from "node:child_process";
 
@@ -3945,10 +3945,50 @@ function possiblyRepeatsDescription(candidate, thread) {
   if (mine.size === 0) return null;
   for (const comment of thread) {
     if (comment.kind !== "description") continue;
-    if (overlap(mine, significantWords(comment.body)) < UNANCHORED_DUPLICATE_OVERLAP) continue;
+    if (!descriptionMatchesCandidate(candidate, mine, comment.body)) continue;
     return { comment, excerpt: overlappingExcerpt(mine, comment.body) };
   }
   return null;
+}
+function descriptionMatchesCandidate(candidate, combined, body) {
+  if (overlap(combined, significantWords(body)) >= UNANCHORED_DUPLICATE_OVERLAP) return true;
+  const descriptionParts = [body, ...body.split(/(?<=[.!?])\s+|\n+/u)];
+  const candidateParts = [candidate.claim, `${candidate.claim} ${candidate.failureMode}`];
+  return candidateParts.some((candidatePart) => {
+    const mine = descriptionWords(candidatePart);
+    return descriptionParts.some((descriptionPart) => descriptionOverlap(mine, descriptionWords(descriptionPart)));
+  });
+}
+var TEST_WORDS = /* @__PURE__ */ new Set(["test", "tests", "testing", "tested", "untested"]);
+var COVERAGE_WORDS = /* @__PURE__ */ new Set(["cover", "covers", "covered", "covering", "coverage"]);
+var TEST_COVERAGE = "test-coverage";
+function descriptionWords(text2) {
+  const raw = significantWords(text2);
+  const words = /* @__PURE__ */ new Set();
+  let hasTest = false;
+  let hasCoverage = false;
+  for (const word of raw) {
+    if (TEST_WORDS.has(word)) {
+      hasTest = true;
+      words.add("test");
+    } else if (COVERAGE_WORDS.has(word)) {
+      hasCoverage = true;
+      words.add("cover");
+    } else {
+      words.add(word);
+    }
+  }
+  const missingCoverage = /\b(?:no|not|without|lack(?:s|ing)?|missing|uncovered)\b/iu.test(text2);
+  if (raw.has("untested") || hasTest && hasCoverage || hasCoverage && missingCoverage) {
+    words.add(TEST_COVERAGE);
+  }
+  return words;
+}
+function descriptionOverlap(mine, theirs) {
+  if (mine.size === 0) return false;
+  const shared = [...mine].filter((word) => theirs.has(word));
+  if (shared.length / mine.size < UNANCHORED_DUPLICATE_OVERLAP) return false;
+  return shared.length >= 3 || shared.length >= 2 && shared.includes(TEST_COVERAGE);
 }
 function overlappingExcerpt(mine, body) {
   const sentences = body.split(/(?<=[.!?])\s+|\n+/u).map((sentence) => sentence.trim()).filter((sentence) => sentence.length > 0);
@@ -16467,6 +16507,8 @@ function topLevelHelp() {
     "",
     "Commands:",
     ...list,
+    "",
+    "Options:",
     "  --version           Print the plugin version",
     "  --help              Show this message",
     "",
@@ -16813,6 +16855,7 @@ function markedGenerated(acquired) {
 }
 function emitDiff(acquired, outDir) {
   const config2 = repositoryConfig();
+  for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
   const generated = markedGenerated(acquired);
   const assessed = assessComplexity(acquired.diff, acquired.files ?? [], config2?.humanReview, generated);
   const production = productionPaths(acquired.files ?? [], config2?.humanReview, generated);
@@ -16963,6 +17006,7 @@ function contextCommand() {
   try {
     const root = repositoryRoot(process.cwd());
     const config2 = loadConfig(root);
+    const configPath = join7(root, ".review-voice", "config.yaml");
     const policy = resolvePolicy(config2.layers);
     console.log(
       JSON.stringify(
@@ -16990,9 +17034,12 @@ function contextCommand() {
           // Not raised on top of a parse failure: a config that did not parse
           // says nothing about whether it has a verification block, and the
           // parse error is the actionable item.
-          warnings: config2.verification.blockPresent || config2.warnings.length > 0 ? config2.warnings : [
+          warnings: config2.verification.blockPresent || config2.warnings.length > 0 ? config2.warnings : existsSync3(configPath) ? [
             ...config2.warnings,
             "No verification block in .review-voice/config.yaml, so the second-pass verifier never runs. Configs written before it existed do not have one. See the second-pass verification section of the README."
+          ] : [
+            ...config2.warnings,
+            "Second-pass verification is off by default. To enable it, create .review-voice/config.yaml with a verification: block that sets enabled: true and command. See the second-pass verification section of the README."
           ]
         },
         null,
@@ -18829,10 +18876,10 @@ function explainCommand(argv) {
     console.log("");
     const history = detail.repository !== null && detail.pullNumber !== null ? followUpHistory(db, detail.repository, detail.pullNumber) : null;
     const shown = wanted === void 0 ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
-    if (shown.length === 0 && wanted === void 0) {
+    if (shown.length === 0 && wanted === void 0 && detail.bodyFindings.length === 0) {
       console.log("No findings were recorded.");
       console.log("");
-    } else if (shown.length === 0) {
+    } else if (shown.length === 0 && wanted !== void 0) {
       console.log(`No finding ${wanted}. Available: ${detail.findings.map((f) => f.findingId).join(", ") || "none"}.`);
       return 1;
     }
@@ -18904,6 +18951,21 @@ function explainCommand(argv) {
             `  tie-break         ${ruling.upheld ? "upheld" : "not upheld"}${ruling.applied === false ? " (not applied)" : ""}${ruling.raised === void 0 ? "" : ` (raised to ${ruling.raised})`} - ${ruling.reason}`
           );
         }
+      }
+      console.log("");
+    }
+    if (detail.bodyFindings.length > 0 && wanted === void 0) {
+      console.log(`Body-only simplifications (${detail.bodyFindings.length}):`);
+      for (const finding of detail.bodyFindings) {
+        const { candidate } = finding;
+        console.log(`  ${candidate.claim}`);
+        console.log(
+          `  removes           ${candidate.removes.map((element2) => `${element2.path}:${element2.line} (${element2.element})`).join("; ")}`
+        );
+        console.log(
+          `  uses              ${candidate.abstraction.path}:${candidate.abstraction.line} (${candidate.abstraction.name})`
+        );
+        console.log("  verdict           never affects the verdict");
       }
       console.log("");
     }
