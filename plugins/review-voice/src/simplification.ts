@@ -1,6 +1,7 @@
 import { classifyAnchor, type FileHunks } from './diff/hunks.ts';
 import { DEFAULT_LIMITS } from './contract/limits.ts';
 import { countWords } from './contract/words.ts';
+import { findForbiddenPhrases } from './contract/validate.ts';
 
 /** One concrete concept a proposed restructuring makes unnecessary. */
 export interface SimplificationElement {
@@ -91,6 +92,9 @@ function abstraction(value: unknown): Parsed<SimplificationAbstraction> {
 }
 
 /** Parses the specialised output of the opt-in simplification analyst pass. */
+/** A removed element or abstraction is a name, not prose. */
+const MAX_NAME_CHARS = 80;
+
 export function parseSimplificationCandidate(value: unknown): Parsed<SimplificationCandidate | null> {
   const document = record(value);
   if (document === null) return { value: null, problem: 'expected {"simplification": ...}' };
@@ -123,6 +127,16 @@ export function parseSimplificationCandidate(value: unknown): Parsed<Simplificat
   }
   const existing = abstraction(candidate['abstraction']);
   if (existing.problem !== null) return { value: null, problem: existing.problem };
+  // Everything rendered into the posted body meets the same contract as a finding's prose.
+  const posted = [claim.value!, ...removes.map((removed) => removed.element), existing.value!.name];
+  if (posted.some((part) => part.length > MAX_NAME_CHARS && part !== claim.value)) {
+    return { value: null, problem: `simplification element and abstraction names must be at most ${MAX_NAME_CHARS} characters` };
+  }
+  if (posted.some((part) => /[\u2013\u2014]/u.test(part))) {
+    return { value: null, problem: 'simplification text contains an em or en dash; use a comma, a full stop, or a plain hyphen' };
+  }
+  const hedges = posted.flatMap((part) => findForbiddenPhrases(part, DEFAULT_LIMITS.forbiddenPhrases));
+  if (hedges.length > 0) return { value: null, problem: `simplification text contains "${hedges[0]}"; state the problem rather than hedging` };
   return {
     value: { category: 'maintainability', claim: claim.value!, removes, abstraction: existing.value! },
     problem: null,

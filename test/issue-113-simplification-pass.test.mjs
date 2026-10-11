@@ -296,3 +296,23 @@ test('a simplification claim over the per-finding word budget is rejected like a
   assert.equal(parsed.value, null);
   assert.match(parsed.problem, /at most 40 words/);
 });
+
+test('simplification text meets the same contract as a finding: no dashes, no hedges, short names', async () => {
+  const { parseSimplificationCandidate } = await import('../plugins/review-voice/src/simplification.ts');
+  const candidate = (over) => ({
+    simplification: {
+      category: 'maintainability',
+      claim: 'The mode flag threads through three functions that a dispatcher replaces.',
+      removes: [{ path: 'src/a.ts', line: 3, element: 'mode flag' }],
+      abstraction: { path: 'src/b.ts', line: 1, name: 'dispatch' },
+      ...over,
+    },
+  });
+  assert.equal(parseSimplificationCandidate(candidate({})).problem, null);
+  assert.match(parseSimplificationCandidate(candidate({ claim: 'The flag — threaded everywhere — goes.' })).problem, /em or en dash/);
+  assert.match(parseSimplificationCandidate(candidate({ claim: 'You might consider a dispatcher here.' })).problem, /hedging/);
+  assert.match(
+    parseSimplificationCandidate(candidate({ removes: [{ path: 'src/a.ts', line: 3, element: 'x'.repeat(81) }] })).problem,
+    /at most 80 characters/,
+  );
+});
