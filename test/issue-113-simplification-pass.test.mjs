@@ -309,7 +309,7 @@ test('simplification text meets the same contract as a finding: no dashes, no he
     },
   });
   assert.equal(parseSimplificationCandidate(candidate({})).problem, null);
-  assert.match(parseSimplificationCandidate(candidate({ claim: 'The flag — threaded everywhere — goes.' })).problem, /em or en dash/);
+  assert.match(parseSimplificationCandidate(candidate({ claim: `The flag ${String.fromCharCode(0x2014)} threaded everywhere goes.` })).problem, /em or en dash/);
   assert.match(parseSimplificationCandidate(candidate({ claim: 'You might consider a dispatcher here.' })).problem, /hedging/);
   assert.match(
     parseSimplificationCandidate(candidate({ removes: [{ path: 'src/a.ts', line: 3, element: 'x'.repeat(81) }] })).problem,
