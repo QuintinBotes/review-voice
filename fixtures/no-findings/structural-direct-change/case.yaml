@@ -1,0 +1,7 @@
+name: structural-direct-change
+asserts: >
+  A direct checkout-specific formatter has no wrapper, threaded mode, copied
+  block, serialized await, shared-module feature branch, or silent fallback,
+  so it produces no finding.
+expect:
+  output: "No actionable findings."

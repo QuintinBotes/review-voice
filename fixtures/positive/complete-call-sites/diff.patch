@@ -1,0 +1,19 @@
+diff --git a/src/loaders.ts b/src/loaders.ts
+--- a/src/loaders.ts
++++ b/src/loaders.ts
+@@ -1,14 +1,17 @@
+ import { metrics } from './metrics';
+ 
+ export async function loadPrimary() {
++  // Count every loader request.
++  metrics.increment('loader.request');
+   return fetch('/primary');
+ }
+ 
+ export async function loadSecondary() {
+   return fetch('/secondary');
+ }
+ 
+ export async function loadArchive() {
+   return fetch('/archive');
+ }

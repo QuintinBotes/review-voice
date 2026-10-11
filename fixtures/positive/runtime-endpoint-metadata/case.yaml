@@ -1,0 +1,9 @@
+name: runtime-endpoint-metadata
+asserts: >
+  Content-type metadata added only for documentation is flagged when it
+  preempts the endpoint's custom content-type filter response.
+expect:
+  min_findings: 1
+  severity: important
+  path: src/ItemsEndpoints.cs
+  category: api_contract

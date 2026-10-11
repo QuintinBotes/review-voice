@@ -1,0 +1,10 @@
+name: test-revert-blind
+asserts: >
+  A new persistence test reads through the handler's tracked context, so it
+  stays green when the added save is removed and should be flagged as
+  test_coverage.
+expect:
+  min_findings: 1
+  severity: minor
+  path: test/orders/MarkPaidHandlerTests.cs
+  category: test_coverage

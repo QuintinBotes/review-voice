@@ -1,0 +1,10 @@
+name: complete-call-sites
+asserts: >
+  A new metric that says every loader request is counted is incomplete when two
+  loader call sites remain uninstrumented; both uninstrumented calls are listed
+  in one finding rather than arriving in separate review rounds.
+expect:
+  findings: 1
+  severity: nit
+  category: observability
+  path: src/loaders.ts

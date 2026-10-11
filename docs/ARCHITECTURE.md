@@ -147,6 +147,15 @@ large diff must not stall the review. A file the budget did not reach is listed
 as inconclusive with `reason: "time-budget"`, and the files finished so far are
 still written.
 
+Added-line functions and methods also receive lexical `declared` context. Their
+names are split into meaningful tokens; names with fewer than two are omitted,
+while the two longest tokens drive one same-line fixed-string grep. A hit is a
+possible existing helper only when its declaration shares at least two tokens
+at Jaccard 0.5 or higher. There are at most eight declarations per file and
+three helpers per declaration. These searches run after reference collection
+under the same budget; a failed query or exhausted budget is inconclusive, not
+evidence that no helper exists.
+
 ### Structural evidence
 
 `diff --out` also writes a `structure` block to `files.json` and its summary:
@@ -167,11 +176,13 @@ instead of treating it as small. "Production" means what the decision-point
 count means by it, from the same classification: tests, documentation and
 generated files are left out.
 
-This is a fact about a file, not about the diff: it is not the size signal
-[adr/0012](adr/0012-complex-changes-need-human-approval.md) rejected, and it
-plays no part in the verdict. The analyst gets it as a lead and still has to
-name a seam the added code could be split along, so "this file is large" on its
-own is never a finding.
+This is a fact about a file, not aggregate diff size. By default it plays no
+part in the verdict. A repository may opt in with
+`review.human_review.structure.file_line_crossing`; then a nonempty
+`sizeCrossings` list joins the [ADR 0012](adr/0012-complex-changes-need-human-approval.md)
+APPROVE cap. The analyst still gets it as a lead and has to name a seam the
+added code could be split along, so "this file is large" on its own is never a
+finding.
 
 The second is `branchGrowth`: declarations that exist at the base and gain at
 least `review.structure.max_added_branches_per_function` (default 3) decision
@@ -190,7 +201,15 @@ in a hunk without header context are not attributed either. There is no
 parser, so an indented method is attributed to the class or function around
 it, as git would; the analyst is told to check. One counter serves both uses,
 so the complexity assessment and this signal cannot disagree about what a
-decision point is.
+decision point is. By default it is evidence only; a repository can opt in
+with `review.human_review.structure.branch_growth` to make a nonempty
+`branchGrowth` list join the same ADR 0012 cap.
+
+Both switches default to false. Enabling one changes only an otherwise
+APPROVE verdict to COMMENT: it does not raise a maintainability tier, create a
+REQUEST_CHANGES event, add a new GitHub write, or put the structural reason in
+the posted review. The signal is named only in the existing local
+`humanReviewNote` and decision data.
 
 The third is `typeEscapes`: `{ path, line, kind }` for each escape from the type
 system on a line the change adds to production source, found by a small
@@ -206,6 +225,21 @@ ignore comments, and directives are read from comments only. It works a line at
 a time and does not follow multi-line strings. A file with any other extension
 gets no entries rather than a guess. The analyst treats an entry as a lead and
 needs to name the hidden invariant and the type that would carry it.
+
+`review.structure.simplify` defaults to `false`. When it is `true` (or a review
+is invoked with `--simplify`), the review command runs one additional analyst
+pass only after ordinary verification. It may propose at most one
+`maintainability` restructuring, and must list every concrete changed
+`path:line` that would disappear plus the existing abstraction it uses. A
+separate verifier checks each listed location is in the diff, that behaviour is
+preserved, and that the suggestion removes concepts rather than merely moving
+code. A rejection produces nothing.
+
+The verified result is stored separately from ordinary candidates and scores.
+It is appended only to the GitHub review body, never sent as an inline comment,
+and never participates in validation, scoring, or the review event. With the
+option off, no extra agent call or stored/output artifact is made; the normal
+review is unchanged.
 
 ### Retrieval
 
@@ -329,7 +363,9 @@ evidence barely moved and the tier jumped.
 `score` derives it from the category **and computed reach**. The category says
 what kind of consequence a claim carries; reach says how far the affected code
 spreads. The requested severity is recorded beside the derived one so a
-divergence can be audited.
+divergence can be audited. An owner may explicitly lower a reported tier with
+`score --severity <candidate_id>=<tier>` when that reach overstates the case;
+the command refuses an increase and records the override in the score reason.
 
 One tier per category was the first version, and it was wrong whenever a
 category's members vary in reach: `ci` covers both a change that breaks every
@@ -386,6 +422,14 @@ and the category is a judgement that can still move. The same comment was
 `maintainability` on one run and `correctness` on the next, which is one tier
 apart. That is a narrower problem than the one this replaced, and a category is
 easier to argue about than a severity.
+
+`trust_boundary` is the exception to a category being severe by nature. It can
+name a non-security control boundary, such as a gate selecting the wrong path,
+so it rises above the requested tier only when the verifier traced impact beyond
+the changed code at the escalation confidence. `security`, `authorization` and
+`authentication` remain inherent boundary tiers. A verifier's
+`impact_class: "no-exposure"` holds any of those boundary findings at the
+requested tier because it traced that the boundary still holds elsewhere.
 
 `question` is preserved rather than derived. It says the reviewer could not
 establish the answer and the author can, which is a kind of finding rather than

@@ -2,12 +2,20 @@ import type { ChangedFile } from './acquire.ts';
 import { unquoteGitPath } from './hunks.ts';
 import { globToRegExp } from '../conventions/globs.ts';
 import { isDocumentation } from './classify.ts';
+import type { StructureSignals } from './structure.ts';
 
 /**
  * Whether a change is complex enough that a person, not this tool, should
- * approve it (docs/adr/0012). Assessed from the diff alone, so the same diff
- * and the same limits always give the same answer.
+ * approve it (docs/adr/0012). Its base signals are assessed from the diff, so
+ * the same diff and the same limits always give the same answer.
  */
+export interface HumanReviewStructureConfig {
+  /** A production file crossing `review.structure.max_file_lines`. */
+  fileLineCrossing: boolean;
+  /** An existing declaration gaining `review.structure.max_added_branches_per_function` branches. */
+  branchGrowth: boolean;
+}
+
 export interface HumanReviewConfig {
   maxDecisionPoints: number;
   maxHunkDecisionPoints: number;
@@ -25,7 +33,14 @@ export interface HumanReviewConfig {
    * as files a generator in the repository writes. Not counted either.
    */
   generatedPaths: string[];
+  /** Structural signals that may opt into the ADR 0012 approval cap. */
+  structure: HumanReviewStructureConfig;
 }
+
+/** A partial config may choose either structural signal independently. */
+export type HumanReviewConfigInput = Omit<Partial<HumanReviewConfig>, 'structure'> & {
+  structure?: Partial<HumanReviewStructureConfig>;
+};
 
 /**
  * `.review-voice/**` is here because the review's own configuration, exclusion
@@ -69,6 +84,7 @@ export const DEFAULT_HUMAN_REVIEW: HumanReviewConfig = {
   sensitiveExemptPaths: [],
   testPaths: DEFAULT_TEST_PATHS,
   generatedPaths: [],
+  structure: { fileLineCrossing: false, branchGrowth: false },
 };
 
 export interface ComplexityAssessment {
@@ -284,7 +300,7 @@ export function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount
   return hunks;
 }
 
-function config(partial: Partial<HumanReviewConfig> | undefined): HumanReviewConfig {
+function config(partial: HumanReviewConfigInput | undefined): HumanReviewConfig {
   return {
     maxDecisionPoints: partial?.maxDecisionPoints ?? DEFAULT_HUMAN_REVIEW.maxDecisionPoints,
     maxHunkDecisionPoints: partial?.maxHunkDecisionPoints ?? DEFAULT_HUMAN_REVIEW.maxHunkDecisionPoints,
@@ -292,6 +308,10 @@ function config(partial: Partial<HumanReviewConfig> | undefined): HumanReviewCon
     sensitiveExemptPaths: partial?.sensitiveExemptPaths ?? DEFAULT_HUMAN_REVIEW.sensitiveExemptPaths,
     testPaths: partial?.testPaths ?? DEFAULT_HUMAN_REVIEW.testPaths,
     generatedPaths: partial?.generatedPaths ?? DEFAULT_HUMAN_REVIEW.generatedPaths,
+    structure: {
+      fileLineCrossing: partial?.structure?.fileLineCrossing ?? DEFAULT_HUMAN_REVIEW.structure.fileLineCrossing,
+      branchGrowth: partial?.structure?.branchGrowth ?? DEFAULT_HUMAN_REVIEW.structure.branchGrowth,
+    },
   };
 }
 
@@ -364,7 +384,7 @@ function reviewedKinds(
  */
 export function productionPaths(
   files: readonly ChangedFile[],
-  partial?: Partial<HumanReviewConfig>,
+  partial?: HumanReviewConfigInput,
   markedGenerated: ReadonlySet<string> = new Set(),
 ): string[] {
   const { kinds } = reviewedKinds(files, config(partial), markedGenerated);
@@ -379,7 +399,7 @@ export function productionPaths(
 export function assessComplexity(
   diff: string,
   files: readonly ChangedFile[],
-  partial?: Partial<HumanReviewConfig>,
+  partial?: HumanReviewConfigInput,
   markedGenerated: ReadonlySet<string> = new Set(),
 ): ComplexityAssessment {
   const limits = config(partial);
@@ -451,8 +471,63 @@ export function assessComplexity(
     sensitivePaths: listed,
     sensitiveMatches: matches,
     sensitiveExempted: exempted.slice(0, MAX_SENSITIVE_LISTED),
-    limits: { ...limits },
+    // Structural-cap switches are deliberately not recorded here: when both
+    // are off, this assessment must remain byte-for-byte compatible with the
+    // output before they existed. An enabled signal is represented by its
+    // recorded reason instead.
+    limits: {
+      maxDecisionPoints: limits.maxDecisionPoints,
+      maxHunkDecisionPoints: limits.maxHunkDecisionPoints,
+      sensitivePaths: limits.sensitivePaths,
+      sensitiveExemptPaths: limits.sensitiveExemptPaths,
+      testPaths: limits.testPaths,
+      generatedPaths: limits.generatedPaths,
+    },
   };
+}
+
+const MAX_STRUCTURE_LISTED = 3;
+
+function listedStructure<T>(items: readonly T[], describe: (item: T) => string): string {
+  const shown = items.slice(0, MAX_STRUCTURE_LISTED).map(describe).join(', ');
+  const more = items.length - Math.min(items.length, MAX_STRUCTURE_LISTED);
+  return `${shown}${more > 0 ? `, +${more} more` : ''}`;
+}
+
+/**
+ * Adds the explicitly enabled structural signals to the ADR 0012 assessment.
+ *
+ * The structure block remains analyst evidence by default. Returning the
+ * original assessment when both settings are off preserves the existing diff
+ * manifest and verdict output exactly.
+ */
+export function applyStructureHumanReviewCap(
+  assessment: ComplexityAssessment,
+  signals: Pick<StructureSignals, 'sizeCrossings' | 'branchGrowth'>,
+  partial?: HumanReviewConfigInput,
+): ComplexityAssessment {
+  const enabled = config(partial).structure;
+  const reasons = [...assessment.reasons];
+
+  if (enabled.fileLineCrossing && signals.sizeCrossings.length > 0) {
+    reasons.push(
+      `file-line crossing signal (structure.sizeCrossings): ${listedStructure(
+        signals.sizeCrossings,
+        (crossing) => `${crossing.path} (${crossing.baseLines} to ${crossing.headLines} lines; threshold ${crossing.threshold})`,
+      )}`,
+    );
+  }
+  if (enabled.branchGrowth && signals.branchGrowth.length > 0) {
+    reasons.push(
+      `branch-growth signal (structure.branchGrowth): ${listedStructure(
+        signals.branchGrowth,
+        (growth) => `${growth.path}:${growth.line} (${growth.function}; ${growth.addedDecisionPoints} added decision points; threshold ${growth.threshold})`,
+      )}`,
+    );
+  }
+
+  if (reasons.length === assessment.reasons.length) return assessment;
+  return { ...assessment, level: 'high', reasons };
 }
 
 const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;

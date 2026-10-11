@@ -1,0 +1,6 @@
+name: complete-call-sites-covered
+asserts: >
+  When each loader call is routed through the same counting helper, no
+  completeness finding is raised.
+expect:
+  output: "No actionable findings."

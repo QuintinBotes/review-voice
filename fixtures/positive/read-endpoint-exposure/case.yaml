@@ -1,0 +1,9 @@
+name: read-endpoint-exposure
+asserts: >
+  A status-only read endpoint protected only by a broad inherited policy while
+  returning notes and display names is flagged for authorization or exposure.
+expect:
+  min_findings: 1
+  severity: blocking
+  path: src/AccountsController.cs
+  category: authorization

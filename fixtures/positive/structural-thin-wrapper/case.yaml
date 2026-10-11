@@ -1,0 +1,10 @@
+name: structural-thin-wrapper
+asserts: >
+  A new exported wrapper whose only body delegates the same argument is flagged
+  as maintainability: it creates an indistinguishable API, and so its contract
+  can drift from the behavior's actual owner.
+expect:
+  findings: 1
+  verified: true
+  path: src/orders/invoice-actions.ts
+  category: maintainability

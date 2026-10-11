@@ -1,0 +1,10 @@
+name: structural-shared-module
+asserts: >
+  Checkout-specific banner logic added to a shared status formatter is flagged
+  as maintainability because other consumers do not need the branch, and so
+  they must carry or reason about checkout behavior.
+expect:
+  findings: 1
+  verified: true
+  path: src/shared/status-label.ts
+  category: maintainability

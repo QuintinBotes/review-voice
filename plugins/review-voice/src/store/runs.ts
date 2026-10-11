@@ -7,6 +7,7 @@ import { parseComplexity, type ComplexityAssessment } from '../diff/complexity.t
 import { matchCarried, type CarriedFinding } from '../diff/carry.ts';
 import type { TieBreak } from '../verify/reconcile.ts';
 import type { FollowUpState } from './follow-ups.ts';
+import type { VerifiedSimplification } from '../simplification.ts';
 
 export interface StoredFinding {
   findingId: string;
@@ -206,6 +207,8 @@ export interface RecordRunInput {
   carry?: CarryMarker | undefined;
   /** Earlier runs' partly-addressed follow-ups, as this run found them: open or resolved. */
   followUps?: FollowUpState[] | undefined;
+  /** Verified, optional restructuring advice rendered only in the review body. */
+  bodyFindings?: VerifiedSimplification[] | undefined;
   /**
    * How long each stage took, and what it cost.
    *
@@ -307,6 +310,9 @@ export function hashDiff(diff: string): string {
 }
 
 export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: string; findings: StoredFinding[] } {
+  if ((input.bodyFindings?.length ?? 0) > 1) {
+    throw new Error('A review may record at most one body-only simplification finding.');
+  }
   const reviewRunId = randomUUID();
   const findings = assignIds(input.output, input.candidates ?? []);
 
@@ -343,6 +349,7 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
       verdicts: input.verdicts ?? [],
       tieBreaks: input.tieBreaks ?? [],
       held: input.held ?? [],
+      ...(input.bodyFindings === undefined || input.bodyFindings.length === 0 ? {} : { bodyFindings: input.bodyFindings }),
       ...(input.carry === undefined ? {} : { carry: input.carry }),
       ...(input.followUps === undefined || input.followUps.length === 0 ? {} : { followUps: input.followUps }),
     }),
@@ -387,6 +394,8 @@ export interface RunDetail {
   carry: CarryMarker | null;
   /** Empty unless an earlier run of the pull request left a follow-up open. */
   followUps: FollowUpState[];
+  /** Verified body-only restructuring advice; never contributes to the verdict. */
+  bodyFindings: VerifiedSimplification[];
 }
 
 function storedComplexity(raw: unknown): ComplexityAssessment | null {
@@ -431,6 +440,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     held?: unknown;
     carry?: unknown;
     followUps?: unknown;
+    bodyFindings?: unknown;
   };
 
   return {
@@ -449,6 +459,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     held: Array.isArray(parsed.held) ? (parsed.held as HeldFinding[]) : [],
     carry: parseCarryMarker(parsed.carry),
     followUps: Array.isArray(parsed.followUps) ? (parsed.followUps as FollowUpState[]) : [],
+    bodyFindings: Array.isArray(parsed.bodyFindings) ? (parsed.bodyFindings as VerifiedSimplification[]) : [],
     // Older rows predate the column, so absence is normal rather than an error.
     stages: ((): StageTiming[] => {
       const raw = row['stages_json'];

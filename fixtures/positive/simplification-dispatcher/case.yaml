@@ -1,0 +1,20 @@
+name: simplification-dispatcher
+asserts: >
+  A receipt flag is threaded through retryOrderUpdate, sendOrderUpdate and
+  sendEmail even though the existing dispatchOrderUpdate abstraction already
+  owns the delivery choice. The opt-in simplification pass may propose one
+  body-only maintainability restructuring that enumerates every disappearing
+  parameter and branch, preserves behaviour through that dispatcher, and does
+  not affect the verdict.
+expect:
+  findings: 1
+  verified: true
+  category: maintainability
+  placement: body
+  verdict_unchanged: true
+  abstraction: src/notifications/dispatch.ts:3
+  removes:
+    - src/notifications/send-update.ts:1
+    - src/notifications/send-update.ts:5
+    - src/notifications/send-update.ts:9
+    - src/notifications/send-update.ts:10

@@ -1,0 +1,20 @@
+--- /dev/null
++++ b/src/scopes.ts
+@@ -0,0 +1,19 @@
++export const Scope = { Read: 1, Write: 2 } as const;
++type ScopeValue = number;
++
++export function parseScopes(raw: string): ScopeValue {
++  const names = raw.split(',').map((name) => name.trim());
++  if (raw.trim() === '' || names.some((name) => name === '')) {
++    throw new Error('A scope is required.');
++  }
++  if (new Set(names).size !== names.length) {
++    throw new Error('A scope may appear once.');
++  }
++  return names.reduce((value, name) => {
++    if (name === 'read') return value | Scope.Read;
++    if (name === 'write') return value | Scope.Write;
++    throw new Error(`Unknown scope: ${name}`);
++  }, 0);
++}

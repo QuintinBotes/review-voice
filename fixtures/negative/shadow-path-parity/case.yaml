@@ -1,0 +1,6 @@
+name: shadow-path-parity
+asserts: >
+  A non-fatal shadow path that guards all of its work, validates before caching,
+  and mirrors production timing, concurrency and budget produces no finding.
+expect:
+  output: "No actionable findings."

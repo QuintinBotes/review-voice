@@ -1,0 +1,10 @@
+name: structural-copied-logic
+asserts: >
+  Two added formatting blocks that differ only in the subject name are flagged
+  as maintainability because they implement one display rule, and so a later
+  correction must be made twice and can diverge.
+expect:
+  findings: 1
+  verified: true
+  path: src/orders/participant-labels.ts
+  category: maintainability

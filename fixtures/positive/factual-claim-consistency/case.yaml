@@ -1,0 +1,10 @@
+name: factual-claim-consistency
+asserts: >
+  A description, changed comment, documentation sibling and entry point that
+  state flag-gated duplicate rejection as a present fact are reported as one
+  consolidated factual-claim finding with every remaining mismatch cited.
+expect:
+  min_findings: 1
+  severity: nit
+  category: maintainability
+  path: src/registration.ts

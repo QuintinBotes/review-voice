@@ -66,11 +66,12 @@ test('api_contract requested minor with no reach stays minor', () => {
   assert.equal(severity.severity, 'minor');
   assert.match(severity.reason, /held at minor because escalation needs the verifier to trace impact/);
 
-  // Boundary categories keep their tier whatever was requested.
-  for (const category of ['security', 'trust_boundary', 'authorization', 'authentication']) {
+  // Security and authorization boundaries keep their tier whatever was requested.
+  for (const category of ['security', 'authorization', 'authentication']) {
     const kept = tier({ category }, { technicalConfidence: 0.9 });
     assert.notEqual(kept.severity, 'minor', category);
   }
+  assert.equal(tier({ category: 'trust_boundary' }, { technicalConfidence: 0.9 }).severity, 'minor');
   assert.equal(tier({ category: 'security' }, { technicalConfidence: 0.9 }).severity, 'blocking');
 });
 

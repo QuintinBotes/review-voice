@@ -2,10 +2,26 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/QuintinBotes/review-voice/schemas/verification.schema.json",
   "title": "Verification entry",
-  "description": "One entry of the evidence-verifier agent's output. The CLI also accepts the camelCase spelling of every field name (candidateId, evidenceQuality, technicalConfidence, fixVerdict, fixConfidence, fixReason, fixDirection, impactTraced, impactClass, premisesVerified, requiredContextMissing, partlyAddressed). Keep the checks in `verificationProblem` in src/cli.ts in step with this file.",
+  "description": "One entry of the evidence-verifier agent's output. The CLI also accepts the camelCase spelling of every field name (candidateId, evidenceQuality, technicalConfidence, fixVerdict, fixConfidence, fixReason, fixDirection, impactTraced, impactClass, premisesVerified, requiredContextMissing, partlyAddressed). `verdict` and `confidence` belong to the second-pass verifier and are refused here; use `verified` and `technical_confidence`. Keep the checks in `verificationProblem` in src/cli.ts in step with this file.",
   "type": "object",
   "required": [
     "candidate_id"
+  ],
+  "allOf": [
+    {
+      "not": {
+        "required": [
+          "verdict"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "confidence"
+        ]
+      }
+    }
   ],
   "properties": {
     "candidate_id": {
@@ -56,7 +72,7 @@
         "data-exposure",
         "privilege-escalation"
       ],
-      "description": "For a security, trust_boundary, authorization or authentication finding: what the defect exposes, as traced. no-exposure only when the boundary still holds elsewhere (the server rejects the request); the finding is then held at the requested tier instead of its boundary tier. Omit when unsure: any other value, or none, keeps the boundary tier."
+      "description": "For a security, trust_boundary, authorization or authentication finding: what the defect exposes, as traced. no-exposure only when the boundary still holds elsewhere (the server rejects the request); the finding is then held at the requested tier. For trust_boundary, an exposure class does not replace impact_traced: the ordinary traced-impact gate decides an escalation."
     },
     "premises_verified": {
       "type": "boolean",

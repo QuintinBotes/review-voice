@@ -1,0 +1,25 @@
+diff --git a/src/orders/MarkPaidHandler.cs b/src/orders/MarkPaidHandler.cs
+--- a/src/orders/MarkPaidHandler.cs
++++ b/src/orders/MarkPaidHandler.cs
+@@ -20,6 +20,7 @@ public sealed class MarkPaidHandler {
+     public async Task Handle(MarkPaid command, CancellationToken cancellationToken) {
+         var order = await _db.Orders.SingleAsync(o => o.Id == command.OrderId, cancellationToken);
+         order.Status = OrderStatus.Paid;
++        await _db.SaveChangesAsync(cancellationToken);
+     }
+ }
+diff --git a/test/orders/MarkPaidHandlerTests.cs b/test/orders/MarkPaidHandlerTests.cs
+--- a/test/orders/MarkPaidHandlerTests.cs
++++ b/test/orders/MarkPaidHandlerTests.cs
+@@ -1,3 +1,14 @@
++[Fact]
++public async Task Handle_persists_paid_status() {
++    await using var db = CreateTrackedDb();
++    var order = await SeedOrder(db);
++    var handler = new MarkPaidHandler(db);
++
++    await handler.Handle(new MarkPaid(order.Id), CancellationToken.None);
++
++    var row = await db.Orders.SingleAsync(o => o.Id == order.Id);
++    row.Status.Should().Be(OrderStatus.Paid);
++}

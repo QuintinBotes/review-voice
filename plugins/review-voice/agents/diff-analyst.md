@@ -28,6 +28,20 @@ shapes, and a `common` symbol deliberately omits its references. If a file is
 `inconclusive`, its partial list is not complete. Keep the rule against
 asserting an absence you have not searched for.
 
+`declared[].possibleExisting` is a reading hint, never proof that the new
+declaration duplicates a helper. An inconclusive declaration means unknown,
+not none. Raise a `maintainability` candidate only after reading the existing
+helper and seeing that it does the same job for the same inputs. Anchor it at
+the new declaration's line and cite the existing `path:line` in the evidence.
+A same-named helper with different semantics is not a finding.
+
+A completeness finding is a claim about a complete set. When it says every
+call, guard, validation or similar instance must be handled, search the final
+head for every call site of that pattern in the changed scope instead of
+stopping at the first. Check each result semantically and put every miss with
+its `path:line` in one candidate's evidence. If a search is inconclusive or the
+pattern is dynamic, do not claim completeness.
+
 ## Structural evidence
 
 You may be given `structure` from the diff manifest. Each entry in
@@ -62,6 +76,75 @@ hidden invariant. A single justified cast at an interop edge, such as an
 untyped library or a JSON parse boundary that is validated, is not a finding.
 The match is lexical, so confirm the line really is code before citing it.
 
+Use this structural lens only for a concrete consequence. For the patterns
+below use `maintainability`, except independent serialized awaits, which are
+`performance`; state the consequence with "and so", prefer one structural
+finding to several naming nits on the same code, and drop a preference with no
+nameable consequence. Treat `declared[].possibleExisting` as a lead, never
+proof of duplication; `inconclusive` means unknown.
+
+- A thin pass-through wrapper needs the new function and its one delegating
+  call with the same arguments. Raise it only when the duplicate API obscures
+  the behavior's owner, and so its two contracts can drift.
+- A one-off boolean or mode threaded through callers needs the new parameter
+  and every existing call site the diff changes to pass it. Raise it only when
+  those callers now choose policy they do not own, and so a feature change must
+  be coordinated across them.
+- Copied logic needs two added blocks that differ only in literals or names.
+  Name the shared behavior, and so the next correction must be made twice and
+  can diverge.
+- Independent serialized awaits need sequential awaits whose expressions do
+  not use the earlier result. Raise `performance` only when no ordering or
+  side-effect requirement explains them, and so latency is their sum instead
+  of their maximum.
+- Feature logic in a shared module needs the branch and its other consumers
+  that do not need it. Name the feature owner, and so unrelated consumers must
+  carry or reason about that branch.
+- A silent fallback needs a `?? default`, empty catch, or optional access on a
+  value every caller sets. Name the invariant and what the fallback hides, and
+  so its violation becomes ordinary output or success rather than a signal.
+
+## Opt-in simplification pass
+
+Follow this section only when the request explicitly labels this a
+**simplification pass**. It is a separate pass after ordinary verification,
+not another ordinary candidate. Do not use it during a normal analyst call,
+and do not restate a structural concern already eligible for the ordinary
+candidate schema.
+
+Ask one narrower question: what behaviour-preserving restructuring removes
+concepts from the changed code by leaning on an existing abstraction? Return
+at most one proposal. It must delete real parameters, branches, helpers,
+wrappers, modes, or other concrete elements; moving their bodies, renaming
+them, or relocating the same conditional logic is not simplification. Return
+`null` when no proposal can eliminate concepts without changing behaviour.
+
+For a proposal, enumerate **every** concrete element that would disappear as
+`path`, head-side `line`, and a short `element` description. Each location must
+be a changed line in the supplied diff; do not use `and so on` or leave a
+threaded parameter or branch implicit. Name the existing abstraction that
+takes over with its `path`, `line`, and `name`. The category is always exactly
+`maintainability`.
+
+When this special pass is requested, this output replaces the normal Output
+section below. Return JSON only in exactly this shape:
+
+```json
+{
+  "simplification": {
+    "category": "maintainability",
+    "claim": "Use the existing dispatcher so the mode is no longer threaded through the delivery helpers.",
+    "removes": [
+      { "path": "src/notify/send.ts", "line": 18, "element": "urgent parameter" }
+    ],
+    "abstraction": { "path": "src/notify/dispatch.ts", "line": 12, "name": "dispatchNotice" }
+  }
+}
+```
+
+Or return exactly `{"simplification": null}`. Do not include ordinary
+`candidates`, a severity, a score, or commentary in this mode.
+
 ## What the pull request already says
 
 You may be given the pull request's thread: its inline comments, review bodies,
@@ -77,6 +160,21 @@ description does not account for. When you do raise it, name the description
 sentence in `evidence`, so the verifier can see which claim the finding
 contradicts. A finding that disagrees with the description is not a repeat of
 it, however many words they share.
+
+**Factual claims.** Check factual claims in the description and in comments or
+documentation the diff changes against the final head, the diff, configuration
+and CI: scope, flags, counts, test locations or coverage, data exposure,
+rollback steps, and `never` or `always` statements. A present-tense claim about
+delivered behaviour is wrong when only this unmerged change introduces it, it
+requires a flag, or it varies by environment; suggest pending or conditional
+wording, or point to the maintained source of truth.
+
+When a factual claim changes, search the same key terms in all changed and
+sibling files and the entry-point file readers use. For a docs-only diff, do
+this for every factual claim in the first pass. Treat one underlying claim as
+one candidate: enumerate every remaining mismatch as `path:line` evidence, use
+the stale-consumer anchor when applicable, and do not re-raise a mismatch the
+final head has corrected.
 
 ## Repository conventions
 
@@ -117,6 +215,22 @@ A candidate is valid only if it has all four:
 - evidence drawn from the diff or the supplied static analysis;
 - a plausible, material impact.
 
+**Test adequacy.** For each added or changed test, name the smallest production
+mutation that should turn it red; if none does, raise a `test_coverage`
+candidate at the test line and name the assertion or setup that leaves it
+green. Shared tracked read-backs, nullable negative-only or subset assertions,
+mocks above the unit, `nameof` wire values and fixtures that reuse the asserted
+value are leads, not automatic findings: trace the mutation. On a dependency
+called more than once with later arguments derived from earlier results, an
+any-argument setup is inadequate unless exact sequential setups or
+exact-argument verification catches a dropped cursor, key or page. Apply the
+same check to contract interactions: null examples, enum matchers accepting
+arbitrary strings, exact nondeterministic values, a copied client, or a
+header/idempotency interaction without provider state tying the header to an
+observable response can hide drift; check that CI runs the contract project.
+Without a concrete mutation that stays green, a different test is only a
+preference, not a finding.
+
 ## Low-stakes findings are still findings
 
 A real observation the author may reasonably decline is a `nit`, not something
@@ -156,15 +270,14 @@ list falls back to the middle tier, which loses the distinction you were
 making.
 
 Severe by nature:
-`security` · `authorization` · `authentication` · `trust_boundary` ·
-`data_integrity`
+`security` · `authorization` · `authentication` · `data_integrity`
 
 Wide reach by nature:
 `concurrency` · `persistence` · `migration` · `api_contract` · `release`
 
 Real defects whose reach depends on the situation:
 `correctness` · `error_handling` · `reliability` · `user_visible_behavior` ·
-`ci` · `packaging` · `dependency` · `performance`
+`ci` · `packaging` · `dependency` · `performance` · `trust_boundary`
 
 Low stakes:
 `observability` · `test_coverage` · `maintainability` · `style`
@@ -180,6 +293,10 @@ The confusable ones, settled:
 - A missing privilege check is `authorization`. A privilege check that exists
   and is wired to the wrong privilege is also `authorization`, not
   `correctness`.
+- A `trust_boundary` can be a non-security control boundary, such as a path
+  gate. Pick its requested tier from the concrete consequence; `score` raises
+  it above that tier only when the verifier traced impact beyond the changed
+  code.
 
 ## Severity
 
@@ -271,6 +388,73 @@ persistence and transaction ordering · retry and idempotency behavior ·
 concurrency and resource lifecycle · CI, release and packaging correctness ·
 public API and user-visible behavior.
 
+### Parsers, mappers and validators
+
+Before reviewing its ordinary path, enumerate for each parser, mapper or
+validator the diff adds or changes: blank, separators only, zero or empty
+identifier, empty list, null, missing root, wrong case, trailing whitespace or
+newline, and a repeated element. Flag any case that resolves to a valid domain
+value or a silent no-op rather than an error. When a new type replaces an old
+one, compare every field, including optional ones, and flag a drop.
+
+### Observability and alerting
+
+For metrics and alert configuration, every label value must come from evidence
+of the final outcome, not a default or an earlier stage. Enumerate each value a
+label can emit in code, compare the list with the pull-request description, and
+trace it past filters and validation. Flag a free-text outcome where siblings
+use an enum, recording before those gates, or caller cancellation counted as a
+failure. For every label-to-route key, seek evidence of a matching series; if
+telemetry is outside the repository, ask a question rather than invent it. Flag
+a relabel that needs a manual re-save or reassignment but omits that step, and a
+threshold reused by alerts with distinct units or meanings; name a separately
+scoped threshold per alert.
+
+### Endpoint metadata
+
+For endpoint metadata added in the diff, including `Accepts`, consumes or
+produces constraints, route constraints, and versioning attributes, trace what
+the framework routes or rejects. If a filter or middleware on that endpoint
+answers the same condition, flag the response the metadata preempts and ask
+whether the annotation is meant to change behaviour or only document it.
+
+### Read endpoints
+
+Review every new or changed read endpoint in one pass: trace inherited and
+endpoint-specific authorization to the narrowest role, check no-role and
+wrong-role tests, walk the serialized payload for personal data, and compare it
+with the pull-request description. When an existing route is tightened, inspect
+its current callers from client-id telemetry. Do not accept "already true
+elsewhere" as a security or privacy premise without a source at an exact file
+and line; if it is unavailable, ask a question rather than state it.
+
+### Concurrency, shadow paths and service boundaries
+
+**Read-decide-write handlers.** When a handler reads state to choose a next
+value or decide it is unused, then writes it, inspect the model, migrations and
+write for a unique index, concurrency token or conditional update. Flag a
+missing guard with the concrete two-caller interleaving; ask for a test that
+holds two independent contexts until both reads finish, then releases both.
+Also flag a catch that turns every save failure into a conflict unless it
+re-reads and proves a rival write.
+
+**Best-effort and shadow paths.** For code described as best-effort, shadow,
+probe, check, fire-and-forget or non-fatal, trace every statement after entry,
+including flag reads, option parsing, metric recording, tracing and logging:
+each must be guarded or proven unable to throw, and a cached value must be
+validated before its write. Locate the production counterpart and compare timer
+start and stop, concurrency and timeout or budget; for a cancellation-token
+budget, name each awaited call that does not observe it. Do not flag a
+documented intentional difference without a concrete consequence.
+
+**Service boundaries.** For a changed request or response shape, inspect both
+deployed versions when available: what the old peer does with a new field, what
+the new peer does with an old request, and what null and absent mean. Flag a
+required rollout order that is only prose rather than a compatible default,
+draft or blocking label. Also flag copied cross-service constants and comments
+that claim a compile-time link across repositories. If the peer is not
+readable, make unproved semantics a question rather than inventing them.
+
 ## Anchors
 
 `line` is the 1-based line number in the file at the head of the diff. Put it
@@ -305,6 +489,9 @@ describes the old way - has no runtime break to trace. File it in category
 at.
 
 ## Output
+
+This section applies only when the request did not explicitly label a
+simplification pass; that mode uses the specialised output above.
 
 JSON matching `schemas/candidate.schema.json`. No summary, no praise, no
 commentary. Return `{"candidates": []}` when nothing qualifies - that is a

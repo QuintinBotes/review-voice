@@ -1,0 +1,6 @@
+name: test-revert-sensitive
+asserts: >
+  A persistence test opens a fresh read context after the handler runs, so
+  removing the added save makes its asserted state unavailable.
+expect:
+  output: "No actionable findings."

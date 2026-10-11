@@ -1,0 +1,6 @@
+name: read-endpoint-exposure
+asserts: >
+  A status-only endpoint with a dedicated read policy, a minimal payload, and
+  no-role and wrong-role tests does not produce an authorization finding.
+expect:
+  output: "No actionable findings."

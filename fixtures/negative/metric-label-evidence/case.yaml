@@ -1,0 +1,6 @@
+name: metric-label-evidence
+asserts: >
+  A metric recorded after filtering from a closed outcome set, while caller
+  cancellation is excluded, does not produce an observability finding.
+expect:
+  output: "No actionable findings."

@@ -1,0 +1,31 @@
+diff --git a/src/orders/shadow.ts b/src/orders/shadow.ts
+--- a/src/orders/shadow.ts
++++ b/src/orders/shadow.ts
+@@ -1,8 +1,27 @@
+ export async function submitOrder(order: Order) {
+   const startedAt = performance.now();
+   const budget = AbortSignal.timeout(4_000);
+   const token = await auth.getToken(budget);
+   const result = await backend.submit(order, token, budget);
+   metrics.record("order_latency", performance.now() - startedAt);
+   return result;
+ }
++
++export async function shadowOrder(order: Order) {
++  try {
++    const startedAt = performance.now();
++    const enabled = flags.isEnabled(order.accountId);
++    if (!enabled) return [];
++
++    const budget = AbortSignal.timeout(4_000);
++    const token = await auth.getToken(budget);
++    const result = await check.run(order, token, budget);
++    const validated = validateResult(result);
++    cache.set(order.id, validated);
++    metrics.record("shadow_latency", performance.now() - startedAt);
++    return validated;
++  } catch (error) {
++    logger.warn({ error }, "shadow order failed");
++    return [];
++  }
++}

@@ -1,0 +1,7 @@
+name: contract-provider-drift-sensitive
+asserts: >
+  A contract targets the real provider, constrains enum and nondeterministic
+  values correctly, and uses provider state that proves the idempotency header
+  selects an existing identifier; CI runs the contract project.
+expect:
+  output: "No actionable findings."

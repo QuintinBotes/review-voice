@@ -47,12 +47,22 @@ review:
     # An existing function, as git names it in a hunk header, that gains at
     # least this many decision points is listed; a whole number above zero.
     max_added_branches_per_function: 3
+    # Opt in to one post-verification, body-only restructuring suggestion.
+    # It must remove concepts through an existing abstraction; it never changes
+    # the verdict or becomes an inline comment.
+    simplify: false
   # A change over any of these is raised for a human and never approved by
   # Review Voice (docs/adr/0012). The review still runs and posts its findings.
   # Defaults are shown; a limit must be a whole number above zero.
   human_review:
     max_decision_points: 40         # branches added across the whole change
     max_hunk_decision_points: 15    # branches added in the densest hunk
+    # Opt in only when either structural regression should leave approval to a
+    # human. These cap APPROVE at COMMENT; they do not add a finding or text to
+    # the posted review (docs/adr/0020).
+    structure:
+      file_line_crossing: false     # a production file crosses max_file_lines
+      branch_growth: false          # an existing function gains branches
     # A list here replaces the defaults; an empty list turns the signal off.
     sensitive_paths:
       - ".github/workflows/**"

@@ -1,0 +1,13 @@
+--- a/src/orders/load-checkout.ts
++++ b/src/orders/load-checkout.ts
+@@ -1,6 +1,9 @@
+ export async function loadCheckout(order: Order): Promise<CheckoutData> {
+-  return {};
++  const account = await loadAccount(order.accountId);
++  const delivery = await loadDeliveryOptions(order.addressId);
++
++  return { account, delivery };
+}
+ export function checkoutPath(order: Order): string {
+   return `/orders/${order.id}/checkout`;
+ }

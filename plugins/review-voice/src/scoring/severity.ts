@@ -29,8 +29,8 @@ export type Severity = (typeof SEVERITIES)[number];
  * weakening, so removing the cliff does not make reviews louder.
  */
 const LEGACY_BY_CATEGORY: Record<string, Severity> = {
-  // Reserved for categories that are severe by their nature rather than by
-  // circumstance. The confidence gate already keeps anything under 0.8 out.
+  // Fixed security and authorization categories. `trust_boundary` keeps its
+  // legacy tier here, then score.ts applies its traced-impact bound.
   security: 'blocking',
   trust_boundary: 'blocking',
   authorization: 'blocking',
@@ -79,11 +79,13 @@ const atEveryReach = (severity: Severity): ReachTiers => ({
  * without restoring an agent judgement to this path.
  */
 /**
- * `atEveryReach` is reserved for categories that name a boundary.
+ * `atEveryReach` is reserved for categories with an inherent tier.
  *
- * Crossing a boundary is severe wherever it happens, so an analyst who
- * underrated a concrete instance must not be able to talk it down - which is
- * also why these sit outside the tier bound.
+ * Crossing a security or authorization boundary is severe wherever it happens,
+ * so an analyst who underrated a concrete instance must not be able to talk it
+ * down. `trust_boundary` shares this table for derivation, but scoring applies
+ * its traced-impact bound afterwards: that category can also describe a
+ * non-security control boundary.
  *
  * Every other category names a consequence, and a consequence has an extent.
  * Three were moved out one at a time on the same argument, each with evidence:
@@ -104,7 +106,7 @@ const atEveryReach = (severity: Severity): ReachTiers => ({
  * avoid.
  */
 const BY_CATEGORY_AND_REACH: Record<string, ReachTiers> = {
-  // The boundary categories. These four, and no others.
+  // Boundary categories. `trust_boundary` is evidence-bounded by score.ts.
   security: atEveryReach('blocking'),
   trust_boundary: atEveryReach('blocking'),
   authorization: atEveryReach('blocking'),
@@ -368,7 +370,8 @@ export function deriveSeverity(
       : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
 
   // A category with one tier at every reach is severe by nature rather than by
-  // search, so the analyst's request does not bound it.
+  // search, so derivation itself does not bound it. score.ts may still apply
+  // an evidence bound where the category's meaning permits a narrower case.
   if (!varies) {
     return { severity, requested, reach: reach ?? null, reason: describe };
   }

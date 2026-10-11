@@ -205,12 +205,14 @@ be, and whether eligibility would flip - while the gate keeps using the current
 computation. `/review-voice:explain` shows it. The switch is a measurement
 waiting on real runs, not a decision waiting on an opinion.
 
-### `atEveryReach` is reserved for boundary categories
+### `trust_boundary` needs traced impact despite its fixed derivation
 
-`security`, `trust_boundary`, `authorization` and `authentication` name a
-boundary: crossing one is severe wherever it happens, so an analyst who
-underrated a concrete instance cannot talk it down, and they sit outside the
-tier bound for that reason.
+`security`, `authorization` and `authentication` name a breach whose
+consequence is severe wherever it happens, so an analyst who underrated a
+concrete instance cannot talk it down. `trust_boundary` shares the fixed
+derivation table but can also name a non-security control boundary, such as a
+path gate. It therefore rises above the requested tier only when the verifier
+traced impact beyond the changed code at the escalation confidence.
 
 Every other category names a **consequence**, and a consequence has an extent.
 Three were moved out of the fixed set one at a time, each on the same argument
@@ -389,6 +391,22 @@ zero samples is how a dashboard starts lying.
 Contract compliance is measured by running recorded output back through the
 validator, not asserted from the fact that validation happened. If output ever
 reaches the store by a path that skipped the gate, this is what notices.
+
+## Measuring opt-in simplification-pass cost
+
+No token-cost figure is published for the opt-in simplification pass yet. Do
+not infer one from latency or from a provider's context-window size. When the
+pass runs, record the provider-reported counts in `--stages` under
+`simplification-analyst` and, only when the analyst returned a non-null
+candidate, `simplification-verifier`.
+
+For each review, its observed incremental token cost is the sum of the
+available `tokens` values for those two stage names. Keep missing provider
+counts missing rather than writing zero. To report an offline measurement,
+state the sample size, how many runs reached the verifier, which provider/model
+was used, and a distribution (for example median and percentile) of observed
+per-review sums. Compare runs of the same fixtures or diffs with the option off
+and on when isolating the pass from ordinary-review variation.
 
 ## Running it
 

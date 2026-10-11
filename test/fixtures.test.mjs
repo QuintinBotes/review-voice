@@ -20,6 +20,16 @@ function cases() {
   return out;
 }
 
+function files(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry);
+    if (statSync(path).isDirectory()) out.push(...files(path));
+    else out.push(path);
+  }
+  return out;
+}
+
 test('every fixture has a case.yaml and a diff', () => {
   const all = cases();
   assert.ok(all.length >= 7, `expected a real suite, found ${all.length}`);
@@ -67,11 +77,11 @@ test('fixtures are synthetic - no real identities, hosts or credentials', () => 
     { pattern: /BEGIN [A-Z ]*PRIVATE KEY/, why: 'private key' },
   ];
   for (const { group, name, dir } of cases()) {
-    for (const file of readdirSync(dir)) {
-      const text = readFileSync(join(dir, file), 'utf8');
+    for (const file of files(dir)) {
+      const text = readFileSync(file, 'utf8');
       for (const { pattern, why } of forbidden) {
         const match = pattern.exec(text);
-        assert.equal(match, null, `${group}/${name}/${file} contains a ${why}: ${match?.[0]}`);
+        assert.equal(match, null, `${group}/${name}/${file.slice(dir.length + 1)} contains a ${why}: ${match?.[0]}`);
       }
     }
   }

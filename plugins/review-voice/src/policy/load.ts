@@ -39,7 +39,7 @@ export interface LoadedConfig {
   };
   /** When a change is raised for a human's approval; see docs/adr/0012. */
   humanReview: HumanReviewConfig;
-  /** Limits for the structural evidence `diff --out` collects for the analyst. */
+  /** Limits and opt-ins for structural review. */
   structure: StructureConfig;
   layers: PolicyLayer[];
   /** Repository-supplied layers awaiting owner approval. */
@@ -88,6 +88,24 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
   result.humanReview.sensitiveExemptPaths = globs('sensitive_exempt_paths') ?? result.humanReview.sensitiveExemptPaths;
   result.humanReview.testPaths = globs('test_paths') ?? result.humanReview.testPaths;
   result.humanReview.generatedPaths = globs('generated_paths') ?? result.humanReview.generatedPaths;
+
+  const structure = block['structure'];
+  if (structure === undefined) return;
+  const signals = asRecord(structure);
+  if (signals === null) {
+    result.warnings.push('review.human_review.structure must be a mapping; using the defaults.');
+    return;
+  }
+  const enabled = (key: string): boolean | undefined => {
+    const value = signals[key];
+    if (value === undefined) return undefined;
+    if (typeof value === 'boolean') return value;
+    result.warnings.push(`review.human_review.structure.${key} must be true or false; using the default.`);
+    return undefined;
+  };
+  result.humanReview.structure.fileLineCrossing =
+    enabled('file_line_crossing') ?? result.humanReview.structure.fileLineCrossing;
+  result.humanReview.structure.branchGrowth = enabled('branch_growth') ?? result.humanReview.structure.branchGrowth;
 }
 
 /** Same rule as the human-review limits: a limit must be a whole number above zero. */
@@ -103,6 +121,12 @@ function readStructure(block: Record<string, unknown> | null, result: LoadedConf
   result.structure.maxFileLines = limit('max_file_lines') ?? result.structure.maxFileLines;
   result.structure.maxAddedBranchesPerFunction =
     limit('max_added_branches_per_function') ?? result.structure.maxAddedBranchesPerFunction;
+
+  const simplify = block['simplify'];
+  if (simplify !== undefined) {
+    if (typeof simplify === 'boolean') result.structure.simplify = simplify;
+    else result.warnings.push('review.structure.simplify must be true or false; using the default.');
+  }
 }
 
 /** Words that appear in nearly every failure, so alone they would turn every failure into a rerun. */
@@ -246,6 +270,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
       sensitiveExemptPaths: [...DEFAULT_HUMAN_REVIEW.sensitiveExemptPaths],
       testPaths: [...DEFAULT_HUMAN_REVIEW.testPaths],
       generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths],
+      structure: { ...DEFAULT_HUMAN_REVIEW.structure },
     },
     structure: { ...DEFAULT_STRUCTURE },
     layers: [],

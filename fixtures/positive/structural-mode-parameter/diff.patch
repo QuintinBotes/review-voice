@@ -1,0 +1,23 @@
+--- a/src/orders/render-receipt.ts
++++ b/src/orders/render-receipt.ts
+@@ -1,4 +1,7 @@
+-export function renderReceipt(receipt: Receipt): string {
++export function renderReceipt(receipt: Receipt, includeInternalNotes: boolean): string {
+   const lines = [receipt.number, receipt.total];
++  if (includeInternalNotes) {
++    lines.push(receipt.internalNote);
++  }
+   return lines.join('\n');
+ }
+--- a/src/orders/send-receipt.ts
++++ b/src/orders/send-receipt.ts
+@@ -8,3 +8,3 @@ export function sendReceipt(receipt: Receipt): Message {
+-  return mail(renderReceipt(receipt));
++  return mail(renderReceipt(receipt, false));
+ }
+--- a/src/orders/export-receipt.ts
++++ b/src/orders/export-receipt.ts
+@@ -4,3 +4,3 @@ export function exportReceipt(receipt: Receipt): string {
+-  return renderReceipt(receipt);
++  return renderReceipt(receipt, true);
+ }

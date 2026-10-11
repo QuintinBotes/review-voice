@@ -1,0 +1,9 @@
+name: paged-mock-any-argument
+asserts: >
+  A paged-call test uses one any-argument setup for both calls, so it remains
+  green when the implementation stops forwarding the returned cursor.
+expect:
+  min_findings: 1
+  severity: minor
+  path: test/catalog/PageReaderTests.cs
+  category: test_coverage

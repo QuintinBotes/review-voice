@@ -185,6 +185,7 @@ test('human_review defaults when absent and reads each key when present', () => 
     sensitiveExemptPaths: [],
     testPaths: DEFAULT_TEST_PATHS,
     generatedPaths: [],
+    structure: { fileLineCrossing: false, branchGrowth: false },
   });
   const set = configIn('review:\n  human_review:\n    max_decision_points: 10\n    sensitive_paths: ["infra/**"]\n');
   assert.equal(set.humanReview.maxDecisionPoints, 10);

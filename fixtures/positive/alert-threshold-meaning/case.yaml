@@ -1,0 +1,9 @@
+name: alert-threshold-meaning
+asserts: >
+  A threshold reused as both a ratio sample floor and an absolute queue-depth
+  limit is flagged because one retune changes two unrelated alert meanings.
+expect:
+  min_findings: 1
+  severity: nit
+  path: alerts/delivery.tf
+  category: observability

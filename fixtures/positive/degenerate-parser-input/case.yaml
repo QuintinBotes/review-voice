@@ -1,0 +1,9 @@
+name: degenerate-parser-input
+asserts: >
+  A separator-only scope list that resolves to the valid None value instead of
+  being rejected is flagged as a correctness defect.
+expect:
+  min_findings: 1
+  severity: important
+  path: src/scopes.ts
+  category: correctness
