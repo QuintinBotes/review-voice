@@ -619,6 +619,8 @@ export function topLevelHelp(): string {
     '',
     'Commands:',
     ...list,
+    '',
+    'Options:',
     '  --version           Print the plugin version',
     '  --help              Show this message',
     '',

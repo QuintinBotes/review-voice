@@ -69,6 +69,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `context` now distinguishes no configuration file from a configuration that
+  lacks `verification`, explaining that the second pass is off by default and
+  how to enable it in the former case. (#129)
+- `diff` now emits repository configuration warnings, including invalid
+  structural settings, while continuing to apply their defaults. (#130)
+- `explain` now shows a recorded body-only simplification, its removed
+  elements, and its verdict-neutral status when a run has no inline findings.
+  (#131)
+- Top-level help now lists global `--version` and `--help` flags as options,
+  so every listed command supports command help. (#132)
 - The analyst and verifier now check factual claims in a pull-request
   description and changed comments against the final head, diff, configuration
   and CI, consolidating every remaining mismatch with file-and-line evidence
