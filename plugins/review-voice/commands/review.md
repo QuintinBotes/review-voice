@@ -575,12 +575,23 @@ a question-framed claim at minor. `security`, `authorization` and
 `authentication` categories are exempt; `trust_boundary` needs the same traced
 impact before it can rise. A boundary finding with
 `impact_class: "no-exposure"` is held at the tier the analyst asked for.
+Whenever a tier ends above the request, the severity reason ends with
+"raised above the requested <tier> because ..." and names that rule.
 
 When the owner has a narrower judgement than the computed reach supports, rerun
 `score` with `--severity <candidate_id>=<tier>`. It accepts only a lower
 ordinary tier, writes the explicit owner override into the severity reason, and
 the resulting scores must still drive `validate-output` and `record --scores`.
-Do not edit a score file by hand.
+When the owner asks to post a finding listed in `belowGate`, rerun `score` with
+`--promote <candidate_id>`. It accepts only a `belowGate` entry, which is a
+verified finding held by the score or confidence gate alone, and records
+`ownerPromotion` with the gate it was held by. Do not edit a score file by hand.
+
+A verified finding lands in `unverified` with `confidenceSource:
+"unverifiable-cap"` for one of two reasons, named in `unverifiableBecause`:
+the verifier listed a non-cosmetic `required_context_missing` item, or the
+analyst's evidence admits the claim could not be checked and the verifier gave
+no `technical_confidence`. File type and category play no part.
 
 **A `question` is eligible when its premises are verified, even if its answer
 is not.** It is the one kind of candidate that can reach the editor without a

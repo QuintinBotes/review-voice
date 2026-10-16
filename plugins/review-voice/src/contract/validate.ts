@@ -1,6 +1,6 @@
 import { DEFAULT_LIMITS, SEVERITY_ORDER, type ContractLimits, type Severity } from './limits.ts';
 import { countWords } from './words.ts';
-import { parseFinding, splitFindings, type ParsedFinding } from './parse.ts';
+import { parseFinding, splitFindings, strayLines, type ParsedFinding } from './parse.ts';
 
 export interface Violation {
   /** Stable machine-readable code, so a retry prompt can be built from it. */
@@ -82,7 +82,9 @@ function validateFinding(
     violations.push({
       code: 'finding_too_long',
       line: at,
-      message: `${words} words; the limit is ${limits.maxWordsPerFinding}. Cut it or drop the finding.`,
+      message:
+        `${words} words of prose; the limit is ${limits.maxWordsPerFinding}. The tag and \`path:line\` are not counted. ` +
+        'Cut it or drop the finding.',
     });
   }
 
@@ -146,6 +148,14 @@ export function validateOutput(
   }
 
   const findings = splitFindings(output).map((block) => parseFinding(block.raw, block.startLine));
+
+  for (const line of strayLines(output)) {
+    violations.push({
+      code: 'stray_text',
+      line,
+      message: 'Not part of any finding: a blank line ends the finding above it. The output is findings only.',
+    });
+  }
 
   if (limits.maxFindings !== null && findings.length > limits.maxFindings) {
     violations.push({

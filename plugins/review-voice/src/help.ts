@@ -315,6 +315,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  --diff-file <path>        Diff for reach and anchor checks',
       '  --min-score <n>           Final score gate (default 0.68)',
       '  --severity <id>=<tier>    Explicit owner downgrade (blocking, important, minor or nit; repeatable)',
+      '  --promote <id>            Owner posts a belowGate finding past its gate (repeatable)',
       '  --repository <name>       Prefer precedents from this repository',
       '  --owner <login>           Owner whose precedents count; default from config',
       'Reads: candidates JSON on stdin.',
