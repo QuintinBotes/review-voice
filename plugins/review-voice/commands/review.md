@@ -653,6 +653,12 @@ the verifier's confidence and those entries. The claim may be right; nobody in t
 pipeline could check it. Keep it for step 6. Like `belowGate`, it is never
 posted and is not part of the validated output.
 
+`absenceContradicted` lists the candidates the verifier confirmed but the
+repository search contradicted: the claim says something is absent, and `found`
+names what the search matched. One of the two is wrong, so check it before
+step 6. A file with the same basename elsewhere does not contradict a missing
+path. Like `belowGate`, it is never posted.
+
 Then order by severity: `blocking`, `important`, `minor`, `nit`, `question`.
 Within a tier, prefer the higher final score.
 
