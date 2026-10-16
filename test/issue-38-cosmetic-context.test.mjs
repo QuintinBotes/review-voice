@@ -12,7 +12,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { blockingContext, scoreCandidate, DEFAULT_THRESHOLDS } from '../plugins/review-voice/src/scoring/score.ts';
+import { blockingContext, scoreCandidate, DEFAULT_THRESHOLDS, UNVERIFIABLE_REJECTION } from '../plugins/review-voice/src/scoring/score.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const plugin = join(root, 'plugins/review-voice');
@@ -45,7 +45,7 @@ test('cosmetic missing context leaves the verifier confidence standing', () => {
   const result = verify([{ context: KEY_TEXT, kind: 'cosmetic' }]);
   assert.equal(result.confidenceSource, 'verifier');
   assert.equal(result.technicalConfidence, 0.85);
-  assert.notEqual(result.rejectedBecause, 'the claim states it could not be verified, so it cannot ship whatever it scores');
+  assert.notEqual(result.rejectedBecause, UNVERIFIABLE_REJECTION);
 });
 
 test('blocking, unmarked and plain-string context still caps', () => {
