@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `score --promote <candidate_id>` posts a `belowGate` finding at the owner's
+  request. It accepts only a verified finding held by the score or confidence
+  gate alone, and the score entry records `ownerPromotion` with the gate it
+  was held by, so `record` can tell it from a hand edit. (#136)
+- Score entries carry `unverifiableBecause`, naming whether the verifier's
+  `required_context_missing` or the analyst's own admission applied the
+  unverifiable cap. (#137)
 - `review.structure.simplify` (default false), or `/review-voice:review
   --simplify`, enables one post-verification, body-only maintainability
   suggestion. It must enumerate each changed element it removes and an existing
@@ -69,6 +76,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A paragraph after the last finding was joined to it, counted against its
+  word limit and posted inside its inline comment. A blank line now ends a
+  finding, text after it is reported as `stray_text`, and the word-limit
+  message says that the tag and `path:line` are not counted. (#134)
+- A tier above the analyst's request now ends its severity reason with the
+  rule that allowed it: the verifier's traced impact and confidence, or a
+  category whose tier ignores the request. (#135)
 - `context` now distinguishes no configuration file from a configuration that
   lacks `verification`, explaining that the second pass is off by default and
   how to enable it in the former case. (#129)

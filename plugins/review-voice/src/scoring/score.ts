@@ -291,7 +291,13 @@ export function boundSeverityByEvidence(
       reason: `${derived.reason}, held at ${candidate.severity} because the verifier found no exposure`,
     };
   }
-  if (FIXED_BOUNDARY_CATEGORIES.has(candidate.category)) return derived;
+  if (FIXED_BOUNDARY_CATEGORIES.has(candidate.category)) {
+    return raisedBecause(
+      derived,
+      candidate.severity,
+      `${candidate.category} names a breach by itself, so its tier does not depend on the request or a trace`,
+    );
+  }
   // A question request is already the weakest assertion there is.
   if (candidate.severity === 'question' || derived.severity === 'question') return derived;
 
@@ -324,7 +330,12 @@ export function boundSeverityByEvidence(
     };
   }
   if (verification?.impactTraced === true && confidence !== null && confidence >= ESCALATION_CONFIDENCE) {
-    return result;
+    return raisedBecause(
+      result,
+      candidate.severity,
+      `the verifier traced impact beyond the changed code (impact_traced: true) at confidence ` +
+        `${confidence.toFixed(2)}, at least ${ESCALATION_CONFIDENCE}`,
+    );
   }
   return {
     ...result,
@@ -333,6 +344,17 @@ export function boundSeverityByEvidence(
       `${result.reason}, held at ${candidate.severity} because escalation needs the verifier ` +
       'to trace impact beyond the changed code',
   };
+}
+
+/**
+ * Names the rule that kept a tier above the analyst's request. Without it an
+ * escalation read like any other derivation and had to be reverse-engineered.
+ */
+function raisedBecause(result: DerivedSeverity, requested: string, why: string): DerivedSeverity {
+  const asked = TIER_ORDER.indexOf(requested as (typeof TIER_ORDER)[number]);
+  const got = TIER_ORDER.indexOf(result.severity as (typeof TIER_ORDER)[number]);
+  if (asked === -1 || got === -1 || got <= asked) return result;
+  return { ...result, reason: `${result.reason}, raised above the requested ${requested} because ${why}` };
 }
 
 /**
@@ -345,7 +367,8 @@ export function boundSeverityByEvidence(
 export const UNVERIFIABLE_CONFIDENCE = 0.6;
 
 /** The rejection the unverifiable cap gives, so a caller can tell it from the others. */
-export const UNVERIFIABLE_REJECTION = 'the claim states it could not be verified, so it cannot ship whatever it scores';
+export const UNVERIFIABLE_REJECTION =
+  'the claim could not be verified, so it cannot ship whatever it scores; `unverifiableBecause` names the trigger';
 
 /**
  * An admission, in the candidate's own evidence, that the claim could not be
@@ -392,6 +415,8 @@ export interface ScoreBreakdown {
   verifiedConfidence: number | null;
   /** Why the effective confidence differs from the analyst's, when it does. */
   confidenceSource: 'analyst' | 'verifier' | 'unverifiable-cap';
+  /** Which input applied the unverifiable cap, when `confidenceSource` is `unverifiable-cap`. */
+  unverifiableBecause: string | null;
   /** The tier this is reported at, derived rather than requested. */
   severity: DerivedSeverity;
   ownerAlignment: number;
@@ -416,6 +441,8 @@ export interface ScoreBreakdown {
   eligible: boolean;
   /** Why it was rejected, when it was. */
   rejectedBecause: string | null;
+  /** Set by `score --promote`: the owner posted it past the gate that held it. */
+  ownerPromotion?: { gate: 'score' | 'confidence'; heldBecause: string };
   /**
    * The precedent that already states this finding at this location, when one
    * exists. Reported so `explain` can name what the corpus already said.
@@ -1344,7 +1371,8 @@ export function scoreCandidate(
   // Context the verifier itself could not obtain is binding: that is the
   // verifier reporting on its own reach, not a guess about someone else's.
   // Only context the claim depends on; cosmetic context leaves it standing.
-  const missingContext = blockingContext(verification?.requiredContextMissing).length > 0;
+  const missing = blockingContext(verification?.requiredContextMissing);
+  const missingContext = missing.length > 0;
 
   // The analyst's admission is a prior, not a ceiling. It used to outrank the
   // verifier absolutely, which inverted the whole point of letting the
@@ -1359,6 +1387,12 @@ export function scoreCandidate(
     confidence = UNVERIFIABLE_CONFIDENCE;
     confidenceSource = 'unverifiable-cap';
   }
+  const unverifiableBecause =
+    confidenceSource !== 'unverifiable-cap'
+      ? null
+      : missingContext
+        ? `the verifier listed required_context_missing the claim depends on: ${missing.join('; ')}`
+        : "the analyst's evidence says the claim could not be checked, and the verifier gave no technical_confidence of its own";
 
   // Which floor applies depends on who established the number. The verifier
   // checked the claim; the analyst did not.
@@ -1526,6 +1560,7 @@ export function scoreCandidate(
     analystConfidence,
     verifiedConfidence,
     confidenceSource,
+    unverifiableBecause,
     ownerAlignment,
     repositoryAlignment,
     evidenceQuality: quality,

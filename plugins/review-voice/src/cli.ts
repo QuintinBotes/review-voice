@@ -1370,6 +1370,46 @@ function ownerSeverityOverrides(argv: string[], candidates: readonly Candidate[]
   return overrides;
 }
 
+/**
+ * Reads repeatable `--promote candidate_id` owner decisions: post a verified
+ * finding that the score or confidence gate alone held back.
+ */
+function ownerPromotions(argv: string[], candidates: readonly Candidate[]): Set<string> | string {
+  const promotions = new Set<string>();
+  const known = new Set(candidates.map((candidate) => candidate.candidateId));
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== '--promote') continue;
+    const candidateId = argv[index + 1];
+    if (candidateId === undefined || candidateId.startsWith('--')) {
+      return '--promote needs a candidate_id, for example cand_001.';
+    }
+    if (!known.has(candidateId)) return `--promote names unknown candidate ${JSON.stringify(candidateId)}.`;
+    if (promotions.has(candidateId)) return `--promote names ${JSON.stringify(candidateId)} more than once.`;
+    promotions.add(candidateId);
+  }
+  return promotions;
+}
+
+/**
+ * Applies one promotion. Only what `belowGate` would list qualifies: the
+ * verifier confirmed it and one numeric gate, which is preference, stopped it.
+ * Anything else was stopped by a check of the claim itself.
+ */
+function applyOwnerPromotion(breakdown: ScoreBreakdown): string | null {
+  const gate = gateOf(breakdown.rejectedBecause);
+  if (breakdown.eligible) return `--promote ${breakdown.candidateId}: it is already eligible.`;
+  if (breakdown.confidenceSource !== 'verifier' || !Number.isFinite(breakdown.finalScore) || gate === null) {
+    return (
+      `--promote ${breakdown.candidateId}: only a verified finding held by the score or confidence gate alone ` +
+      `can be promoted, and this one was rejected because ${breakdown.rejectedBecause}.`
+    );
+  }
+  breakdown.ownerPromotion = { gate, heldBecause: breakdown.rejectedBecause! };
+  breakdown.eligible = true;
+  breakdown.rejectedBecause = null;
+  return null;
+}
+
 /** Applies one explicit owner downgrade after deterministic derivation. */
 function applyOwnerSeverityOverride(breakdown: ScoreBreakdown, override: OwnerOverrideSeverity): string | null {
   const current = breakdown.severity.severity;
@@ -1410,6 +1450,12 @@ function scoreCommand(argv: string[]): number {
   const severityOverrides = ownerSeverityOverrides(argv, candidates);
   if (typeof severityOverrides === 'string') {
     console.error(severityOverrides);
+    return 2;
+  }
+
+  const promotions = ownerPromotions(argv, candidates);
+  if (typeof promotions === 'string') {
+    console.error(promotions);
     return 2;
   }
 
@@ -1745,6 +1791,14 @@ function scoreCommand(argv: string[]): number {
           } else {
             alsoRejected(because);
           }
+        }
+      }
+
+      if (promotions.has(candidate.candidateId)) {
+        const problem = applyOwnerPromotion(breakdown);
+        if (problem !== null) {
+          console.error(problem);
+          return 2;
         }
       }
 

@@ -28,27 +28,42 @@ const FINDING = new RegExp(`^\\[([a-z_]+)\\]\\s+\`([^\`]+):(\\d+)\`\\s+-\\s*([\\
 
 /**
  * Findings wrap across lines, so a finding runs from its opening line until
- * the next opening line or the end of the output.
+ * the next opening line, a blank line, or the end of the output. The blank
+ * line matters: without it, a paragraph after the last finding was joined to
+ * that finding, counted against its word limit and posted inside its comment.
  */
 export function splitFindings(output: string): { raw: string; startLine: number }[] {
-  const lines = output.split('\n');
-  const blocks: { raw: string; startLine: number }[] = [];
-  let current: { raw: string[]; startLine: number } | null = null;
+  return scanFindings(output).blocks;
+}
 
-  lines.forEach((line, index) => {
+/** 1-indexed lines after the first finding that belong to no finding. */
+export function strayLines(output: string): number[] {
+  return scanFindings(output).stray;
+}
+
+function scanFindings(output: string): { blocks: { raw: string; startLine: number }[]; stray: number[] } {
+  const blocks: { raw: string; startLine: number }[] = [];
+  const stray: number[] = [];
+  let current: { raw: string[]; startLine: number } | null = null;
+  const flush = (): void => {
+    if (current) blocks.push({ raw: current.raw.join('\n').trim(), startLine: current.startLine });
+    current = null;
+  };
+
+  output.split('\n').forEach((line, index) => {
     if (OPENS_FINDING.test(line)) {
-      if (current) blocks.push({ raw: current.raw.join('\n').trim(), startLine: current.startLine });
+      flush();
       current = { raw: [line], startLine: index + 1 };
+    } else if (line.trim() === '') {
+      flush();
     } else if (current) {
       current.raw.push(line);
+    } else if (blocks.length > 0) {
+      stray.push(index + 1);
     }
   });
-
-  if (current) {
-    const last = current as { raw: string[]; startLine: number };
-    blocks.push({ raw: last.raw.join('\n').trim(), startLine: last.startLine });
-  }
-  return blocks;
+  flush();
+  return { blocks, stray };
 }
 
 export function parseFinding(raw: string, startLine: number): ParsedFinding {
