@@ -450,6 +450,13 @@ export function checkAbsenceClaim(
     }
   }
 
+  // A basename stands in for its path only when the path itself was found.
+  // `README.md` at the root does not contradict "`ci/README.md` does not
+  // exist"; counting it did, and silently dropped a verified finding.
+  const missingPaths = checked.filter((symbol) => symbol.includes('/') && !found.includes(symbol));
+  const refuting = found.filter((symbol) => !missingPaths.some((path) => path.split('/').pop() === symbol));
+  found.splice(0, found.length, ...refuting);
+
   // Found nowhere tracked is corroboration only when nothing could have
   // generated the name. Asked last and only then, so a claim the search
   // already refutes costs no extra process.

@@ -4693,6 +4693,9 @@ function checkAbsenceClaim(text2, cwd, ref = null, search = gitGrep, repository 
       return { found: [], checked, inconclusive: true, searchedRef };
     }
   }
+  const missingPaths = checked.filter((symbol) => symbol.includes("/") && !found.includes(symbol));
+  const refuting = found.filter((symbol) => !missingPaths.some((path) => path.split("/").pop() === symbol));
+  found.splice(0, found.length, ...refuting);
   if (found.length === 0) {
     const accessor = checked.find(generatedAccessor);
     const sources = accessor === void 0 ? resources(cwd) : [];
@@ -17749,6 +17752,17 @@ function scoreCommand(argv) {
         })
       ];
     });
+    const absenceContradicted = results.filter((r) => !r.eligible && r.absenceCheck !== void 0 && r.absenceCheck.found.length > 0).filter((r) => verifications.get(r.candidateId)?.verified === true).map(
+      (r) => boundLists({
+        candidateId: r.candidateId,
+        path: r.path,
+        line: r.line,
+        severity: r.severity.severity,
+        claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? "",
+        found: r.absenceCheck.found,
+        rejectedBecause: r.rejectedBecause
+      })
+    );
     const finals = results.map((r) => r.finalScore).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
     const at = (p) => finals.length === 0 ? null : finals[Math.min(finals.length - 1, Math.floor(p * finals.length))];
     console.log(
@@ -17817,7 +17831,8 @@ function scoreCommand(argv) {
             };
           }),
           belowGate: belowGate.map(withSnakeCaseId),
-          unverified: unverified.map(withSnakeCaseId)
+          unverified: unverified.map(withSnakeCaseId),
+          absenceContradicted: absenceContradicted.map(withSnakeCaseId)
         },
         null,
         2

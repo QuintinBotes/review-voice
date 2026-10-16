@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Score entries carry `unverifiableBecause`, naming whether the verifier's
   `required_context_missing` or the analyst's own admission applied the
   unverifiable cap. (#137)
+- `score` lists verified candidates that the absence check contradicted in
+  `absenceContradicted`, with what the search found, instead of dropping them
+  without a local trace. (#139)
 - `review.structure.simplify` (default false), or `/review-voice:review
   --simplify`, enables one post-verification, body-only maintainability
   suggestion. It must enumerate each changed element it removes and an existing
@@ -83,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A tier above the analyst's request now ends its severity reason with the
   rule that allowed it: the verifier's traced impact and confidence, or a
   category whose tier ignores the request. (#135)
+- The absence check no longer treats a same-name file in another directory as
+  proof that a missing path exists: `README.md` at the root does not contradict
+  "`ci/README.md` does not exist". (#139)
 - `context` now distinguishes no configuration file from a configuration that
   lacks `verification`, explaining that the second pass is off by default and
   how to enable it in the former case. (#129)
