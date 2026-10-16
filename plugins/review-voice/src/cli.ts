@@ -1813,6 +1813,23 @@ function scoreCommand(argv: string[]): number {
         ];
       });
 
+    // Verified, then contradicted by the repository search. One of the two is
+    // wrong, so the owner sees it locally rather than losing it. Never posted.
+    const absenceContradicted = results
+      .filter((r) => !r.eligible && r.absenceCheck !== undefined && r.absenceCheck.found.length > 0)
+      .filter((r) => verifications.get(r.candidateId)?.verified === true)
+      .map((r) =>
+        boundLists({
+          candidateId: r.candidateId,
+          path: r.path,
+          line: r.line,
+          severity: r.severity.severity,
+          claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? '',
+          found: r.absenceCheck!.found,
+          rejectedBecause: r.rejectedBecause,
+        }),
+      );
+
     const finals = results
       .map((r) => r.finalScore)
       .filter((v) => Number.isFinite(v))
@@ -1889,6 +1906,7 @@ function scoreCommand(argv: string[]): number {
           }),
           belowGate: belowGate.map(withSnakeCaseId),
           unverified: unverified.map(withSnakeCaseId),
+          absenceContradicted: absenceContradicted.map(withSnakeCaseId),
         },
         null,
         2,
