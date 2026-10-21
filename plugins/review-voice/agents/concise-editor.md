@@ -48,7 +48,8 @@ Severity is one of `blocking`, `important`, `minor`, `nit`, `question`.
 `blocking`, `important`, `minor`, `nit`, then `question`.** A `question` comes
 after every `nit`, never before one. A reader who stops halfway must have seen
 the most serious ones. This is checked, not requested: any other order fails
-validation as `severity_order`.
+validation as `severity_order`. The findings you are given already arrive in
+that order, so keep them in the order you received them.
 
 There is no cap on how many findings you return. Report everything that
 survived verification. What bounds the output is the total word budget, which

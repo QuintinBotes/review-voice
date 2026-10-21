@@ -671,8 +671,10 @@ step 6. A file is looked up by path, never by content: a doc that cites a
 missing path, or a same-name file in another directory, does not contradict it.
 Like `belowGate`, it is never posted.
 
-Then order by severity: `blocking`, `important`, `minor`, `nit`, `question`.
-Within a tier, prefer the higher final score.
+`eligible[]` is already in render order: by severity, `blocking`, `important`,
+`minor`, `nit`, then `question`, and within a tier the higher final score first.
+That is the order `validate-output` enforces as `severity_order`. Hand it to the
+editor in that order and do not re-sort it.
 
 **Use the `severity` that `score` returns, not the one the analyst asked for.**
 It is derived from the category and the verified confidence, and `eligible[]`

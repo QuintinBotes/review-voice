@@ -89,6 +89,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The absence check looks a file up by path instead of searching file contents,
   so a doc that cites `ci/README.md`, or a root `README.md`, no longer counts as
   proof that a missing `ci/README.md` exists. (#139)
+- `score` now emits `eligible[]` in the order `validate-output` enforces:
+  severity from `blocking` to `question`, then the higher final score. The
+  editor keeps the order it is given, so a question handed over before a nit no
+  longer fails validation as `severity_order`. (#144)
 - `context` now distinguishes no configuration file from a configuration that
   lacks `verification`, explaining that the second pass is off by default and
   how to enable it in the former case. (#129)

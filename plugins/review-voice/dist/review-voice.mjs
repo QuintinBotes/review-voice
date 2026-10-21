@@ -17781,6 +17781,16 @@ function scoreCommand(argv) {
         rejectedBecause: r.rejectedBecause
       })
     );
+    const scoreOf = new Map(results.map((r) => [r.candidateId, r]));
+    const rank2 = (c) => {
+      const scored = scoreOf.get(c.candidateId);
+      return [SEVERITY_ORDER[scored?.severity.severity ?? c.severity], -(scored?.finalScore ?? 0)];
+    };
+    kept.sort((a, b) => {
+      const [sa, fa] = rank2(a);
+      const [sb, fb] = rank2(b);
+      return sa - sb || fa - fb;
+    });
     const finals = results.map((r) => r.finalScore).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
     const at = (p) => finals.length === 0 ? null : finals[Math.min(finals.length - 1, Math.floor(p * finals.length))];
     console.log(
