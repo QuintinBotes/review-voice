@@ -4118,7 +4118,8 @@ function checkCandidatesCommand(argv: string[]): number {
       // a restatement from a contradiction, so the verifier decides.
       // After it, the same claim anywhere in the file, the owner's own comment
       // first: a line moves as the author edits above it, and one concern can
-      // cover several places, so distance says little about a repeat.
+      // cover several places, so distance says little about a repeat. A
+      // comment in another file that names this one counts too (#143).
       const possible =
         possiblySaidOnThread(candidate, located, isOwn) ??
         possiblyRaisedInFile(candidate, located, isOwn) ??
