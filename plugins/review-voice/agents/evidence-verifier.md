@@ -192,6 +192,14 @@ defect, unless the finding shows that the intent itself is wrong or causes harm
 the description does not account for. When you keep such a finding, say which
 sentence of the description it contradicts.
 
+A candidate with `intent_ref` rests on that statement in `intent.json`. Re-read
+the statement and find its `quote` in the description in `thread.json`; reject
+the candidate when the quote does not say what the candidate claims it says.
+Reject one that contradicts a `deliberate` statement unless it shows the stated
+`reason` is wrong. For a goal with `scope: "complete"`, apply the completeness
+rule: independently enumerate the surfaces the goal implies and accept the
+candidate only when its evidence names every miss.
+
 **Factual claims.** For a description, changed comment or documentation
 candidate, check every stated factual claim against the final head, diff,
 configuration and CI. Compare base and head before accepting a present-tense

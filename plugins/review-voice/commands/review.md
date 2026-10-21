@@ -294,12 +294,30 @@ files it had not finished are `inconclusive` with `reason: "time-budget"`, the
 finished ones are still written, and `budget.exhausted` says it happened. Never
 wrap it in a kill timer; a hung step is reported, not worked around.
 
+## Step 1f - Extract stated intent
+
+On a `--pr` run whose `thread.json` has a `description` entry with non-empty
+text, launch the `intent-extractor` agent with the pull request `title` from
+step 1 and `thread.json`. Skip this step otherwise, and on any run that is not
+a pull request; nothing later needs `intent.json`.
+
+Pipe its output into `RV check-intent --thread <tmpdir>/thread.json` and write
+what it prints to `<tmpdir>/intent.json`. It refuses a quote that is not in the
+description, so no stage checks the change against intent the author did not
+state. If it exits 2, **relaunch the extractor once with the schema restated,
+and do not translate its output by hand.** If the second attempt also fails,
+say so once after the findings and continue without `intent.json`: stated
+intent sharpens the review, it does not gate it.
+
+`{"statements": []}` is a valid answer for a boilerplate description. Pass it
+on as it is.
+
 ## Step 2 - Generate candidates
 
 Launch the `diff-analyst` agent with the `diff` field, the `files` list and the
 convention `documents`, plus `symbols.json`, the manifest's `structure` block
-and, on a `--pr` run, `thread.json`. A point already made in the thread is not
-a candidate. `structure` is evidence, never a finding: do not report a size
+and, on a `--pr` run, `thread.json` and `intent.json` when step 1f wrote one. A
+point already made in the thread is not a candidate. `structure` is evidence, never a finding: do not report a size
 crossing yourself, and do not mention it to the user unless a verified finding
 rests on it.
 
@@ -385,7 +403,8 @@ same convention `documents`, and `symbols.json`.
 
 On a `--pr` run, give it the same `thread.json` too. It must be able to check
 factual claims in the description against the final head, not merely a
-candidate's excerpt of them.
+candidate's excerpt of them. Give it `intent.json` as well when step 1f wrote
+one, so it can re-read the statement any candidate's `intent_ref` names.
 
 Discard every candidate it does not verify, with two exceptions that step 4
 decides:
