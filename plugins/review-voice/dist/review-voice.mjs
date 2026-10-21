@@ -135,22 +135,33 @@ var SEVERITY_ALTERNATION = SEVERITIES.join("|");
 var OPENS_FINDING = new RegExp(`^\\[(?:${SEVERITY_ALTERNATION}|[a-z_]+)\\]`, "i");
 var FINDING = new RegExp(`^\\[([a-z_]+)\\]\\s+\`([^\`]+):(\\d+)\`\\s+-\\s*([\\s\\S]*)$`, "i");
 function splitFindings(output) {
-  const lines2 = output.split("\n");
+  return scanFindings(output).blocks;
+}
+function strayLines(output) {
+  return scanFindings(output).stray;
+}
+function scanFindings(output) {
   const blocks = [];
+  const stray = [];
   let current = null;
-  lines2.forEach((line2, index) => {
+  const flush = () => {
+    if (current) blocks.push({ raw: current.raw.join("\n").trim(), startLine: current.startLine });
+    current = null;
+  };
+  output.split("\n").forEach((line2, index) => {
     if (OPENS_FINDING.test(line2)) {
-      if (current) blocks.push({ raw: current.raw.join("\n").trim(), startLine: current.startLine });
+      flush();
       current = { raw: [line2], startLine: index + 1 };
+    } else if (line2.trim() === "") {
+      flush();
     } else if (current) {
       current.raw.push(line2);
+    } else if (blocks.length > 0) {
+      stray.push(index + 1);
     }
   });
-  if (current) {
-    const last = current;
-    blocks.push({ raw: last.raw.join("\n").trim(), startLine: last.startLine });
-  }
-  return blocks;
+  flush();
+  return { blocks, stray };
 }
 function parseFinding(raw, startLine) {
   const joined = raw.replace(/\s*\n\s*/g, " ").trim();
@@ -212,7 +223,7 @@ function validateFinding(finding, limits, violations) {
     violations.push({
       code: "finding_too_long",
       line: at,
-      message: `${words} words; the limit is ${limits.maxWordsPerFinding}. Cut it or drop the finding.`
+      message: `${words} words of prose; the limit is ${limits.maxWordsPerFinding}. The tag and \`path:line\` are not counted. Cut it or drop the finding.`
     });
   }
   if (/[\u2013\u2014]/u.test(finding.prose)) {
@@ -257,6 +268,13 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
     if (pattern.test(output)) violations.push({ code, message });
   }
   const findings = splitFindings(output).map((block) => parseFinding(block.raw, block.startLine));
+  for (const line2 of strayLines(output)) {
+    violations.push({
+      code: "stray_text",
+      line: line2,
+      message: "Not part of any finding: a blank line ends the finding above it. The output is findings only."
+    });
+  }
   if (limits.maxFindings !== null && findings.length > limits.maxFindings) {
     violations.push({
       code: "too_many_findings",
@@ -3799,7 +3817,13 @@ function boundSeverityByEvidence(derived, candidate, verification2) {
       reason: `${derived.reason}, held at ${candidate.severity} because the verifier found no exposure`
     };
   }
-  if (FIXED_BOUNDARY_CATEGORIES.has(candidate.category)) return derived;
+  if (FIXED_BOUNDARY_CATEGORIES.has(candidate.category)) {
+    return raisedBecause(
+      derived,
+      candidate.severity,
+      `${candidate.category} names a breach by itself, so its tier does not depend on the request or a trace`
+    );
+  }
   if (candidate.severity === "question" || derived.severity === "question") return derived;
   let result = derived;
   if ((result.severity === "important" || result.severity === "blocking") && isInterrogativeClaim(candidate.claim)) {
@@ -3821,7 +3845,11 @@ function boundSeverityByEvidence(derived, candidate, verification2) {
     };
   }
   if (verification2?.impactTraced === true && confidence !== null && confidence >= ESCALATION_CONFIDENCE) {
-    return result;
+    return raisedBecause(
+      result,
+      candidate.severity,
+      `the verifier traced impact beyond the changed code (impact_traced: true) at confidence ${confidence.toFixed(2)}, at least ${ESCALATION_CONFIDENCE}`
+    );
   }
   return {
     ...result,
@@ -3829,8 +3857,14 @@ function boundSeverityByEvidence(derived, candidate, verification2) {
     reason: `${result.reason}, held at ${candidate.severity} because escalation needs the verifier to trace impact beyond the changed code`
   };
 }
+function raisedBecause(result, requested, why) {
+  const asked = TIER_ORDER.indexOf(requested);
+  const got = TIER_ORDER.indexOf(result.severity);
+  if (asked === -1 || got === -1 || got <= asked) return result;
+  return { ...result, reason: `${result.reason}, raised above the requested ${requested} because ${why}` };
+}
 var UNVERIFIABLE_CONFIDENCE = 0.6;
-var UNVERIFIABLE_REJECTION = "the claim states it could not be verified, so it cannot ship whatever it scores";
+var UNVERIFIABLE_REJECTION = "the claim could not be verified, so it cannot ship whatever it scores; `unverifiableBecause` names the trigger";
 var ADMITS_UNVERIFIABLE = [
   /\b(?:cannot|can not|could not|couldn't|unable to)\s+(?:be\s+)?(?:verif|confirm|check|establish|determin)/i,
   /\bnot\s+verifiable\b/i,
@@ -4230,13 +4264,15 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const verifiedConfidence = verification2 === void 0 ? null : verifierConfidence(verification2.technicalConfidence, verification2.evidenceQuality);
   let confidence = verifiedConfidence ?? analystConfidence;
   let confidenceSource = verifiedConfidence === null ? "analyst" : "verifier";
-  const missingContext = blockingContext(verification2?.requiredContextMissing).length > 0;
+  const missing = blockingContext(verification2?.requiredContextMissing);
+  const missingContext = missing.length > 0;
   const admitted = admitsUnverifiable(candidate);
   const verifierEngaged = verification2?.technicalConfidence !== void 0;
   if ((missingContext || admitted && !verifierEngaged) && confidence > UNVERIFIABLE_CONFIDENCE) {
     confidence = UNVERIFIABLE_CONFIDENCE;
     confidenceSource = "unverifiable-cap";
   }
+  const unverifiableBecause = confidenceSource !== "unverifiable-cap" ? null : missingContext ? `the verifier listed required_context_missing the claim depends on: ${missing.join("; ")}` : "the analyst's evidence says the claim could not be checked, and the verifier gave no technical_confidence of its own";
   const confidenceFloor = confidenceSource === "verifier" ? thresholds.technicalConfidence : thresholds.analystOnlyConfidence;
   const alreadySaid = duplicatePrecedent(candidate, precedents);
   const forAlignment = alreadySaid === null ? precedents : precedents.filter((p) => !sameLocation(candidate, p));
@@ -4300,6 +4336,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     analystConfidence,
     verifiedConfidence,
     confidenceSource,
+    unverifiableBecause,
     ownerAlignment,
     repositoryAlignment,
     evidenceQuality: quality,
@@ -4593,6 +4630,17 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
     throw error;
   }
 };
+var gitTrackedPaths = (cwd, ref) => {
+  const args = ref === null ? ["ls-files", "-z", "--full-name", "--", ":/"] : ["ls-tree", "-r", "-z", "--name-only", "--full-tree", ref];
+  const output = execFileSync7("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 1e4,
+    maxBuffer: 64 * 1024 * 1024
+  });
+  return output.split("\0").filter((path) => path.length > 0);
+};
 var RESOURCE_PATHSPECS = [
   ":(glob)**/*.resx",
   ":(glob)**/*.resw",
@@ -4627,7 +4675,7 @@ var FILE_NAME = /\.(?:tsx?|jsx?|mjs|cjs|cs|py|go|rb|java|kt|rs|swift|dart|json|y
 function generatedAccessor(symbol) {
   return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
 }
-function checkAbsenceClaim(text2, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources) {
+function checkAbsenceClaim(text2, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths) {
   const searchedRefLabel = ref ?? "working tree";
   if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text2))) return null;
   const scope = absenceScope(text2, repository);
@@ -4643,15 +4691,25 @@ function checkAbsenceClaim(text2, cwd, ref = null, search = gitGrep, repository 
       searchedRef: searchedRefLabel
     };
   }
-  const symbols = namedSymbols(text2);
+  const symbols = namedSymbols(text2).filter(
+    (symbol) => text2.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
+  );
   if (symbols.length === 0) return null;
   const searchedRef = ref ?? "working tree";
   const found = [];
   const checked = [];
+  let paths = null;
   for (const symbol of symbols.slice(0, 12)) {
     try {
       checked.push(symbol);
-      if (search(symbol, cwd, ref)) found.push(symbol);
+      if (symbol.includes("/") || FILE_NAME.test(symbol)) {
+        paths ??= trackedPaths(cwd, ref);
+        const path = symbol.replace(/^\.?\//, "").replace(/\/$/, "");
+        const exists = path.includes("/") ? paths.some((tracked) => tracked === path || tracked.startsWith(`${path}/`)) : paths.some((tracked) => tracked === path || tracked.endsWith(`/${path}`));
+        if (exists) found.push(symbol);
+      } else if (search(symbol, cwd, ref)) {
+        found.push(symbol);
+      }
     } catch {
       return { found: [], checked, inconclusive: true, searchedRef };
     }
@@ -16170,6 +16228,7 @@ var COMMAND_HELP = {
       "  --diff-file <path>        Diff for reach and anchor checks",
       "  --min-score <n>           Final score gate (default 0.68)",
       "  --severity <id>=<tier>    Explicit owner downgrade (blocking, important, minor or nit; repeatable)",
+      "  --promote <id>            Owner posts a belowGate finding past its gate (repeatable)",
       "  --repository <name>       Prefer precedents from this repository",
       "  --owner <login>           Owner whose precedents count; default from config",
       "Reads: candidates JSON on stdin.",
@@ -17364,6 +17423,32 @@ function ownerSeverityOverrides(argv, candidates) {
   }
   return overrides;
 }
+function ownerPromotions(argv, candidates) {
+  const promotions = /* @__PURE__ */ new Set();
+  const known = new Set(candidates.map((candidate) => candidate.candidateId));
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== "--promote") continue;
+    const candidateId = argv[index + 1];
+    if (candidateId === void 0 || candidateId.startsWith("--")) {
+      return "--promote needs a candidate_id, for example cand_001.";
+    }
+    if (!known.has(candidateId)) return `--promote names unknown candidate ${JSON.stringify(candidateId)}.`;
+    if (promotions.has(candidateId)) return `--promote names ${JSON.stringify(candidateId)} more than once.`;
+    promotions.add(candidateId);
+  }
+  return promotions;
+}
+function applyOwnerPromotion(breakdown) {
+  const gate = gateOf(breakdown.rejectedBecause);
+  if (breakdown.eligible) return `--promote ${breakdown.candidateId}: it is already eligible.`;
+  if (breakdown.confidenceSource !== "verifier" || !Number.isFinite(breakdown.finalScore) || gate === null) {
+    return `--promote ${breakdown.candidateId}: only a verified finding held by the score or confidence gate alone can be promoted, and this one was rejected because ${breakdown.rejectedBecause}.`;
+  }
+  breakdown.ownerPromotion = { gate, heldBecause: breakdown.rejectedBecause };
+  breakdown.eligible = true;
+  breakdown.rejectedBecause = null;
+  return null;
+}
 function applyOwnerSeverityOverride(breakdown, override) {
   const current = breakdown.severity.severity;
   if (current === "question") return `--severity cannot override question for ${breakdown.candidateId}.`;
@@ -17396,6 +17481,11 @@ function scoreCommand(argv) {
   const severityOverrides = ownerSeverityOverrides(argv, candidates);
   if (typeof severityOverrides === "string") {
     console.error(severityOverrides);
+    return 2;
+  }
+  const promotions = ownerPromotions(argv, candidates);
+  if (typeof promotions === "string") {
+    console.error(promotions);
     return 2;
   }
   const thresholds = {
@@ -17634,6 +17724,13 @@ function scoreCommand(argv) {
           }
         }
       }
+      if (promotions.has(candidate.candidateId)) {
+        const problem = applyOwnerPromotion(breakdown);
+        if (problem !== null) {
+          console.error(problem);
+          return 2;
+        }
+      }
       if (breakdown.eligible) kept.push(candidate);
       results.push({
         ...breakdown,
@@ -17673,6 +17770,17 @@ function scoreCommand(argv) {
         })
       ];
     });
+    const absenceContradicted = results.filter((r) => !r.eligible && r.absenceCheck !== void 0 && r.absenceCheck.found.length > 0).filter((r) => verifications.get(r.candidateId)?.verified === true).map(
+      (r) => boundLists({
+        candidateId: r.candidateId,
+        path: r.path,
+        line: r.line,
+        severity: r.severity.severity,
+        claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? "",
+        found: r.absenceCheck.found,
+        rejectedBecause: r.rejectedBecause
+      })
+    );
     const scoreOf = new Map(results.map((r) => [r.candidateId, r]));
     const rank2 = (c) => {
       const scored = scoreOf.get(c.candidateId);
@@ -17751,7 +17859,8 @@ function scoreCommand(argv) {
             };
           }),
           belowGate: belowGate.map(withSnakeCaseId),
-          unverified: unverified.map(withSnakeCaseId)
+          unverified: unverified.map(withSnakeCaseId),
+          absenceContradicted: absenceContradicted.map(withSnakeCaseId)
         },
         null,
         2
