@@ -1883,6 +1883,19 @@ function scoreCommand(argv: string[]): number {
           rejectedBecause: r.rejectedBecause,
         }),
       );
+    // Render order, the one validate-output enforces: severity, then the higher
+    // final score. Handing the editor sorted input means it never has to
+    // re-sort, which it did not reliably do (#144).
+    const scoreOf = new Map(results.map((r) => [r.candidateId, r]));
+    const rank = (c: Candidate): [number, number] => {
+      const scored = scoreOf.get(c.candidateId);
+      return [SEVERITY_ORDER[(scored?.severity.severity ?? c.severity) as Severity], -(scored?.finalScore ?? 0)];
+    };
+    kept.sort((a, b) => {
+      const [sa, fa] = rank(a);
+      const [sb, fb] = rank(b);
+      return sa - sb || fa - fb;
+    });
 
     const finals = results
       .map((r) => r.finalScore)
