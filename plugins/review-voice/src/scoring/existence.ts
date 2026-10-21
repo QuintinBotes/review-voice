@@ -317,6 +317,29 @@ export const gitGrepLines: LineSearcher = (patterns, cwd, ref, timeoutMs) => {
   }
 };
 
+/** Every tracked path, repository-relative. Throws when git could not answer. */
+export type TrackedPathLister = (cwd: string, ref: string | null) => string[];
+
+/**
+ * The index for the working tree, the tree itself for a ref. A path claim is
+ * about what files exist, which `git grep` cannot answer: it reads contents,
+ * so a doc citing `ci/README.md` "proved" that file exists.
+ */
+export const gitTrackedPaths: TrackedPathLister = (cwd, ref) => {
+  const args =
+    ref === null
+      ? ['ls-files', '-z', '--full-name', '--', ':/']
+      : ['ls-tree', '-r', '-z', '--name-only', '--full-tree', ref];
+  const output = execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 10_000,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return output.split('\0').filter((path) => path.length > 0);
+};
+
 /**
  * Tracked files a localisation or resource generator reads.
  *
@@ -406,6 +429,7 @@ export function checkAbsenceClaim(
   search: Searcher = gitGrep,
   repository: string | null = null,
   resources: ResourceLister = gitResourceSources,
+  trackedPaths: TrackedPathLister = gitTrackedPaths,
 ): ExistenceCheck | null {
   const searchedRefLabel = ref ?? 'working tree';
 
@@ -432,17 +456,35 @@ export function checkAbsenceClaim(
     };
   }
 
-  const symbols = namedSymbols(text);
+  // Only names the claim states. `namedSymbols` also yields `README.md` out of
+  // `ci/README.md`, and that names a different file: the root README does not
+  // contradict "`ci/README.md` does not exist".
+  const symbols = namedSymbols(text).filter((symbol) =>
+    text.split(symbol).slice(0, -1).some((before) => !before.endsWith('/')),
+  );
   if (symbols.length === 0) return null;
 
   const searchedRef = ref ?? 'working tree';
   const found: string[] = [];
   const checked: string[] = [];
+  let paths: string[] | null = null;
 
   for (const symbol of symbols.slice(0, 12)) {
     try {
       checked.push(symbol);
-      if (search(symbol, cwd, ref)) found.push(symbol);
+      // A file is checked by path, anything else by content. A path with a
+      // directory must exist there (or be a tracked directory); a bare file
+      // name may exist in any directory.
+      if (symbol.includes('/') || FILE_NAME.test(symbol)) {
+        paths ??= trackedPaths(cwd, ref);
+        const path = symbol.replace(/^\.?\//, '').replace(/\/$/, '');
+        const exists = path.includes('/')
+          ? paths.some((tracked) => tracked === path || tracked.startsWith(`${path}/`))
+          : paths.some((tracked) => tracked === path || tracked.endsWith(`/${path}`));
+        if (exists) found.push(symbol);
+      } else if (search(symbol, cwd, ref)) {
+        found.push(symbol);
+      }
     } catch {
       // A search that could not run is not an answer. A missing ref exits
       // 128, which must never be read as "the symbol is absent".
