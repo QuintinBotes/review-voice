@@ -302,9 +302,10 @@ step 1 and `thread.json`. Skip this step otherwise, and on any run that is not
 a pull request; nothing later needs `intent.json`.
 
 Pipe its output into `RV check-intent --thread <tmpdir>/thread.json` and write
-what it prints to `<tmpdir>/intent.json`. It refuses a quote that is not in the
-description, so no stage checks the change against intent the author did not
-state. If it exits 2, **relaunch the extractor once with the schema restated,
+what it prints to `<tmpdir>/intent.json`. It refuses a quote or reason that is
+not a whole sentence or list item of the description, so no stage checks the
+change against intent the author did not state, or against a sentence with
+its negation cut off. If it exits 2, **relaunch the extractor once with the schema restated,
 and do not translate its output by hand.** If the second attempt also fails,
 say so once after the findings and continue without `intent.json`: stated
 intent sharpens the review, it does not gate it.
@@ -338,8 +339,13 @@ pass that found the most serious defect in the diff. Failing at this step costs
 one re-run of one agent. If the second attempt is also malformed, say so and
 stop.
 
+When step 1f wrote `intent.json`, also add `--intent <tmpdir>/intent.json`.
+A candidate whose `intent_ref` names no statement in it is listed under
+`intentFailures` and fails like an anchor.
+
 If it exits 1, send **only the failing candidates** back to the analyst once,
-including each reported `reason`, and ask it to re-anchor or withdraw each one.
+including each reported `reason`, and ask it to re-anchor, fix the
+`intent_ref`, or withdraw each one.
 Run the same check again. Drop candidates that still fail and say the dropped
 count once after the findings. Never correct an anchor by hand.
 

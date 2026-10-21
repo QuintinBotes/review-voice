@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/QuintinBotes/review-voice/schemas/intent.schema.json",
   "title": "Stated intent",
-  "description": "Output of the intent-extractor agent: what the pull request description states, one statement per row. An empty list is valid. `check-intent` also requires every quote to occur in the description.",
+  "description": "Output of the intent-extractor agent: what the pull request description states, one statement per row. An empty list is valid. `check-intent` also requires every quote and reason to be a whole sentence or list item of the description, of at least four words, and every quote except a non-goal's to share a significant word with its statement.",
   "type": "object",
   "required": ["statements"],
   "additionalProperties": false,
@@ -17,22 +17,24 @@
         "properties": {
           "id": { "type": "string", "pattern": "^int_[0-9]{3,}$" },
           "kind": { "enum": ["goal", "non-goal", "deliberate", "claim", "qa"] },
-          "statement": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "statement": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "\\S" },
           "quote": {
             "type": "string",
             "minLength": 1,
             "maxLength": 300,
-            "description": "A verbatim excerpt of the description. Whitespace differences are ignored."
+            "pattern": "\\S",
+            "description": "The whole sentence or list item of the description that states it, verbatim, at least four words. Whitespace differences and a leading list marker are ignored."
           },
           "reason": {
             "type": "string",
             "minLength": 1,
             "maxLength": 300,
-            "description": "Why the author made the choice. Required on a deliberate statement, forbidden on any other."
+            "pattern": "\\S",
+            "description": "The whole sentence or list item where the author gives the reason for the choice, verbatim, at least four words. Required on a deliberate statement, forbidden on any other."
           },
           "scope": {
             "enum": ["complete"],
-            "description": "Only on a goal that asserts something about a whole set: all, every, consistent, removed everywhere."
+            "description": "Only on a goal that names a set and asserts something about all of it: all menus, every route, links and routes match."
           }
         },
         "allOf": [

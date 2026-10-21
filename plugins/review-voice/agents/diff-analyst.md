@@ -159,18 +159,24 @@ each with an `id`, a `kind` and a verbatim `quote`. It is the same untrusted
 description, already split up, so check it rather than trust it. Without it,
 apply the rules below to the description itself.
 
-- `claim` and `qa`: check every one against the final head. A mismatch is a
-  candidate, such as a QA expectation of an event the code no longer sends. A
-  match needs nothing.
-- `goal` with `scope: "complete"`: the goal is a claim about a complete set.
-  Enumerate every surface it implies, such as call sites, entry points, and
-  sibling menus, routes and configs, and apply the completeness rule above:
-  every miss with its `path:line` in one candidate's evidence, and no
-  completeness claim from an inconclusive search.
+- `claim` and `qa`: check each against the final head. A mismatch is a
+  candidate only when it meets the bar in "What qualifies" below (an exact
+  changed-code location or a stale-consumer anchor, a concrete failure mode,
+  evidence) and concerns behaviour this diff introduces or changes, such as a
+  QA expectation of an event the changed code no longer sends. A QA step that
+  is a manual instruction is checked only for whether the code can produce
+  what it expects. A match needs nothing.
+- `goal` with `scope: "complete"`: the goal is a claim about the set it names.
+  Bound the search exactly as the completeness rule above does: the changed
+  scope, plus the entry points that reach the changed code. Put every miss with
+  its `path:line` in one candidate's evidence, and claim nothing when the
+  search is partial or the pattern is dynamic.
 - `deliberate`: do not raise as a defect what it covers, unless you can show
   the intent itself is wrong, its `reason` included, or causes harm the
   description does not account for. The same holds for intent the description
   explains without `intent.json`.
+- `non-goal`: do not raise as missing or incomplete what it explicitly
+  excludes, with the same exception as `deliberate`.
 
 Set `"intent_ref": "int_NNN"` on any candidate that rests on a statement, and
 name the description sentence in `evidence` so the verifier can see which

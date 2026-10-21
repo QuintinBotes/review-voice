@@ -109,9 +109,10 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  --owner <login>        Owner for --thread; default from config',
       '  --held-from <run-id>   Drop or flag repeats of that run\'s held findings (needs --head)',
       '  --head <sha>           Head the candidates were produced against (with --held-from)',
+      '  --intent <path>        intent.json from check-intent; every intent_ref must name a statement in it',
       'Reads: candidates JSON on stdin.',
       'Writes: JSON on stdout.',
-      'Exit codes: 0 valid, 2 invalid candidates or bad invocation.',
+      'Exit codes: 0 valid, 1 anchor or intent_ref failures, 2 invalid candidates or bad invocation.',
     ),
   },
   'check-verification': {
@@ -147,13 +148,14 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     body: lines(
       'review-voice check-intent --thread <path>',
       '  Validate the stated-intent statements extracted from the pull request',
-      '  description. Every quote must occur in the description in thread.json.',
+      '  description. Every quote, and every deliberate reason, must be a whole',
+      '  sentence or list item of the description in thread.json, of at least four words.',
       '',
       'Flags:',
       '  --thread <path>        thread.json from `thread`, holding the description (required)',
       'Reads: the intent-extractor JSON on stdin.',
       'Writes: the normalised intent document on stdout.',
-      'Exit codes: 0 valid, 2 malformed or bad invocation.',
+      'Exit codes: 0 valid, 2 malformed, no description, or bad invocation.',
     ),
   },
   context: {

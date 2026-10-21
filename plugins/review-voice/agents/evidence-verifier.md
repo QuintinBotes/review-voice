@@ -187,18 +187,22 @@ fell under the confidence gate: it is not a refutation, so judge the candidate
 on its own evidence.
 
 **Stated intent.** Behaviour the author describes as intentional in the
-description is grounds to reject or downgrade a candidate that calls it a
-defect, unless the finding shows that the intent itself is wrong or causes harm
-the description does not account for. When you keep such a finding, say which
-sentence of the description it contradicts.
+description, whether a `deliberate` statement in `intent.json` or a sentence of
+the description itself, is grounds to reject or downgrade a candidate that
+calls it a defect, unless the finding shows that the intent itself is wrong,
+its stated `reason` included, or causes harm the description does not account
+for. When you keep such a finding, say which sentence of the description it
+contradicts.
 
-A candidate with `intent_ref` rests on that statement in `intent.json`. Re-read
-the statement and find its `quote` in the description in `thread.json`; reject
-the candidate when the quote does not say what the candidate claims it says.
-Reject one that contradicts a `deliberate` statement unless it shows the stated
-`reason` is wrong. For a goal with `scope: "complete"`, apply the completeness
-rule: independently enumerate the surfaces the goal implies and accept the
-candidate only when its evidence names every miss.
+A candidate with `intent_ref` rests on that statement in `intent.json`. Reject
+it when `intent.json` has no statement with that id. Otherwise find the
+statement's `quote` in the description in `thread.json` and read the whole
+sentence around it, not only the quote; reject the candidate when that
+sentence, with its negations, conditions and qualifiers, does not say what the
+candidate claims it says. For a goal with `scope: "complete"`, apply the
+completeness rule: independently enumerate the surfaces the goal names, in the
+changed scope plus the entry points that reach the changed code, and accept
+the candidate only when its evidence names every miss.
 
 **Factual claims.** For a description, changed comment or documentation
 candidate, check every stated factual claim against the final head, diff,

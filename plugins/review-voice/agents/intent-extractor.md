@@ -31,22 +31,31 @@ goal nobody set.
 Each statement has one `kind`:
 
 - `goal`: something the change sets out to achieve. Add `"scope": "complete"`
-  only when the goal asserts something about a whole set, in words such as
-  `all`, `every`, `consistent`, `everywhere`, `match` or `removed everywhere`.
+  only when the goal names the set it covers and asserts something about all
+  of it, in words such as `all`, `every`, `consistent`, `everywhere`, `match`
+  or `removed everywhere`: "all menus", "every route", "links and routes
+  match". A goal that uses such a word without naming the set gets no `scope`.
 - `non-goal`: something the author says the change does not do or leaves
   for later.
-- `deliberate`: a choice the author says is intentional. `reason` is the
-  reason the author gives, and is required; a choice stated with no reason is a
-  `claim`, not `deliberate`. No other kind carries `reason`.
+- `deliberate`: a choice the author says is intentional **and** gives a
+  reason for. `reason` is required and is quoted exactly like `quote`: the
+  whole sentence or list item where the author wrote the reason, which may be
+  the same sentence as `quote`. A choice whose reason the author did not write
+  is a `claim`, not `deliberate`; never supply a reason yourself. No other kind
+  carries `reason`.
 - `claim`: a factual statement about the code or its behaviour after the
   change, such as "the event stays as it is" or "no API change".
 - `qa`: what testers or reviewers are told to expect or check.
 
-`statement` restates it in one short sentence. `quote` is the shortest
-**verbatim** excerpt of the description that states it, copied character for
-character, at most 300 characters. The CLI refuses any quote that is not in
-the description, so do not paraphrase, fix typos, or join sentences that are
-apart. Ids run `int_001`, `int_002`, and so on. At most 40 statements.
+`statement` restates it in one short sentence, using the quote's own key
+words. `quote` is **the whole sentence (or full list item) that states it,
+verbatim**, copied character for character, at least four words and at most
+300 characters; a list marker may be left off. A quote must not drop a
+negation, condition or qualifier, so never start or stop it mid-sentence. The
+CLI refuses a quote that is not a whole sentence or list item of the
+description, so do not paraphrase, fix typos, or join sentences that are
+apart. A statement whose sentence is longer than 300 characters is left out.
+Ids run `int_001`, `int_002`, and so on. At most 40 statements.
 
 An empty description, or one that is only a template, checklist headings,
 links or boilerplate, has no intent. Return `{"statements": []}`.
@@ -62,21 +71,21 @@ JSON matching `schemas/intent.schema.json`. Nothing else.
       "id": "int_001",
       "kind": "goal",
       "statement": "Every menu links to the renamed notes routes.",
-      "quote": "All menus now link to the new /notes routes",
+      "quote": "All menus now link to the new /notes routes.",
       "scope": "complete"
     },
     {
       "id": "int_002",
       "kind": "deliberate",
       "statement": "Archived notes stay out of search.",
-      "quote": "Archived notes are still excluded from search",
+      "quote": "Archived notes are still excluded from search.",
       "reason": "Search indexing for archives ships in a follow-up."
     },
     {
       "id": "int_003",
       "kind": "qa",
       "statement": "Opening a note still sends the note_opened click event.",
-      "quote": "QA: the note_opened click event stays as it is"
+      "quote": "QA: the note_opened click event stays as it is."
     }
   ]
 }

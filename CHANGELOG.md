@@ -22,11 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Intent capture: on a pull request with a description, a new
   `intent-extractor` agent lists its goals, non-goals, deliberate choices,
   claims and QA expectations as quoted statements, and `review-voice
-  check-intent` refuses any quote not in the description. The analyst checks
-  every claim and QA statement against the head, enumerates every surface a
-  `scope: "complete"` goal implies, and tags findings with `intent_ref`; the
-  verifier re-reads the referenced statement and rejects findings that
-  contradict a deliberate choice without showing its reason is wrong.
+  check-intent` refuses any quote or deliberate reason that is not a whole
+  sentence or list item of the description, of at least four words. The
+  analyst checks claim and QA statements against the head under the usual
+  qualification bar, bounds the search for a `scope: "complete"` goal like any
+  completeness finding, and tags findings with `intent_ref`, which
+  `check-candidates --intent` requires to name a real statement; the verifier
+  re-reads the whole sentence around the referenced quote.
 - `review.structure.simplify` (default false), or `/review-voice:review
   --simplify`, enables one post-verification, body-only maintainability
   suggestion. It must enumerate each changed element it removes and an existing
