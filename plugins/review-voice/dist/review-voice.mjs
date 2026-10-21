@@ -1137,8 +1137,8 @@ function checkSeverityAgainstScores(output, scores) {
 // plugins/review-voice/src/contract/backing-check.ts
 var ABSOLUTES = ["every", "everyone", "everything", "everywhere", "always", "never", "all"];
 var WORD = /[a-z]+/g;
-function wordsOf(text2) {
-  const prose = text2.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ");
+function wordsOf(text3) {
+  const prose = text3.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ");
   return new Set(prose.toLowerCase().match(WORD) ?? []);
 }
 function backingText(entry) {
@@ -1736,21 +1736,21 @@ var HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/;
 var DECLARATION = /^[A-Za-z_$]/;
 var STATEMENT = /^(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|when)\b/;
 var MAX_SCOPE_LENGTH = 80;
-function count(text2, pattern) {
-  return text2.match(pattern)?.length ?? 0;
+function count(text3, pattern) {
+  return text3.match(pattern)?.length ?? 0;
 }
-function decisionPointsIn(text2) {
-  const trimmed = text2.trim();
+function decisionPointsIn(text3) {
+  const trimmed = text3.trim();
   if (trimmed.length === 0 || COMMENT_START.test(trimmed)) return 0;
   return count(trimmed, KEYWORDS) + count(trimmed, /&&/g) + count(trimmed, /\|\|/g) + count(trimmed, TERNARY);
 }
-function declarationIn(text2) {
-  return DECLARATION.test(text2) && !STATEMENT.test(text2) ? text2.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
+function declarationIn(text3) {
+  return DECLARATION.test(text3) && !STATEMENT.test(text3) ? text3.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
 }
 function headerPath2(raw) {
-  const text2 = raw.replace(/\t.*$/, "");
-  if (text2 === "/dev/null") return null;
-  const unquoted = unquoteGitPath(text2);
+  const text3 = raw.replace(/\t.*$/, "");
+  if (text3 === "/dev/null") return null;
+  const unquoted = unquoteGitPath(text3);
   return unquoted.startsWith("b/") ? unquoted.slice(2) : unquoted;
 }
 function countHunks(diff, wanted) {
@@ -1762,8 +1762,8 @@ function countHunks(diff, wanted) {
   let remainingOld = 0;
   let remainingNew = 0;
   let newLine = 0;
-  const record2 = (hunk, text2, removed) => {
-    const decisionPoints = decisionPointsIn(text2);
+  const record2 = (hunk, text3, removed) => {
+    const decisionPoints = decisionPointsIn(text3);
     if (decisionPoints === 0) return;
     if (!removed) hunk.decisionPoints += decisionPoints;
     hunk.branches.push({ scope, line: newLine, decisionPoints, removed });
@@ -1771,30 +1771,30 @@ function countHunks(diff, wanted) {
   for (const raw of diff.split("\n")) {
     const line2 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (current !== null && (remainingOld > 0 || remainingNew > 0)) {
-      const text2 = line2.slice(1);
+      const text3 = line2.slice(1);
       if (line2.startsWith("+")) {
-        if (declarationIn(text2) !== null) {
+        if (declarationIn(text3) !== null) {
           if (!replacing) scope = null;
           replacing = false;
         }
-        record2(current, text2, false);
-        current.added.push({ line: newLine, text: text2 });
+        record2(current, text3, false);
+        current.added.push({ line: newLine, text: text3 });
         remainingNew -= 1;
         newLine += 1;
         continue;
       }
       if (line2.startsWith("-")) {
-        const declaration = declarationIn(text2);
+        const declaration = declarationIn(text3);
         if (declaration !== null) {
           scope = declaration;
           replacing = true;
         }
-        record2(current, text2, true);
+        record2(current, text3, true);
         remainingOld -= 1;
         continue;
       }
       if (line2.startsWith(" ") || line2 === "") {
-        scope = declarationIn(text2) ?? scope;
+        scope = declarationIn(text3) ?? scope;
         replacing = false;
         remainingOld -= 1;
         remainingNew -= 1;
@@ -2163,13 +2163,13 @@ var LANGUAGES2 = {
   ".py": PYTHON,
   ".pyi": PYTHON
 };
-function splitLine(text2, language) {
-  if (language.blockComments && text2.trimStart().startsWith("*")) return { code: "", comment: text2 };
+function splitLine(text3, language) {
+  if (language.blockComments && text3.trimStart().startsWith("*")) return { code: "", comment: text3 };
   let code = "";
   let comment = "";
   let quote2 = null;
-  for (let index = 0; index < text2.length; index += 1) {
-    const char = text2[index];
+  for (let index = 0; index < text3.length; index += 1) {
+    const char = text3[index];
     if (quote2 !== null) {
       if (char === "\\") {
         code += "  ";
@@ -2183,12 +2183,12 @@ function splitLine(text2, language) {
     } else if (language.quotes.includes(char)) {
       quote2 = char;
       code += char;
-    } else if (text2.startsWith(language.lineComment, index)) {
-      comment += text2.slice(index);
+    } else if (text3.startsWith(language.lineComment, index)) {
+      comment += text3.slice(index);
       break;
-    } else if (language.blockComments && text2.startsWith("/*", index)) {
-      const end = text2.indexOf("*/", index + 2);
-      comment += `${text2.slice(index, end === -1 ? void 0 : end + 2)} `;
+    } else if (language.blockComments && text3.startsWith("/*", index)) {
+      const end = text3.indexOf("*/", index + 2);
+      comment += `${text3.slice(index, end === -1 ? void 0 : end + 2)} `;
       if (end === -1) break;
       index = end + 1;
     } else {
@@ -2197,8 +2197,8 @@ function splitLine(text2, language) {
   }
   return { code, comment };
 }
-function kindsIn(text2, language) {
-  const { code, comment } = splitLine(text2, language);
+function kindsIn(text3, language) {
+  const { code, comment } = splitLine(text3, language);
   const kinds = [];
   for (const rule of language.rules) {
     if (rule.in === "code" && language.skip?.test(code)) continue;
@@ -2214,8 +2214,8 @@ function findTypeEscapes(diff, paths) {
   for (const hunk of countHunks(diff, new Set(paths))) {
     const language = LANGUAGES2[extname(hunk.path).toLowerCase()];
     if (language === void 0) continue;
-    for (const { line: line2, text: text2 } of hunk.added) {
-      for (const kind of kindsIn(text2, language)) found.push({ path: hunk.path, line: line2, kind });
+    for (const { line: line2, text: text3 } of hunk.added) {
+      for (const kind of kindsIn(text3, language)) found.push({ path: hunk.path, line: line2, kind });
     }
   }
   const byPathLineKind = (a, b) => {
@@ -2379,6 +2379,943 @@ function collectStructure(cwd, change, production, limits = DEFAULT_STRUCTURE) {
   } catch {
   }
   return findStructureSignals(change.diff, paths, counts, limits);
+}
+
+// plugins/review-voice/src/scoring/severity.ts
+var LEGACY_BY_CATEGORY = {
+  // Fixed security and authorization categories. `trust_boundary` keeps its
+  // legacy tier here, then score.ts applies its traced-impact bound.
+  security: "blocking",
+  trust_boundary: "blocking",
+  authorization: "blocking",
+  authentication: "blocking",
+  data_integrity: "blocking",
+  // Wide blast radius follows from the kind of defect.
+  concurrency: "important",
+  persistence: "important",
+  migration: "important",
+  api_contract: "important",
+  release: "important",
+  // Real defects whose reach depends on circumstances the scorer cannot see.
+  // The quieter tier is the right default for a reviewer whose whole purpose
+  // is not to overstate; the wording carries the consequence either way.
+  correctness: "minor",
+  error_handling: "minor",
+  reliability: "minor",
+  user_visible_behavior: "minor",
+  ci: "minor",
+  packaging: "minor",
+  dependency: "minor",
+  performance: "minor",
+  observability: "nit",
+  test_coverage: "nit",
+  maintainability: "nit",
+  style: "nit"
+};
+var atEveryReach = (severity) => ({
+  local: severity,
+  component: severity,
+  repository: severity
+});
+var BY_CATEGORY_AND_REACH = {
+  // Boundary categories. `trust_boundary` is evidence-bounded by score.ts.
+  security: atEveryReach("blocking"),
+  trust_boundary: atEveryReach("blocking"),
+  authorization: atEveryReach("blocking"),
+  authentication: atEveryReach("blocking"),
+  data_integrity: { local: "important", component: "blocking", repository: "blocking" },
+  api_contract: { local: "important", component: "important", repository: "blocking" },
+  // A deployment that cannot succeed stops every consumer of the release, and
+  // the evidence was a build already red at the head that derived `important`.
+  release: { local: "important", component: "important", repository: "blocking" },
+  // Not yet a counterexample, and the same shape as the three above: a
+  // consequence whose extent the reach search can establish.
+  concurrency: { local: "important", component: "important", repository: "blocking" },
+  persistence: { local: "important", component: "important", repository: "blocking" },
+  migration: { local: "important", component: "important", repository: "blocking" },
+  correctness: { local: "minor", component: "important", repository: "important" },
+  error_handling: { local: "minor", component: "important", repository: "important" },
+  reliability: { local: "minor", component: "important", repository: "important" },
+  user_visible_behavior: { local: "minor", component: "important", repository: "important" },
+  ci: { local: "nit", component: "important", repository: "blocking" },
+  packaging: { local: "minor", component: "important", repository: "blocking" },
+  dependency: { local: "minor", component: "important", repository: "blocking" },
+  performance: { local: "minor", component: "minor", repository: "important" },
+  // Fixed on purpose: see the note above.
+  observability: atEveryReach("nit"),
+  test_coverage: atEveryReach("nit"),
+  maintainability: atEveryReach("nit"),
+  style: atEveryReach("nit")
+};
+var ALIASES = {
+  testing: "test_coverage",
+  tests: "test_coverage",
+  test: "test_coverage",
+  coverage: "test_coverage",
+  documentation: "maintainability",
+  docs: "maintainability",
+  comments: "maintainability",
+  naming: "maintainability",
+  readability: "maintainability",
+  perf: "performance",
+  logging: "observability",
+  formatting: "style",
+  authz: "authorization",
+  authn: "authentication",
+  secrets: "security",
+  vulnerability: "security",
+  race: "concurrency",
+  idempotency: "concurrency",
+  database: "persistence",
+  schema: "migration",
+  api: "api_contract",
+  build: "ci",
+  deployment: "release",
+  dependencies: "dependency",
+  bug: "correctness",
+  logic: "correctness"
+};
+var MAX_TIER_MOVEMENT = 1;
+function boundToRequest(derived, requested, reach, reason2) {
+  const asked = SEVERITIES.indexOf(requested);
+  const got = SEVERITIES.indexOf(derived);
+  if (asked === -1 || got === -1) {
+    return { severity: derived, requested, reach, reason: reason2 };
+  }
+  const distance = got - asked;
+  if (Math.abs(distance) <= MAX_TIER_MOVEMENT) {
+    return { severity: derived, requested, reach, reason: reason2 };
+  }
+  const bounded = SEVERITIES[asked + Math.sign(distance) * MAX_TIER_MOVEMENT];
+  return {
+    severity: bounded,
+    requested,
+    reach,
+    reason: `${reason2}, bounded to ${bounded} because the analyst asked for ${requested} and derivation may move a tier by one`
+  };
+}
+function deriveSeverity(category, requested, reach = null) {
+  if (requested === "question") {
+    return {
+      severity: "question",
+      requested,
+      reach: reach ?? null,
+      reason: "a question is a kind of finding, not a tier, whatever its reach"
+    };
+  }
+  const resolvedReach = reach?.reach;
+  const hasReach = resolvedReach === "local" || resolvedReach === "component" || resolvedReach === "repository";
+  if (category === null || category === void 0 || category === "") {
+    if (!hasReach && requested === "question") {
+      return {
+        severity: "question",
+        requested,
+        reach: reach ?? null,
+        reason: "a question is a kind of finding, not a tier"
+      };
+    }
+    return {
+      severity: "minor",
+      requested,
+      reach: reach ?? null,
+      reason: "no category was supplied, so the middle tier is used rather than a guess"
+    };
+  }
+  const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const alias = ALIASES[normalised];
+  const resolved = LEGACY_BY_CATEGORY[normalised] !== void 0 ? normalised : alias ?? normalised;
+  const legacy = LEGACY_BY_CATEGORY[resolved];
+  if (legacy === void 0) {
+    return {
+      severity: "minor",
+      requested,
+      reach: reach ?? null,
+      reason: `category ${category} has no mapping, so the middle tier is used rather than a guess`
+    };
+  }
+  if (!hasReach) {
+    if (requested === "question") {
+      return {
+        severity: "question",
+        requested,
+        reach: reach ?? null,
+        reason: "a question is a kind of finding, not a tier"
+      };
+    }
+    return {
+      severity: legacy,
+      requested,
+      reach: reach ?? null,
+      reason: resolved === normalised ? `${resolved} carries ${legacy}` : `${category} read as ${resolved}, which carries ${legacy}`
+    };
+  }
+  const tiers = BY_CATEGORY_AND_REACH[resolved];
+  const severity = tiers?.[resolvedReach];
+  if (severity === void 0) {
+    return {
+      severity: legacy,
+      requested,
+      reach: reach ?? null,
+      reason: `${resolved} has no reach mapping, so its legacy ${legacy} tier is used`
+    };
+  }
+  const varies = new Set(Object.values(tiers ?? {})).size > 1;
+  const describe = resolved === normalised ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
+  if (!varies) {
+    return { severity, requested, reach: reach ?? null, reason: describe };
+  }
+  return boundToRequest(
+    severity,
+    requested,
+    reach ?? null,
+    describe
+  );
+}
+
+// plugins/review-voice/src/scoring/confidence.ts
+var QUALITY_CONFIDENCE = { high: 0.9, medium: 0.75, low: 0.5 };
+var ESCALATION_CONFIDENCE = 0.85;
+function verifierConfidence(technicalConfidence, evidenceQuality2) {
+  if (typeof technicalConfidence === "number" && Number.isFinite(technicalConfidence)) return technicalConfidence;
+  if (typeof evidenceQuality2 !== "string" || !Object.hasOwn(QUALITY_CONFIDENCE, evidenceQuality2)) return null;
+  return QUALITY_CONFIDENCE[evidenceQuality2] ?? null;
+}
+
+// plugins/review-voice/src/scoring/score.ts
+var STALE_CONSUMER = "stale-consumer";
+var DOCUMENTATION_PATH = /\.(?:md|rst|adoc)$/i;
+function isDocumentationPath(path) {
+  return DOCUMENTATION_PATH.test(path);
+}
+var FIX_VERDICTS = ["verified", "partial", "refuted", "absent"];
+function isFixVerdict(value) {
+  return typeof value === "string" && FIX_VERDICTS.includes(value);
+}
+var EVIDENCE_QUALITIES = ["high", "medium", "low"];
+var IMPACT_CLASSES = ["no-exposure", "data-exposure", "privilege-escalation"];
+function isImpactClass(value) {
+  return typeof value === "string" && IMPACT_CLASSES.includes(value);
+}
+var CONTEXT_KINDS = ["blocking", "cosmetic"];
+function blockingContext(entries) {
+  return (entries ?? []).filter((entry) => typeof entry === "string" || entry.kind !== "cosmetic").map((entry) => typeof entry === "string" ? entry : entry.context);
+}
+var REASON_CAP = 200;
+function withVerifierReason(base, reason2) {
+  const text3 = reason2?.replace(/\s+/g, " ").trim() ?? "";
+  if (text3.length === 0) return base;
+  const bounded = text3.length > REASON_CAP ? `${text3.slice(0, REASON_CAP - 1)}\u2026` : text3;
+  return `${base}; the verifier said: "${bounded}"`;
+}
+var TIER_ORDER = ["nit", "minor", "important", "blocking"];
+var BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
+  "security",
+  "trust_boundary",
+  "authorization",
+  "authentication"
+]);
+var FIXED_BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
+  "security",
+  "authorization",
+  "authentication"
+]);
+var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
+function isInterrogativeClaim(claim) {
+  const text3 = claim.trim();
+  if (text3.endsWith("?")) return true;
+  return text3.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
+}
+function boundSeverityByEvidence(derived, candidate, verification2) {
+  if (BOUNDARY_CATEGORIES.has(candidate.category) && verification2?.impactClass === "no-exposure") {
+    if (candidate.severity === "question") return derived;
+    const asked2 = TIER_ORDER.indexOf(candidate.severity);
+    const got2 = TIER_ORDER.indexOf(derived.severity);
+    if (asked2 === -1 || got2 === -1 || asked2 >= got2) return derived;
+    return {
+      ...derived,
+      severity: TIER_ORDER[asked2],
+      reason: `${derived.reason}, held at ${candidate.severity} because the verifier found no exposure`
+    };
+  }
+  if (FIXED_BOUNDARY_CATEGORIES.has(candidate.category)) {
+    return raisedBecause(
+      derived,
+      candidate.severity,
+      `${candidate.category} names a breach by itself, so its tier does not depend on the request or a trace`
+    );
+  }
+  if (candidate.severity === "question" || derived.severity === "question") return derived;
+  let result = derived;
+  if ((result.severity === "important" || result.severity === "blocking") && isInterrogativeClaim(candidate.claim)) {
+    result = {
+      ...result,
+      severity: "minor",
+      reason: `${result.reason}, capped at minor because the claim is framed as a question`
+    };
+  }
+  const asked = TIER_ORDER.indexOf(candidate.severity);
+  const got = TIER_ORDER.indexOf(result.severity);
+  if (asked === -1 || got === -1 || got <= asked) return result;
+  const confidence = verifierConfidence(verification2?.technicalConfidence, verification2?.evidenceQuality);
+  if (candidate.impactDisputed === true) {
+    return {
+      ...result,
+      severity: TIER_ORDER[asked],
+      reason: `${result.reason}, held at ${candidate.severity} because the second pass disputed the traced impact and no tie-break upheld it`
+    };
+  }
+  if (verification2?.impactTraced === true && confidence !== null && confidence >= ESCALATION_CONFIDENCE) {
+    return raisedBecause(
+      result,
+      candidate.severity,
+      `the verifier traced impact beyond the changed code (impact_traced: true) at confidence ${confidence.toFixed(2)}, at least ${ESCALATION_CONFIDENCE}`
+    );
+  }
+  return {
+    ...result,
+    severity: TIER_ORDER[asked],
+    reason: `${result.reason}, held at ${candidate.severity} because escalation needs the verifier to trace impact beyond the changed code`
+  };
+}
+function raisedBecause(result, requested, why) {
+  const asked = TIER_ORDER.indexOf(requested);
+  const got = TIER_ORDER.indexOf(result.severity);
+  if (asked === -1 || got === -1 || got <= asked) return result;
+  return { ...result, reason: `${result.reason}, raised above the requested ${requested} because ${why}` };
+}
+var UNVERIFIABLE_CONFIDENCE = 0.6;
+var UNVERIFIABLE_REJECTION = "the claim could not be verified, so it cannot ship whatever it scores; `unverifiableBecause` names the trigger";
+var ADMITS_UNVERIFIABLE = [
+  /\b(?:cannot|can not|could not|couldn't|unable to)\s+(?:be\s+)?(?:verif|confirm|check|establish|determin)/i,
+  /\bnot\s+verifiable\b/i,
+  /\bwithout\s+access\s+to\b/i,
+  /\bno\s+way\s+to\s+(?:verify|confirm|check)\b/i
+];
+function admitsUnverifiable(candidate) {
+  return candidate.evidence.some((item) => ADMITS_UNVERIFIABLE.some((pattern) => pattern.test(item)));
+}
+var DEFAULT_THRESHOLDS = {
+  technicalConfidence: 0.8,
+  analystOnlyConfidence: 0.7,
+  finalScore: 0.68
+};
+var MAX_QUESTIONS = 2;
+function applyQuestionCap(breakdowns, limit = MAX_QUESTIONS) {
+  const questions = breakdowns.filter((b) => b.eligible && b.severity.severity === "question");
+  if (questions.length <= limit) return;
+  const ranked = [...questions].sort(
+    (a, b) => b.finalScore - a.finalScore || a.candidateId.localeCompare(b.candidateId)
+  );
+  for (const dropped of ranked.slice(limit)) {
+    dropped.eligible = false;
+    dropped.rejectedBecause = `this review already asks ${limit} better-evidenced question${limit === 1 ? "" : "s"}, and a review that ends in a list of questions has stopped being a review`;
+  }
+}
+var CITATION = /(?<![\w./-])`?((?:[\w.-]+\/)*[\w-][\w.-]*\.[A-Za-z0-9]+):(\d+)(?:-\d+)?`?/g;
+function citedLocations(thread) {
+  const out = [];
+  for (const comment of thread) {
+    out.push(comment);
+    if (comment.kind === "description" || comment.path !== null) continue;
+    const citations = [...comment.body.matchAll(CITATION)];
+    citations.forEach((match, index) => {
+      const end = citations[index + 1]?.index ?? comment.body.length;
+      out.push({
+        ...comment,
+        path: match[1].replace(/^\.\//, ""),
+        line: Number(match[2]),
+        body: comment.body.slice(match.index, end),
+        cited: true
+      });
+    });
+  }
+  return out;
+}
+function onFile(comment, path) {
+  if (comment.path === path) return true;
+  return comment.cited === true && comment.path !== null && path.endsWith(`/${comment.path}`);
+}
+function alreadySaidOnThread(candidate, thread) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+  for (const comment of thread) {
+    if (comment.kind === "description") continue;
+    const anchored = comment.path !== null && comment.line !== null;
+    if (anchored) {
+      if (!onFile(comment, candidate.path)) continue;
+      if (Math.abs(comment.line - candidate.line) > DUPLICATE_LINE_WINDOW) continue;
+      if (overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
+      continue;
+    }
+    if (overlap(mine, significantWords(comment.body)) >= UNANCHORED_DUPLICATE_OVERLAP) return comment;
+  }
+  return null;
+}
+var POSSIBLE_REPEAT_OVERLAP = 0.25;
+var POSSIBLE_REPEAT_LINE_WINDOW = 5;
+function possiblySaidOnThread(candidate, thread, preferred = () => false) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+  let best = null;
+  for (const comment of thread) {
+    if (comment.path === null || comment.line === null) continue;
+    if (!onFile(comment, candidate.path)) continue;
+    const distance = Math.abs(comment.line - candidate.line);
+    if (distance > POSSIBLE_REPEAT_LINE_WINDOW) continue;
+    const share = overlap(mine, significantWords(comment.body));
+    if (share < POSSIBLE_REPEAT_OVERLAP) continue;
+    const rank2 = [preferred(comment) ? 1 : 0, share, -distance];
+    if (best === null || compareRank(rank2, best.rank) > 0) best = { comment, rank: rank2 };
+  }
+  return best?.comment ?? null;
+}
+function compareRank(a, b) {
+  for (let i = 0; i < a.length; i += 1) {
+    const d = a[i] - b[i];
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+var SAME_FILE_REPEAT_OVERLAP = 0.4;
+function possiblyRaisedInFile(candidate, thread, accept = () => true) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+  let best = null;
+  for (const comment of thread) {
+    if (comment.path === null || comment.line === null || !accept(comment)) continue;
+    const here = onFile(comment, candidate.path);
+    if (!here && !namesFile(comment.body, candidate.path)) continue;
+    const share = overlap(mine, significantWords(comment.body));
+    if (share < SAME_FILE_REPEAT_OVERLAP) continue;
+    const distance = here ? Math.abs(comment.line - candidate.line) : Number.POSITIVE_INFINITY;
+    const rank2 = [here ? 1 : 0, share, -distance];
+    if (best === null || compareRank(rank2, best.rank) > 0) best = { comment, rank: rank2 };
+  }
+  return best?.comment ?? null;
+}
+function namesFile(body, path) {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-])`).test(body);
+}
+var DESCRIPTION_EXCERPT_CHARS = 400;
+function possiblyRepeatsDescription(candidate, thread) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  if (mine.size === 0) return null;
+  for (const comment of thread) {
+    if (comment.kind !== "description") continue;
+    if (overlap(mine, significantWords(comment.body)) < UNANCHORED_DUPLICATE_OVERLAP) continue;
+    return { comment, excerpt: overlappingExcerpt(mine, comment.body) };
+  }
+  return null;
+}
+function overlappingExcerpt(mine, body) {
+  const sentences = body.split(/(?<=[.!?])\s+|\n+/u).map((sentence) => sentence.trim()).filter((sentence) => sentence.length > 0);
+  const ranked = sentences.map((text3, index) => ({ text: text3, index, shared: [...significantWords(text3)].filter((word) => mine.has(word)).length })).filter((sentence) => sentence.shared > 0).sort((a, b) => b.shared - a.shared || a.index - b.index);
+  const [best, ...rest] = ranked;
+  if (best === void 0) return clip(body.trim());
+  const chosen = [best];
+  let length = Math.min(best.text.length, DESCRIPTION_EXCERPT_CHARS);
+  for (const sentence of rest) {
+    if (length + 1 + sentence.text.length > DESCRIPTION_EXCERPT_CHARS) continue;
+    chosen.push(sentence);
+    length += 1 + sentence.text.length;
+  }
+  if (chosen.length === 1) return clip(best.text);
+  return chosen.sort((a, b) => a.index - b.index).map((sentence) => sentence.text).join(" ");
+}
+function clip(text3) {
+  return text3.length <= DESCRIPTION_EXCERPT_CHARS ? text3 : `${text3.slice(0, DESCRIPTION_EXCERPT_CHARS - 1)}\u2026`;
+}
+var MalformedCandidate = class extends Error {
+};
+var FOREIGN_KEYS = ["title", "location", "suggested_direction", "suggestion", "description", "summary"];
+function normaliseCandidate(raw, index) {
+  const candidateId = raw.candidate_id ?? raw.candidateId ?? `cand_${String(index + 1).padStart(3, "0")}`;
+  const confidence = raw.technical_confidence ?? raw.technicalConfidence;
+  const suggestedFix = raw.suggested_fix !== void 0 ? raw.suggested_fix : raw.suggestedFix;
+  const fixConfidence = raw.fix_confidence !== void 0 ? raw.fix_confidence : raw.fixConfidence;
+  if (typeof raw.path !== "string" || raw.path.length === 0) {
+    const foreign = FOREIGN_KEYS.filter((key) => key in raw);
+    throw new MalformedCandidate(
+      foreign.length > 0 ? `${candidateId}: has ${foreign.join(", ")} but no path. This is not the candidate schema. Expected candidate_id, path, line, category, severity, claim, failure_mode, evidence, technical_confidence, per schemas/candidate.schema.json.` : `${candidateId}: missing path`
+    );
+  }
+  if (!Number.isFinite(raw.line)) {
+    throw new MalformedCandidate(`${candidateId}: missing or non-numeric line`);
+  }
+  if (!Number.isFinite(confidence)) {
+    throw new MalformedCandidate(
+      `${candidateId}: missing or non-numeric technical_confidence - a score cannot be computed, and a candidate that cannot be scored must not be treated as eligible`
+    );
+  }
+  if (suggestedFix !== void 0 && typeof suggestedFix !== "string") {
+    throw new MalformedCandidate(`${candidateId}: suggested_fix must be a string when supplied`);
+  }
+  if (fixConfidence !== void 0 && (!Number.isFinite(fixConfidence) || fixConfidence < 0 || fixConfidence > 1)) {
+    throw new MalformedCandidate(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
+  }
+  if (raw.anchor !== void 0 && raw.anchor !== STALE_CONSUMER) {
+    throw new MalformedCandidate(`${candidateId}: anchor must be "${STALE_CONSUMER}" when supplied`);
+  }
+  const rawCause = raw.caused_by !== void 0 ? raw.caused_by : raw.causedBy;
+  let causedBy = null;
+  if (raw.anchor === STALE_CONSUMER && rawCause !== void 0 && rawCause !== null) {
+    if (typeof rawCause !== "object" || typeof rawCause.path !== "string" || rawCause.path.length === 0 || !Number.isInteger(rawCause.line) || rawCause.line < 1) {
+      throw new MalformedCandidate(`${candidateId}: caused_by must be {"path": string, "line": positive integer}`);
+    }
+    causedBy = { path: rawCause.path, line: rawCause.line };
+  }
+  const ownComment = ownCommentOf(raw.possibleRepeatOf);
+  const impactDisputed = raw.impact_disputed !== void 0 ? raw.impact_disputed : raw.impactDisputed;
+  if (impactDisputed !== void 0 && typeof impactDisputed !== "boolean") {
+    throw new MalformedCandidate(`${candidateId}: impact_disputed must be true or false when supplied`);
+  }
+  const intentRef = raw.intent_ref !== void 0 ? raw.intent_ref : raw.intentRef;
+  if (intentRef !== void 0 && (typeof intentRef !== "string" || !/^int_[0-9]{3,}$/.test(intentRef))) {
+    throw new MalformedCandidate(`${candidateId}: intent_ref must match int_NNN when supplied`);
+  }
+  return {
+    candidateId,
+    path: raw.path,
+    line: raw.line,
+    // Deliberately not defaulted. `correctness` used to stand in for a missing
+    // category, which gave an unlabelled finding a real tier and recorded
+    // nothing about the substitution.
+    category: raw.category ?? "",
+    severity: raw.severity ?? "minor",
+    claim: raw.claim ?? "",
+    failureMode: raw.failure_mode ?? raw.failureMode ?? "",
+    evidence: Array.isArray(raw.evidence) ? raw.evidence : [],
+    suggestedFix: suggestedFix ?? null,
+    fixConfidence: fixConfidence ?? null,
+    technicalConfidence: confidence,
+    // Spread only when declared, so an ordinary candidate keeps its shape.
+    ...raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {},
+    ...impactDisputed === true ? { impactDisputed: true } : {},
+    ...intentRef === void 0 ? {} : { intentRef },
+    ...ownComment === null ? {} : { ownComment }
+  };
+}
+function ownCommentOf(value) {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value;
+  if (v["kind"] !== "own-comment") return null;
+  if (typeof v["author"] !== "string" || v["author"].length === 0) return null;
+  if (typeof v["path"] !== "string" || v["path"].length === 0) return null;
+  if (!Number.isInteger(v["line"]) || v["line"] < 1) return null;
+  return {
+    author: v["author"],
+    path: v["path"],
+    line: v["line"],
+    ...Number.isInteger(v["commentId"]) ? { commentId: v["commentId"] } : {}
+  };
+}
+function partlyAddressedProblem(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return 'must be {"remaining": [...], "addressed": [...]}';
+  }
+  const v = value;
+  for (const key of ["remaining", "addressed"]) {
+    const list = v[key];
+    if (!Array.isArray(list) || list.length === 0 || !list.every((item) => typeof item === "string" && item.trim().length > 0)) {
+      return `${key} must be a non-empty array of non-empty strings`;
+    }
+  }
+  return null;
+}
+function followUpOf(candidate, verification2, thread, owner) {
+  const prior = candidate.ownComment;
+  const partly = verification2?.partlyAddressed;
+  if (prior === void 0 || partly === void 0) return null;
+  if (owner === null || prior.author.toLowerCase() !== owner.toLowerCase()) return null;
+  const onThread = thread.some(
+    (comment) => comment.author === prior.author && comment.path === prior.path && comment.line === prior.line
+  );
+  return onThread ? { ...prior, remaining: partly.remaining, addressed: partly.addressed } : null;
+}
+var WORDS = /[^\p{L}\p{N}]+/u;
+function significantWords(text3) {
+  return new Set(text3.toLowerCase().split(WORDS).filter((word) => word.length > 3));
+}
+function overlap(mine, theirs) {
+  if (mine.size === 0) return 0;
+  return [...mine].filter((word) => theirs.has(word)).length / mine.size;
+}
+var DUPLICATE_LINE_WINDOW = 2;
+var DUPLICATE_OVERLAP = 0.4;
+var UNANCHORED_DUPLICATE_OVERLAP = 0.7;
+function sameLocation(candidate, precedent) {
+  if (precedent.filePath === null || precedent.lineStart === null) return false;
+  if (precedent.filePath !== candidate.path) return false;
+  return Math.abs(precedent.lineStart - candidate.line) <= DUPLICATE_LINE_WINDOW;
+}
+function duplicatePrecedent(candidate, precedents) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  for (const precedent of precedents) {
+    if (!sameLocation(candidate, precedent)) continue;
+    if (overlap(mine, significantWords(precedent.excerpt)) >= DUPLICATE_OVERLAP) return precedent;
+  }
+  return null;
+}
+function isAnchored(precedent) {
+  return precedent.filePath !== null;
+}
+var NEUTRAL_ALIGNMENT = 0.5;
+function alignmentFrom(precedents) {
+  if (precedents.length === 0) return NEUTRAL_ALIGNMENT;
+  const total = precedents.reduce((sum, p) => sum + p.weight * (p.matchStrength ?? 1), 0);
+  return 1 / (1 + Math.exp(-total));
+}
+function anchoredAlignmentFrom(precedents) {
+  return alignmentFrom(precedents.filter(isAnchored));
+}
+var ANCHORED = [
+  /\bline\s+\d+/i,
+  /:\d+\b/,
+  /`[^`]+`/,
+  /\b[\w$]+\.(?:ts|tsx|js|jsx|cs|py|go|rb|java|kt|rs|sql|ya?ml|json)\b/i,
+  /\b[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*\b/,
+  /\b[A-Z][A-Z0-9]+_[A-Z0-9_]+\b/
+];
+function evidenceQuality(candidate) {
+  const items = candidate.evidence.filter((item) => item.trim().length > 0);
+  if (items.length === 0) return 0;
+  const specific = items.filter((item) => ANCHORED.some((pattern) => pattern.test(item))).length;
+  const breadth = Math.min(1, items.length / 3);
+  const depth = specific / items.length;
+  return 0.4 * breadth + 0.6 * depth;
+}
+var CROSS_FILE_DUPLICATE = 0.8;
+function novelty(candidate, kept, precedents) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  let worst = 1;
+  for (const other of kept) {
+    if (other.path === candidate.path && other.line === candidate.line) return 0;
+    const theirs = significantWords(`${other.claim} ${other.failureMode}`);
+    const shared = overlap(mine, theirs);
+    if (other.path === candidate.path) {
+      worst = Math.min(worst, 1 - shared);
+    } else if (shared >= CROSS_FILE_DUPLICATE) {
+      worst = Math.min(worst, 1 - shared);
+    }
+  }
+  for (const precedent of precedents) {
+    if (precedent.filePath !== candidate.path) continue;
+    if (overlap(mine, significantWords(precedent.excerpt)) < 0.7) continue;
+    worst = Math.min(worst, 0.5);
+  }
+  return worst;
+}
+var MAX_DIRECTION_LENGTH = 120;
+function isBareDirection(direction) {
+  if (direction === null) return false;
+  const text3 = direction.trim();
+  if (text3.length === 0 || text3.length > MAX_DIRECTION_LENGTH) return false;
+  if (/[\r\n`]/.test(text3)) return false;
+  return !/[.!?]\s+\S/.test(text3);
+}
+function editorFix(fix) {
+  if (fix.render === "fix") return { render: "fix", text: fix.suggested };
+  if (fix.render === "direction") return { render: "direction", text: fix.direction };
+  return { render: "none", text: null };
+}
+function assertUniqueCandidateIds(candidates) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const candidate of candidates) {
+    if (seen.has(candidate.candidateId)) {
+      throw new MalformedCandidate(
+        `${candidate.candidateId}: appears more than once. Candidate ids must be unique, because verification is matched to candidates by id.`
+      );
+    }
+    seen.add(candidate.candidateId);
+  }
+}
+function renderFix(candidate, verification2, thresholds) {
+  const suggested = candidate.suggestedFix ?? null;
+  const rawVerdict = verification2?.fixVerdict;
+  const verdict = isFixVerdict(rawVerdict) ? rawVerdict : null;
+  const rawConfidence = verification2?.fixConfidence;
+  const confidence = typeof rawConfidence === "number" && Number.isFinite(rawConfidence) && rawConfidence >= 0 && rawConfidence <= 1 ? rawConfidence : null;
+  const rawDirection = verification2?.fixDirection;
+  const direction = typeof rawDirection === "string" ? rawDirection : null;
+  const verifierReason = verification2?.fixReason?.trim().length ? verification2.fixReason : null;
+  const hasSuggested = suggested !== null && suggested.trim().length > 0;
+  const analystConfidence = candidate.fixConfidence ?? null;
+  const hasDirection = direction !== null && direction.trim().length > 0;
+  if (hasSuggested && verdict === "verified" && confidence !== null && confidence >= thresholds.technicalConfidence) {
+    return {
+      suggested,
+      analystConfidence,
+      verdict,
+      confidence,
+      direction,
+      render: "fix",
+      reason: verifierReason ?? `verified fix confidence ${confidence.toFixed(2)} meets the ${thresholds.technicalConfidence} threshold`
+    };
+  }
+  if (verdict === "partial" && hasSuggested && hasDirection && isBareDirection(direction)) {
+    return {
+      suggested,
+      analystConfidence,
+      verdict,
+      confidence,
+      direction,
+      render: "direction",
+      reason: verifierReason ?? "the verifier could confirm only the repair direction"
+    };
+  }
+  let reason2 = "the suggested fix was not verified";
+  if (!hasSuggested) {
+    reason2 = "no fix was proposed";
+  } else if (verdict === "verified" && confidence !== null) {
+    reason2 = `verified fix confidence ${confidence.toFixed(2)} is below the ${thresholds.technicalConfidence} threshold`;
+  } else if (verdict === "partial" && hasDirection) {
+    reason2 = "the direction is not one short sentence without code, so it is withheld";
+  } else if (verdict === "partial") {
+    reason2 = "the verifier gave a partial fix verdict without a direction";
+  } else if (verdict === "refuted") {
+    reason2 = "the verifier refuted the suggested fix";
+  } else if (verdict === "absent") {
+    reason2 = "the verifier reports no suggested fix";
+  }
+  return {
+    suggested,
+    analystConfidence,
+    verdict,
+    confidence,
+    direction,
+    render: "none",
+    reason: verifierReason ?? reason2
+  };
+}
+function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2) {
+  const analystConfidence = candidate.technicalConfidence;
+  const verifiedConfidence = verification2 === void 0 ? null : verifierConfidence(verification2.technicalConfidence, verification2.evidenceQuality);
+  let confidence = verifiedConfidence ?? analystConfidence;
+  let confidenceSource = verifiedConfidence === null ? "analyst" : "verifier";
+  const missing = blockingContext(verification2?.requiredContextMissing);
+  const missingContext = missing.length > 0;
+  const admitted = admitsUnverifiable(candidate);
+  const verifierEngaged = verification2?.technicalConfidence !== void 0;
+  if ((missingContext || admitted && !verifierEngaged) && confidence > UNVERIFIABLE_CONFIDENCE) {
+    confidence = UNVERIFIABLE_CONFIDENCE;
+    confidenceSource = "unverifiable-cap";
+  }
+  const unverifiableBecause = confidenceSource !== "unverifiable-cap" ? null : missingContext ? `the verifier listed required_context_missing the claim depends on: ${missing.join("; ")}` : "the analyst's evidence says the claim could not be checked, and the verifier gave no technical_confidence of its own";
+  const confidenceFloor = confidenceSource === "verifier" ? thresholds.technicalConfidence : thresholds.analystOnlyConfidence;
+  const alreadySaid = duplicatePrecedent(candidate, precedents);
+  const forAlignment = alreadySaid === null ? precedents : precedents.filter((p) => !sameLocation(candidate, p));
+  const ownerPrecedents = forAlignment.filter((p) => p.role === "owner");
+  const repositoryPrecedents = forAlignment.filter((p) => p.role !== "owner");
+  const ownerAlignment = alignmentFrom(ownerPrecedents);
+  const repositoryAlignment = alignmentFrom(repositoryPrecedents);
+  const anchoredOwnerAlignment = anchoredAlignmentFrom(ownerPrecedents);
+  const anchoredRepositoryAlignment = anchoredAlignmentFrom(repositoryPrecedents);
+  const quality = evidenceQuality(candidate);
+  const novel = alreadySaid === null ? novelty(candidate, kept, precedents) : 0;
+  const score = (owner, repository) => 0.35 * confidence + 0.25 * owner + 0.15 * repository + 0.15 * quality + 0.1 * novel;
+  const finalScore = score(ownerAlignment, repositoryAlignment);
+  const anchoredFinalScore = score(anchoredOwnerAlignment, anchoredRepositoryAlignment);
+  const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification2?.reach);
+  const isQuestion = derivedSeverity.severity === "question";
+  let rejectedBecause = null;
+  if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
+    rejectedBecause = "score could not be computed from this candidate";
+  } else if (alreadySaid !== null) {
+    rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
+  } else if (isQuestion && verification2?.premisesVerified === false) {
+    rejectedBecause = withVerifierReason(
+      "the verifier could not verify the premises this question rests on (premises_verified: false)",
+      verification2.reason
+    );
+  } else if (isQuestion && verification2?.verified !== true && verification2?.premisesVerified !== true) {
+    rejectedBecause = withVerifierReason(
+      verification2 === void 0 ? "a question needs the verifier to confirm the premises it rests on (premises_verified: true), and there is no verifier verdict for this one" : "the verifier did not verify this question or confirm the premises it rests on (premises_verified is not true)",
+      verification2?.reason
+    );
+  } else if (isQuestion) {
+    if (ownerAlignment < NEUTRAL_ALIGNMENT) {
+      rejectedBecause = `owner precedent is against asking this (${ownerAlignment.toFixed(2)} alignment), and a question the owner has dismissed the like of before is noise the second time`;
+    }
+  } else if (confidenceSource === "unverifiable-cap") {
+    rejectedBecause = UNVERIFIABLE_REJECTION;
+  } else if (verification2?.verified === false) {
+    rejectedBecause = "the verifier did not verify this claim (verified: false)";
+  } else if (confidence < confidenceFloor) {
+    rejectedBecause = `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` + (confidenceSource === "analyst" ? ". No verification was supplied, so this is the analyst's opinion of its own output." : "");
+  } else if (finalScore < thresholds.finalScore) {
+    rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
+  }
+  const severity = boundSeverityByEvidence(derivedSeverity, candidate, verification2);
+  const staleConsumer = candidate.anchor === STALE_CONSUMER;
+  const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit" && confidenceSource === "verifier";
+  if (staleConsumer && verification2?.impactTraced !== true && !untracedDocumentNit) {
+    const untraced = "a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause (impact_traced: true)" + (isDocumentationPath(candidate.path) ? `; a documentation consumer may go untraced only at nit and on the verifier's confidence, and this one is ${severity.severity}` + (confidenceSource === "analyst" ? " on the analyst's confidence alone" : confidenceSource === "unverifiable-cap" ? " with context the verifier could not obtain" : "") : "");
+    if (rejectedBecause === null) rejectedBecause = untraced;
+    else if (rejectedBecause.startsWith("score ")) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
+    else rejectedBecause = `${rejectedBecause}. Also: ${untraced}`;
+  }
+  const fix = renderFix(candidate, verification2, thresholds);
+  return {
+    candidateId: candidate.candidateId,
+    path: candidate.path,
+    line: candidate.line,
+    technicalConfidence: confidence,
+    severity,
+    analystConfidence,
+    verifiedConfidence,
+    confidenceSource,
+    unverifiableBecause,
+    ownerAlignment,
+    repositoryAlignment,
+    evidenceQuality: quality,
+    novelty: novel,
+    finalScore,
+    fix,
+    anchored: {
+      ownerAlignment: anchoredOwnerAlignment,
+      repositoryAlignment: anchoredRepositoryAlignment,
+      finalScore: anchoredFinalScore,
+      // Only the score gate can flip here: every other rejection reason is
+      // independent of alignment.
+      wouldChangeEligibility: rejectedBecause === null ? anchoredFinalScore < thresholds.finalScore : rejectedBecause.startsWith("score ") && anchoredFinalScore >= thresholds.finalScore
+    },
+    eligible: rejectedBecause === null,
+    rejectedBecause,
+    duplicateOfPrecedent: alreadySaid?.eventId ?? null,
+    precedentIds: precedents.map((p) => p.eventId),
+    ...staleConsumer ? { anchor: STALE_CONSUMER, causedBy: candidate.causedBy ?? null } : {}
+  };
+}
+
+// plugins/review-voice/src/intent.ts
+var INTENT_KINDS = ["goal", "non-goal", "deliberate", "claim", "qa"];
+var MAX_INTENT_STATEMENTS = 40;
+var MAX_TEXT = 300;
+var MIN_QUOTE_WORDS = 4;
+var ID = /^int_[0-9]{3,}$/;
+var LIST_OR_HEADING = /^\s*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?|#{1,6}\s+|>\s*)/u;
+var collapse = (text3) => text3.replace(/\s+/gu, " ").trim();
+function sentencesOf(description) {
+  let text3 = "";
+  const starts = /* @__PURE__ */ new Set([0]);
+  const ends = /* @__PURE__ */ new Set();
+  let blank = false;
+  let previousHeading = false;
+  for (const line2 of description.split(/\r?\n/u)) {
+    const marked = LIST_OR_HEADING.test(line2);
+    const content = collapse(line2.replace(LIST_OR_HEADING, ""));
+    if (content === "") {
+      blank = true;
+      continue;
+    }
+    if (text3 !== "") {
+      if (blank || marked || previousHeading) {
+        ends.add(text3.length);
+        starts.add(text3.length + 1);
+      }
+      text3 += " ";
+    }
+    text3 += content;
+    blank = false;
+    previousHeading = /^\s*#/u.test(line2);
+  }
+  ends.add(text3.length);
+  for (const match of text3.matchAll(/[.!?](?= |$)/gu)) {
+    ends.add(match.index);
+    ends.add(match.index + 1);
+    starts.add(match.index + 2);
+  }
+  return { text: text3, starts, ends };
+}
+function excerptProblem(quote2, sentences, name) {
+  const wanted = collapse(quote2.replace(LIST_OR_HEADING, ""));
+  if (wanted.split(" ").length < MIN_QUOTE_WORDS) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
+  let at = sentences.text.indexOf(wanted);
+  if (at === -1) return `${name} does not occur in the pull request description`;
+  for (; at !== -1; at = sentences.text.indexOf(wanted, at + 1)) {
+    if (sentences.starts.has(at) && sentences.ends.has(at + wanted.length)) return null;
+  }
+  return `${name} must be a whole sentence or list item of the description, not part of one`;
+}
+function text2(value, name) {
+  if (typeof value !== "string" || value.trim().length === 0) return { value: null, problem: `${name} must be non-empty text` };
+  if (value.length > MAX_TEXT) return { value: null, problem: `${name} must be at most ${MAX_TEXT} characters` };
+  return { value: value.trim(), problem: null };
+}
+function descriptionOf(thread) {
+  const comments = thread?.comments;
+  if (!Array.isArray(comments)) return null;
+  const bodies = comments.filter((comment) => comment?.kind === "description").map((comment) => comment.body).filter((body) => typeof body === "string");
+  return bodies.length === 0 ? null : bodies.join("\n");
+}
+function parseIntent(value, description) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { value: null, problem: 'expected {"statements": [...]}' };
+  }
+  const document = value;
+  const extra = Object.keys(document).find((key) => key !== "statements");
+  if (extra !== void 0) return { value: null, problem: `has an unexpected ${JSON.stringify(extra)} field` };
+  const raw = document["statements"];
+  if (!Array.isArray(raw)) return { value: null, problem: "statements must be an array" };
+  if (raw.length > MAX_INTENT_STATEMENTS) {
+    return { value: null, problem: `statements must list at most ${MAX_INTENT_STATEMENTS} entries` };
+  }
+  const sentences = sentencesOf(description);
+  const seen = /* @__PURE__ */ new Set();
+  const statements = [];
+  for (const [index, rawEntry] of raw.entries()) {
+    const at = `statements[${index}]`;
+    if (typeof rawEntry !== "object" || rawEntry === null || Array.isArray(rawEntry)) {
+      return { value: null, problem: `${at} must be an object` };
+    }
+    const entry = rawEntry;
+    const unexpected = Object.keys(entry).find((key) => !["id", "kind", "statement", "quote", "reason", "scope"].includes(key));
+    if (unexpected !== void 0) return { value: null, problem: `${at} has an unexpected ${JSON.stringify(unexpected)} field` };
+    const id = entry["id"];
+    if (typeof id !== "string" || !ID.test(id)) return { value: null, problem: `${at}.id must match int_NNN` };
+    if (seen.has(id)) return { value: null, problem: `${at}.id ${id} is used twice` };
+    seen.add(id);
+    const kind = entry["kind"];
+    if (!INTENT_KINDS.includes(kind)) {
+      return { value: null, problem: `${at}.kind must be one of ${INTENT_KINDS.join(", ")}` };
+    }
+    const statement = text2(entry["statement"], `${at}.statement`);
+    if (statement.problem !== null) return { value: null, problem: statement.problem };
+    const quote2 = text2(entry["quote"], `${at}.quote`);
+    if (quote2.problem !== null) return { value: null, problem: quote2.problem };
+    const quoteProblem = excerptProblem(quote2.value, sentences, `${at}.quote`);
+    if (quoteProblem !== null) return { value: null, problem: quoteProblem };
+    if (kind !== "non-goal") {
+      const quoted = significantWords(quote2.value);
+      if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
+        return { value: null, problem: `${at}.quote shares no significant word with its statement` };
+      }
+    }
+    let reason2;
+    if (kind === "deliberate") {
+      const parsed = text2(entry["reason"], `${at}.reason`);
+      if (parsed.problem !== null) return { value: null, problem: `${parsed.problem} on a deliberate statement` };
+      const reasonProblem = excerptProblem(parsed.value, sentences, `${at}.reason`);
+      if (reasonProblem !== null) return { value: null, problem: reasonProblem };
+      reason2 = parsed.value;
+    } else if (entry["reason"] !== void 0) {
+      return { value: null, problem: `${at}.reason belongs only on a deliberate statement` };
+    }
+    if (entry["scope"] !== void 0 && (kind !== "goal" || entry["scope"] !== "complete")) {
+      return { value: null, problem: `${at}.scope may only be "complete", and only on a goal` };
+    }
+    statements.push({
+      id,
+      kind,
+      statement: statement.value,
+      quote: quote2.value,
+      ...reason2 === void 0 ? {} : { reason: reason2 },
+      ...entry["scope"] === "complete" ? { scope: "complete" } : {}
+    });
+  }
+  return { value: { statements }, problem: null };
 }
 
 // plugins/review-voice/src/diff/pull-request.ts
@@ -2915,12 +3852,12 @@ function sectionHunks(section) {
   const parts = section.split(/^(?=@@ )/m);
   const header = parts[0].startsWith("@@ ") ? "" : parts.shift();
   const hunks = [];
-  for (const text2 of parts) {
-    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text2);
+  for (const text3 of parts) {
+    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text3);
     if (numbers === null) return null;
     const start = Number(numbers[1]);
     const count3 = numbers[2] === void 0 ? 1 : Number(numbers[2]);
-    hunks.push({ text: text2, first: start, last: count3 === 0 ? start + 1 : start + count3 - 1 });
+    hunks.push({ text: text3, first: start, last: count3 === 0 ? start + 1 : start + count3 - 1 });
   }
   return { header, hunks };
 }
@@ -3411,10 +4348,10 @@ function isPlaceholder(value) {
 }
 function redact(input) {
   const counts = {};
-  let text2 = input;
+  let text3 = input;
   for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
     pattern.lastIndex = 0;
-    text2 = text2.replace(pattern, (match, ...groups) => {
+    text3 = text3.replace(pattern, (match, ...groups) => {
       const captured = group === void 0 || group === 0 ? match : groups[group - 1];
       if (captured === void 0 || captured.length === 0) return match;
       if (isPlaceholder(captured)) return match;
@@ -3424,10 +4361,10 @@ function redact(input) {
     });
   }
   return {
-    text: text2,
+    text: text3,
     counts,
     sourceHash: hash(input),
-    redactedHash: hash(text2),
+    redactedHash: hash(text3),
     version: REDACTION_VERSION
   };
 }
@@ -3559,809 +4496,6 @@ async function readThreadStates(client, repository, pullNumber) {
     cursor = threads.pageInfo.endCursor;
   }
   return states;
-}
-
-// plugins/review-voice/src/scoring/severity.ts
-var LEGACY_BY_CATEGORY = {
-  // Fixed security and authorization categories. `trust_boundary` keeps its
-  // legacy tier here, then score.ts applies its traced-impact bound.
-  security: "blocking",
-  trust_boundary: "blocking",
-  authorization: "blocking",
-  authentication: "blocking",
-  data_integrity: "blocking",
-  // Wide blast radius follows from the kind of defect.
-  concurrency: "important",
-  persistence: "important",
-  migration: "important",
-  api_contract: "important",
-  release: "important",
-  // Real defects whose reach depends on circumstances the scorer cannot see.
-  // The quieter tier is the right default for a reviewer whose whole purpose
-  // is not to overstate; the wording carries the consequence either way.
-  correctness: "minor",
-  error_handling: "minor",
-  reliability: "minor",
-  user_visible_behavior: "minor",
-  ci: "minor",
-  packaging: "minor",
-  dependency: "minor",
-  performance: "minor",
-  observability: "nit",
-  test_coverage: "nit",
-  maintainability: "nit",
-  style: "nit"
-};
-var atEveryReach = (severity) => ({
-  local: severity,
-  component: severity,
-  repository: severity
-});
-var BY_CATEGORY_AND_REACH = {
-  // Boundary categories. `trust_boundary` is evidence-bounded by score.ts.
-  security: atEveryReach("blocking"),
-  trust_boundary: atEveryReach("blocking"),
-  authorization: atEveryReach("blocking"),
-  authentication: atEveryReach("blocking"),
-  data_integrity: { local: "important", component: "blocking", repository: "blocking" },
-  api_contract: { local: "important", component: "important", repository: "blocking" },
-  // A deployment that cannot succeed stops every consumer of the release, and
-  // the evidence was a build already red at the head that derived `important`.
-  release: { local: "important", component: "important", repository: "blocking" },
-  // Not yet a counterexample, and the same shape as the three above: a
-  // consequence whose extent the reach search can establish.
-  concurrency: { local: "important", component: "important", repository: "blocking" },
-  persistence: { local: "important", component: "important", repository: "blocking" },
-  migration: { local: "important", component: "important", repository: "blocking" },
-  correctness: { local: "minor", component: "important", repository: "important" },
-  error_handling: { local: "minor", component: "important", repository: "important" },
-  reliability: { local: "minor", component: "important", repository: "important" },
-  user_visible_behavior: { local: "minor", component: "important", repository: "important" },
-  ci: { local: "nit", component: "important", repository: "blocking" },
-  packaging: { local: "minor", component: "important", repository: "blocking" },
-  dependency: { local: "minor", component: "important", repository: "blocking" },
-  performance: { local: "minor", component: "minor", repository: "important" },
-  // Fixed on purpose: see the note above.
-  observability: atEveryReach("nit"),
-  test_coverage: atEveryReach("nit"),
-  maintainability: atEveryReach("nit"),
-  style: atEveryReach("nit")
-};
-var ALIASES = {
-  testing: "test_coverage",
-  tests: "test_coverage",
-  test: "test_coverage",
-  coverage: "test_coverage",
-  documentation: "maintainability",
-  docs: "maintainability",
-  comments: "maintainability",
-  naming: "maintainability",
-  readability: "maintainability",
-  perf: "performance",
-  logging: "observability",
-  formatting: "style",
-  authz: "authorization",
-  authn: "authentication",
-  secrets: "security",
-  vulnerability: "security",
-  race: "concurrency",
-  idempotency: "concurrency",
-  database: "persistence",
-  schema: "migration",
-  api: "api_contract",
-  build: "ci",
-  deployment: "release",
-  dependencies: "dependency",
-  bug: "correctness",
-  logic: "correctness"
-};
-var MAX_TIER_MOVEMENT = 1;
-function boundToRequest(derived, requested, reach, reason2) {
-  const asked = SEVERITIES.indexOf(requested);
-  const got = SEVERITIES.indexOf(derived);
-  if (asked === -1 || got === -1) {
-    return { severity: derived, requested, reach, reason: reason2 };
-  }
-  const distance = got - asked;
-  if (Math.abs(distance) <= MAX_TIER_MOVEMENT) {
-    return { severity: derived, requested, reach, reason: reason2 };
-  }
-  const bounded = SEVERITIES[asked + Math.sign(distance) * MAX_TIER_MOVEMENT];
-  return {
-    severity: bounded,
-    requested,
-    reach,
-    reason: `${reason2}, bounded to ${bounded} because the analyst asked for ${requested} and derivation may move a tier by one`
-  };
-}
-function deriveSeverity(category, requested, reach = null) {
-  if (requested === "question") {
-    return {
-      severity: "question",
-      requested,
-      reach: reach ?? null,
-      reason: "a question is a kind of finding, not a tier, whatever its reach"
-    };
-  }
-  const resolvedReach = reach?.reach;
-  const hasReach = resolvedReach === "local" || resolvedReach === "component" || resolvedReach === "repository";
-  if (category === null || category === void 0 || category === "") {
-    if (!hasReach && requested === "question") {
-      return {
-        severity: "question",
-        requested,
-        reach: reach ?? null,
-        reason: "a question is a kind of finding, not a tier"
-      };
-    }
-    return {
-      severity: "minor",
-      requested,
-      reach: reach ?? null,
-      reason: "no category was supplied, so the middle tier is used rather than a guess"
-    };
-  }
-  const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
-  const alias = ALIASES[normalised];
-  const resolved = LEGACY_BY_CATEGORY[normalised] !== void 0 ? normalised : alias ?? normalised;
-  const legacy = LEGACY_BY_CATEGORY[resolved];
-  if (legacy === void 0) {
-    return {
-      severity: "minor",
-      requested,
-      reach: reach ?? null,
-      reason: `category ${category} has no mapping, so the middle tier is used rather than a guess`
-    };
-  }
-  if (!hasReach) {
-    if (requested === "question") {
-      return {
-        severity: "question",
-        requested,
-        reach: reach ?? null,
-        reason: "a question is a kind of finding, not a tier"
-      };
-    }
-    return {
-      severity: legacy,
-      requested,
-      reach: reach ?? null,
-      reason: resolved === normalised ? `${resolved} carries ${legacy}` : `${category} read as ${resolved}, which carries ${legacy}`
-    };
-  }
-  const tiers = BY_CATEGORY_AND_REACH[resolved];
-  const severity = tiers?.[resolvedReach];
-  if (severity === void 0) {
-    return {
-      severity: legacy,
-      requested,
-      reach: reach ?? null,
-      reason: `${resolved} has no reach mapping, so its legacy ${legacy} tier is used`
-    };
-  }
-  const varies = new Set(Object.values(tiers ?? {})).size > 1;
-  const describe = resolved === normalised ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
-  if (!varies) {
-    return { severity, requested, reach: reach ?? null, reason: describe };
-  }
-  return boundToRequest(
-    severity,
-    requested,
-    reach ?? null,
-    describe
-  );
-}
-
-// plugins/review-voice/src/scoring/confidence.ts
-var QUALITY_CONFIDENCE = { high: 0.9, medium: 0.75, low: 0.5 };
-var ESCALATION_CONFIDENCE = 0.85;
-function verifierConfidence(technicalConfidence, evidenceQuality2) {
-  if (typeof technicalConfidence === "number" && Number.isFinite(technicalConfidence)) return technicalConfidence;
-  if (typeof evidenceQuality2 !== "string" || !Object.hasOwn(QUALITY_CONFIDENCE, evidenceQuality2)) return null;
-  return QUALITY_CONFIDENCE[evidenceQuality2] ?? null;
-}
-
-// plugins/review-voice/src/scoring/score.ts
-var STALE_CONSUMER = "stale-consumer";
-var DOCUMENTATION_PATH = /\.(?:md|rst|adoc)$/i;
-function isDocumentationPath(path) {
-  return DOCUMENTATION_PATH.test(path);
-}
-var FIX_VERDICTS = ["verified", "partial", "refuted", "absent"];
-function isFixVerdict(value) {
-  return typeof value === "string" && FIX_VERDICTS.includes(value);
-}
-var EVIDENCE_QUALITIES = ["high", "medium", "low"];
-var IMPACT_CLASSES = ["no-exposure", "data-exposure", "privilege-escalation"];
-function isImpactClass(value) {
-  return typeof value === "string" && IMPACT_CLASSES.includes(value);
-}
-var CONTEXT_KINDS = ["blocking", "cosmetic"];
-function blockingContext(entries) {
-  return (entries ?? []).filter((entry) => typeof entry === "string" || entry.kind !== "cosmetic").map((entry) => typeof entry === "string" ? entry : entry.context);
-}
-var REASON_CAP = 200;
-function withVerifierReason(base, reason2) {
-  const text2 = reason2?.replace(/\s+/g, " ").trim() ?? "";
-  if (text2.length === 0) return base;
-  const bounded = text2.length > REASON_CAP ? `${text2.slice(0, REASON_CAP - 1)}\u2026` : text2;
-  return `${base}; the verifier said: "${bounded}"`;
-}
-var TIER_ORDER = ["nit", "minor", "important", "blocking"];
-var BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
-  "security",
-  "trust_boundary",
-  "authorization",
-  "authentication"
-]);
-var FIXED_BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
-  "security",
-  "authorization",
-  "authentication"
-]);
-var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
-function isInterrogativeClaim(claim) {
-  const text2 = claim.trim();
-  if (text2.endsWith("?")) return true;
-  return text2.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
-}
-function boundSeverityByEvidence(derived, candidate, verification2) {
-  if (BOUNDARY_CATEGORIES.has(candidate.category) && verification2?.impactClass === "no-exposure") {
-    if (candidate.severity === "question") return derived;
-    const asked2 = TIER_ORDER.indexOf(candidate.severity);
-    const got2 = TIER_ORDER.indexOf(derived.severity);
-    if (asked2 === -1 || got2 === -1 || asked2 >= got2) return derived;
-    return {
-      ...derived,
-      severity: TIER_ORDER[asked2],
-      reason: `${derived.reason}, held at ${candidate.severity} because the verifier found no exposure`
-    };
-  }
-  if (FIXED_BOUNDARY_CATEGORIES.has(candidate.category)) {
-    return raisedBecause(
-      derived,
-      candidate.severity,
-      `${candidate.category} names a breach by itself, so its tier does not depend on the request or a trace`
-    );
-  }
-  if (candidate.severity === "question" || derived.severity === "question") return derived;
-  let result = derived;
-  if ((result.severity === "important" || result.severity === "blocking") && isInterrogativeClaim(candidate.claim)) {
-    result = {
-      ...result,
-      severity: "minor",
-      reason: `${result.reason}, capped at minor because the claim is framed as a question`
-    };
-  }
-  const asked = TIER_ORDER.indexOf(candidate.severity);
-  const got = TIER_ORDER.indexOf(result.severity);
-  if (asked === -1 || got === -1 || got <= asked) return result;
-  const confidence = verifierConfidence(verification2?.technicalConfidence, verification2?.evidenceQuality);
-  if (candidate.impactDisputed === true) {
-    return {
-      ...result,
-      severity: TIER_ORDER[asked],
-      reason: `${result.reason}, held at ${candidate.severity} because the second pass disputed the traced impact and no tie-break upheld it`
-    };
-  }
-  if (verification2?.impactTraced === true && confidence !== null && confidence >= ESCALATION_CONFIDENCE) {
-    return raisedBecause(
-      result,
-      candidate.severity,
-      `the verifier traced impact beyond the changed code (impact_traced: true) at confidence ${confidence.toFixed(2)}, at least ${ESCALATION_CONFIDENCE}`
-    );
-  }
-  return {
-    ...result,
-    severity: TIER_ORDER[asked],
-    reason: `${result.reason}, held at ${candidate.severity} because escalation needs the verifier to trace impact beyond the changed code`
-  };
-}
-function raisedBecause(result, requested, why) {
-  const asked = TIER_ORDER.indexOf(requested);
-  const got = TIER_ORDER.indexOf(result.severity);
-  if (asked === -1 || got === -1 || got <= asked) return result;
-  return { ...result, reason: `${result.reason}, raised above the requested ${requested} because ${why}` };
-}
-var UNVERIFIABLE_CONFIDENCE = 0.6;
-var UNVERIFIABLE_REJECTION = "the claim could not be verified, so it cannot ship whatever it scores; `unverifiableBecause` names the trigger";
-var ADMITS_UNVERIFIABLE = [
-  /\b(?:cannot|can not|could not|couldn't|unable to)\s+(?:be\s+)?(?:verif|confirm|check|establish|determin)/i,
-  /\bnot\s+verifiable\b/i,
-  /\bwithout\s+access\s+to\b/i,
-  /\bno\s+way\s+to\s+(?:verify|confirm|check)\b/i
-];
-function admitsUnverifiable(candidate) {
-  return candidate.evidence.some((item) => ADMITS_UNVERIFIABLE.some((pattern) => pattern.test(item)));
-}
-var DEFAULT_THRESHOLDS = {
-  technicalConfidence: 0.8,
-  analystOnlyConfidence: 0.7,
-  finalScore: 0.68
-};
-var MAX_QUESTIONS = 2;
-function applyQuestionCap(breakdowns, limit = MAX_QUESTIONS) {
-  const questions = breakdowns.filter((b) => b.eligible && b.severity.severity === "question");
-  if (questions.length <= limit) return;
-  const ranked = [...questions].sort(
-    (a, b) => b.finalScore - a.finalScore || a.candidateId.localeCompare(b.candidateId)
-  );
-  for (const dropped of ranked.slice(limit)) {
-    dropped.eligible = false;
-    dropped.rejectedBecause = `this review already asks ${limit} better-evidenced question${limit === 1 ? "" : "s"}, and a review that ends in a list of questions has stopped being a review`;
-  }
-}
-var CITATION = /(?<![\w./-])`?((?:[\w.-]+\/)*[\w-][\w.-]*\.[A-Za-z0-9]+):(\d+)(?:-\d+)?`?/g;
-function citedLocations(thread) {
-  const out = [];
-  for (const comment of thread) {
-    out.push(comment);
-    if (comment.kind === "description" || comment.path !== null) continue;
-    const citations = [...comment.body.matchAll(CITATION)];
-    citations.forEach((match, index) => {
-      const end = citations[index + 1]?.index ?? comment.body.length;
-      out.push({
-        ...comment,
-        path: match[1].replace(/^\.\//, ""),
-        line: Number(match[2]),
-        body: comment.body.slice(match.index, end),
-        cited: true
-      });
-    });
-  }
-  return out;
-}
-function onFile(comment, path) {
-  if (comment.path === path) return true;
-  return comment.cited === true && comment.path !== null && path.endsWith(`/${comment.path}`);
-}
-function alreadySaidOnThread(candidate, thread) {
-  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  if (mine.size === 0) return null;
-  for (const comment of thread) {
-    if (comment.kind === "description") continue;
-    const anchored = comment.path !== null && comment.line !== null;
-    if (anchored) {
-      if (!onFile(comment, candidate.path)) continue;
-      if (Math.abs(comment.line - candidate.line) > DUPLICATE_LINE_WINDOW) continue;
-      if (overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
-      continue;
-    }
-    if (overlap(mine, significantWords(comment.body)) >= UNANCHORED_DUPLICATE_OVERLAP) return comment;
-  }
-  return null;
-}
-var POSSIBLE_REPEAT_OVERLAP = 0.25;
-var POSSIBLE_REPEAT_LINE_WINDOW = 5;
-function possiblySaidOnThread(candidate, thread, preferred = () => false) {
-  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  if (mine.size === 0) return null;
-  let best = null;
-  for (const comment of thread) {
-    if (comment.path === null || comment.line === null) continue;
-    if (!onFile(comment, candidate.path)) continue;
-    const distance = Math.abs(comment.line - candidate.line);
-    if (distance > POSSIBLE_REPEAT_LINE_WINDOW) continue;
-    const share = overlap(mine, significantWords(comment.body));
-    if (share < POSSIBLE_REPEAT_OVERLAP) continue;
-    const rank2 = [preferred(comment) ? 1 : 0, share, -distance];
-    if (best === null || compareRank(rank2, best.rank) > 0) best = { comment, rank: rank2 };
-  }
-  return best?.comment ?? null;
-}
-function compareRank(a, b) {
-  for (let i = 0; i < a.length; i += 1) {
-    const d = a[i] - b[i];
-    if (d !== 0) return d;
-  }
-  return 0;
-}
-var SAME_FILE_REPEAT_OVERLAP = 0.4;
-function possiblyRaisedInFile(candidate, thread, accept = () => true) {
-  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  if (mine.size === 0) return null;
-  let best = null;
-  for (const comment of thread) {
-    if (comment.path === null || comment.line === null || !accept(comment)) continue;
-    const here = onFile(comment, candidate.path);
-    if (!here && !namesFile(comment.body, candidate.path)) continue;
-    const share = overlap(mine, significantWords(comment.body));
-    if (share < SAME_FILE_REPEAT_OVERLAP) continue;
-    const distance = here ? Math.abs(comment.line - candidate.line) : Number.POSITIVE_INFINITY;
-    const rank2 = [here ? 1 : 0, share, -distance];
-    if (best === null || compareRank(rank2, best.rank) > 0) best = { comment, rank: rank2 };
-  }
-  return best?.comment ?? null;
-}
-function namesFile(body, path) {
-  const name = path.slice(path.lastIndexOf("/") + 1);
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-])`).test(body);
-}
-var DESCRIPTION_EXCERPT_CHARS = 400;
-function possiblyRepeatsDescription(candidate, thread) {
-  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  if (mine.size === 0) return null;
-  for (const comment of thread) {
-    if (comment.kind !== "description") continue;
-    if (overlap(mine, significantWords(comment.body)) < UNANCHORED_DUPLICATE_OVERLAP) continue;
-    return { comment, excerpt: overlappingExcerpt(mine, comment.body) };
-  }
-  return null;
-}
-function overlappingExcerpt(mine, body) {
-  const sentences = body.split(/(?<=[.!?])\s+|\n+/u).map((sentence) => sentence.trim()).filter((sentence) => sentence.length > 0);
-  const ranked = sentences.map((text2, index) => ({ text: text2, index, shared: [...significantWords(text2)].filter((word) => mine.has(word)).length })).filter((sentence) => sentence.shared > 0).sort((a, b) => b.shared - a.shared || a.index - b.index);
-  const [best, ...rest] = ranked;
-  if (best === void 0) return clip(body.trim());
-  const chosen = [best];
-  let length = Math.min(best.text.length, DESCRIPTION_EXCERPT_CHARS);
-  for (const sentence of rest) {
-    if (length + 1 + sentence.text.length > DESCRIPTION_EXCERPT_CHARS) continue;
-    chosen.push(sentence);
-    length += 1 + sentence.text.length;
-  }
-  if (chosen.length === 1) return clip(best.text);
-  return chosen.sort((a, b) => a.index - b.index).map((sentence) => sentence.text).join(" ");
-}
-function clip(text2) {
-  return text2.length <= DESCRIPTION_EXCERPT_CHARS ? text2 : `${text2.slice(0, DESCRIPTION_EXCERPT_CHARS - 1)}\u2026`;
-}
-var MalformedCandidate = class extends Error {
-};
-var FOREIGN_KEYS = ["title", "location", "suggested_direction", "suggestion", "description", "summary"];
-function normaliseCandidate(raw, index) {
-  const candidateId = raw.candidate_id ?? raw.candidateId ?? `cand_${String(index + 1).padStart(3, "0")}`;
-  const confidence = raw.technical_confidence ?? raw.technicalConfidence;
-  const suggestedFix = raw.suggested_fix !== void 0 ? raw.suggested_fix : raw.suggestedFix;
-  const fixConfidence = raw.fix_confidence !== void 0 ? raw.fix_confidence : raw.fixConfidence;
-  if (typeof raw.path !== "string" || raw.path.length === 0) {
-    const foreign = FOREIGN_KEYS.filter((key) => key in raw);
-    throw new MalformedCandidate(
-      foreign.length > 0 ? `${candidateId}: has ${foreign.join(", ")} but no path. This is not the candidate schema. Expected candidate_id, path, line, category, severity, claim, failure_mode, evidence, technical_confidence, per schemas/candidate.schema.json.` : `${candidateId}: missing path`
-    );
-  }
-  if (!Number.isFinite(raw.line)) {
-    throw new MalformedCandidate(`${candidateId}: missing or non-numeric line`);
-  }
-  if (!Number.isFinite(confidence)) {
-    throw new MalformedCandidate(
-      `${candidateId}: missing or non-numeric technical_confidence - a score cannot be computed, and a candidate that cannot be scored must not be treated as eligible`
-    );
-  }
-  if (suggestedFix !== void 0 && typeof suggestedFix !== "string") {
-    throw new MalformedCandidate(`${candidateId}: suggested_fix must be a string when supplied`);
-  }
-  if (fixConfidence !== void 0 && (!Number.isFinite(fixConfidence) || fixConfidence < 0 || fixConfidence > 1)) {
-    throw new MalformedCandidate(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
-  }
-  if (raw.anchor !== void 0 && raw.anchor !== STALE_CONSUMER) {
-    throw new MalformedCandidate(`${candidateId}: anchor must be "${STALE_CONSUMER}" when supplied`);
-  }
-  const rawCause = raw.caused_by !== void 0 ? raw.caused_by : raw.causedBy;
-  let causedBy = null;
-  if (raw.anchor === STALE_CONSUMER && rawCause !== void 0 && rawCause !== null) {
-    if (typeof rawCause !== "object" || typeof rawCause.path !== "string" || rawCause.path.length === 0 || !Number.isInteger(rawCause.line) || rawCause.line < 1) {
-      throw new MalformedCandidate(`${candidateId}: caused_by must be {"path": string, "line": positive integer}`);
-    }
-    causedBy = { path: rawCause.path, line: rawCause.line };
-  }
-  const ownComment = ownCommentOf(raw.possibleRepeatOf);
-  const impactDisputed = raw.impact_disputed !== void 0 ? raw.impact_disputed : raw.impactDisputed;
-  if (impactDisputed !== void 0 && typeof impactDisputed !== "boolean") {
-    throw new MalformedCandidate(`${candidateId}: impact_disputed must be true or false when supplied`);
-  }
-  return {
-    candidateId,
-    path: raw.path,
-    line: raw.line,
-    // Deliberately not defaulted. `correctness` used to stand in for a missing
-    // category, which gave an unlabelled finding a real tier and recorded
-    // nothing about the substitution.
-    category: raw.category ?? "",
-    severity: raw.severity ?? "minor",
-    claim: raw.claim ?? "",
-    failureMode: raw.failure_mode ?? raw.failureMode ?? "",
-    evidence: Array.isArray(raw.evidence) ? raw.evidence : [],
-    suggestedFix: suggestedFix ?? null,
-    fixConfidence: fixConfidence ?? null,
-    technicalConfidence: confidence,
-    // Spread only when declared, so an ordinary candidate keeps its shape.
-    ...raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {},
-    ...impactDisputed === true ? { impactDisputed: true } : {},
-    ...ownComment === null ? {} : { ownComment }
-  };
-}
-function ownCommentOf(value) {
-  if (typeof value !== "object" || value === null) return null;
-  const v = value;
-  if (v["kind"] !== "own-comment") return null;
-  if (typeof v["author"] !== "string" || v["author"].length === 0) return null;
-  if (typeof v["path"] !== "string" || v["path"].length === 0) return null;
-  if (!Number.isInteger(v["line"]) || v["line"] < 1) return null;
-  return {
-    author: v["author"],
-    path: v["path"],
-    line: v["line"],
-    ...Number.isInteger(v["commentId"]) ? { commentId: v["commentId"] } : {}
-  };
-}
-function partlyAddressedProblem(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return 'must be {"remaining": [...], "addressed": [...]}';
-  }
-  const v = value;
-  for (const key of ["remaining", "addressed"]) {
-    const list = v[key];
-    if (!Array.isArray(list) || list.length === 0 || !list.every((item) => typeof item === "string" && item.trim().length > 0)) {
-      return `${key} must be a non-empty array of non-empty strings`;
-    }
-  }
-  return null;
-}
-function followUpOf(candidate, verification2, thread, owner) {
-  const prior = candidate.ownComment;
-  const partly = verification2?.partlyAddressed;
-  if (prior === void 0 || partly === void 0) return null;
-  if (owner === null || prior.author.toLowerCase() !== owner.toLowerCase()) return null;
-  const onThread = thread.some(
-    (comment) => comment.author === prior.author && comment.path === prior.path && comment.line === prior.line
-  );
-  return onThread ? { ...prior, remaining: partly.remaining, addressed: partly.addressed } : null;
-}
-var WORDS = /[^\p{L}\p{N}]+/u;
-function significantWords(text2) {
-  return new Set(text2.toLowerCase().split(WORDS).filter((word) => word.length > 3));
-}
-function overlap(mine, theirs) {
-  if (mine.size === 0) return 0;
-  return [...mine].filter((word) => theirs.has(word)).length / mine.size;
-}
-var DUPLICATE_LINE_WINDOW = 2;
-var DUPLICATE_OVERLAP = 0.4;
-var UNANCHORED_DUPLICATE_OVERLAP = 0.7;
-function sameLocation(candidate, precedent) {
-  if (precedent.filePath === null || precedent.lineStart === null) return false;
-  if (precedent.filePath !== candidate.path) return false;
-  return Math.abs(precedent.lineStart - candidate.line) <= DUPLICATE_LINE_WINDOW;
-}
-function duplicatePrecedent(candidate, precedents) {
-  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  for (const precedent of precedents) {
-    if (!sameLocation(candidate, precedent)) continue;
-    if (overlap(mine, significantWords(precedent.excerpt)) >= DUPLICATE_OVERLAP) return precedent;
-  }
-  return null;
-}
-function isAnchored(precedent) {
-  return precedent.filePath !== null;
-}
-var NEUTRAL_ALIGNMENT = 0.5;
-function alignmentFrom(precedents) {
-  if (precedents.length === 0) return NEUTRAL_ALIGNMENT;
-  const total = precedents.reduce((sum, p) => sum + p.weight * (p.matchStrength ?? 1), 0);
-  return 1 / (1 + Math.exp(-total));
-}
-function anchoredAlignmentFrom(precedents) {
-  return alignmentFrom(precedents.filter(isAnchored));
-}
-var ANCHORED = [
-  /\bline\s+\d+/i,
-  /:\d+\b/,
-  /`[^`]+`/,
-  /\b[\w$]+\.(?:ts|tsx|js|jsx|cs|py|go|rb|java|kt|rs|sql|ya?ml|json)\b/i,
-  /\b[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*\b/,
-  /\b[A-Z][A-Z0-9]+_[A-Z0-9_]+\b/
-];
-function evidenceQuality(candidate) {
-  const items = candidate.evidence.filter((item) => item.trim().length > 0);
-  if (items.length === 0) return 0;
-  const specific = items.filter((item) => ANCHORED.some((pattern) => pattern.test(item))).length;
-  const breadth = Math.min(1, items.length / 3);
-  const depth = specific / items.length;
-  return 0.4 * breadth + 0.6 * depth;
-}
-var CROSS_FILE_DUPLICATE = 0.8;
-function novelty(candidate, kept, precedents) {
-  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  let worst = 1;
-  for (const other of kept) {
-    if (other.path === candidate.path && other.line === candidate.line) return 0;
-    const theirs = significantWords(`${other.claim} ${other.failureMode}`);
-    const shared = overlap(mine, theirs);
-    if (other.path === candidate.path) {
-      worst = Math.min(worst, 1 - shared);
-    } else if (shared >= CROSS_FILE_DUPLICATE) {
-      worst = Math.min(worst, 1 - shared);
-    }
-  }
-  for (const precedent of precedents) {
-    if (precedent.filePath !== candidate.path) continue;
-    if (overlap(mine, significantWords(precedent.excerpt)) < 0.7) continue;
-    worst = Math.min(worst, 0.5);
-  }
-  return worst;
-}
-var MAX_DIRECTION_LENGTH = 120;
-function isBareDirection(direction) {
-  if (direction === null) return false;
-  const text2 = direction.trim();
-  if (text2.length === 0 || text2.length > MAX_DIRECTION_LENGTH) return false;
-  if (/[\r\n`]/.test(text2)) return false;
-  return !/[.!?]\s+\S/.test(text2);
-}
-function editorFix(fix) {
-  if (fix.render === "fix") return { render: "fix", text: fix.suggested };
-  if (fix.render === "direction") return { render: "direction", text: fix.direction };
-  return { render: "none", text: null };
-}
-function assertUniqueCandidateIds(candidates) {
-  const seen = /* @__PURE__ */ new Set();
-  for (const candidate of candidates) {
-    if (seen.has(candidate.candidateId)) {
-      throw new MalformedCandidate(
-        `${candidate.candidateId}: appears more than once. Candidate ids must be unique, because verification is matched to candidates by id.`
-      );
-    }
-    seen.add(candidate.candidateId);
-  }
-}
-function renderFix(candidate, verification2, thresholds) {
-  const suggested = candidate.suggestedFix ?? null;
-  const rawVerdict = verification2?.fixVerdict;
-  const verdict = isFixVerdict(rawVerdict) ? rawVerdict : null;
-  const rawConfidence = verification2?.fixConfidence;
-  const confidence = typeof rawConfidence === "number" && Number.isFinite(rawConfidence) && rawConfidence >= 0 && rawConfidence <= 1 ? rawConfidence : null;
-  const rawDirection = verification2?.fixDirection;
-  const direction = typeof rawDirection === "string" ? rawDirection : null;
-  const verifierReason = verification2?.fixReason?.trim().length ? verification2.fixReason : null;
-  const hasSuggested = suggested !== null && suggested.trim().length > 0;
-  const analystConfidence = candidate.fixConfidence ?? null;
-  const hasDirection = direction !== null && direction.trim().length > 0;
-  if (hasSuggested && verdict === "verified" && confidence !== null && confidence >= thresholds.technicalConfidence) {
-    return {
-      suggested,
-      analystConfidence,
-      verdict,
-      confidence,
-      direction,
-      render: "fix",
-      reason: verifierReason ?? `verified fix confidence ${confidence.toFixed(2)} meets the ${thresholds.technicalConfidence} threshold`
-    };
-  }
-  if (verdict === "partial" && hasSuggested && hasDirection && isBareDirection(direction)) {
-    return {
-      suggested,
-      analystConfidence,
-      verdict,
-      confidence,
-      direction,
-      render: "direction",
-      reason: verifierReason ?? "the verifier could confirm only the repair direction"
-    };
-  }
-  let reason2 = "the suggested fix was not verified";
-  if (!hasSuggested) {
-    reason2 = "no fix was proposed";
-  } else if (verdict === "verified" && confidence !== null) {
-    reason2 = `verified fix confidence ${confidence.toFixed(2)} is below the ${thresholds.technicalConfidence} threshold`;
-  } else if (verdict === "partial" && hasDirection) {
-    reason2 = "the direction is not one short sentence without code, so it is withheld";
-  } else if (verdict === "partial") {
-    reason2 = "the verifier gave a partial fix verdict without a direction";
-  } else if (verdict === "refuted") {
-    reason2 = "the verifier refuted the suggested fix";
-  } else if (verdict === "absent") {
-    reason2 = "the verifier reports no suggested fix";
-  }
-  return {
-    suggested,
-    analystConfidence,
-    verdict,
-    confidence,
-    direction,
-    render: "none",
-    reason: verifierReason ?? reason2
-  };
-}
-function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2) {
-  const analystConfidence = candidate.technicalConfidence;
-  const verifiedConfidence = verification2 === void 0 ? null : verifierConfidence(verification2.technicalConfidence, verification2.evidenceQuality);
-  let confidence = verifiedConfidence ?? analystConfidence;
-  let confidenceSource = verifiedConfidence === null ? "analyst" : "verifier";
-  const missing = blockingContext(verification2?.requiredContextMissing);
-  const missingContext = missing.length > 0;
-  const admitted = admitsUnverifiable(candidate);
-  const verifierEngaged = verification2?.technicalConfidence !== void 0;
-  if ((missingContext || admitted && !verifierEngaged) && confidence > UNVERIFIABLE_CONFIDENCE) {
-    confidence = UNVERIFIABLE_CONFIDENCE;
-    confidenceSource = "unverifiable-cap";
-  }
-  const unverifiableBecause = confidenceSource !== "unverifiable-cap" ? null : missingContext ? `the verifier listed required_context_missing the claim depends on: ${missing.join("; ")}` : "the analyst's evidence says the claim could not be checked, and the verifier gave no technical_confidence of its own";
-  const confidenceFloor = confidenceSource === "verifier" ? thresholds.technicalConfidence : thresholds.analystOnlyConfidence;
-  const alreadySaid = duplicatePrecedent(candidate, precedents);
-  const forAlignment = alreadySaid === null ? precedents : precedents.filter((p) => !sameLocation(candidate, p));
-  const ownerPrecedents = forAlignment.filter((p) => p.role === "owner");
-  const repositoryPrecedents = forAlignment.filter((p) => p.role !== "owner");
-  const ownerAlignment = alignmentFrom(ownerPrecedents);
-  const repositoryAlignment = alignmentFrom(repositoryPrecedents);
-  const anchoredOwnerAlignment = anchoredAlignmentFrom(ownerPrecedents);
-  const anchoredRepositoryAlignment = anchoredAlignmentFrom(repositoryPrecedents);
-  const quality = evidenceQuality(candidate);
-  const novel = alreadySaid === null ? novelty(candidate, kept, precedents) : 0;
-  const score = (owner, repository) => 0.35 * confidence + 0.25 * owner + 0.15 * repository + 0.15 * quality + 0.1 * novel;
-  const finalScore = score(ownerAlignment, repositoryAlignment);
-  const anchoredFinalScore = score(anchoredOwnerAlignment, anchoredRepositoryAlignment);
-  const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification2?.reach);
-  const isQuestion = derivedSeverity.severity === "question";
-  let rejectedBecause = null;
-  if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
-    rejectedBecause = "score could not be computed from this candidate";
-  } else if (alreadySaid !== null) {
-    rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
-  } else if (isQuestion && verification2?.premisesVerified === false) {
-    rejectedBecause = withVerifierReason(
-      "the verifier could not verify the premises this question rests on (premises_verified: false)",
-      verification2.reason
-    );
-  } else if (isQuestion && verification2?.verified !== true && verification2?.premisesVerified !== true) {
-    rejectedBecause = withVerifierReason(
-      verification2 === void 0 ? "a question needs the verifier to confirm the premises it rests on (premises_verified: true), and there is no verifier verdict for this one" : "the verifier did not verify this question or confirm the premises it rests on (premises_verified is not true)",
-      verification2?.reason
-    );
-  } else if (isQuestion) {
-    if (ownerAlignment < NEUTRAL_ALIGNMENT) {
-      rejectedBecause = `owner precedent is against asking this (${ownerAlignment.toFixed(2)} alignment), and a question the owner has dismissed the like of before is noise the second time`;
-    }
-  } else if (confidenceSource === "unverifiable-cap") {
-    rejectedBecause = UNVERIFIABLE_REJECTION;
-  } else if (verification2?.verified === false) {
-    rejectedBecause = "the verifier did not verify this claim (verified: false)";
-  } else if (confidence < confidenceFloor) {
-    rejectedBecause = `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` + (confidenceSource === "analyst" ? ". No verification was supplied, so this is the analyst's opinion of its own output." : "");
-  } else if (finalScore < thresholds.finalScore) {
-    rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
-  }
-  const severity = boundSeverityByEvidence(derivedSeverity, candidate, verification2);
-  const staleConsumer = candidate.anchor === STALE_CONSUMER;
-  const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit" && confidenceSource === "verifier";
-  if (staleConsumer && verification2?.impactTraced !== true && !untracedDocumentNit) {
-    const untraced = "a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause (impact_traced: true)" + (isDocumentationPath(candidate.path) ? `; a documentation consumer may go untraced only at nit and on the verifier's confidence, and this one is ${severity.severity}` + (confidenceSource === "analyst" ? " on the analyst's confidence alone" : confidenceSource === "unverifiable-cap" ? " with context the verifier could not obtain" : "") : "");
-    if (rejectedBecause === null) rejectedBecause = untraced;
-    else if (rejectedBecause.startsWith("score ")) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
-    else rejectedBecause = `${rejectedBecause}. Also: ${untraced}`;
-  }
-  const fix = renderFix(candidate, verification2, thresholds);
-  return {
-    candidateId: candidate.candidateId,
-    path: candidate.path,
-    line: candidate.line,
-    technicalConfidence: confidence,
-    severity,
-    analystConfidence,
-    verifiedConfidence,
-    confidenceSource,
-    unverifiableBecause,
-    ownerAlignment,
-    repositoryAlignment,
-    evidenceQuality: quality,
-    novelty: novel,
-    finalScore,
-    fix,
-    anchored: {
-      ownerAlignment: anchoredOwnerAlignment,
-      repositoryAlignment: anchoredRepositoryAlignment,
-      finalScore: anchoredFinalScore,
-      // Only the score gate can flip here: every other rejection reason is
-      // independent of alignment.
-      wouldChangeEligibility: rejectedBecause === null ? anchoredFinalScore < thresholds.finalScore : rejectedBecause.startsWith("score ") && anchoredFinalScore >= thresholds.finalScore
-    },
-    eligible: rejectedBecause === null,
-    rejectedBecause,
-    duplicateOfPrecedent: alreadySaid?.eventId ?? null,
-    precedentIds: precedents.map((p) => p.eventId),
-    ...staleConsumer ? { anchor: STALE_CONSUMER, causedBy: candidate.causedBy ?? null } : {}
-  };
 }
 
 // plugins/review-voice/src/store/follow-ups.ts
@@ -4530,9 +4664,9 @@ var ASSERTS_ABSENCE = [
 ];
 var DETERMINER = /^(?:the|this|that|these|those|our|your|their|its|his|her|my|a|an)\s+/i;
 function withoutDeterminer(complement) {
-  let text2 = complement.trim().replace(/[`'"]/g, "");
-  for (let i = 0; i < 3; i += 1) text2 = text2.replace(DETERMINER, "");
-  return text2.trim();
+  let text3 = complement.trim().replace(/[`'"]/g, "");
+  for (let i = 0; i < 3; i += 1) text3 = text3.replace(DETERMINER, "");
+  return text3.trim();
 }
 var GENERIC_REPOSITORY = /^(?:entire\s+|whole\s+)?(?:mono)?(?:repo|repository|code\s?base|project|tree)\b/i;
 var NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
@@ -4549,12 +4683,12 @@ function namesThisRepository(complement, repository) {
   );
 }
 var PROPERTY_NOT_PLACE = /\b(?:ex|im)ported\b|\bnot\s+(?:public|exposed|re-?exported)\b/i;
-function absenceScope(text2, repository = null) {
-  if (PROPERTY_NOT_PLACE.test(text2)) return "bounded";
-  if (/\b(?:anywhere|nowhere)\b/i.test(text2)) return "repository";
-  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text2);
+function absenceScope(text3, repository = null) {
+  if (PROPERTY_NOT_PLACE.test(text3)) return "bounded";
+  if (/\b(?:anywhere|nowhere)\b/i.test(text3)) return "repository";
+  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text3);
   if (assertion === null) return "repository";
-  const after = text2.slice(assertion.index + assertion[0].length);
+  const after = text3.slice(assertion.index + assertion[0].length);
   const locative = LOCATIVE.exec(after);
   if (locative === null) return "repository";
   const complement = (locative[1] ?? "").trim();
@@ -4566,16 +4700,16 @@ function absenceScope(text2, repository = null) {
   }
   return "bounded";
 }
-function namedSymbols(text2) {
+function namedSymbols(text3) {
   const found = /* @__PURE__ */ new Set();
-  for (const match of text2.matchAll(/`([^`]+)`/g)) {
+  for (const match of text3.matchAll(/`([^`]+)`/g)) {
     const token = (match[1] ?? "").trim();
     if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found.add(token);
   }
-  for (const match of text2.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
+  for (const match of text3.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
     if (match[1] !== void 0) found.add(match[1]);
   }
-  for (const match of text2.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
+  for (const match of text3.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
     if (match[1] !== void 0) found.add(match[1]);
   }
   for (const token of [...found]) {
@@ -4621,12 +4755,12 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
     for (const record2 of output.split("\n")) {
       const [rawPath = "", number = "", ...rest] = record2.split("\0");
       const line2 = Number(number);
-      const text2 = rest.join("\0");
+      const text3 = rest.join("\0");
       if (!Number.isSafeInteger(line2) || line2 < 1) continue;
       lines2.push({
         path: prefix !== "" && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
         line: line2,
-        text: text2
+        text: text3
       });
     }
     return lines2;
@@ -4680,10 +4814,10 @@ var FILE_NAME = /\.(?:tsx?|jsx?|mjs|cjs|cs|py|go|rb|java|kt|rs|swift|dart|json|y
 function generatedAccessor(symbol) {
   return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
 }
-function checkAbsenceClaim(text2, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths) {
+function checkAbsenceClaim(text3, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths) {
   const searchedRefLabel = ref ?? "working tree";
-  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text2))) return null;
-  const scope = absenceScope(text2, repository);
+  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text3))) return null;
+  const scope = absenceScope(text3, repository);
   if (scope === "bounded") return null;
   if (scope === "elsewhere") {
     return {
@@ -4696,8 +4830,8 @@ function checkAbsenceClaim(text2, cwd, ref = null, search = gitGrep, repository 
       searchedRef: searchedRefLabel
     };
   }
-  const symbols = namedSymbols(text2).filter(
-    (symbol) => text2.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
+  const symbols = namedSymbols(text3).filter(
+    (symbol) => text3.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
   );
   if (symbols.length === 0) return null;
   const searchedRef = ref ?? "working tree";
@@ -4816,7 +4950,7 @@ var STOP_TOKENS = /* @__PURE__ */ new Set([
   "helper",
   "helpers"
 ]);
-function declarationName(text2) {
+function declarationName(text3) {
   for (const pattern of [
     TS_FUNCTION,
     VARIABLE_FUNCTION,
@@ -4826,10 +4960,10 @@ function declarationName(text2) {
     MODIFIED_METHOD,
     KOTLIN_FUNCTION
   ]) {
-    const match = pattern.exec(text2);
+    const match = pattern.exec(text3);
     if (match?.[1] !== void 0) return match[1];
   }
-  const method = CLASS_METHOD.exec(text2);
+  const method = CLASS_METHOD.exec(text3);
   const name = method?.[1];
   if (name === void 0 || STATEMENT_KEYWORDS.has(name.toLowerCase())) return null;
   return name;
@@ -4931,8 +5065,8 @@ function symbolsFromHunks(diff, changedPath) {
     if (!inFile) continue;
     if (raw.startsWith("--- ")) continue;
     if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
-    const text2 = raw.slice(1);
-    for (const m of text2.matchAll(
+    const text3 = raw.slice(1);
+    for (const m of text3.matchAll(
       /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g
     )) {
       if (m[1] !== void 0) found.add(m[1]);
@@ -4987,9 +5121,9 @@ function isImportOnlyChange(diff, changedPath) {
     }
     if (!inFile || raw.startsWith("--- ")) continue;
     if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
-    const text2 = raw.slice(1).trim();
-    if (text2 === "") continue;
-    if (!IMPORT_LINE.some((pattern) => pattern.test(text2))) return false;
+    const text3 = raw.slice(1).trim();
+    if (text3 === "") continue;
+    if (!IMPORT_LINE.some((pattern) => pattern.test(text3))) return false;
     imports += 1;
   }
   return imports > 0;
@@ -5003,12 +5137,12 @@ function isRepositoryWideToolchainPath(path) {
   const normalised = normalisePath3(path);
   return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
 }
-function computeReach(text2, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
+function computeReach(text3, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
   const searchedRef = ref ?? "working tree";
   const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
   const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
   const source = ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
-  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text2)).slice(0, 12);
+  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text3)).slice(0, 12);
   const searched = [];
   const ignored = [];
   const hits = /* @__PURE__ */ new Set();
@@ -5713,8 +5847,8 @@ function followLine(previousHead, head, path, line2, cwd) {
   );
   return remapLine(oldSideHunks(patch), line2);
 }
-function rewriteAnchor(text2, path, oldLine, line2) {
-  return text2.replace(`\`${path}:${oldLine}\``, `\`${path}:${line2}\``);
+function rewriteAnchor(text3, path, oldLine, line2) {
+  return text3.replace(`\`${path}:${oldLine}\``, `\`${path}:${line2}\``);
 }
 function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map()) {
   for (const ref of [previousHead, head]) {
@@ -5757,8 +5891,8 @@ function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */
   const output = findings.length === 0 ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join("\n\n");
   return { carried, notCarried, heldBack, output };
 }
-function findingBody(text2) {
-  const joined = text2.replace(/\s+/g, " ").trim();
+function findingBody(text3) {
+  const joined = text3.replace(/\s+/g, " ").trim();
   const match = /^\[[a-z_]+\]\s+`[^`]+:\d+`\s*(.*)$/i.exec(joined);
   return match === null ? joined : match[1] ?? "";
 }
@@ -5788,10 +5922,10 @@ function changedFiles(previousHead, head, cwd) {
 function escapeRegExp2(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function namesFile2(text2, path) {
-  if (text2.includes(path)) return true;
+function namesFile2(text3, path) {
+  if (text3.includes(path)) return true;
   const name = path.split("/").pop() ?? path;
-  return new RegExp(`(^|[^\\w./-])${escapeRegExp2(name)}($|[^\\w-])`).test(text2);
+  return new RegExp(`(^|[^\\w./-])${escapeRegExp2(name)}($|[^\\w-])`).test(text3);
 }
 function carryCandidates(candidates, previousHead, head, hunks, cwd) {
   for (const ref of [previousHead, head]) {
@@ -5813,7 +5947,7 @@ function carryCandidates(candidates, previousHead, head, hunks, cwd) {
       refuse(`the file of its cause, ${cause.path}, changed between the two heads`);
       continue;
     }
-    const named = [...changed].find((path) => (candidate.texts ?? []).some((text2) => namesFile2(text2, path)));
+    const named = [...changed].find((path) => (candidate.texts ?? []).some((text3) => namesFile2(text3, path)));
     if (named !== void 0) {
       refuse(`its claim, evidence or verification names ${named}, which changed between the two heads`);
       continue;
@@ -6096,10 +6230,10 @@ function latestRun(db) {
 
 // plugins/review-voice/src/diff/held.ts
 var QUOTE_LIMIT = 200;
-function parseThreadFile(text2, file, run) {
+function parseThreadFile(text3, file, run) {
   let parsed;
   try {
-    const raw = JSON.parse(text2);
+    const raw = JSON.parse(text3);
     if (typeof raw !== "object" || raw === null || Array.isArray(raw) || !Array.isArray(raw["comments"])) {
       throw new Error("expected the thread.json that `RV thread` wrote");
     }
@@ -6133,8 +6267,8 @@ function postedReviewIds(db, runId) {
   }
   return reviewIds;
 }
-function quote(text2) {
-  const flat = text2.replace(/\s+/g, " ").trim();
+function quote(text3) {
+  const flat = text3.replace(/\s+/g, " ").trim();
   return `"${flat.length > QUOTE_LIMIT ? `${flat.slice(0, QUOTE_LIMIT)}...` : flat}"`;
 }
 function postedComment2(finding, thread, run, reviewIds) {
@@ -7241,14 +7375,14 @@ var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(c
 var FOLD_FLOW = "flow";
 var FOLD_BLOCK = "block";
 var FOLD_QUOTED = "quoted";
-function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
+function foldFlowLines(text3, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
   if (!lineWidth || lineWidth < 0)
-    return text2;
+    return text3;
   if (lineWidth < minContentWidth)
     minContentWidth = 0;
   const endStep = Math.max(1 + minContentWidth, 1 + lineWidth - indent.length);
-  if (text2.length <= endStep)
-    return text2;
+  if (text3.length <= endStep)
+    return text3;
   const folds = [];
   const escapedFolds = {};
   let end = lineWidth - indent.length;
@@ -7265,14 +7399,14 @@ function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth 
   let escStart = -1;
   let escEnd = -1;
   if (mode === FOLD_BLOCK) {
-    i = consumeMoreIndentedLines(text2, i, indent.length);
+    i = consumeMoreIndentedLines(text3, i, indent.length);
     if (i !== -1)
       end = i + endStep;
   }
-  for (let ch; ch = text2[i += 1]; ) {
+  for (let ch; ch = text3[i += 1]; ) {
     if (mode === FOLD_QUOTED && ch === "\\") {
       escStart = i;
-      switch (text2[i + 1]) {
+      switch (text3[i + 1]) {
         case "x":
           i += 3;
           break;
@@ -7289,12 +7423,12 @@ function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth 
     }
     if (ch === "\n") {
       if (mode === FOLD_BLOCK)
-        i = consumeMoreIndentedLines(text2, i, indent.length);
+        i = consumeMoreIndentedLines(text3, i, indent.length);
       end = i + indent.length + endStep;
       split = void 0;
     } else {
       if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
-        const next = text2[i + 1];
+        const next = text3[i + 1];
         if (next && next !== " " && next !== "\n" && next !== "	")
           split = i;
       }
@@ -7306,12 +7440,12 @@ function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth 
         } else if (mode === FOLD_QUOTED) {
           while (prev === " " || prev === "	") {
             prev = ch;
-            ch = text2[i += 1];
+            ch = text3[i += 1];
             overflow = true;
           }
           const j = i > escEnd + 1 ? i - 2 : escStart - 1;
           if (escapedFolds[j])
-            return text2;
+            return text3;
           folds.push(j);
           escapedFolds[j] = true;
           end = j + endStep;
@@ -7326,39 +7460,39 @@ function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth 
   if (overflow && onOverflow)
     onOverflow();
   if (folds.length === 0)
-    return text2;
+    return text3;
   if (onFold)
     onFold();
-  let res = text2.slice(0, folds[0]);
+  let res = text3.slice(0, folds[0]);
   for (let i2 = 0; i2 < folds.length; ++i2) {
     const fold = folds[i2];
-    const end2 = folds[i2 + 1] || text2.length;
+    const end2 = folds[i2 + 1] || text3.length;
     if (fold === 0)
       res = `
-${indent}${text2.slice(0, end2)}`;
+${indent}${text3.slice(0, end2)}`;
     else {
       if (mode === FOLD_QUOTED && escapedFolds[fold])
-        res += `${text2[fold]}\\`;
+        res += `${text3[fold]}\\`;
       res += `
-${indent}${text2.slice(fold + 1, end2)}`;
+${indent}${text3.slice(fold + 1, end2)}`;
     }
   }
   return res;
 }
-function consumeMoreIndentedLines(text2, i, indent) {
+function consumeMoreIndentedLines(text3, i, indent) {
   let end = i;
   let start = i + 1;
-  let ch = text2[start];
+  let ch = text3[start];
   while (ch === " " || ch === "	") {
     if (i < start + indent) {
-      ch = text2[++i];
+      ch = text3[++i];
     } else {
       do {
-        ch = text2[++i];
+        ch = text3[++i];
       } while (ch && ch !== "\n");
       end = i;
       start = i + 1;
-      ch = text2[start];
+      ch = text3[start];
     }
   }
   return end;
@@ -12715,10 +12849,10 @@ function nameGlob(glob) {
   const source = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
   return new RegExp(`^${source}$`, "i");
 }
-function matchingGate(name, text2, gates) {
+function matchingGate(name, text3, gates) {
   for (const gate of gates) {
     if (!nameGlob(gate.name).test(name)) continue;
-    if (gate.summary !== void 0 && !text2.toLowerCase().includes(gate.summary.toLowerCase())) continue;
+    if (gate.summary !== void 0 && !text3.toLowerCase().includes(gate.summary.toLowerCase())) continue;
     return gate;
   }
   return null;
@@ -12735,7 +12869,7 @@ var EXIT_CODE_NOTE = /^Process completed with exit code \d+\.?$/;
 var neutral = (annotation) => fromRunner(annotation) && EXIT_CODE_NOTE.test((annotation.message ?? "").trim());
 function infrastructureSignature(run, signatures) {
   const find = (...texts) => {
-    const haystack = texts.filter((text2) => typeof text2 === "string").join("\n").toLowerCase();
+    const haystack = texts.filter((text3) => typeof text3 === "string").join("\n").toLowerCase();
     if (haystack.length === 0) return null;
     return signatures.find((signature) => signature.length > 0 && haystack.includes(signature.toLowerCase())) ?? null;
   };
@@ -12779,16 +12913,16 @@ function summariseCi(checkRuns, statuses, gates = [], reading = {}, rules = {}) 
         detail = `failure, matched "${matched}"`;
       }
     }
-    const text2 = `${run.output?.title ?? ""}
+    const text3 = `${run.output?.title ?? ""}
 ${run.output?.summary ?? ""}`;
-    entries.push({ entry: { name: run.name ?? "", source: "check-run", result, detail }, text: text2 });
+    entries.push({ entry: { name: run.name ?? "", source: "check-run", result, detail }, text: text3 });
   }
   for (const status of statuses) {
     const { result, detail } = classifyStatus(status);
     entries.push({ entry: { name: status.context ?? "", source: "status", result, detail }, text: status.description ?? "" });
   }
   const state = { state: "green", passed: 0, failed: [], rerun: [], pending: [], ignored: [], gates: [] };
-  for (const { entry, text: text2 } of entries) {
+  for (const { entry, text: text3 } of entries) {
     if (entry.result === "passed") {
       state.passed += 1;
       continue;
@@ -12797,7 +12931,7 @@ ${run.output?.summary ?? ""}`;
       state.ignored.push(entry);
       continue;
     }
-    const gate = matchingGate(entry.name, text2, gates);
+    const gate = matchingGate(entry.name, text3, gates);
     if (gate !== null) {
       state.gates.push({ ...entry, gate: gate.name });
     } else if (entry.result === "failed") {
@@ -13019,11 +13153,11 @@ function readCiRules(block, result) {
     result.ciRules.rerunSignatures = [...builtin === false ? [] : BUILTIN_RERUN_SIGNATURES, ...added];
   }
 }
-function contentHash(text2) {
-  return createHash4("sha256").update(text2).digest("hex").slice(0, 16);
+function contentHash(text3) {
+  return createHash4("sha256").update(text3).digest("hex").slice(0, 16);
 }
-function layerFromPolicyFile(text2, source, fallbackKey) {
-  const doc = asRecord(parse(text2));
+function layerFromPolicyFile(text3, source, fallbackKey) {
+  const doc = asRecord(parse(text3));
   if (doc === null) return null;
   const scope = asRecord(doc["scope"]);
   const type = typeof scope?.["type"] === "string" ? scope["type"] : "repository";
@@ -13146,10 +13280,10 @@ function loadConfig(repositoryRoot2) {
   const policyPath = join5(repositoryRoot2, ".review-voice", "policy.yaml");
   if (existsSync(policyPath)) {
     try {
-      const text2 = readFileSync4(policyPath, "utf8");
-      const layer = layerFromPolicyFile(text2, ".review-voice/policy.yaml", repositoryRoot2);
+      const text3 = readFileSync4(policyPath, "utf8");
+      const layer = layerFromPolicyFile(text3, ".review-voice/policy.yaml", repositoryRoot2);
       if (layer !== null) {
-        result.unapproved.push({ source: ".review-voice/policy.yaml", contentHash: contentHash(text2) });
+        result.unapproved.push({ source: ".review-voice/policy.yaml", contentHash: contentHash(text3) });
       }
     } catch (error) {
       result.warnings.push(`.review-voice/policy.yaml could not be parsed: ${String(error)}`);
@@ -13338,14 +13472,14 @@ function decisiveEvidence(raw) {
     return typeof e["path"] === "string" && e["path"].length > 0 && Number.isInteger(e["line"]) && e["line"] > 0 && typeof e["why"] === "string" && e["why"].trim().length > 0;
   }).slice(0, MAX_DECISIVE_EVIDENCE).map((entry) => ({ path: entry.path, line: entry.line, why: entry.why }));
 }
-function jsonCandidates(text2) {
+function jsonCandidates(text3) {
   const found = [];
   let depth = 0;
   let start = -1;
   let inString = false;
   let escaped = false;
-  for (let i = 0; i < text2.length; i += 1) {
-    const ch = text2[i];
+  for (let i = 0; i < text3.length; i += 1) {
+    const ch = text3[i];
     if (inString) {
       if (escaped) escaped = false;
       else if (ch === "\\") escaped = true;
@@ -13359,7 +13493,7 @@ function jsonCandidates(text2) {
     } else if (ch === "}") {
       depth -= 1;
       if (depth === 0 && start !== -1) {
-        found.push(text2.slice(start, i + 1));
+        found.push(text3.slice(start, i + 1));
         start = -1;
       } else if (depth < 0) {
         depth = 0;
@@ -14087,7 +14221,7 @@ function truncationMarker(bytes, included) {
 [Truncated by Review Voice: ${included} of ${bytes} bytes shown. The rest of this document was not read.]
 `;
 }
-function sections(text2) {
+function sections(text3) {
   const out = [];
   let heading = "";
   let buffer = [];
@@ -14096,7 +14230,7 @@ function sections(text2) {
       out.push({ heading, body: buffer.join("\n") });
     }
   };
-  for (const line2 of text2.split(/\r?\n/)) {
+  for (const line2 of text3.split(/\r?\n/)) {
     if (/^#{1,3} /.test(line2)) {
       flush();
       heading = line2;
@@ -14121,8 +14255,8 @@ function changeVocabulary(changedPaths) {
   }
   return words;
 }
-function relevantSections(text2, changedPaths, budget) {
-  const parts = sections(text2);
+function relevantSections(text3, changedPaths, budget) {
+  const parts = sections(text3);
   if (parts.length < 2 || changedPaths.length === 0) return null;
   const vocabulary = changeVocabulary(changedPaths);
   if (vocabulary.size === 0) return null;
@@ -14179,17 +14313,17 @@ function readBounded(absolute, changedPaths = []) {
   const buffer = Buffer.from(raw, "utf8");
   let end = Math.min(budget, buffer.length);
   const decoder = new TextDecoder("utf8", { fatal: true });
-  let text2 = "";
+  let text3 = "";
   for (; end > 0; end -= 1) {
     try {
-      text2 = decoder.decode(buffer.subarray(0, end));
+      text3 = decoder.decode(buffer.subarray(0, end));
       break;
     } catch {
     }
   }
-  const lastBreak = text2.lastIndexOf("\n");
-  if (lastBreak > 0) text2 = text2.slice(0, lastBreak);
-  const content = `${text2}${truncationMarker(bytes, Buffer.byteLength(text2, "utf8"))}`;
+  const lastBreak = text3.lastIndexOf("\n");
+  if (lastBreak > 0) text3 = text3.slice(0, lastBreak);
+  const content = `${text3}${truncationMarker(bytes, Buffer.byteLength(text3, "utf8"))}`;
   return {
     content,
     bytes,
@@ -14792,8 +14926,8 @@ function eventWeight(parts) {
 }
 
 // plugins/review-voice/src/retrieval/retrieve.ts
-function toMatchQuery(text2) {
-  const terms = text2.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((term) => term.length > 2 && !STOPWORDS.has(term));
+function toMatchQuery(text3) {
+  const terms = text3.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((term) => term.length > 2 && !STOPWORDS.has(term));
   const unique = [...new Set(terms)].slice(0, 24);
   return unique.map((term) => `"${term}"`).join(" OR ");
 }
@@ -15541,8 +15675,8 @@ function assertPayload(payload) {
 
 // plugins/review-voice/src/publish/post.ts
 var SHA2 = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-function normalise2(text2) {
-  return text2.replace(/\r\n/g, "\n").trim();
+function normalise2(text3) {
+  return text3.replace(/\r\n/g, "\n").trim();
 }
 function subjectId(repository, pullNumber) {
   return `${repository.toLowerCase()}#${pullNumber}`;
@@ -16027,9 +16161,10 @@ var COMMAND_HELP = {
       "  --owner <login>        Owner for --thread; default from config",
       "  --held-from <run-id>   Drop or flag repeats of that run's held findings (needs --head)",
       "  --head <sha>           Head the candidates were produced against (with --held-from)",
+      "  --intent <path>        intent.json from check-intent; every intent_ref must name a statement in it",
       "Reads: candidates JSON on stdin.",
       "Writes: JSON on stdout.",
-      "Exit codes: 0 valid, 2 invalid candidates or bad invocation."
+      "Exit codes: 0 valid, 1 anchor or intent_ref failures, 2 invalid candidates or bad invocation."
     )
   },
   "check-verification": {
@@ -16058,6 +16193,21 @@ var COMMAND_HELP = {
       "Reads: the simplification candidate or verifier JSON on stdin.",
       "Writes: checked candidate JSON, or {bodyFindings:[...]} for record.",
       "Exit codes: 0 valid (a rejected candidate writes no body finding), 2 malformed or bad invocation."
+    )
+  },
+  "check-intent": {
+    summary: "Validate the intent-extractor output against the description",
+    body: lines(
+      "review-voice check-intent --thread <path>",
+      "  Validate the stated-intent statements extracted from the pull request",
+      "  description. Every quote, and every deliberate reason, must be a whole",
+      "  sentence or list item of the description in thread.json, of at least four words.",
+      "",
+      "Flags:",
+      "  --thread <path>        thread.json from `thread`, holding the description (required)",
+      "Reads: the intent-extractor JSON on stdin.",
+      "Writes: the normalised intent document on stdout.",
+      "Exit codes: 0 valid, 2 malformed, no description, or bad invocation."
     )
   },
   context: {
@@ -16551,6 +16701,7 @@ var STDIN_INPUT = {
   "check-candidates": "candidates JSON",
   "check-verification": "the evidence-verifier output",
   "check-simplification": "the simplification candidate or verifier output",
+  "check-intent": "the intent-extractor output",
   score: "candidates JSON",
   record: "the validated review",
   "validate-output": "the review text",
@@ -17952,15 +18103,15 @@ function policyCommand(argv) {
   }
 }
 function retrieveCommand(argv) {
-  const text2 = flag(argv, "--text");
-  if (text2 === null) {
+  const text3 = flag(argv, "--text");
+  if (text3 === null) {
     console.error('retrieve needs --text "<claim and failure mode>".');
     return 2;
   }
   const db = openDatabase();
   try {
     const precedents = retrievePrecedents(db, {
-      text: text2,
+      text: text3,
       repository: flag(argv, "--repository") ?? void 0,
       filePath: flag(argv, "--path") ?? void 0,
       language: flag(argv, "--language") ?? void 0,
@@ -18508,13 +18659,13 @@ function carryForRun(db, runId, head, repository, threadFile = null) {
   }
   let hold;
   if (threadFile !== null) {
-    let text2;
+    let text3;
     try {
-      text2 = readFileSync6(threadFile, "utf8");
+      text3 = readFileSync6(threadFile, "utf8");
     } catch (error) {
       throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const thread = parseThreadFile(text2, threadFile, detail);
+    const thread = parseThreadFile(text3, threadFile, detail);
     hold = heldBackFindings(detail.findings, thread, detail, postedReviewIds(db, runId));
   }
   return carryFindings(detail.findings, detail.headRef, head, root, hold);
@@ -19197,6 +19348,39 @@ function checkVerificationCommand() {
   console.log(JSON.stringify({ valid: true, verifications: list.length }, null, 2));
   return 0;
 }
+function checkIntentCommand(argv) {
+  const threadFile = flag(argv, "--thread");
+  if (threadFile === null) {
+    console.error("--thread needs the thread.json the intent-extractor read.");
+    return 2;
+  }
+  let description;
+  try {
+    description = descriptionOf(JSON.parse(readFileSync6(threadFile, "utf8")));
+  } catch (error) {
+    console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  if (description === null || description.trim() === "") {
+    console.error(`No pull request description to validate intent against in ${threadFile}.`);
+    return 2;
+  }
+  let document;
+  try {
+    document = JSON.parse(readStdin());
+  } catch {
+    console.error('Expected {"statements": [...]} on stdin.');
+    return 2;
+  }
+  const intent = parseIntent(document, description);
+  if (intent.problem !== null) {
+    console.error(`Malformed intent - ${intent.problem}.`);
+    console.error("Re-run the intent-extractor with the schema restated. Do not hand-translate its output.");
+    return 2;
+  }
+  console.log(JSON.stringify(intent.value, null, 2));
+  return 0;
+}
 function checkSimplificationCommand(argv) {
   const diffFile = flag(argv, "--diff-file");
   if (diffFile === null) {
@@ -19331,7 +19515,7 @@ function namesHeldPath(candidate, entry) {
   const base = entry.path.slice(entry.path.lastIndexOf("/") + 1);
   const names = base.includes(".") && base.length >= 6 ? [entry.path, base] : [entry.path];
   return [candidate.claim, candidate.failureMode, ...candidate.evidence].some(
-    (text2) => typeof text2 === "string" && names.some((name) => text2.includes(name))
+    (text3) => typeof text3 === "string" && names.some((name) => text3.includes(name))
   );
 }
 function matchHeld(candidate, held) {
@@ -19372,6 +19556,32 @@ function checkCandidatesCommand(argv) {
   try {
     const candidates = raw.map((candidate, index) => normaliseCandidate(candidate, index));
     assertUniqueCandidateIds(candidates);
+    let intentFailures = [];
+    if (argv.includes("--intent")) {
+      const intentFile = flag(argv, "--intent");
+      if (intentFile === null) {
+        console.error("--intent needs the intent.json check-intent wrote.");
+        return 2;
+      }
+      let ids;
+      try {
+        const statements = JSON.parse(readFileSync6(intentFile, "utf8")).statements;
+        if (!Array.isArray(statements)) throw new Error("statements is not a list");
+        ids = new Set(statements.map((statement) => statement?.id).filter((id) => typeof id === "string"));
+      } catch (error) {
+        console.error(`Cannot read ${intentFile}: ${error instanceof Error ? error.message : String(error)}`);
+        return 2;
+      }
+      intentFailures = candidates.flatMap(
+        ({ candidateId, intentRef }) => intentRef === void 0 || ids.has(intentRef) ? [] : [{ candidateId, intentRef, reason: `intent_ref ${intentRef} names no statement in ${intentFile}; cite an existing one or drop intent_ref` }]
+      );
+    }
+    const intentExtra = intentFailures.length > 0 ? { intentFailures } : {};
+    if (intentFailures.length > 0 && !argv.includes("--diff-file")) {
+      console.log(JSON.stringify({ valid: false, intentFailures }, null, 2));
+      console.error(`${intentFailures.length} candidate intent_ref failure${intentFailures.length === 1 ? "" : "s"}.`);
+      return 1;
+    }
     if (!argv.includes("--diff-file")) {
       console.log(JSON.stringify({ valid: true, candidates: candidates.length }, null, 2));
       return 0;
@@ -19405,9 +19615,14 @@ function checkCandidatesCommand(argv) {
       nearest: anchor.nearest,
       ...anchor.causedBy === void 0 ? {} : { causedBy: anchor.causedBy }
     }));
-    if (anchorFailures.length > 0) {
-      console.log(JSON.stringify({ valid: false, anchorFailures }, null, 2));
-      console.error(`${anchorFailures.length} candidate anchor failure${anchorFailures.length === 1 ? "" : "s"}.`);
+    if (anchorFailures.length > 0 || intentFailures.length > 0) {
+      console.log(JSON.stringify({ valid: false, ...anchorFailures.length > 0 ? { anchorFailures } : {}, ...intentExtra }, null, 2));
+      if (anchorFailures.length > 0) {
+        console.error(`${anchorFailures.length} candidate anchor failure${anchorFailures.length === 1 ? "" : "s"}.`);
+      }
+      if (intentFailures.length > 0) {
+        console.error(`${intentFailures.length} candidate intent_ref failure${intentFailures.length === 1 ? "" : "s"}.`);
+      }
       return 1;
     }
     const heldFrom = flag(argv, "--held-from");
@@ -19681,6 +19896,8 @@ ${topLevelHelp()}`);
       return checkVerificationCommand();
     case "check-simplification":
       return checkSimplificationCommand(argv.slice(1));
+    case "check-intent":
+      return checkIntentCommand(argv.slice(1));
     case "conventions":
       return conventionsCommand(argv.slice(1));
     case "evidence":

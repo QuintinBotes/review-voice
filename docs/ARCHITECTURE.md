@@ -15,6 +15,7 @@ agents. A command file orchestrates them.**
 | Context resolution | CLI | config and policy layering is pure logic |
 | Static evidence collection | CLI | runs configured tools, emits JSON |
 | Convention discovery | CLI | which files exist is a fact |
+| Stated-intent extraction | `intent-extractor`, quotes checked by CLI | judgment, held to verbatim quotes |
 | Candidate generation | `diff-analyst` | genuine judgment |
 | Evidence verification | `evidence-verifier` | genuine judgment |
 | Verifier tie-break | `tie-breaker` | genuine judgment, only on a dispute |

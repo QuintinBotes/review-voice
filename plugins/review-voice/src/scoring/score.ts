@@ -31,6 +31,9 @@ export interface RawCandidate {
   /** Set by `reconcile`; see `Candidate.impactDisputed`. */
   impact_disputed?: unknown;
   impactDisputed?: unknown;
+  /** The stated-intent statement the candidate rests on; see `Candidate.intentRef`. */
+  intent_ref?: unknown;
+  intentRef?: unknown;
   /** Set by `check-candidates --thread`; see `Candidate.ownComment`. */
   possibleRepeatOf?: unknown;
 }
@@ -78,6 +81,8 @@ export interface Candidate {
    * above the one the second pass left; see docs/adr/0014.
    */
   impactDisputed?: true | undefined;
+  /** The `intent.json` statement (`int_NNN`) the finding rests on, for the verifier to re-read. */
+  intentRef?: string | undefined;
   /**
    * The owner's own comment `check-candidates --thread` linked this candidate
    * to. Only that kind is kept: it is the one a follow-up may be posted for.
@@ -922,6 +927,10 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
   if (impactDisputed !== undefined && typeof impactDisputed !== 'boolean') {
     throw new MalformedCandidate(`${candidateId}: impact_disputed must be true or false when supplied`);
   }
+  const intentRef = raw.intent_ref !== undefined ? raw.intent_ref : raw.intentRef;
+  if (intentRef !== undefined && (typeof intentRef !== 'string' || !/^int_[0-9]{3,}$/.test(intentRef))) {
+    throw new MalformedCandidate(`${candidateId}: intent_ref must match int_NNN when supplied`);
+  }
 
   return {
     candidateId,
@@ -941,6 +950,7 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     // Spread only when declared, so an ordinary candidate keeps its shape.
     ...(raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {}),
     ...(impactDisputed === true ? { impactDisputed: true as const } : {}),
+    ...(intentRef === undefined ? {} : { intentRef }),
     ...(ownComment === null ? {} : { ownComment }),
   };
 }

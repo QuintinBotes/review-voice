@@ -35,6 +35,7 @@ import {
   simplificationDiffProblem,
   type VerifiedSimplification,
 } from './simplification.ts';
+import { descriptionOf, parseIntent } from './intent.ts';
 import { acquirePullRequestDiff, applyReviewScope, type SuspectedWrongBase } from './diff/pull-request.ts';
 import { isReviewable } from './diff/classify.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
@@ -154,6 +155,7 @@ const STDIN_INPUT: Record<string, string> = {
   'check-candidates': 'candidates JSON',
   'check-verification': 'the evidence-verifier output',
   'check-simplification': 'the simplification candidate or verifier output',
+  'check-intent': 'the intent-extractor output',
   score: 'candidates JSON',
   record: 'the validated review',
   'validate-output': 'the review text',
@@ -3702,6 +3704,48 @@ function checkVerificationCommand(): number {
 }
 
 /**
+ * Validates the intent-extractor output against the description it read. A
+ * quote that is not in the description is refused, so the analyst and verifier
+ * never check the change against intent the author did not state.
+ */
+function checkIntentCommand(argv: string[]): number {
+  const threadFile = flag(argv, '--thread');
+  if (threadFile === null) {
+    console.error('--thread needs the thread.json the intent-extractor read.');
+    return 2;
+  }
+  let description: string | null;
+  try {
+    description = descriptionOf(JSON.parse(readFileSync(threadFile, 'utf8')) as unknown);
+  } catch (error) {
+    console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+
+  if (description === null || description.trim() === '') {
+    console.error(`No pull request description to validate intent against in ${threadFile}.`);
+    return 2;
+  }
+
+  let document: unknown;
+  try {
+    document = JSON.parse(readStdin()) as unknown;
+  } catch {
+    console.error('Expected {"statements": [...]} on stdin.');
+    return 2;
+  }
+
+  const intent = parseIntent(document, description);
+  if (intent.problem !== null) {
+    console.error(`Malformed intent - ${intent.problem}.`);
+    console.error('Re-run the intent-extractor with the schema restated. Do not hand-translate its output.');
+    return 2;
+  }
+  console.log(JSON.stringify(intent.value, null, 2));
+  return 0;
+}
+
+/**
  * Validates the two short-lived documents of the opt-in simplification pass.
  *
  * Without --candidate this checks the analyst's one optional candidate. With
@@ -3960,6 +4004,37 @@ function checkCandidatesCommand(argv: string[]): number {
     const candidates = raw.map((candidate, index) => normaliseCandidate(candidate as RawCandidate, index));
     assertUniqueCandidateIds(candidates);
 
+    // An intent_ref naming no statement would send the verifier to re-read
+    // intent nobody extracted; it fails like an anchor, so only it goes back.
+    let intentFailures: { candidateId: string; intentRef: string; reason: string }[] = [];
+    if (argv.includes('--intent')) {
+      const intentFile = flag(argv, '--intent');
+      if (intentFile === null) {
+        console.error('--intent needs the intent.json check-intent wrote.');
+        return 2;
+      }
+      let ids: Set<string>;
+      try {
+        const statements = (JSON.parse(readFileSync(intentFile, 'utf8')) as { statements?: unknown }).statements;
+        if (!Array.isArray(statements)) throw new Error('statements is not a list');
+        ids = new Set(statements.map((statement) => (statement as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string'));
+      } catch (error) {
+        console.error(`Cannot read ${intentFile}: ${error instanceof Error ? error.message : String(error)}`);
+        return 2;
+      }
+      intentFailures = candidates.flatMap(({ candidateId, intentRef }) =>
+        intentRef === undefined || ids.has(intentRef)
+          ? []
+          : [{ candidateId, intentRef, reason: `intent_ref ${intentRef} names no statement in ${intentFile}; cite an existing one or drop intent_ref` }],
+      );
+    }
+    const intentExtra = intentFailures.length > 0 ? { intentFailures } : {};
+    if (intentFailures.length > 0 && !argv.includes('--diff-file')) {
+      console.log(JSON.stringify({ valid: false, intentFailures }, null, 2));
+      console.error(`${intentFailures.length} candidate intent_ref failure${intentFailures.length === 1 ? '' : 's'}.`);
+      return 1;
+    }
+
     // Keep the no-flag answer byte-for-byte compatible for callers that use
     // this command only as the cheap schema boundary before a diff exists.
     if (!argv.includes('--diff-file')) {
@@ -4006,9 +4081,14 @@ function checkCandidatesCommand(argv: string[]): number {
         ...(anchor.causedBy === undefined ? {} : { causedBy: anchor.causedBy }),
       }));
 
-    if (anchorFailures.length > 0) {
-      console.log(JSON.stringify({ valid: false, anchorFailures }, null, 2));
-      console.error(`${anchorFailures.length} candidate anchor failure${anchorFailures.length === 1 ? '' : 's'}.`);
+    if (anchorFailures.length > 0 || intentFailures.length > 0) {
+      console.log(JSON.stringify({ valid: false, ...(anchorFailures.length > 0 ? { anchorFailures } : {}), ...intentExtra }, null, 2));
+      if (anchorFailures.length > 0) {
+        console.error(`${anchorFailures.length} candidate anchor failure${anchorFailures.length === 1 ? '' : 's'}.`);
+      }
+      if (intentFailures.length > 0) {
+        console.error(`${intentFailures.length} candidate intent_ref failure${intentFailures.length === 1 ? '' : 's'}.`);
+      }
       return 1;
     }
 
@@ -4377,6 +4457,9 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'check-simplification':
       return checkSimplificationCommand(argv.slice(1));
+
+    case 'check-intent':
+      return checkIntentCommand(argv.slice(1));
 
     case 'conventions':
       return conventionsCommand(argv.slice(1));
