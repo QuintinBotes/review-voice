@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `score` lists verified candidates that the absence check contradicted in
   `absenceContradicted`, with what the search found, instead of dropping them
   without a local trace. (#139)
+- Intent capture: on a pull request with a description, a new
+  `intent-extractor` agent lists its goals, non-goals, deliberate choices,
+  claims and QA expectations as quoted statements, and `review-voice
+  check-intent` refuses any quote not in the description. The analyst checks
+  every claim and QA statement against the head, enumerates every surface a
+  `scope: "complete"` goal implies, and tags findings with `intent_ref`; the
+  verifier re-reads the referenced statement and rejects findings that
+  contradict a deliberate choice without showing its reason is wrong.
 - `review.structure.simplify` (default false), or `/review-voice:review
   --simplify`, enables one post-verification, body-only maintainability
   suggestion. It must enumerate each changed element it removes and an existing
