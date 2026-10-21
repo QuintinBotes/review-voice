@@ -86,9 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A tier above the analyst's request now ends its severity reason with the
   rule that allowed it: the verifier's traced impact and confidence, or a
   category whose tier ignores the request. (#135)
-- The absence check no longer treats a same-name file in another directory as
-  proof that a missing path exists: `README.md` at the root does not contradict
-  "`ci/README.md` does not exist". (#139)
+- The absence check looks a file up by path instead of searching file contents,
+  so a doc that cites `ci/README.md`, or a root `README.md`, no longer counts as
+  proof that a missing `ci/README.md` exists. (#139)
 - `context` now distinguishes no configuration file from a configuration that
   lacks `verification`, explaining that the second pass is off by default and
   how to enable it in the former case. (#129)

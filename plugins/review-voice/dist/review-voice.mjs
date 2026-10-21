@@ -4630,6 +4630,17 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
     throw error;
   }
 };
+var gitTrackedPaths = (cwd, ref) => {
+  const args = ref === null ? ["ls-files", "-z", "--full-name", "--", ":/"] : ["ls-tree", "-r", "-z", "--name-only", "--full-tree", ref];
+  const output = execFileSync7("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 1e4,
+    maxBuffer: 64 * 1024 * 1024
+  });
+  return output.split("\0").filter((path) => path.length > 0);
+};
 var RESOURCE_PATHSPECS = [
   ":(glob)**/*.resx",
   ":(glob)**/*.resw",
@@ -4664,7 +4675,7 @@ var FILE_NAME = /\.(?:tsx?|jsx?|mjs|cjs|cs|py|go|rb|java|kt|rs|swift|dart|json|y
 function generatedAccessor(symbol) {
   return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
 }
-function checkAbsenceClaim(text2, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources) {
+function checkAbsenceClaim(text2, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths) {
   const searchedRefLabel = ref ?? "working tree";
   if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text2))) return null;
   const scope = absenceScope(text2, repository);
@@ -4680,22 +4691,29 @@ function checkAbsenceClaim(text2, cwd, ref = null, search = gitGrep, repository 
       searchedRef: searchedRefLabel
     };
   }
-  const symbols = namedSymbols(text2);
+  const symbols = namedSymbols(text2).filter(
+    (symbol) => text2.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
+  );
   if (symbols.length === 0) return null;
   const searchedRef = ref ?? "working tree";
   const found = [];
   const checked = [];
+  let paths = null;
   for (const symbol of symbols.slice(0, 12)) {
     try {
       checked.push(symbol);
-      if (search(symbol, cwd, ref)) found.push(symbol);
+      if (symbol.includes("/") || FILE_NAME.test(symbol)) {
+        paths ??= trackedPaths(cwd, ref);
+        const path = symbol.replace(/^\.?\//, "").replace(/\/$/, "");
+        const exists = path.includes("/") ? paths.some((tracked) => tracked === path || tracked.startsWith(`${path}/`)) : paths.some((tracked) => tracked === path || tracked.endsWith(`/${path}`));
+        if (exists) found.push(symbol);
+      } else if (search(symbol, cwd, ref)) {
+        found.push(symbol);
+      }
     } catch {
       return { found: [], checked, inconclusive: true, searchedRef };
     }
   }
-  const missingPaths = checked.filter((symbol) => symbol.includes("/") && !found.includes(symbol));
-  const refuting = found.filter((symbol) => !missingPaths.some((path) => path.split("/").pop() === symbol));
-  found.splice(0, found.length, ...refuting);
   if (found.length === 0) {
     const accessor = checked.find(generatedAccessor);
     const sources = accessor === void 0 ? resources(cwd) : [];

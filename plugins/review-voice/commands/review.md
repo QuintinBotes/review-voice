@@ -667,8 +667,9 @@ posted and is not part of the validated output.
 `absenceContradicted` lists the candidates the verifier confirmed but the
 repository search contradicted: the claim says something is absent, and `found`
 names what the search matched. One of the two is wrong, so check it before
-step 6. A file with the same basename elsewhere does not contradict a missing
-path. Like `belowGate`, it is never posted.
+step 6. A file is looked up by path, never by content: a doc that cites a
+missing path, or a same-name file in another directory, does not contradict it.
+Like `belowGate`, it is never posted.
 
 Then order by severity: `blocking`, `important`, `minor`, `nit`, `question`.
 Within a tier, prefer the higher final score.
@@ -768,7 +769,12 @@ stray directory and another project's notes took the reviewed count from 11 to
   `unverified` from step 4 is not empty, print after that a line
   `Unverified (not posted)` and then one line per entry:
   `[severity] path:line - claim (could not check: <required_context_missing>)`.
-  The verifier could not check them; they are never posted either. Then
+  The verifier could not check them; they are never posted either. When
+  `absenceContradicted` from step 4 is not empty, print after that a line
+  `Absence contradicted (not posted)` and then one line per entry:
+  `[severity] path:line - claim (found: <found>)`. The verifier confirmed them
+  but the repository holds what the claim says is absent; they are never
+  posted either. Then
   record it. Write the scored candidates to a temporary file and pass it:
   `RV record --repository <owner/repo> --base <ref> --head <sha> --candidates <file>
   --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --stages <file>` with the validated output on
