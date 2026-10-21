@@ -87,6 +87,11 @@
             "minimum": 0,
             "maximum": 1
           },
+          "intent_ref": {
+            "type": "string",
+            "pattern": "^int_[0-9]{3,}$",
+            "description": "The intent.json statement the candidate rests on, for the verifier to re-read."
+          },
           "anchor": {
             "enum": [
               "stale-consumer"

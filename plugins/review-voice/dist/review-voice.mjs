@@ -1137,8 +1137,8 @@ function checkSeverityAgainstScores(output, scores) {
 // plugins/review-voice/src/contract/backing-check.ts
 var ABSOLUTES = ["every", "everyone", "everything", "everywhere", "always", "never", "all"];
 var WORD = /[a-z]+/g;
-function wordsOf(text2) {
-  const prose = text2.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ");
+function wordsOf(text3) {
+  const prose = text3.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ");
   return new Set(prose.toLowerCase().match(WORD) ?? []);
 }
 function backingText(entry) {
@@ -1736,21 +1736,21 @@ var HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/;
 var DECLARATION = /^[A-Za-z_$]/;
 var STATEMENT = /^(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|when)\b/;
 var MAX_SCOPE_LENGTH = 80;
-function count(text2, pattern) {
-  return text2.match(pattern)?.length ?? 0;
+function count(text3, pattern) {
+  return text3.match(pattern)?.length ?? 0;
 }
-function decisionPointsIn(text2) {
-  const trimmed = text2.trim();
+function decisionPointsIn(text3) {
+  const trimmed = text3.trim();
   if (trimmed.length === 0 || COMMENT_START.test(trimmed)) return 0;
   return count(trimmed, KEYWORDS) + count(trimmed, /&&/g) + count(trimmed, /\|\|/g) + count(trimmed, TERNARY);
 }
-function declarationIn(text2) {
-  return DECLARATION.test(text2) && !STATEMENT.test(text2) ? text2.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
+function declarationIn(text3) {
+  return DECLARATION.test(text3) && !STATEMENT.test(text3) ? text3.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
 }
 function headerPath2(raw) {
-  const text2 = raw.replace(/\t.*$/, "");
-  if (text2 === "/dev/null") return null;
-  const unquoted = unquoteGitPath(text2);
+  const text3 = raw.replace(/\t.*$/, "");
+  if (text3 === "/dev/null") return null;
+  const unquoted = unquoteGitPath(text3);
   return unquoted.startsWith("b/") ? unquoted.slice(2) : unquoted;
 }
 function countHunks(diff, wanted) {
@@ -1762,8 +1762,8 @@ function countHunks(diff, wanted) {
   let remainingOld = 0;
   let remainingNew = 0;
   let newLine = 0;
-  const record2 = (hunk, text2, removed) => {
-    const decisionPoints = decisionPointsIn(text2);
+  const record2 = (hunk, text3, removed) => {
+    const decisionPoints = decisionPointsIn(text3);
     if (decisionPoints === 0) return;
     if (!removed) hunk.decisionPoints += decisionPoints;
     hunk.branches.push({ scope, line: newLine, decisionPoints, removed });
@@ -1771,30 +1771,30 @@ function countHunks(diff, wanted) {
   for (const raw of diff.split("\n")) {
     const line2 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (current !== null && (remainingOld > 0 || remainingNew > 0)) {
-      const text2 = line2.slice(1);
+      const text3 = line2.slice(1);
       if (line2.startsWith("+")) {
-        if (declarationIn(text2) !== null) {
+        if (declarationIn(text3) !== null) {
           if (!replacing) scope = null;
           replacing = false;
         }
-        record2(current, text2, false);
-        current.added.push({ line: newLine, text: text2 });
+        record2(current, text3, false);
+        current.added.push({ line: newLine, text: text3 });
         remainingNew -= 1;
         newLine += 1;
         continue;
       }
       if (line2.startsWith("-")) {
-        const declaration = declarationIn(text2);
+        const declaration = declarationIn(text3);
         if (declaration !== null) {
           scope = declaration;
           replacing = true;
         }
-        record2(current, text2, true);
+        record2(current, text3, true);
         remainingOld -= 1;
         continue;
       }
       if (line2.startsWith(" ") || line2 === "") {
-        scope = declarationIn(text2) ?? scope;
+        scope = declarationIn(text3) ?? scope;
         replacing = false;
         remainingOld -= 1;
         remainingNew -= 1;
@@ -2163,13 +2163,13 @@ var LANGUAGES2 = {
   ".py": PYTHON,
   ".pyi": PYTHON
 };
-function splitLine(text2, language) {
-  if (language.blockComments && text2.trimStart().startsWith("*")) return { code: "", comment: text2 };
+function splitLine(text3, language) {
+  if (language.blockComments && text3.trimStart().startsWith("*")) return { code: "", comment: text3 };
   let code = "";
   let comment = "";
   let quote2 = null;
-  for (let index = 0; index < text2.length; index += 1) {
-    const char = text2[index];
+  for (let index = 0; index < text3.length; index += 1) {
+    const char = text3[index];
     if (quote2 !== null) {
       if (char === "\\") {
         code += "  ";
@@ -2183,12 +2183,12 @@ function splitLine(text2, language) {
     } else if (language.quotes.includes(char)) {
       quote2 = char;
       code += char;
-    } else if (text2.startsWith(language.lineComment, index)) {
-      comment += text2.slice(index);
+    } else if (text3.startsWith(language.lineComment, index)) {
+      comment += text3.slice(index);
       break;
-    } else if (language.blockComments && text2.startsWith("/*", index)) {
-      const end = text2.indexOf("*/", index + 2);
-      comment += `${text2.slice(index, end === -1 ? void 0 : end + 2)} `;
+    } else if (language.blockComments && text3.startsWith("/*", index)) {
+      const end = text3.indexOf("*/", index + 2);
+      comment += `${text3.slice(index, end === -1 ? void 0 : end + 2)} `;
       if (end === -1) break;
       index = end + 1;
     } else {
@@ -2197,8 +2197,8 @@ function splitLine(text2, language) {
   }
   return { code, comment };
 }
-function kindsIn(text2, language) {
-  const { code, comment } = splitLine(text2, language);
+function kindsIn(text3, language) {
+  const { code, comment } = splitLine(text3, language);
   const kinds = [];
   for (const rule of language.rules) {
     if (rule.in === "code" && language.skip?.test(code)) continue;
@@ -2214,8 +2214,8 @@ function findTypeEscapes(diff, paths) {
   for (const hunk of countHunks(diff, new Set(paths))) {
     const language = LANGUAGES2[extname(hunk.path).toLowerCase()];
     if (language === void 0) continue;
-    for (const { line: line2, text: text2 } of hunk.added) {
-      for (const kind of kindsIn(text2, language)) found.push({ path: hunk.path, line: line2, kind });
+    for (const { line: line2, text: text3 } of hunk.added) {
+      for (const kind of kindsIn(text3, language)) found.push({ path: hunk.path, line: line2, kind });
     }
   }
   const byPathLineKind = (a, b) => {
@@ -2379,6 +2379,84 @@ function collectStructure(cwd, change, production, limits = DEFAULT_STRUCTURE) {
   } catch {
   }
   return findStructureSignals(change.diff, paths, counts, limits);
+}
+
+// plugins/review-voice/src/intent.ts
+var INTENT_KINDS = ["goal", "non-goal", "deliberate", "claim", "qa"];
+var MAX_INTENT_STATEMENTS = 40;
+var MAX_TEXT = 300;
+var ID = /^int_[0-9]{3,}$/;
+var collapse = (text3) => text3.replace(/\s+/gu, " ").trim();
+function text2(value, name) {
+  if (typeof value !== "string" || value.trim().length === 0) return { value: null, problem: `${name} must be non-empty text` };
+  if (value.length > MAX_TEXT) return { value: null, problem: `${name} must be at most ${MAX_TEXT} characters` };
+  return { value: value.trim(), problem: null };
+}
+function descriptionOf(thread) {
+  const comments = thread?.comments;
+  if (!Array.isArray(comments)) return null;
+  const bodies = comments.filter((comment) => comment?.kind === "description").map((comment) => comment.body).filter((body) => typeof body === "string");
+  return bodies.length === 0 ? null : bodies.join("\n");
+}
+function parseIntent(value, description) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { value: null, problem: 'expected {"statements": [...]}' };
+  }
+  const document = value;
+  const extra = Object.keys(document).find((key) => key !== "statements");
+  if (extra !== void 0) return { value: null, problem: `has an unexpected ${JSON.stringify(extra)} field` };
+  const raw = document["statements"];
+  if (!Array.isArray(raw)) return { value: null, problem: "statements must be an array" };
+  if (raw.length > MAX_INTENT_STATEMENTS) {
+    return { value: null, problem: `statements must list at most ${MAX_INTENT_STATEMENTS} entries` };
+  }
+  const haystack = collapse(description);
+  const seen = /* @__PURE__ */ new Set();
+  const statements = [];
+  for (const [index, rawEntry] of raw.entries()) {
+    const at = `statements[${index}]`;
+    if (typeof rawEntry !== "object" || rawEntry === null || Array.isArray(rawEntry)) {
+      return { value: null, problem: `${at} must be an object` };
+    }
+    const entry = rawEntry;
+    const unexpected = Object.keys(entry).find((key) => !["id", "kind", "statement", "quote", "reason", "scope"].includes(key));
+    if (unexpected !== void 0) return { value: null, problem: `${at} has an unexpected ${JSON.stringify(unexpected)} field` };
+    const id = entry["id"];
+    if (typeof id !== "string" || !ID.test(id)) return { value: null, problem: `${at}.id must match int_NNN` };
+    if (seen.has(id)) return { value: null, problem: `${at}.id ${id} is used twice` };
+    seen.add(id);
+    const kind = entry["kind"];
+    if (!INTENT_KINDS.includes(kind)) {
+      return { value: null, problem: `${at}.kind must be one of ${INTENT_KINDS.join(", ")}` };
+    }
+    const statement = text2(entry["statement"], `${at}.statement`);
+    if (statement.problem !== null) return { value: null, problem: statement.problem };
+    const quote2 = text2(entry["quote"], `${at}.quote`);
+    if (quote2.problem !== null) return { value: null, problem: quote2.problem };
+    if (!haystack.includes(collapse(quote2.value))) {
+      return { value: null, problem: `${at}.quote does not occur in the pull request description` };
+    }
+    let reason2;
+    if (kind === "deliberate") {
+      const parsed = text2(entry["reason"], `${at}.reason`);
+      if (parsed.problem !== null) return { value: null, problem: `${parsed.problem} on a deliberate statement` };
+      reason2 = parsed.value;
+    } else if (entry["reason"] !== void 0) {
+      return { value: null, problem: `${at}.reason belongs only on a deliberate statement` };
+    }
+    if (entry["scope"] !== void 0 && (kind !== "goal" || entry["scope"] !== "complete")) {
+      return { value: null, problem: `${at}.scope may only be "complete", and only on a goal` };
+    }
+    statements.push({
+      id,
+      kind,
+      statement: statement.value,
+      quote: quote2.value,
+      ...reason2 === void 0 ? {} : { reason: reason2 },
+      ...entry["scope"] === "complete" ? { scope: "complete" } : {}
+    });
+  }
+  return { value: { statements }, problem: null };
 }
 
 // plugins/review-voice/src/diff/pull-request.ts
@@ -2915,12 +2993,12 @@ function sectionHunks(section) {
   const parts = section.split(/^(?=@@ )/m);
   const header = parts[0].startsWith("@@ ") ? "" : parts.shift();
   const hunks = [];
-  for (const text2 of parts) {
-    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text2);
+  for (const text3 of parts) {
+    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text3);
     if (numbers === null) return null;
     const start = Number(numbers[1]);
     const count3 = numbers[2] === void 0 ? 1 : Number(numbers[2]);
-    hunks.push({ text: text2, first: start, last: count3 === 0 ? start + 1 : start + count3 - 1 });
+    hunks.push({ text: text3, first: start, last: count3 === 0 ? start + 1 : start + count3 - 1 });
   }
   return { header, hunks };
 }
@@ -3411,10 +3489,10 @@ function isPlaceholder(value) {
 }
 function redact(input) {
   const counts = {};
-  let text2 = input;
+  let text3 = input;
   for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
     pattern.lastIndex = 0;
-    text2 = text2.replace(pattern, (match, ...groups) => {
+    text3 = text3.replace(pattern, (match, ...groups) => {
       const captured = group === void 0 || group === 0 ? match : groups[group - 1];
       if (captured === void 0 || captured.length === 0) return match;
       if (isPlaceholder(captured)) return match;
@@ -3424,10 +3502,10 @@ function redact(input) {
     });
   }
   return {
-    text: text2,
+    text: text3,
     counts,
     sourceHash: hash(input),
-    redactedHash: hash(text2),
+    redactedHash: hash(text3),
     version: REDACTION_VERSION
   };
 }
@@ -3782,9 +3860,9 @@ function blockingContext(entries) {
 }
 var REASON_CAP = 200;
 function withVerifierReason(base, reason2) {
-  const text2 = reason2?.replace(/\s+/g, " ").trim() ?? "";
-  if (text2.length === 0) return base;
-  const bounded = text2.length > REASON_CAP ? `${text2.slice(0, REASON_CAP - 1)}\u2026` : text2;
+  const text3 = reason2?.replace(/\s+/g, " ").trim() ?? "";
+  if (text3.length === 0) return base;
+  const bounded = text3.length > REASON_CAP ? `${text3.slice(0, REASON_CAP - 1)}\u2026` : text3;
   return `${base}; the verifier said: "${bounded}"`;
 }
 var TIER_ORDER = ["nit", "minor", "important", "blocking"];
@@ -3801,9 +3879,9 @@ var FIXED_BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
 ]);
 var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
 function isInterrogativeClaim(claim) {
-  const text2 = claim.trim();
-  if (text2.endsWith("?")) return true;
-  return text2.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
+  const text3 = claim.trim();
+  if (text3.endsWith("?")) return true;
+  return text3.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
 }
 function boundSeverityByEvidence(derived, candidate, verification2) {
   if (BOUNDARY_CATEGORIES.has(candidate.category) && verification2?.impactClass === "no-exposure") {
@@ -3991,7 +4069,7 @@ function possiblyRepeatsDescription(candidate, thread) {
 }
 function overlappingExcerpt(mine, body) {
   const sentences = body.split(/(?<=[.!?])\s+|\n+/u).map((sentence) => sentence.trim()).filter((sentence) => sentence.length > 0);
-  const ranked = sentences.map((text2, index) => ({ text: text2, index, shared: [...significantWords(text2)].filter((word) => mine.has(word)).length })).filter((sentence) => sentence.shared > 0).sort((a, b) => b.shared - a.shared || a.index - b.index);
+  const ranked = sentences.map((text3, index) => ({ text: text3, index, shared: [...significantWords(text3)].filter((word) => mine.has(word)).length })).filter((sentence) => sentence.shared > 0).sort((a, b) => b.shared - a.shared || a.index - b.index);
   const [best, ...rest] = ranked;
   if (best === void 0) return clip(body.trim());
   const chosen = [best];
@@ -4004,8 +4082,8 @@ function overlappingExcerpt(mine, body) {
   if (chosen.length === 1) return clip(best.text);
   return chosen.sort((a, b) => a.index - b.index).map((sentence) => sentence.text).join(" ");
 }
-function clip(text2) {
-  return text2.length <= DESCRIPTION_EXCERPT_CHARS ? text2 : `${text2.slice(0, DESCRIPTION_EXCERPT_CHARS - 1)}\u2026`;
+function clip(text3) {
+  return text3.length <= DESCRIPTION_EXCERPT_CHARS ? text3 : `${text3.slice(0, DESCRIPTION_EXCERPT_CHARS - 1)}\u2026`;
 }
 var MalformedCandidate = class extends Error {
 };
@@ -4051,6 +4129,10 @@ function normaliseCandidate(raw, index) {
   if (impactDisputed !== void 0 && typeof impactDisputed !== "boolean") {
     throw new MalformedCandidate(`${candidateId}: impact_disputed must be true or false when supplied`);
   }
+  const intentRef = raw.intent_ref !== void 0 ? raw.intent_ref : raw.intentRef;
+  if (intentRef !== void 0 && (typeof intentRef !== "string" || !/^int_[0-9]{3,}$/.test(intentRef))) {
+    throw new MalformedCandidate(`${candidateId}: intent_ref must match int_NNN when supplied`);
+  }
   return {
     candidateId,
     path: raw.path,
@@ -4069,6 +4151,7 @@ function normaliseCandidate(raw, index) {
     // Spread only when declared, so an ordinary candidate keeps its shape.
     ...raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {},
     ...impactDisputed === true ? { impactDisputed: true } : {},
+    ...intentRef === void 0 ? {} : { intentRef },
     ...ownComment === null ? {} : { ownComment }
   };
 }
@@ -4110,8 +4193,8 @@ function followUpOf(candidate, verification2, thread, owner) {
   return onThread ? { ...prior, remaining: partly.remaining, addressed: partly.addressed } : null;
 }
 var WORDS = /[^\p{L}\p{N}]+/u;
-function significantWords(text2) {
-  return new Set(text2.toLowerCase().split(WORDS).filter((word) => word.length > 3));
+function significantWords(text3) {
+  return new Set(text3.toLowerCase().split(WORDS).filter((word) => word.length > 3));
 }
 function overlap(mine, theirs) {
   if (mine.size === 0) return 0;
@@ -4185,10 +4268,10 @@ function novelty(candidate, kept, precedents) {
 var MAX_DIRECTION_LENGTH = 120;
 function isBareDirection(direction) {
   if (direction === null) return false;
-  const text2 = direction.trim();
-  if (text2.length === 0 || text2.length > MAX_DIRECTION_LENGTH) return false;
-  if (/[\r\n`]/.test(text2)) return false;
-  return !/[.!?]\s+\S/.test(text2);
+  const text3 = direction.trim();
+  if (text3.length === 0 || text3.length > MAX_DIRECTION_LENGTH) return false;
+  if (/[\r\n`]/.test(text3)) return false;
+  return !/[.!?]\s+\S/.test(text3);
 }
 function editorFix(fix) {
   if (fix.render === "fix") return { render: "fix", text: fix.suggested };
@@ -4530,9 +4613,9 @@ var ASSERTS_ABSENCE = [
 ];
 var DETERMINER = /^(?:the|this|that|these|those|our|your|their|its|his|her|my|a|an)\s+/i;
 function withoutDeterminer(complement) {
-  let text2 = complement.trim().replace(/[`'"]/g, "");
-  for (let i = 0; i < 3; i += 1) text2 = text2.replace(DETERMINER, "");
-  return text2.trim();
+  let text3 = complement.trim().replace(/[`'"]/g, "");
+  for (let i = 0; i < 3; i += 1) text3 = text3.replace(DETERMINER, "");
+  return text3.trim();
 }
 var GENERIC_REPOSITORY = /^(?:entire\s+|whole\s+)?(?:mono)?(?:repo|repository|code\s?base|project|tree)\b/i;
 var NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
@@ -4549,12 +4632,12 @@ function namesThisRepository(complement, repository) {
   );
 }
 var PROPERTY_NOT_PLACE = /\b(?:ex|im)ported\b|\bnot\s+(?:public|exposed|re-?exported)\b/i;
-function absenceScope(text2, repository = null) {
-  if (PROPERTY_NOT_PLACE.test(text2)) return "bounded";
-  if (/\b(?:anywhere|nowhere)\b/i.test(text2)) return "repository";
-  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text2);
+function absenceScope(text3, repository = null) {
+  if (PROPERTY_NOT_PLACE.test(text3)) return "bounded";
+  if (/\b(?:anywhere|nowhere)\b/i.test(text3)) return "repository";
+  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text3);
   if (assertion === null) return "repository";
-  const after = text2.slice(assertion.index + assertion[0].length);
+  const after = text3.slice(assertion.index + assertion[0].length);
   const locative = LOCATIVE.exec(after);
   if (locative === null) return "repository";
   const complement = (locative[1] ?? "").trim();
@@ -4566,16 +4649,16 @@ function absenceScope(text2, repository = null) {
   }
   return "bounded";
 }
-function namedSymbols(text2) {
+function namedSymbols(text3) {
   const found = /* @__PURE__ */ new Set();
-  for (const match of text2.matchAll(/`([^`]+)`/g)) {
+  for (const match of text3.matchAll(/`([^`]+)`/g)) {
     const token = (match[1] ?? "").trim();
     if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found.add(token);
   }
-  for (const match of text2.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
+  for (const match of text3.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
     if (match[1] !== void 0) found.add(match[1]);
   }
-  for (const match of text2.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
+  for (const match of text3.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
     if (match[1] !== void 0) found.add(match[1]);
   }
   for (const token of [...found]) {
@@ -4621,12 +4704,12 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
     for (const record2 of output.split("\n")) {
       const [rawPath = "", number = "", ...rest] = record2.split("\0");
       const line2 = Number(number);
-      const text2 = rest.join("\0");
+      const text3 = rest.join("\0");
       if (!Number.isSafeInteger(line2) || line2 < 1) continue;
       lines2.push({
         path: prefix !== "" && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
         line: line2,
-        text: text2
+        text: text3
       });
     }
     return lines2;
@@ -4680,10 +4763,10 @@ var FILE_NAME = /\.(?:tsx?|jsx?|mjs|cjs|cs|py|go|rb|java|kt|rs|swift|dart|json|y
 function generatedAccessor(symbol) {
   return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
 }
-function checkAbsenceClaim(text2, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths) {
+function checkAbsenceClaim(text3, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths) {
   const searchedRefLabel = ref ?? "working tree";
-  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text2))) return null;
-  const scope = absenceScope(text2, repository);
+  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text3))) return null;
+  const scope = absenceScope(text3, repository);
   if (scope === "bounded") return null;
   if (scope === "elsewhere") {
     return {
@@ -4696,8 +4779,8 @@ function checkAbsenceClaim(text2, cwd, ref = null, search = gitGrep, repository 
       searchedRef: searchedRefLabel
     };
   }
-  const symbols = namedSymbols(text2).filter(
-    (symbol) => text2.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
+  const symbols = namedSymbols(text3).filter(
+    (symbol) => text3.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
   );
   if (symbols.length === 0) return null;
   const searchedRef = ref ?? "working tree";
@@ -4816,7 +4899,7 @@ var STOP_TOKENS = /* @__PURE__ */ new Set([
   "helper",
   "helpers"
 ]);
-function declarationName(text2) {
+function declarationName(text3) {
   for (const pattern of [
     TS_FUNCTION,
     VARIABLE_FUNCTION,
@@ -4826,10 +4909,10 @@ function declarationName(text2) {
     MODIFIED_METHOD,
     KOTLIN_FUNCTION
   ]) {
-    const match = pattern.exec(text2);
+    const match = pattern.exec(text3);
     if (match?.[1] !== void 0) return match[1];
   }
-  const method = CLASS_METHOD.exec(text2);
+  const method = CLASS_METHOD.exec(text3);
   const name = method?.[1];
   if (name === void 0 || STATEMENT_KEYWORDS.has(name.toLowerCase())) return null;
   return name;
@@ -4931,8 +5014,8 @@ function symbolsFromHunks(diff, changedPath) {
     if (!inFile) continue;
     if (raw.startsWith("--- ")) continue;
     if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
-    const text2 = raw.slice(1);
-    for (const m of text2.matchAll(
+    const text3 = raw.slice(1);
+    for (const m of text3.matchAll(
       /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g
     )) {
       if (m[1] !== void 0) found.add(m[1]);
@@ -4987,9 +5070,9 @@ function isImportOnlyChange(diff, changedPath) {
     }
     if (!inFile || raw.startsWith("--- ")) continue;
     if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
-    const text2 = raw.slice(1).trim();
-    if (text2 === "") continue;
-    if (!IMPORT_LINE.some((pattern) => pattern.test(text2))) return false;
+    const text3 = raw.slice(1).trim();
+    if (text3 === "") continue;
+    if (!IMPORT_LINE.some((pattern) => pattern.test(text3))) return false;
     imports += 1;
   }
   return imports > 0;
@@ -5003,12 +5086,12 @@ function isRepositoryWideToolchainPath(path) {
   const normalised = normalisePath3(path);
   return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
 }
-function computeReach(text2, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
+function computeReach(text3, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
   const searchedRef = ref ?? "working tree";
   const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
   const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
   const source = ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
-  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text2)).slice(0, 12);
+  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text3)).slice(0, 12);
   const searched = [];
   const ignored = [];
   const hits = /* @__PURE__ */ new Set();
@@ -5713,8 +5796,8 @@ function followLine(previousHead, head, path, line2, cwd) {
   );
   return remapLine(oldSideHunks(patch), line2);
 }
-function rewriteAnchor(text2, path, oldLine, line2) {
-  return text2.replace(`\`${path}:${oldLine}\``, `\`${path}:${line2}\``);
+function rewriteAnchor(text3, path, oldLine, line2) {
+  return text3.replace(`\`${path}:${oldLine}\``, `\`${path}:${line2}\``);
 }
 function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map()) {
   for (const ref of [previousHead, head]) {
@@ -5757,8 +5840,8 @@ function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */
   const output = findings.length === 0 ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join("\n\n");
   return { carried, notCarried, heldBack, output };
 }
-function findingBody(text2) {
-  const joined = text2.replace(/\s+/g, " ").trim();
+function findingBody(text3) {
+  const joined = text3.replace(/\s+/g, " ").trim();
   const match = /^\[[a-z_]+\]\s+`[^`]+:\d+`\s*(.*)$/i.exec(joined);
   return match === null ? joined : match[1] ?? "";
 }
@@ -5788,10 +5871,10 @@ function changedFiles(previousHead, head, cwd) {
 function escapeRegExp2(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function namesFile2(text2, path) {
-  if (text2.includes(path)) return true;
+function namesFile2(text3, path) {
+  if (text3.includes(path)) return true;
   const name = path.split("/").pop() ?? path;
-  return new RegExp(`(^|[^\\w./-])${escapeRegExp2(name)}($|[^\\w-])`).test(text2);
+  return new RegExp(`(^|[^\\w./-])${escapeRegExp2(name)}($|[^\\w-])`).test(text3);
 }
 function carryCandidates(candidates, previousHead, head, hunks, cwd) {
   for (const ref of [previousHead, head]) {
@@ -5813,7 +5896,7 @@ function carryCandidates(candidates, previousHead, head, hunks, cwd) {
       refuse(`the file of its cause, ${cause.path}, changed between the two heads`);
       continue;
     }
-    const named = [...changed].find((path) => (candidate.texts ?? []).some((text2) => namesFile2(text2, path)));
+    const named = [...changed].find((path) => (candidate.texts ?? []).some((text3) => namesFile2(text3, path)));
     if (named !== void 0) {
       refuse(`its claim, evidence or verification names ${named}, which changed between the two heads`);
       continue;
@@ -6096,10 +6179,10 @@ function latestRun(db) {
 
 // plugins/review-voice/src/diff/held.ts
 var QUOTE_LIMIT = 200;
-function parseThreadFile(text2, file, run) {
+function parseThreadFile(text3, file, run) {
   let parsed;
   try {
-    const raw = JSON.parse(text2);
+    const raw = JSON.parse(text3);
     if (typeof raw !== "object" || raw === null || Array.isArray(raw) || !Array.isArray(raw["comments"])) {
       throw new Error("expected the thread.json that `RV thread` wrote");
     }
@@ -6133,8 +6216,8 @@ function postedReviewIds(db, runId) {
   }
   return reviewIds;
 }
-function quote(text2) {
-  const flat = text2.replace(/\s+/g, " ").trim();
+function quote(text3) {
+  const flat = text3.replace(/\s+/g, " ").trim();
   return `"${flat.length > QUOTE_LIMIT ? `${flat.slice(0, QUOTE_LIMIT)}...` : flat}"`;
 }
 function postedComment2(finding, thread, run, reviewIds) {
@@ -7241,14 +7324,14 @@ var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(c
 var FOLD_FLOW = "flow";
 var FOLD_BLOCK = "block";
 var FOLD_QUOTED = "quoted";
-function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
+function foldFlowLines(text3, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
   if (!lineWidth || lineWidth < 0)
-    return text2;
+    return text3;
   if (lineWidth < minContentWidth)
     minContentWidth = 0;
   const endStep = Math.max(1 + minContentWidth, 1 + lineWidth - indent.length);
-  if (text2.length <= endStep)
-    return text2;
+  if (text3.length <= endStep)
+    return text3;
   const folds = [];
   const escapedFolds = {};
   let end = lineWidth - indent.length;
@@ -7265,14 +7348,14 @@ function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth 
   let escStart = -1;
   let escEnd = -1;
   if (mode === FOLD_BLOCK) {
-    i = consumeMoreIndentedLines(text2, i, indent.length);
+    i = consumeMoreIndentedLines(text3, i, indent.length);
     if (i !== -1)
       end = i + endStep;
   }
-  for (let ch; ch = text2[i += 1]; ) {
+  for (let ch; ch = text3[i += 1]; ) {
     if (mode === FOLD_QUOTED && ch === "\\") {
       escStart = i;
-      switch (text2[i + 1]) {
+      switch (text3[i + 1]) {
         case "x":
           i += 3;
           break;
@@ -7289,12 +7372,12 @@ function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth 
     }
     if (ch === "\n") {
       if (mode === FOLD_BLOCK)
-        i = consumeMoreIndentedLines(text2, i, indent.length);
+        i = consumeMoreIndentedLines(text3, i, indent.length);
       end = i + indent.length + endStep;
       split = void 0;
     } else {
       if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
-        const next = text2[i + 1];
+        const next = text3[i + 1];
         if (next && next !== " " && next !== "\n" && next !== "	")
           split = i;
       }
@@ -7306,12 +7389,12 @@ function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth 
         } else if (mode === FOLD_QUOTED) {
           while (prev === " " || prev === "	") {
             prev = ch;
-            ch = text2[i += 1];
+            ch = text3[i += 1];
             overflow = true;
           }
           const j = i > escEnd + 1 ? i - 2 : escStart - 1;
           if (escapedFolds[j])
-            return text2;
+            return text3;
           folds.push(j);
           escapedFolds[j] = true;
           end = j + endStep;
@@ -7326,39 +7409,39 @@ function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth 
   if (overflow && onOverflow)
     onOverflow();
   if (folds.length === 0)
-    return text2;
+    return text3;
   if (onFold)
     onFold();
-  let res = text2.slice(0, folds[0]);
+  let res = text3.slice(0, folds[0]);
   for (let i2 = 0; i2 < folds.length; ++i2) {
     const fold = folds[i2];
-    const end2 = folds[i2 + 1] || text2.length;
+    const end2 = folds[i2 + 1] || text3.length;
     if (fold === 0)
       res = `
-${indent}${text2.slice(0, end2)}`;
+${indent}${text3.slice(0, end2)}`;
     else {
       if (mode === FOLD_QUOTED && escapedFolds[fold])
-        res += `${text2[fold]}\\`;
+        res += `${text3[fold]}\\`;
       res += `
-${indent}${text2.slice(fold + 1, end2)}`;
+${indent}${text3.slice(fold + 1, end2)}`;
     }
   }
   return res;
 }
-function consumeMoreIndentedLines(text2, i, indent) {
+function consumeMoreIndentedLines(text3, i, indent) {
   let end = i;
   let start = i + 1;
-  let ch = text2[start];
+  let ch = text3[start];
   while (ch === " " || ch === "	") {
     if (i < start + indent) {
-      ch = text2[++i];
+      ch = text3[++i];
     } else {
       do {
-        ch = text2[++i];
+        ch = text3[++i];
       } while (ch && ch !== "\n");
       end = i;
       start = i + 1;
-      ch = text2[start];
+      ch = text3[start];
     }
   }
   return end;
@@ -12715,10 +12798,10 @@ function nameGlob(glob) {
   const source = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
   return new RegExp(`^${source}$`, "i");
 }
-function matchingGate(name, text2, gates) {
+function matchingGate(name, text3, gates) {
   for (const gate of gates) {
     if (!nameGlob(gate.name).test(name)) continue;
-    if (gate.summary !== void 0 && !text2.toLowerCase().includes(gate.summary.toLowerCase())) continue;
+    if (gate.summary !== void 0 && !text3.toLowerCase().includes(gate.summary.toLowerCase())) continue;
     return gate;
   }
   return null;
@@ -12735,7 +12818,7 @@ var EXIT_CODE_NOTE = /^Process completed with exit code \d+\.?$/;
 var neutral = (annotation) => fromRunner(annotation) && EXIT_CODE_NOTE.test((annotation.message ?? "").trim());
 function infrastructureSignature(run, signatures) {
   const find = (...texts) => {
-    const haystack = texts.filter((text2) => typeof text2 === "string").join("\n").toLowerCase();
+    const haystack = texts.filter((text3) => typeof text3 === "string").join("\n").toLowerCase();
     if (haystack.length === 0) return null;
     return signatures.find((signature) => signature.length > 0 && haystack.includes(signature.toLowerCase())) ?? null;
   };
@@ -12779,16 +12862,16 @@ function summariseCi(checkRuns, statuses, gates = [], reading = {}, rules = {}) 
         detail = `failure, matched "${matched}"`;
       }
     }
-    const text2 = `${run.output?.title ?? ""}
+    const text3 = `${run.output?.title ?? ""}
 ${run.output?.summary ?? ""}`;
-    entries.push({ entry: { name: run.name ?? "", source: "check-run", result, detail }, text: text2 });
+    entries.push({ entry: { name: run.name ?? "", source: "check-run", result, detail }, text: text3 });
   }
   for (const status of statuses) {
     const { result, detail } = classifyStatus(status);
     entries.push({ entry: { name: status.context ?? "", source: "status", result, detail }, text: status.description ?? "" });
   }
   const state = { state: "green", passed: 0, failed: [], rerun: [], pending: [], ignored: [], gates: [] };
-  for (const { entry, text: text2 } of entries) {
+  for (const { entry, text: text3 } of entries) {
     if (entry.result === "passed") {
       state.passed += 1;
       continue;
@@ -12797,7 +12880,7 @@ ${run.output?.summary ?? ""}`;
       state.ignored.push(entry);
       continue;
     }
-    const gate = matchingGate(entry.name, text2, gates);
+    const gate = matchingGate(entry.name, text3, gates);
     if (gate !== null) {
       state.gates.push({ ...entry, gate: gate.name });
     } else if (entry.result === "failed") {
@@ -13019,11 +13102,11 @@ function readCiRules(block, result) {
     result.ciRules.rerunSignatures = [...builtin === false ? [] : BUILTIN_RERUN_SIGNATURES, ...added];
   }
 }
-function contentHash(text2) {
-  return createHash4("sha256").update(text2).digest("hex").slice(0, 16);
+function contentHash(text3) {
+  return createHash4("sha256").update(text3).digest("hex").slice(0, 16);
 }
-function layerFromPolicyFile(text2, source, fallbackKey) {
-  const doc = asRecord(parse(text2));
+function layerFromPolicyFile(text3, source, fallbackKey) {
+  const doc = asRecord(parse(text3));
   if (doc === null) return null;
   const scope = asRecord(doc["scope"]);
   const type = typeof scope?.["type"] === "string" ? scope["type"] : "repository";
@@ -13146,10 +13229,10 @@ function loadConfig(repositoryRoot2) {
   const policyPath = join5(repositoryRoot2, ".review-voice", "policy.yaml");
   if (existsSync(policyPath)) {
     try {
-      const text2 = readFileSync4(policyPath, "utf8");
-      const layer = layerFromPolicyFile(text2, ".review-voice/policy.yaml", repositoryRoot2);
+      const text3 = readFileSync4(policyPath, "utf8");
+      const layer = layerFromPolicyFile(text3, ".review-voice/policy.yaml", repositoryRoot2);
       if (layer !== null) {
-        result.unapproved.push({ source: ".review-voice/policy.yaml", contentHash: contentHash(text2) });
+        result.unapproved.push({ source: ".review-voice/policy.yaml", contentHash: contentHash(text3) });
       }
     } catch (error) {
       result.warnings.push(`.review-voice/policy.yaml could not be parsed: ${String(error)}`);
@@ -13338,14 +13421,14 @@ function decisiveEvidence(raw) {
     return typeof e["path"] === "string" && e["path"].length > 0 && Number.isInteger(e["line"]) && e["line"] > 0 && typeof e["why"] === "string" && e["why"].trim().length > 0;
   }).slice(0, MAX_DECISIVE_EVIDENCE).map((entry) => ({ path: entry.path, line: entry.line, why: entry.why }));
 }
-function jsonCandidates(text2) {
+function jsonCandidates(text3) {
   const found = [];
   let depth = 0;
   let start = -1;
   let inString = false;
   let escaped = false;
-  for (let i = 0; i < text2.length; i += 1) {
-    const ch = text2[i];
+  for (let i = 0; i < text3.length; i += 1) {
+    const ch = text3[i];
     if (inString) {
       if (escaped) escaped = false;
       else if (ch === "\\") escaped = true;
@@ -13359,7 +13442,7 @@ function jsonCandidates(text2) {
     } else if (ch === "}") {
       depth -= 1;
       if (depth === 0 && start !== -1) {
-        found.push(text2.slice(start, i + 1));
+        found.push(text3.slice(start, i + 1));
         start = -1;
       } else if (depth < 0) {
         depth = 0;
@@ -14087,7 +14170,7 @@ function truncationMarker(bytes, included) {
 [Truncated by Review Voice: ${included} of ${bytes} bytes shown. The rest of this document was not read.]
 `;
 }
-function sections(text2) {
+function sections(text3) {
   const out = [];
   let heading = "";
   let buffer = [];
@@ -14096,7 +14179,7 @@ function sections(text2) {
       out.push({ heading, body: buffer.join("\n") });
     }
   };
-  for (const line2 of text2.split(/\r?\n/)) {
+  for (const line2 of text3.split(/\r?\n/)) {
     if (/^#{1,3} /.test(line2)) {
       flush();
       heading = line2;
@@ -14121,8 +14204,8 @@ function changeVocabulary(changedPaths) {
   }
   return words;
 }
-function relevantSections(text2, changedPaths, budget) {
-  const parts = sections(text2);
+function relevantSections(text3, changedPaths, budget) {
+  const parts = sections(text3);
   if (parts.length < 2 || changedPaths.length === 0) return null;
   const vocabulary = changeVocabulary(changedPaths);
   if (vocabulary.size === 0) return null;
@@ -14179,17 +14262,17 @@ function readBounded(absolute, changedPaths = []) {
   const buffer = Buffer.from(raw, "utf8");
   let end = Math.min(budget, buffer.length);
   const decoder = new TextDecoder("utf8", { fatal: true });
-  let text2 = "";
+  let text3 = "";
   for (; end > 0; end -= 1) {
     try {
-      text2 = decoder.decode(buffer.subarray(0, end));
+      text3 = decoder.decode(buffer.subarray(0, end));
       break;
     } catch {
     }
   }
-  const lastBreak = text2.lastIndexOf("\n");
-  if (lastBreak > 0) text2 = text2.slice(0, lastBreak);
-  const content = `${text2}${truncationMarker(bytes, Buffer.byteLength(text2, "utf8"))}`;
+  const lastBreak = text3.lastIndexOf("\n");
+  if (lastBreak > 0) text3 = text3.slice(0, lastBreak);
+  const content = `${text3}${truncationMarker(bytes, Buffer.byteLength(text3, "utf8"))}`;
   return {
     content,
     bytes,
@@ -14792,8 +14875,8 @@ function eventWeight(parts) {
 }
 
 // plugins/review-voice/src/retrieval/retrieve.ts
-function toMatchQuery(text2) {
-  const terms = text2.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((term) => term.length > 2 && !STOPWORDS.has(term));
+function toMatchQuery(text3) {
+  const terms = text3.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((term) => term.length > 2 && !STOPWORDS.has(term));
   const unique = [...new Set(terms)].slice(0, 24);
   return unique.map((term) => `"${term}"`).join(" OR ");
 }
@@ -15541,8 +15624,8 @@ function assertPayload(payload) {
 
 // plugins/review-voice/src/publish/post.ts
 var SHA2 = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-function normalise2(text2) {
-  return text2.replace(/\r\n/g, "\n").trim();
+function normalise2(text3) {
+  return text3.replace(/\r\n/g, "\n").trim();
 }
 function subjectId(repository, pullNumber) {
   return `${repository.toLowerCase()}#${pullNumber}`;
@@ -16060,6 +16143,20 @@ var COMMAND_HELP = {
       "Exit codes: 0 valid (a rejected candidate writes no body finding), 2 malformed or bad invocation."
     )
   },
+  "check-intent": {
+    summary: "Validate the intent-extractor output against the description",
+    body: lines(
+      "review-voice check-intent --thread <path>",
+      "  Validate the stated-intent statements extracted from the pull request",
+      "  description. Every quote must occur in the description in thread.json.",
+      "",
+      "Flags:",
+      "  --thread <path>        thread.json from `thread`, holding the description (required)",
+      "Reads: the intent-extractor JSON on stdin.",
+      "Writes: the normalised intent document on stdout.",
+      "Exit codes: 0 valid, 2 malformed or bad invocation."
+    )
+  },
   context: {
     summary: "Resolve config and the active policy stack as JSON",
     body: lines(
@@ -16551,6 +16648,7 @@ var STDIN_INPUT = {
   "check-candidates": "candidates JSON",
   "check-verification": "the evidence-verifier output",
   "check-simplification": "the simplification candidate or verifier output",
+  "check-intent": "the intent-extractor output",
   score: "candidates JSON",
   record: "the validated review",
   "validate-output": "the review text",
@@ -17952,15 +18050,15 @@ function policyCommand(argv) {
   }
 }
 function retrieveCommand(argv) {
-  const text2 = flag(argv, "--text");
-  if (text2 === null) {
+  const text3 = flag(argv, "--text");
+  if (text3 === null) {
     console.error('retrieve needs --text "<claim and failure mode>".');
     return 2;
   }
   const db = openDatabase();
   try {
     const precedents = retrievePrecedents(db, {
-      text: text2,
+      text: text3,
       repository: flag(argv, "--repository") ?? void 0,
       filePath: flag(argv, "--path") ?? void 0,
       language: flag(argv, "--language") ?? void 0,
@@ -18508,13 +18606,13 @@ function carryForRun(db, runId, head, repository, threadFile = null) {
   }
   let hold;
   if (threadFile !== null) {
-    let text2;
+    let text3;
     try {
-      text2 = readFileSync6(threadFile, "utf8");
+      text3 = readFileSync6(threadFile, "utf8");
     } catch (error) {
       throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const thread = parseThreadFile(text2, threadFile, detail);
+    const thread = parseThreadFile(text3, threadFile, detail);
     hold = heldBackFindings(detail.findings, thread, detail, postedReviewIds(db, runId));
   }
   return carryFindings(detail.findings, detail.headRef, head, root, hold);
@@ -19197,6 +19295,35 @@ function checkVerificationCommand() {
   console.log(JSON.stringify({ valid: true, verifications: list.length }, null, 2));
   return 0;
 }
+function checkIntentCommand(argv) {
+  const threadFile = flag(argv, "--thread");
+  if (threadFile === null) {
+    console.error("--thread needs the thread.json the intent-extractor read.");
+    return 2;
+  }
+  let description;
+  try {
+    description = descriptionOf(JSON.parse(readFileSync6(threadFile, "utf8")));
+  } catch (error) {
+    console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  let document;
+  try {
+    document = JSON.parse(readStdin());
+  } catch {
+    console.error('Expected {"statements": [...]} on stdin.');
+    return 2;
+  }
+  const intent = parseIntent(document, description ?? "");
+  if (intent.problem !== null) {
+    console.error(`Malformed intent - ${intent.problem}.`);
+    console.error("Re-run the intent-extractor with the schema restated. Do not hand-translate its output.");
+    return 2;
+  }
+  console.log(JSON.stringify(intent.value, null, 2));
+  return 0;
+}
 function checkSimplificationCommand(argv) {
   const diffFile = flag(argv, "--diff-file");
   if (diffFile === null) {
@@ -19331,7 +19458,7 @@ function namesHeldPath(candidate, entry) {
   const base = entry.path.slice(entry.path.lastIndexOf("/") + 1);
   const names = base.includes(".") && base.length >= 6 ? [entry.path, base] : [entry.path];
   return [candidate.claim, candidate.failureMode, ...candidate.evidence].some(
-    (text2) => typeof text2 === "string" && names.some((name) => text2.includes(name))
+    (text3) => typeof text3 === "string" && names.some((name) => text3.includes(name))
   );
 }
 function matchHeld(candidate, held) {
@@ -19681,6 +19808,8 @@ ${topLevelHelp()}`);
       return checkVerificationCommand();
     case "check-simplification":
       return checkSimplificationCommand(argv.slice(1));
+    case "check-intent":
+      return checkIntentCommand(argv.slice(1));
     case "conventions":
       return conventionsCommand(argv.slice(1));
     case "evidence":

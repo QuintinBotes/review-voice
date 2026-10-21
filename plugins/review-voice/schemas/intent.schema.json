@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/QuintinBotes/review-voice/schemas/intent.schema.json",
+  "title": "Stated intent",
+  "description": "Output of the intent-extractor agent: what the pull request description states, one statement per row. An empty list is valid. `check-intent` also requires every quote to occur in the description.",
+  "type": "object",
+  "required": ["statements"],
+  "additionalProperties": false,
+  "properties": {
+    "statements": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "statement", "quote"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^int_[0-9]{3,}$" },
+          "kind": { "enum": ["goal", "non-goal", "deliberate", "claim", "qa"] },
+          "statement": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "quote": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "A verbatim excerpt of the description. Whitespace differences are ignored."
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "Why the author made the choice. Required on a deliberate statement, forbidden on any other."
+          },
+          "scope": {
+            "enum": ["complete"],
+            "description": "Only on a goal that asserts something about a whole set: all, every, consistent, removed everywhere."
+          }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "kind": { "const": "deliberate" } } },
+            "then": { "required": ["reason"] },
+            "else": { "not": { "required": ["reason"] } }
+          },
+          {
+            "if": { "not": { "properties": { "kind": { "const": "goal" } } } },
+            "then": { "not": { "required": ["scope"] } }
+          }
+        ]
+      }
+    }
+  }
+}

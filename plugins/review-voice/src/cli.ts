@@ -35,6 +35,7 @@ import {
   simplificationDiffProblem,
   type VerifiedSimplification,
 } from './simplification.ts';
+import { descriptionOf, parseIntent } from './intent.ts';
 import { acquirePullRequestDiff, applyReviewScope, type SuspectedWrongBase } from './diff/pull-request.ts';
 import { isReviewable } from './diff/classify.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
@@ -154,6 +155,7 @@ const STDIN_INPUT: Record<string, string> = {
   'check-candidates': 'candidates JSON',
   'check-verification': 'the evidence-verifier output',
   'check-simplification': 'the simplification candidate or verifier output',
+  'check-intent': 'the intent-extractor output',
   score: 'candidates JSON',
   record: 'the validated review',
   'validate-output': 'the review text',
@@ -3702,6 +3704,43 @@ function checkVerificationCommand(): number {
 }
 
 /**
+ * Validates the intent-extractor output against the description it read. A
+ * quote that is not in the description is refused, so the analyst and verifier
+ * never check the change against intent the author did not state.
+ */
+function checkIntentCommand(argv: string[]): number {
+  const threadFile = flag(argv, '--thread');
+  if (threadFile === null) {
+    console.error('--thread needs the thread.json the intent-extractor read.');
+    return 2;
+  }
+  let description: string | null;
+  try {
+    description = descriptionOf(JSON.parse(readFileSync(threadFile, 'utf8')) as unknown);
+  } catch (error) {
+    console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+
+  let document: unknown;
+  try {
+    document = JSON.parse(readStdin()) as unknown;
+  } catch {
+    console.error('Expected {"statements": [...]} on stdin.');
+    return 2;
+  }
+
+  const intent = parseIntent(document, description ?? '');
+  if (intent.problem !== null) {
+    console.error(`Malformed intent - ${intent.problem}.`);
+    console.error('Re-run the intent-extractor with the schema restated. Do not hand-translate its output.');
+    return 2;
+  }
+  console.log(JSON.stringify(intent.value, null, 2));
+  return 0;
+}
+
+/**
  * Validates the two short-lived documents of the opt-in simplification pass.
  *
  * Without --candidate this checks the analyst's one optional candidate. With
@@ -4377,6 +4416,9 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'check-simplification':
       return checkSimplificationCommand(argv.slice(1));
+
+    case 'check-intent':
+      return checkIntentCommand(argv.slice(1));
 
     case 'conventions':
       return conventionsCommand(argv.slice(1));

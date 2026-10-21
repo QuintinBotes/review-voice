@@ -142,6 +142,20 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       'Exit codes: 0 valid (a rejected candidate writes no body finding), 2 malformed or bad invocation.',
     ),
   },
+  'check-intent': {
+    summary: 'Validate the intent-extractor output against the description',
+    body: lines(
+      'review-voice check-intent --thread <path>',
+      '  Validate the stated-intent statements extracted from the pull request',
+      '  description. Every quote must occur in the description in thread.json.',
+      '',
+      'Flags:',
+      '  --thread <path>        thread.json from `thread`, holding the description (required)',
+      'Reads: the intent-extractor JSON on stdin.',
+      'Writes: the normalised intent document on stdout.',
+      'Exit codes: 0 valid, 2 malformed or bad invocation.',
+    ),
+  },
   context: {
     summary: 'Resolve config and the active policy stack as JSON',
     body: lines(
