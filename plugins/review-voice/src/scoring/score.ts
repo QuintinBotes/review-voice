@@ -736,8 +736,13 @@ export const SAME_FILE_REPEAT_OVERLAP = 0.4;
  * different query 15 lines away. The candidate is kept; the verifier judges
  * whether it adds anything, or whether the earlier fix covered it.
  *
- * `accept` narrows which comments count. The best overlap wins, then the
- * nearest line.
+ * A comment anchored in another file counts when its body names this
+ * candidate's file (#143): a concern about a generated type, first raised on
+ * the file that consumes it, came back anchored on the generated file itself.
+ * Only the name ties the two together, so this flags and never drops.
+ *
+ * `accept` narrows which comments count. A comment on this file beats one
+ * that only names it, then the best overlap wins, then the nearest line.
  */
 export function possiblyRaisedInFile(
   candidate: Candidate,
@@ -747,19 +752,26 @@ export function possiblyRaisedInFile(
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
   if (mine.size === 0) return null;
 
-  let best: { comment: ThreadComment; share: number; distance: number } | null = null;
+  let best: { comment: ThreadComment; rank: [number, number, number] } | null = null;
   for (const comment of thread) {
-    if (comment.path === null || comment.line === null) continue;
-    if (!onFile(comment, candidate.path) || !accept(comment)) continue;
+    if (comment.path === null || comment.line === null || !accept(comment)) continue;
+    const here = onFile(comment, candidate.path);
+    if (!here && !namesFile(comment.body, candidate.path)) continue;
     const share = overlap(mine, significantWords(comment.body));
     if (share < SAME_FILE_REPEAT_OVERLAP) continue;
-    const distance = Math.abs(comment.line - candidate.line);
-    if (best === null || share > best.share || (share === best.share && distance < best.distance)) {
-      best = { comment, share, distance };
-    }
+    const distance = here ? Math.abs(comment.line - candidate.line) : Number.POSITIVE_INFINITY;
+    const rank: [number, number, number] = [here ? 1 : 0, share, -distance];
+    if (best === null || compareRank(rank, best.rank) > 0) best = { comment, rank };
   }
 
   return best?.comment ?? null;
+}
+
+/** Whether `body` names the file at `path`; a full path ends in the file name too. */
+function namesFile(body: string, path: string): boolean {
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-])`).test(body);
 }
 
 /** Roughly what a verifier needs to judge a repeat without the whole body. */

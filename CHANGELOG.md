@@ -93,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   severity from `blocking` to `question`, then the higher final score. The
   editor keeps the order it is given, so a question handed over before a nit no
   longer fails validation as `severity_order`. (#144)
+- `check-candidates --thread` now flags a candidate as a possible repeat of an
+  inline comment anchored in another file when that comment names the
+  candidate's file and makes much the same claim. It is flagged for the
+  verifier, never dropped, since only the file name ties the two. (#143)
 - `context` now distinguishes no configuration file from a configuration that
   lacks `verification`, explaining that the second pass is off by default and
   how to enable it in the former case. (#129)

@@ -3962,16 +3962,21 @@ function possiblyRaisedInFile(candidate, thread, accept = () => true) {
   if (mine.size === 0) return null;
   let best = null;
   for (const comment of thread) {
-    if (comment.path === null || comment.line === null) continue;
-    if (!onFile(comment, candidate.path) || !accept(comment)) continue;
+    if (comment.path === null || comment.line === null || !accept(comment)) continue;
+    const here = onFile(comment, candidate.path);
+    if (!here && !namesFile(comment.body, candidate.path)) continue;
     const share = overlap(mine, significantWords(comment.body));
     if (share < SAME_FILE_REPEAT_OVERLAP) continue;
-    const distance = Math.abs(comment.line - candidate.line);
-    if (best === null || share > best.share || share === best.share && distance < best.distance) {
-      best = { comment, share, distance };
-    }
+    const distance = here ? Math.abs(comment.line - candidate.line) : Number.POSITIVE_INFINITY;
+    const rank2 = [here ? 1 : 0, share, -distance];
+    if (best === null || compareRank(rank2, best.rank) > 0) best = { comment, rank: rank2 };
   }
   return best?.comment ?? null;
+}
+function namesFile(body, path) {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-])`).test(body);
 }
 var DESCRIPTION_EXCERPT_CHARS = 400;
 function possiblyRepeatsDescription(candidate, thread) {
@@ -5783,7 +5788,7 @@ function changedFiles(previousHead, head, cwd) {
 function escapeRegExp2(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function namesFile(text2, path) {
+function namesFile2(text2, path) {
   if (text2.includes(path)) return true;
   const name = path.split("/").pop() ?? path;
   return new RegExp(`(^|[^\\w./-])${escapeRegExp2(name)}($|[^\\w-])`).test(text2);
@@ -5808,7 +5813,7 @@ function carryCandidates(candidates, previousHead, head, hunks, cwd) {
       refuse(`the file of its cause, ${cause.path}, changed between the two heads`);
       continue;
     }
-    const named = [...changed].find((path) => (candidate.texts ?? []).some((text2) => namesFile(text2, path)));
+    const named = [...changed].find((path) => (candidate.texts ?? []).some((text2) => namesFile2(text2, path)));
     if (named !== void 0) {
       refuse(`its claim, evidence or verification names ${named}, which changed between the two heads`);
       continue;
