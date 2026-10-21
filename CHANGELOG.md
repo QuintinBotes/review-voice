@@ -102,6 +102,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   how to enable it in the former case. (#129)
 - `diff` now emits repository configuration warnings, including invalid
   structural settings, while continuing to apply their defaults. (#130)
+- `record` keeps stdout pure JSON when it warns about a missing `--diff-file`.
+  The notice was already on stderr, and a test now pins that, so capture stdout
+  alone (not `2>&1`) when a later step parses the result. (#145)
 - `explain` now shows a recorded body-only simplification, its removed
   elements, and its verdict-neutral status when a run has no inline findings.
   (#131)

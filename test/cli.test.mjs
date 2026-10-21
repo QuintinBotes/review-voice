@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -196,4 +196,21 @@ test('symbols rejects a missing diff file', () => {
   const { code, stderr } = run(['symbols', '--diff-file', join(tmpdir(), 'rv-symbols-missing.patch')]);
   assert.equal(code, 2);
   assert.match(stderr, /Cannot read/);
+});
+
+test('record keeps its missing --diff-file notice off stdout, so stdout parses as JSON', () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'rv-record-stdout-'));
+  try {
+    const result = spawnSync(process.execPath, [bundle, 'record', '--repository', 'o/r', '--head', 'abc'], {
+      encoding: 'utf8',
+      input: 'No actionable findings.\n',
+      env: { ...process.env, REVIEW_VOICE_DATA_DIR: dataDir },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /No --diff-file/);
+    assert.doesNotMatch(result.stdout, /No --diff-file/);
+    assert.equal(typeof JSON.parse(result.stdout).reviewRunId, 'string');
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });
