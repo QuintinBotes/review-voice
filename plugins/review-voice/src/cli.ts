@@ -36,7 +36,7 @@ import {
   type VerifiedSimplification,
 } from './simplification.ts';
 import { descriptionOf, parseIntent } from './intent.ts';
-import { acquirePullRequestDiff, applyReviewScope, type SuspectedWrongBase } from './diff/pull-request.ts';
+import { acquirePullRequestDiff, applyReviewScope, type SquashedParentSuspected, type SuspectedWrongBase } from './diff/pull-request.ts';
 import { isReviewable } from './diff/classify.ts';
 import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
 import {
@@ -517,6 +517,7 @@ interface EmittedDiff {
   truncated?: boolean;
   truncationNote?: string | null;
   suspectedWrongBase?: SuspectedWrongBase | null;
+  squashedParentSuspected?: SquashedParentSuspected | null;
   /** Added by `emitDiff`; see docs/adr/0012. */
   complexity?: ComplexityAssessment;
   humanReviewNote?: string | null;
@@ -569,6 +570,8 @@ export function diffSummary(result: EmittedDiff): {
   truncationNote: string | null;
   /** A pull request whose commits mostly sit on the default branch; see `acquirePullRequestDiff`. */
   suspectedWrongBase: SuspectedWrongBase | null;
+  /** Listed files already identical on the base tip, excluded from the review; see `acquirePullRequestDiff`. */
+  squashedParentSuspected: SquashedParentSuspected | null;
   reviewedFileCount: number;
   hunkFileCount: number;
   excludedFileCount: number;
@@ -623,6 +626,7 @@ export function diffSummary(result: EmittedDiff): {
     truncated: result.truncated ?? false,
     truncationNote: result.truncationNote ?? null,
     suspectedWrongBase: result.suspectedWrongBase ?? null,
+    squashedParentSuspected: result.squashedParentSuspected ?? null,
     reviewedFileCount: result.reviewedFileCount,
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,

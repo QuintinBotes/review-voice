@@ -4088,6 +4088,15 @@ function ensureRefs(options) {
     `The ${missing.join(" and ")} commit could not be made available locally. Reading code at that ref will fail, so evidence from it is unavailable rather than absent.`
   );
 }
+var SAME_AS_BASE_TIP = "identical to the base branch tip (already merged there)";
+function differingFromBaseTip(base, head, cwd) {
+  try {
+    const args = ["diff", "--no-ext-diff", "--no-relative", "--ignore-submodules=none", "--no-renames", "--name-only", "-z", base, head];
+    return new Set(git2(args, cwd).split("\0").filter(Boolean));
+  } catch {
+    return null;
+  }
+}
 function earlierReview(scope) {
   return scope.priorReviewedAt === null ? `the review at ${scope.since.slice(0, 7)}` : `the review of ${scope.priorReviewedAt.slice(0, 10)}`;
 }
@@ -4195,6 +4204,13 @@ async function detectWrongBase(client, repository, pull) {
     return null;
   }
 }
+function squashedParent(files, baseRef) {
+  if (files === 0) return null;
+  return {
+    files,
+    note: `${files} listed file(s) already match ${baseRef}'s tip (most likely a squash-merged parent branch, or a change that also landed on ${baseRef}); they are left out.`
+  };
+}
 async function acquirePullRequestDiff(options) {
   const client = new GitHubClient({ allowlist: [options.repository] });
   const { data: pull } = await client.get(
@@ -4223,14 +4239,25 @@ async function acquirePullRequestDiff(options) {
       return added.join("\n");
     }
   );
+  const refs = ensureRefs({
+    repository: options.repository,
+    pullNumber: options.pullNumber,
+    base: pull.base.sha,
+    head: pull.head.sha,
+    cwd
+  });
+  const differing = refs.base.available && refs.head.available ? differingFromBaseTip(pull.base.sha, pull.head.sha, cwd) : null;
+  const sameAsBaseTip = (file) => differing !== null && !differing.has(file.filename) && (file.previous_filename === void 0 || !differing.has(file.previous_filename));
   const files = rawFiles.map((file) => {
     const cls = classify(file.filename);
     const deleted = file.status === "removed";
     const suspected = handEdited.has(file.filename);
-    const reviewed = !deleted && (suspected || isReviewable(file.filename, options.includeGenerated)) && file.patch !== void 0;
+    const merged = sameAsBaseTip(file);
+    const reviewed = !merged && !deleted && (suspected || isReviewable(file.filename, options.includeGenerated)) && file.patch !== void 0;
     let excludedBecause;
     if (!reviewed) {
-      if (deleted) excludedBecause = "file deleted";
+      if (merged) excludedBecause = SAME_AS_BASE_TIP;
+      else if (deleted) excludedBecause = "file deleted";
       else if (file.patch === void 0) excludedBecause = "no patch returned (binary or too large)";
       else excludedBecause = `${cls} file`;
     }
@@ -4269,14 +4296,9 @@ async function acquirePullRequestDiff(options) {
     // failure mode a reviewer cannot recover from, because nothing downstream
     // can tell that anything is missing.
     truncationNote: truncated ? `Only ${rawFiles.length} of ${pull.changed_files} changed files were read. This review covers part of the change.` : null,
-    refs: ensureRefs({
-      repository: options.repository,
-      pullNumber: options.pullNumber,
-      base: pull.base.sha,
-      head: pull.head.sha,
-      cwd
-    }),
-    suspectedWrongBase: await detectWrongBase(client, options.repository, pull)
+    refs,
+    suspectedWrongBase: await detectWrongBase(client, options.repository, pull),
+    squashedParentSuspected: squashedParent(files.filter((file) => file.excludedBecause === SAME_AS_BASE_TIP).length, pull.base.ref)
   };
 }
 
@@ -17074,6 +17096,7 @@ function diffSummary(result) {
     truncated: result.truncated ?? false,
     truncationNote: result.truncationNote ?? null,
     suspectedWrongBase: result.suspectedWrongBase ?? null,
+    squashedParentSuspected: result.squashedParentSuspected ?? null,
     reviewedFileCount: result.reviewedFileCount,
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,
