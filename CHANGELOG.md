@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   negates or scopes the sentence (`**Not in this change:**`, `[Out of
   scope](url): `) is still part of it, so a quote cannot drop it. (#153)
 
+- The absence check looks up only the paths a claim says are missing, not
+  every path it names: in "`docs/guide.md` cites `ci/README.md`, which does
+  not exist", only `ci/README.md` is checked, so the tracked citing file no
+  longer moves a true finding to `absenceContradicted`. A path counts when it
+  shares a clause with one of the gate's absence phrases or is the antecedent
+  of a relative clause carrying one; looser wording such as "removed" counts
+  only when no gate phrase ties a name, and a claim the grammar does not
+  settle is checked as before. (#149)
+
 ## [1.15.0] - 2026-10-21
 
 ### Added

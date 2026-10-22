@@ -402,6 +402,78 @@ const GENERATED_ACCESSOR = [
 
 const FILE_NAME = /\.(?:tsx?|jsx?|mjs|cjs|cs|py|go|rb|java|kt|rs|swift|dart|json|ya?ml|md|xml|resx|resw|po|xlf|xliff|arb)$/i;
 
+function isPath(symbol: string): boolean {
+  return symbol.includes('/') || FILE_NAME.test(symbol);
+}
+
+/**
+ * Looser absence wording, tried only when no gate phrase ties a name. "Removed"
+ * and "deleted" often describe what the change did, so in "`b.ts` is not
+ * defined; it replaces `old.ts`, which was removed" they must not displace the
+ * gate's tie to `b.ts`.
+ */
+const LOOSE_ABSENCE = [
+  /\b(?:does|do|did)\s*(?:not|n't)\s+exist|\bmissing\b|\babsent\b|\b(?:deleted|removed)\b|\bnot\s+(?:found|present)\b/i,
+];
+
+/** Where a clause starts: sentence punctuation, or a relative or contrasting word. */
+const CLAUSE_BREAK = /[.;!?](?=\s|$)|\b(?:which|that|who|but|whereas|while)\b/gi;
+
+/**
+ * The paths a claim says are absent, as opposed to paths it merely mentions.
+ *
+ * "`docs/guide.md` cites `ci/README.md`, which does not exist" names two files
+ * and says one is missing; reading both as claimed-absent let the tracked
+ * citing file refute a true finding. A name is tied when it shares a clause
+ * with an absence phrase, or is the antecedent of a relative clause carrying
+ * one: the gate's own phrases first, then looser wording. An empty set means
+ * the grammar settled nothing, and the caller checks every name as before.
+ */
+function tiedToAbsence(text: string, symbols: readonly string[]): Set<string> {
+  const strict = tiedBy(ASSERTS_ABSENCE, text, symbols);
+  return strict.size > 0 ? strict : tiedBy(LOOSE_ABSENCE, text, symbols);
+}
+
+function tiedBy(phrases: readonly RegExp[], text: string, symbols: readonly string[]): Set<string> {
+  // Clause words inside backticks are part of a name, not grammar.
+  const masked = text.replace(/`[^`]*`/g, (span) => `\`${'x'.repeat(span.length - 2)}\``);
+  const starts = [0];
+  for (const match of masked.matchAll(CLAUSE_BREAK)) {
+    starts.push(match[0].length === 1 ? match.index + 1 : match.index);
+  }
+  starts.push(text.length);
+
+  const occurrences = symbols.flatMap((symbol) => {
+    const at: Array<{ symbol: string; index: number }> = [];
+    for (let index = text.indexOf(symbol); index !== -1; index = text.indexOf(symbol, index + 1)) {
+      if (text[index - 1] !== '/') at.push({ symbol, index });
+    }
+    return at;
+  });
+
+  const tied = new Set<string>();
+  for (let i = 0; i + 1 < starts.length; i += 1) {
+    const start = starts[i] ?? 0;
+    const end = starts[i + 1] ?? text.length;
+    const clause = masked.slice(start, end);
+    if (!phrases.some((phrase) => phrase.test(clause))) continue;
+
+    const inClause = occurrences.filter(({ index }) => index >= start && index < end);
+    if (inClause.length > 0) {
+      for (const { symbol } of inClause) tied.add(symbol);
+    } else if (/^\s*(?:which|that|who)\b/i.test(clause)) {
+      let antecedent: { symbol: string; index: number } | undefined;
+      for (const occurrence of occurrences) {
+        if (occurrence.index < start && (antecedent === undefined || occurrence.index > antecedent.index)) {
+          antecedent = occurrence;
+        }
+      }
+      if (antecedent !== undefined) tied.add(antecedent.symbol);
+    }
+  }
+  return tied;
+}
+
 function generatedAccessor(symbol: string): boolean {
   return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
 }
@@ -459,9 +531,11 @@ export function checkAbsenceClaim(
   // Only names the claim states. `namedSymbols` also yields `README.md` out of
   // `ci/README.md`, and that names a different file: the root README does not
   // contradict "`ci/README.md` does not exist".
-  const symbols = namedSymbols(text).filter((symbol) =>
+  const stated = namedSymbols(text).filter((symbol) =>
     text.split(symbol).slice(0, -1).some((before) => !before.endsWith('/')),
   );
+  const tied = tiedToAbsence(text, stated);
+  const symbols = stated.filter((symbol) => !isPath(symbol) || tied.size === 0 || tied.has(symbol));
   if (symbols.length === 0) return null;
 
   const searchedRef = ref ?? 'working tree';
@@ -475,7 +549,7 @@ export function checkAbsenceClaim(
       // A file is checked by path, anything else by content. A path with a
       // directory must exist there (or be a tracked directory); a bare file
       // name may exist in any directory.
-      if (symbol.includes('/') || FILE_NAME.test(symbol)) {
+      if (isPath(symbol)) {
         paths ??= trackedPaths(cwd, ref);
         const path = symbol.replace(/^\.?\//, '').replace(/\/$/, '');
         const exists = path.includes('/')

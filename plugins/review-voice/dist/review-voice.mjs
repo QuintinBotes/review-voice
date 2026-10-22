@@ -4829,6 +4829,52 @@ var GENERATED_ACCESSOR = [
   /^(?:L10n|l10n)\.[A-Za-z_]\w*$/
 ];
 var FILE_NAME = /\.(?:tsx?|jsx?|mjs|cjs|cs|py|go|rb|java|kt|rs|swift|dart|json|ya?ml|md|xml|resx|resw|po|xlf|xliff|arb)$/i;
+function isPath(symbol) {
+  return symbol.includes("/") || FILE_NAME.test(symbol);
+}
+var LOOSE_ABSENCE = [
+  /\b(?:does|do|did)\s*(?:not|n't)\s+exist|\bmissing\b|\babsent\b|\b(?:deleted|removed)\b|\bnot\s+(?:found|present)\b/i
+];
+var CLAUSE_BREAK = /[.;!?](?=\s|$)|\b(?:which|that|who|but|whereas|while)\b/gi;
+function tiedToAbsence(text3, symbols) {
+  const strict = tiedBy(ASSERTS_ABSENCE, text3, symbols);
+  return strict.size > 0 ? strict : tiedBy(LOOSE_ABSENCE, text3, symbols);
+}
+function tiedBy(phrases, text3, symbols) {
+  const masked = text3.replace(/`[^`]*`/g, (span) => `\`${"x".repeat(span.length - 2)}\``);
+  const starts = [0];
+  for (const match of masked.matchAll(CLAUSE_BREAK)) {
+    starts.push(match[0].length === 1 ? match.index + 1 : match.index);
+  }
+  starts.push(text3.length);
+  const occurrences = symbols.flatMap((symbol) => {
+    const at = [];
+    for (let index = text3.indexOf(symbol); index !== -1; index = text3.indexOf(symbol, index + 1)) {
+      if (text3[index - 1] !== "/") at.push({ symbol, index });
+    }
+    return at;
+  });
+  const tied = /* @__PURE__ */ new Set();
+  for (let i = 0; i + 1 < starts.length; i += 1) {
+    const start = starts[i] ?? 0;
+    const end = starts[i + 1] ?? text3.length;
+    const clause = masked.slice(start, end);
+    if (!phrases.some((phrase) => phrase.test(clause))) continue;
+    const inClause = occurrences.filter(({ index }) => index >= start && index < end);
+    if (inClause.length > 0) {
+      for (const { symbol } of inClause) tied.add(symbol);
+    } else if (/^\s*(?:which|that|who)\b/i.test(clause)) {
+      let antecedent;
+      for (const occurrence of occurrences) {
+        if (occurrence.index < start && (antecedent === void 0 || occurrence.index > antecedent.index)) {
+          antecedent = occurrence;
+        }
+      }
+      if (antecedent !== void 0) tied.add(antecedent.symbol);
+    }
+  }
+  return tied;
+}
 function generatedAccessor(symbol) {
   return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
 }
@@ -4848,9 +4894,11 @@ function checkAbsenceClaim(text3, cwd, ref = null, search = gitGrep, repository 
       searchedRef: searchedRefLabel
     };
   }
-  const symbols = namedSymbols(text3).filter(
+  const stated = namedSymbols(text3).filter(
     (symbol) => text3.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
   );
+  const tied = tiedToAbsence(text3, stated);
+  const symbols = stated.filter((symbol) => !isPath(symbol) || tied.size === 0 || tied.has(symbol));
   if (symbols.length === 0) return null;
   const searchedRef = ref ?? "working tree";
   const found = [];
@@ -4859,7 +4907,7 @@ function checkAbsenceClaim(text3, cwd, ref = null, search = gitGrep, repository 
   for (const symbol of symbols.slice(0, 12)) {
     try {
       checked.push(symbol);
-      if (symbol.includes("/") || FILE_NAME.test(symbol)) {
+      if (isPath(symbol)) {
         paths ??= trackedPaths(cwd, ref);
         const path = symbol.replace(/^\.?\//, "").replace(/\/$/, "");
         const exists = path.includes("/") ? paths.some((tracked) => tracked === path || tracked.startsWith(`${path}/`)) : paths.some((tracked) => tracked === path || tracked.endsWith(`/${path}`));
