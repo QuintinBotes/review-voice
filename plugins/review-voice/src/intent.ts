@@ -33,6 +33,10 @@ const MAX_TEXT = 300;
 const MIN_QUOTE_WORDS = 4;
 const ID = /^int_[0-9]{3,}$/;
 const LIST_OR_HEADING = /^\s*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?|#{1,6}\s+|>\s*)/u;
+// A leading `[label](url): `, bare URL and `: `, `**Label.**` or `**Label:**` reads as a label, not part of the sentence after it.
+const LEAD_LABEL = /^(?:(?:\[[^\]]*\]\([^)\s]+\)|https?:\/\/\S+):|\*\*[^*]+?[.:]\*\*)(?= |$)/u;
+// ...unless the label negates or scopes that sentence ("**Not in this change:**"), which a quote must keep.
+const QUALIFYING_LABEL = /\b(?:not|no|out of scope|non-goals?|won't|without|except|unless|only if|later|follow-ups?)\b|n't\b/iu;
 
 const collapse = (text: string): string => text.replace(/\s+/gu, ' ').trim();
 
@@ -67,6 +71,11 @@ function sentencesOf(description: string): Sentences {
         starts.add(text.length + 1);
       }
       text += ' ';
+    }
+    const label = LEAD_LABEL.exec(content);
+    if (label !== null && !QUALIFYING_LABEL.test(label[0])) {
+      ends.add(text.length + label[0].length);
+      starts.add(text.length + label[0].length + 1);
     }
     text += content;
     blank = false;
@@ -110,76 +119,97 @@ export function descriptionOf(thread: unknown): string | null {
   return bodies.length === 0 ? null : bodies.join('\n');
 }
 
-/** Parses the intent-extractor output; every quote and reason must be a whole sentence of `description`. */
-export function parseIntent(value: unknown, description: string): Parsed<IntentDocument> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return { value: null, problem: 'expected {"statements": [...]}' };
+/** One statement of the extractor output, or the first rule it breaks. */
+function statementOf(rawEntry: unknown, at: string, sentences: Sentences): Parsed<IntentStatement> {
+  if (typeof rawEntry !== 'object' || rawEntry === null || Array.isArray(rawEntry)) {
+    return { value: null, problem: `${at} must be an object` };
   }
-  const document = value as Record<string, unknown>;
-  const extra = Object.keys(document).find((key) => key !== 'statements');
-  if (extra !== undefined) return { value: null, problem: `has an unexpected ${JSON.stringify(extra)} field` };
-  const raw = document['statements'];
-  if (!Array.isArray(raw)) return { value: null, problem: 'statements must be an array' };
-  if (raw.length > MAX_INTENT_STATEMENTS) {
-    return { value: null, problem: `statements must list at most ${MAX_INTENT_STATEMENTS} entries` };
+  // A model writes null for "not applicable"; read it as the key left out.
+  const entry = Object.fromEntries(
+    Object.entries(rawEntry as Record<string, unknown>).filter(([key, value]) => !(value === null && (key === 'reason' || key === 'scope'))),
+  );
+  const unexpected = Object.keys(entry).find((key) => !['id', 'kind', 'statement', 'quote', 'reason', 'scope'].includes(key));
+  if (unexpected !== undefined) return { value: null, problem: `${at} has an unexpected ${JSON.stringify(unexpected)} field` };
+
+  const id = entry['id'];
+  if (typeof id !== 'string' || !ID.test(id)) return { value: null, problem: `${at}.id must match int_NNN` };
+
+  const kind = entry['kind'];
+  if (!INTENT_KINDS.includes(kind as IntentKind)) {
+    return { value: null, problem: `${at}.kind must be one of ${INTENT_KINDS.join(', ')}` };
+  }
+  const statement = text(entry['statement'], `${at}.statement`);
+  if (statement.problem !== null) return { value: null, problem: statement.problem };
+  const quote = text(entry['quote'], `${at}.quote`);
+  if (quote.problem !== null) return { value: null, problem: quote.problem };
+  const quoteProblem = excerptProblem(quote.value, sentences, `${at}.quote`);
+  if (quoteProblem !== null) return { value: null, problem: quoteProblem };
+  if (kind !== 'non-goal') {
+    const quoted = significantWords(quote.value);
+    if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
+      return { value: null, problem: `${at}.quote shares no significant word with its statement` };
+    }
   }
 
-  const sentences = sentencesOf(description);
-  const seen = new Set<string>();
-  const statements: IntentStatement[] = [];
-  for (const [index, rawEntry] of raw.entries()) {
-    const at = `statements[${index}]`;
-    if (typeof rawEntry !== 'object' || rawEntry === null || Array.isArray(rawEntry)) {
-      return { value: null, problem: `${at} must be an object` };
-    }
-    const entry = rawEntry as Record<string, unknown>;
-    const unexpected = Object.keys(entry).find((key) => !['id', 'kind', 'statement', 'quote', 'reason', 'scope'].includes(key));
-    if (unexpected !== undefined) return { value: null, problem: `${at} has an unexpected ${JSON.stringify(unexpected)} field` };
+  let reason: string | undefined;
+  if (kind === 'deliberate') {
+    const parsed = text(entry['reason'], `${at}.reason`);
+    if (parsed.problem !== null) return { value: null, problem: `${parsed.problem} on a deliberate statement` };
+    const reasonProblem = excerptProblem(parsed.value, sentences, `${at}.reason`);
+    if (reasonProblem !== null) return { value: null, problem: reasonProblem };
+    reason = parsed.value;
+  } else if (entry['reason'] !== undefined) {
+    return { value: null, problem: `${at}.reason belongs only on a deliberate statement` };
+  }
+  if (entry['scope'] !== undefined && (kind !== 'goal' || entry['scope'] !== 'complete')) {
+    return { value: null, problem: `${at}.scope may only be "complete", and only on a goal` };
+  }
 
-    const id = entry['id'];
-    if (typeof id !== 'string' || !ID.test(id)) return { value: null, problem: `${at}.id must match int_NNN` };
-    if (seen.has(id)) return { value: null, problem: `${at}.id ${id} is used twice` };
-    seen.add(id);
-
-    const kind = entry['kind'];
-    if (!INTENT_KINDS.includes(kind as IntentKind)) {
-      return { value: null, problem: `${at}.kind must be one of ${INTENT_KINDS.join(', ')}` };
-    }
-    const statement = text(entry['statement'], `${at}.statement`);
-    if (statement.problem !== null) return { value: null, problem: statement.problem };
-    const quote = text(entry['quote'], `${at}.quote`);
-    if (quote.problem !== null) return { value: null, problem: quote.problem };
-    const quoteProblem = excerptProblem(quote.value, sentences, `${at}.quote`);
-    if (quoteProblem !== null) return { value: null, problem: quoteProblem };
-    if (kind !== 'non-goal') {
-      const quoted = significantWords(quote.value);
-      if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
-        return { value: null, problem: `${at}.quote shares no significant word with its statement` };
-      }
-    }
-
-    let reason: string | undefined;
-    if (kind === 'deliberate') {
-      const parsed = text(entry['reason'], `${at}.reason`);
-      if (parsed.problem !== null) return { value: null, problem: `${parsed.problem} on a deliberate statement` };
-      const reasonProblem = excerptProblem(parsed.value, sentences, `${at}.reason`);
-      if (reasonProblem !== null) return { value: null, problem: reasonProblem };
-      reason = parsed.value;
-    } else if (entry['reason'] !== undefined) {
-      return { value: null, problem: `${at}.reason belongs only on a deliberate statement` };
-    }
-    if (entry['scope'] !== undefined && (kind !== 'goal' || entry['scope'] !== 'complete')) {
-      return { value: null, problem: `${at}.scope may only be "complete", and only on a goal` };
-    }
-
-    statements.push({
+  return {
+    value: {
       id,
       kind: kind as IntentKind,
       statement: statement.value,
       quote: quote.value,
       ...(reason === undefined ? {} : { reason }),
       ...(entry['scope'] === 'complete' ? { scope: 'complete' as const } : {}),
-    });
+    },
+    problem: null,
+  };
+}
+
+/**
+ * Parses the intent-extractor output; every quote and reason must be a whole
+ * sentence of `description`. A statement that breaks a rule is dropped and
+ * named in `dropped`, so one bad entry does not cost the rest of the table;
+ * the whole output is refused only when its shape is broken, two kept statements
+ * share an id, or none survives.
+ */
+export function parseIntent(value: unknown, description: string): Parsed<IntentDocument> & { dropped: string[] } {
+  const refuse = (problem: string, dropped: string[] = []) => ({ value: null, problem, dropped });
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return refuse('expected {"statements": [...]}');
+  const document = value as Record<string, unknown>;
+  const extra = Object.keys(document).find((key) => key !== 'statements');
+  if (extra !== undefined) return refuse(`has an unexpected ${JSON.stringify(extra)} field`);
+  const raw = document['statements'];
+  if (!Array.isArray(raw)) return refuse('statements must be an array');
+  if (raw.length > MAX_INTENT_STATEMENTS) return refuse(`statements must list at most ${MAX_INTENT_STATEMENTS} entries`);
+
+  const sentences = sentencesOf(description);
+  const statements: IntentStatement[] = [];
+  const dropped: string[] = [];
+  for (const [index, rawEntry] of raw.entries()) {
+    const parsed = statementOf(rawEntry, `statements[${index}]`, sentences);
+    if (parsed.problem === null) statements.push(parsed.value);
+    else {
+      const id = (rawEntry as { id?: unknown } | null)?.id;
+      dropped.push(typeof id === 'string' ? `${id} (${parsed.problem})` : parsed.problem);
+    }
   }
-  return { value: { statements }, problem: null };
+  // Two kept statements with one id would make an intent_ref ambiguous.
+  const ids = statements.map(({ id }) => id);
+  const twice = ids.find((id, index) => ids.indexOf(id) !== index);
+  if (twice !== undefined) return refuse(`id ${twice} is used by two statements`, dropped);
+  if (raw.length > 0 && statements.length === 0) return refuse('no statement survives validation', dropped);
+  return { value: { statements }, problem: null, dropped };
 }

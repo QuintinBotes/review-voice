@@ -55,7 +55,10 @@ negation, condition or qualifier, so never start or stop it mid-sentence. The
 CLI refuses a quote that is not a whole sentence or list item of the
 description, so do not paraphrase, fix typos, or join sentences that are
 apart. A statement whose sentence is longer than 300 characters is left out.
-Ids run `int_001`, `int_002`, and so on. At most 40 statements.
+A leading link or bold label (`[label](url): `, `**Label.** `) is not part of
+the sentence after it; quote the sentence without it. Leave out keys that do
+not apply; never write null. Ids run `int_001`, `int_002`, and so on. At most
+40 statements.
 
 An empty description, or one that is only a template, checklist headings,
 links or boilerplate, has no intent. Return `{"statements": []}`.
