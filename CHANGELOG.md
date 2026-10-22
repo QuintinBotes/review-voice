@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only when no gate phrase ties a name, and a claim the grammar does not
   settle is checked as before. (#149)
 
+- `diff --pr` no longer reviews a squash-merged stacked parent's changes as
+  the pull request's own after it is retargeted. Listed files whose head
+  content already matches the base branch tip are excluded with that reason,
+  and `squashedParentSuspected` gives their count and a note to print after
+  the findings. (#154)
+
 ## [1.15.0] - 2026-10-21
 
 ### Added

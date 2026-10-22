@@ -148,6 +148,11 @@ short question about the base branch instead of running the analyst over the
 whole patch, unless the person asks for the full review or the description
 says bringing those commits across is the intent.
 
+**If `squashedParentSuspected` is not null, print its `note` on its own line
+after the findings.** Those files already match the base branch tip, usually
+because a branch this one was stacked on was squash-merged, so they are
+excluded with that reason and are not the author's change.
+
 **If `scopeNote` is not null, print it on its own line after the findings, just
 as `truncationNote` is printed.** This includes an output of exactly
 `No actionable findings.`: in an incremental run, that sentence only applies to

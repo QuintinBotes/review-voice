@@ -228,6 +228,32 @@ export interface PullRequestDiff extends DiffResult {
   refs: RefAvailability;
   /** Set when most commits are already on the default branch; null when not suspected or not checkable. */
   suspectedWrongBase: SuspectedWrongBase | null;
+  /** Set when listed files already match the base tip and were excluded; null when none or not checkable. */
+  squashedParentSuspected: SquashedParentSuspected | null;
+}
+
+export interface SquashedParentSuspected {
+  files: number;
+  note: string;
+}
+
+const SAME_AS_BASE_TIP = 'identical to the base branch tip (already merged there)';
+
+/**
+ * Listed paths whose head content differs from the base branch tip, or null
+ * when that cannot be read. The files endpoint diffs from the merge base, and
+ * once a branch this one was stacked on lands as a squash commit that merge
+ * base predates it, so the parent's changes are listed as this pull request's.
+ */
+function differingFromBaseTip(base: string, head: string, cwd: string): Set<string> | null {
+  try {
+    // Explicit flags so diff.relative or diff.ignoreSubmodules in the user's
+    // config cannot hide a path and get a real change excluded.
+    const args = ['diff', '--no-ext-diff', '--no-relative', '--ignore-submodules=none', '--no-renames', '--name-only', '-z', base, head];
+    return new Set(git(args, cwd).split('\0').filter(Boolean));
+  } catch {
+    return null;
+  }
 }
 
 export interface SuspectedWrongBase {
@@ -420,6 +446,16 @@ async function detectWrongBase(client: GitHubClient, repository: string, pull: R
   }
 }
 
+function squashedParent(files: number, baseRef: string): SquashedParentSuspected | null {
+  if (files === 0) return null;
+  return {
+    files,
+    note:
+      `${files} listed file(s) already match ${baseRef}'s tip (most likely a squash-merged parent branch, or a ` +
+      `change that also landed on ${baseRef}); they are left out.`,
+  };
+}
+
 export async function acquirePullRequestDiff(options: {
   repository: string;
   pullNumber: number;
@@ -472,16 +508,30 @@ export async function acquirePullRequestDiff(options: {
     },
   );
 
+  const refs = ensureRefs({
+    repository: options.repository,
+    pullNumber: options.pullNumber,
+    base: pull.base.sha,
+    head: pull.head.sha,
+    cwd,
+  });
+  const differing = refs.base.available && refs.head.available ? differingFromBaseTip(pull.base.sha, pull.head.sha, cwd) : null;
+  // A rename is only already merged when neither of its paths differs.
+  const sameAsBaseTip = (file: RawFile): boolean =>
+    differing !== null && !differing.has(file.filename) && (file.previous_filename === undefined || !differing.has(file.previous_filename));
+
   const files: ChangedFile[] = rawFiles.map((file) => {
     const cls = classify(file.filename);
     const deleted = file.status === 'removed';
     const suspected = handEdited.has(file.filename);
+    const merged = sameAsBaseTip(file);
     const reviewed =
-      !deleted && (suspected || isReviewable(file.filename, options.includeGenerated)) && file.patch !== undefined;
+      !merged && !deleted && (suspected || isReviewable(file.filename, options.includeGenerated)) && file.patch !== undefined;
 
     let excludedBecause: string | undefined;
     if (!reviewed) {
-      if (deleted) excludedBecause = 'file deleted';
+      if (merged) excludedBecause = SAME_AS_BASE_TIP;
+      else if (deleted) excludedBecause = 'file deleted';
       else if (file.patch === undefined) excludedBecause = 'no patch returned (binary or too large)';
       else excludedBecause = `${cls} file`;
     }
@@ -528,13 +578,8 @@ export async function acquirePullRequestDiff(options: {
     truncationNote: truncated
       ? `Only ${rawFiles.length} of ${pull.changed_files} changed files were read. This review covers part of the change.`
       : null,
-    refs: ensureRefs({
-      repository: options.repository,
-      pullNumber: options.pullNumber,
-      base: pull.base.sha,
-      head: pull.head.sha,
-      cwd,
-    }),
+    refs,
     suspectedWrongBase: await detectWrongBase(client, options.repository, pull),
+    squashedParentSuspected: squashedParent(files.filter((file) => file.excludedBecause === SAME_AS_BASE_TIP).length, pull.base.ref),
   };
 }
