@@ -302,10 +302,13 @@ step 1 and `thread.json`. Skip this step otherwise, and on any run that is not
 a pull request; nothing later needs `intent.json`.
 
 Pipe its output into `RV check-intent --thread <tmpdir>/thread.json` and write
-what it prints to `<tmpdir>/intent.json`. It refuses a quote or reason that is
-not a whole sentence or list item of the description, so no stage checks the
-change against intent the author did not state, or against a sentence with
-its negation cut off. If it exits 2, **relaunch the extractor once with the schema restated,
+what it prints to `<tmpdir>/intent.json`. It drops, with a warning, any
+statement whose quote or reason is not a whole sentence or list item of the
+description, so no stage checks the change against intent the author did not
+state, or against a sentence with its negation cut off. Each drop is a
+`Dropped statement ...` line on its stderr: list those lines in the run report
+after the findings, so a lost goal is visible. If it exits 2 (broken shape,
+two statements with one id, or no statement survives), **relaunch the extractor once with the schema restated,
 and do not translate its output by hand.** If the second attempt also fails,
 say so once after the findings and continue without `intent.json`: stated
 intent sharpens the review, it does not gate it.

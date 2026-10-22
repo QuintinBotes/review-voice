@@ -3736,6 +3736,7 @@ function checkIntentCommand(argv: string[]): number {
   }
 
   const intent = parseIntent(document, description);
+  for (const problem of intent.dropped) console.error(`${intent.problem === null ? 'Dropped' : 'Invalid'} statement ${problem}.`);
   if (intent.problem !== null) {
     console.error(`Malformed intent - ${intent.problem}.`);
     console.error('Re-run the intent-extractor with the schema restated. Do not hand-translate its output.');
@@ -4025,7 +4026,7 @@ function checkCandidatesCommand(argv: string[]): number {
       intentFailures = candidates.flatMap(({ candidateId, intentRef }) =>
         intentRef === undefined || ids.has(intentRef)
           ? []
-          : [{ candidateId, intentRef, reason: `intent_ref ${intentRef} names no statement in ${intentFile}; cite an existing one or drop intent_ref` }],
+          : [{ candidateId, intentRef, reason: `intent_ref ${intentRef} names no statement in ${intentFile} (check-intent drops a statement that breaks a rule); cite an existing one or drop intent_ref` }],
       );
     }
     const intentExtra = intentFailures.length > 0 ? { intentFailures } : {};

@@ -5,6 +5,27 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `check-intent` drops a statement that breaks a rule, with a warning on
+  stderr naming its id and the rule, and keeps the rest; it refuses the output
+  only when its shape is broken, two statements share an id, or no statement
+  survives, and then lists every violation at once. The review reports the
+  dropped statements. `scope: null` and `reason: null` read as left out. The
+  intent-extractor is told to leave out keys that do not apply. An `intent_ref`
+  to a dropped statement still fails `check-candidates --intent`. (#152)
+
+### Fixed
+
+- `check-intent` accepts a quote of the sentence after a leading
+  `[label](url): `, a bare URL and `: `, `**Label.**` or `**Label:**` at the
+  start of a line or list item, and a whole line in bold quoted with its
+  asterisks, instead of refusing it as part of a sentence. A label that
+  negates or scopes the sentence (`**Not in this change:**`, `[Out of
+  scope](url): `) is still part of it, so a quote cannot drop it. (#153)
+
 ## [1.15.0] - 2026-10-21
 
 ### Added

@@ -73,7 +73,6 @@ for (const [name, statements, problem] of [
   ['a deliberate statement with no reason', [{ ...deliberate, reason: undefined }], /reason must be non-empty/],
   ['a scope on a non-goal', [{ ...deliberate, scope: 'complete' }], /scope may only be "complete", and only on a goal/],
   ['a quote not in the description', [{ ...goal, quote: 'All settings pages now use the new routes.' }], /quote does not occur in the pull request description/],
-  ['a duplicate id', [goal, { ...deliberate, id: 'int_001' }], /int_001 is used twice/],
   ['more than 40 statements', Array.from({ length: 41 }, (_, i) => ({ ...goal, id: `int_${String(i + 1).padStart(3, '0')}` })), /at most 40 entries/],
   ['a statement over 300 characters', [{ ...goal, statement: 'x'.repeat(301) }], /statement must be at most 300 characters/],
   ['an unexpected field', [{ ...goal, confidence: 0.9 }], /unexpected "confidence" field/],
@@ -101,6 +100,91 @@ for (const [name, statements, problem] of [
     assert.match(result.stderr, /Re-run the intent-extractor with the schema restated\. Do not hand-translate its output\./);
   });
 }
+
+test('check-intent reads a null scope or reason as left out', () => {
+  const result = checkIntent([{ ...qa, scope: null, reason: null }, { ...goal, scope: null }]);
+  assert.equal(result.status, 0, result.stderr);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.statements.length, 2);
+  assert.equal('scope' in out.statements[0] || 'reason' in out.statements[0] || 'scope' in out.statements[1], false);
+});
+
+test('check-intent drops each invalid statement with a warning and keeps the rest', () => {
+  const short = { ...qa, id: 'int_004', quote: 'Routes renamed', statement: 'Routes are renamed.' };
+  const result = checkIntent([goal, { ...deliberate, reason: 'Because.' }, short, { ...qa, scope: 'complete' }]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).statements.map((statement) => statement.id), ['int_001']);
+  assert.match(result.stderr, /Dropped statement int_002 \(statements\[1\]\.reason must be at least 4 words/);
+  assert.match(result.stderr, /Dropped statement int_004 \(statements\[2\]\.quote must be at least 4 words\)/);
+  assert.match(result.stderr, /Dropped statement int_003 \(statements\[3\]\.scope may only be "complete"/);
+});
+
+test('an invalid statement does not take the id of a later valid one', () => {
+  const result = checkIntent([{ ...goal, kind: 'wish' }, goal]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).statements.map((statement) => statement.id), ['int_001']);
+  assert.match(result.stderr, /Dropped statement int_001 \(statements\[0\]\.kind must be one of/);
+});
+
+test('check-intent refuses two valid statements with one id', () => {
+  const result = checkIntent([goal, { ...deliberate, id: 'int_001' }]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /id int_001 is used by two statements/);
+});
+
+test('a negating or scoping label stays part of its sentence', () => {
+  const body = '- **Not in this change:** the cache rewrite moves to its own branch.\n' + '- [Out of scope](https://tracker.example/item): migrating the billing tables safely.';
+  for (const quote of ['the cache rewrite moves to its own branch.', 'migrating the billing tables safely.']) {
+    const result = checkIntent([{ id: 'int_001', kind: 'claim', statement: quote, quote }], body);
+    assert.equal(result.status, 2, quote);
+    assert.match(result.stderr, /whole sentence or list item/);
+  }
+});
+
+test('check-intent refuses when no statement survives, listing every violation', () => {
+  const result = checkIntent([{ ...goal, kind: 'wish' }, { ...qa, reason: 'Because.' }]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /Invalid statement int_001 \(statements\[0\]\.kind must be one of/);
+  assert.match(result.stderr, /Invalid statement int_003 \(statements\[1\]\.reason belongs only on a deliberate/);
+  assert.match(result.stderr, /no statement survives validation/);
+});
+
+test('check-intent reads a leading link or bold label as a sentence boundary', () => {
+  const body =
+    '- [label](https://tracker.example/item): Search now reads the new index, where `Id` is sortable. Lookups now return every match.\n' +
+    'https://tracker.example/other: Turn on the setting everywhere, so all databases match.\n' +
+    '- **`Check name`.** One job always reports its own status.\n' +
+    '**The wire format is unchanged below.**';
+  const quotes = [
+    'Search now reads the new index, where `Id` is sortable.',
+    'Turn on the setting everywhere, so all databases match.',
+    'One job always reports its own status.',
+    '**The wire format is unchanged below.**',
+  ];
+  const statements = quotes.map((quote, i) => ({ id: `int_00${i + 1}`, kind: 'claim', statement: quote.replaceAll('*', ''), quote }));
+  const result = checkIntent(statements, body);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, '');
+  assert.equal(JSON.parse(result.stdout).statements.length, 4);
+  const partial = checkIntent([{ id: 'int_001', kind: 'claim', statement: 'The index is sortable.', quote: 'where `Id` is sortable.' }], body);
+  assert.equal(partial.status, 2);
+  assert.match(partial.stderr, /whole sentence or list item/);
+});
+
+test('an intent_ref to a statement check-intent dropped fails check-candidates', () => {
+  withThread((thread) => {
+    const kept = checkIntent([goal, { ...qa, quote: 'Routes renamed' }]);
+    assert.equal(kept.status, 0, kept.stderr);
+    const intent = join(dirname(thread), 'intent.json');
+    writeFileSync(intent, kept.stdout);
+    const result = spawnSync(process.execPath, [bundle, 'check-candidates', '--intent', intent], {
+      encoding: 'utf8',
+      input: JSON.stringify({ candidates: [{ ...candidate, intent_ref: 'int_003' }] }),
+    });
+    assert.equal(result.status, 1);
+    assert.match(JSON.parse(result.stdout).intentFailures[0].reason, /names no statement .*check-intent drops a statement/);
+  });
+});
 
 test('check-intent needs the thread it validates quotes against', () => {
   const result = spawnSync(process.execPath, [bundle, 'check-intent'], { encoding: 'utf8', input: '{"statements": []}' });
