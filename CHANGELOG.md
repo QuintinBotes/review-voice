@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warns on stderr (`Removed scope from int_003 (...)`) instead of dropping
   the statement. (#160)
 
+- `validate-output` names an over-long finding by its `path:line` and tag and
+  says how many words to cut (`46 words of prose, 6 over the limit of 40`),
+  instead of only its output line, which pointed at the wrong finding when
+  findings were separated by blank lines. The concise editor aims for 35 words
+  and counts each finding before returning. (#161, #167)
+
 ## [1.16.0] - 2026-10-22
 
 ### Changed
