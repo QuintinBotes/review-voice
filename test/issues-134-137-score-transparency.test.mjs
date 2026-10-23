@@ -102,7 +102,18 @@ test('#134: a wrapped finding still counts as one finding, and the limit message
     const wrapped = run(dir, ['validate-output'], `[minor] \`a/b.ts:1\` - ${words(20)}\n${words(10)}.\n`);
     assert.equal(wrapped.status, 0, wrapped.stdout + wrapped.stderr);
     const long = run(dir, ['validate-output'], `[minor] \`a/b.ts:1\` - ${words(41)}.\n`);
-    assert.match(long.stdout + long.stderr, /41 words of prose; the limit is 40\. The tag and `path:line` are not counted/);
+    assert.match(long.stdout + long.stderr, /41 words of prose, 1 over the limit of 40\. The tag and `path:line` are not counted/);
+  }));
+
+test('#161 #167: an over-long finding is named by its path:line and severity, with the excess to cut', () =>
+  withDir((dir) => {
+    const out = `[nit] \`a/b.ts:1\` - ${words(20)}.\n\n[question] \`a/c.ts:7\` - ${words(46)}?\n`;
+    const result = run(dir, ['validate-output'], out);
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stdout + result.stderr,
+      /finding at `a\/c\.ts:7` \[question\]: 46 words of prose, 6 over the limit of 40\. The tag and `path:line` are not counted\. Cut at least 6 words or drop the finding\./,
+    );
   }));
 
 test('#135: an escalation above the requested tier names the rule that allowed it', () =>

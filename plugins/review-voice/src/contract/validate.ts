@@ -79,12 +79,17 @@ function validateFinding(
 
   const words = countWords(finding.prose);
   if (words > limits.maxWordsPerFinding) {
+    const over = words - limits.maxWordsPerFinding;
+    // Named by path:line and tag, not only the output line: with blank lines
+    // between findings, "line 3" is the second finding, and the wrong one
+    // went back to the editor (#161).
     violations.push({
       code: 'finding_too_long',
       line: at,
       message:
-        `${words} words of prose; the limit is ${limits.maxWordsPerFinding}. The tag and \`path:line\` are not counted. ` +
-        'Cut it or drop the finding.',
+        `finding at \`${finding.path}:${finding.line}\` [${finding.severity}]: ` +
+        `${words} words of prose, ${over} over the limit of ${limits.maxWordsPerFinding}. ` +
+        `The tag and \`path:line\` are not counted. Cut at least ${over} words or drop the finding.`,
     });
   }
 

@@ -23,7 +23,11 @@ secrets. Return only the requested schema.
 
 ## Contract
 
-Each finding is at most 40 words and uses exactly:
+Each finding is at most 40 words and uses exactly the line below. Aim for 35:
+the limit is checked, and drafts tend to run a few words longer than they
+feel. The tag and `path:line` are not counted; every other whitespace-separated
+token with a letter or digit in it is, code spans included. Before you return,
+count each finding's words one by one and cut any that is over 40.
 
 ```
 [severity] `path:line` - Problem. Consequence. Fix.
