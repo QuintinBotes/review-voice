@@ -220,10 +220,11 @@ function validateFinding(finding, limits, violations) {
   }
   const words = countWords(finding.prose);
   if (words > limits.maxWordsPerFinding) {
+    const over = words - limits.maxWordsPerFinding;
     violations.push({
       code: "finding_too_long",
       line: at,
-      message: `${words} words of prose; the limit is ${limits.maxWordsPerFinding}. The tag and \`path:line\` are not counted. Cut it or drop the finding.`
+      message: `finding at \`${finding.path}:${finding.line}\` [${finding.severity}]: ${words} words of prose, ${over} over the limit of ${limits.maxWordsPerFinding}. The tag and \`path:line\` are not counted. Cut at least ${over} words or drop the finding.`
     });
   }
   if (/[\u2013\u2014]/u.test(finding.prose)) {
