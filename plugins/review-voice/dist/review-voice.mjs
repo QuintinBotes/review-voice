@@ -3257,7 +3257,7 @@ function descriptionOf(thread) {
   const bodies = comments.filter((comment) => comment?.kind === "description").map((comment) => comment.body).filter((body) => typeof body === "string");
   return bodies.length === 0 ? null : bodies.join("\n");
 }
-function statementOf(rawEntry, at, sentences) {
+function statementOf(rawEntry, at, sentences, removed) {
   if (typeof rawEntry !== "object" || rawEntry === null || Array.isArray(rawEntry)) {
     return { value: null, problem: `${at} must be an object` };
   }
@@ -3292,11 +3292,10 @@ function statementOf(rawEntry, at, sentences) {
     if (reasonProblem !== null) return { value: null, problem: reasonProblem };
     reason2 = parsed.value;
   } else if (entry["reason"] !== void 0) {
-    return { value: null, problem: `${at}.reason belongs only on a deliberate statement` };
+    removed.push(`reason from ${id} (only a deliberate statement takes reason)`);
   }
-  if (entry["scope"] !== void 0 && (kind !== "goal" || entry["scope"] !== "complete")) {
-    return { value: null, problem: `${at}.scope may only be "complete", and only on a goal` };
-  }
+  const complete = kind === "goal" && entry["scope"] === "complete";
+  if (entry["scope"] !== void 0 && !complete) removed.push(`scope from ${id} (only a goal takes scope, and only "complete")`);
   return {
     value: {
       id,
@@ -3304,13 +3303,14 @@ function statementOf(rawEntry, at, sentences) {
       statement: statement.value,
       quote: quote2.value,
       ...reason2 === void 0 ? {} : { reason: reason2 },
-      ...entry["scope"] === "complete" ? { scope: "complete" } : {}
+      ...complete ? { scope: "complete" } : {}
     },
     problem: null
   };
 }
 function parseIntent(value, description) {
-  const refuse = (problem, dropped2 = []) => ({ value: null, problem, dropped: dropped2 });
+  const removed = [];
+  const refuse = (problem, dropped2 = []) => ({ value: null, problem, dropped: dropped2, removed });
   if (typeof value !== "object" || value === null || Array.isArray(value)) return refuse('expected {"statements": [...]}');
   const document = value;
   const extra = Object.keys(document).find((key) => key !== "statements");
@@ -3322,7 +3322,9 @@ function parseIntent(value, description) {
   const statements = [];
   const dropped = [];
   for (const [index, rawEntry] of raw.entries()) {
-    const parsed = statementOf(rawEntry, `statements[${index}]`, sentences);
+    const removedHere = [];
+    const parsed = statementOf(rawEntry, `statements[${index}]`, sentences, removedHere);
+    if (parsed.problem === null) removed.push(...removedHere);
     if (parsed.problem === null) statements.push(parsed.value);
     else {
       const id = rawEntry?.id;
@@ -3333,7 +3335,7 @@ function parseIntent(value, description) {
   const twice = ids.find((id, index) => ids.indexOf(id) !== index);
   if (twice !== void 0) return refuse(`id ${twice} is used by two statements`, dropped);
   if (raw.length > 0 && statements.length === 0) return refuse("no statement survives validation", dropped);
-  return { value: { statements }, problem: null, dropped };
+  return { value: { statements }, problem: null, dropped, removed };
 }
 
 // plugins/review-voice/src/diff/pull-request.ts
@@ -19465,6 +19467,7 @@ function checkIntentCommand(argv) {
   }
   const intent = parseIntent(document, description);
   for (const problem of intent.dropped) console.error(`${intent.problem === null ? "Dropped" : "Invalid"} statement ${problem}.`);
+  for (const note of intent.removed) console.error(`Removed ${note}.`);
   if (intent.problem !== null) {
     console.error(`Malformed intent - ${intent.problem}.`);
     console.error("Re-run the intent-extractor with the schema restated. Do not hand-translate its output.");

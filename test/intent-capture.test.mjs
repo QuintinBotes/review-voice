@@ -69,9 +69,7 @@ test('an empty statement list is valid', () => {
 
 for (const [name, statements, problem] of [
   ['an unknown kind', [{ ...goal, kind: 'wish', scope: undefined }], /kind must be one of/],
-  ['a reason on a non-deliberate statement', [{ ...goal, reason: 'Because.' }], /reason belongs only on a deliberate/],
   ['a deliberate statement with no reason', [{ ...deliberate, reason: undefined }], /reason must be non-empty/],
-  ['a scope on a non-goal', [{ ...deliberate, scope: 'complete' }], /scope may only be "complete", and only on a goal/],
   ['a quote not in the description', [{ ...goal, quote: 'All settings pages now use the new routes.' }], /quote does not occur in the pull request description/],
   ['more than 40 statements', Array.from({ length: 41 }, (_, i) => ({ ...goal, id: `int_${String(i + 1).padStart(3, '0')}` })), /at most 40 entries/],
   ['a statement over 300 characters', [{ ...goal, statement: 'x'.repeat(301) }], /statement must be at most 300 characters/],
@@ -111,12 +109,27 @@ test('check-intent reads a null scope or reason as left out', () => {
 
 test('check-intent drops each invalid statement with a warning and keeps the rest', () => {
   const short = { ...qa, id: 'int_004', quote: 'Routes renamed', statement: 'Routes are renamed.' };
-  const result = checkIntent([goal, { ...deliberate, reason: 'Because.' }, short, { ...qa, scope: 'complete' }]);
+  const result = checkIntent([goal, { ...deliberate, reason: 'Because.' }, short]);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout).statements.map((statement) => statement.id), ['int_001']);
   assert.match(result.stderr, /Dropped statement int_002 \(statements\[1\]\.reason must be at least 4 words/);
   assert.match(result.stderr, /Dropped statement int_004 \(statements\[2\]\.quote must be at least 4 words\)/);
-  assert.match(result.stderr, /Dropped statement int_003 \(statements\[3\]\.scope may only be "complete"/);
+});
+
+test('check-intent strips a misplaced scope or reason and keeps the statement', () => {
+  const result = checkIntent([
+    { ...goal, scope: 'all' },
+    { ...qa, scope: 'complete' },
+    { ...qa, id: 'int_004', reason: deliberate.reason },
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  const statements = JSON.parse(result.stdout).statements;
+  assert.deepEqual(statements.map((statement) => statement.id), ['int_001', 'int_003', 'int_004']);
+  assert.equal(statements.some((statement) => 'scope' in statement || 'reason' in statement), false);
+  assert.match(result.stderr, /Removed scope from int_001 \(only a goal takes scope, and only "complete"\)\./);
+  assert.match(result.stderr, /Removed scope from int_003 \(only a goal takes scope, and only "complete"\)\./);
+  assert.match(result.stderr, /Removed reason from int_004 \(only a deliberate statement takes reason\)\./);
+  assert.doesNotMatch(result.stderr, /Dropped statement/);
 });
 
 test('an invalid statement does not take the id of a later valid one', () => {
@@ -142,10 +155,10 @@ test('a negating or scoping label stays part of its sentence', () => {
 });
 
 test('check-intent refuses when no statement survives, listing every violation', () => {
-  const result = checkIntent([{ ...goal, kind: 'wish' }, { ...qa, reason: 'Because.' }]);
+  const result = checkIntent([{ ...goal, kind: 'wish' }, { ...qa, quote: 'Routes renamed', statement: 'Routes are renamed.' }]);
   assert.equal(result.status, 2);
   assert.match(result.stderr, /Invalid statement int_001 \(statements\[0\]\.kind must be one of/);
-  assert.match(result.stderr, /Invalid statement int_003 \(statements\[1\]\.reason belongs only on a deliberate/);
+  assert.match(result.stderr, /Invalid statement int_003 \(statements\[1\]\.quote must be at least 4 words/);
   assert.match(result.stderr, /no statement survives validation/);
 });
 

@@ -119,8 +119,12 @@ export function descriptionOf(thread: unknown): string | null {
   return bodies.length === 0 ? null : bodies.join('\n');
 }
 
-/** One statement of the extractor output, or the first rule it breaks. */
-function statementOf(rawEntry: unknown, at: string, sentences: Sentences): Parsed<IntentStatement> {
+/**
+ * One statement of the extractor output, or the first rule it breaks. A
+ * misplaced optional `scope` or `reason` is stripped and named in `removed`
+ * instead: the statement itself is still a valid author statement.
+ */
+function statementOf(rawEntry: unknown, at: string, sentences: Sentences, removed: string[]): Parsed<IntentStatement> {
   if (typeof rawEntry !== 'object' || rawEntry === null || Array.isArray(rawEntry)) {
     return { value: null, problem: `${at} must be an object` };
   }
@@ -159,11 +163,10 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences): Parse
     if (reasonProblem !== null) return { value: null, problem: reasonProblem };
     reason = parsed.value;
   } else if (entry['reason'] !== undefined) {
-    return { value: null, problem: `${at}.reason belongs only on a deliberate statement` };
+    removed.push(`reason from ${id} (only a deliberate statement takes reason)`);
   }
-  if (entry['scope'] !== undefined && (kind !== 'goal' || entry['scope'] !== 'complete')) {
-    return { value: null, problem: `${at}.scope may only be "complete", and only on a goal` };
-  }
+  const complete = kind === 'goal' && entry['scope'] === 'complete';
+  if (entry['scope'] !== undefined && !complete) removed.push(`scope from ${id} (only a goal takes scope, and only "complete")`);
 
   return {
     value: {
@@ -172,7 +175,7 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences): Parse
       statement: statement.value,
       quote: quote.value,
       ...(reason === undefined ? {} : { reason }),
-      ...(entry['scope'] === 'complete' ? { scope: 'complete' as const } : {}),
+      ...(complete ? { scope: 'complete' as const } : {}),
     },
     problem: null,
   };
@@ -182,11 +185,13 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences): Parse
  * Parses the intent-extractor output; every quote and reason must be a whole
  * sentence of `description`. A statement that breaks a rule is dropped and
  * named in `dropped`, so one bad entry does not cost the rest of the table;
- * the whole output is refused only when its shape is broken, two kept statements
- * share an id, or none survives.
+ * a misplaced optional key is stripped and named in `removed`. The whole
+ * output is refused only when its shape is broken, two kept statements share
+ * an id, or none survives.
  */
-export function parseIntent(value: unknown, description: string): Parsed<IntentDocument> & { dropped: string[] } {
-  const refuse = (problem: string, dropped: string[] = []) => ({ value: null, problem, dropped });
+export function parseIntent(value: unknown, description: string): Parsed<IntentDocument> & { dropped: string[]; removed: string[] } {
+  const removed: string[] = [];
+  const refuse = (problem: string, dropped: string[] = []) => ({ value: null, problem, dropped, removed });
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return refuse('expected {"statements": [...]}');
   const document = value as Record<string, unknown>;
   const extra = Object.keys(document).find((key) => key !== 'statements');
@@ -199,7 +204,10 @@ export function parseIntent(value: unknown, description: string): Parsed<IntentD
   const statements: IntentStatement[] = [];
   const dropped: string[] = [];
   for (const [index, rawEntry] of raw.entries()) {
-    const parsed = statementOf(rawEntry, `statements[${index}]`, sentences);
+    const removedHere: string[] = [];
+    const parsed = statementOf(rawEntry, `statements[${index}]`, sentences, removedHere);
+    // A dropped statement's stripped keys are moot; only report kept ones.
+    if (parsed.problem === null) removed.push(...removedHere);
     if (parsed.problem === null) statements.push(parsed.value);
     else {
       const id = (rawEntry as { id?: unknown } | null)?.id;
@@ -211,5 +219,5 @@ export function parseIntent(value: unknown, description: string): Parsed<IntentD
   const twice = ids.find((id, index) => ids.indexOf(id) !== index);
   if (twice !== undefined) return refuse(`id ${twice} is used by two statements`, dropped);
   if (raw.length > 0 && statements.length === 0) return refuse('no statement survives validation', dropped);
-  return { value: { statements }, problem: null, dropped };
+  return { value: { statements }, problem: null, dropped, removed };
 }
