@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   widened quote keeps any negation or condition the clause dropped. A clause
   that spans a boundary or sits in a longer sentence is still dropped. (#164)
 
+- An untraced stale consumer on a document graded above nit is still rejected,
+  but the rejection now says how to post it (`lower it with --severity
+  <id>=nit`), and an owner downgrade to nit lifts that rejection when it was
+  the only one. Code consumers still need the trace at any tier. (#166)
+
 ## [1.16.0] - 2026-10-22
 
 ### Changed

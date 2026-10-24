@@ -56,7 +56,7 @@ const stale = (over = {}) => ({
   ...over,
 });
 
-function score(dir, candidate, impactTraced = false) {
+function score(dir, candidate, impactTraced = false, extra = []) {
   const file = join(dir, 'verification.json');
   writeFileSync(
     file,
@@ -64,7 +64,7 @@ function score(dir, candidate, impactTraced = false) {
   );
   const r = spawnSync(
     process.execPath,
-    [bundle, 'score', '--verification', file, '--diff-file', writePatch(dir), '--min-score', '0.3'],
+    [bundle, 'score', '--verification', file, '--diff-file', writePatch(dir), '--min-score', '0.3', ...extra],
     { encoding: 'utf8', input: JSON.stringify({ candidates: [candidate] }), cwd: dir, env: { ...process.env, REVIEW_VOICE_DATA_DIR: dir } },
   );
   assert.equal(r.status, 0, r.stderr);
@@ -87,6 +87,24 @@ test('an untraced documentation consumer above nit is still rejected, and says w
     assert.equal(row.eligible, false);
     assert.match(row.rejectedBecause, /needs the verifier to trace the impact/);
     assert.match(row.rejectedBecause, /documentation consumer may go untraced only at nit and on the verifier's confidence, and this one is minor/);
+    assert.match(row.rejectedBecause, /lower it with `--severity cand_001=nit` to post it as a nit$/);
+  }));
+
+test('#166: an owner downgrade to nit makes an untraced documentation consumer eligible', () =>
+  withDir((dir) => {
+    const out = score(dir, stale({ category: 'correctness', severity: 'minor' }), false, ['--severity', 'cand_001=nit']);
+    const [row] = out.scores;
+    assert.equal(row.severity.severity, 'nit');
+    assert.equal(row.eligible, true, row.rejectedBecause);
+    assert.match(row.severity.reason, /held at nit by an explicit owner override/);
+    assert.equal(out.eligible.length, 1);
+  }));
+
+test('#166: an owner downgrade to nit does not lift the trace rule for a code consumer', () =>
+  withDir((dir) => {
+    const [row] = score(dir, stale({ path: 'src/report.ts', category: 'correctness', severity: 'minor' }), false, ['--severity', 'cand_001=nit']).scores;
+    assert.equal(row.eligible, false);
+    assert.match(row.rejectedBecause, /needs the verifier to trace the impact/);
   }));
 
 test('an untraced code consumer at nit is still rejected', () =>

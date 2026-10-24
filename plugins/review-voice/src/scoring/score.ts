@@ -371,6 +371,13 @@ function raisedBecause(result: DerivedSeverity, requested: string, why: string):
  */
 export const UNVERIFIABLE_CONFIDENCE = 0.6;
 
+/**
+ * How the owner posts an untraced documentation stale consumer the analyst
+ * graded above nit (#166): lower it to nit, where the documentation exception
+ * applies. `<id>` is replaced with the candidate id.
+ */
+export const DOCUMENT_NIT_HINT = 'lower it with `--severity <id>=nit` to post it as a nit';
+
 /** The rejection the unverifiable cap gives, so a caller can tell it from the others. */
 export const UNVERIFIABLE_REJECTION =
   'the claim could not be verified, so it cannot ship whatever it scores; `unverifiableBecause` names the trigger';
@@ -1565,7 +1572,7 @@ export function scoreCandidate(
             ? " on the analyst's confidence alone"
             : confidenceSource === 'unverifiable-cap'
               ? ' with context the verifier could not obtain'
-              : '')
+              : `; ${DOCUMENT_NIT_HINT.replace('<id>', candidate.candidateId)}`)
         : '');
     if (rejectedBecause === null) rejectedBecause = untraced;
     else if (rejectedBecause.startsWith('score ')) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
