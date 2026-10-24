@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changed. A run whose findings are all settled carries as clean, and
   `record --carried-from --files` applies the same rule. (#178)
 
+- When reach is unknown and a verified finding asked for a higher tier than
+  its category's legacy tier, `score` keeps the legacy tier but says the
+  request was not applied and names the override
+  (`--severity <id>=<requested>`), so a build broken for everyone is not
+  posted a tier low unnoticed. (#179)
+
 ## [1.17.0] - 2026-10-24
 
 ### Fixed
