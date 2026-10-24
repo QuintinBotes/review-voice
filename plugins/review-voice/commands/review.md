@@ -454,9 +454,11 @@ pass list: step 4 gates on the confidence it reports, because the verifier is
 the only stage that checked the claim against the repository. Without the file,
 scoring falls back to the analyst's opinion of its own work.
 
-**Check its shape at once:** pipe the file into `RV check-verification`. It
-runs the checks `score` runs on the same file and names the entry and field it
-refuses, such as an `evidence_quality` outside `high`, `medium` and `low`. If it
+**Check its shape at once:** pipe the file into
+`RV check-verification --candidates <tmpdir>/checked.json`. It runs the checks
+`score` runs on the same file and names the entry and field it refuses, such as
+an `evidence_quality` outside `high`, `medium` and `low`, or a kept candidate the
+verifier returned no entry for. If it
 exits 2, **relaunch the verifier once with the schema restated**, while its
 context is still warm, and do not translate its output by hand. If the second
 attempt is also malformed, say so and stop. The evidence verifier writes

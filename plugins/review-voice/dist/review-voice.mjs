@@ -16261,9 +16261,11 @@ var COMMAND_HELP = {
   "check-verification": {
     summary: "Validate verifier output from stdin, as score would",
     body: lines(
-      "review-voice check-verification",
-      "  Validate verifier output the way score would read it. Takes no flags.",
+      "review-voice check-verification [--candidates <path>]",
+      "  Validate verifier output the way score would read it.",
       "  Use verified and technical_confidence; verdict and confidence belong to the second pass.",
+      "  --candidates  check-candidates output (or a candidates array); refuses output that",
+      "                skips a kept candidate, so the verifier can be re-asked for it.",
       "",
       "Reads: the evidence-verifier output on stdin.",
       "Writes: JSON on stdout.",
@@ -19418,7 +19420,22 @@ function verificationProblem(list) {
   }
   return null;
 }
-function checkVerificationCommand() {
+function keptCandidateIds(value) {
+  const record2 = value;
+  const list = Array.isArray(value) ? value : Array.isArray(record2?.kept) ? record2.kept : Array.isArray(record2?.candidates) ? record2.candidates : [];
+  return list.map((entry) => entry?.candidate_id).filter((id) => typeof id === "string");
+}
+function checkVerificationCommand(argv) {
+  const candidatesFile = flag(argv, "--candidates");
+  let keptIds = null;
+  if (candidatesFile !== null) {
+    try {
+      keptIds = keptCandidateIds(JSON.parse(readFileSync6(candidatesFile, "utf8")));
+    } catch (error) {
+      console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
   let parsed;
   try {
     parsed = JSON.parse(readStdin());
@@ -19438,6 +19455,15 @@ function checkVerificationCommand() {
     console.error(`Malformed verification - ${problem}`);
     console.error("Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.");
     return 2;
+  }
+  if (keptIds !== null) {
+    const verified = new Set(list.map((entry) => entry.candidate_id));
+    const missing = keptIds.filter((id) => !verified.has(id));
+    if (missing.length > 0) {
+      for (const id of missing) console.error(`No verification for kept candidate ${id}.`);
+      console.error("Re-run the evidence-verifier for the missing candidates.");
+      return 2;
+    }
   }
   console.log(JSON.stringify({ valid: true, verifications: list.length }, null, 2));
   return 0;
@@ -19989,7 +20015,7 @@ ${topLevelHelp()}`);
     case "check-candidates":
       return checkCandidatesCommand(argv.slice(1));
     case "check-verification":
-      return checkVerificationCommand();
+      return checkVerificationCommand(argv.slice(1));
     case "check-simplification":
       return checkSimplificationCommand(argv.slice(1));
     case "check-intent":

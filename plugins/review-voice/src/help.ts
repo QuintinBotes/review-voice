@@ -118,9 +118,11 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   'check-verification': {
     summary: 'Validate verifier output from stdin, as score would',
     body: lines(
-      'review-voice check-verification',
-      '  Validate verifier output the way score would read it. Takes no flags.',
+      'review-voice check-verification [--candidates <path>]',
+      '  Validate verifier output the way score would read it.',
       '  Use verified and technical_confidence; verdict and confidence belong to the second pass.',
+      '  --candidates  check-candidates output (or a candidates array); refuses output that',
+      '                skips a kept candidate, so the verifier can be re-asked for it.',
       '',
       'Reads: the evidence-verifier output on stdin.',
       'Writes: JSON on stdout.',
