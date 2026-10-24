@@ -446,8 +446,11 @@ export interface ScoreBreakdown {
   eligible: boolean;
   /** Why it was rejected, when it was. */
   rejectedBecause: string | null;
-  /** Set by `score --promote`: the owner posted it past the gate that held it. */
-  ownerPromotion?: { gate: 'score' | 'confidence'; heldBecause: string };
+  /**
+   * Set by `score --promote`: the owner posted it past the gate that held it.
+   * `unverifiable` needs `--allow-unverifiable` and carries the owner's note.
+   */
+  ownerPromotion?: { gate: 'score' | 'confidence' | 'unverifiable'; heldBecause: string; ownerNote?: string };
   /**
    * The precedent that already states this finding at this location, when one
    * exists. Reported so `explain` can name what the corpus already said.

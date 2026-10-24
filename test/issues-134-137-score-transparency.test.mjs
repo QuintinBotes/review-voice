@@ -211,3 +211,45 @@ test('#137: the unverifiable cap names the required_context_missing item that ap
     assert.match(out.scores[0].unverifiableBecause, because);
     assert.deepEqual(out.unverified[0].requiredContextMissing, ['whether generated code imports the dependency']);
   }));
+
+const unverifiable = [
+  { candidate_id: 'cand_001', verified: true, technical_confidence: 0.7, required_context_missing: ['whether a follow-up change reorders the calls'] },
+];
+
+test('#163: --promote refuses an unverifiable-capped finding unless the owner explicitly allows it', () =>
+  withDir((dir) => {
+    repository(dir);
+    const refused = score(dir, unverifiable, ['--promote', 'cand_001']);
+    assert.equal(refused.status, 2);
+    assert.match(refused.stderr, /--allow-unverifiable/);
+    const noNote = score(dir, unverifiable, ['--promote', 'cand_001', '--allow-unverifiable']);
+    assert.equal(noNote.status, 2);
+    assert.match(noNote.stderr, /--allow-unverifiable needs --owner-note/);
+  }));
+
+test('#163: --allow-unverifiable with --owner-note promotes the finding and records the note', () =>
+  withDir((dir) => {
+    repository(dir);
+    const note = 'Cross-check confirmed the ordering at head; posting on the owner decision.';
+    const scored = score(dir, unverifiable, ['--promote', 'cand_001', '--allow-unverifiable', '--owner-note', note]);
+    assert.equal(scored.status, 0, scored.stderr);
+    const out = JSON.parse(scored.stdout);
+    assert.equal(out.eligible.length, 1);
+    assert.equal(out.scores[0].confidenceSource, 'unverifiable-cap');
+    assert.equal(out.scores[0].ownerPromotion.gate, 'unverifiable');
+    assert.equal(out.scores[0].ownerPromotion.ownerNote, note);
+
+    const scores = join(dir, 'scores.json');
+    writeFileSync(scores, scored.stdout);
+    const review = `[${out.eligible[0].severity}] \`ci/paths.ts:2\` - The renamed workflow path skips the required check.\n`;
+    const recorded = run(dir, ['record', '--scores', scores], review);
+    assert.equal(recorded.status, 0, recorded.stderr);
+    const db = openDatabase(databasePath({ REVIEW_VOICE_DATA_DIR: join(dir, 'data') }));
+    try {
+      const stored = runDetail(db, JSON.parse(recorded.stdout).reviewRunId).scores.find((e) => e.candidate_id === 'cand_001');
+      assert.equal(stored.ownerPromotion.gate, 'unverifiable');
+      assert.equal(stored.ownerPromotion.ownerNote, note);
+    } finally {
+      db.close();
+    }
+  }));
