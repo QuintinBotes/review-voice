@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unverifiable` with the note, in the scores and in `record`. Without the flag,
   promoting such a finding is refused and the message names it. (#163)
 
+- `check-intent` widens a quote or reason that is a clause of one sentence to
+  that whole sentence or list item, when it is at most 300 characters, and
+  notes it on stderr (`Widened quote of int_005 to its whole sentence`). The
+  widened quote keeps any negation or condition the clause dropped. A clause
+  that spans a boundary or sits in a longer sentence is still dropped. (#164)
+
 ## [1.16.0] - 2026-10-22
 
 ### Changed

@@ -102,6 +102,39 @@ function excerptProblem(quote: string, sentences: Sentences, name: string): stri
   return `${name} must be a whole sentence or list item of the description, not part of one`;
 }
 
+/**
+ * The whole sentence or list item a clause quote sits in, when that is a valid
+ * quote (#164). The whole-sentence rule exists so a quote never loses a
+ * negation or condition; widening keeps that guarantee and saves a statement
+ * the extractor quoted too narrowly. Null when the clause spans a boundary or
+ * the sentence is over the length cap.
+ */
+function widenToSentence(quote: string, sentences: Sentences): string | null {
+  const wanted = collapse(quote.replace(LIST_OR_HEADING, ''));
+  const at = sentences.text.indexOf(wanted);
+  if (at === -1) return null;
+  const end = at + wanted.length;
+  if ([...sentences.starts].some((start) => start > at && start < end)) return null;
+  const from = Math.max(...[...sentences.starts].filter((start) => start <= at));
+  let to = Math.min(...[...sentences.ends].filter((stop) => stop >= end && stop > from));
+  if (!Number.isFinite(to)) return null;
+  // A sentence end is recorded on both sides of its full stop; keep the stop.
+  if (/[.!?]/u.test(sentences.text[to] ?? '') && sentences.ends.has(to + 1)) to += 1;
+  const sentence = sentences.text.slice(from, to);
+  return sentence.length <= MAX_TEXT ? sentence : null;
+}
+
+/** A valid excerpt for `value`: as given, or widened to its sentence, with a note when widened. */
+function excerptOf(value: string, sentences: Sentences, name: string, id: string, notes: string[]): Parsed<string> {
+  const problem = excerptProblem(value, sentences, name);
+  if (problem === null) return { value, problem: null };
+  if (!problem.endsWith('not part of one')) return { value: null, problem };
+  const widened = widenToSentence(value, sentences);
+  if (widened === null || excerptProblem(widened, sentences, name) !== null) return { value: null, problem };
+  notes.push(`Widened ${name.split('.').pop()} of ${id} to its whole sentence`);
+  return { value: widened, problem: null };
+}
+
 function text(value: unknown, name: string): Parsed<string> {
   if (typeof value !== 'string' || value.trim().length === 0) return { value: null, problem: `${name} must be non-empty text` };
   if (value.length > MAX_TEXT) return { value: null, problem: `${name} must be at most ${MAX_TEXT} characters` };
@@ -144,10 +177,10 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences, remove
   }
   const statement = text(entry['statement'], `${at}.statement`);
   if (statement.problem !== null) return { value: null, problem: statement.problem };
-  const quote = text(entry['quote'], `${at}.quote`);
+  const rawQuote = text(entry['quote'], `${at}.quote`);
+  if (rawQuote.problem !== null) return { value: null, problem: rawQuote.problem };
+  const quote = excerptOf(rawQuote.value, sentences, `${at}.quote`, id, removed);
   if (quote.problem !== null) return { value: null, problem: quote.problem };
-  const quoteProblem = excerptProblem(quote.value, sentences, `${at}.quote`);
-  if (quoteProblem !== null) return { value: null, problem: quoteProblem };
   if (kind !== 'non-goal') {
     const quoted = significantWords(quote.value);
     if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
@@ -159,14 +192,14 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences, remove
   if (kind === 'deliberate') {
     const parsed = text(entry['reason'], `${at}.reason`);
     if (parsed.problem !== null) return { value: null, problem: `${parsed.problem} on a deliberate statement` };
-    const reasonProblem = excerptProblem(parsed.value, sentences, `${at}.reason`);
-    if (reasonProblem !== null) return { value: null, problem: reasonProblem };
-    reason = parsed.value;
+    const excerpt = excerptOf(parsed.value, sentences, `${at}.reason`, id, removed);
+    if (excerpt.problem !== null) return { value: null, problem: excerpt.problem };
+    reason = excerpt.value;
   } else if (entry['reason'] !== undefined) {
-    removed.push(`reason from ${id} (only a deliberate statement takes reason)`);
+    removed.push(`Removed reason from ${id} (only a deliberate statement takes reason)`);
   }
   const complete = kind === 'goal' && entry['scope'] === 'complete';
-  if (entry['scope'] !== undefined && !complete) removed.push(`scope from ${id} (only a goal takes scope, and only "complete")`);
+  if (entry['scope'] !== undefined && !complete) removed.push(`Removed scope from ${id} (only a goal takes scope, and only "complete")`);
 
   return {
     value: {
