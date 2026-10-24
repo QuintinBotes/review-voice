@@ -1401,9 +1401,23 @@ function ownerPromotions(argv: string[], candidates: readonly Candidate[]): Set<
  * verifier confirmed it and one numeric gate, which is preference, stopped it.
  * Anything else was stopped by a check of the claim itself.
  */
-function applyOwnerPromotion(breakdown: ScoreBreakdown): string | null {
+function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null): string | null {
   const gate = gateOf(breakdown.rejectedBecause);
   if (breakdown.eligible) return `--promote ${breakdown.candidateId}: it is already eligible.`;
+  // The unverifiable cap is a check of the claim, not a preference gate, so it
+  // only lifts on an explicit owner decision that is recorded with its reason (#163).
+  if (breakdown.confidenceSource === 'unverifiable-cap' && breakdown.rejectedBecause === UNVERIFIABLE_REJECTION) {
+    if (ownerNote === null) {
+      return (
+        `--promote ${breakdown.candidateId}: it is capped as unverifiable (${breakdown.unverifiableBecause}). ` +
+        'Pass --allow-unverifiable with --owner-note "<why>" to post it on the owner\'s decision.'
+      );
+    }
+    breakdown.ownerPromotion = { gate: 'unverifiable', heldBecause: breakdown.rejectedBecause, ownerNote };
+    breakdown.eligible = true;
+    breakdown.rejectedBecause = null;
+    return null;
+  }
   if (breakdown.confidenceSource !== 'verifier' || !Number.isFinite(breakdown.finalScore) || gate === null) {
     return (
       `--promote ${breakdown.candidateId}: only a verified finding held by the score or confidence gate alone ` +
@@ -1464,6 +1478,13 @@ function scoreCommand(argv: string[]): number {
     console.error(promotions);
     return 2;
   }
+  const allowUnverifiable = argv.includes('--allow-unverifiable');
+  const ownerNote = flag(argv, '--owner-note');
+  if (allowUnverifiable && (ownerNote === null || ownerNote.trim() === '')) {
+    console.error('--allow-unverifiable needs --owner-note "<why>": the run records why the owner posted it.');
+    return 2;
+  }
+  const unverifiableNote = allowUnverifiable ? ownerNote!.trim() : null;
 
   const thresholds = {
     technicalConfidence: Number(flag(argv, '--min-confidence') ?? DEFAULT_THRESHOLDS.technicalConfidence),
@@ -1801,7 +1822,7 @@ function scoreCommand(argv: string[]): number {
       }
 
       if (promotions.has(candidate.candidateId)) {
-        const problem = applyOwnerPromotion(breakdown);
+        const problem = applyOwnerPromotion(breakdown, unverifiableNote);
         if (problem !== null) {
           console.error(problem);
           return 2;

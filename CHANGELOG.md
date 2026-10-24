@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `excluded.documentationFiles`, so a threat-model file of English text is not
   marked high complexity. XSLT, project files and YAML are still counted. (#159)
 
+- `score --promote <id> --allow-unverifiable --owner-note "<why>"` lets the
+  owner post a finding capped as unverifiable. It becomes eligible at its scored
+  tier (category caps still apply) and `ownerPromotion` records gate
+  `unverifiable` with the note, in the scores and in `record`. Without the flag,
+  promoting such a finding is refused and the message names it. (#163)
+
 ## [1.16.0] - 2026-10-22
 
 ### Changed

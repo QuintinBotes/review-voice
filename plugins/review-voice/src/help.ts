@@ -336,6 +336,8 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  --min-score <n>           Final score gate (default 0.68)',
       '  --severity <id>=<tier>    Explicit owner downgrade (blocking, important, minor or nit; repeatable)',
       '  --promote <id>            Owner posts a belowGate finding past its gate (repeatable)',
+      '  --allow-unverifiable      With --promote: also lift the unverifiable cap; needs --owner-note',
+      '  --owner-note <text>       Why the owner posts an unverifiable finding; recorded with it',
       '  --repository <name>       Prefer precedents from this repository',
       '  --owner <login>           Owner whose precedents count; default from config',
       'Reads: candidates JSON on stdin.',

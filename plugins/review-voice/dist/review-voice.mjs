@@ -16480,6 +16480,8 @@ var COMMAND_HELP = {
       "  --min-score <n>           Final score gate (default 0.68)",
       "  --severity <id>=<tier>    Explicit owner downgrade (blocking, important, minor or nit; repeatable)",
       "  --promote <id>            Owner posts a belowGate finding past its gate (repeatable)",
+      "  --allow-unverifiable      With --promote: also lift the unverifiable cap; needs --owner-note",
+      "  --owner-note <text>       Why the owner posts an unverifiable finding; recorded with it",
       "  --repository <name>       Prefer precedents from this repository",
       "  --owner <login>           Owner whose precedents count; default from config",
       "Reads: candidates JSON on stdin.",
@@ -17691,9 +17693,18 @@ function ownerPromotions(argv, candidates) {
   }
   return promotions;
 }
-function applyOwnerPromotion(breakdown) {
+function applyOwnerPromotion(breakdown, ownerNote) {
   const gate = gateOf(breakdown.rejectedBecause);
   if (breakdown.eligible) return `--promote ${breakdown.candidateId}: it is already eligible.`;
+  if (breakdown.confidenceSource === "unverifiable-cap" && breakdown.rejectedBecause === UNVERIFIABLE_REJECTION) {
+    if (ownerNote === null) {
+      return `--promote ${breakdown.candidateId}: it is capped as unverifiable (${breakdown.unverifiableBecause}). Pass --allow-unverifiable with --owner-note "<why>" to post it on the owner's decision.`;
+    }
+    breakdown.ownerPromotion = { gate: "unverifiable", heldBecause: breakdown.rejectedBecause, ownerNote };
+    breakdown.eligible = true;
+    breakdown.rejectedBecause = null;
+    return null;
+  }
   if (breakdown.confidenceSource !== "verifier" || !Number.isFinite(breakdown.finalScore) || gate === null) {
     return `--promote ${breakdown.candidateId}: only a verified finding held by the score or confidence gate alone can be promoted, and this one was rejected because ${breakdown.rejectedBecause}.`;
   }
@@ -17741,6 +17752,13 @@ function scoreCommand(argv) {
     console.error(promotions);
     return 2;
   }
+  const allowUnverifiable = argv.includes("--allow-unverifiable");
+  const ownerNote = flag(argv, "--owner-note");
+  if (allowUnverifiable && (ownerNote === null || ownerNote.trim() === "")) {
+    console.error('--allow-unverifiable needs --owner-note "<why>": the run records why the owner posted it.');
+    return 2;
+  }
+  const unverifiableNote = allowUnverifiable ? ownerNote.trim() : null;
   const thresholds = {
     technicalConfidence: Number(flag(argv, "--min-confidence") ?? DEFAULT_THRESHOLDS.technicalConfidence),
     analystOnlyConfidence: Number(
@@ -17978,7 +17996,7 @@ function scoreCommand(argv) {
         }
       }
       if (promotions.has(candidate.candidateId)) {
-        const problem = applyOwnerPromotion(breakdown);
+        const problem = applyOwnerPromotion(breakdown, unverifiableNote);
         if (problem !== null) {
           console.error(problem);
           return 2;
