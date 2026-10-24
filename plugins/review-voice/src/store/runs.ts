@@ -86,8 +86,12 @@ export function partlyAddressedOf(value: unknown): PartlyAddressedFinding | unde
  * `below-gate` is a verified finding whose score fell short of the gate. It
  * says nothing against the finding, so the next review never treats it as a
  * reason to drop the same candidate.
+ *
+ * `owner-declined` is the owner's answer to a held finding put to them: not
+ * worth posting. It is set after the run by `decline` (#173) and holds a
+ * repeat back like `refuted`, including on a related pull request.
  */
-export type HeldVerdict = 'partly' | 'refuted' | 'unverified' | 'repeat' | 'below-gate';
+export type HeldVerdict = 'partly' | 'refuted' | 'unverified' | 'repeat' | 'below-gate' | 'owner-declined';
 
 export interface HeldFinding {
   path: string;
@@ -101,7 +105,7 @@ export interface HeldFinding {
   text?: string | undefined;
 }
 
-export const HELD_VERDICTS: readonly HeldVerdict[] = ['partly', 'refuted', 'unverified', 'repeat', 'below-gate'];
+export const HELD_VERDICTS: readonly HeldVerdict[] = ['partly', 'refuted', 'unverified', 'repeat', 'below-gate', 'owner-declined'];
 
 /** Null when the entry is well formed, else what is wrong with it. */
 export function heldProblem(entry: unknown): string | null {
@@ -416,6 +420,40 @@ function storedScope(raw: unknown): ReviewScope | null {
     // users from inspecting its otherwise intact review.
     return null;
   }
+}
+
+/**
+ * Marks the run's held findings at `path:line` as declined by the owner. The
+ * held entries are rewritten in place; everything else in the run is kept.
+ */
+export function declineHeld(
+  db: Database,
+  reviewRunId: string,
+  at: { path: string; line: number },
+  reason: string,
+): { ok: true; declined: number } | { ok: false; error: string } {
+  const row = db.prepare('SELECT output_json FROM review_runs WHERE review_run_id = ?').get(reviewRunId) as
+    | { output_json: string }
+    | undefined;
+  if (row === undefined) return { ok: false, error: `No recorded run ${reviewRunId}.` };
+  const parsed = JSON.parse(row.output_json) as { held?: unknown };
+  const held = Array.isArray(parsed.held) ? (parsed.held as HeldFinding[]) : [];
+  const matching = held.filter((entry) => entry.path === at.path && entry.line === at.line);
+  if (matching.length === 0) {
+    const anchors = held.map((entry) => `${entry.path}:${entry.line}`);
+    return {
+      ok: false,
+      error: `No held finding at ${at.path}:${at.line} in run ${reviewRunId}. ${anchors.length === 0 ? 'It holds none.' : `Held: ${anchors.join(', ')}.`}`,
+    };
+  }
+  for (const entry of matching) {
+    entry.verdict = 'owner-declined';
+    entry.source = 'owner';
+    entry.reason = reason;
+  }
+  db.prepare('UPDATE review_runs SET output_json = ? WHERE review_run_id = ?').run(JSON.stringify(parsed), reviewRunId);
+  recordAudit(db, 'held_declined', { type: 'review_run', id: reviewRunId }, { path: at.path, line: at.line });
+  return { ok: true, declined: matching.length };
 }
 
 /** Everything `explain` needs about a run, without re-deriving any of it. */

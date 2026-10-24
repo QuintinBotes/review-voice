@@ -6154,7 +6154,7 @@ function partlyAddressedOf(value) {
     addressed
   };
 }
-var HELD_VERDICTS = ["partly", "refuted", "unverified", "repeat", "below-gate"];
+var HELD_VERDICTS = ["partly", "refuted", "unverified", "repeat", "below-gate", "owner-declined"];
 function heldProblem(entry) {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "not an object";
   const e = entry;
@@ -6296,6 +6296,28 @@ function storedScope(raw) {
   } catch {
     return null;
   }
+}
+function declineHeld(db, reviewRunId, at, reason2) {
+  const row = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(reviewRunId);
+  if (row === void 0) return { ok: false, error: `No recorded run ${reviewRunId}.` };
+  const parsed = JSON.parse(row.output_json);
+  const held = Array.isArray(parsed.held) ? parsed.held : [];
+  const matching = held.filter((entry) => entry.path === at.path && entry.line === at.line);
+  if (matching.length === 0) {
+    const anchors = held.map((entry) => `${entry.path}:${entry.line}`);
+    return {
+      ok: false,
+      error: `No held finding at ${at.path}:${at.line} in run ${reviewRunId}. ${anchors.length === 0 ? "It holds none." : `Held: ${anchors.join(", ")}.`}`
+    };
+  }
+  for (const entry of matching) {
+    entry.verdict = "owner-declined";
+    entry.source = "owner";
+    entry.reason = reason2;
+  }
+  db.prepare("UPDATE review_runs SET output_json = ? WHERE review_run_id = ?").run(JSON.stringify(parsed), reviewRunId);
+  recordAudit(db, "held_declined", { type: "review_run", id: reviewRunId }, { path: at.path, line: at.line });
+  return { ok: true, declined: matching.length };
 }
 function runDetail(db, reviewRunId) {
   const row = reviewRunId === void 0 ? db.prepare("SELECT * FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get() : db.prepare("SELECT * FROM review_runs WHERE review_run_id = ?").get(reviewRunId);
@@ -16299,7 +16321,8 @@ var COMMAND_HELP = {
       "  --diff-file <path>     Require anchors on changed lines",
       "  --thread <path>        Drop thread repeats; flag near ones for the verifier",
       "  --owner <login>        Owner for --thread; default from config",
-      "  --held-from <run-id>   Drop or flag repeats of that run's held findings (needs --head)",
+      "  --held-from <run-ids>  Drop or flag repeats of those runs' held findings; several",
+      "                         run ids separated by commas, e.g. a stacked sibling's (needs --head)",
       "  --head <sha>           Head the candidates were produced against (with --held-from)",
       "  --intent <path>        intent.json from check-intent; every intent_ref must name a statement in it",
       "Reads: candidates JSON on stdin.",
@@ -16756,6 +16779,21 @@ var COMMAND_HELP = {
       "Reads: nothing on stdin.",
       "Writes: one feedback record to the local store.",
       "Exit codes: 0 recorded, 1 unknown finding, 2 bad invocation or action."
+    )
+  },
+  decline: {
+    summary: "Record that the owner declined a held finding",
+    body: lines(
+      "review-voice decline --run <run-id> <path:line> [--reason <text>]",
+      "  Mark the run's held finding at <path:line> as owner-declined, so a later",
+      "  check-candidates --held-from that names this run holds its repeat back.",
+      "",
+      "Flags:",
+      "  --run <run-id>         The recorded run holding the finding (required)",
+      "  --reason <text>        Why the owner declined it",
+      "Reads: nothing on stdin.",
+      "Writes: the run's held entry in the local store.",
+      "Exit codes: 0 recorded, 1 no such run or no held finding there, 2 bad invocation."
     )
   },
   status: {
@@ -19248,6 +19286,26 @@ function feedbackCommand(argv) {
     db.close();
   }
 }
+function declineCommand(argv) {
+  const runId = flag(argv, "--run");
+  const at = /^(.+):(\d+)$/u.exec(argv.find((arg) => /^[^-].*:\d+$/u.test(arg)) ?? "");
+  if (runId === null || at === null) {
+    console.error("Usage: decline --run <run-id> <path:line> [--reason <text>]");
+    return 2;
+  }
+  const db = openDatabase();
+  try {
+    const result = declineHeld(db, runId, { path: at[1], line: Number(at[2]) }, flag(argv, "--reason") ?? "declined by the owner");
+    if (!result.ok) {
+      console.error(result.error);
+      return 1;
+    }
+    console.log(`Recorded owner-declined for ${at[1]}:${at[2]} in run ${runId}.`);
+    return 0;
+  } finally {
+    db.close();
+  }
+}
 function explainCommand(argv) {
   const db = openDatabase();
   try {
@@ -19686,13 +19744,13 @@ function carriedHeldFindings(runId, head) {
     if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
     if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head.`);
     const entries = detail.held.filter(
-      (h) => h.verdict === "refuted" || h.verdict === "partly" || h.verdict === "repeat" || h.verdict === "below-gate"
+      (h) => h.verdict === "refuted" || h.verdict === "partly" || h.verdict === "repeat" || h.verdict === "below-gate" || h.verdict === "owner-declined"
     );
     const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: "" }));
     const result = carryFindings(inputs, detail.headRef, head, process.cwd());
     return result.carried.map((c) => {
       const entry = entries[Number(c.findingId)];
-      return { path: c.path, line: c.line, verdict: entry.verdict, reason: entry.reason, text: entry.text };
+      return { path: c.path, line: c.line, verdict: entry.verdict, reason: entry.reason, text: entry.text, runId };
     });
   } catch (error) {
     if (error instanceof CarryError) {
@@ -19837,7 +19895,7 @@ function checkCandidatesCommand(argv) {
     }
     const heldFrom = flag(argv, "--held-from");
     if (argv.includes("--held-from") && heldFrom === null) {
-      console.error("--held-from needs a run id.");
+      console.error("--held-from needs a run id, or several separated by commas.");
       return 2;
     }
     const headSha = flag(argv, "--head");
@@ -19867,7 +19925,8 @@ function checkCandidatesCommand(argv) {
         return 2;
       }
     }
-    const held = heldFrom === null || headSha === null ? [] : carriedHeldFindings(heldFrom, headSha);
+    const heldRuns = heldFrom === null ? [] : [...new Set(heldFrom.split(",").map((id) => id.trim()).filter((id) => id !== ""))];
+    const held = headSha === null ? [] : heldRuns.flatMap((runId) => carriedHeldFindings(runId, headSha));
     const owner = argv.includes("--thread") ? (flag(argv, "--owner") ?? configuredOwner())?.toLowerCase() ?? null : null;
     const isOwn = (comment) => owner !== null && comment.author.toLowerCase() === owner;
     const located = citedLocations(thread);
@@ -19898,7 +19957,7 @@ function checkCandidatesCommand(argv) {
           line: candidate.line,
           heldVerdict: heldMatch.entry.verdict,
           heldReason: heldMatch.entry.reason,
-          priorRunId: heldFrom
+          priorRunId: heldMatch.entry.runId
         });
         return;
       }
@@ -19908,7 +19967,8 @@ function checkCandidatesCommand(argv) {
         reason: heldMatch.entry.reason,
         excerpt: (heldMatch.entry.text ?? "").slice(0, 200),
         path: heldMatch.entry.path,
-        line: heldMatch.entry.line
+        line: heldMatch.entry.line,
+        priorRunId: heldMatch.entry.runId
       };
       const possible = possiblySaidOnThread(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located);
       if (possible !== null) {
@@ -20127,6 +20187,8 @@ ${topLevelHelp()}`);
       return carryCandidatesCommand(argv.slice(1));
     case "feedback":
       return feedbackCommand(argv.slice(1));
+    case "decline":
+      return declineCommand(argv.slice(1));
     case "status":
       return statusCommand();
     case "explain":

@@ -66,6 +66,7 @@ import {
   latestRun,
   recordedRunsForPull,
   runDetail,
+  declineHeld,
   heldProblem,
   type CarryMarker,
   CarryMismatch,
@@ -3330,6 +3331,27 @@ function feedbackCommand(argv: string[]): number {
   }
 }
 
+function declineCommand(argv: string[]): number {
+  const runId = flag(argv, '--run');
+  const at = /^(.+):(\d+)$/u.exec(argv.find((arg) => /^[^-].*:\d+$/u.test(arg)) ?? '');
+  if (runId === null || at === null) {
+    console.error('Usage: decline --run <run-id> <path:line> [--reason <text>]');
+    return 2;
+  }
+  const db = openDatabase();
+  try {
+    const result = declineHeld(db, runId, { path: at[1]!, line: Number(at[2]) }, flag(argv, '--reason') ?? 'declined by the owner');
+    if (!result.ok) {
+      console.error(result.error);
+      return 1;
+    }
+    console.log(`Recorded owner-declined for ${at[1]}:${at[2]} in run ${runId}.`);
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 function explainCommand(argv: string[]): number {
   const db = openDatabase();
   try {
@@ -3944,6 +3966,8 @@ interface CarriedHeld {
   verdict: string;
   reason: string;
   text?: string | undefined;
+  /** The run the entry was held in; one of several when `--held-from` lists related pull requests. */
+  runId: string;
 }
 
 /**
@@ -3966,13 +3990,18 @@ function carriedHeldFindings(runId: string, head: string): CarriedHeld[] {
     // so it argues for the candidate and never removes one (`matchHeld`). The
     // mark tells the verifier the same concern was already held below the gate.
     const entries = detail.held.filter(
-      (h) => h.verdict === 'refuted' || h.verdict === 'partly' || h.verdict === 'repeat' || h.verdict === 'below-gate',
+      (h) =>
+        h.verdict === 'refuted' ||
+        h.verdict === 'partly' ||
+        h.verdict === 'repeat' ||
+        h.verdict === 'below-gate' ||
+        h.verdict === 'owner-declined',
     );
     const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: '' }));
     const result = carryFindings(inputs, detail.headRef, head, process.cwd());
     return result.carried.map((c) => {
       const entry = entries[Number(c.findingId)] as HeldFinding;
-      return { path: c.path, line: c.line, verdict: entry.verdict, reason: entry.reason, text: entry.text };
+      return { path: c.path, line: c.line, verdict: entry.verdict, reason: entry.reason, text: entry.text, runId };
     });
   } catch (error) {
     if (error instanceof CarryError) {
@@ -4047,15 +4076,6 @@ function configuredOwner(): string | null {
 }
 
 /**
- * Checks analyst output against the candidate schema, before anything expensive
- * reads it.
- *
- * The same validation runs inside `score`, but `score` is the fourth stage. A
- * wrong-shaped output was not caught until after a full verification pass, and
- * on a real run that cost the only pass which found the best defect of the day.
- * Failing here costs one re-run of one agent.
- */
-/**
  * Marks candidates that overlap within the set (#162), without dropping any.
  * Two sources (analyst, a second model, another lane) often raise one concern,
  * and one anchor can carry two different concerns, so an anchor alone is not
@@ -4082,6 +4102,15 @@ function markSiblings(kept: Record<string, unknown>[]): void {
   });
 }
 
+/**
+ * Checks analyst output against the candidate schema, before anything expensive
+ * reads it.
+ *
+ * The same validation runs inside `score`, but `score` is the fourth stage. A
+ * wrong-shaped output was not caught until after a full verification pass, and
+ * on a real run that cost the only pass which found the best defect of the day.
+ * Failing here costs one re-run of one agent.
+ */
 function checkCandidatesCommand(argv: string[]): number {
   let raw: unknown[];
   try {
@@ -4186,7 +4215,7 @@ function checkCandidatesCommand(argv: string[]): number {
 
     const heldFrom = flag(argv, '--held-from');
     if (argv.includes('--held-from') && heldFrom === null) {
-      console.error('--held-from needs a run id.');
+      console.error('--held-from needs a run id, or several separated by commas.');
       return 2;
     }
     const headSha = flag(argv, '--head');
@@ -4223,7 +4252,10 @@ function checkCandidatesCommand(argv: string[]): number {
       }
     }
 
-    const held = heldFrom === null || headSha === null ? [] : carriedHeldFindings(heldFrom, headSha);
+    // Several runs when related pull requests (a stack) carry the same code, so
+    // an owner's decision on one holds on the others (#173).
+    const heldRuns = heldFrom === null ? [] : [...new Set(heldFrom.split(',').map((id) => id.trim()).filter((id) => id !== ''))];
+    const held = headSha === null ? [] : heldRuns.flatMap((runId) => carriedHeldFindings(runId, headSha));
 
     // The owner's own comments are told apart so the verifier knows whose point
     // it would be repeating. Logins compare without case, as GitHub's do.
@@ -4268,7 +4300,7 @@ function checkCandidatesCommand(argv: string[]): number {
           line: candidate.line,
           heldVerdict: heldMatch.entry.verdict,
           heldReason: heldMatch.entry.reason,
-          priorRunId: heldFrom,
+          priorRunId: heldMatch.entry.runId,
         });
         return;
       }
@@ -4284,6 +4316,7 @@ function checkCandidatesCommand(argv: string[]): number {
               excerpt: (heldMatch.entry.text ?? '').slice(0, 200),
               path: heldMatch.entry.path,
               line: heldMatch.entry.line,
+              priorRunId: heldMatch.entry.runId,
             };
       // A nearby anchored comment is the stronger lead, so it wins when both
       // match. A description match is never dropped here: wording cannot tell
@@ -4579,6 +4612,9 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'feedback':
       return feedbackCommand(argv.slice(1));
+
+    case 'decline':
+      return declineCommand(argv.slice(1));
 
     case 'status':
       return statusCommand();

@@ -14,6 +14,7 @@ export type AuditAction =
   | 'policy_approved'
   | 'policy_rolled_back'
   | 'feedback_recorded'
+  | 'held_declined'
   | 'purge'
   | 'prompt_injection_detected'
   | 'external_write_attempted'
