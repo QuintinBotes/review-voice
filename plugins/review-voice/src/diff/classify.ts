@@ -87,11 +87,13 @@ export function classify(path: string): FileClass {
  * Prose and plain-text data: reviewed like any other file, but not code, so
  * its words are not branches. A Markdown hunk once read as 26 decision points
  * because prose is full of `if`, `when` and `or` (docs/adr/0012). MDX is left
- * out of the list because it can carry components and their logic.
+ * out of the list because it can carry components and their logic. Plain XML
+ * is in: a threat-model document of element text read as 27 decision points
+ * (#159). XSLT, project files and YAML are not, since they carry conditions.
  */
 const DOCUMENTATION_EXTENSIONS = new Set([
   'md', 'markdown', 'mdown', 'mkd', 'rst', 'adoc', 'asciidoc',
-  'txt', 'text', 'org', 'rtf', 'tex', 'csv', 'tsv',
+  'txt', 'text', 'org', 'rtf', 'tex', 'csv', 'tsv', 'xml',
 ]);
 
 /** Text files that are code: a build script is not prose for its extension. */

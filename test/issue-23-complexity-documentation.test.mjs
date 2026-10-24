@@ -68,3 +68,15 @@ test('an assessment recorded before exclusions were reported still parses, as ex
   assert.equal(parseComplexity(older).excluded.documentationFiles, 0);
   assert.equal(parseComplexity({ ...older, excluded: { documentationFiles: -1 } }), null);
 });
+
+test('#159: an XML document of prose adds no decision points and is never the densest hunk', () => {
+  assert.equal(isDocumentation('security/threat-model.xml'), true);
+  const xml = ['<model>', ...prose.map((sentence) => `  <threat>${sentence}</threat>`), '</model>'];
+  const diff = patch('security/threat-model.xml', xml) + patch('src/a.ts', ['if (a) {}'], 3);
+  const files = [file('security/threat-model.xml'), file('src/a.ts')];
+  const result = assessComplexity(diff, files, { sensitivePaths: [], maxDecisionPoints: 5, maxHunkDecisionPoints: 2 });
+
+  assert.equal(result.level, 'normal');
+  assert.equal(result.decisionPoints, 1);
+  assert.equal(result.excluded.documentationFiles, 1);
+});

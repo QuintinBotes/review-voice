@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is re-asked instead of `score` silently falling back to the analyst's own
   confidence for it. The review flow passes `--candidates`. (#165)
 
+- Complexity no longer counts decision keywords in the prose of a plain `.xml`
+  document. XML is treated like other documentation and listed under
+  `excluded.documentationFiles`, so a threat-model file of English text is not
+  marked high complexity. XSLT, project files and YAML are still counted. (#159)
+
 ## [1.16.0] - 2026-10-22
 
 ### Changed
