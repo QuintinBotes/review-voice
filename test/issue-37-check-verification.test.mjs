@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,4 +66,41 @@ test('the verifier states the evidence_quality enum and the review checks the sh
   const stepThree = review.slice(review.indexOf('## Step 3 - Verify'), review.indexOf('## Step 3b'));
   assert.match(stepThree, /RV check-verification/);
   assert.match(stepThree, /relaunch the verifier once/);
+});
+
+function checkWith(payload, candidates) {
+  const data = mkdtempSync(join(tmpdir(), 'rv-check-verification-'));
+  try {
+    const file = join(data, 'checked.json');
+    writeFileSync(file, JSON.stringify(candidates));
+    const r = spawnSync(process.execPath, [bundle, 'check-verification', '--candidates', file], {
+      encoding: 'utf8',
+      input: JSON.stringify(payload),
+      cwd: data,
+      env: { ...process.env, REVIEW_VOICE_DATA_DIR: data },
+    });
+    return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+  } finally {
+    rmSync(data, { recursive: true, force: true });
+  }
+}
+
+const kept = { valid: true, kept: [{ candidate_id: 'cand_001' }, { candidate_id: 'tn_001' }], droppedAsRepeat: [] };
+
+test('#165: check-verification --candidates refuses output that skips a kept candidate, naming it', () => {
+  const r = checkWith([good], kept);
+  assert.equal(r.code, 2, r.stdout);
+  assert.match(r.stderr, /No verification for kept candidate tn_001/);
+  assert.match(r.stderr, /Re-run the evidence-verifier/);
+});
+
+test('#165: check-verification --candidates accepts output that covers every kept candidate', () => {
+  const r = checkWith([good, { ...good, candidate_id: 'tn_001' }], kept);
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), { valid: true, verifications: 2 });
+});
+
+test('#165: check-verification --candidates also reads a plain candidates array or {candidates}', () => {
+  assert.equal(checkWith([good], [{ candidate_id: 'cand_001' }]).code, 0);
+  assert.equal(checkWith([good], { candidates: [{ candidate_id: 'cand_001' }, { candidate_id: 'cand_002' }] }).code, 2);
 });

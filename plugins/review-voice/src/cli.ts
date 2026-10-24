@@ -3681,7 +3681,26 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
  * every earlier stage already spent, and relaunching it then meant a cold
  * start. Failing here costs one re-run of one agent while its context is warm.
  */
-function checkVerificationCommand(): number {
+/** Candidate ids from check-candidates output ({kept}), {candidates}, or a bare array. */
+function keptCandidateIds(value: unknown): string[] {
+  const record = value as { kept?: unknown; candidates?: unknown } | null;
+  const list = Array.isArray(value) ? value : Array.isArray(record?.kept) ? record.kept : Array.isArray(record?.candidates) ? record.candidates : [];
+  return list
+    .map((entry) => (entry as { candidate_id?: unknown } | null)?.candidate_id)
+    .filter((id): id is string => typeof id === 'string');
+}
+
+function checkVerificationCommand(argv: string[]): number {
+  const candidatesFile = flag(argv, '--candidates');
+  let keptIds: string[] | null = null;
+  if (candidatesFile !== null) {
+    try {
+      keptIds = keptCandidateIds(JSON.parse(readFileSync(candidatesFile, 'utf8')) as unknown);
+    } catch (error) {
+      console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(readStdin()) as unknown;
@@ -3702,6 +3721,17 @@ function checkVerificationCommand(): number {
     console.error(`Malformed verification - ${problem}`);
     console.error('Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.');
     return 2;
+  }
+  // A kept candidate the verifier skipped would otherwise score on the analyst's own
+  // confidence and read as weighed and held (#165).
+  if (keptIds !== null) {
+    const verified = new Set(list.map((entry) => (entry as { candidate_id?: unknown }).candidate_id));
+    const missing = keptIds.filter((id) => !verified.has(id));
+    if (missing.length > 0) {
+      for (const id of missing) console.error(`No verification for kept candidate ${id}.`);
+      console.error('Re-run the evidence-verifier for the missing candidates.');
+      return 2;
+    }
   }
   console.log(JSON.stringify({ valid: true, verifications: list.length }, null, 2));
   return 0;
@@ -4459,7 +4489,7 @@ async function dispatch(argv: string[]): Promise<number> {
       return checkCandidatesCommand(argv.slice(1));
 
     case 'check-verification':
-      return checkVerificationCommand();
+      return checkVerificationCommand(argv.slice(1));
 
     case 'check-simplification':
       return checkSimplificationCommand(argv.slice(1));

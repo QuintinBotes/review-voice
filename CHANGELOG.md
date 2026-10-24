@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   findings were separated by blank lines. The concise editor aims for 35 words
   and counts each finding before returning. (#161, #167)
 
+- `check-verification --candidates <checked.json>` refuses verifier output that
+  has no entry for a kept candidate and names each missing id, so the verifier
+  is re-asked instead of `score` silently falling back to the analyst's own
+  confidence for it. The review flow passes `--candidates`. (#165)
+
 ## [1.16.0] - 2026-10-22
 
 ### Changed
