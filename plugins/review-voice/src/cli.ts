@@ -3792,7 +3792,7 @@ function checkIntentCommand(argv: string[]): number {
 
   const intent = parseIntent(document, description);
   for (const problem of intent.dropped) console.error(`${intent.problem === null ? 'Dropped' : 'Invalid'} statement ${problem}.`);
-  for (const note of intent.removed) console.error(`Removed ${note}.`);
+  for (const note of intent.removed) console.error(`${note}.`);
   if (intent.problem !== null) {
     console.error(`Malformed intent - ${intent.problem}.`);
     console.error('Re-run the intent-extractor with the schema restated. Do not hand-translate its output.');

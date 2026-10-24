@@ -78,12 +78,6 @@ for (const [name, statements, problem] of [
   ['a quote under four words', [{ ...goal, quote: 'Routes renamed', statement: 'Routes are renamed.' }], /quote must be at least 4 words/],
   ['a quote without a word of its statement', [{ ...goal, statement: 'Search excludes archived items.' }], /shares no significant word with its statement/],
   ['a reason not in the description', [{ ...deliberate, reason: 'Archive indexing is too slow today.' }], /reason does not occur in the pull request description/],
-  ['a free-text reason that is part of a sentence', [{ ...deliberate, reason: 'Archive indexing ships in a later' }], /reason must be a whole sentence or list item/],
-  [
-    'a quote that drops the leading negation',
-    [{ id: 'int_005', kind: 'claim', statement: 'The legacy endpoint is removed everywhere.', quote: 'remove the legacy endpoint everywhere' }],
-    /quote must be a whole sentence or list item/,
-  ],
   ['whitespace-only text', [{ ...goal, statement: '   ' }], /statement must be non-empty text/],
 ]) {
   test(`check-intent refuses ${name}`, () => {
@@ -147,10 +141,12 @@ test('check-intent refuses two valid statements with one id', () => {
 
 test('a negating or scoping label stays part of its sentence', () => {
   const body = '- **Not in this change:** the cache rewrite moves to its own branch.\n' + '- [Out of scope](https://tracker.example/item): migrating the billing tables safely.';
-  for (const quote of ['the cache rewrite moves to its own branch.', 'migrating the billing tables safely.']) {
+  const labels = { 'the cache rewrite moves to its own branch.': /^\*\*Not in this change:\*\* the cache rewrite/, 'migrating the billing tables safely.': /^\[Out of scope\]/ };
+  for (const [quote, label] of Object.entries(labels)) {
     const result = checkIntent([{ id: 'int_001', kind: 'claim', statement: quote, quote }], body);
-    assert.equal(result.status, 2, quote);
-    assert.match(result.stderr, /whole sentence or list item/);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(JSON.parse(result.stdout).statements[0].quote, label);
+    assert.match(result.stderr, /Widened quote of int_001 to its whole sentence/);
   }
 });
 
@@ -180,8 +176,8 @@ test('check-intent reads a leading link or bold label as a sentence boundary', (
   assert.equal(result.stderr, '');
   assert.equal(JSON.parse(result.stdout).statements.length, 4);
   const partial = checkIntent([{ id: 'int_001', kind: 'claim', statement: 'The index is sortable.', quote: 'where `Id` is sortable.' }], body);
-  assert.equal(partial.status, 2);
-  assert.match(partial.stderr, /whole sentence or list item/);
+  assert.equal(partial.status, 0, partial.stderr);
+  assert.equal(JSON.parse(partial.stdout).statements[0].quote, 'Search now reads the new index, where `Id` is sortable.');
 });
 
 test('an intent_ref to a statement check-intent dropped fails check-candidates', () => {
@@ -205,11 +201,27 @@ test('check-intent needs the thread it validates quotes against', () => {
   assert.match(result.stderr, /--thread/);
 });
 
-test('check-intent refuses a mid-sentence quote even when wrapped across lines', () => {
+test('check-intent widens a mid-sentence quote across a wrapped line, keeping the negation', () => {
   const wrapped = 'We do not\nremove the legacy endpoint everywhere.';
   const result = checkIntent([{ id: 'int_001', kind: 'claim', statement: 'The legacy endpoint is removed.', quote: 'remove the legacy endpoint everywhere.' }], wrapped);
-  assert.equal(result.status, 2);
-  assert.match(result.stderr, /whole sentence or list item/);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).statements[0].quote, 'We do not remove the legacy endpoint everywhere.');
+});
+
+test('#164: a clause quote or reason is widened to its whole sentence, and a too-long sentence still drops', () => {
+  const negation = { id: 'int_005', kind: 'claim', statement: 'The legacy endpoint is removed everywhere.', quote: 'remove the legacy endpoint everywhere' };
+  const result = checkIntent([negation, { ...deliberate, reason: 'Archive indexing ships in a later' }]);
+  assert.equal(result.status, 0, result.stderr);
+  const [claim, choice] = JSON.parse(result.stdout).statements;
+  assert.equal(claim.quote, 'We do not remove the legacy endpoint everywhere; only the docs link changes.');
+  assert.equal(choice.reason, 'Archive indexing ships in a later change.');
+  assert.match(result.stderr, /Widened quote of int_005 to its whole sentence\./);
+  assert.match(result.stderr, /Widened reason of int_002 to its whole sentence\./);
+
+  const long = `The cache keeps every row ${'and every column '.repeat(20)}until the nightly job clears it.`;
+  const dropped = checkIntent([goal, { id: 'int_009', kind: 'claim', statement: 'The cache keeps every row.', quote: 'The cache keeps every row' }], `${description}\n\n${long}`);
+  assert.equal(dropped.status, 0, dropped.stderr);
+  assert.match(dropped.stderr, /Dropped statement int_009 \(statements\[1\]\.quote must be a whole sentence or list item/);
 });
 
 test('check-intent fails closed when the thread has no description', () => {
