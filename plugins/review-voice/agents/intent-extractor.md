@@ -50,11 +50,14 @@ Each statement has one `kind`:
 `statement` restates it in one short sentence, using the quote's own key
 words. `quote` is **the whole sentence (or full list item) that states it,
 verbatim**, copied character for character, at least four words and at most
-300 characters; a list marker may be left off. A quote must not drop a
+600 characters; a list marker may be left off. A quote must not drop a
 negation, condition or qualifier, so never start or stop it mid-sentence. The
 CLI refuses a quote that is not a whole sentence or list item of the
 description, so do not paraphrase, fix typos, or join sentences that are
-apart. A statement whose sentence is longer than 300 characters is left out.
+apart. A statement whose sentence is longer than 600 characters is left out.
+A short answer under a heading (`None.` under "Database changes") may be
+quoted as it stands when it is all the section says; the CLI records the
+heading with it. Keep `statement` itself under 300 characters.
 A leading link or bold label (`[label](url): `, `**Label.** `) is not part of
 the sentence after it; quote the sentence without it. Leave out keys that do
 not apply; never write null. Ids run `int_001`, `int_002`, and so on. At most

@@ -19,6 +19,8 @@ export interface IntentStatement {
   reason?: string;
   /** Only on a goal that asserts something about a whole set. */
   scope?: 'complete';
+  /** The heading a short `quote` answers, when the quote is that section's whole body (#164). Set by the CLI. */
+  heading?: string;
 }
 
 export interface IntentDocument {
@@ -30,7 +32,11 @@ type Parsed<T> = { value: T; problem: null } | { value: null; problem: string };
 export const INTENT_KINDS: readonly IntentKind[] = ['goal', 'non-goal', 'deliberate', 'claim', 'qa'];
 export const MAX_INTENT_STATEMENTS = 40;
 const MAX_TEXT = 300;
+// A quote is one whole sentence, so its own cap is looser than a statement's:
+// a long technical sentence has no shorter quote that keeps its conditions (#164).
+const MAX_QUOTE = 600;
 const MIN_QUOTE_WORDS = 4;
+const HEADING = /^\s*#{1,6}\s+/u;
 const ID = /^int_[0-9]{3,}$/;
 const LIST_OR_HEADING = /^\s*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?|#{1,6}\s+|>\s*)/u;
 // A leading `[label](url): `, bare URL and `: `, `**Label.**` or `**Label:**` reads as a label, not part of the sentence after it.
@@ -44,6 +50,8 @@ interface Sentences {
   text: string;
   starts: Set<number>;
   ends: Set<number>;
+  /** Each heading and the offsets of the body under it, up to the next heading. */
+  sections: { heading: string; from: number; to: number }[];
 }
 
 /**
@@ -58,6 +66,9 @@ function sentencesOf(description: string): Sentences {
   const ends = new Set<number>();
   let blank = false;
   let previousHeading = false;
+  const sections: Sentences['sections'] = [];
+  let open: Sentences['sections'][number] | null = null;
+  let contentEnd = 0;
   for (const line of description.split(/\r?\n/u)) {
     const marked = LIST_OR_HEADING.test(line);
     const content = collapse(line.replace(LIST_OR_HEADING, ''));
@@ -77,17 +88,26 @@ function sentencesOf(description: string): Sentences {
       ends.add(text.length + label[0].length);
       starts.add(text.length + label[0].length + 1);
     }
+    const heading = HEADING.test(line);
+    if (heading) {
+      if (open !== null && open.from !== -1) sections.push({ ...open, to: contentEnd });
+      open = { heading: content, from: -1, to: -1 };
+    } else if (open !== null && open.from === -1) {
+      open.from = text.length;
+    }
     text += content;
+    contentEnd = text.length;
     blank = false;
-    previousHeading = /^\s*#/u.test(line);
+    previousHeading = heading;
   }
+  if (open !== null && open.from !== -1) sections.push({ ...open, to: contentEnd });
   ends.add(text.length);
   for (const match of text.matchAll(/[.!?](?= |$)/gu)) {
     ends.add(match.index);
     ends.add(match.index + 1);
     starts.add(match.index + 2);
   }
-  return { text, starts, ends };
+  return { text, starts, ends, sections };
 }
 
 /** Problem with `quote` as a whole-sentence excerpt of the description, or null. */
@@ -121,7 +141,22 @@ function widenToSentence(quote: string, sentences: Sentences): string | null {
   // A sentence end is recorded on both sides of its full stop; keep the stop.
   if (/[.!?]/u.test(sentences.text[to] ?? '') && sentences.ends.has(to + 1)) to += 1;
   const sentence = sentences.text.slice(from, to);
-  return sentence.length <= MAX_TEXT ? sentence : null;
+  return sentence.length <= MAX_QUOTE ? sentence : null;
+}
+
+/**
+ * The heading a short quote answers, or null. Under four words a quote rarely
+ * carries its own subject ("None."), so it is kept only when it is the whole
+ * body of a section and the heading supplies the question it answers (#164).
+ */
+function answeredHeading(quote: string, sentences: Sentences): string | null {
+  const wanted = collapse(quote.replace(LIST_OR_HEADING, ''));
+  if (wanted === '' || wanted.split(' ').length >= MIN_QUOTE_WORDS) return null;
+  const section = sentences.sections.find(({ from, to }) => {
+    const body = sentences.text.slice(from, to);
+    return body === wanted || body === `${wanted}.`;
+  });
+  return section?.heading ?? null;
 }
 
 /** A valid excerpt for `value`: as given, or widened to its sentence, with a note when widened. */
@@ -135,9 +170,9 @@ function excerptOf(value: string, sentences: Sentences, name: string, id: string
   return { value: widened, problem: null };
 }
 
-function text(value: unknown, name: string): Parsed<string> {
+function text(value: unknown, name: string, max = MAX_TEXT): Parsed<string> {
   if (typeof value !== 'string' || value.trim().length === 0) return { value: null, problem: `${name} must be non-empty text` };
-  if (value.length > MAX_TEXT) return { value: null, problem: `${name} must be at most ${MAX_TEXT} characters` };
+  if (value.length > max) return { value: null, problem: `${name} must be at most ${max} characters` };
   return { value: value.trim(), problem: null };
 }
 
@@ -165,7 +200,7 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences, remove
   const entry = Object.fromEntries(
     Object.entries(rawEntry as Record<string, unknown>).filter(([key, value]) => !(value === null && (key === 'reason' || key === 'scope'))),
   );
-  const unexpected = Object.keys(entry).find((key) => !['id', 'kind', 'statement', 'quote', 'reason', 'scope'].includes(key));
+  const unexpected = Object.keys(entry).find((key) => !['id', 'kind', 'statement', 'quote', 'reason', 'scope', 'heading'].includes(key));
   if (unexpected !== undefined) return { value: null, problem: `${at} has an unexpected ${JSON.stringify(unexpected)} field` };
 
   const id = entry['id'];
@@ -177,12 +212,14 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences, remove
   }
   const statement = text(entry['statement'], `${at}.statement`);
   if (statement.problem !== null) return { value: null, problem: statement.problem };
-  const rawQuote = text(entry['quote'], `${at}.quote`);
+  const rawQuote = text(entry['quote'], `${at}.quote`, MAX_QUOTE);
   if (rawQuote.problem !== null) return { value: null, problem: rawQuote.problem };
-  const quote = excerptOf(rawQuote.value, sentences, `${at}.quote`, id, removed);
+  // A supplied heading is recomputed, so re-checking this command's output passes and a made-up one never does.
+  const heading = answeredHeading(rawQuote.value, sentences);
+  const quote: Parsed<string> = heading === null ? excerptOf(rawQuote.value, sentences, `${at}.quote`, id, removed) : rawQuote;
   if (quote.problem !== null) return { value: null, problem: quote.problem };
   if (kind !== 'non-goal') {
-    const quoted = significantWords(quote.value);
+    const quoted = significantWords(heading === null ? quote.value : `${heading} ${quote.value}`);
     if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
       return { value: null, problem: `${at}.quote shares no significant word with its statement` };
     }
@@ -190,7 +227,7 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences, remove
 
   let reason: string | undefined;
   if (kind === 'deliberate') {
-    const parsed = text(entry['reason'], `${at}.reason`);
+    const parsed = text(entry['reason'], `${at}.reason`, MAX_QUOTE);
     if (parsed.problem !== null) return { value: null, problem: `${parsed.problem} on a deliberate statement` };
     const excerpt = excerptOf(parsed.value, sentences, `${at}.reason`, id, removed);
     if (excerpt.problem !== null) return { value: null, problem: excerpt.problem };
@@ -209,6 +246,7 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences, remove
       quote: quote.value,
       ...(reason === undefined ? {} : { reason }),
       ...(complete ? { scope: 'complete' as const } : {}),
+      ...(heading === null ? {} : { heading }),
     },
     problem: null,
   };

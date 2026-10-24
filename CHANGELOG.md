@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `check-intent` keeps statements it used to drop for their quote's length:
+  a quote or reason may be one whole sentence of up to 600 characters (the
+  statement stays at 300), so a long technical sentence no longer has no
+  valid quote, and a clause of it widens to it. A quote under four words is
+  kept when it is the whole body of a section, such as `None.` under
+  "Database changes", and the statement records that `heading`. (#164)
+
 ## [1.17.0] - 2026-10-24
 
 ### Fixed
