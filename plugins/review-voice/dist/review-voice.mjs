@@ -1340,7 +1340,8 @@ var DOCUMENTATION_EXTENSIONS = /* @__PURE__ */ new Set([
   "rtf",
   "tex",
   "csv",
-  "tsv"
+  "tsv",
+  "xml"
 ]);
 var CODE_NAMES = /* @__PURE__ */ new Set(["cmakelists.txt"]);
 var DOCUMENTATION_NAMES = /* @__PURE__ */ new Set([
