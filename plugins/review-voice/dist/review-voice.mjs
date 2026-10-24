@@ -2686,6 +2686,7 @@ function raisedBecause(result, requested, why) {
   return { ...result, reason: `${result.reason}, raised above the requested ${requested} because ${why}` };
 }
 var UNVERIFIABLE_CONFIDENCE = 0.6;
+var DOCUMENT_NIT_HINT = "lower it with `--severity <id>=nit` to post it as a nit";
 var UNVERIFIABLE_REJECTION = "the claim could not be verified, so it cannot ship whatever it scores; `unverifiableBecause` names the trigger";
 var ADMITS_UNVERIFIABLE = [
   /\b(?:cannot|can not|could not|couldn't|unable to)\s+(?:be\s+)?(?:verif|confirm|check|establish|determin)/i,
@@ -3153,7 +3154,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
   const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit" && confidenceSource === "verifier";
   if (staleConsumer && verification2?.impactTraced !== true && !untracedDocumentNit) {
-    const untraced = "a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause (impact_traced: true)" + (isDocumentationPath(candidate.path) ? `; a documentation consumer may go untraced only at nit and on the verifier's confidence, and this one is ${severity.severity}` + (confidenceSource === "analyst" ? " on the analyst's confidence alone" : confidenceSource === "unverifiable-cap" ? " with context the verifier could not obtain" : "") : "");
+    const untraced = "a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause (impact_traced: true)" + (isDocumentationPath(candidate.path) ? `; a documentation consumer may go untraced only at nit and on the verifier's confidence, and this one is ${severity.severity}` + (confidenceSource === "analyst" ? " on the analyst's confidence alone" : confidenceSource === "unverifiable-cap" ? " with context the verifier could not obtain" : `; ${DOCUMENT_NIT_HINT.replace("<id>", candidate.candidateId)}`) : "");
     if (rejectedBecause === null) rejectedBecause = untraced;
     else if (rejectedBecause.startsWith("score ")) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
     else rejectedBecause = `${rejectedBecause}. Also: ${untraced}`;
@@ -17746,6 +17747,11 @@ function applyOwnerSeverityOverride(breakdown, override) {
     severity: override,
     reason: `${breakdown.severity.reason}, held at ${override} by an explicit owner override`
   };
+  const hint = DOCUMENT_NIT_HINT.replace("<id>", breakdown.candidateId);
+  if (override === "nit" && breakdown.rejectedBecause?.endsWith(hint) && !breakdown.rejectedBecause.includes(" Also: ")) {
+    breakdown.eligible = true;
+    breakdown.rejectedBecause = null;
+  }
   return null;
 }
 function scoreCommand(argv) {

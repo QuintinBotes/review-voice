@@ -126,6 +126,7 @@ import {
   isImpactClass,
   CONTEXT_KINDS,
   UNVERIFIABLE_REJECTION,
+  DOCUMENT_NIT_HINT,
   blockingContext,
   overlap,
   significantWords,
@@ -1445,6 +1446,13 @@ function applyOwnerSeverityOverride(breakdown: ScoreBreakdown, override: OwnerOv
     severity: override,
     reason: `${breakdown.severity.reason}, held at ${override} by an explicit owner override`,
   };
+  // At nit the documentation exception applies, so the rejection that pointed
+  // the owner here lifts, but only when it was the sole reason (#166).
+  const hint = DOCUMENT_NIT_HINT.replace('<id>', breakdown.candidateId);
+  if (override === 'nit' && breakdown.rejectedBecause?.endsWith(hint) && !breakdown.rejectedBecause.includes(' Also: ')) {
+    breakdown.eligible = true;
+    breakdown.rejectedBecause = null;
+  }
   return null;
 }
 
