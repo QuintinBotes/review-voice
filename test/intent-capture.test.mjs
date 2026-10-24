@@ -218,7 +218,7 @@ test('#164: a clause quote or reason is widened to its whole sentence, and a too
   assert.match(result.stderr, /Widened quote of int_005 to its whole sentence\./);
   assert.match(result.stderr, /Widened reason of int_002 to its whole sentence\./);
 
-  const long = `The cache keeps every row ${'and every column '.repeat(20)}until the nightly job clears it.`;
+  const long = `The cache keeps every row ${'and every column '.repeat(40)}until the nightly job clears it.`;
   const dropped = checkIntent([goal, { id: 'int_009', kind: 'claim', statement: 'The cache keeps every row.', quote: 'The cache keeps every row' }], `${description}\n\n${long}`);
   assert.equal(dropped.status, 0, dropped.stderr);
   assert.match(dropped.stderr, /Dropped statement int_009 \(statements\[1\]\.quote must be a whole sentence or list item/);

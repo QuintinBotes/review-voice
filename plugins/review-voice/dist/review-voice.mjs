@@ -3196,7 +3196,9 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
 var INTENT_KINDS = ["goal", "non-goal", "deliberate", "claim", "qa"];
 var MAX_INTENT_STATEMENTS = 40;
 var MAX_TEXT = 300;
+var MAX_QUOTE = 600;
 var MIN_QUOTE_WORDS = 4;
+var HEADING = /^\s*#{1,6}\s+/u;
 var ID = /^int_[0-9]{3,}$/;
 var LIST_OR_HEADING = /^\s*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?|#{1,6}\s+|>\s*)/u;
 var LEAD_LABEL = /^(?:(?:\[[^\]]*\]\([^)\s]+\)|https?:\/\/\S+):|\*\*[^*]+?[.:]\*\*)(?= |$)/u;
@@ -3208,6 +3210,9 @@ function sentencesOf(description) {
   const ends = /* @__PURE__ */ new Set();
   let blank = false;
   let previousHeading = false;
+  const sections2 = [];
+  let open = null;
+  let contentEnd = 0;
   for (const line2 of description.split(/\r?\n/u)) {
     const marked = LIST_OR_HEADING.test(line2);
     const content = collapse(line2.replace(LIST_OR_HEADING, ""));
@@ -3227,17 +3232,26 @@ function sentencesOf(description) {
       ends.add(text3.length + label2[0].length);
       starts.add(text3.length + label2[0].length + 1);
     }
+    const heading = HEADING.test(line2);
+    if (heading) {
+      if (open !== null && open.from !== -1) sections2.push({ ...open, to: contentEnd });
+      open = { heading: content, from: -1, to: -1 };
+    } else if (open !== null && open.from === -1) {
+      open.from = text3.length;
+    }
     text3 += content;
+    contentEnd = text3.length;
     blank = false;
-    previousHeading = /^\s*#/u.test(line2);
+    previousHeading = heading;
   }
+  if (open !== null && open.from !== -1) sections2.push({ ...open, to: contentEnd });
   ends.add(text3.length);
   for (const match of text3.matchAll(/[.!?](?= |$)/gu)) {
     ends.add(match.index);
     ends.add(match.index + 1);
     starts.add(match.index + 2);
   }
-  return { text: text3, starts, ends };
+  return { text: text3, starts, ends, sections: sections2 };
 }
 function excerptProblem(quote2, sentences, name) {
   const wanted = collapse(quote2.replace(LIST_OR_HEADING, ""));
@@ -3260,7 +3274,16 @@ function widenToSentence(quote2, sentences) {
   if (!Number.isFinite(to)) return null;
   if (/[.!?]/u.test(sentences.text[to] ?? "") && sentences.ends.has(to + 1)) to += 1;
   const sentence = sentences.text.slice(from, to);
-  return sentence.length <= MAX_TEXT ? sentence : null;
+  return sentence.length <= MAX_QUOTE ? sentence : null;
+}
+function answeredHeading(quote2, sentences) {
+  const wanted = collapse(quote2.replace(LIST_OR_HEADING, ""));
+  if (wanted === "" || wanted.split(" ").length >= MIN_QUOTE_WORDS) return null;
+  const section = sentences.sections.find(({ from, to }) => {
+    const body = sentences.text.slice(from, to);
+    return body === wanted || body === `${wanted}.`;
+  });
+  return section?.heading ?? null;
 }
 function excerptOf(value, sentences, name, id, notes) {
   const problem = excerptProblem(value, sentences, name);
@@ -3271,9 +3294,9 @@ function excerptOf(value, sentences, name, id, notes) {
   notes.push(`Widened ${name.split(".").pop()} of ${id} to its whole sentence`);
   return { value: widened, problem: null };
 }
-function text2(value, name) {
+function text2(value, name, max = MAX_TEXT) {
   if (typeof value !== "string" || value.trim().length === 0) return { value: null, problem: `${name} must be non-empty text` };
-  if (value.length > MAX_TEXT) return { value: null, problem: `${name} must be at most ${MAX_TEXT} characters` };
+  if (value.length > max) return { value: null, problem: `${name} must be at most ${max} characters` };
   return { value: value.trim(), problem: null };
 }
 function descriptionOf(thread) {
@@ -3289,7 +3312,7 @@ function statementOf(rawEntry, at, sentences, removed) {
   const entry = Object.fromEntries(
     Object.entries(rawEntry).filter(([key, value]) => !(value === null && (key === "reason" || key === "scope")))
   );
-  const unexpected = Object.keys(entry).find((key) => !["id", "kind", "statement", "quote", "reason", "scope"].includes(key));
+  const unexpected = Object.keys(entry).find((key) => !["id", "kind", "statement", "quote", "reason", "scope", "heading"].includes(key));
   if (unexpected !== void 0) return { value: null, problem: `${at} has an unexpected ${JSON.stringify(unexpected)} field` };
   const id = entry["id"];
   if (typeof id !== "string" || !ID.test(id)) return { value: null, problem: `${at}.id must match int_NNN` };
@@ -3299,19 +3322,20 @@ function statementOf(rawEntry, at, sentences, removed) {
   }
   const statement = text2(entry["statement"], `${at}.statement`);
   if (statement.problem !== null) return { value: null, problem: statement.problem };
-  const rawQuote = text2(entry["quote"], `${at}.quote`);
+  const rawQuote = text2(entry["quote"], `${at}.quote`, MAX_QUOTE);
   if (rawQuote.problem !== null) return { value: null, problem: rawQuote.problem };
-  const quote2 = excerptOf(rawQuote.value, sentences, `${at}.quote`, id, removed);
+  const heading = answeredHeading(rawQuote.value, sentences);
+  const quote2 = heading === null ? excerptOf(rawQuote.value, sentences, `${at}.quote`, id, removed) : rawQuote;
   if (quote2.problem !== null) return { value: null, problem: quote2.problem };
   if (kind !== "non-goal") {
-    const quoted = significantWords(quote2.value);
+    const quoted = significantWords(heading === null ? quote2.value : `${heading} ${quote2.value}`);
     if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
       return { value: null, problem: `${at}.quote shares no significant word with its statement` };
     }
   }
   let reason2;
   if (kind === "deliberate") {
-    const parsed = text2(entry["reason"], `${at}.reason`);
+    const parsed = text2(entry["reason"], `${at}.reason`, MAX_QUOTE);
     if (parsed.problem !== null) return { value: null, problem: `${parsed.problem} on a deliberate statement` };
     const excerpt = excerptOf(parsed.value, sentences, `${at}.reason`, id, removed);
     if (excerpt.problem !== null) return { value: null, problem: excerpt.problem };
@@ -3328,7 +3352,8 @@ function statementOf(rawEntry, at, sentences, removed) {
       statement: statement.value,
       quote: quote2.value,
       ...reason2 === void 0 ? {} : { reason: reason2 },
-      ...complete ? { scope: "complete" } : {}
+      ...complete ? { scope: "complete" } : {},
+      ...heading === null ? {} : { heading }
     },
     problem: null
   };
