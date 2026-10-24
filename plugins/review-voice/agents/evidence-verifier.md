@@ -125,6 +125,14 @@ Set `verified` to `false` for any rejection. In particular,
 behavior. Do not return ordinary candidate ids, confidence, severity, or
 commentary in this mode.
 
+## Candidates that overlap each other
+
+`possibleDuplicateOf: {candidate_id, kind}` names an earlier candidate in the
+same file whose claim says much the same thing, often from another source. If
+both make the same point, verify the earlier one and reject this one as a
+duplicate. `sharesAnchorWith` only lists other candidates on the same
+path:line; they may be different concerns, so verify each on its own.
+
 ## A candidate that may repeat a comment
 
 A candidate carrying `possibleRepeatOf` sits near an existing comment on the

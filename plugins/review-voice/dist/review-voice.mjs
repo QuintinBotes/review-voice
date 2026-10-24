@@ -19713,6 +19713,22 @@ function configuredOwner() {
     return null;
   }
 }
+function markSiblings(kept) {
+  const facts = kept.map((entry) => ({
+    id: String(entry["candidate_id"] ?? entry["candidateId"] ?? ""),
+    path: String(entry["path"] ?? ""),
+    line: Number(entry["line"]),
+    words: significantWords(String(entry["claim"] ?? ""))
+  }));
+  facts.forEach((fact, index) => {
+    const anchorSiblings = facts.filter((other, j) => j !== index && other.path === fact.path && other.line === fact.line).map((other) => other.id);
+    if (anchorSiblings.length > 0) kept[index]["sharesAnchorWith"] = anchorSiblings;
+    const earlier = facts.slice(0, index).find((other) => other.path === fact.path && fact.words.size > 0 && overlap(fact.words, other.words) >= SAME_FILE_REPEAT_OVERLAP);
+    if (earlier !== void 0) {
+      kept[index]["possibleDuplicateOf"] = { candidate_id: earlier.id, kind: earlier.line === fact.line ? "same-anchor" : "same-claim" };
+    }
+  });
+}
 function checkCandidatesCommand(argv) {
   let raw;
   try {
@@ -19901,6 +19917,7 @@ function checkCandidatesCommand(argv) {
         }
       );
     });
+    markSiblings(kept);
     console.log(
       JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld, ...extra }, null, 2)
     );
