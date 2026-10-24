@@ -52,6 +52,12 @@ export interface CarryResult {
   carried: CarriedFinding[];
   notCarried: NotCarriedFinding[];
   /**
+   * Findings on a file the pull request no longer changes, because the base
+   * already holds it (#178). They no longer belong to this pull request, so
+   * they are not serious-not-carried, and a run of only these is clean.
+   */
+  settled: HeldBackFinding[];
+  /**
    * Findings left out because the author resolved or dismissed them. They are
    * neither carried nor not carried, and are not serious-not-carried: the
    * author answered them, and the caller decides what that means.
@@ -60,8 +66,9 @@ export interface CarryResult {
   /**
    * The carried texts, blank-line separated, with each anchor moved to its new
    * line. A run that had no findings carries the contract's clean-review
-   * sentence, so the text passes `validate-output` and `record` as it is. Empty
-   * only when findings existed and none carried: that is not a clean review.
+   * sentence, so the text passes `validate-output` and `record` as it is, and so
+   * does a run whose findings were all settled. Empty only when findings existed
+   * and none carried for another reason: that is not a clean review.
    */
   output: string;
 }
@@ -188,6 +195,7 @@ export function carryFindings(
   head: string,
   cwd: string,
   hold: ReadonlyMap<string, string> = new Map(),
+  noLongerChanged: ReadonlySet<string> = new Set(),
 ): CarryResult {
   for (const ref of [previousHead, head]) {
     if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
@@ -196,6 +204,7 @@ export function carryFindings(
   const carried: CarriedFinding[] = [];
   const notCarried: NotCarriedFinding[] = [];
   const heldBack: HeldBackFinding[] = [];
+  const settled: HeldBackFinding[] = [];
 
   for (const finding of findings) {
     const holdReason = hold.get(finding.findingId);
@@ -205,6 +214,18 @@ export function carryFindings(
         path: finding.path,
         line: finding.line,
         reason: holdReason,
+        ...(finding.severity === undefined ? {} : { severity: finding.severity }),
+      });
+      continue;
+    }
+    // Checked before following the line: the base merge that took the file out
+    // of the pull request also moves its lines, which reads as a change.
+    if (noLongerChanged.has(finding.path)) {
+      settled.push({
+        findingId: finding.findingId,
+        path: finding.path,
+        line: finding.line,
+        reason: 'file no longer changed by the pull request',
         ...(finding.severity === undefined ? {} : { severity: finding.severity }),
       });
       continue;
@@ -230,8 +251,8 @@ export function carryFindings(
   }
 
   const output =
-    findings.length === 0 ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join('\n\n');
-  return { carried, notCarried, heldBack, output };
+    findings.length === settled.length ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join('\n\n');
+  return { carried, notCarried, heldBack, settled, output };
 }
 
 /** What a finding says after its anchor, whitespace collapsed so wrapping cannot matter. */

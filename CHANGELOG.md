@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kept when it is the whole body of a section, such as `None.` under
   "Database changes", and the statement records that `heading`. (#164)
 
+- `carry --files <files.json>` settles a finding on a file the pull request no
+  longer changes (`scope.noLongerChanged`, after a rebase onto a base that
+  already holds it) instead of refusing the follow-up as if that code had
+  changed. A run whose findings are all settled carries as clean, and
+  `record --carried-from --files` applies the same rule. (#178)
+
 ## [1.17.0] - 2026-10-24
 
 ### Fixed

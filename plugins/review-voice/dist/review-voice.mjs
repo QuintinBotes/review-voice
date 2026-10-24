@@ -5990,13 +5990,14 @@ function followLine(previousHead, head, path, line2, cwd) {
 function rewriteAnchor(text3, path, oldLine, line2) {
   return text3.replace(`\`${path}:${oldLine}\``, `\`${path}:${line2}\``);
 }
-function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map()) {
+function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map(), noLongerChanged = /* @__PURE__ */ new Set()) {
   for (const ref of [previousHead, head]) {
     if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
   }
   const carried = [];
   const notCarried = [];
   const heldBack = [];
+  const settled = [];
   for (const finding of findings) {
     const holdReason = hold.get(finding.findingId);
     if (holdReason !== void 0) {
@@ -6005,6 +6006,16 @@ function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */
         path: finding.path,
         line: finding.line,
         reason: holdReason,
+        ...finding.severity === void 0 ? {} : { severity: finding.severity }
+      });
+      continue;
+    }
+    if (noLongerChanged.has(finding.path)) {
+      settled.push({
+        findingId: finding.findingId,
+        path: finding.path,
+        line: finding.line,
+        reason: "file no longer changed by the pull request",
         ...finding.severity === void 0 ? {} : { severity: finding.severity }
       });
       continue;
@@ -6028,8 +6039,8 @@ function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */
       text: rewriteAnchor(finding.text, finding.path, finding.line, moved.line)
     });
   }
-  const output = findings.length === 0 ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join("\n\n");
-  return { carried, notCarried, heldBack, output };
+  const output = findings.length === settled.length ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join("\n\n");
+  return { carried, notCarried, heldBack, settled, output };
 }
 function findingBody(text3) {
   const joined = text3.replace(/\s+/g, " ").trim();
@@ -16700,7 +16711,7 @@ var COMMAND_HELP = {
   carry: {
     summary: "Carry an earlier run's untouched findings to a new head",
     body: lines(
-      "review-voice carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text] [--thread <path>]",
+      "review-voice carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text] [--thread <path>] [--files <path>]",
       "  Carry an earlier run's untouched findings to a new head. Commits are read from",
       "  the git repository in the working directory, which must be a clone of the run's",
       "  repository.",
@@ -16713,10 +16724,13 @@ var COMMAND_HELP = {
       "  --thread <path>        thread.json of the same pull request, from `thread`: a finding whose",
       "                         comment thread was resolved, or whose review was dismissed, is held",
       "                         back instead of carried. Without it a pull request run says so.",
-      "Reads: nothing on stdin; the local store, and --thread when given.",
+      "  --files <path>         files.json from `diff --pr`: a finding on a file in scope.noLongerChanged",
+      "                         (the base now holds it) is settled; a run of only these carries clean.",
+      "Reads: nothing on stdin; the local store, and --thread and --files when given.",
       "Writes: JSON (or with --text, the review text) on stdout; what did not carry on stderr.",
       "  JSON adds heldBack: {findingId, path, line, severity, reason}[], not counted as serious findings",
-      '  that did not carry; with --text each is on stderr as "Held back: ...".',
+      '  that did not carry; with --text each is on stderr as "Held back: ...". settled has the same',
+      '  shape, for findings on files the pull request no longer changes ("Settled: ..." with --text).',
       "Exit codes: 0 ok, 1 with --text nothing carried or a serious finding did not, 2 bad invocation."
     )
   },
@@ -18718,7 +18732,7 @@ function recordCommand(argv) {
         return 2;
       }
       try {
-        const result = carryForRun(db, carriedFrom, head, flag(argv, "--repository"), followUpThreadFile);
+        const result = carryForRun(db, carriedFrom, head, flag(argv, "--repository"), followUpThreadFile, filesFile);
         const serious = seriousNotCarried(result.notCarried);
         if (serious.length > 0) {
           console.error(
@@ -18834,7 +18848,7 @@ ${error.message}`);
     db.close();
   }
 }
-function carryForRun(db, runId, head, repository, threadFile = null) {
+function carryForRun(db, runId, head, repository, threadFile = null, filesFile = null) {
   const detail = runDetail(db, runId);
   if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
   if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head, so nothing can be carried from it.`);
@@ -18874,13 +18888,23 @@ function carryForRun(db, runId, head, repository, threadFile = null) {
     const thread = parseThreadFile(text3, threadFile, detail);
     hold = heldBackFindings(detail.findings, thread, detail, postedReviewIds(db, runId));
   }
-  return carryFindings(detail.findings, detail.headRef, head, root, hold);
+  let noLongerChanged = /* @__PURE__ */ new Set();
+  if (filesFile !== null) {
+    try {
+      const files = JSON.parse(readFileSync6(filesFile, "utf8"));
+      const listed = files.scope?.noLongerChanged;
+      noLongerChanged = new Set(Array.isArray(listed) ? listed.filter((path) => typeof path === "string") : []);
+    } catch (error) {
+      throw new CarryError(`Cannot read ${filesFile}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return carryFindings(detail.findings, detail.headRef, head, root, hold, noLongerChanged);
 }
 function carryCommand(argv) {
   const from = flag(argv, "--from");
   const head = flag(argv, "--head");
   if (from === null || head === null) {
-    console.error("Usage: carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text] [--thread <thread.json>]");
+    console.error("Usage: carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text] [--thread <thread.json>] [--files <files.json>]");
     return 2;
   }
   const threadFile = flag(argv, "--thread");
@@ -18888,9 +18912,14 @@ function carryCommand(argv) {
     console.error("--thread needs a thread JSON path.");
     return 2;
   }
+  const filesFile = flag(argv, "--files");
+  if (argv.includes("--files") && filesFile === null) {
+    console.error("--files needs the files.json path from `RV diff --pr`.");
+    return 2;
+  }
   const db = openDatabase();
   try {
-    const result = carryForRun(db, from, head, flag(argv, "--repository"), threadFile);
+    const result = carryForRun(db, from, head, flag(argv, "--repository"), threadFile, filesFile);
     if (threadFile === null && runDetail(db, from)?.pullNumber !== null) {
       console.error(
         "Findings the author resolved or dismissed on the pull request were not checked. Pass --thread <thread.json> from `RV thread` to hold them back."
@@ -18906,6 +18935,9 @@ function carryCommand(argv) {
     for (const held of result.heldBack) {
       const severity = held.severity === void 0 ? "" : ` (${held.severity})`;
       console.error(`Held back: ${held.findingId} ${held.path}:${held.line}${severity} - ${held.reason}`);
+    }
+    for (const settled of result.settled) {
+      console.error(`Settled: ${settled.findingId} ${settled.path}:${settled.line} - ${settled.reason}`);
     }
     const serious = seriousNotCarried(result.notCarried);
     if (serious.length > 0) {

@@ -2608,9 +2608,10 @@ function recordCommand(argv: string[]): number {
         return 2;
       }
       try {
-        // The same hold-back `carry --thread` made, so the text it printed is
+        // The same hold-back `carry --thread` made, and the same settling of
+        // files the pull request no longer changes, so the text it printed is
         // the text recorded here.
-        const result = carryForRun(db, carriedFrom, head, flag(argv, '--repository'), followUpThreadFile);
+        const result = carryForRun(db, carriedFrom, head, flag(argv, '--repository'), followUpThreadFile, filesFile);
         // A serious finding left behind may be what stopped an approval;
         // recording the rest would let the review approve without it.
         const serious = seriousNotCarried(result.notCarried);
@@ -2762,6 +2763,7 @@ function carryForRun(
   head: string,
   repository: string | null,
   threadFile: string | null = null,
+  filesFile: string | null = null,
 ): ReturnType<typeof carryFindings> {
   const detail = runDetail(db, runId);
   if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
@@ -2809,7 +2811,17 @@ function carryForRun(
     const thread = parseThreadFile(text, threadFile, detail);
     hold = heldBackFindings(detail.findings, thread, detail, postedReviewIds(db, runId));
   }
-  return carryFindings(detail.findings, detail.headRef, head, root, hold);
+  let noLongerChanged = new Set<string>();
+  if (filesFile !== null) {
+    try {
+      const files = JSON.parse(readFileSync(filesFile, 'utf8')) as { scope?: { noLongerChanged?: unknown } };
+      const listed = files.scope?.noLongerChanged;
+      noLongerChanged = new Set(Array.isArray(listed) ? listed.filter((path): path is string => typeof path === 'string') : []);
+    } catch (error) {
+      throw new CarryError(`Cannot read ${filesFile}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return carryFindings(detail.findings, detail.headRef, head, root, hold, noLongerChanged);
 }
 
 /**
@@ -2822,7 +2834,7 @@ function carryCommand(argv: string[]): number {
   const from = flag(argv, '--from');
   const head = flag(argv, '--head');
   if (from === null || head === null) {
-    console.error('Usage: carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text] [--thread <thread.json>]');
+    console.error('Usage: carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text] [--thread <thread.json>] [--files <files.json>]');
     return 2;
   }
   // What the author answered on the pull request: threads resolved, reviews dismissed.
@@ -2831,9 +2843,15 @@ function carryCommand(argv: string[]): number {
     console.error('--thread needs a thread JSON path.');
     return 2;
   }
+  // `RV diff --pr` output: its `scope.noLongerChanged` names files the base took over.
+  const filesFile = flag(argv, '--files');
+  if (argv.includes('--files') && filesFile === null) {
+    console.error('--files needs the files.json path from `RV diff --pr`.');
+    return 2;
+  }
   const db = openDatabase();
   try {
-    const result = carryForRun(db, from, head, flag(argv, '--repository'), threadFile);
+    const result = carryForRun(db, from, head, flag(argv, '--repository'), threadFile, filesFile);
     if (threadFile === null && runDetail(db, from)?.pullNumber !== null) {
       console.error(
         'Findings the author resolved or dismissed on the pull request were not checked. ' +
@@ -2852,6 +2870,9 @@ function carryCommand(argv: string[]): number {
     for (const held of result.heldBack) {
       const severity = held.severity === undefined ? '' : ` (${held.severity})`;
       console.error(`Held back: ${held.findingId} ${held.path}:${held.line}${severity} - ${held.reason}`);
+    }
+    for (const settled of result.settled) {
+      console.error(`Settled: ${settled.findingId} ${settled.path}:${settled.line} - ${settled.reason}`);
     }
     const serious = seriousNotCarried(result.notCarried);
     if (serious.length > 0) {
