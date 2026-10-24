@@ -4055,6 +4055,33 @@ function configuredOwner(): string | null {
  * on a real run that cost the only pass which found the best defect of the day.
  * Failing here costs one re-run of one agent.
  */
+/**
+ * Marks candidates that overlap within the set (#162), without dropping any.
+ * Two sources (analyst, a second model, another lane) often raise one concern,
+ * and one anchor can carry two different concerns, so an anchor alone is not
+ * a duplicate. `sharesAnchorWith` lists the others on the same path:line;
+ * `possibleDuplicateOf` names an earlier candidate in the same file whose claim
+ * says the same thing, for the verifier and the renderer to settle.
+ */
+function markSiblings(kept: Record<string, unknown>[]): void {
+  const facts = kept.map((entry) => ({
+    id: String(entry['candidate_id'] ?? entry['candidateId'] ?? ''),
+    path: String(entry['path'] ?? ''),
+    line: Number(entry['line']),
+    words: significantWords(String(entry['claim'] ?? '')),
+  }));
+  facts.forEach((fact, index) => {
+    const anchorSiblings = facts.filter((other, j) => j !== index && other.path === fact.path && other.line === fact.line).map((other) => other.id);
+    if (anchorSiblings.length > 0) kept[index]!['sharesAnchorWith'] = anchorSiblings;
+    const earlier = facts
+      .slice(0, index)
+      .find((other) => other.path === fact.path && fact.words.size > 0 && overlap(fact.words, other.words) >= SAME_FILE_REPEAT_OVERLAP);
+    if (earlier !== undefined) {
+      kept[index]!['possibleDuplicateOf'] = { candidate_id: earlier.id, kind: earlier.line === fact.line ? 'same-anchor' : 'same-claim' };
+    }
+  });
+}
+
 function checkCandidatesCommand(argv: string[]): number {
   let raw: unknown[];
   try {
@@ -4304,6 +4331,7 @@ function checkCandidatesCommand(argv: string[]): number {
             },
       );
     });
+    markSiblings(kept as Record<string, unknown>[]);
 
     console.log(
       JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld, ...extra }, null, 2),

@@ -48,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   <id>=nit`), and an owner downgrade to nit lifts that rejection when it was
   the only one. Code consumers still need the trace at any tier. (#166)
 
+- `check-candidates --thread` marks overlapping candidates within the set and
+  drops none: `sharesAnchorWith` lists others on the same path:line (they may
+  be different concerns), and `possibleDuplicateOf: {candidate_id, kind}` names
+  an earlier candidate in the same file with much the same claim (`same-anchor`
+  or `same-claim`). The evidence-verifier is told to verify the earlier one and
+  reject a true duplicate. (#162)
+
 ## [1.16.0] - 2026-10-22
 
 ### Changed
