@@ -3092,6 +3092,16 @@ function renderFix(candidate, verification2, thresholds) {
     reason: verifierReason ?? reason2
   };
 }
+function withLegacyTierHint(severity, candidate, verification2) {
+  const tiers = SEVERITIES;
+  const asked = tiers.indexOf(severity.requested);
+  if (severity.reach !== null || verification2?.verified !== true || severity.requested === "question") return severity;
+  if (asked === -1 || asked >= tiers.indexOf(severity.severity)) return severity;
+  return {
+    ...severity,
+    reason: `${severity.reason}; reach is unknown, so the requested ${severity.requested} was not applied. If it breaks things for the whole repository, raise it with \`--severity ${candidate.candidateId}=${severity.requested}\``
+  };
+}
 function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2) {
   const analystConfidence = candidate.technicalConfidence;
   const verifiedConfidence = verification2 === void 0 ? null : verifierConfidence(verification2.technicalConfidence, verification2.evidenceQuality);
@@ -3150,7 +3160,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
-  const severity = boundSeverityByEvidence(derivedSeverity, candidate, verification2);
+  const severity = withLegacyTierHint(boundSeverityByEvidence(derivedSeverity, candidate, verification2), candidate, verification2);
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
   const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit" && confidenceSource === "verifier";
   if (staleConsumer && verification2?.impactTraced !== true && !untracedDocumentNit) {

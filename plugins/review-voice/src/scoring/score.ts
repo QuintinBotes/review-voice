@@ -2,6 +2,7 @@ import type { Precedent } from '../retrieval/retrieve.ts';
 import type { ReachCheck } from './reach.ts';
 import { deriveSeverity, type DerivedSeverity } from './severity.ts';
 import { ESCALATION_CONFIDENCE, verifierConfidence } from './confidence.ts';
+import { SEVERITIES } from '../contract/limits.ts';
 
 /**
  * A candidate as the schema publishes it. `schemas/candidate.schema.json` is
@@ -1381,6 +1382,25 @@ function renderFix(
  * compute this would make the thresholds unfalsifiable, and the whole point of
  * a threshold is that it can be checked.
  */
+/**
+ * With reach unknown the category's legacy tier applies, whatever the request.
+ * When a verified finding asked for more, say so and name the owner override,
+ * since only the owner can tell that a pipeline or shared build is broken for
+ * everyone (#179). The tier itself is not raised: no evidence measured reach.
+ */
+function withLegacyTierHint(severity: DerivedSeverity, candidate: Candidate, verification: Verification | undefined): DerivedSeverity {
+  const tiers: readonly string[] = SEVERITIES;
+  const asked = tiers.indexOf(severity.requested);
+  if (severity.reach !== null || verification?.verified !== true || severity.requested === 'question') return severity;
+  if (asked === -1 || asked >= tiers.indexOf(severity.severity)) return severity;
+  return {
+    ...severity,
+    reason:
+      `${severity.reason}; reach is unknown, so the requested ${severity.requested} was not applied. ` +
+      `If it breaks things for the whole repository, raise it with \`--severity ${candidate.candidateId}=${severity.requested}\``,
+  };
+}
+
 export function scoreCandidate(
   candidate: Candidate,
   precedents: Precedent[],
@@ -1544,7 +1564,7 @@ export function scoreCandidate(
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
 
-  const severity = boundSeverityByEvidence(derivedSeverity, candidate, verification);
+  const severity = withLegacyTierHint(boundSeverityByEvidence(derivedSeverity, candidate, verification), candidate, verification);
 
   // A stale consumer sits on code the diff did not touch, so nothing in the
   // diff shows it breaking. Only the verifier following it back to its cause
