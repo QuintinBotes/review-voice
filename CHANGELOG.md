@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `decline --run <run-id> <path:line> [--reason]` records the owner's "skip"
+  on a held finding as the held verdict `owner-declined`, which holds a later
+  repeat back like `refuted`. `check-candidates --held-from` takes several run
+  ids separated by commas, so a stacked sibling's declined findings are read
+  too; `droppedAsHeld` and the `held` mark name the run as `priorRunId`. (#173)
+
 ### Fixed
 
 - `check-intent` keeps statements it used to drop for their quote's length:

@@ -403,6 +403,14 @@ and largely shares its wording; the mark carries the held finding's `path` and
 `line`. If the prior run cannot be read the command says so on stderr and
 keeps every candidate.
 
+`--held-from` takes several run ids separated by commas. Add the latest run of
+each related pull request (a stacked parent or sibling carrying the same code),
+so a finding the owner declined on one is not raised on the other. When the
+owner answers a held finding with "skip", record it on that run with
+`decline --run <run-id> <path:line> --reason "<why>"`; its verdict becomes
+`owner-declined`, which holds a repeat back like `refuted`. `droppedAsHeld`
+and the `held` mark name the run each entry came from as `priorRunId`.
+
 If there are no ordinary candidates and `simplificationEnabled` is false,
 output exactly `No actionable findings.` and stop. When it is true, retain the
 empty ordinary candidate and verification lists, skip ordinary verification

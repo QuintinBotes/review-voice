@@ -192,7 +192,10 @@ whether the candidate adds anything the held finding did not, such as another
 site, a different failure or new evidence, and reject a plain restatement. A
 verdict of `below-gate` means the earlier verifier confirmed the point but it
 fell under the confidence gate: it is not a refutation, so judge the candidate
-on its own evidence.
+on its own evidence. A verdict of `owner-declined` means the owner saw the
+point and chose not to post it, possibly on a related pull request
+(`priorRunId`): reject a restatement, and keep the candidate only for what is
+new in it.
 
 **Stated intent.** Behaviour the author describes as intentional in the
 description, whether a `deliberate` statement in `intent.json` or a sentence of
