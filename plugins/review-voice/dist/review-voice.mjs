@@ -6497,6 +6497,90 @@ function heldBackFindings(findings, thread, run, reviewIds) {
   return held;
 }
 
+// plugins/review-voice/src/review/plan.ts
+var MODES = ["fast", "standard", "thorough", "auto"];
+var MODEL_KEYS = ["intent", "analyst", "lanes", "verify", "tie-break", "challenge", "edit"];
+var SONNET = "sonnet";
+var OPUS = "opus";
+var THOROUGH_LINE_LIMIT = 150;
+function autoMode(input) {
+  if (!input.productionSourceChanged) return { mode: "fast", reason: "auto: no production source changed" };
+  if (input.complexity === "high") return { mode: "thorough", reason: "auto: complexity is high" };
+  if (input.productionLinesChanged > THOROUGH_LINE_LIMIT) {
+    return {
+      mode: "thorough",
+      reason: `auto: ${input.productionLinesChanged} production lines changed (over ${THOROUGH_LINE_LIMIT})`
+    };
+  }
+  return { mode: "standard", reason: "auto: production source changed within the standard limits" };
+}
+function resolvePlan(input) {
+  const overrides = input.models ?? {};
+  const chosen = input.requested === "auto" ? autoMode(input) : { mode: input.requested, reason: `mode set to ${input.requested}` };
+  const { mode } = chosen;
+  const fast = mode === "fast";
+  const thorough = mode === "thorough";
+  const diffLane = overrides.analyst ?? overrides.lanes ?? (thorough ? OPUS : SONNET);
+  const otherLanes = fast ? null : overrides.lanes ?? (thorough ? OPUS : SONNET);
+  const secondPass = input.secondPassConfigured && !fast;
+  return {
+    mode,
+    requested: input.requested,
+    reason: chosen.reason,
+    stages: {
+      intent: { run: true, model: overrides.intent ?? SONNET },
+      lanes: { run: true, model: diffLane },
+      // The verifier is a floor: no mode turns it off.
+      verify: { run: true, model: overrides.verify ?? (thorough ? OPUS : SONNET) },
+      // The second pass is a configured command, so it has no model of its own.
+      "second-pass": { run: secondPass, model: null },
+      "tie-break": { run: true, model: overrides["tie-break"] ?? (fast ? SONNET : OPUS) },
+      // In fast the stage is off by default; modelForFinding applies the floor for findings above a nit.
+      challenge: fast ? { run: false, model: null } : { run: true, model: overrides.challenge ?? (thorough ? OPUS : SONNET) },
+      edit: { run: true, model: overrides.edit ?? SONNET }
+    },
+    laneModels: { diff: diffLane, others: otherLanes },
+    overrides
+  };
+}
+function linesByPath(diffText) {
+  const counts = /* @__PURE__ */ new Map();
+  let current = null;
+  let inHunk = false;
+  for (const line2 of diffText.split("\n")) {
+    if (line2.startsWith("diff --git ")) {
+      const match = /^diff --git (?:"a\/.*?"|a\/\S+) ("b\/.*"|b\/.*)$/.exec(line2);
+      current = match === null ? null : unquoteGitPath(match[1]).slice(2);
+      inHunk = false;
+      continue;
+    }
+    if (current === null) continue;
+    if (line2.startsWith("@@")) {
+      inHunk = true;
+      continue;
+    }
+    if (inHunk && (line2.startsWith("+") || line2.startsWith("-"))) {
+      counts.set(current, (counts.get(current) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+function productionChange(files, diffText, partial, markedGenerated2 = /* @__PURE__ */ new Set()) {
+  const production = new Set(productionPaths(files, partial, markedGenerated2));
+  let fromDiff = null;
+  let lines2 = 0;
+  for (const file of files) {
+    if (!production.has(file.path)) continue;
+    if (Number.isFinite(file.additions) && Number.isFinite(file.deletions)) {
+      lines2 += file.additions + file.deletions;
+    } else {
+      fromDiff ??= linesByPath(diffText);
+      lines2 += fromDiff.get(file.path) ?? 0;
+    }
+  }
+  return { productionSourceChanged: production.size > 0, productionLinesChanged: lines2 };
+}
+
 // plugins/review-voice/src/diff/prior.ts
 import { execFileSync as execFileSync9 } from "node:child_process";
 function git3(args, cwd) {
@@ -13245,6 +13329,31 @@ function readStructure(block, result) {
     else result.warnings.push("review.structure.simplify must be true or false; using the default.");
   }
 }
+function readCostMode(review, result) {
+  const mode = review["mode"];
+  if (mode !== void 0) {
+    const known = MODES.find((candidate) => candidate === mode);
+    if (known === void 0) result.warnings.push(`review.mode must be one of ${MODES.join(", ")}; using auto.`);
+    else result.costMode.mode = known;
+  }
+  const models = review["models"];
+  if (models === void 0) return;
+  const block = asRecord(models);
+  if (block === null) {
+    result.warnings.push("review.models must be a map of stage to model name; ignoring it.");
+    return;
+  }
+  for (const [key, value] of Object.entries(block)) {
+    const known = MODEL_KEYS.find((candidate) => candidate === key);
+    if (known === void 0) {
+      result.warnings.push(`review.models.${key} is not a stage (${MODEL_KEYS.join(", ")}); ignoring it.`);
+    } else if (typeof value !== "string" || value.trim().length === 0) {
+      result.warnings.push(`review.models.${key} must be a model name; using the default.`);
+    } else {
+      result.costMode.models[known] = value.trim();
+    }
+  }
+}
 var GENERIC_SIGNATURE_WORDS = /* @__PURE__ */ new Set([
   "error",
   "errors",
@@ -13378,6 +13487,7 @@ function loadConfig(repositoryRoot2) {
       structure: { ...DEFAULT_HUMAN_REVIEW.structure }
     },
     structure: { ...DEFAULT_STRUCTURE },
+    costMode: { mode: "auto", models: {} },
     layers: [],
     unapproved: [],
     warnings: []
@@ -13446,6 +13556,7 @@ function loadConfig(repositoryRoot2) {
         if (review !== null) {
           readHumanReview(asRecord(review["human_review"]), result);
           readStructure(asRecord(review["structure"]), result);
+          readCostMode(review, result);
           result.layers.push({
             scope: { type: "repository", key: repositoryRoot2 },
             source: ".review-voice/config.yaml",
@@ -16744,6 +16855,24 @@ var COMMAND_HELP = {
       "Exit codes: 0 ok, 1 with --text nothing carried or a serious finding did not, 2 bad invocation."
     )
   },
+  plan: {
+    summary: "Print the stage plan a cost mode resolves to",
+    body: lines(
+      "review-voice plan --files <files.json> --diff-file <diff.patch> [--mode fast|standard|thorough|auto]",
+      "  Print which review stages run and on which model, as JSON (docs/adr/0025).",
+      "  `auto` picks fast when no production source changed, thorough when",
+      "  complexity is high or over 150 production lines changed, else standard.",
+      "",
+      "Flags:",
+      "  --files <path>         files.json from `diff --out` (required)",
+      "  --diff-file <path>     diff.patch from `diff --out` (required)",
+      "  --mode <mode>          fast, standard, thorough or auto; beats review.mode",
+      "Reads: --files, --diff-file, and review.mode, review.models and verification.enabled",
+      "  from .review-voice/config.yaml when the working directory has one.",
+      "Writes: the StagePlan JSON on stdout; config warnings on stderr.",
+      "Exit codes: 0 ok, 2 bad invocation or unreadable input."
+    )
+  },
   reanchor: {
     summary: "Move one scored candidate to a corrected changed line",
     body: lines(
@@ -17628,6 +17757,50 @@ function reviewTarget(argv, command) {
   const review = readStdin();
   if (review.trim().length === 0) return "Nothing on stdin. Pipe the validated review in.";
   return { repository, pullNumber, head, review, runId: flag(argv, "--run") ?? void 0 };
+}
+function planCommand(argv) {
+  const filesPath = flag(argv, "--files");
+  const diffPath = flag(argv, "--diff-file");
+  const modeFlag = flag(argv, "--mode");
+  const requested = MODES.find((mode) => mode === modeFlag);
+  if (filesPath === null || diffPath === null || argv.includes("--mode") && requested === void 0) {
+    console.error("Usage: plan --files <files.json> --diff-file <diff.patch> [--mode fast|standard|thorough|auto]");
+    return 2;
+  }
+  let manifest;
+  let diffText;
+  try {
+    const parsed = JSON.parse(readFileSync6(filesPath, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not a JSON object");
+    manifest = parsed;
+    diffText = readFileSync6(diffPath, "utf8");
+  } catch (error) {
+    console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const files = manifest["files"];
+  if (!Array.isArray(files) || !files.every((file) => typeof file === "object" && file !== null && typeof file.path === "string")) {
+    console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
+    return 2;
+  }
+  const config2 = repositoryConfig();
+  for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
+  const changed = files;
+  const generated = markedGenerated({ ...manifest, diff: diffText });
+  const change = productionChange(changed, diffText, config2?.humanReview, generated);
+  const complexity = asLevel(manifest["complexity"]);
+  const plan = resolvePlan({
+    requested: requested ?? config2?.costMode.mode ?? "auto",
+    models: config2?.costMode.models ?? {},
+    ...change,
+    complexity,
+    secondPassConfigured: config2?.verification.enabled ?? false
+  });
+  console.log(JSON.stringify(plan, null, 2));
+  return 0;
+}
+function asLevel(value) {
+  return typeof value === "object" && value !== null && value.level === "high" ? "high" : "normal";
 }
 function repositoryConfig() {
   try {
@@ -20223,6 +20396,8 @@ ${topLevelHelp()}`);
       return recordCommand(argv.slice(1));
     case "carry":
       return carryCommand(argv.slice(1));
+    case "plan":
+      return planCommand(argv.slice(1));
     case "reanchor":
       return reanchorCommand(argv.slice(1));
     case "carry-candidates":

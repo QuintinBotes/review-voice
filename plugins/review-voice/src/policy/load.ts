@@ -6,6 +6,7 @@ import type { PolicyLayer, ScopeType } from './schema.ts';
 import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publish/ci.ts';
 import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
 import { DEFAULT_STRUCTURE, type StructureConfig } from '../diff/structure.ts';
+import { MODEL_KEYS, MODES, type ModelOverrides, type RequestedMode } from '../review/plan.ts';
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
@@ -41,6 +42,8 @@ export interface LoadedConfig {
   humanReview: HumanReviewConfig;
   /** Limits and opt-ins for structural review. */
   structure: StructureConfig;
+  /** `review.mode` and `review.models` (docs/adr/0025). */
+  costMode: { mode: RequestedMode; models: ModelOverrides };
   layers: PolicyLayer[];
   /** Repository-supplied layers awaiting owner approval. */
   unapproved: { source: string; contentHash: string }[];
@@ -126,6 +129,34 @@ function readStructure(block: Record<string, unknown> | null, result: LoadedConf
   if (simplify !== undefined) {
     if (typeof simplify === 'boolean') result.structure.simplify = simplify;
     else result.warnings.push('review.structure.simplify must be true or false; using the default.');
+  }
+}
+
+/** An unknown mode or model key is reported and ignored, so a typo never changes what runs silently. */
+function readCostMode(review: Record<string, unknown>, result: LoadedConfig): void {
+  const mode = review['mode'];
+  if (mode !== undefined) {
+    const known = MODES.find((candidate) => candidate === mode);
+    if (known === undefined) result.warnings.push(`review.mode must be one of ${MODES.join(', ')}; using auto.`);
+    else result.costMode.mode = known;
+  }
+
+  const models = review['models'];
+  if (models === undefined) return;
+  const block = asRecord(models);
+  if (block === null) {
+    result.warnings.push('review.models must be a map of stage to model name; ignoring it.');
+    return;
+  }
+  for (const [key, value] of Object.entries(block)) {
+    const known = MODEL_KEYS.find((candidate) => candidate === key);
+    if (known === undefined) {
+      result.warnings.push(`review.models.${key} is not a stage (${MODEL_KEYS.join(', ')}); ignoring it.`);
+    } else if (typeof value !== 'string' || value.trim().length === 0) {
+      result.warnings.push(`review.models.${key} must be a model name; using the default.`);
+    } else {
+      result.costMode.models[known] = value.trim();
+    }
   }
 }
 
@@ -273,6 +304,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
       structure: { ...DEFAULT_HUMAN_REVIEW.structure },
     },
     structure: { ...DEFAULT_STRUCTURE },
+    costMode: { mode: 'auto', models: {} },
     layers: [],
     unapproved: [],
     warnings: [],
@@ -352,6 +384,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
           // The user's own config is trusted: they wrote it, in their checkout.
           readHumanReview(asRecord(review['human_review']), result);
           readStructure(asRecord(review['structure']), result);
+          readCostMode(review, result);
           result.layers.push({
             scope: { type: 'repository', key: repositoryRoot },
             source: '.review-voice/config.yaml',
