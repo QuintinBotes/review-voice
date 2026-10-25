@@ -163,9 +163,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `review.final_score_threshold` are now read as the defaults for `score
   --min-confidence` and `--min-score`, and the example shows 0.68 for the
   latter. An unknown top-level key in `config.yaml` warns. (#197)
+
 - `policies/baseline-global.yaml` is now the broadest policy layer, so a new
   install starts from it; a narrower layer can still only tighten it, and a
   missing file falls back to the built-in limits. (#198)
+
 - Only the owner's own feedback counts as the owner signal that lets `calibrate`
   mark a rule activatable; other actors still inform voice and precedent.
   (#203)
