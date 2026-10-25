@@ -33,9 +33,9 @@ request, and accepts only schema-valid output. Agents get no shell and no git.**
   `src/agents/`. Callers never build a command line.
 - **The `claude-cli` backend.** It runs `claude -p <prompt> --restricted
   --strict-mcp-config --no-session-persistence --system-prompt-file
-  agents/<name>.md --model <model> --tools <tools> --allowedTools <tools, with
-  Bash narrowed to Bash(git:*)> --json-schema <schema> --output-format json`,
-  with the clone as the working directory. It adds `--bare` when
+  agents/<name>.md --model <model> --tools <tools> --allowedTools <tools>
+  --add-dir <run dir> --json-schema <schema> --output-format json`, with a
+  checkout of the pull request head as the working directory. It adds `--bare` when
   `ANTHROPIC_API_KEY` is set, because bare mode skips OAuth and keychain reads.
 - **Tools come from the agent file, narrowed.** The runner reads the `tools:`
   frontmatter and keeps only Read, Grep and Glob. A declared `Bash(git:*)` is
