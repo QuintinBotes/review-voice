@@ -2,7 +2,7 @@
 
 // plugins/review-voice/src/cli.ts
 import { readFileSync as readFileSync11, readSync, writeFileSync as writeFileSync3, mkdirSync as mkdirSync4, statSync as statSync2, renameSync, rmSync as rmSync2, existsSync as existsSync8 } from "node:fs";
-import { dirname as dirname9, join as join13, resolve as resolve3 } from "node:path";
+import { dirname as dirname10, join as join13, resolve as resolve3 } from "node:path";
 import { execFileSync as execFileSync12 } from "node:child_process";
 import { format } from "node:util";
 
@@ -7557,7 +7557,8 @@ function feedbackTotals(db) {
 // plugins/review-voice/src/policy/load.ts
 import { readFileSync as readFileSync7, existsSync as existsSync4 } from "node:fs";
 import { createHash as createHash4 } from "node:crypto";
-import { join as join8 } from "node:path";
+import { dirname as dirname6, join as join8 } from "node:path";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
@@ -14433,6 +14434,49 @@ function layerFromPolicyFile(text4, source, fallbackKey) {
     priorities
   };
 }
+function pluginRoot2() {
+  let dir = dirname6(fileURLToPath4(import.meta.url));
+  while (!existsSync4(join8(dir, ".claude-plugin", "plugin.json")) && dirname6(dir) !== dir) dir = dirname6(dir);
+  return dir;
+}
+function loadBaselineLayer(owner, path = join8(pluginRoot2(), "policies", "baseline-global.yaml")) {
+  if (!existsSync4(path)) return null;
+  try {
+    const doc = asRecord(parse(readFileSync7(path, "utf8")));
+    if (doc === null) return null;
+    const voice = asRecord(doc["voice"]);
+    const maxFindings = positiveInt(voice?.["max_findings"]);
+    const maxWords = positiveInt(voice?.["max_words_per_finding"]);
+    const maxTotal = positiveInt(voice?.["max_total_words"]);
+    return {
+      scope: { type: "global", key: owner ?? "owner" },
+      source: "policies/baseline-global.yaml",
+      requiresApproval: false,
+      ...maxFindings === void 0 ? {} : { maxFindings },
+      ...maxWords === void 0 ? {} : { maxWordsPerFinding: maxWords },
+      ...maxTotal === void 0 ? {} : { maxTotalWords: maxTotal },
+      forbiddenPhrases: asStringArray(doc["forbidden_phrases"]),
+      suppressedPatterns: asStringArray(doc["suppressed_patterns"]),
+      priorities: asStringArray(doc["priorities"]).map((category) => ({ category, weight: "normal" }))
+    };
+  } catch {
+    return null;
+  }
+}
+var KNOWN_TOP_LEVEL = ["identity", "repositories", "review", "ci", "verdict", "static_evidence", "verification", "queue", "writes"];
+function readThresholds(review, result) {
+  const read = (key) => {
+    const value = review[key];
+    if (value === void 0) return void 0;
+    if (typeof value === "number" && value > 0 && value <= 1) return value;
+    result.warnings.push(`review.${key} must be a number above 0 and at most 1; using the default.`);
+    return void 0;
+  };
+  const confidence = read("confidence_threshold");
+  const score2 = read("final_score_threshold");
+  if (confidence !== void 0) result.thresholds.technicalConfidence = confidence;
+  if (score2 !== void 0) result.thresholds.finalScore = score2;
+}
 function readReviewers(identity2, result) {
   const raw = identity2?.["reviewers"];
   const listed = [];
@@ -14457,7 +14501,7 @@ function readReviewers(identity2, result) {
   }
   result.reviewers = listed;
 }
-function loadConfig(repositoryRoot2) {
+function loadConfig(repositoryRoot2, baselinePath) {
   const result = {
     ownerReviewer: null,
     reviewers: [],
@@ -14480,6 +14524,7 @@ function loadConfig(repositoryRoot2) {
     costMode: { mode: "auto", models: {} },
     verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
     lanes: [DIFF_LANE],
+    thresholds: {},
     layers: [],
     unapproved: [],
     warnings: []
@@ -14489,6 +14534,9 @@ function loadConfig(repositoryRoot2) {
     try {
       const doc = asRecord(parse(readFileSync7(configPath, "utf8")));
       if (doc !== null) {
+        for (const key of Object.keys(doc)) {
+          if (!KNOWN_TOP_LEVEL.includes(key)) result.warnings.push(`${key} is not a setting Review Voice reads; ignoring it.`);
+        }
         const identity2 = asRecord(doc["identity"]);
         if (typeof identity2?.["owner_reviewer"] === "string") {
           result.ownerReviewer = identity2["owner_reviewer"];
@@ -14563,6 +14611,7 @@ function loadConfig(repositoryRoot2) {
           readHumanReview(asRecord(review["human_review"]), result);
           readStructure(asRecord(review["structure"]), result);
           readCostMode(review, result);
+          readThresholds(review, result);
           readLanes(review["lanes"], result);
           result.layers.push({
             scope: { type: "repository", key: repositoryRoot2 },
@@ -14578,6 +14627,8 @@ function loadConfig(repositoryRoot2) {
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }
   }
+  const baseline = loadBaselineLayer(result.ownerReviewer, baselinePath);
+  if (baseline !== null) result.layers.unshift(baseline);
   const policyPath = join8(repositoryRoot2, ".review-voice", "policy.yaml");
   if (existsSync4(policyPath)) {
     try {
@@ -15705,7 +15756,7 @@ function scaledRepositoryShare(repositoryCount) {
 
 // plugins/review-voice/src/conventions/discover.ts
 import { existsSync as existsSync5, readFileSync as readFileSync8, readdirSync, statSync } from "node:fs";
-import { dirname as dirname6, join as join9, sep } from "node:path";
+import { dirname as dirname7, join as join9, sep } from "node:path";
 var REPOSITORY_FILES = [
   { path: "CLAUDE.md", kind: "claude" },
   { path: ".claude/CLAUDE.md", kind: "claude" },
@@ -15860,11 +15911,11 @@ function ancestors(changedPath) {
   return out;
 }
 function resolvePointer(root, pointerPath, target) {
-  const own = dirname6(pointerPath);
+  const own = dirname7(pointerPath);
   const candidates = own === "." || own === "" ? [] : [join9(own, target)];
-  let directory = dirname6(pointerPath);
+  let directory = dirname7(pointerPath);
   while (directory !== "." && directory !== "" && directory !== sep) {
-    const base = dirname6(directory);
+    const base = dirname7(directory);
     const name = directory.split(sep).pop();
     if (name === ".claude" || name === ".agents") candidates.push(join9(base === "." ? "" : base, target));
     directory = base;
@@ -16302,7 +16353,8 @@ function corpusCoverage(db, options = {}) {
       }
     }
   }
-  if (total > 0 && (byRole["owner"] ?? 0) === 0) {
+  const ownerAuthored = options.ownerReviewer === void 0 || options.ownerReviewer === null ? byRole["owner"] ?? 0 : db.prepare("SELECT COUNT(*) AS n FROM review_events WHERE LOWER(reviewer_login) = LOWER(?)").get(options.ownerReviewer).n;
+  if (total > 0 && ownerAuthored === 0) {
     warnings.push(
       "No events authored by the owner reviewer. Policy rules need at least one owner signal, so nothing in this corpus can activate a rule. Check identity.owner_reviewer matches your GitHub login."
     );
@@ -16837,13 +16889,13 @@ function resolveSyncWindow(input, now = /* @__PURE__ */ new Date()) {
 
 // plugins/review-voice/src/retrieval/baseline.ts
 import { existsSync as existsSync6, readFileSync as readFileSync9 } from "node:fs";
-import { dirname as dirname7, join as join10 } from "node:path";
-import { fileURLToPath as fileURLToPath4 } from "node:url";
+import { dirname as dirname8, join as join10 } from "node:path";
+import { fileURLToPath as fileURLToPath5 } from "node:url";
 function isCorpusEmpty(db) {
   return db.prepare("SELECT COUNT(*) AS n FROM review_events").get().n === 0;
 }
 function baselineVoice() {
-  const here = dirname7(fileURLToPath4(import.meta.url));
+  const here = dirname8(fileURLToPath5(import.meta.url));
   for (const relative2 of ["..", "../.."]) {
     const candidate = join10(here, relative2, "templates", "voice.baseline.md");
     if (existsSync6(candidate)) return readFileSync9(candidate, "utf8").trim();
@@ -16891,7 +16943,7 @@ function label(row) {
 }
 function compileProposals(db) {
   const rows = db.prepare(
-    `SELECT f.action, f.finding_id, f.review_run_id, f.reason, f.created_at, r.output_json
+    `SELECT f.action, f.actor, f.finding_id, f.review_run_id, f.reason, f.created_at, r.output_json
        FROM feedback f
        JOIN review_runs r ON r.review_run_id = f.review_run_id
        ORDER BY f.created_at DESC`
@@ -16917,8 +16969,9 @@ function compileProposals(db) {
       keeps,
       dismissals,
       rewrites,
-      // Every recorded feedback action is the owner's; that is who gives it.
-      ownerSignals: group.length,
+      // Only the owner's own feedback is an activation signal; a pooled
+      // reviewer's comment informs voice and precedent, never a rule (docs/adr/0030).
+      ownerSignals: group.filter((g) => g.row.actor === "owner").length,
       contradictingSignals,
       mostRecentAt: group[0]?.row.created_at ?? null,
       eventIds: group.map((g) => `${g.row.review_run_id}:${g.row.finding_id}`)
@@ -19252,7 +19305,7 @@ function topLevelHelp() {
 // plugins/review-voice/src/review/driver.ts
 import { execFileSync as execFileSync11 } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync as existsSync7, mkdirSync as mkdirSync3, readFileSync as readFileSync10, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname8, join as join12, resolve as resolve2, sep as sep2 } from "node:path";
+import { dirname as dirname9, join as join12, resolve as resolve2, sep as sep2 } from "node:path";
 
 // plugins/review-voice/src/review/prompts.ts
 import { join as join11 } from "node:path";
@@ -19684,7 +19737,7 @@ function prepareWorkspace(run) {
       continue;
     }
     try {
-      mkdirSync3(dirname8(target), { recursive: true });
+      mkdirSync3(dirname9(target), { recursive: true });
       writeFileSync2(target, content, { flag: "wx" });
     } catch (error) {
       run.notes.push(`No base copy for ${path}: it conflicts with another path (${error.code ?? "error"}).`);
@@ -20683,7 +20736,7 @@ function resolveOutPath(out, defaultName) {
     }
   }
   try {
-    mkdirSync4(dirname9(target), { recursive: true });
+    mkdirSync4(dirname10(target), { recursive: true });
   } catch (error) {
     throw new Error(
       `${out}: expected a file path or a directory (${error instanceof Error ? error.message : String(error)})`
@@ -20909,7 +20962,7 @@ async function syncCommand(argv) {
             repositories: selection.perRepository
           },
           stored,
-          coverage: corpusCoverage(db),
+          coverage: corpusCoverage(db, { ownerReviewer: config2.ownerReviewer }),
           lastSync: lastSync(db)
         },
         null,
@@ -21344,12 +21397,15 @@ function scoreCommand(argv) {
     return 2;
   }
   const unverifiableNote = allowUnverifiable ? ownerNote.trim() : null;
+  const configured = repositoryConfig()?.thresholds ?? {};
   const thresholds = {
-    technicalConfidence: Number(flag(argv, "--min-confidence") ?? DEFAULT_THRESHOLDS.technicalConfidence),
+    technicalConfidence: Number(
+      flag(argv, "--min-confidence") ?? configured.technicalConfidence ?? DEFAULT_THRESHOLDS.technicalConfidence
+    ),
     analystOnlyConfidence: Number(
       flag(argv, "--min-analyst-confidence") ?? DEFAULT_THRESHOLDS.analystOnlyConfidence
     ),
-    finalScore: Number(flag(argv, "--min-score") ?? DEFAULT_THRESHOLDS.finalScore)
+    finalScore: Number(flag(argv, "--min-score") ?? configured.finalScore ?? DEFAULT_THRESHOLDS.finalScore)
   };
   const verifications = /* @__PURE__ */ new Map();
   const verificationFlag = flag(argv, "--verification");
@@ -22659,7 +22715,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
 function partialDiffReason(diffFile) {
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync11(join13(dirname9(diffFile), "files.json"), "utf8"));
+    manifest = JSON.parse(readFileSync11(join13(dirname10(diffFile), "files.json"), "utf8"));
   } catch {
     return null;
   }
@@ -23649,13 +23705,15 @@ function statusCommand() {
   try {
     let allowlist = [];
     let maxRepositoryShare;
+    let ownerReviewer = null;
     try {
       const config2 = loadConfig(repositoryRoot(process.cwd()));
+      ownerReviewer = config2.ownerReviewer;
       allowlist = namedRepositories(config2.allowlist, "status");
       maxRepositoryShare = scaledRepositoryShare(allowlist.length);
     } catch {
     }
-    const coverage = corpusCoverage(db, { allowlist, ...maxRepositoryShare === void 0 ? {} : { maxRepositoryShare } });
+    const coverage = corpusCoverage(db, { allowlist, ownerReviewer, ...maxRepositoryShare === void 0 ? {} : { maxRepositoryShare } });
     const runs = db.prepare("SELECT COUNT(*) AS n FROM review_runs").get().n;
     const audits = db.prepare("SELECT COUNT(*) AS n FROM audit_events").get().n;
     const totals = feedbackTotals(db);
@@ -23739,7 +23797,7 @@ async function agentCommand(argv) {
     console.error(`The schema ${schemaPath} must be a JSON object.`);
     return 2;
   }
-  const schemaDir = dirname9(resolve3(schemaPath));
+  const schemaDir = dirname10(resolve3(schemaPath));
   try {
     schemaForRunner(schema4, schemaDir);
   } catch (error) {

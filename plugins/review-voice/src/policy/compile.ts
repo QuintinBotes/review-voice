@@ -60,6 +60,7 @@ function confidenceFrom(evidence: RuleEvidence): number {
 
 interface FeedbackRow {
   action: string;
+  actor: string;
   finding_id: string;
   review_run_id: string;
   reason: string | null;
@@ -103,7 +104,7 @@ function label(row: FeedbackRow): Labelled | null {
 export function compileProposals(db: Database): ProposedRule[] {
   const rows = db
     .prepare(
-      `SELECT f.action, f.finding_id, f.review_run_id, f.reason, f.created_at, r.output_json
+      `SELECT f.action, f.actor, f.finding_id, f.review_run_id, f.reason, f.created_at, r.output_json
        FROM feedback f
        JOIN review_runs r ON r.review_run_id = f.review_run_id
        ORDER BY f.created_at DESC`,
@@ -146,8 +147,9 @@ export function compileProposals(db: Database): ProposedRule[] {
       keeps,
       dismissals,
       rewrites,
-      // Every recorded feedback action is the owner's; that is who gives it.
-      ownerSignals: group.length,
+      // Only the owner's own feedback is an activation signal; a pooled
+      // reviewer's comment informs voice and precedent, never a rule (docs/adr/0030).
+      ownerSignals: group.filter((g) => g.row.actor === 'owner').length,
       contradictingSignals,
       mostRecentAt: group[0]?.row.created_at ?? null,
       eventIds: group.map((g) => `${g.row.review_run_id}:${g.row.finding_id}`),
