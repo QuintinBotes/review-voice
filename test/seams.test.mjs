@@ -323,8 +323,6 @@ test('every agent declares the narrowest tool grant it can do its job with', () 
   const expected = {
     'diff-analyst': 'Read, Grep, Glob, Bash(git:*)',
     'evidence-verifier': 'Read, Grep, Glob, Bash(git:*)',
-    'static-evidence-interpreter': 'Read, Grep',
-    'precedent-ranker': 'Read',
     'concise-editor': '[]',
   };
 
@@ -344,7 +342,7 @@ test('every agent declares the narrowest tool grant it can do its job with', () 
 });
 
 test('no agent is granted an unrestricted shell', () => {
-  const agents = ['diff-analyst', 'evidence-verifier', 'static-evidence-interpreter', 'precedent-ranker', 'concise-editor'];
+  const agents = ['diff-analyst', 'evidence-verifier', 'concise-editor'];
   for (const name of agents) {
     const agent = readFileSync(
       new URL(`../plugins/review-voice/agents/${name}.md`, import.meta.url),

@@ -90,7 +90,9 @@ export function retrievePrecedents(db: Database, query: RetrieveQuery): Preceden
     rows = db
       .prepare(
         `SELECT e.event_id, e.repository, e.reviewer_login, e.reviewer_role,
-                e.outcome_status, e.created_at, e.file_path, e.line_start,
+                -- A weak outcome cannot move a weight on its own (adr/0004).
+                CASE WHEN e.outcome_certainty = 'strong' THEN e.outcome_status ELSE 'unknown' END AS outcome_status,
+                e.created_at, e.file_path, e.line_start,
                 e.body_redacted, e.diff_hunk_redacted, e.language,
                 bm25(review_events_fts) AS rank
          FROM review_events_fts

@@ -112,9 +112,8 @@ export const ADAPTERS: Adapter[] = [
 ];
 
 /**
- * Unrecognised output is not discarded: the exit code is still evidence, and
- * the static-evidence-interpreter agent can read the raw text. It is simply
- * not turned into structured signals by guesswork.
+ * Unrecognised output yields no signals rather than signals made up by
+ * guesswork; the command's exit code is still recorded as evidence.
  */
 export function parseOutput(name: string, command: string, output: string): EvidenceSignal[] {
   const haystack = `${name} ${command}`;

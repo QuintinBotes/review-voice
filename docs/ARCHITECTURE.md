@@ -82,7 +82,9 @@ the child's environment drops GitHub tokens and `REVIEW_VOICE_*` settings.
 `runAgents` caps the calls in flight (default 4) and keeps results in input
 order. Each call has a timeout (default 10 minutes, at most an hour) and a
 32 MiB output cap, either of which kills its whole process group, and
-SIGINT or SIGTERM to the CLI kills every live group before it exits.
+SIGINT or SIGTERM to the CLI kills every live group before it exits. A
+SIGKILL cannot be caught, so each claude runs under a small node wrapper that
+leads its group and kills it within two seconds of the CLI's pid going away.
 
 `REVIEW_VOICE_FAKE_AGENTS=<dir>` swaps in canned answers from
 `<dir>/<name>.<n>.json`, counting calls on disk so separate CLI processes in

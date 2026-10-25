@@ -46,9 +46,13 @@ export function eligibleFindings(scores: unknown): Json[] {
   return isRecord(scores) && Array.isArray(scores['eligible']) ? scores['eligible'].filter(isRecord) : [];
 }
 
-/** The candidates list of a candidates file, keyed by id. */
+/**
+ * The candidates list of a candidates file, keyed by id: a bare array,
+ * `{candidates: [...]}`, or the `{kept: [...]}` that `check-candidates` writes.
+ */
 export function candidatesById(parsed: unknown): Map<string, Json> {
-  const list = Array.isArray(parsed) ? parsed : isRecord(parsed) && Array.isArray(parsed['candidates']) ? parsed['candidates'] : [];
+  const key = isRecord(parsed) ? ['candidates', 'kept'].find((k) => Array.isArray(parsed[k])) : undefined;
+  const list = Array.isArray(parsed) ? parsed : isRecord(parsed) && key !== undefined ? (parsed[key] as unknown[]) : [];
   const out = new Map<string, Json>();
   for (const entry of list) {
     if (!isRecord(entry)) continue;

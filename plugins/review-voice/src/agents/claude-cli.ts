@@ -66,6 +66,32 @@ function untrack(child: ChildProcess): void {
   process.off('SIGTERM', onSignal);
 }
 
+/**
+ * A SIGKILL to the CLI cannot be caught, so claude runs under this wrapper. It
+ * leads the process group the runner kills, and kills that group itself once
+ * the CLI's pid is gone: no portable parent-death signal exists, so it polls.
+ * The argv after `--` is the claude command line; stdio passes straight through.
+ */
+export const WATCHDOG = `
+const { spawn } = require('node:child_process');
+const parent = process.ppid;
+const [bin, ...args] = process.argv.slice(1);
+const child = spawn(bin, args, { stdio: 'inherit' });
+const poll = setInterval(() => {
+  if (process.ppid === parent) return;
+  try { process.kill(-process.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); process.exit(1); }
+}, 2000);
+child.on('error', (error) => {
+  process.stderr.write('could not start ' + bin + ': ' + error.message);
+  process.exit(127);
+});
+child.on('exit', (code, signal) => {
+  clearInterval(poll);
+  if (signal) process.kill(process.pid, signal);
+  process.exitCode = code ?? 1;
+});
+`;
+
 export function claudeBin(env: NodeJS.ProcessEnv): string {
   return env['REVIEW_VOICE_CLAUDE_BIN'] || 'claude';
 }
@@ -146,7 +172,7 @@ export function runClaudeCli(
 
   return new Promise((resolve) => {
     // Its own process group, so a timeout can kill everything it started.
-    const child = spawn(bin, args, {
+    const child = spawn(process.execPath, ['-e', WATCHDOG, '--', bin, ...args], {
       cwd,
       env: childEnv(env),
       detached: process.platform !== 'win32',

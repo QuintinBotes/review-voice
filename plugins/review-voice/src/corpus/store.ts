@@ -23,6 +23,11 @@ export function storeEvents(db: Database, events: CollectedEvent[]): StoreResult
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (content_key) DO NOTHING`,
   );
+  // A re-read pull request can show a reply or a change that was not there
+  // before; a re-read that infers nothing keeps what an earlier one saw.
+  const updateOutcome = db.prepare(
+    `UPDATE review_events SET outcome_status = ?, outcome_certainty = ? WHERE content_key = ?`,
+  );
 
   let inserted = 0;
   db.exec('BEGIN');
@@ -43,15 +48,17 @@ export function storeEvents(db: Database, events: CollectedEvent[]): StoreResult
         event.filePath ?? null,
         event.lineStart ?? null,
         event.diffHunkRedacted ?? null,
-        // Outcomes are inferred in a later pass; unknown is the honest default
-        // and carries a middling weight rather than zero.
-        'unknown',
-        'weak',
+        // Unknown is the honest default and carries a middling weight rather than zero.
+        event.outcome?.status ?? 'unknown',
+        event.outcome?.certainty ?? 'weak',
         event.redactionVersion,
         JSON.stringify(event.redactionCounts),
         new Date().toISOString(),
       );
       if (result.changes > 0) inserted += 1;
+      else if (event.outcome !== undefined && event.outcome.status !== 'unknown') {
+        updateOutcome.run(event.outcome.status, event.outcome.certainty, event.contentKey);
+      }
     }
     db.exec('COMMIT');
   } catch (error) {
