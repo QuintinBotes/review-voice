@@ -8,11 +8,12 @@
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
 import { readFileSync, readSync, writeFileSync, mkdirSync, statSync, renameSync, rmSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
 import { pluginVersion } from './version.ts';
-import { runDoctor } from './doctor.ts';
+import { OPTIONAL_CHECKS, runDoctor } from './doctor.ts';
+import { AgentSpecError, readAgentTools, runAgent, runnerTools, schemaForRunner } from './agents/runner.ts';
 import { validateOutput } from './contract/validate.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
 import { checkSeverityAgainstScores, scoredEntries } from './contract/severity-check.ts';
@@ -4828,6 +4829,79 @@ async function main(argv: string[]): Promise<number> {
   return exit;
 }
 
+/**
+ * Runs one agent through the runner (docs/adr/0021): the prompt on stdin, the
+ * AgentResult as JSON on stdout. Tools come from the agent file, never a flag,
+ * and the runner narrows them to read-only file tools.
+ */
+async function agentCommand(argv: string[]): Promise<number> {
+  const name = flag(argv, '--name');
+  const model = flag(argv, '--model');
+  const schemaPath = flag(argv, '--schema');
+  if (name === null || model === null || schemaPath === null) {
+    console.error('agent needs --name <agent>, --model <model> and --schema <file.json>.');
+    return 2;
+  }
+  let tools: string[];
+  try {
+    tools = readAgentTools(name);
+    runnerTools(tools);
+  } catch (error) {
+    if (error instanceof AgentSpecError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+  let schema: unknown;
+  try {
+    schema = JSON.parse(readFileSync(schemaPath, 'utf8')) as unknown;
+  } catch (error) {
+    console.error(`Cannot read the schema ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) {
+    console.error(`The schema ${schemaPath} must be a JSON object.`);
+    return 2;
+  }
+  // Relative $refs resolve next to the schema file, as they would for a validator.
+  const schemaDir = dirname(resolve(schemaPath));
+  try {
+    schemaForRunner(schema, schemaDir);
+  } catch (error) {
+    if (error instanceof AgentSpecError) {
+      console.error(`The schema ${schemaPath} cannot be given to an agent: ${error.message}`);
+      return 2;
+    }
+    throw error;
+  }
+  const cwd = flag(argv, '--cwd') ?? process.cwd();
+  let isDirectory = false;
+  try {
+    isDirectory = statSync(cwd).isDirectory();
+  } catch {
+    isDirectory = false;
+  }
+  if (!isDirectory) {
+    console.error(`--cwd ${cwd} is not a directory.`);
+    return 2;
+  }
+  const timeout = numericFlag(argv, '--timeout', 0);
+  if (timeout === null || (argv.includes('--timeout') && timeout === 0) || timeout > 3600) {
+    console.error('--timeout takes a whole number of seconds from 1 to 3600.');
+    return 2;
+  }
+
+  const prompt = readStdin();
+  const result = await runAgent(
+    { name, model, tools, schema, schemaDir, ...(timeout > 0 ? { timeoutMs: timeout * 1000 } : {}) },
+    prompt,
+    cwd,
+  );
+  console.log(JSON.stringify(result, null, 2));
+  return result.ok ? 0 : 1;
+}
+
 async function dispatch(argv: string[]): Promise<number> {
   const command = argv[0];
 
@@ -5011,6 +5085,9 @@ async function dispatch(argv: string[]): Promise<number> {
     case 'validate-output':
       return validateOutputCommand(argv.slice(1));
 
+    case 'agent':
+      return await agentCommand(argv.slice(1));
+
     case 'doctor': {
       const checks = runDoctor();
       for (const check of checks) {
@@ -5018,7 +5095,7 @@ async function dispatch(argv: string[]): Promise<number> {
       }
       // git and node:sqlite are required; gh is only needed once GitHub history
       // ingestion is enabled, so its absence is reported but not fatal.
-      const required = checks.filter((c) => c.name !== 'gh');
+      const required = checks.filter((c) => !OPTIONAL_CHECKS.has(c.name));
       return required.every((c) => c.ok) ? 0 : 1;
     }
 

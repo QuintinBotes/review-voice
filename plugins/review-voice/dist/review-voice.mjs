@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync7, readSync, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2, renameSync, rmSync, existsSync as existsSync5 } from "node:fs";
-import { dirname as dirname6, join as join9 } from "node:path";
+import { readFileSync as readFileSync10, readSync, writeFileSync as writeFileSync2, mkdirSync as mkdirSync3, statSync as statSync2, renameSync, rmSync, existsSync as existsSync7 } from "node:fs";
+import { dirname as dirname8, join as join11, resolve as resolve2 } from "node:path";
 import { execFileSync as execFileSync11 } from "node:child_process";
 
 // plugins/review-voice/src/warnings.ts
@@ -72,14 +72,391 @@ function checkBinary(name, args) {
     return { name, ok: false, detail: "not found on PATH" };
   }
 }
+function checkClaude() {
+  const bin = process.env["REVIEW_VOICE_CLAUDE_BIN"] || "claude";
+  const found = checkBinary(bin, ["--version"]);
+  return {
+    name: "claude",
+    ok: found.ok,
+    detail: found.ok ? `found (login not checked): ${found.detail}` : `${bin} not found on PATH (needed only by review and watch)`
+  };
+}
+var OPTIONAL_CHECKS = /* @__PURE__ */ new Set(["gh", "claude"]);
 function runDoctor() {
   return [
     checkNode(),
     checkSqlite(),
     checkBinary("git", ["--version"]),
     // gh is how Review Voice borrows GitHub credentials; see docs/adr/0002.
-    checkBinary("gh", ["--version"])
+    checkBinary("gh", ["--version"]),
+    checkClaude()
   ];
+}
+
+// plugins/review-voice/src/agents/claude-cli.ts
+import { spawn } from "node:child_process";
+
+// plugins/review-voice/src/agents/tools.ts
+import { existsSync, readFileSync as readFileSync2 } from "node:fs";
+import { dirname as dirname2, join as join2 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+var RUNNER_TOOLS = ["Read", "Grep", "Glob"];
+var HOST_ONLY_TOOLS = ["Bash(git:*)"];
+var AgentSpecError = class extends Error {
+};
+function pluginRoot() {
+  const here = dirname2(fileURLToPath2(import.meta.url));
+  for (let dir = here; ; dir = dirname2(dir)) {
+    if (existsSync(join2(dir, ".claude-plugin", "plugin.json"))) return dir;
+    if (dirname2(dir) === dir) return join2(here, "..");
+  }
+}
+function agentsDir() {
+  return join2(pluginRoot(), "agents");
+}
+function schemasDir() {
+  return join2(pluginRoot(), "schemas");
+}
+function checkAgentName(name) {
+  if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new AgentSpecError(`Unknown agent: ${name} (not an agent name)`);
+}
+function agentFile(name) {
+  checkAgentName(name);
+  const path = join2(agentsDir(), `${name}.md`);
+  if (!existsSync(path)) throw new AgentSpecError(`Unknown agent: ${name} (no ${name}.md in ${agentsDir()})`);
+  return path;
+}
+function readAgentTools(name) {
+  return parseAgentTools(readFileSync2(agentFile(name), "utf8"), `${name}.md`);
+}
+function parseAgentTools(text4, label2) {
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text4)?.[1];
+  if (frontmatter === void 0) throw new AgentSpecError(`${label2} has no frontmatter`);
+  const line3 = /^tools:[ \t]*(.*)$((?:\r?\n[ \t]*-[^\n]*)*)/m.exec(frontmatter);
+  if (line3 === null) throw new AgentSpecError(`${label2} declares no tools: line`);
+  const inline = line3[1].trim();
+  const items = inline === "" ? line3[2].split("\n").map((item) => item.replace(/^[ \t]*-/, "")) : inline.replace(/^\[(.*)\]$/, "$1").split(",");
+  return items.map((tool) => tool.trim().replace(/^["']|["']$/g, "")).filter((tool) => tool !== "");
+}
+function runnerTools(declared) {
+  const tools = [];
+  for (const tool of declared) {
+    if (HOST_ONLY_TOOLS.includes(tool)) continue;
+    if (!RUNNER_TOOLS.includes(tool)) {
+      throw new AgentSpecError(`Tool ${tool} is not allowed: the runner grants only ${RUNNER_TOOLS.join(", ")}`);
+    }
+    if (!tools.includes(tool)) tools.push(tool);
+  }
+  return tools;
+}
+
+// plugins/review-voice/src/agents/types.ts
+var DEFAULT_AGENT_TIMEOUT_MS = 6e5;
+var MAX_AGENT_TIMEOUT_MS = 36e5;
+
+// plugins/review-voice/src/agents/claude-cli.ts
+var ERROR_CHARS = 500;
+var MAX_STDOUT_BYTES = 32 * 1024 * 1024;
+var MAX_STDERR_BYTES = 64 * 1024;
+function childEnv(env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(
+      ([key]) => key !== "GITHUB_TOKEN" && key !== "GH_TOKEN" && !key.startsWith("REVIEW_VOICE_")
+    )
+  );
+}
+function agentTimeoutMs(spec) {
+  return Math.min(spec.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS);
+}
+var live = /* @__PURE__ */ new Set();
+function onSignal(signal2) {
+  for (const child of live) killTree(child);
+  process.exit(signal2 === "SIGINT" ? 130 : 143);
+}
+function track(child) {
+  if (live.size === 0) {
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
+  }
+  live.add(child);
+}
+function untrack(child) {
+  if (!live.delete(child) || live.size > 0) return;
+  process.off("SIGINT", onSignal);
+  process.off("SIGTERM", onSignal);
+}
+function claudeBin(env) {
+  return env["REVIEW_VOICE_CLAUDE_BIN"] || "claude";
+}
+function claudeArguments(spec, addDirs, env) {
+  const tools = spec.tools.join(",");
+  return [
+    "-p",
+    "--restricted",
+    // Ignores CLAUDE.md, skills, commands and agents planted in the checkout.
+    "--safe-mode",
+    "--strict-mcp-config",
+    "--no-session-persistence",
+    // Bare mode skips OAuth and keychain reads, which only an API key replaces.
+    ...env["ANTHROPIC_API_KEY"] ? ["--bare"] : [],
+    "--system-prompt-file",
+    agentFile(spec.name),
+    "--model",
+    spec.model,
+    // An empty value is how claude disables every built-in tool; leaving the
+    // flag out would grant the default set.
+    "--tools",
+    tools,
+    ...tools === "" ? [] : ["--allowedTools", tools],
+    ...addDirs.flatMap((dir) => ["--add-dir", dir]),
+    "--json-schema",
+    JSON.stringify(spec.schema),
+    "--output-format",
+    "json"
+  ];
+}
+function firstChars(text4) {
+  return text4.trim().slice(0, ERROR_CHARS);
+}
+function interpretEnvelope(stdout, stderr, code) {
+  let envelope = null;
+  try {
+    const parsed = JSON.parse(stdout);
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) envelope = parsed;
+  } catch {
+    envelope = null;
+  }
+  const costUsd = typeof envelope?.total_cost_usd === "number" ? envelope.total_cost_usd : null;
+  if (code === 0 && envelope !== null && envelope.is_error === false && envelope.structured_output !== void 0) {
+    return { ok: true, output: envelope.structured_output, costUsd };
+  }
+  const result = typeof envelope?.result === "string" ? envelope.result : "";
+  const detail = firstChars(result) || firstChars(stderr) || firstChars(stdout) || (code === 0 ? "claude returned no structured output" : `claude exited with code ${code}`);
+  return { ok: false, output: null, costUsd, error: detail };
+}
+function runClaudeCli(spec, prompt, cwd, addDirs, env) {
+  const args = claudeArguments(spec, addDirs, env);
+  const timeoutMs = agentTimeoutMs(spec);
+  const bin = claudeBin(env);
+  return new Promise((resolve3) => {
+    const child = spawn(bin, args, {
+      cwd,
+      env: childEnv(env),
+      detached: process.platform !== "win32",
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    track(child);
+    const stdout = [];
+    const stderr = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stopped = null;
+    let settled = false;
+    const finish = (result) => {
+      untrack(child);
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve3(result);
+    };
+    const stop = (reason2) => {
+      stopped ??= reason2;
+      killTree(child);
+    };
+    const timer = setTimeout(() => stop("timeout"), timeoutMs);
+    child.stdout?.on("data", (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > MAX_STDOUT_BYTES) stop("output too large");
+      else stdout.push(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      if (stderrBytes < MAX_STDERR_BYTES) stderr.push(chunk);
+      stderrBytes += chunk.length;
+    });
+    child.on("error", (error) => {
+      finish({ ok: false, output: null, costUsd: null, error: `could not start ${bin}: ${error.message}` });
+    });
+    child.on("close", (code) => {
+      if (stopped !== null) {
+        finish({ ok: false, output: null, costUsd: null, error: stopped });
+        return;
+      }
+      finish(
+        interpretEnvelope(
+          Buffer.concat(stdout).toString("utf8"),
+          Buffer.concat(stderr).toString("utf8"),
+          code
+        )
+      );
+    });
+    if (child.stdin) {
+      child.stdin.on("error", () => {
+      });
+      child.stdin.end(prompt);
+    }
+  });
+}
+function killTree(child) {
+  if (child.pid === void 0) return;
+  try {
+    if (process.platform === "win32") child.kill("SIGKILL");
+    else process.kill(-child.pid, "SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
+  }
+}
+
+// plugins/review-voice/src/agents/fake.ts
+import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync3, writeFileSync } from "node:fs";
+import { join as join3 } from "node:path";
+function runFake(spec, prompt, dir) {
+  checkAgentName(spec.name);
+  const calls = join3(dir, ".calls");
+  mkdirSync(calls, { recursive: true });
+  const counter = join3(calls, `${spec.name}.count`);
+  const n = (existsSync2(counter) ? Number(readFileSync3(counter, "utf8").trim()) || 0 : 0) + 1;
+  writeFileSync(counter, `${n}
+`);
+  writeFileSync(join3(calls, `${spec.name}.${n}.prompt.txt`), prompt);
+  writeFileSync(
+    join3(calls, `${spec.name}.${n}.spec.json`),
+    `${JSON.stringify({ name: spec.name, model: spec.model, tools: spec.tools, timeoutMs: spec.timeoutMs ?? null }, null, 2)}
+`
+  );
+  const numbered = join3(dir, `${spec.name}.${n}.json`);
+  const fallback = join3(dir, `${spec.name}.json`);
+  const path = existsSync2(numbered) ? numbered : fallback;
+  if (!existsSync2(path)) {
+    return { ok: false, output: null, costUsd: null, error: `no fake output: neither ${numbered} nor ${fallback} exists` };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync3(path, "utf8"));
+  } catch (error) {
+    return { ok: false, output: null, costUsd: null, error: `${path} is not JSON: ${error.message}` };
+  }
+  const record2 = parsed !== null && typeof parsed === "object" ? parsed : {};
+  if (typeof record2["error"] === "string") return { ok: false, output: null, costUsd: null, error: record2["error"] };
+  if ("output" in record2) return { ok: true, output: record2["output"], costUsd: null };
+  return { ok: false, output: null, costUsd: null, error: `${path} has neither "output" nor "error"` };
+}
+
+// plugins/review-voice/src/agents/schema.ts
+import { readFileSync as readFileSync4 } from "node:fs";
+import { dirname as dirname3, isAbsolute, relative, resolve } from "node:path";
+function schemaForRunner(schema4, baseDir) {
+  const base = resolve(baseDir);
+  const prepared = prepare(schema4, { baseDir: base, dir: base, document: schema4, inlined: false, stack: [] });
+  return prepared;
+}
+function prepare(node, ctx) {
+  if (Array.isArray(node)) return node.map((item) => prepare(item, ctx));
+  if (node === null || typeof node !== "object") return node;
+  const rest = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "$schema" || key === "$id" || key === "$ref") continue;
+    Object.defineProperty(rest, key, { value: prepare(value, ctx), enumerable: true, writable: true, configurable: true });
+  }
+  const ref = node["$ref"];
+  if (ref === void 0) return rest;
+  if (typeof ref !== "string") throw new AgentSpecError("A schema $ref must be a string");
+  if (ref.startsWith("#")) {
+    checkInternalRef(ref, ctx);
+    return { $ref: ref, ...rest };
+  }
+  const target = resolveFileRef(ref, ctx);
+  if (target === null || typeof target !== "object" || Array.isArray(target)) {
+    throw new AgentSpecError(`Schema $ref ${ref} does not point at a schema object`);
+  }
+  return { ...target, ...rest };
+}
+function checkInternalRef(ref, ctx) {
+  if (ctx.inlined) {
+    throw new AgentSpecError(`Schema $ref ${ref} sits in a referenced file and cannot be kept once it is inlined`);
+  }
+  const match = /^#\/(\$defs|definitions)\/[^/]+$/.exec(ref);
+  if (match === null || pointer(ctx.document, ref.slice(1)) === void 0) {
+    throw new AgentSpecError(`Schema $ref ${ref} must point into this schema's $defs or definitions`);
+  }
+}
+function resolveFileRef(ref, ctx) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith("//") || isAbsolute(ref)) {
+    throw new AgentSpecError(`Schema $ref ${ref} is absolute; only a relative file is allowed`);
+  }
+  const hash2 = ref.indexOf("#");
+  const file = resolve(ctx.dir, hash2 === -1 ? ref : ref.slice(0, hash2));
+  const fragment = hash2 === -1 ? "" : ref.slice(hash2 + 1);
+  const fromBase = relative(ctx.baseDir, file);
+  if (fromBase.startsWith("..") || isAbsolute(fromBase)) {
+    throw new AgentSpecError(`Schema $ref ${ref} leaves ${ctx.baseDir}`);
+  }
+  const key = `${file}#${fragment}`;
+  if (ctx.stack.includes(key)) throw new AgentSpecError(`Schema $ref ${ref} is part of a cycle`);
+  let document;
+  try {
+    document = JSON.parse(readFileSync4(file, "utf8"));
+  } catch (error) {
+    throw new AgentSpecError(`Schema $ref ${ref} cannot be read: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const target = fragment === "" ? document : fragment.startsWith("/") ? pointer(document, fragment) : void 0;
+  if (target === void 0) throw new AgentSpecError(`Schema $ref ${ref} has a fragment that does not resolve`);
+  return prepare(target, {
+    baseDir: ctx.baseDir,
+    dir: dirname3(file),
+    document,
+    inlined: true,
+    stack: [...ctx.stack, key]
+  });
+}
+function pointer(document, path) {
+  let node = document;
+  for (const raw of path.split("/").slice(1)) {
+    let step;
+    try {
+      step = decodeURIComponent(raw).replace(/~1/g, "/").replace(/~0/g, "~");
+    } catch {
+      return void 0;
+    }
+    if (node === null || typeof node !== "object" || !Object.hasOwn(node, step)) return void 0;
+    node = node[step];
+  }
+  return node;
+}
+
+// plugins/review-voice/src/agents/runner.ts
+var RUNNER_PREAMBLE = `Tools available: ${RUNNER_TOOLS.join(", ")}. Shell and git are not available in this run. The working directory is the pull request head; base versions of changed files, when provided, are under the directories named in the prompt.`;
+function elapsed(started) {
+  return Math.round((performance.now() - started) / 10) / 100;
+}
+async function runAgent(spec, prompt, cwd, addDirs = [], env = process.env) {
+  const started = performance.now();
+  try {
+    const granted = { ...spec, tools: runnerTools(spec.tools) };
+    const sent = `${RUNNER_PREAMBLE}
+
+${prompt}`;
+    const fakeDir = env["REVIEW_VOICE_FAKE_AGENTS"];
+    if (fakeDir) return { ...runFake(granted, sent, fakeDir), seconds: elapsed(started) };
+    if (env["REVIEW_VOICE_AGENT_RUNNER"] === "fake") {
+      return {
+        ok: false,
+        output: null,
+        costUsd: null,
+        seconds: elapsed(started),
+        error: "REVIEW_VOICE_AGENT_RUNNER=fake needs REVIEW_VOICE_FAKE_AGENTS=<dir>"
+      };
+    }
+    const prepared = { ...granted, schema: schemaForRunner(spec.schema, spec.schemaDir ?? schemasDir()) };
+    return { ...await runClaudeCli(prepared, sent, cwd, addDirs, env), seconds: elapsed(started) };
+  } catch (error) {
+    return {
+      ok: false,
+      output: null,
+      costUsd: null,
+      seconds: elapsed(started),
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
 }
 
 // plugins/review-voice/src/contract/limits.ts
@@ -1267,8 +1644,8 @@ function checkUnbackedAbsolutes(output, scores) {
 
 // plugins/review-voice/src/diff/acquire.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
-import { readFileSync as readFileSync2 } from "node:fs";
-import { join as join2 } from "node:path";
+import { readFileSync as readFileSync5 } from "node:fs";
+import { join as join4 } from "node:path";
 
 // plugins/review-voice/src/diff/classify.ts
 var LOCKFILES = /* @__PURE__ */ new Set([
@@ -1628,7 +2005,7 @@ function acquireDiff(options) {
   }
   const readHead3 = (path) => {
     try {
-      if (mode === "worktree") return readFileSync2(join2(root, path), "utf8");
+      if (mode === "worktree") return readFileSync5(join4(root, path), "utf8");
       return git(["show", mode === "staged" ? `:${path}` : `HEAD:${path}`], root);
     } catch {
       return null;
@@ -2201,8 +2578,8 @@ function parseComplexity(value) {
 
 // plugins/review-voice/src/diff/structure.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
-import { readFileSync as readFileSync3 } from "node:fs";
-import { join as join3 } from "node:path";
+import { readFileSync as readFileSync6 } from "node:fs";
+import { join as join5 } from "node:path";
 
 // plugins/review-voice/src/diff/type-escapes.ts
 import { extname } from "node:path";
@@ -2409,7 +2786,7 @@ function measureLines(root, files, paths, sides) {
   };
   const fromWorktree = (path) => {
     try {
-      return countLines(readFileSync3(join3(root, path)));
+      return countLines(readFileSync6(join5(root, path)));
     } catch {
       return null;
     }
@@ -2683,9 +3060,9 @@ function verifierConfidence(technicalConfidence, evidenceQuality2) {
 }
 
 // plugins/review-voice/src/review/lanes.ts
-import { existsSync } from "node:fs";
-import { dirname as dirname2, join as join4 } from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { existsSync as existsSync3 } from "node:fs";
+import { dirname as dirname4, join as join6 } from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // plugins/review-voice/src/review/plan.ts
 var MODES = ["fast", "standard", "thorough", "auto"];
@@ -2790,18 +3167,18 @@ function laneNamed(lanes, name) {
   return lanes.find((lane) => lane.name === (name ?? DIFF_LANE.name));
 }
 function agentsDirectory() {
-  let dir = dirname2(fileURLToPath2(import.meta.url));
+  let dir = dirname4(fileURLToPath3(import.meta.url));
   for (let depth = 0; depth < 4; depth += 1) {
-    const candidate = join4(dir, "agents");
-    if (existsSync(join4(candidate, `${DIFF_LANE.agent}.md`))) return candidate;
-    dir = dirname2(dir);
+    const candidate = join6(dir, "agents");
+    if (existsSync3(join6(candidate, `${DIFF_LANE.agent}.md`))) return candidate;
+    dir = dirname4(dir);
   }
   return null;
 }
 function agentExists(name) {
   if (!/^[a-z][a-z0-9-]*$/.test(name)) return false;
   const dir = agentsDirectory();
-  return dir !== null && existsSync(join4(dir, `${name}.md`));
+  return dir !== null && existsSync3(join6(dir, `${name}.md`));
 }
 function eligibleLanes(lanes, files, diffText, options = {}) {
   return lanes.map((lane) => {
@@ -3797,7 +4174,7 @@ var GitHubClient = class {
     }
     this.baseUrl = options.baseUrl ?? "https://api.github.com";
     this.doFetch = options.fetchImpl ?? fetch;
-    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve3) => setTimeout(resolve3, ms)));
     this.token = options.token ?? null;
   }
   authorization() {
@@ -6010,31 +6387,31 @@ function collectSymbolContext(options) {
 
 // plugins/review-voice/src/store/db.ts
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, chmodSync } from "node:fs";
-import { dirname as dirname3 } from "node:path";
+import { mkdirSync as mkdirSync2, chmodSync } from "node:fs";
+import { dirname as dirname5 } from "node:path";
 
 // plugins/review-voice/src/store/paths.ts
 import { homedir } from "node:os";
-import { join as join5 } from "node:path";
+import { join as join7 } from "node:path";
 function dataDirectory(env = process.env) {
   const override = env["REVIEW_VOICE_DATA_DIR"];
   if (override !== void 0 && override.length > 0) return override;
   const home = homedir();
   switch (process.platform) {
     case "darwin":
-      return join5(home, "Library", "Application Support", "review-voice");
+      return join7(home, "Library", "Application Support", "review-voice");
     case "win32": {
       const appData = env["APPDATA"];
-      return appData !== void 0 && appData.length > 0 ? join5(appData, "review-voice") : join5(home, "AppData", "Roaming", "review-voice");
+      return appData !== void 0 && appData.length > 0 ? join7(appData, "review-voice") : join7(home, "AppData", "Roaming", "review-voice");
     }
     default: {
       const xdg = env["XDG_DATA_HOME"];
-      return xdg !== void 0 && xdg.length > 0 ? join5(xdg, "review-voice") : join5(home, ".local", "share", "review-voice");
+      return xdg !== void 0 && xdg.length > 0 ? join7(xdg, "review-voice") : join7(home, ".local", "share", "review-voice");
     }
   }
 }
 function databasePath(env) {
-  return join5(dataDirectory(env), "review-voice.db");
+  return join7(dataDirectory(env), "review-voice.db");
 }
 
 // plugins/review-voice/src/store/db.ts
@@ -6275,8 +6652,8 @@ function migrate(db) {
   }
 }
 function openDatabase(path = databasePath()) {
-  const directory = dirname3(path);
-  mkdirSync(directory, { recursive: true, mode: 448 });
+  const directory = dirname5(path);
+  mkdirSync2(directory, { recursive: true, mode: 448 });
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
@@ -7153,9 +7530,9 @@ function feedbackTotals(db) {
 }
 
 // plugins/review-voice/src/policy/load.ts
-import { readFileSync as readFileSync4, existsSync as existsSync2 } from "node:fs";
+import { readFileSync as readFileSync7, existsSync as existsSync4 } from "node:fs";
 import { createHash as createHash4 } from "node:crypto";
-import { join as join6 } from "node:path";
+import { join as join8 } from "node:path";
 
 // node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
@@ -10388,11 +10765,11 @@ var prettifyError = (src, lc) => (error) => {
     if (end?.line === line3 && end.col > col) {
       count3 = Math.max(1, Math.min(end.col - col, 80 - ci));
     }
-    const pointer = " ".repeat(ci) + "^".repeat(count3);
+    const pointer2 = " ".repeat(ci) + "^".repeat(count3);
     error.message += `:
 
 ${lineStr}
-${pointer}
+${pointer2}
 `;
   }
 };
@@ -14082,10 +14459,10 @@ function loadConfig(repositoryRoot2) {
     unapproved: [],
     warnings: []
   };
-  const configPath = join6(repositoryRoot2, ".review-voice", "config.yaml");
-  if (existsSync2(configPath)) {
+  const configPath = join8(repositoryRoot2, ".review-voice", "config.yaml");
+  if (existsSync4(configPath)) {
     try {
-      const doc = asRecord(parse(readFileSync4(configPath, "utf8")));
+      const doc = asRecord(parse(readFileSync7(configPath, "utf8")));
       if (doc !== null) {
         const identity2 = asRecord(doc["identity"]);
         if (typeof identity2?.["owner_reviewer"] === "string") {
@@ -14176,10 +14553,10 @@ function loadConfig(repositoryRoot2) {
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }
   }
-  const policyPath = join6(repositoryRoot2, ".review-voice", "policy.yaml");
-  if (existsSync2(policyPath)) {
+  const policyPath = join8(repositoryRoot2, ".review-voice", "policy.yaml");
+  if (existsSync4(policyPath)) {
     try {
-      const text4 = readFileSync4(policyPath, "utf8");
+      const text4 = readFileSync7(policyPath, "utf8");
       const layer = layerFromPolicyFile(text4, ".review-voice/policy.yaml", repositoryRoot2);
       if (layer !== null) {
         result.unapproved.push({ source: ".review-voice/policy.yaml", contentHash: contentHash(text4) });
@@ -15302,8 +15679,8 @@ function scaledRepositoryShare(repositoryCount) {
 }
 
 // plugins/review-voice/src/conventions/discover.ts
-import { existsSync as existsSync3, readFileSync as readFileSync5, readdirSync, statSync } from "node:fs";
-import { dirname as dirname4, join as join7, sep } from "node:path";
+import { existsSync as existsSync5, readFileSync as readFileSync8, readdirSync, statSync } from "node:fs";
+import { dirname as dirname6, join as join9, sep } from "node:path";
 var REPOSITORY_FILES = [
   { path: "CLAUDE.md", kind: "claude" },
   { path: ".claude/CLAUDE.md", kind: "claude" },
@@ -15316,9 +15693,9 @@ var NESTED_FILES = [
   { name: "AGENTS.md", kind: "agents" }
 ];
 var RULE_DIRECTORIES = [
-  { path: join7(".claude", "skills"), kind: "skill" },
-  { path: join7(".agents", "rules"), kind: "rule" },
-  { path: join7(".claude", "rules"), kind: "rule" }
+  { path: join9(".claude", "skills"), kind: "skill" },
+  { path: join9(".agents", "rules"), kind: "rule" },
+  { path: join9(".claude", "rules"), kind: "rule" }
 ];
 var TOTAL_BYTES = 6e4;
 var PER_DOCUMENT_SHARE = 0.25;
@@ -15403,13 +15780,13 @@ ${entry.part.body}`.trim()).join("\n\n");
 `;
 }
 function readHead(absolute, limit) {
-  const raw = readFileSync5(absolute);
+  const raw = readFileSync8(absolute);
   if (raw.length <= limit) return raw.toString("utf8");
   const decoder = new TextDecoder("utf8", { fatal: false });
   return decoder.decode(raw.subarray(0, limit));
 }
 function readBounded(absolute, changedPaths = []) {
-  const raw = readFileSync5(absolute, "utf8");
+  const raw = readFileSync8(absolute, "utf8");
   const bytes = Buffer.byteLength(raw, "utf8");
   if (bytes <= PER_DOCUMENT_BYTES) {
     return { content: raw, bytes, includedBytes: bytes, truncated: false, scoped: false };
@@ -15458,31 +15835,31 @@ function ancestors(changedPath) {
   return out;
 }
 function resolvePointer(root, pointerPath, target) {
-  const own = dirname4(pointerPath);
-  const candidates = own === "." || own === "" ? [] : [join7(own, target)];
-  let directory = dirname4(pointerPath);
+  const own = dirname6(pointerPath);
+  const candidates = own === "." || own === "" ? [] : [join9(own, target)];
+  let directory = dirname6(pointerPath);
   while (directory !== "." && directory !== "" && directory !== sep) {
-    const base = dirname4(directory);
+    const base = dirname6(directory);
     const name = directory.split(sep).pop();
-    if (name === ".claude" || name === ".agents") candidates.push(join7(base === "." ? "" : base, target));
+    if (name === ".claude" || name === ".agents") candidates.push(join9(base === "." ? "" : base, target));
     directory = base;
   }
   candidates.push(target);
   for (const candidate of candidates) {
-    if (existsSync3(join7(root, candidate))) return candidate;
+    if (existsSync5(join9(root, candidate))) return candidate;
   }
   return null;
 }
 function listRuleDocuments(root, directory) {
   const out = [];
-  for (const { path: relative, kind } of RULE_DIRECTORIES) {
-    const base = join7(root, directory, relative);
-    if (!existsSync3(base)) continue;
+  for (const { path: relative2, kind } of RULE_DIRECTORIES) {
+    const base = join9(root, directory, relative2);
+    if (!existsSync5(base)) continue;
     try {
       for (const entry of readdirSync(base).sort()) {
-        for (const candidate of [join7(directory, relative, entry, "SKILL.md"), join7(directory, relative, entry)]) {
+        for (const candidate of [join9(directory, relative2, entry, "SKILL.md"), join9(directory, relative2, entry)]) {
           if (!candidate.endsWith(".md")) continue;
-          if (!existsSync3(join7(root, candidate))) continue;
+          if (!existsSync5(join9(root, candidate))) continue;
           out.push({ path: candidate, kind });
           break;
         }
@@ -15512,7 +15889,7 @@ function discoverConventions(root, changedPaths = []) {
   for (const changed of changedPaths) {
     for (const directory of ancestors(changed)) {
       for (const { name } of NESTED_FILES) {
-        const candidate = join7(directory, name);
+        const candidate = join9(directory, name);
         const existing = governed.get(candidate);
         if (existing === void 0) governed.set(candidate, [changed]);
         else existing.push(changed);
@@ -15576,9 +15953,9 @@ function discoverConventions(root, changedPaths = []) {
     let governs = [];
     let followed = [];
     try {
-      bytes = statSync(join7(root, entry.path)).size;
+      bytes = statSync(join9(root, entry.path)).size;
       {
-        const head = readHead(join7(root, entry.path), CHEAP_BYTES);
+        const head = readHead(join9(root, entry.path), CHEAP_BYTES);
         governs = frontmatterPaths(head);
         const targets = pointerTargets(head);
         for (const target of targets) {
@@ -15604,7 +15981,7 @@ function discoverConventions(root, changedPaths = []) {
     return followed.map((path) => {
       let targetBytes = Number.POSITIVE_INFINITY;
       try {
-        targetBytes = statSync(join7(root, path)).size;
+        targetBytes = statSync(join9(root, path)).size;
       } catch {
         targetBytes = Number.POSITIVE_INFINITY;
       }
@@ -15613,7 +15990,7 @@ function discoverConventions(root, changedPaths = []) {
   });
   const fitsWhole = (entry) => {
     try {
-      return statSync(join7(root, entry.path)).size <= PER_DOCUMENT_BYTES;
+      return statSync(join9(root, entry.path)).size <= PER_DOCUMENT_BYTES;
     } catch {
       return false;
     }
@@ -15640,8 +16017,8 @@ function discoverConventions(root, changedPaths = []) {
   });
   for (const { entry } of sized) {
     if (seen.has(entry.path)) continue;
-    const absolute = join7(root, entry.path);
-    if (!existsSync3(absolute)) continue;
+    const absolute = join9(root, entry.path);
+    if (!existsSync5(absolute)) continue;
     try {
       if (!statSync(absolute).isFile()) continue;
     } catch {
@@ -16434,17 +16811,17 @@ function resolveSyncWindow(input, now = /* @__PURE__ */ new Date()) {
 }
 
 // plugins/review-voice/src/retrieval/baseline.ts
-import { existsSync as existsSync4, readFileSync as readFileSync6 } from "node:fs";
-import { dirname as dirname5, join as join8 } from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
+import { existsSync as existsSync6, readFileSync as readFileSync9 } from "node:fs";
+import { dirname as dirname7, join as join10 } from "node:path";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 function isCorpusEmpty(db) {
   return db.prepare("SELECT COUNT(*) AS n FROM review_events").get().n === 0;
 }
 function baselineVoice() {
-  const here = dirname5(fileURLToPath3(import.meta.url));
-  for (const relative of ["..", "../.."]) {
-    const candidate = join8(here, relative, "templates", "voice.baseline.md");
-    if (existsSync4(candidate)) return readFileSync6(candidate, "utf8").trim();
+  const here = dirname7(fileURLToPath4(import.meta.url));
+  for (const relative2 of ["..", "../.."]) {
+    const candidate = join10(here, relative2, "templates", "voice.baseline.md");
+    if (existsSync6(candidate)) return readFileSync9(candidate, "utf8").trim();
   }
   throw new Error("templates/voice.baseline.md is missing from the plugin.");
 }
@@ -18737,6 +19114,28 @@ var COMMAND_HELP = {
       "Exit codes: 0 compliant, 1 violations found, 2 bad invocation."
     )
   },
+  agent: {
+    summary: "Run one agent as a confined headless Claude Code process",
+    body: lines(
+      "review-voice agent --name <agent> --model <model> --schema <file.json> [flags]",
+      "  Run one agent from agents/<name>.md and print its schema-valid output. It gets",
+      "  only the read-only file tools it declares (Read, Grep, Glob): a declared",
+      "  Bash(git:*) is dropped, and any other tool is refused.",
+      "",
+      "Flags:",
+      "  --name <agent>         The agent file name, e.g. diff-analyst",
+      "  --model <model>        The model to run it on, e.g. haiku",
+      "  --schema <file.json>   The JSON Schema its answer must satisfy",
+      "  --cwd <dir>            The repository clone it may read (default: the current directory)",
+      "  --timeout <seconds>    Kill the call after this long (default 600, at most 3600)",
+      "Reads: the prompt on stdin. Runs `claude` (or $REVIEW_VOICE_CLAUDE_BIN); with",
+      "  $REVIEW_VOICE_FAKE_AGENTS=<dir>, serves canned output from <dir>/<agent>.<n>.json instead.",
+      "Writes: the result as JSON on stdout ({ok, output, costUsd, seconds, error}); the fake",
+      "  backend records each call under <dir>/.calls/.",
+      "Exit codes: 0 the agent returned valid output, 1 the agent failed or timed out,",
+      "  2 bad invocation (unknown agent, unreadable schema, disallowed tool)."
+    )
+  },
   doctor: {
     summary: "Check that this machine can run Review Voice",
     body: lines(
@@ -18745,7 +19144,7 @@ var COMMAND_HELP = {
       "",
       "Reads: nothing on stdin.",
       "Writes: one line per check on stdout.",
-      "Exit codes: 0 every required check passed (gh is optional), 1 a required check failed."
+      "Exit codes: 0 every required check passed (gh and claude are optional), 1 a required check failed."
     )
   }
 };
@@ -18858,7 +19257,7 @@ function validateOutputCommand(argv) {
   if (scoresFlag !== null) {
     let entries;
     try {
-      entries = scoredEntries(JSON.parse(readFileSync7(scoresFlag, "utf8")));
+      entries = scoredEntries(JSON.parse(readFileSync10(scoresFlag, "utf8")));
     } catch (error) {
       console.error(`Cannot read ${scoresFlag}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -18938,7 +19337,7 @@ async function threadCommand(argv) {
   }
   try {
     const path = resolveOutPath(out, "thread.json");
-    writeFileSync(path, JSON.stringify(result, null, 2), "utf8");
+    writeFileSync2(path, JSON.stringify(result, null, 2), "utf8");
     console.log(
       JSON.stringify(
         {
@@ -19129,11 +19528,11 @@ function emitDiff(acquired, outDir) {
     return 0;
   }
   try {
-    mkdirSync2(outDir, { recursive: true });
-    const patchPath = join9(outDir, "diff.patch");
-    const metaPath = join9(outDir, "files.json");
-    writeFileSync(patchPath, result.diff);
-    writeFileSync(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
+    mkdirSync3(outDir, { recursive: true });
+    const patchPath = join11(outDir, "diff.patch");
+    const metaPath = join11(outDir, "files.json");
+    writeFileSync2(patchPath, result.diff);
+    writeFileSync2(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
     console.log(
       JSON.stringify(
         { patch: patchPath, files: metaPath, diffBytes: result.diff.length, summary: diffSummary(result) },
@@ -19179,7 +19578,7 @@ function symbolsCommand(argv) {
   }
   let diff;
   try {
-    diff = readFileSync7(diffFile, "utf8");
+    diff = readFileSync10(diffFile, "utf8");
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -19211,7 +19610,7 @@ function symbolsCommand(argv) {
   }
   try {
     const path = resolveOutPath(out, "symbols.json");
-    writeFileSync(path, JSON.stringify(result, null, 2), "utf8");
+    writeFileSync2(path, JSON.stringify(result, null, 2), "utf8");
     console.log(
       JSON.stringify(
         {
@@ -19242,7 +19641,7 @@ function flag(argv, name) {
 function resolveOutPath(out, defaultName) {
   let target = out;
   try {
-    if (out.endsWith("/") || statSync2(out).isDirectory()) target = join9(out, defaultName);
+    if (out.endsWith("/") || statSync2(out).isDirectory()) target = join11(out, defaultName);
   } catch (error) {
     if (error.code !== "ENOENT") {
       throw new Error(
@@ -19251,7 +19650,7 @@ function resolveOutPath(out, defaultName) {
     }
   }
   try {
-    mkdirSync2(dirname6(target), { recursive: true });
+    mkdirSync3(dirname8(target), { recursive: true });
   } catch (error) {
     throw new Error(
       `${out}: expected a file path or a directory (${error instanceof Error ? error.message : String(error)})`
@@ -19263,7 +19662,7 @@ function contextCommand() {
   try {
     const root = repositoryRoot(process.cwd());
     const config2 = loadConfig(root);
-    const configPath = join9(root, ".review-voice", "config.yaml");
+    const configPath = join11(root, ".review-voice", "config.yaml");
     const policy = resolvePolicy(config2.layers);
     console.log(
       JSON.stringify(
@@ -19291,7 +19690,7 @@ function contextCommand() {
           // Not raised on top of a parse failure: a config that did not parse
           // says nothing about whether it has a verification block, and the
           // parse error is the actionable item.
-          warnings: config2.verification.blockPresent || config2.warnings.length > 0 ? config2.warnings : existsSync5(configPath) ? [
+          warnings: config2.verification.blockPresent || config2.warnings.length > 0 ? config2.warnings : existsSync7(configPath) ? [
             ...config2.warnings,
             "No verification block in .review-voice/config.yaml, so the second-pass verifier never runs. Configs written before it existed do not have one. See the second-pass verification section of the README."
           ] : [
@@ -19558,10 +19957,10 @@ function readFilesAndDiff(filesPath, diffPath) {
   let manifest;
   let diffText;
   try {
-    const parsed = JSON.parse(readFileSync7(filesPath, "utf8"));
+    const parsed = JSON.parse(readFileSync10(filesPath, "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not a JSON object");
     manifest = parsed;
-    diffText = readFileSync7(diffPath, "utf8");
+    diffText = readFileSync10(diffPath, "utf8");
   } catch (error) {
     console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
     return null;
@@ -19923,7 +20322,7 @@ function scoreCommand(argv) {
   const verificationFlag = flag(argv, "--verification");
   if (verificationFlag !== null) {
     try {
-      const parsed = JSON.parse(readFileSync7(verificationFlag, "utf8"));
+      const parsed = JSON.parse(readFileSync10(verificationFlag, "utf8"));
       const list = verdictList(parsed);
       const problem = verificationProblem(list);
       if (problem !== null) {
@@ -20010,7 +20409,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      reachDiff = readFileSync7(path, "utf8");
+      reachDiff = readFileSync10(path, "utf8");
       anchorHunks = parseHunks(reachDiff);
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -20025,7 +20424,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync7(path, "utf8"));
+      const parsed = JSON.parse(readFileSync10(path, "utf8"));
       thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -20411,9 +20810,9 @@ function anchorsCommand(argv) {
   let hunks = null;
   let scores = [];
   try {
-    if (diffFile !== null) hunks = parseHunks(readFileSync7(diffFile, "utf8"));
+    if (diffFile !== null) hunks = parseHunks(readFileSync10(diffFile, "utf8"));
     if (scoresFile !== null) {
-      const parsed = JSON.parse(readFileSync7(scoresFile, "utf8"));
+      const parsed = JSON.parse(readFileSync10(scoresFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed.scores;
       scores = Array.isArray(list) ? list : [];
     }
@@ -20502,7 +20901,7 @@ function reconcileCommand(argv) {
   }
   let verifications;
   try {
-    verifications = verdictList(JSON.parse(readFileSync7(verificationFile, "utf8")));
+    verifications = verdictList(JSON.parse(readFileSync10(verificationFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read ${verificationFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -20518,7 +20917,7 @@ function reconcileCommand(argv) {
   }
   let secondPass;
   try {
-    secondPass = parseSecondPass(JSON.parse(readFileSync7(secondPassFile, "utf8")));
+    secondPass = parseSecondPass(JSON.parse(readFileSync10(secondPassFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read the second pass from ${secondPassFile}: ${error.message}`);
     return 2;
@@ -20527,7 +20926,7 @@ function reconcileCommand(argv) {
   const tieBreaksFile = flag(argv, "--tie-breaks");
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync7(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync10(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -20602,7 +21001,7 @@ function recordCommand(argv) {
   let diff = "";
   if (diffFile !== null) {
     try {
-      diff = readFileSync7(diffFile, "utf8");
+      diff = readFileSync10(diffFile, "utf8");
     } catch {
       console.error(`Cannot read ${diffFile}.`);
       return 2;
@@ -20624,7 +21023,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync7(bodyFindingsFile, "utf8"));
+      const parsed = JSON.parse(readFileSync10(bodyFindingsFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null && Array.isArray(parsed.bodyFindings) ? parsed.bodyFindings : null;
       if (list === null) throw new Error('expected an array or {"bodyFindings": [...]}');
       if (list.length > 1) throw new Error("at most one body-only simplification is allowed per review");
@@ -20650,7 +21049,7 @@ function recordCommand(argv) {
   let complexity = null;
   if (filesFile !== null) {
     try {
-      const manifest = JSON.parse(readFileSync7(filesFile, "utf8"));
+      const manifest = JSON.parse(readFileSync10(filesFile, "utf8"));
       if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
         pullNumber = manifest.pullNumber;
       }
@@ -20670,7 +21069,7 @@ function recordCommand(argv) {
   let candidates = [];
   if (candidatesFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync7(candidatesFile, "utf8"));
+      const parsed = JSON.parse(readFileSync10(candidatesFile, "utf8"));
       candidates = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
     } catch {
       console.error(`Cannot read candidates from ${candidatesFile}.`);
@@ -20681,7 +21080,7 @@ function recordCommand(argv) {
   let scores = [];
   if (scoresFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync7(scoresFile, "utf8"));
+      const parsed = JSON.parse(readFileSync10(scoresFile, "utf8"));
       scores = boundLists(Array.isArray(parsed) ? parsed : parsed.scores ?? []);
     } catch {
       console.error(`Cannot read scores from ${scoresFile}.`);
@@ -20692,7 +21091,7 @@ function recordCommand(argv) {
   let verdicts = [];
   if (verdictsFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync7(verdictsFile, "utf8"));
+      const parsed = JSON.parse(readFileSync10(verdictsFile, "utf8"));
       verdicts = Array.isArray(parsed) ? parsed : parsed.verdicts ?? [];
     } catch {
       console.error(`Cannot read verdicts from ${verdictsFile}.`);
@@ -20703,7 +21102,7 @@ function recordCommand(argv) {
   let tieBreaks = [];
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync7(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync10(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -20713,7 +21112,7 @@ function recordCommand(argv) {
   let held = [];
   if (heldFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync7(heldFile, "utf8"));
+      const parsed = JSON.parse(readFileSync10(heldFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed?.held;
       if (!Array.isArray(list)) throw new Error('expected an array or {"held": [...]}');
       list.forEach((entry, index) => {
@@ -20730,7 +21129,7 @@ function recordCommand(argv) {
   let stages = [];
   if (stagesFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync7(stagesFile, "utf8"));
+      const parsed = JSON.parse(readFileSync10(stagesFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed.stages ?? [];
       stages = (Array.isArray(list) ? list : []).filter(
         (stage) => typeof stage === "object" && stage !== null && typeof stage.name === "string" && Number.isFinite(stage.seconds)
@@ -20750,7 +21149,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync7(followUpThreadFile, "utf8"));
+      const parsed = JSON.parse(readFileSync10(followUpThreadFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed.comments;
       if (!Array.isArray(list)) throw new Error("comments is not a list");
       followUpThread = list;
@@ -20768,7 +21167,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      rulings = parseFollowUpRulings(JSON.parse(readFileSync7(rulingsFile, "utf8")));
+      rulings = parseFollowUpRulings(JSON.parse(readFileSync10(rulingsFile, "utf8")));
     } catch (error) {
       const why = error instanceof FollowUpRulingError ? error.message : `cannot read it (${error.message})`;
       console.error(`Cannot read follow-up rulings from ${rulingsFile}: ${why}.`);
@@ -20808,7 +21207,7 @@ function recordCommand(argv) {
       const head = flag(argv, "--head");
       let marker = null;
       try {
-        const parsed = JSON.parse(readFileSync7(carryFile, "utf8"));
+        const parsed = JSON.parse(readFileSync10(carryFile, "utf8"));
         const refused = Array.isArray(parsed["refused"]) ? parsed["refused"].map((r) => String(r?.candidateId)) : null;
         const interdiff = parsed["interdiff"];
         if (refused !== null && typeof parsed["since"] === "string" && typeof parsed["head"] === "string") {
@@ -20936,7 +21335,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   if (threadFile !== null) {
     let text4;
     try {
-      text4 = readFileSync7(threadFile, "utf8");
+      text4 = readFileSync10(threadFile, "utf8");
     } catch (error) {
       throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -20946,7 +21345,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   let noLongerChanged = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
-      const files = JSON.parse(readFileSync7(filesFile, "utf8"));
+      const files = JSON.parse(readFileSync10(filesFile, "utf8"));
       const listed = files.scope?.noLongerChanged;
       noLongerChanged = new Set(Array.isArray(listed) ? listed.filter((path) => typeof path === "string") : []);
     } catch (error) {
@@ -21033,12 +21432,12 @@ function reanchorCommand(argv) {
     console.error("--path needs the file the finding belongs in.");
     return 2;
   }
-  const readJson = (path) => JSON.parse(readFileSync7(path, "utf8"));
+  const readJson = (path) => JSON.parse(readFileSync10(path, "utf8"));
   let scores;
   let hunks;
   try {
     scores = readJson(scoresFile);
-    hunks = parseHunks(readFileSync7(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync10(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -21066,11 +21465,11 @@ function reanchorCommand(argv) {
   try {
     if (candidatesFile !== null) {
       staged.push([`${candidatesFile}.reanchor-${process.pid}`, candidatesFile]);
-      writeFileSync(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
+      writeFileSync2(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
 `);
     }
     staged.push([`${scoresFile}.reanchor-${process.pid}`, scoresFile]);
-    writeFileSync(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
+    writeFileSync2(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
 `);
     for (const [temporary, target] of staged) renameSync(temporary, target);
   } catch (error) {
@@ -21100,7 +21499,7 @@ function challengeCommand(argv) {
       return 2;
     }
   }
-  const readJson = (path) => JSON.parse(readFileSync7(path, "utf8"));
+  const readJson = (path) => JSON.parse(readFileSync10(path, "utf8"));
   let scores;
   let candidates;
   try {
@@ -21126,7 +21525,7 @@ function challengeCommand(argv) {
   let verdicts;
   let hunks;
   try {
-    hunks = parseHunks(readFileSync7(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync10(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -21149,7 +21548,7 @@ function challengeCommand(argv) {
     process.stdout.write(body);
   } else {
     try {
-      writeFileSync(outFile, body);
+      writeFileSync2(outFile, body);
     } catch (error) {
       console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -21186,8 +21585,8 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let manifest;
   let hunks;
   try {
-    manifest = JSON.parse(readFileSync7(join9(dir, "files.json"), "utf8"));
-    hunks = parseHunks(readFileSync7(join9(dir, "diff.patch"), "utf8"));
+    manifest = JSON.parse(readFileSync10(join11(dir, "files.json"), "utf8"));
+    hunks = parseHunks(readFileSync10(join11(dir, "diff.patch"), "utf8"));
   } catch (error) {
     return `Cannot read the interdiff in ${dir}: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -21202,7 +21601,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let candidates;
   let verification2;
   try {
-    const parsed = listIn(JSON.parse(readFileSync7(candidatesFile, "utf8")), ["candidates"]);
+    const parsed = listIn(JSON.parse(readFileSync10(candidatesFile, "utf8")), ["candidates"]);
     if (parsed === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidates = parsed.list;
     const normalised = candidates.map((raw, index) => normaliseCandidate(raw, index));
@@ -21210,11 +21609,11 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
     const misplaced = normalised.filter((c) => !candidateAnchor(hunks, c).ok);
     if (misplaced.length > 0) {
       throw new Error(
-        `interdiff candidate(s) not on a changed line of ${join9(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
+        `interdiff candidate(s) not on a changed line of ${join11(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
       );
     }
     candidates = candidates.map((raw, index) => withId(raw, normalised[index].candidateId));
-    const parsedVerification = listIn(JSON.parse(readFileSync7(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync10(verificationFile, "utf8")), VERDICT_KEYS);
     verification2 = parsedVerification?.list ?? [];
     if (parsedVerification === null && candidates.length > 0) throw new Error(`${verificationFile} contains no verifications`);
     const problem = verificationProblem(verification2);
@@ -21227,7 +21626,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
 function partialDiffReason(diffFile) {
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync7(join9(dirname6(diffFile), "files.json"), "utf8"));
+    manifest = JSON.parse(readFileSync10(join11(dirname8(diffFile), "files.json"), "utf8"));
   } catch {
     return null;
   }
@@ -21259,24 +21658,24 @@ function carryCandidatesCommand(argv) {
   let hunks;
   let heldIn = null;
   try {
-    const parsedCandidates = listIn(JSON.parse(readFileSync7(candidatesFile, "utf8")), ["candidates"]);
+    const parsedCandidates = listIn(JSON.parse(readFileSync10(candidatesFile, "utf8")), ["candidates"]);
     if (parsedCandidates === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidatesIn = parsedCandidates;
     candidates = candidatesIn.list.map((raw, index) => normaliseCandidate(raw, index));
     assertUniqueCandidateIds(candidates);
-    const parsedVerification = listIn(JSON.parse(readFileSync7(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync10(verificationFile, "utf8")), VERDICT_KEYS);
     if (parsedVerification === null || parsedVerification.list.length === 0) {
       throw new Error(`${verificationFile} contains no verifications`);
     }
     verificationIn = parsedVerification;
     const problem = verificationProblem(verificationIn.list);
     if (problem !== null) throw new Error(`malformed verification - ${problem}`);
-    hunks = parseHunks(readFileSync7(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync10(diffFile, "utf8"));
     const partial = partialDiffReason(diffFile);
     if (partial !== null) throw new Error(partial);
     const heldFile = flag(argv, "--held");
     if (heldFile !== null) {
-      heldIn = listIn(JSON.parse(readFileSync7(heldFile, "utf8")), ["held"]);
+      heldIn = listIn(JSON.parse(readFileSync10(heldFile, "utf8")), ["held"]);
       if (heldIn === null) throw new Error(`${heldFile} is not an array or {"held": [...]}`);
       heldIn.list.forEach((entry, index) => {
         const heldError = heldProblem(entry);
@@ -21368,20 +21767,20 @@ function carryCandidatesCommand(argv) {
     ...heldIn === null ? {} : { held: { kept: heldKept.length, dropped: heldDropped } }
   };
   try {
-    mkdirSync2(outDir, { recursive: true });
-    writeFileSync(
-      join9(outDir, "candidates.json"),
+    mkdirSync3(outDir, { recursive: true });
+    writeFileSync2(
+      join11(outDir, "candidates.json"),
       `${JSON.stringify(candidatesIn.rebuild([...carriedCandidates, ...interdiffCandidates]), null, 2)}
 `
     );
-    writeFileSync(
-      join9(outDir, "verification.json"),
+    writeFileSync2(
+      join11(outDir, "verification.json"),
       `${JSON.stringify(verificationIn.rebuild([...carriedVerification, ...interdiffVerification]), null, 2)}
 `
     );
-    if (heldIn !== null) writeFileSync(join9(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
+    if (heldIn !== null) writeFileSync2(join11(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
 `);
-    writeFileSync(join9(outDir, "carry.json"), `${JSON.stringify(record2, null, 2)}
+    writeFileSync2(join11(outDir, "carry.json"), `${JSON.stringify(record2, null, 2)}
 `);
   } catch (error) {
     console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -21410,10 +21809,10 @@ function carryCandidatesCommand(argv) {
         carried: result.carried.length,
         refused,
         interdiffReviewed: interdiff !== null,
-        candidates: join9(outDir, "candidates.json"),
-        verification: join9(outDir, "verification.json"),
-        ...heldIn === null ? {} : { held: join9(outDir, "held.json") },
-        carry: join9(outDir, "carry.json")
+        candidates: join11(outDir, "candidates.json"),
+        verification: join11(outDir, "verification.json"),
+        ...heldIn === null ? {} : { held: join11(outDir, "held.json") },
+        carry: join11(outDir, "carry.json")
       },
       null,
       2
@@ -21643,7 +22042,7 @@ function conventionsCommand(argv) {
   const changed = [];
   if (filesFlag !== null) {
     try {
-      changed.push(...changedPathsFrom(JSON.parse(readFileSync7(filesFlag, "utf8"))));
+      changed.push(...changedPathsFrom(JSON.parse(readFileSync10(filesFlag, "utf8"))));
     } catch (error) {
       console.error(`Cannot read ${filesFlag}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -21729,7 +22128,7 @@ function checkVerificationCommand(argv) {
   let keptIds = null;
   if (candidatesFile !== null) {
     try {
-      keptIds = keptCandidateIds(JSON.parse(readFileSync7(candidatesFile, "utf8")));
+      keptIds = keptCandidateIds(JSON.parse(readFileSync10(candidatesFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -21775,7 +22174,7 @@ function checkIntentCommand(argv) {
   }
   let description;
   try {
-    description = descriptionOf(JSON.parse(readFileSync7(threadFile, "utf8")));
+    description = descriptionOf(JSON.parse(readFileSync10(threadFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -21815,7 +22214,7 @@ function checkSimplificationCommand(argv) {
   }
   let hunks;
   try {
-    hunks = parseHunks(readFileSync7(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync10(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -21847,7 +22246,7 @@ function checkSimplificationCommand(argv) {
   }
   let candidateDocument;
   try {
-    candidateDocument = JSON.parse(readFileSync7(candidateFile, "utf8"));
+    candidateDocument = JSON.parse(readFileSync10(candidateFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${candidateFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -22020,7 +22419,7 @@ function checkCandidatesCommand(argv) {
       }
       let ids;
       try {
-        const statements = JSON.parse(readFileSync7(intentFile, "utf8")).statements;
+        const statements = JSON.parse(readFileSync10(intentFile, "utf8")).statements;
         if (!Array.isArray(statements)) throw new Error("statements is not a list");
         ids = new Set(statements.map((statement) => statement?.id).filter((id) => typeof id === "string"));
       } catch (error) {
@@ -22051,7 +22450,7 @@ function checkCandidatesCommand(argv) {
     }
     let hunks;
     try {
-      hunks = parseHunks(readFileSync7(diffFile, "utf8"));
+      hunks = parseHunks(readFileSync10(diffFile, "utf8"));
     } catch (error) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -22110,7 +22509,7 @@ function checkCandidatesCommand(argv) {
         return 2;
       }
       try {
-        const parsed = JSON.parse(readFileSync7(threadFile, "utf8"));
+        const parsed = JSON.parse(readFileSync10(threadFile, "utf8"));
         thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
         if (!Array.isArray(thread)) throw new Error("comments is not a list");
       } catch (error) {
@@ -22277,6 +22676,71 @@ async function main(argv) {
   }
   return exit;
 }
+async function agentCommand(argv) {
+  const name = flag(argv, "--name");
+  const model = flag(argv, "--model");
+  const schemaPath = flag(argv, "--schema");
+  if (name === null || model === null || schemaPath === null) {
+    console.error("agent needs --name <agent>, --model <model> and --schema <file.json>.");
+    return 2;
+  }
+  let tools;
+  try {
+    tools = readAgentTools(name);
+    runnerTools(tools);
+  } catch (error) {
+    if (error instanceof AgentSpecError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+  let schema4;
+  try {
+    schema4 = JSON.parse(readFileSync10(schemaPath, "utf8"));
+  } catch (error) {
+    console.error(`Cannot read the schema ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  if (schema4 === null || typeof schema4 !== "object" || Array.isArray(schema4)) {
+    console.error(`The schema ${schemaPath} must be a JSON object.`);
+    return 2;
+  }
+  const schemaDir = dirname8(resolve2(schemaPath));
+  try {
+    schemaForRunner(schema4, schemaDir);
+  } catch (error) {
+    if (error instanceof AgentSpecError) {
+      console.error(`The schema ${schemaPath} cannot be given to an agent: ${error.message}`);
+      return 2;
+    }
+    throw error;
+  }
+  const cwd = flag(argv, "--cwd") ?? process.cwd();
+  let isDirectory = false;
+  try {
+    isDirectory = statSync2(cwd).isDirectory();
+  } catch {
+    isDirectory = false;
+  }
+  if (!isDirectory) {
+    console.error(`--cwd ${cwd} is not a directory.`);
+    return 2;
+  }
+  const timeout = numericFlag(argv, "--timeout", 0);
+  if (timeout === null || argv.includes("--timeout") && timeout === 0 || timeout > 3600) {
+    console.error("--timeout takes a whole number of seconds from 1 to 3600.");
+    return 2;
+  }
+  const prompt = readStdin();
+  const result = await runAgent(
+    { name, model, tools, schema: schema4, schemaDir, ...timeout > 0 ? { timeoutMs: timeout * 1e3 } : {} },
+    prompt,
+    cwd
+  );
+  console.log(JSON.stringify(result, null, 2));
+  return result.ok ? 0 : 1;
+}
 async function dispatch(argv) {
   const command = argv[0];
   if (command !== void 0 && (argv.includes("--help") || argv.includes("-h"))) {
@@ -22411,12 +22875,14 @@ ${topLevelHelp()}`);
       return explainCommand(argv.slice(1));
     case "validate-output":
       return validateOutputCommand(argv.slice(1));
+    case "agent":
+      return await agentCommand(argv.slice(1));
     case "doctor": {
       const checks = runDoctor();
       for (const check of checks) {
         console.log(`${check.ok ? "ok  " : "FAIL"}  ${check.name.padEnd(12)} ${check.detail}`);
       }
-      const required = checks.filter((c) => c.name !== "gh");
+      const required = checks.filter((c) => !OPTIONAL_CHECKS.has(c.name));
       return required.every((c) => c.ok) ? 0 : 1;
     }
     default:

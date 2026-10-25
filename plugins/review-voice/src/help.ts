@@ -775,6 +775,28 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       'Exit codes: 0 compliant, 1 violations found, 2 bad invocation.',
     ),
   },
+  agent: {
+    summary: 'Run one agent as a confined headless Claude Code process',
+    body: lines(
+      'review-voice agent --name <agent> --model <model> --schema <file.json> [flags]',
+      '  Run one agent from agents/<name>.md and print its schema-valid output. It gets',
+      '  only the read-only file tools it declares (Read, Grep, Glob): a declared',
+      '  Bash(git:*) is dropped, and any other tool is refused.',
+      '',
+      'Flags:',
+      '  --name <agent>         The agent file name, e.g. diff-analyst',
+      '  --model <model>        The model to run it on, e.g. haiku',
+      '  --schema <file.json>   The JSON Schema its answer must satisfy',
+      '  --cwd <dir>            The repository clone it may read (default: the current directory)',
+      '  --timeout <seconds>    Kill the call after this long (default 600, at most 3600)',
+      'Reads: the prompt on stdin. Runs `claude` (or $REVIEW_VOICE_CLAUDE_BIN); with',
+      '  $REVIEW_VOICE_FAKE_AGENTS=<dir>, serves canned output from <dir>/<agent>.<n>.json instead.',
+      'Writes: the result as JSON on stdout ({ok, output, costUsd, seconds, error}); the fake',
+      '  backend records each call under <dir>/.calls/.',
+      'Exit codes: 0 the agent returned valid output, 1 the agent failed or timed out,',
+      '  2 bad invocation (unknown agent, unreadable schema, disallowed tool).',
+    ),
+  },
   doctor: {
     summary: 'Check that this machine can run Review Voice',
     body: lines(
@@ -783,7 +805,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '',
       'Reads: nothing on stdin.',
       'Writes: one line per check on stdout.',
-      'Exit codes: 0 every required check passed (gh is optional), 1 a required check failed.',
+      'Exit codes: 0 every required check passed (gh and claude are optional), 1 a required check failed.',
     ),
   },
 };

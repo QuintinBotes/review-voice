@@ -61,6 +61,34 @@ startup because it concerns a dependency choice the user never made.
 The committed bundle is a real risk: it can drift from source. CI rebuilds and
 diffs on every push, so a stale bundle cannot ship.
 
+### Agent runner
+
+`src/agents/` starts one agent per process: `runAgent(spec, prompt, cwd,
+addDirs)` runs `claude -p --restricted --strict-mcp-config` in the pull
+request's head checkout, with `agents/<name>.md` as the system prompt, the
+agent's JSON Schema, and `--add-dir` for each extra directory it may read,
+such as base copies of changed files (docs/adr/0021). Agents get read-only
+file tools only: `Read`, `Grep` and `Glob`. A `Bash(git:*)` in an agent's
+frontmatter serves the interactive host and is dropped here, because git
+options can run arbitrary commands and a tool prefix cannot narrow them.
+Any other tool is refused before a process starts. So an injected
+instruction meets an agent that can read files and do nothing else, and the
+runner appends a fixed note to every prompt saying which tools exist.
+The schema is passed with `$schema` and `$id` removed and each sibling-file
+`$ref` inlined, because claude's validator cannot load either; a `$ref` it
+could not follow is refused first. `--safe-mode` keeps CLAUDE.md, skills, commands and agents in the checkout
+from loading, the prompt always goes on stdin after the runner's note, and
+the child's environment drops GitHub tokens and `REVIEW_VOICE_*` settings.
+`runAgents` caps the calls in flight (default 4) and keeps results in input
+order. Each call has a timeout (default 10 minutes, at most an hour) and a
+32 MiB output cap, either of which kills its whole process group, and
+SIGINT or SIGTERM to the CLI kills every live group before it exits.
+
+`REVIEW_VOICE_FAKE_AGENTS=<dir>` swaps in canned answers from
+`<dir>/<name>.<n>.json`, counting calls on disk so separate CLI processes in
+one test share the numbering. `review-voice agent` runs a single call, which
+is how the runner is exercised on its own.
+
 ### Diff acquisition
 
 `review-voice diff` emits the change under review as JSON: base and head, every
