@@ -18249,10 +18249,10 @@ function planCommand(argv) {
   let manifest;
   let diffText;
   try {
-    const parsed = JSON.parse(readFileSync6(filesPath, "utf8"));
+    const parsed = JSON.parse(readFileSync7(filesPath, "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not a JSON object");
     manifest = parsed;
-    diffText = readFileSync6(diffPath, "utf8");
+    diffText = readFileSync7(diffPath, "utf8");
   } catch (error) {
     console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
