@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync7, readSync, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2, renameSync, rmSync, existsSync as existsSync4 } from "node:fs";
-import { dirname as dirname5, join as join8 } from "node:path";
+import { readFileSync as readFileSync7, readSync, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2, renameSync, rmSync, existsSync as existsSync5 } from "node:fs";
+import { dirname as dirname6, join as join9 } from "node:path";
 import { execFileSync as execFileSync11 } from "node:child_process";
 
 // plugins/review-voice/src/warnings.ts
@@ -1445,6 +1445,12 @@ var DOCUMENTATION_NAMES = /* @__PURE__ */ new Set([
   "contributors",
   "copying"
 ]);
+var CONFIGURATION_EXTENSIONS = /* @__PURE__ */ new Set(["yaml", "yml", "json", "jsonc", "toml", "ini", "cfg", "conf", "properties", "env", "lock"]);
+function isConfiguration(path) {
+  if (path.startsWith(".github/workflows/")) return false;
+  const name = (path.split("/").pop() ?? "").toLowerCase();
+  return name === ".env" || CONFIGURATION_EXTENSIONS.has(extensionOf(path)) || classify(path) === "lockfile";
+}
 function isDocumentation(path) {
   const segments = path.split("/");
   const name = (segments.pop() ?? "").toLowerCase();
@@ -1979,6 +1985,9 @@ function reviewedKinds(files, limits, markedGenerated2) {
     if (file.reviewed) kinds.set(file.path, kindOf(file));
   }
   return { kinds, reasons };
+}
+function reviewedFileKinds(files, partial, markedGenerated2 = /* @__PURE__ */ new Set()) {
+  return reviewedKinds(files, config(partial), markedGenerated2).kinds;
 }
 function productionPaths(files, partial, markedGenerated2 = /* @__PURE__ */ new Set()) {
   const { kinds } = reviewedKinds(files, config(partial), markedGenerated2);
@@ -2673,6 +2682,142 @@ function verifierConfidence(technicalConfidence, evidenceQuality2) {
   return QUALITY_CONFIDENCE[evidenceQuality2] ?? null;
 }
 
+// plugins/review-voice/src/review/lanes.ts
+import { existsSync } from "node:fs";
+import { dirname as dirname2, join as join4 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// plugins/review-voice/src/review/plan.ts
+var MODES = ["fast", "standard", "thorough", "auto"];
+var MODEL_KEYS = ["intent", "analyst", "lanes", "verify", "tie-break", "challenge", "edit"];
+var SONNET = "sonnet";
+var OPUS = "opus";
+var THOROUGH_LINE_LIMIT = 150;
+function autoMode(input) {
+  if (!input.productionSourceChanged) return { mode: "fast", reason: "auto: no production source changed" };
+  if (input.complexity === "high") return { mode: "thorough", reason: "auto: complexity is high" };
+  if (input.productionLinesChanged > THOROUGH_LINE_LIMIT) {
+    return {
+      mode: "thorough",
+      reason: `auto: ${input.productionLinesChanged} production lines changed (over ${THOROUGH_LINE_LIMIT})`
+    };
+  }
+  return { mode: "standard", reason: "auto: production source changed within the standard limits" };
+}
+function resolvePlan(input) {
+  const overrides = input.models ?? {};
+  const chosen = input.requested === "auto" ? autoMode(input) : { mode: input.requested, reason: `mode set to ${input.requested}` };
+  const { mode } = chosen;
+  const fast = mode === "fast";
+  const thorough = mode === "thorough";
+  const diffLane = overrides.analyst ?? overrides.lanes ?? (thorough ? OPUS : SONNET);
+  const otherLanes = fast ? null : overrides.lanes ?? (thorough ? OPUS : SONNET);
+  const secondPass = input.secondPassConfigured && !fast;
+  return {
+    mode,
+    requested: input.requested,
+    reason: chosen.reason,
+    stages: {
+      intent: { run: true, model: overrides.intent ?? SONNET },
+      lanes: { run: true, model: diffLane },
+      // The verifier is a floor: no mode turns it off.
+      verify: { run: true, model: overrides.verify ?? (thorough ? OPUS : SONNET) },
+      // The second pass is a configured command, so it has no model of its own.
+      "second-pass": { run: secondPass, model: null },
+      "tie-break": { run: true, model: overrides["tie-break"] ?? (fast ? SONNET : OPUS) },
+      // In fast the stage is off by default; modelForFinding applies the floor for findings above a nit.
+      challenge: fast ? { run: false, model: null } : { run: true, model: overrides.challenge ?? (thorough ? OPUS : SONNET) },
+      edit: { run: true, model: overrides.edit ?? SONNET }
+    },
+    laneModels: { diff: diffLane, others: otherLanes },
+    overrides
+  };
+}
+var CHANGE_KINDS = ["test", "docs", "config", "generated"];
+var CHANGE_KIND = {
+  production: "production",
+  test: "test",
+  documentation: "docs",
+  generated: "generated"
+};
+function linesByPath(diffText) {
+  const counts = /* @__PURE__ */ new Map();
+  let current = null;
+  let inHunk = false;
+  for (const line2 of diffText.split("\n")) {
+    if (line2.startsWith("diff --git ")) {
+      const match = /^diff --git (?:"a\/.*?"|a\/\S+) ("b\/.*"|b\/.*)$/.exec(line2);
+      current = match === null ? null : unquoteGitPath(match[1]).slice(2);
+      inHunk = false;
+      continue;
+    }
+    if (current === null) continue;
+    if (line2.startsWith("@@")) {
+      inHunk = true;
+      continue;
+    }
+    if (inHunk && (line2.startsWith("+") || line2.startsWith("-"))) {
+      counts.set(current, (counts.get(current) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+function productionChange(files, diffText, partial, markedGenerated2 = /* @__PURE__ */ new Set(), options = {}) {
+  const exclude = new Set(options.exclude ?? CHANGE_KINDS);
+  const lockfiles = new Set(files.filter((file) => file.class === "lockfile").map((file) => file.path));
+  const kindOf = (path, kind) => (kind === "production" || lockfiles.has(path)) && isConfiguration(path) ? "config" : CHANGE_KIND[kind];
+  const production = new Set(
+    [...reviewedFileKinds(files, partial, markedGenerated2)].filter(([path, kind]) => !exclude.has(kindOf(path, kind)) && (options.counts?.(path) ?? true)).map(([path]) => path)
+  );
+  let fromDiff = null;
+  let lines2 = 0;
+  for (const file of files) {
+    if (!production.has(file.path)) continue;
+    if (Number.isFinite(file.additions) && Number.isFinite(file.deletions)) {
+      lines2 += file.additions + file.deletions;
+    } else {
+      fromDiff ??= linesByPath(diffText);
+      lines2 += fromDiff.get(file.path) ?? 0;
+    }
+  }
+  return { productionSourceChanged: production.size > 0, productionLinesChanged: lines2 };
+}
+
+// plugins/review-voice/src/review/lanes.ts
+var LANE_TIERS = ["nit", "minor", "important", "blocking"];
+var DIFF_LANE = { name: "diff", agent: "diff-analyst", prefix: "cand_", when: {}, severity: {} };
+function laneNamed(lanes, name) {
+  return lanes.find((lane) => lane.name === (name ?? DIFF_LANE.name));
+}
+function agentsDirectory() {
+  let dir = dirname2(fileURLToPath2(import.meta.url));
+  for (let depth = 0; depth < 4; depth += 1) {
+    const candidate = join4(dir, "agents");
+    if (existsSync(join4(candidate, `${DIFF_LANE.agent}.md`))) return candidate;
+    dir = dirname2(dir);
+  }
+  return null;
+}
+function agentExists(name) {
+  if (!/^[a-z][a-z0-9-]*$/.test(name)) return false;
+  const dir = agentsDirectory();
+  return dir !== null && existsSync(join4(dir, `${name}.md`));
+}
+function eligibleLanes(lanes, files, diffText, options = {}) {
+  return lanes.map((lane) => {
+    if (lane.name === DIFF_LANE.name) return { lane, eligible: true, reason: "the diff lane always runs" };
+    const paths = lane.when.paths;
+    const counts = paths === void 0 ? void 0 : (path) => governsAny(paths, [path]);
+    const { productionLinesChanged: lines2 } = productionChange(files, diffText, options.humanReview, options.markedGenerated, {
+      exclude: lane.when.excludeKinds,
+      counts
+    });
+    const measured = `${lines2} changed source line${lines2 === 1 ? "" : "s"}${paths === void 0 ? "" : ` in ${paths.join(", ")}`}`;
+    const minimum = lane.when.minChangedSourceLines ?? 0;
+    return lines2 >= minimum ? { lane, eligible: true, reason: `${measured}, at least ${minimum}` } : { lane, eligible: false, reason: `${measured}, under the minimum of ${minimum}` };
+  });
+}
+
 // plugins/review-voice/src/scoring/score.ts
 var STALE_CONSUMER = "stale-consumer";
 var DOCUMENTATION_PATH = /\.(?:md|rst|adoc)$/i;
@@ -2774,6 +2919,31 @@ function raisedBecause(result, requested, why) {
   const got = TIER_ORDER.indexOf(result.severity);
   if (asked === -1 || got === -1 || got <= asked) return result;
   return { ...result, reason: `${result.reason}, raised above the requested ${requested} because ${why}` };
+}
+function applyLaneSeverity(derived, candidate, lane, verification2) {
+  const { cap, escalate } = lane?.severity ?? {};
+  if (lane === void 0 || derived.severity === "question") return derived;
+  const rank2 = (tier) => TIER_ORDER.indexOf(tier);
+  let result = derived;
+  if (cap !== void 0 && rank2(result.severity) > rank2(cap)) {
+    result = { ...result, severity: cap, reason: `${result.reason}, capped at ${cap} by lane ${lane.name}` };
+  }
+  if (escalate === void 0 || verification2?.blockerConfirmed !== true || rank2(result.severity) >= rank2(escalate.to)) {
+    return result;
+  }
+  const confidence = verifierConfidence(verification2.technicalConfidence, verification2.evidenceQuality);
+  const held = (why) => ({ ...result, reason: `${result.reason}; blocker confirmed but ${why}` });
+  if (verification2.impactTraced !== true) return held("impact not traced");
+  if (confidence === null || confidence < ESCALATION_CONFIDENCE) {
+    return held(`verifier confidence ${confidence === null ? "is unknown" : confidence.toFixed(2)}, under ${ESCALATION_CONFIDENCE}`);
+  }
+  if (candidate.impactDisputed === true) return held("the second pass disputed the traced impact");
+  if (isInterrogativeClaim(candidate.claim)) return held("the claim is framed as a question");
+  return {
+    ...result,
+    severity: escalate.to,
+    reason: `${result.reason}, raised to ${escalate.to} by lane ${lane.name} because the verifier confirmed the blocker and traced its impact at confidence ${confidence.toFixed(2)}`
+  };
 }
 var UNVERIFIABLE_CONFIDENCE = 0.6;
 var DOCUMENT_NIT_HINT = "lower it with `--severity <id>=nit` to post it as a nit";
@@ -2968,6 +3138,13 @@ function normaliseCandidate(raw, index) {
   if (intentRef !== void 0 && (typeof intentRef !== "string" || !/^int_[0-9]{3,}$/.test(intentRef))) {
     throw new MalformedCandidate(`${candidateId}: intent_ref must match int_NNN when supplied`);
   }
+  if (raw.lane !== void 0 && (typeof raw.lane !== "string" || raw.lane.length === 0)) {
+    throw new MalformedCandidate(`${candidateId}: lane must be a lane name when supplied`);
+  }
+  const blockerClass = raw.blocker_class !== void 0 ? raw.blocker_class : raw.blockerClass;
+  if (blockerClass !== void 0 && blockerClass !== null && typeof blockerClass !== "string") {
+    throw new MalformedCandidate(`${candidateId}: blocker_class must be a string or null when supplied`);
+  }
   return {
     candidateId,
     path: raw.path,
@@ -2987,7 +3164,9 @@ function normaliseCandidate(raw, index) {
     ...raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {},
     ...impactDisputed === true ? { impactDisputed: true } : {},
     ...intentRef === void 0 ? {} : { intentRef },
-    ...ownComment === null ? {} : { ownComment }
+    ...ownComment === null ? {} : { ownComment },
+    ...raw.lane === void 0 ? {} : { lane: raw.lane },
+    ...blockerClass === void 0 ? {} : { blockerClass }
   };
 }
 function ownCommentOf(value) {
@@ -3192,7 +3371,7 @@ function withLegacyTierHint(severity, candidate, verification2) {
     reason: `${severity.reason}; reach is unknown, so the requested ${severity.requested} was not applied. If it breaks things for the whole repository, raise it with \`--severity ${candidate.candidateId}=${severity.requested}\``
   };
 }
-function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2) {
+function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2, lane) {
   const analystConfidence = candidate.technicalConfidence;
   const verifiedConfidence = verification2 === void 0 ? null : verifierConfidence(verification2.technicalConfidence, verification2.evidenceQuality);
   let confidence = verifiedConfidence ?? analystConfidence;
@@ -3250,7 +3429,12 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
-  const severity = withLegacyTierHint(boundSeverityByEvidence(derivedSeverity, candidate, verification2), candidate, verification2);
+  const severity = applyLaneSeverity(
+    withLegacyTierHint(boundSeverityByEvidence(derivedSeverity, candidate, verification2), candidate, verification2),
+    candidate,
+    lane,
+    verification2
+  );
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
   const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit" && confidenceSource === "verifier";
   if (staleConsumer && verification2?.impactTraced !== true && !untracedDocumentNit) {
@@ -3262,6 +3446,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const fix = renderFix(candidate, verification2, thresholds);
   return {
     candidateId: candidate.candidateId,
+    lane: candidate.lane ?? DIFF_LANE.name,
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
@@ -5701,30 +5886,30 @@ function collectSymbolContext(options) {
 // plugins/review-voice/src/store/db.ts
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, chmodSync } from "node:fs";
-import { dirname as dirname2 } from "node:path";
+import { dirname as dirname3 } from "node:path";
 
 // plugins/review-voice/src/store/paths.ts
 import { homedir } from "node:os";
-import { join as join4 } from "node:path";
+import { join as join5 } from "node:path";
 function dataDirectory(env = process.env) {
   const override = env["REVIEW_VOICE_DATA_DIR"];
   if (override !== void 0 && override.length > 0) return override;
   const home = homedir();
   switch (process.platform) {
     case "darwin":
-      return join4(home, "Library", "Application Support", "review-voice");
+      return join5(home, "Library", "Application Support", "review-voice");
     case "win32": {
       const appData = env["APPDATA"];
-      return appData !== void 0 && appData.length > 0 ? join4(appData, "review-voice") : join4(home, "AppData", "Roaming", "review-voice");
+      return appData !== void 0 && appData.length > 0 ? join5(appData, "review-voice") : join5(home, "AppData", "Roaming", "review-voice");
     }
     default: {
       const xdg = env["XDG_DATA_HOME"];
-      return xdg !== void 0 && xdg.length > 0 ? join4(xdg, "review-voice") : join4(home, ".local", "share", "review-voice");
+      return xdg !== void 0 && xdg.length > 0 ? join5(xdg, "review-voice") : join5(home, ".local", "share", "review-voice");
     }
   }
 }
 function databasePath(env) {
-  return join4(dataDirectory(env), "review-voice.db");
+  return join5(dataDirectory(env), "review-voice.db");
 }
 
 // plugins/review-voice/src/store/db.ts
@@ -5965,7 +6150,7 @@ function migrate(db) {
   }
 }
 function openDatabase(path = databasePath()) {
-  const directory = dirname2(path);
+  const directory = dirname3(path);
   mkdirSync(directory, { recursive: true, mode: 448 });
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL");
@@ -6631,90 +6816,6 @@ function heldBackFindings(findings, thread, run, reviewIds) {
   return held;
 }
 
-// plugins/review-voice/src/review/plan.ts
-var MODES = ["fast", "standard", "thorough", "auto"];
-var MODEL_KEYS = ["intent", "analyst", "lanes", "verify", "tie-break", "challenge", "edit"];
-var SONNET = "sonnet";
-var OPUS = "opus";
-var THOROUGH_LINE_LIMIT = 150;
-function autoMode(input) {
-  if (!input.productionSourceChanged) return { mode: "fast", reason: "auto: no production source changed" };
-  if (input.complexity === "high") return { mode: "thorough", reason: "auto: complexity is high" };
-  if (input.productionLinesChanged > THOROUGH_LINE_LIMIT) {
-    return {
-      mode: "thorough",
-      reason: `auto: ${input.productionLinesChanged} production lines changed (over ${THOROUGH_LINE_LIMIT})`
-    };
-  }
-  return { mode: "standard", reason: "auto: production source changed within the standard limits" };
-}
-function resolvePlan(input) {
-  const overrides = input.models ?? {};
-  const chosen = input.requested === "auto" ? autoMode(input) : { mode: input.requested, reason: `mode set to ${input.requested}` };
-  const { mode } = chosen;
-  const fast = mode === "fast";
-  const thorough = mode === "thorough";
-  const diffLane = overrides.analyst ?? overrides.lanes ?? (thorough ? OPUS : SONNET);
-  const otherLanes = fast ? null : overrides.lanes ?? (thorough ? OPUS : SONNET);
-  const secondPass = input.secondPassConfigured && !fast;
-  return {
-    mode,
-    requested: input.requested,
-    reason: chosen.reason,
-    stages: {
-      intent: { run: true, model: overrides.intent ?? SONNET },
-      lanes: { run: true, model: diffLane },
-      // The verifier is a floor: no mode turns it off.
-      verify: { run: true, model: overrides.verify ?? (thorough ? OPUS : SONNET) },
-      // The second pass is a configured command, so it has no model of its own.
-      "second-pass": { run: secondPass, model: null },
-      "tie-break": { run: true, model: overrides["tie-break"] ?? (fast ? SONNET : OPUS) },
-      // In fast the stage is off by default; modelForFinding applies the floor for findings above a nit.
-      challenge: fast ? { run: false, model: null } : { run: true, model: overrides.challenge ?? (thorough ? OPUS : SONNET) },
-      edit: { run: true, model: overrides.edit ?? SONNET }
-    },
-    laneModels: { diff: diffLane, others: otherLanes },
-    overrides
-  };
-}
-function linesByPath(diffText) {
-  const counts = /* @__PURE__ */ new Map();
-  let current = null;
-  let inHunk = false;
-  for (const line2 of diffText.split("\n")) {
-    if (line2.startsWith("diff --git ")) {
-      const match = /^diff --git (?:"a\/.*?"|a\/\S+) ("b\/.*"|b\/.*)$/.exec(line2);
-      current = match === null ? null : unquoteGitPath(match[1]).slice(2);
-      inHunk = false;
-      continue;
-    }
-    if (current === null) continue;
-    if (line2.startsWith("@@")) {
-      inHunk = true;
-      continue;
-    }
-    if (inHunk && (line2.startsWith("+") || line2.startsWith("-"))) {
-      counts.set(current, (counts.get(current) ?? 0) + 1);
-    }
-  }
-  return counts;
-}
-function productionChange(files, diffText, partial, markedGenerated2 = /* @__PURE__ */ new Set()) {
-  const production = new Set(productionPaths(files, partial, markedGenerated2));
-  let fromDiff = null;
-  let lines2 = 0;
-  for (const file of files) {
-    if (!production.has(file.path)) continue;
-    if (Number.isFinite(file.additions) && Number.isFinite(file.deletions)) {
-      lines2 += file.additions + file.deletions;
-    } else {
-      fromDiff ??= linesByPath(diffText);
-      lines2 += fromDiff.get(file.path) ?? 0;
-    }
-  }
-  return { productionSourceChanged: production.size > 0, productionLinesChanged: lines2 };
-}
-
 // plugins/review-voice/src/diff/prior.ts
 import { execFileSync as execFileSync9 } from "node:child_process";
 function git3(args, cwd) {
@@ -6927,9 +7028,9 @@ function feedbackTotals(db) {
 }
 
 // plugins/review-voice/src/policy/load.ts
-import { readFileSync as readFileSync4, existsSync } from "node:fs";
+import { readFileSync as readFileSync4, existsSync as existsSync2 } from "node:fs";
 import { createHash as createHash4 } from "node:crypto";
-import { join as join5 } from "node:path";
+import { join as join6 } from "node:path";
 
 // node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
@@ -13493,6 +13594,70 @@ function readCostMode(review, result) {
     }
   }
 }
+function parseLane(entry, taken) {
+  const block = asRecord(entry);
+  if (block === null) return "must be a mapping";
+  const { name, agent, prefix } = block;
+  if (typeof name !== "string" || !/^[a-z][a-z0-9-]*$/.test(name)) return "name must be lower-case letters, digits and dashes";
+  if (name === DIFF_LANE.name) return "diff is built in and cannot be redefined";
+  if (taken.some((lane) => lane.name === name)) return `name ${name} is already used`;
+  if (typeof prefix !== "string" || !/^[a-z]+_$/.test(prefix)) return "prefix must be lower-case letters followed by _";
+  if (taken.some((lane) => lane.prefix === prefix)) return `prefix ${prefix} is already used`;
+  if (typeof agent !== "string" || !agentExists(agent)) return `agent ${String(agent)} is not an agent under agents/`;
+  const when = {};
+  if (block["when"] !== void 0) {
+    const rule = asRecord(block["when"]);
+    if (rule === null) return "when must be a mapping";
+    const min = rule["min_changed_source_lines"];
+    if (min !== void 0) {
+      if (typeof min !== "number" || !Number.isInteger(min) || min < 0) return "when.min_changed_source_lines must be a whole number";
+      when.minChangedSourceLines = min;
+    }
+    const paths = rule["paths"];
+    if (paths !== void 0) {
+      if (!Array.isArray(paths) || !paths.every((path) => typeof path === "string" && path.length > 0)) return "when.paths must be a list of globs";
+      when.paths = paths;
+    }
+    const kinds = rule["exclude_kinds"];
+    if (kinds !== void 0) {
+      if (!Array.isArray(kinds) || !kinds.every((kind) => CHANGE_KINDS.includes(kind))) {
+        return `when.exclude_kinds must list only ${CHANGE_KINDS.join(", ")}`;
+      }
+      when.excludeKinds = kinds;
+    }
+  }
+  const severity = {};
+  if (block["severity"] !== void 0) {
+    const rule = asRecord(block["severity"]);
+    if (rule === null) return "severity must be a mapping";
+    const tier = (value) => LANE_TIERS.find((known) => known === value);
+    if (rule["cap"] !== void 0) {
+      const cap = tier(rule["cap"]);
+      if (cap === void 0) return `severity.cap must be one of ${LANE_TIERS.join(", ")}`;
+      severity.cap = cap;
+    }
+    if (rule["escalate"] !== void 0) {
+      const escalate = asRecord(rule["escalate"]);
+      const to = tier(escalate?.["to"]);
+      if (to === void 0) return `severity.escalate.to must be one of ${LANE_TIERS.join(", ")}`;
+      if (escalate?.["requires"] !== "blocker_confirmed") return "severity.escalate.requires must be blocker_confirmed";
+      severity.escalate = { to, requires: "blocker_confirmed" };
+    }
+  }
+  return { name, agent, prefix, when, severity };
+}
+function readLanes(value, result) {
+  if (value === void 0) return;
+  if (!Array.isArray(value)) {
+    result.warnings.push("review.lanes must be a list; ignoring it.");
+    return;
+  }
+  value.forEach((entry, index) => {
+    const lane = parseLane(entry, result.lanes);
+    if (typeof lane === "string") result.warnings.push(`review.lanes[${index}]: ${lane}; dropping the lane.`);
+    else result.lanes.push(lane);
+  });
+}
 var GENERIC_SIGNATURE_WORDS = /* @__PURE__ */ new Set([
   "error",
   "errors",
@@ -13676,12 +13841,13 @@ function loadConfig(repositoryRoot2) {
     structure: { ...DEFAULT_STRUCTURE },
     costMode: { mode: "auto", models: {} },
     verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
+    lanes: [DIFF_LANE],
     layers: [],
     unapproved: [],
     warnings: []
   };
-  const configPath = join5(repositoryRoot2, ".review-voice", "config.yaml");
-  if (existsSync(configPath)) {
+  const configPath = join6(repositoryRoot2, ".review-voice", "config.yaml");
+  if (existsSync2(configPath)) {
     try {
       const doc = asRecord(parse(readFileSync4(configPath, "utf8")));
       if (doc !== null) {
@@ -13751,6 +13917,7 @@ function loadConfig(repositoryRoot2) {
           readHumanReview(asRecord(review["human_review"]), result);
           readStructure(asRecord(review["structure"]), result);
           readCostMode(review, result);
+          readLanes(review["lanes"], result);
           result.layers.push({
             scope: { type: "repository", key: repositoryRoot2 },
             source: ".review-voice/config.yaml",
@@ -13765,8 +13932,8 @@ function loadConfig(repositoryRoot2) {
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }
   }
-  const policyPath = join5(repositoryRoot2, ".review-voice", "policy.yaml");
-  if (existsSync(policyPath)) {
+  const policyPath = join6(repositoryRoot2, ".review-voice", "policy.yaml");
+  if (existsSync2(policyPath)) {
     try {
       const text4 = readFileSync4(policyPath, "utf8");
       const layer = layerFromPolicyFile(text4, ".review-voice/policy.yaml", repositoryRoot2);
@@ -14891,8 +15058,8 @@ function scaledRepositoryShare(repositoryCount) {
 }
 
 // plugins/review-voice/src/conventions/discover.ts
-import { existsSync as existsSync2, readFileSync as readFileSync5, readdirSync, statSync } from "node:fs";
-import { dirname as dirname3, join as join6, sep } from "node:path";
+import { existsSync as existsSync3, readFileSync as readFileSync5, readdirSync, statSync } from "node:fs";
+import { dirname as dirname4, join as join7, sep } from "node:path";
 var REPOSITORY_FILES = [
   { path: "CLAUDE.md", kind: "claude" },
   { path: ".claude/CLAUDE.md", kind: "claude" },
@@ -14905,9 +15072,9 @@ var NESTED_FILES = [
   { name: "AGENTS.md", kind: "agents" }
 ];
 var RULE_DIRECTORIES = [
-  { path: join6(".claude", "skills"), kind: "skill" },
-  { path: join6(".agents", "rules"), kind: "rule" },
-  { path: join6(".claude", "rules"), kind: "rule" }
+  { path: join7(".claude", "skills"), kind: "skill" },
+  { path: join7(".agents", "rules"), kind: "rule" },
+  { path: join7(".claude", "rules"), kind: "rule" }
 ];
 var TOTAL_BYTES = 6e4;
 var PER_DOCUMENT_SHARE = 0.25;
@@ -15047,31 +15214,31 @@ function ancestors(changedPath) {
   return out;
 }
 function resolvePointer(root, pointerPath, target) {
-  const own = dirname3(pointerPath);
-  const candidates = own === "." || own === "" ? [] : [join6(own, target)];
-  let directory = dirname3(pointerPath);
+  const own = dirname4(pointerPath);
+  const candidates = own === "." || own === "" ? [] : [join7(own, target)];
+  let directory = dirname4(pointerPath);
   while (directory !== "." && directory !== "" && directory !== sep) {
-    const base = dirname3(directory);
+    const base = dirname4(directory);
     const name = directory.split(sep).pop();
-    if (name === ".claude" || name === ".agents") candidates.push(join6(base === "." ? "" : base, target));
+    if (name === ".claude" || name === ".agents") candidates.push(join7(base === "." ? "" : base, target));
     directory = base;
   }
   candidates.push(target);
   for (const candidate of candidates) {
-    if (existsSync2(join6(root, candidate))) return candidate;
+    if (existsSync3(join7(root, candidate))) return candidate;
   }
   return null;
 }
 function listRuleDocuments(root, directory) {
   const out = [];
   for (const { path: relative, kind } of RULE_DIRECTORIES) {
-    const base = join6(root, directory, relative);
-    if (!existsSync2(base)) continue;
+    const base = join7(root, directory, relative);
+    if (!existsSync3(base)) continue;
     try {
       for (const entry of readdirSync(base).sort()) {
-        for (const candidate of [join6(directory, relative, entry, "SKILL.md"), join6(directory, relative, entry)]) {
+        for (const candidate of [join7(directory, relative, entry, "SKILL.md"), join7(directory, relative, entry)]) {
           if (!candidate.endsWith(".md")) continue;
-          if (!existsSync2(join6(root, candidate))) continue;
+          if (!existsSync3(join7(root, candidate))) continue;
           out.push({ path: candidate, kind });
           break;
         }
@@ -15101,7 +15268,7 @@ function discoverConventions(root, changedPaths = []) {
   for (const changed of changedPaths) {
     for (const directory of ancestors(changed)) {
       for (const { name } of NESTED_FILES) {
-        const candidate = join6(directory, name);
+        const candidate = join7(directory, name);
         const existing = governed.get(candidate);
         if (existing === void 0) governed.set(candidate, [changed]);
         else existing.push(changed);
@@ -15165,9 +15332,9 @@ function discoverConventions(root, changedPaths = []) {
     let governs = [];
     let followed = [];
     try {
-      bytes = statSync(join6(root, entry.path)).size;
+      bytes = statSync(join7(root, entry.path)).size;
       {
-        const head = readHead(join6(root, entry.path), CHEAP_BYTES);
+        const head = readHead(join7(root, entry.path), CHEAP_BYTES);
         governs = frontmatterPaths(head);
         const targets = pointerTargets(head);
         for (const target of targets) {
@@ -15193,7 +15360,7 @@ function discoverConventions(root, changedPaths = []) {
     return followed.map((path) => {
       let targetBytes = Number.POSITIVE_INFINITY;
       try {
-        targetBytes = statSync(join6(root, path)).size;
+        targetBytes = statSync(join7(root, path)).size;
       } catch {
         targetBytes = Number.POSITIVE_INFINITY;
       }
@@ -15202,7 +15369,7 @@ function discoverConventions(root, changedPaths = []) {
   });
   const fitsWhole = (entry) => {
     try {
-      return statSync(join6(root, entry.path)).size <= PER_DOCUMENT_BYTES;
+      return statSync(join7(root, entry.path)).size <= PER_DOCUMENT_BYTES;
     } catch {
       return false;
     }
@@ -15229,8 +15396,8 @@ function discoverConventions(root, changedPaths = []) {
   });
   for (const { entry } of sized) {
     if (seen.has(entry.path)) continue;
-    const absolute = join6(root, entry.path);
-    if (!existsSync2(absolute)) continue;
+    const absolute = join7(root, entry.path);
+    if (!existsSync3(absolute)) continue;
     try {
       if (!statSync(absolute).isFile()) continue;
     } catch {
@@ -15778,17 +15945,17 @@ function resolveSyncWindow(input, now = /* @__PURE__ */ new Date()) {
 }
 
 // plugins/review-voice/src/retrieval/baseline.ts
-import { existsSync as existsSync3, readFileSync as readFileSync6 } from "node:fs";
-import { dirname as dirname4, join as join7 } from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { existsSync as existsSync4, readFileSync as readFileSync6 } from "node:fs";
+import { dirname as dirname5, join as join8 } from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 function isCorpusEmpty(db) {
   return db.prepare("SELECT COUNT(*) AS n FROM review_events").get().n === 0;
 }
 function baselineVoice() {
-  const here = dirname4(fileURLToPath2(import.meta.url));
+  const here = dirname5(fileURLToPath3(import.meta.url));
   for (const relative of ["..", "../.."]) {
-    const candidate = join7(here, relative, "templates", "voice.baseline.md");
-    if (existsSync3(candidate)) return readFileSync6(candidate, "utf8").trim();
+    const candidate = join8(here, relative, "templates", "voice.baseline.md");
+    if (existsSync4(candidate)) return readFileSync6(candidate, "utf8").trim();
   }
   throw new Error("templates/voice.baseline.md is missing from the plugin.");
 }
@@ -17418,9 +17585,11 @@ var COMMAND_HELP = {
       "                         run ids separated by commas, e.g. a stacked sibling's (needs --head)",
       "  --head <sha>           Head the candidates were produced against (with --held-from)",
       "  --intent <path>        intent.json from check-intent; every intent_ref must name a statement in it",
-      "Reads: candidates JSON on stdin.",
+      "Reads: candidates JSON on stdin; review.lanes from .review-voice/config.yaml. A candidate that",
+      "  names a lane needs a configured one and a candidate_id with that lane's prefix; one naming",
+      "  no lane is the diff lane, and its id must not carry another lane's prefix.",
       "Writes: JSON on stdout.",
-      "Exit codes: 0 valid, 1 anchor or intent_ref failures, 2 invalid candidates or bad invocation."
+      "Exit codes: 0 valid, 1 anchor, lane or intent_ref failures, 2 invalid candidates or bad invocation."
     )
   },
   "check-verification": {
@@ -17431,6 +17600,7 @@ var COMMAND_HELP = {
       "  Use verified and technical_confidence; verdict and confidence belong to the second pass.",
       "  --candidates  check-candidates output (or a candidates array); refuses output that",
       "                skips a kept candidate, so the verifier can be re-asked for it.",
+      "  blocker_confirmed, when present, must be true or false.",
       "",
       "Reads: the evidence-verifier output on stdin.",
       "Writes: JSON on stdout.",
@@ -17653,8 +17823,9 @@ var COMMAND_HELP = {
       "  --owner-note <text>       Why the owner posts an unverifiable finding; recorded with it",
       "  --repository <name>       Prefer precedents from this repository",
       "  --owner <login>           Owner whose precedents count; default from config",
-      "Reads: candidates JSON on stdin.",
-      "Writes: JSON scores on stdout. Every entry names its candidate as candidate_id,",
+      "Reads: candidates JSON on stdin; review.lanes from .review-voice/config.yaml, whose",
+      "  severity rule (cap, escalate on blocker_confirmed) applies after the tier is derived.",
+      "Writes: JSON scores on stdout, each entry with its lane. Every entry names its candidate as candidate_id,",
       "  like candidates and verification; candidateId is still written beside it",
       "  but is deprecated.",
       "Exit codes: 0 ok, 2 malformed candidates or bad invocation."
@@ -17872,6 +18043,8 @@ var COMMAND_HELP = {
       "  Print which review stages run and on which model, as JSON (docs/adr/0025).",
       "  `auto` picks fast when no production source changed, thorough when",
       "  complexity is high or over 150 production lines changed, else standard.",
+      "  Tests, documentation, generated files and configuration (YAML, JSON, TOML,",
+      "  INI and similar files, .env, lockfiles) do not count; .github/workflows/ does.",
       "",
       "Flags:",
       "  --files <path>         files.json from `diff --out` (required)",
@@ -17880,6 +18053,24 @@ var COMMAND_HELP = {
       "Reads: --files, --diff-file, and review.mode, review.models and verification.enabled",
       "  from .review-voice/config.yaml when the working directory has one.",
       "Writes: the StagePlan JSON on stdout; config warnings on stderr.",
+      "Exit codes: 0 ok, 2 bad invocation or unreadable input."
+    )
+  },
+  lanes: {
+    summary: "Print which analyst lanes run on a change",
+    body: lines(
+      "review-voice lanes --files <files.json> --diff-file <diff.patch>",
+      "  Print every configured lane with whether it runs on this change and why, as JSON",
+      "  (docs/adr/0023). The diff lane always runs. Another lane runs when its changed",
+      "  lines, within its paths, reach min_changed_source_lines. Lines are counted as",
+      "  plan counts them, except that the lane's exclude_kinds replaces the kinds left out.",
+      "",
+      "Flags:",
+      "  --files <path>         files.json from `diff --out` (required)",
+      "  --diff-file <path>     diff.patch from `diff --out` (required)",
+      "Reads: --files, --diff-file, and review.lanes and review.human_review from",
+      "  .review-voice/config.yaml when the working directory has one.",
+      "Writes: a JSON list of {lane, eligible, reason} on stdout; config warnings on stderr.",
       "Exit codes: 0 ok, 2 bad invocation or unreadable input."
     )
   },
@@ -18429,8 +18620,8 @@ function emitDiff(acquired, outDir) {
   }
   try {
     mkdirSync2(outDir, { recursive: true });
-    const patchPath = join8(outDir, "diff.patch");
-    const metaPath = join8(outDir, "files.json");
+    const patchPath = join9(outDir, "diff.patch");
+    const metaPath = join9(outDir, "files.json");
     writeFileSync(patchPath, result.diff);
     writeFileSync(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
     console.log(
@@ -18541,7 +18732,7 @@ function flag(argv, name) {
 function resolveOutPath(out, defaultName) {
   let target = out;
   try {
-    if (out.endsWith("/") || statSync2(out).isDirectory()) target = join8(out, defaultName);
+    if (out.endsWith("/") || statSync2(out).isDirectory()) target = join9(out, defaultName);
   } catch (error) {
     if (error.code !== "ENOENT") {
       throw new Error(
@@ -18550,7 +18741,7 @@ function resolveOutPath(out, defaultName) {
     }
   }
   try {
-    mkdirSync2(dirname5(target), { recursive: true });
+    mkdirSync2(dirname6(target), { recursive: true });
   } catch (error) {
     throw new Error(
       `${out}: expected a file path or a directory (${error instanceof Error ? error.message : String(error)})`
@@ -18562,7 +18753,7 @@ function contextCommand() {
   try {
     const root = repositoryRoot(process.cwd());
     const config2 = loadConfig(root);
-    const configPath = join8(root, ".review-voice", "config.yaml");
+    const configPath = join9(root, ".review-voice", "config.yaml");
     const policy = resolvePolicy(config2.layers);
     console.log(
       JSON.stringify(
@@ -18590,7 +18781,7 @@ function contextCommand() {
           // Not raised on top of a parse failure: a config that did not parse
           // says nothing about whether it has a verification block, and the
           // parse error is the actionable item.
-          warnings: config2.verification.blockPresent || config2.warnings.length > 0 ? config2.warnings : existsSync4(configPath) ? [
+          warnings: config2.verification.blockPresent || config2.warnings.length > 0 ? config2.warnings : existsSync5(configPath) ? [
             ...config2.warnings,
             "No verification block in .review-voice/config.yaml, so the second-pass verifier never runs. Configs written before it existed do not have one. See the second-pass verification section of the README."
           ] : [
@@ -18824,26 +19015,11 @@ function planCommand(argv) {
     console.error("Usage: plan --files <files.json> --diff-file <diff.patch> [--mode fast|standard|thorough|auto]");
     return 2;
   }
-  let manifest;
-  let diffText;
-  try {
-    const parsed = JSON.parse(readFileSync7(filesPath, "utf8"));
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not a JSON object");
-    manifest = parsed;
-    diffText = readFileSync7(diffPath, "utf8");
-  } catch (error) {
-    console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  const files = manifest["files"];
-  if (!Array.isArray(files) || !files.every((file) => typeof file === "object" && file !== null && typeof file.path === "string")) {
-    console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
-    return 2;
-  }
+  const input = readFilesAndDiff(filesPath, diffPath);
+  if (input === null) return 2;
+  const { manifest, changed, diffText, generated } = input;
   const config2 = repositoryConfig();
   for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
-  const changed = files;
-  const generated = markedGenerated({ ...manifest, diff: diffText });
   const change = productionChange(changed, diffText, config2?.humanReview, generated);
   const complexity = asLevel(manifest["complexity"]);
   const plan = resolvePlan({
@@ -18854,6 +19030,44 @@ function planCommand(argv) {
     secondPassConfigured: config2?.verification.enabled ?? false
   });
   console.log(JSON.stringify(plan, null, 2));
+  return 0;
+}
+function readFilesAndDiff(filesPath, diffPath) {
+  let manifest;
+  let diffText;
+  try {
+    const parsed = JSON.parse(readFileSync7(filesPath, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not a JSON object");
+    manifest = parsed;
+    diffText = readFileSync7(diffPath, "utf8");
+  } catch (error) {
+    console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  const files = manifest["files"];
+  if (!Array.isArray(files) || !files.every((file) => typeof file === "object" && file !== null && typeof file.path === "string")) {
+    console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
+    return null;
+  }
+  const generated = markedGenerated({ ...manifest, diff: diffText });
+  return { manifest, changed: files, diffText, generated };
+}
+function lanesCommand(argv) {
+  const filesPath = flag(argv, "--files");
+  const diffPath = flag(argv, "--diff-file");
+  if (filesPath === null || diffPath === null) {
+    console.error("Usage: lanes --files <files.json> --diff-file <diff.patch>");
+    return 2;
+  }
+  const input = readFilesAndDiff(filesPath, diffPath);
+  if (input === null) return 2;
+  const config2 = repositoryConfig();
+  for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
+  const lanes = eligibleLanes(config2?.lanes ?? [DIFF_LANE], input.changed, input.diffText, {
+    humanReview: config2?.humanReview,
+    markedGenerated: input.generated
+  });
+  console.log(JSON.stringify(lanes, null, 2));
   return 0;
 }
 function asLevel(value) {
@@ -19206,6 +19420,7 @@ function scoreCommand(argv) {
         const premisesVerified = raw["premises_verified"] ?? raw["premisesVerified"];
         const verified = raw["verified"];
         const reason2 = raw["reason"];
+        const blockerConfirmed = raw["blocker_confirmed"] ?? raw["blockerConfirmed"];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: raw["evidence_quality"] ?? raw["evidenceQuality"],
@@ -19222,6 +19437,7 @@ function scoreCommand(argv) {
           impactClass: isImpactClass(impactClass) ? impactClass : void 0,
           premisesVerified: typeof premisesVerified === "boolean" ? premisesVerified : void 0,
           verified: typeof verified === "boolean" ? verified : void 0,
+          blockerConfirmed: typeof blockerConfirmed === "boolean" ? blockerConfirmed : void 0,
           reason: typeof reason2 === "string" ? reason2 : void 0,
           requiredContextMissing: raw["required_context_missing"] ?? raw["requiredContextMissing"],
           // Already checked by `verificationProblem`.
@@ -19317,6 +19533,7 @@ function scoreCommand(argv) {
     console.error("--exclude-pull needs a pull request number.");
     return 2;
   }
+  const lanes = repositoryConfig()?.lanes ?? [DIFF_LANE];
   const db = openDatabase();
   try {
     const kept = [];
@@ -19340,7 +19557,8 @@ function scoreCommand(argv) {
         precedents,
         kept,
         thresholds,
-        verifications.get(candidate.candidateId)
+        verifications.get(candidate.candidateId),
+        laneNamed(lanes, candidate.lane)
       );
       const override = severityOverrides.get(candidate.candidateId);
       if (override !== void 0) {
@@ -20446,8 +20664,8 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let manifest;
   let hunks;
   try {
-    manifest = JSON.parse(readFileSync7(join8(dir, "files.json"), "utf8"));
-    hunks = parseHunks(readFileSync7(join8(dir, "diff.patch"), "utf8"));
+    manifest = JSON.parse(readFileSync7(join9(dir, "files.json"), "utf8"));
+    hunks = parseHunks(readFileSync7(join9(dir, "diff.patch"), "utf8"));
   } catch (error) {
     return `Cannot read the interdiff in ${dir}: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -20470,7 +20688,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
     const misplaced = normalised.filter((c) => !candidateAnchor(hunks, c).ok);
     if (misplaced.length > 0) {
       throw new Error(
-        `interdiff candidate(s) not on a changed line of ${join8(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
+        `interdiff candidate(s) not on a changed line of ${join9(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
       );
     }
     candidates = candidates.map((raw, index) => withId(raw, normalised[index].candidateId));
@@ -20487,7 +20705,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
 function partialDiffReason(diffFile) {
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync7(join8(dirname5(diffFile), "files.json"), "utf8"));
+    manifest = JSON.parse(readFileSync7(join9(dirname6(diffFile), "files.json"), "utf8"));
   } catch {
     return null;
   }
@@ -20630,18 +20848,18 @@ function carryCandidatesCommand(argv) {
   try {
     mkdirSync2(outDir, { recursive: true });
     writeFileSync(
-      join8(outDir, "candidates.json"),
+      join9(outDir, "candidates.json"),
       `${JSON.stringify(candidatesIn.rebuild([...carriedCandidates, ...interdiffCandidates]), null, 2)}
 `
     );
     writeFileSync(
-      join8(outDir, "verification.json"),
+      join9(outDir, "verification.json"),
       `${JSON.stringify(verificationIn.rebuild([...carriedVerification, ...interdiffVerification]), null, 2)}
 `
     );
-    if (heldIn !== null) writeFileSync(join8(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
+    if (heldIn !== null) writeFileSync(join9(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
 `);
-    writeFileSync(join8(outDir, "carry.json"), `${JSON.stringify(record2, null, 2)}
+    writeFileSync(join9(outDir, "carry.json"), `${JSON.stringify(record2, null, 2)}
 `);
   } catch (error) {
     console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -20670,10 +20888,10 @@ function carryCandidatesCommand(argv) {
         carried: result.carried.length,
         refused,
         interdiffReviewed: interdiff !== null,
-        candidates: join8(outDir, "candidates.json"),
-        verification: join8(outDir, "verification.json"),
-        ...heldIn === null ? {} : { held: join8(outDir, "held.json") },
-        carry: join8(outDir, "carry.json")
+        candidates: join9(outDir, "candidates.json"),
+        verification: join9(outDir, "verification.json"),
+        ...heldIn === null ? {} : { held: join9(outDir, "held.json") },
+        carry: join9(outDir, "carry.json")
       },
       null,
       2
@@ -20960,6 +21178,10 @@ function verificationProblem(list) {
     const premises = entry["premises_verified"] ?? entry["premisesVerified"];
     if (premises !== void 0 && typeof premises !== "boolean") {
       return `${who}: premises_verified must be true or false.`;
+    }
+    const blocker = entry["blocker_confirmed"] ?? entry["blockerConfirmed"];
+    if (blocker !== void 0 && typeof blocker !== "boolean") {
+      return `${who}: blocker_confirmed must be true or false.`;
     }
     const impactClass = entry["impact_class"] ?? entry["impactClass"];
     if (impactClass !== void 0 && !isImpactClass(impactClass)) {
@@ -21249,6 +21471,24 @@ function checkCandidatesCommand(argv) {
   try {
     const candidates = raw.map((candidate, index) => normaliseCandidate(candidate, index));
     assertUniqueCandidateIds(candidates);
+    const lanes = repositoryConfig()?.lanes ?? [DIFF_LANE];
+    const laneFailures = candidates.flatMap(({ candidateId, lane: name }) => {
+      if (name === void 0) {
+        const owner2 = lanes.find((lane2) => lane2.name !== DIFF_LANE.name && candidateId.startsWith(lane2.prefix));
+        return owner2 === void 0 ? [] : [{ candidateId, lane: DIFF_LANE.name, reason: `${candidateId} carries lane ${owner2.name}'s prefix ${owner2.prefix} but names no lane; set lane: "${owner2.name}"` }];
+      }
+      const lane = laneNamed(lanes, name);
+      if (lane === void 0) {
+        return [{ candidateId, lane: name, reason: `lane ${name} is not configured (${lanes.map((known) => known.name).join(", ")})` }];
+      }
+      return candidateId.startsWith(lane.prefix) ? [] : [{ candidateId, lane: lane.name, reason: `${candidateId} is from lane ${lane.name}, so its candidate_id must start with ${lane.prefix}` }];
+    });
+    const laneExtra = laneFailures.length > 0 ? { laneFailures } : {};
+    const reportLaneFailures = () => {
+      if (laneFailures.length > 0) {
+        console.error(`${laneFailures.length} candidate lane failure${laneFailures.length === 1 ? "" : "s"}.`);
+      }
+    };
     let intentFailures = [];
     if (argv.includes("--intent")) {
       const intentFile = flag(argv, "--intent");
@@ -21270,9 +21510,12 @@ function checkCandidatesCommand(argv) {
       );
     }
     const intentExtra = intentFailures.length > 0 ? { intentFailures } : {};
-    if (intentFailures.length > 0 && !argv.includes("--diff-file")) {
-      console.log(JSON.stringify({ valid: false, intentFailures }, null, 2));
-      console.error(`${intentFailures.length} candidate intent_ref failure${intentFailures.length === 1 ? "" : "s"}.`);
+    if ((intentFailures.length > 0 || laneFailures.length > 0) && !argv.includes("--diff-file")) {
+      console.log(JSON.stringify({ valid: false, ...laneExtra, ...intentExtra }, null, 2));
+      reportLaneFailures();
+      if (intentFailures.length > 0) {
+        console.error(`${intentFailures.length} candidate intent_ref failure${intentFailures.length === 1 ? "" : "s"}.`);
+      }
       return 1;
     }
     if (!argv.includes("--diff-file")) {
@@ -21308,8 +21551,11 @@ function checkCandidatesCommand(argv) {
       nearest: anchor.nearest,
       ...anchor.causedBy === void 0 ? {} : { causedBy: anchor.causedBy }
     }));
-    if (anchorFailures.length > 0 || intentFailures.length > 0) {
-      console.log(JSON.stringify({ valid: false, ...anchorFailures.length > 0 ? { anchorFailures } : {}, ...intentExtra }, null, 2));
+    if (anchorFailures.length > 0 || intentFailures.length > 0 || laneFailures.length > 0) {
+      console.log(
+        JSON.stringify({ valid: false, ...anchorFailures.length > 0 ? { anchorFailures } : {}, ...laneExtra, ...intentExtra }, null, 2)
+      );
+      reportLaneFailures();
       if (anchorFailures.length > 0) {
         console.error(`${anchorFailures.length} candidate anchor failure${anchorFailures.length === 1 ? "" : "s"}.`);
       }
@@ -21616,6 +21862,8 @@ ${topLevelHelp()}`);
       return carryCommand(argv.slice(1));
     case "plan":
       return planCommand(argv.slice(1));
+    case "lanes":
+      return lanesCommand(argv.slice(1));
     case "reanchor":
       return reanchorCommand(argv.slice(1));
     case "challenge":
