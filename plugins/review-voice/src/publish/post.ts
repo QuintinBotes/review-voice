@@ -537,6 +537,9 @@ function recordedCandidates(db: Database, runId: string): Candidate[] {
  * `check-candidates --thread` drops a repeat by, so a point is a repeat here
  * exactly when it would have been one there. GET only.
  */
+/** Shortest colleague text that counts as pasted from this tool's own review. */
+const PASTED_TEXT_MIN = 40;
+
 async function raisedByOthers(
   options: { client: GitHubClient; repository: string; pullNumber: number; db: Database },
   run: RunDetail,
@@ -550,8 +553,17 @@ async function raisedByOthers(
   const { comments } = await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client });
   const mine = new Set(comments.filter((c) => c.author.toLowerCase() === me && c.id !== undefined).map((c) => c.id));
   const started = Date.parse(run.createdAt);
+  // A comment quoting this tool's own text is not a point someone else raised.
+  const squash = (text: string): string => text.toLowerCase().replace(/\s+/g, ' ').trim();
+  const ownTexts = comments.filter((c) => c.author.toLowerCase() === me).map((c) => squash(c.body));
   const thread = comments
     .filter((comment) => comment.author.toLowerCase() !== me)
+    .map((comment) => ({ ...comment, body: comment.body.split('\n').filter((line) => !/^\s*>/.test(line)).join('\n') }))
+    .filter((comment) => {
+      const text = squash(comment.body);
+      // A short comment can occur inside the tool's text by chance, so only a pasted passage counts.
+      return text !== '' && !(text.length >= PASTED_TEXT_MIN && ownTexts.some((own) => own.includes(text)));
+    })
     // Earlier comments were in front of `check-candidates` already.
     .filter((comment) => comment.createdAt === undefined || !(Date.parse(comment.createdAt) <= started))
     // A reply in a thread this tool started answers it, often by quoting it.

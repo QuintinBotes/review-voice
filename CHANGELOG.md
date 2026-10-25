@@ -157,6 +157,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `doctor` reports whether `claude` is installed, without failing when it is
   not. (ADR 0021)
 
+- `record` keeps each candidate's `lane` (default `diff`) and `blocker_class` in
+  the stored candidates, and each stored finding carries the lane of the
+  candidate it came from, so `evaluate --json` reports precision per lane
+  instead of counting every posted finding under `diff`. (#201, ADR 0023)
+
+- The Posting section of `docs/ARCHITECTURE.md` describes what `verdict` and
+  `post` do today: the guard order, the verdict policies, carry, the thread
+  re-check, the idempotency key and the audit rows, instead of saying posting is
+  not implemented. (#202)
+
+- `post --recheck-thread` ignores a comment that only quotes the tool's own
+  earlier text: blockquote lines are dropped before matching, and a comment
+  whose remaining text is contained in a review or comment the token's user
+  posted no longer holds the post with exit 8. (#204)
+
 ## [1.18.0] - 2026-10-24
 
 ### Added
