@@ -898,98 +898,178 @@ function planFindings(output, run, loadRun) {
   if (heldBackApproval) mapped = "COMMENT";
   return { inline, unanchored, held, mapped, heldBackApproval };
 }
+var DEFAULT_VERDICT_POLICY = Object.freeze({
+  ciPending: "wait",
+  ciRed: "cap",
+  ciNeedsRerun: "hold",
+  capApproval: true,
+  carryApprovalOnUnchanged: false,
+  recheckThreadBeforePost: false
+});
+function verdictPolicy(policy) {
+  return { ...DEFAULT_VERDICT_POLICY, ...policy };
+}
+var MAX_ANNOTATED_CHECKS = 5;
+var MAX_CHECK_NAME = 60;
+function safeCheckName(name) {
+  const flat = name.replace(/[\u202a-\u202e\u2066-\u2069\u200b-\u200d\ufeff`]/g, "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+  const points = [...flat];
+  return points.length > MAX_CHECK_NAME ? `${points.slice(0, MAX_CHECK_NAME - 1).join("")}\u2026` : flat;
+}
+function checkNames(entries) {
+  const names = [...new Set(entries.map((entry) => safeCheckName(entry.name)).filter((name) => name.length > 0))].sort();
+  return names.length === 0 ? "some checks" : names.slice(0, MAX_ANNOTATED_CHECKS).map((name) => `\`${name}\``).join(", ");
+}
+function ciAnnotations(ci, policy) {
+  if (ci?.state === "red" && policy.ciRed === "annotate") {
+    return [`Heads up: ${checkNames(ci.failed)} failing on this head.`];
+  }
+  if (ci?.state === "needs-rerun" && policy.ciNeedsRerun === "annotate") {
+    return [`Heads up: ${checkNames(ci.rerun)} need a rerun.`];
+  }
+  return [];
+}
+function ciAllowsApproval(state, policy) {
+  if (state === "green") return true;
+  if (state === "pending") return policy.ciPending === "proceed";
+  if (state === "red") return policy.ciRed === "annotate";
+  return policy.ciNeedsRerun === "annotate";
+}
 function decide(input) {
+  const policy = verdictPolicy(input.policy);
   const reasons = [];
+  const done = (decision, annotations2 = []) => ({
+    ...decision,
+    annotations: decision.action === "post" ? annotations2 : [],
+    carriedReviewUrl: null
+  });
   if (input.heldBackApproval === true) {
     reasons.push("an unverified finding above a nit was held back, so this comments rather than approves");
   }
   if (input.headMoved) {
-    return {
+    return done({
       event: input.mapped,
       action: "refuse",
       reasons: [...reasons, "the pull request head moved since the review read it; review the new head"],
       exitCode: 3,
       cappedByCi: false
-    };
+    });
   }
-  if (input.ci === "needs-rerun") {
-    const named = (input.rerun ?? []).map((entry) => `${entry.name} (${entry.detail})`);
+  if (typeof input.carriedReviewUrl === "string" && input.mapped === "APPROVE" && input.heldBackApproval !== true && input.uncoveredCarry !== true) {
     return {
       event: null,
-      action: "wait",
-      reasons: [...reasons, `CI needs a rerun${named.length > 0 ? `: ${named.join(", ")}` : ""}`],
-      exitCode: 6,
-      cappedByCi: false
+      action: "carry",
+      reasons: [...reasons, "the scope is unchanged and the owner's approval still stands, so nothing is posted"],
+      exitCode: 0,
+      cappedByCi: false,
+      annotations: [],
+      carriedReviewUrl: input.carriedReviewUrl
     };
+  }
+  const annotations = input.recheck ? [] : ciAnnotations({ state: input.ci ?? "green", failed: [...input.failed ?? []], rerun: [...input.rerun ?? []] }, policy);
+  if (input.ci === "needs-rerun") {
+    const named = (input.rerun ?? []).map((entry) => `${entry.name} (${entry.detail})`);
+    const why = `CI needs a rerun${named.length > 0 ? `: ${named.join(", ")}` : ""}`;
+    if (input.recheck || policy.ciNeedsRerun === "hold") {
+      return done({ event: null, action: "wait", reasons: [...reasons, why], exitCode: 6, cappedByCi: false });
+    }
+    reasons.push(`${why}; posting the code verdict with a note, as verdict.ci_needs_rerun is annotate`);
   }
   if (input.uncoveredCarry === true && input.mapped === "APPROVE") {
     const why = "candidates were carried to this head without a review of the commits since, so this comments rather than approves";
     if (input.recheck) {
-      return { event: "COMMENT", action: "refuse", reasons: [...reasons, why], exitCode: 2, cappedByCi: false };
+      return done({ event: "COMMENT", action: "refuse", reasons: [...reasons, why], exitCode: 2, cappedByCi: false });
     }
-    return { event: "COMMENT", action: "post", reasons: [...reasons, why], exitCode: 0, cappedByCi: false };
+    return done({ event: "COMMENT", action: "post", reasons: [...reasons, why], exitCode: 0, cappedByCi: false }, annotations);
   }
   if (input.needsHuman === true && input.mapped === "APPROVE") {
-    if (input.recheck) {
-      return {
+    if (!policy.capApproval) {
+      reasons.push("the change was raised for human review; approving anyway, as review.human_review.cap_approval is false");
+    } else if (input.recheck) {
+      return done({
         event: "COMMENT",
         action: "refuse",
         reasons: [...reasons, "the change was raised for human review, so there is no approval to re-check"],
         exitCode: 2,
         cappedByCi: false
-      };
+      });
+    } else {
+      return done(
+        {
+          event: "COMMENT",
+          action: "post",
+          reasons: [...reasons, "the change was raised for human review, so this comments rather than approves"],
+          exitCode: 0,
+          cappedByCi: false
+        },
+        annotations
+      );
     }
-    return {
-      event: "COMMENT",
-      action: "post",
-      reasons: [...reasons, "the change was raised for human review, so this comments rather than approves"],
-      exitCode: 0,
-      cappedByCi: false
-    };
   }
   if (input.recheck) {
     if (input.mapped !== "APPROVE") {
-      return {
+      return done({
         event: input.mapped,
         action: "refuse",
         reasons: [...reasons, `the review maps to ${input.mapped}, so there is no approval to re-check`],
         exitCode: 2,
         cappedByCi: false
-      };
+      });
     }
     if (input.ci === "pending") {
-      return { event: "APPROVE", action: "wait", reasons: [...reasons, "CI is still running"], exitCode: 4, cappedByCi: false };
+      return done({ event: "APPROVE", action: "wait", reasons: [...reasons, "CI is still running"], exitCode: 4, cappedByCi: false });
     }
     if (input.ci !== "green") {
-      return {
+      return done({
         event: "COMMENT",
         action: "refuse",
         reasons: [...reasons, "CI is red, so there is no approval to send"],
         exitCode: 5,
         cappedByCi: true
-      };
+      });
     }
-    return { event: "APPROVE", action: "post", reasons: [...reasons, "head unchanged and CI green"], exitCode: 0, cappedByCi: false };
+    return done({ event: "APPROVE", action: "post", reasons: [...reasons, "head unchanged and CI green"], exitCode: 0, cappedByCi: false });
   }
   if (input.mapped === "APPROVE" && input.ci === "red") {
-    return {
+    if (policy.ciRed === "annotate") {
+      return done(
+        {
+          event: "APPROVE",
+          action: "post",
+          reasons: [...reasons, "CI is red; approving with a note, as verdict.ci_red is annotate"],
+          exitCode: 0,
+          cappedByCi: false
+        },
+        annotations
+      );
+    }
+    return done({
       event: "COMMENT",
       action: "post",
       reasons: [...reasons, "CI is red, so the approval is capped at COMMENT"],
       exitCode: 0,
       cappedByCi: true
-    };
+    });
   }
-  if (input.mapped === "APPROVE" && input.ci !== "green") {
-    return {
+  if (input.mapped === "APPROVE" && input.ci !== "green" && input.ci !== "needs-rerun") {
+    if (policy.ciPending === "proceed") {
+      return done({
+        event: "APPROVE",
+        action: "post",
+        reasons: [...reasons, "CI is still running; approving now, as verdict.ci_pending is proceed"],
+        exitCode: 0,
+        cappedByCi: false
+      });
+    }
+    return done({
       event: "APPROVE",
       action: "wait",
       reasons: [...reasons, "CI is still running; approve once it is green with verdict --recheck"],
       exitCode: 4,
       cappedByCi: false
-    };
+    });
   }
-  return { event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false };
+  return done({ event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false }, annotations);
 }
 function plural(count3, word) {
   return `${count3} ${word}${count3 === 1 ? "" : "s"}`;
@@ -1053,6 +1133,16 @@ function buildPayload(input) {
     body,
     comments: input.planned.inline.map(inlineComment)
   };
+}
+function withAnnotations(body, annotations) {
+  return [body, ...annotations].join("\n\n");
+}
+function replaceAnnotations(body, previous, next) {
+  const suffix = previous.map((line2) => `
+
+${line2}`).join("");
+  const base = suffix.length > 0 && body.endsWith(suffix) ? body.slice(0, body.length - suffix.length) : body;
+  return withAnnotations(base, next);
 }
 function renderPreview(input) {
   const { payload } = input;
@@ -4519,7 +4609,8 @@ async function readThread(options) {
       ...typeof raw.pull_request_review_id === "number" ? { reviewId: raw.pull_request_review_id } : {},
       ...typeof raw.in_reply_to_id === "number" ? { inReplyTo: raw.in_reply_to_id } : {},
       ...state?.resolved === true ? { resolved: true } : {},
-      ...state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {}
+      ...state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {},
+      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
     });
   }
   const reviews = await client.paginate(
@@ -4538,7 +4629,15 @@ async function readThread(options) {
     }
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
-    comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: "review-body" });
+    comments.push({
+      path: null,
+      line: null,
+      author: kept.author,
+      body: kept.body,
+      kind: "review-body",
+      ...typeof raw.submitted_at === "string" ? { createdAt: raw.submitted_at } : {},
+      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
+    });
   }
   if (threadReviews.some((review) => review.state === "DISMISSED")) {
     try {
@@ -4566,7 +4665,15 @@ async function readThread(options) {
   for (const raw of conversation) {
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
-    comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: "conversation" });
+    comments.push({
+      path: null,
+      line: null,
+      author: kept.author,
+      body: kept.body,
+      kind: "conversation",
+      ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
+      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
+    });
   }
   return {
     repository: options.repository,
@@ -13313,6 +13420,11 @@ function readHumanReview(block, result) {
   result.humanReview.sensitiveExemptPaths = globs("sensitive_exempt_paths") ?? result.humanReview.sensitiveExemptPaths;
   result.humanReview.testPaths = globs("test_paths") ?? result.humanReview.testPaths;
   result.humanReview.generatedPaths = globs("generated_paths") ?? result.humanReview.generatedPaths;
+  const cap = block["cap_approval"];
+  if (cap !== void 0) {
+    if (typeof cap === "boolean") result.verdictPolicy.capApproval = cap;
+    else result.warnings.push("review.human_review.cap_approval must be true or false; using true.");
+  }
   const structure = block["structure"];
   if (structure === void 0) return;
   const signals = asRecord(structure);
@@ -13463,6 +13575,29 @@ function readCiRules(block, result) {
     result.ciRules.rerunSignatures = [...builtin === false ? [] : BUILTIN_RERUN_SIGNATURES, ...added];
   }
 }
+function readVerdictPolicy(block, result) {
+  if (block === null) return;
+  const choice = (key, options, fallback) => {
+    const value = block[key];
+    if (value === void 0) return fallback;
+    if (typeof value === "string" && options.includes(value)) return value;
+    result.warnings.push(`verdict.${key} must be one of ${options.join(", ")}; using ${fallback}.`);
+    return fallback;
+  };
+  const enabled = (key, fallback) => {
+    const value = block[key];
+    if (value === void 0) return fallback;
+    if (typeof value === "boolean") return value;
+    result.warnings.push(`verdict.${key} must be true or false; using ${String(fallback)}.`);
+    return fallback;
+  };
+  const policy = result.verdictPolicy;
+  policy.ciPending = choice("ci_pending", ["wait", "proceed"], DEFAULT_VERDICT_POLICY.ciPending);
+  policy.ciRed = choice("ci_red", ["cap", "annotate"], DEFAULT_VERDICT_POLICY.ciRed);
+  policy.ciNeedsRerun = choice("ci_needs_rerun", ["hold", "annotate"], DEFAULT_VERDICT_POLICY.ciNeedsRerun);
+  policy.carryApprovalOnUnchanged = enabled("carry_approval_on_unchanged", DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
+  policy.recheckThreadBeforePost = enabled("recheck_thread_before_post", DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
+}
 function contentHash(text3) {
   return createHash4("sha256").update(text3).digest("hex").slice(0, 16);
 }
@@ -13531,6 +13666,7 @@ function loadConfig(repositoryRoot2) {
     },
     structure: { ...DEFAULT_STRUCTURE },
     costMode: { mode: "auto", models: {} },
+    verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
     layers: [],
     unapproved: [],
     warnings: []
@@ -13584,6 +13720,11 @@ function loadConfig(repositoryRoot2) {
           });
         }
         readCiRules(ci, result);
+        if (doc["verdict"] !== void 0) {
+          const verdict = asRecord(doc["verdict"]);
+          if (verdict === null) result.warnings.push("verdict must be a mapping; using the defaults.");
+          readVerdictPolicy(verdict, result);
+        }
         const verification2 = asRecord(doc["verification"]);
         if (verification2 !== null) {
           const command = verification2["command"];
@@ -16439,6 +16580,8 @@ function refusal(head, reason2) {
       wouldHaveEvent: null,
       wouldHaveSummary: null,
       staleRequestChanges: null,
+      annotations: [],
+      carriedReviewUrl: null,
       payload: null,
       alreadyInline: 0,
       key: null,
@@ -16466,18 +16609,50 @@ function pullRequestComplexity(run, loadRun) {
   return found;
 }
 var MAX_REVIEWS = 300;
-async function standingRequestChanges(client, repository, pullNumber, owner) {
+async function standingOwnerReview(client, repository, pullNumber, owner) {
   const reviews = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`, MAX_REVIEWS);
   const deciding = reviews.filter(
     (review) => typeof review.user?.login === "string" && review.user.login.toLowerCase() === owner.toLowerCase() && (review.state === "APPROVED" || review.state === "CHANGES_REQUESTED" || review.state === "DISMISSED")
   );
   const latest = deciding[deciding.length - 1];
-  if (latest === void 0 || latest.state !== "CHANGES_REQUESTED" || typeof latest.id !== "number") return null;
+  if (latest === void 0 || typeof latest.id !== "number") return null;
   return {
-    reviewId: latest.id,
+    id: latest.id,
+    state: String(latest.state),
     submittedAt: typeof latest.submitted_at === "string" ? latest.submitted_at : null,
-    url: typeof latest.html_url === "string" ? latest.html_url : null
+    url: typeof latest.html_url === "string" ? latest.html_url : null,
+    commitId: typeof latest.commit_id === "string" ? latest.commit_id.toLowerCase() : null
   };
+}
+async function standingRequestChanges(client, repository, pullNumber, owner) {
+  const latest = await standingOwnerReview(client, repository, pullNumber, owner);
+  if (latest === null || latest.state !== "CHANGES_REQUESTED") return null;
+  return { reviewId: latest.id, submittedAt: latest.submittedAt, url: latest.url };
+}
+async function carriedApproval(options, run, reasons) {
+  if (run.scope?.kind !== "unchanged") return null;
+  const since = run.scope.since.toLowerCase();
+  const owner = options.owner ?? null;
+  if (owner === null || owner.length === 0) {
+    reasons.push("identity.owner_reviewer is not set, so a standing approval to carry was not looked for");
+    return null;
+  }
+  try {
+    const latest = await standingOwnerReview(options.client, options.repository, options.pullNumber, owner);
+    if (latest?.state !== "APPROVED") return null;
+    if (latest.commitId !== since) {
+      reasons.push(`${owner}'s standing approval is of ${latest.commitId ?? "an unknown commit"}, not ${since}, so it is not carried`);
+      return null;
+    }
+    if (latest.url === null) {
+      reasons.push(`${owner}'s standing approval has no link, so it is not carried`);
+      return null;
+    }
+    return latest.url;
+  } catch (error) {
+    reasons.push(`could not read the pull request's reviews for a standing approval: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
 }
 async function staleRequest(options, planned, reasons) {
   const severities = [
@@ -16543,18 +16718,25 @@ async function computeVerdict(options) {
   const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {});
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === "high";
+  const policy = verdictPolicy(options.policy);
+  const lookupReasons = [];
+  const carriedReviewUrl = !headMoved && policy.carryApprovalOnUnchanged ? await carriedApproval(options, run, lookupReasons) : null;
   const decision = decide({
     mapped: planned.mapped,
     headMoved,
     ci: ci?.state ?? null,
     rerun: ci?.rerun,
+    failed: ci?.failed,
     recheck: options.recheck === true,
     heldBackApproval: planned.heldBackApproval,
     needsHuman,
-    uncoveredCarry: run.carry?.covered === false
+    uncoveredCarry: run.carry?.covered === false,
+    carriedReviewUrl,
+    policy
   });
+  decision.reasons.push(...lookupReasons);
   if (complexity === null) decision.reasons.push("no complexity assessment was recorded for this run");
-  const staleRequestChanges = needsHuman ? await staleRequest(options, planned, decision.reasons) : null;
+  const staleRequestChanges = needsHuman && !(decision.event === "APPROVE" && decision.action !== "refuse") ? await staleRequest(options, planned, decision.reasons) : null;
   let payload = null;
   let preview = null;
   let key = null;
@@ -16568,13 +16750,13 @@ async function computeVerdict(options) {
       // One plain summary line whichever cap applies: CI first, then a held
       // finding or an uncovered carry, then complexity. None of them names
       // human review or the carry in the posted body.
-      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || run.carry?.covered === false && planned.mapped === "APPROVE" ? "held" : needsHuman && planned.mapped === "APPROVE" ? "complexity" : null
+      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || run.carry?.covered === false && planned.mapped === "APPROVE" ? "held" : needsHuman && policy.capApproval && planned.mapped === "APPROVE" ? "complexity" : null
     });
     key = idempotencyKey(options.repository, options.pullNumber, full2);
     const sent = sentInline(options.db, options.repository, options.pullNumber, head);
     const comments = full2.comments.filter((comment) => !sent.has(commentSignature(comment)));
     alreadyInline = full2.comments.length - comments.length;
-    payload = { ...full2, comments };
+    payload = { ...full2, body: withAnnotations(full2.body, decision.annotations), comments };
     preview = renderPreview({
       repository: options.repository,
       pullNumber: options.pullNumber,
@@ -16586,6 +16768,8 @@ async function computeVerdict(options) {
   return {
     exitCode: decision.exitCode,
     run,
+    planned,
+    cappedByCi: decision.cappedByCi,
     output: {
       event: decision.event,
       action: decision.action,
@@ -16599,12 +16783,67 @@ async function computeVerdict(options) {
       wouldHaveEvent: needsHuman ? planned.mapped : null,
       wouldHaveSummary: needsHuman ? wouldHaveSummary(planned) : null,
       staleRequestChanges,
+      annotations: decision.annotations,
+      carriedReviewUrl: decision.carriedReviewUrl,
       payload,
       alreadyInline,
       key,
       preview
     }
   };
+}
+function recordedCandidates(db, runId) {
+  const row = db.prepare("SELECT candidates_json FROM review_runs WHERE review_run_id = ?").get(runId);
+  let raw;
+  try {
+    raw = JSON.parse(row?.candidates_json ?? "[]");
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry, index) => {
+    try {
+      return [normaliseCandidate(entry, index)];
+    } catch {
+      return [];
+    }
+  });
+}
+async function raisedByOthers(options, run, findings) {
+  if (findings.length === 0) return [];
+  const { data: viewer } = await options.client.get("/user");
+  if (typeof viewer?.login !== "string") throw new Error("GitHub did not say whose token this is");
+  const me = viewer.login.toLowerCase();
+  const { comments } = await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client });
+  const mine = new Set(comments.filter((c) => c.author.toLowerCase() === me && c.id !== void 0).map((c) => c.id));
+  const started = Date.parse(run.createdAt);
+  const thread = comments.filter((comment) => comment.author.toLowerCase() !== me).filter((comment) => comment.createdAt === void 0 || !(Date.parse(comment.createdAt) <= started)).filter((comment) => comment.inReplyTo === void 0 || !mine.has(comment.inReplyTo)).flatMap((comment) => citedLocations([comment]).map((located) => ({ comment: located, url: comment.url ?? null })));
+  if (thread.length === 0) return [];
+  const candidates = recordedCandidates(options.db, run.reviewRunId);
+  const raised = [];
+  for (const finding of findings) {
+    if (finding.path === null || finding.severity === null) continue;
+    const candidate = candidates.find((c) => c.path === finding.path && c.line === finding.line) ?? {
+      candidateId: finding.findingId ?? `${finding.path}:${finding.line ?? ""}`,
+      path: finding.path,
+      // A finding with no line is compared with every comment on its file:
+      // no comment line is ever within the window of NaN, nor outside it.
+      line: finding.line ?? Number.NaN,
+      category: "posted",
+      severity: finding.severity,
+      claim: finding.prose,
+      failureMode: "",
+      evidence: [],
+      suggestedFix: null,
+      fixConfidence: null,
+      technicalConfidence: 0
+    };
+    const match = thread.find((entry) => alreadySaidOnThread(candidate, [entry.comment]) !== null);
+    if (match !== void 0) {
+      raised.push({ path: finding.path, line: finding.line, raisedBy: match.comment.author, commentUrl: match.url });
+    }
+  }
+  return raised;
 }
 function keyBlocked(db, key) {
   const rows = db.prepare(
@@ -16644,14 +16883,15 @@ function claimKey(db, key, subject, metadata) {
 async function postReview(options) {
   const subject = { type: "pull_request", id: subjectId(options.repository, options.pullNumber) };
   const postCheck = evaluatePostingGate(options.db, options.postingEnabled);
-  const refuse = (exitCode2, reasons, verdict2, key2) => {
+  const refuse = (exitCode2, reasons, verdict2, key2, extra = {}) => {
     recordAudit(options.db, "review_post_refused", subject, {
       reasons,
       key: key2,
       head: options.head,
-      event: verdict2?.event ?? null
+      event: verdict2?.event ?? null,
+      ...extra
     });
-    return { exitCode: exitCode2, output: { status: "refused", reasons, key: key2, verdict: verdict2, postCheck } };
+    return { exitCode: exitCode2, output: { status: "refused", reasons, key: key2, verdict: verdict2, postCheck, ...extra } };
   };
   if (!options.postingEnabled) {
     return refuse(2, ["writes.github_posting_enabled is false in .review-voice/config.yaml"], null, null);
@@ -16670,11 +16910,30 @@ async function postReview(options) {
   } catch (error) {
     return refuse(1, [`could not read the pull request or its CI: ${error instanceof Error ? error.message : String(error)}`], null, null);
   }
-  const { exitCode, output: verdict, run } = computed;
+  const { exitCode, run } = computed;
+  let verdict = computed.output;
+  if (verdict.action === "carry" && verdict.carriedReviewUrl !== null && run !== null) {
+    if (run.repository === null || run.repository.toLowerCase() !== options.repository.toLowerCase()) {
+      return refuse(2, [`run ${run.reviewRunId} reviewed ${run.repository ?? "no repository"}, not ${options.repository}`], verdict, null);
+    }
+    if (options.confirm) {
+      recordAudit(options.db, "review_carried", subject, {
+        repository: options.repository,
+        pull: options.pullNumber,
+        head: verdict.head.expected,
+        reviewUrl: verdict.carriedReviewUrl
+      });
+    }
+    return {
+      exitCode: 0,
+      output: { status: "carried", carried: true, reviewUrl: verdict.carriedReviewUrl, reasons: verdict.reasons, key: null, verdict, postCheck }
+    };
+  }
   if (verdict.action !== "post" || verdict.payload === null || verdict.key === null || run === null) {
     return refuse(exitCode === 0 ? 2 : exitCode, verdict.reasons, verdict, null);
   }
-  const payload = verdict.payload;
+  const policy = verdictPolicy(options.policy);
+  let payload = verdict.payload;
   const key = verdict.key;
   const blocked = keyBlocked(options.db, key);
   if (blocked !== null) return refuse(2, [blocked], verdict, key);
@@ -16692,6 +16951,25 @@ async function postReview(options) {
   if (run.repository === null || run.repository.toLowerCase() !== options.repository.toLowerCase()) {
     return refuse(2, [`run ${run.reviewRunId} reviewed ${run.repository ?? "no repository"}, not ${options.repository}`], verdict, key);
   }
+  if (options.recheckThread === true || policy.recheckThreadBeforePost) {
+    const inPayload = (finding) => payload.comments.some((comment) => comment.path === finding.path && comment.line === finding.line);
+    const findings = computed.planned === void 0 ? [] : [...computed.planned.inline.filter(inPayload), ...computed.planned.unanchored];
+    let raised;
+    try {
+      raised = await raisedByOthers(options, run, findings);
+    } catch (error) {
+      return refuse(1, [`could not re-read the thread before sending: ${error instanceof Error ? error.message : String(error)}`], verdict, key);
+    }
+    if (raised.length > 0) {
+      return refuse(
+        8,
+        [`${raised.length} finding${raised.length === 1 ? " was" : "s were"} raised on the thread by someone else during the review; nothing was sent`],
+        verdict,
+        key,
+        { refused: "thread-changed", findings: raised }
+      );
+    }
+  }
   if (payload.event === "APPROVE") {
     let reread;
     try {
@@ -16705,13 +16983,30 @@ async function postReview(options) {
     if (reread.head !== payload.commit_id) {
       return refuse(3, ["the pull request head moved before sending; review the new head"], verdict, key);
     }
-    if (reread.ci.state !== "green") {
+    if (!ciAllowsApproval(reread.ci.state, policy)) {
       return refuse(
         reread.ci.state === "pending" ? 4 : reread.ci.state === "needs-rerun" ? 6 : 5,
         [`CI turned ${reread.ci.state} before sending; not approving`],
         { ...verdict, ci: reread.ci },
         key
       );
+    }
+    const annotations = ciAnnotations(reread.ci, policy);
+    if (annotations.join("\n") !== verdict.annotations.join("\n")) {
+      payload = { ...payload, body: replaceAnnotations(payload.body, verdict.annotations, annotations) };
+      verdict = {
+        ...verdict,
+        ci: reread.ci,
+        annotations,
+        payload,
+        preview: renderPreview({
+          repository: options.repository,
+          pullNumber: options.pullNumber,
+          payload,
+          held: verdict.held,
+          alreadyInline: verdict.alreadyInline
+        })
+      };
     }
   }
   const claimed = claimKey(options.db, key, subject, {
@@ -16731,6 +17026,8 @@ async function postReview(options) {
       head: payload.commit_id,
       event: payload.event,
       inline: payload.comments.map(commentSignature),
+      // The queue finds a COMMENT posted only because CI was red by this.
+      cappedByCi: computed.cappedByCi === true,
       reviewId: review.id,
       url: review.htmlUrl
     });
@@ -17234,11 +17531,27 @@ var COMMAND_HELP = {
       "  --head <sha>           Head commit the review read (required)",
       "  --repository <name>    owner/repo; inferred from the git remote if absent",
       "  --run <run-id>         Recorded run to use; default the newest for the pull request",
-      "  --recheck              Re-read CI once more before answering",
+      "  --recheck              Re-read CI once more before answering; asks for green CI",
+      "                         whatever the verdict settings say",
+      "",
+      "Settings (.review-voice/config.yaml, docs/adr/0028; defaults first):",
+      "  verdict.ci_pending: wait|proceed        proceed approves while CI is still running",
+      "  verdict.ci_red: cap|annotate            annotate keeps the event and adds",
+      '                                          "Heads up: <checks> failing on this head."',
+      "  verdict.ci_needs_rerun: hold|annotate   annotate posts the code verdict and adds",
+      '                                          "Heads up: <checks> need a rerun."',
+      "  review.human_review.cap_approval: true  false lets a clean complex change approve;",
+      "                                          the local note stays",
+      "  verdict.carry_approval_on_unchanged: false",
+      '                                          true returns action "carry" and posts nothing',
+      "                                          when a clean approval's scope is unchanged and",
+      "                                          the owner's approval of its start still stands",
+      "                                          (carriedReviewUrl)",
+      '  An annotation names at most five checks and appears in "annotations".',
       "Reads: the validated review on stdin.",
       "Writes: JSON on stdout. Nothing is sent to GitHub.",
-      "Exit codes: 0 ok, 2 refused or bad invocation, 3 the head moved, 4 CI still running",
-      "  on an approval, 5 a re-check found CI red, 6 CI needs a rerun."
+      "Exit codes: 0 ok or carried, 2 refused or bad invocation, 3 the head moved, 4 CI still",
+      "  running on an approval, 5 a re-check found CI red, 6 CI needs a rerun."
     )
   },
   post: {
@@ -17254,10 +17567,20 @@ var COMMAND_HELP = {
       "  --run <run-id>         Recorded run to use; default the newest for the pull request",
       "  --confirm              Send the review; without it, only a preview",
       "  --event <EVENT>        The review event to send (COMMENT, APPROVE or REQUEST_CHANGES)",
+      "  --recheck-thread       Re-read the thread (comments and review bodies) before sending;",
+      "                         a finding someone else raised meanwhile refuses with exit 8",
+      "",
+      "Settings: the verdict settings apply as in `review-voice verdict --help`, including",
+      "  to the CI re-read just before an approval is sent. Annotations are appended to the",
+      "  body, each on its own line, and left out of the idempotency key. A carry sends",
+      "  nothing and prints {carried: true, reviewUrl}. verdict.recheck_thread_before_post:",
+      "  true always does what --recheck-thread does.",
       "Reads: the validated review on stdin.",
       "Writes: JSON on stdout. With --confirm, WRITES the review to GitHub (the plugin's only write).",
-      "Exit codes: 0 sent or previewed, 1 the send failed, 2 refused or bad invocation,",
-      "  3 the head moved, 4 CI still running on an approval, 5 CI red, 6 CI needs a rerun."
+      "Exit codes: 0 sent, previewed or carried, 1 the send failed, 2 refused or bad invocation,",
+      "  3 the head moved, 4 CI still running on an approval, 5 CI red, 6 CI needs a rerun,",
+      '  8 the thread re-check found a finding someone else raised ({refused: "thread-changed",',
+      "  findings: [{path, line, raisedBy, commentUrl}]}); nothing is sent."
     )
   },
   record: {
@@ -18304,7 +18627,8 @@ async function verdictCommand(argv) {
       recheck: argv.includes("--recheck"),
       gateChecks: config2?.ciGateChecks ?? [],
       ciRules: config2?.ciRules ?? {},
-      owner: config2?.ownerReviewer ?? null
+      owner: config2?.ownerReviewer ?? null,
+      policy: config2?.verdictPolicy
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -18332,7 +18656,9 @@ async function postCommand(argv) {
       postingEnabled: config2?.postingEnabled ?? false,
       gateChecks: config2?.ciGateChecks ?? [],
       ciRules: config2?.ciRules ?? {},
-      owner: config2?.ownerReviewer ?? null
+      owner: config2?.ownerReviewer ?? null,
+      policy: config2?.verdictPolicy,
+      recheckThread: argv.includes("--recheck-thread")
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;

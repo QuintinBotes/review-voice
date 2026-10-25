@@ -5,20 +5,29 @@ import { humanReviewNote, type ComplexityAssessment } from '../diff/complexity.t
 import { AuthError } from '../github/auth.ts';
 import { GitHubError, NotAllowlisted, type GitHubClient } from '../github/client.ts';
 import { REVIEW_EVENTS, WriteViolation, type ReviewWriter } from '../github/writer.ts';
+import { readThread } from '../diff/thread.ts';
+import { alreadySaidOnThread, citedLocations, normaliseCandidate, type Candidate, type RawCandidate } from '../scoring/score.ts';
 import { readCi, type CiRules, type CiState, type GateCheck } from './ci.ts';
 import { evaluatePostingGate, type GateResult } from './gate.ts';
 import {
   buildPayload,
+  ciAllowsApproval,
+  ciAnnotations,
   commentSignature,
   decide,
   idempotencyKey,
   planFindings,
   renderPreview,
+  replaceAnnotations,
+  withAnnotations,
+  verdictPolicy,
   type Action,
   type HeldBack,
   type PlannedFindings,
   type ReviewEvent,
+  type ReviewFinding,
   type ReviewPayload,
+  type VerdictPolicy,
   wouldHaveSummary,
 } from './verdict.ts';
 
@@ -41,8 +50,10 @@ export interface VerdictOptions {
   ciRules?: CiRules | undefined;
   /** The time a stuck check is judged against, in epoch milliseconds; default now. */
   now?: number | undefined;
-  /** `identity.owner_reviewer`: whose earlier request for changes may be left standing. */
+  /** `identity.owner_reviewer`: whose earlier request for changes may be left standing, and whose approval may be carried. */
   owner?: string | null | undefined;
+  /** `verdict:` and `review.human_review.cap_approval` from the config; unset keys keep the defaults (docs/adr/0028). */
+  policy?: Partial<VerdictPolicy> | undefined;
 }
 
 /** An earlier request for changes by the owner that a COMMENT will not replace. */
@@ -77,6 +88,10 @@ export interface VerdictOutput {
    * agent tells the user to dismiss it by hand. Null otherwise.
    */
   staleRequestChanges: StaleRequestChanges | null;
+  /** Lines an `annotate` policy appends to the posted body; empty under the defaults. */
+  annotations: string[];
+  /** The owner's approval that still stands, when the action is `carry`; nothing is posted then. */
+  carriedReviewUrl: string | null;
   /** What would be sent: inline comments already posted on this head are left out. */
   payload: ReviewPayload | null;
   /** Inline comments an earlier post of this head already sent. */
@@ -119,6 +134,8 @@ function refusal(head: string, reason: string): { exitCode: number; output: Verd
       wouldHaveEvent: null,
       wouldHaveSummary: null,
       staleRequestChanges: null,
+      annotations: [],
+      carriedReviewUrl: null,
       payload: null,
       alreadyInline: 0,
       key: null,
@@ -165,22 +182,24 @@ interface RawReview {
   state?: unknown;
   submitted_at?: unknown;
   html_url?: unknown;
+  commit_id?: unknown;
 }
 
 const MAX_REVIEWS = 300;
 
 /**
- * The owner's request for changes, when it is where the owner currently
- * stands on the pull request. Read only. A COMMENTED review replaces neither
- * an approval nor a request for changes on GitHub, so only approvals, requests
- * for changes and dismissals decide it; the list is chronological.
+ * Where the owner currently stands on the pull request. Read only. A
+ * COMMENTED review replaces neither an approval nor a request for changes on
+ * GitHub, so only approvals, requests for changes and dismissals decide it;
+ * the list is chronological. GitHub marks a dismissed review DISMISSED, so an
+ * approval that was dismissed is not APPROVED here.
  */
-async function standingRequestChanges(
+async function standingOwnerReview(
   client: GitHubClient,
   repository: string,
   pullNumber: number,
   owner: string,
-): Promise<StaleRequestChanges | null> {
+): Promise<{ id: number; state: string; submittedAt: string | null; url: string | null; commitId: string | null } | null> {
   const reviews = await client.paginate<RawReview>(`/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`, MAX_REVIEWS);
   const deciding = reviews.filter(
     (review) =>
@@ -189,12 +208,59 @@ async function standingRequestChanges(
       (review.state === 'APPROVED' || review.state === 'CHANGES_REQUESTED' || review.state === 'DISMISSED'),
   );
   const latest = deciding[deciding.length - 1];
-  if (latest === undefined || latest.state !== 'CHANGES_REQUESTED' || typeof latest.id !== 'number') return null;
+  if (latest === undefined || typeof latest.id !== 'number') return null;
   return {
-    reviewId: latest.id,
+    id: latest.id,
+    state: String(latest.state),
     submittedAt: typeof latest.submitted_at === 'string' ? latest.submitted_at : null,
     url: typeof latest.html_url === 'string' ? latest.html_url : null,
+    commitId: typeof latest.commit_id === 'string' ? latest.commit_id.toLowerCase() : null,
   };
+}
+
+/** The owner's request for changes, when it is where the owner currently stands. */
+async function standingRequestChanges(
+  client: GitHubClient,
+  repository: string,
+  pullNumber: number,
+  owner: string,
+): Promise<StaleRequestChanges | null> {
+  const latest = await standingOwnerReview(client, repository, pullNumber, owner);
+  if (latest === null || latest.state !== 'CHANGES_REQUESTED') return null;
+  return { reviewId: latest.id, submittedAt: latest.submittedAt, url: latest.url };
+}
+
+/**
+ * The owner's approval to carry when the run's scope is unchanged and
+ * `carry_approval_on_unchanged` is on (docs/adr/0028), or null. Never fatal:
+ * without an answer the verdict is computed as usual, and the reason says so.
+ */
+async function carriedApproval(options: VerdictOptions, run: RunDetail, reasons: string[]): Promise<string | null> {
+  if (run.scope?.kind !== 'unchanged') return null;
+  const since = run.scope.since.toLowerCase();
+  const owner = options.owner ?? null;
+  if (owner === null || owner.length === 0) {
+    reasons.push('identity.owner_reviewer is not set, so a standing approval to carry was not looked for');
+    return null;
+  }
+  try {
+    const latest = await standingOwnerReview(options.client, options.repository, options.pullNumber, owner);
+    if (latest?.state !== 'APPROVED') return null;
+    // The scope is unchanged since `since`; an approval of any other commit
+    // approved code this run did not compare against.
+    if (latest.commitId !== since) {
+      reasons.push(`${owner}'s standing approval is of ${latest.commitId ?? 'an unknown commit'}, not ${since}, so it is not carried`);
+      return null;
+    }
+    if (latest.url === null) {
+      reasons.push(`${owner}'s standing approval has no link, so it is not carried`);
+      return null;
+    }
+    return latest.url;
+  } catch (error) {
+    reasons.push(`could not read the pull request's reviews for a standing approval: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
 }
 
 /**
@@ -278,7 +344,14 @@ function sentInline(db: Database, repository: string, pullNumber: number, head: 
  */
 export async function computeVerdict(
   options: VerdictOptions,
-): Promise<{ exitCode: number; output: VerdictOutput; run: RunDetail | null }> {
+): Promise<{
+  exitCode: number;
+  output: VerdictOutput;
+  run: RunDetail | null;
+  /** For `post`: the findings, and whether CI capped the event, which the sent audit row records. */
+  planned?: PlannedFindings;
+  cappedByCi?: boolean;
+}> {
   const head = options.head.toLowerCase();
   if (!SHA.test(head)) return refusal(options.head, '--head must be the full commit sha the review read');
 
@@ -295,20 +368,34 @@ export async function computeVerdict(
 
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === 'high';
+  const policy = verdictPolicy(options.policy);
+
+  const lookupReasons: string[] = [];
+  const carriedReviewUrl =
+    !headMoved && policy.carryApprovalOnUnchanged ? await carriedApproval(options, run, lookupReasons) : null;
 
   const decision = decide({
     mapped: planned.mapped,
     headMoved,
     ci: ci?.state ?? null,
     rerun: ci?.rerun,
+    failed: ci?.failed,
     recheck: options.recheck === true,
     heldBackApproval: planned.heldBackApproval,
     needsHuman,
     uncoveredCarry: run.carry?.covered === false,
+    carriedReviewUrl,
+    policy,
   });
+  decision.reasons.push(...lookupReasons);
   // Only a missing assessment is worth saying: a normal one changes nothing.
   if (complexity === null) decision.reasons.push('no complexity assessment was recorded for this run');
-  const staleRequestChanges = needsHuman ? await staleRequest(options, planned, decision.reasons) : null;
+  // An approval replaces a request for changes, so only an approval that is
+  // going ahead leaves none standing.
+  const staleRequestChanges =
+    needsHuman && !(decision.event === 'APPROVE' && decision.action !== 'refuse')
+      ? await staleRequest(options, planned, decision.reasons)
+      : null;
 
   let payload: ReviewPayload | null = null;
   let preview: string | null = null;
@@ -327,19 +414,21 @@ export async function computeVerdict(
         ? 'ci'
         : planned.heldBackApproval || (run.carry?.covered === false && planned.mapped === 'APPROVE')
           ? 'held'
-          : needsHuman && planned.mapped === 'APPROVE'
+          : needsHuman && policy.capApproval && planned.mapped === 'APPROVE'
             ? 'complexity'
             : null,
     });
     // Keyed on the whole review, so the same review is refused a second time
-    // even once its comments are all on the pull request.
+    // even once its comments are all on the pull request. Annotations are left
+    // out: they follow CI, and a CI change must not make the same review of
+    // the same head a second post.
     key = idempotencyKey(options.repository, options.pullNumber, full);
     // A comment already posted on this head, by an earlier COMMENT while CI
     // was red, is not posted again when the approval follows.
     const sent = sentInline(options.db, options.repository, options.pullNumber, head);
     const comments = full.comments.filter((comment) => !sent.has(commentSignature(comment)));
     alreadyInline = full.comments.length - comments.length;
-    payload = { ...full, comments };
+    payload = { ...full, body: withAnnotations(full.body, decision.annotations), comments };
     preview = renderPreview({
       repository: options.repository,
       pullNumber: options.pullNumber,
@@ -352,6 +441,8 @@ export async function computeVerdict(
   return {
     exitCode: decision.exitCode,
     run,
+    planned,
+    cappedByCi: decision.cappedByCi,
     output: {
       event: decision.event,
       action: decision.action,
@@ -365,6 +456,8 @@ export async function computeVerdict(
       wouldHaveEvent: needsHuman ? planned.mapped : null,
       wouldHaveSummary: needsHuman ? wouldHaveSummary(planned) : null,
       staleRequestChanges,
+      annotations: decision.annotations,
+      carriedReviewUrl: decision.carriedReviewUrl,
       payload,
       alreadyInline,
       key,
@@ -386,10 +479,20 @@ export interface PostOptions extends VerdictOptions {
   event?: string | undefined;
   /** `writes.github_posting_enabled`. */
   postingEnabled: boolean;
+  /** `--recheck-thread`; `verdict.recheck_thread_before_post` turns it on too. */
+  recheckThread?: boolean | undefined;
+}
+
+/** A finding in the payload that someone else raised on the thread while the review ran. */
+export interface RaisedFinding {
+  path: string | null;
+  line: number | null;
+  raisedBy: string;
+  commentUrl: string | null;
 }
 
 export interface PostOutput {
-  status: 'sent' | 'refused' | 'failed';
+  status: 'sent' | 'refused' | 'failed' | 'carried';
   reasons: string[];
   key: string | null;
   verdict: VerdictOutput | null;
@@ -397,6 +500,94 @@ export interface PostOutput {
   postCheck: GateResult;
   review?: { id: number | null; url: string | null; state: string | null };
   error?: { status: number | null; message: string };
+  /** The scope is unchanged and the owner's approval stands: nothing was sent (docs/adr/0028). */
+  carried?: true;
+  reviewUrl?: string;
+  /** Set with exit 8, when the thread re-read just before sending found a finding someone else raised. */
+  refused?: 'thread-changed';
+  findings?: RaisedFinding[];
+}
+
+/** The candidates the run was recorded with, as `check-candidates` read them; malformed ones are skipped. */
+function recordedCandidates(db: Database, runId: string): Candidate[] {
+  const row = db.prepare('SELECT candidates_json FROM review_runs WHERE review_run_id = ?').get(runId) as
+    | { candidates_json: string | null }
+    | undefined;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(row?.candidates_json ?? '[]');
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry, index) => {
+    try {
+      return [normaliseCandidate(entry as RawCandidate, index)];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * The payload's findings that someone other than the token's user raised on
+ * the pull request after the run was recorded, read fresh just before sending
+ * (docs/adr/0028). The thread is read as `thread` reads it, and a finding is
+ * matched on its candidate's claim and failure mode with the rule
+ * `check-candidates --thread` drops a repeat by, so a point is a repeat here
+ * exactly when it would have been one there. GET only.
+ */
+async function raisedByOthers(
+  options: { client: GitHubClient; repository: string; pullNumber: number; db: Database },
+  run: RunDetail,
+  findings: readonly ReviewFinding[],
+): Promise<RaisedFinding[]> {
+  if (findings.length === 0) return [];
+  const { data: viewer } = await options.client.get<{ login?: unknown }>('/user');
+  if (typeof viewer?.login !== 'string') throw new Error('GitHub did not say whose token this is');
+  const me = viewer.login.toLowerCase();
+
+  const { comments } = await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client });
+  const mine = new Set(comments.filter((c) => c.author.toLowerCase() === me && c.id !== undefined).map((c) => c.id));
+  const started = Date.parse(run.createdAt);
+  const thread = comments
+    .filter((comment) => comment.author.toLowerCase() !== me)
+    // Earlier comments were in front of `check-candidates` already.
+    .filter((comment) => comment.createdAt === undefined || !(Date.parse(comment.createdAt) <= started))
+    // A reply in a thread this tool started answers it, often by quoting it.
+    .filter((comment) => comment.inReplyTo === undefined || !mine.has(comment.inReplyTo))
+    // Each citation in a review body or conversation comment stands for that
+    // comment, so it is expanded one comment at a time to keep its link.
+    .flatMap((comment) => citedLocations([comment]).map((located) => ({ comment: located, url: comment.url ?? null })));
+  if (thread.length === 0) return [];
+
+  const candidates = recordedCandidates(options.db, run.reviewRunId);
+  const raised: RaisedFinding[] = [];
+  for (const finding of findings) {
+    if (finding.path === null || finding.severity === null) continue;
+    // shortcut: a finding whose candidate was not recorded is matched on its
+    // rendered prose; record --candidates always supplies one in the pipeline.
+    const candidate: Candidate = candidates.find((c) => c.path === finding.path && c.line === finding.line) ?? {
+      candidateId: finding.findingId ?? `${finding.path}:${finding.line ?? ''}`,
+      path: finding.path,
+      // A finding with no line is compared with every comment on its file:
+      // no comment line is ever within the window of NaN, nor outside it.
+      line: finding.line ?? Number.NaN,
+      category: 'posted',
+      severity: finding.severity,
+      claim: finding.prose,
+      failureMode: '',
+      evidence: [],
+      suggestedFix: null,
+      fixConfidence: null,
+      technicalConfidence: 0,
+    };
+    const match = thread.find((entry) => alreadySaidOnThread(candidate, [entry.comment]) !== null);
+    if (match !== undefined) {
+      raised.push({ path: finding.path, line: finding.line, raisedBy: match.comment.author, commentUrl: match.url });
+    }
+  }
+  return raised;
 }
 
 /**
@@ -471,14 +662,16 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
     reasons: string[],
     verdict: VerdictOutput | null,
     key: string | null,
+    extra: Pick<PostOutput, 'refused' | 'findings'> = {},
   ): { exitCode: number; output: PostOutput } => {
     recordAudit(options.db, 'review_post_refused', subject, {
       reasons,
       key,
       head: options.head,
       event: verdict?.event ?? null,
+      ...extra,
     });
-    return { exitCode, output: { status: 'refused', reasons, key, verdict, postCheck } };
+    return { exitCode, output: { status: 'refused', reasons, key, verdict, postCheck, ...extra } };
   };
 
   if (!options.postingEnabled) {
@@ -499,12 +692,32 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
   } catch (error) {
     return refuse(1, [`could not read the pull request or its CI: ${error instanceof Error ? error.message : String(error)}`], null, null);
   }
-  const { exitCode, output: verdict, run } = computed;
+  const { exitCode, run } = computed;
+  let verdict = computed.output;
+  if (verdict.action === 'carry' && verdict.carriedReviewUrl !== null && run !== null) {
+    if (run.repository === null || run.repository.toLowerCase() !== options.repository.toLowerCase()) {
+      return refuse(2, [`run ${run.reviewRunId} reviewed ${run.repository ?? 'no repository'}, not ${options.repository}`], verdict, null);
+    }
+    // Only a confirmed post is an outcome worth recording; without one this is a preview.
+    if (options.confirm) {
+      recordAudit(options.db, 'review_carried', subject, {
+        repository: options.repository,
+        pull: options.pullNumber,
+        head: verdict.head.expected,
+        reviewUrl: verdict.carriedReviewUrl,
+      });
+    }
+    return {
+      exitCode: 0,
+      output: { status: 'carried', carried: true, reviewUrl: verdict.carriedReviewUrl, reasons: verdict.reasons, key: null, verdict, postCheck },
+    };
+  }
   if (verdict.action !== 'post' || verdict.payload === null || verdict.key === null || run === null) {
     return refuse(exitCode === 0 ? 2 : exitCode, verdict.reasons, verdict, null);
   }
 
-  const payload = verdict.payload;
+  const policy = verdictPolicy(options.policy);
+  let payload = verdict.payload;
   const key = verdict.key;
   const blocked = keyBlocked(options.db, key);
   if (blocked !== null) return refuse(2, [blocked], verdict, key);
@@ -527,6 +740,32 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
     return refuse(2, [`run ${run.reviewRunId} reviewed ${run.repository ?? 'no repository'}, not ${options.repository}`], verdict, key);
   }
 
+  // Someone may have made one of these points while the review ran; posting
+  // it again would talk over them. Before the approval's re-read, so that
+  // re-read stays the last thing between confirmation and sending.
+  if (options.recheckThread === true || policy.recheckThreadBeforePost) {
+    const inPayload = (finding: ReviewFinding): boolean =>
+      payload.comments.some((comment) => comment.path === finding.path && comment.line === finding.line);
+    const findings = computed.planned === undefined
+      ? []
+      : [...computed.planned.inline.filter(inPayload), ...computed.planned.unanchored];
+    let raised: RaisedFinding[];
+    try {
+      raised = await raisedByOthers(options, run, findings);
+    } catch (error) {
+      return refuse(1, [`could not re-read the thread before sending: ${error instanceof Error ? error.message : String(error)}`], verdict, key);
+    }
+    if (raised.length > 0) {
+      return refuse(
+        8,
+        [`${raised.length} finding${raised.length === 1 ? ' was' : 's were'} raised on the thread by someone else during the review; nothing was sent`],
+        verdict,
+        key,
+        { refused: 'thread-changed', findings: raised },
+      );
+    }
+  }
+
   // An approval is the one event that can unblock a merge, so its two guards
   // are read again at the moment of sending rather than trusted from above.
   // Before the attempt is recorded, so a failed re-read leaves no attempt
@@ -544,13 +783,32 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
     if (reread.head !== payload.commit_id) {
       return refuse(3, ['the pull request head moved before sending; review the new head'], verdict, key);
     }
-    if (reread.ci.state !== 'green') {
+    if (!ciAllowsApproval(reread.ci.state, policy)) {
       return refuse(
         reread.ci.state === 'pending' ? 4 : reread.ci.state === 'needs-rerun' ? 6 : 5,
         [`CI turned ${reread.ci.state} before sending; not approving`],
         { ...verdict, ci: reread.ci },
         key,
       );
+    }
+    // The note has to describe the CI the approval is sent on. The key does
+    // not cover it, so it stays the same.
+    const annotations = ciAnnotations(reread.ci, policy);
+    if (annotations.join('\n') !== verdict.annotations.join('\n')) {
+      payload = { ...payload, body: replaceAnnotations(payload.body, verdict.annotations, annotations) };
+      verdict = {
+        ...verdict,
+        ci: reread.ci,
+        annotations,
+        payload,
+        preview: renderPreview({
+          repository: options.repository,
+          pullNumber: options.pullNumber,
+          payload,
+          held: verdict.held,
+          alreadyInline: verdict.alreadyInline,
+        }),
+      };
     }
   }
 
@@ -572,6 +830,8 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
       head: payload.commit_id,
       event: payload.event,
       inline: payload.comments.map(commentSignature),
+      // The queue finds a COMMENT posted only because CI was red by this.
+      cappedByCi: computed.cappedByCi === true,
       reviewId: review.id,
       url: review.htmlUrl,
     });

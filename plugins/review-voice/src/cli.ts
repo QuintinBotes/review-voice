@@ -1232,7 +1232,8 @@ function repositoryConfig(): ReturnType<typeof loadConfig> | null {
  * The review event, head guard and CI guard, computed and printed. Reads only;
  * see docs/adr/0010. Exit 3 means the head moved, 4 that CI is still running
  * on an approval, 5 that a re-check found CI red, 6 that CI needs a rerun
- * before any event is sent (docs/adr/0013).
+ * before any event is sent (docs/adr/0013). The `verdict:` settings change
+ * which of these apply (docs/adr/0028).
  */
 async function verdictCommand(argv: string[]): Promise<number> {
   const target = reviewTarget(argv, 'verdict');
@@ -1251,6 +1252,7 @@ async function verdictCommand(argv: string[]): Promise<number> {
       gateChecks: config?.ciGateChecks ?? [],
       ciRules: config?.ciRules ?? {},
       owner: config?.ownerReviewer ?? null,
+      policy: config?.verdictPolicy,
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -1284,6 +1286,8 @@ async function postCommand(argv: string[]): Promise<number> {
       gateChecks: config?.ciGateChecks ?? [],
       ciRules: config?.ciRules ?? {},
       owner: config?.ownerReviewer ?? null,
+      policy: config?.verdictPolicy,
+      recheckThread: argv.includes('--recheck-thread'),
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;

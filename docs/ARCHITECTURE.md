@@ -896,6 +896,17 @@ these rules. Exit codes: 0 ready, 2 nothing to post or re-check, 3 head moved,
 4 CI still running on an approval, 5 CI red on a re-check, 6 CI needs a rerun
 (an infrastructure failure or a stuck check, ADR 0013; no event is sent).
 
+ADR 0028 turns the pending, red, needs-rerun, complexity and unchanged-scope
+rules into `verdict:` settings (and `review.human_review.cap_approval`) whose
+defaults are those rules; `decide()` takes them as a `VerdictPolicy`. An
+`annotate` setting keeps the event and appends a line naming at most five
+checks, which the idempotency key leaves out so a CI change cannot make the
+same review a second post, and `post`'s CI re-read before an approval applies
+the same settings. A carry posts nothing. `post --recheck-thread` re-reads the
+thread just before that re-read, which stays the last read before sending, and
+refuses with exit 8 when someone else raised a finding meanwhile. The head guard, the
+writer's single endpoint and the key are not settings.
+
 ## Trust boundary
 
 Everything read from a repository or from GitHub is **untrusted data**: source,

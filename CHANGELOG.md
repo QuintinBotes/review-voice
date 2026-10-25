@@ -55,6 +55,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It needs the same consent plan as `sync`, and `/review-voice:init` offers it.
   (ADR 0030)
 
+- Verdict policies: `verdict.ci_pending` (`wait` | `proceed`), `verdict.ci_red`
+  (`cap` | `annotate`), `verdict.ci_needs_rerun` (`hold` | `annotate`),
+  `review.human_review.cap_approval` and
+  `verdict.carry_approval_on_unchanged` make the CI, complexity and
+  unchanged-scope rules settings whose defaults are the old rules. `annotate`
+  keeps the event and appends `Heads up: <checks> failing on this head.` or
+  `Heads up: <checks> need a rerun.` to the posted body, naming at most five
+  checks as inline code, sorted; `verdict` reports it in `annotations`. The
+  idempotency key leaves the note out, so a CI change on the same head does
+  not make the same review a second post. The CI re-read before an approval
+  applies the same settings. A carry needs a clean approval and the owner's
+  standing approval of the commit the unchanged scope is measured from; it
+  returns `action: "carry"` with `carriedReviewUrl`, and `post` sends nothing,
+  prints `{carried: true, reviewUrl}`, and with `--confirm` records
+  `review_carried`.
+  `--recheck` still asks for green CI. A moved head, the single writer
+  endpoint and the idempotency key are unchanged. (ADR 0028)
+
+- `post --recheck-thread`, or `verdict.recheck_thread_before_post: true`,
+  re-reads the thread as `thread` does just before the approval's head and CI
+  re-read, and refuses with the new exit code 8
+  (`{refused: "thread-changed", findings}`) when someone else raised one of
+  the findings after the run was recorded. It matches the recorded
+  candidate's claim and failure mode by the repeat rule
+  `check-candidates --thread` uses, and ignores replies in threads the tool
+  started. `thread` output now carries each comment's `url`, and `createdAt`
+  for review bodies and conversation comments. (ADR 0028)
+
+- The `review_post_sent` audit row records `cappedByCi`. (ADR 0028)
+
 ## [1.18.0] - 2026-10-24
 
 ### Added

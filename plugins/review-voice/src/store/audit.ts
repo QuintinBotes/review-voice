@@ -24,6 +24,8 @@ export type AuditAction =
   | 'review_post_sent'
   | 'review_post_refused'
   | 'review_post_failed'
+  // An unchanged scope whose owner approval stands: nothing was posted (docs/adr/0028).
+  | 'review_carried'
   // Verified candidates carried to a head pushed mid-review.
   | 'candidates_carried';
 
