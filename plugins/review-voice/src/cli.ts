@@ -93,6 +93,7 @@ import { repositoryRoot } from './diff/acquire.ts';
 import { collectEvidence } from './evidence/run.ts';
 import { verifyFindings, type VerifiableFinding } from './verify/external.ts';
 import { parseSecondPass, parseTieBreaks, reconcile, ReconcileInputError, type TieBreak } from './verify/reconcile.ts';
+import { applyChallenge, candidatesById, challengePrompts, intentStatements } from './verify/challenge.ts';
 import { redact } from './redact/redact.ts';
 import { GitHubClient, NotAllowlisted, ReadOnlyViolation } from './github/client.ts';
 import { AuthError } from './github/auth.ts';
@@ -169,6 +170,7 @@ const STDIN_INPUT: Record<string, string> = {
   anchors: 'the validated review',
   verify: 'candidates JSON',
   reconcile: 'candidates JSON',
+  challenge: 'the challenger verdicts',
   redact: 'the text to redact',
   draft: 'the validated review',
   verdict: 'the validated review',
@@ -3172,6 +3174,94 @@ function reanchorCommand(argv: string[]): number {
   return 0;
 }
 
+/**
+ * The independent challenge (docs/adr/0024): `--emit-prompts` builds one
+ * challenger prompt per eligible finding; otherwise the challenger verdicts on
+ * stdin are checked and applied to the score document.
+ */
+function challengeCommand(argv: string[]): number {
+  const scoresFile = flag(argv, '--scores');
+  const candidatesFile = flag(argv, '--candidates');
+  const emit = argv.includes('--emit-prompts');
+  const diffFile = flag(argv, '--diff-file');
+  const intentFile = flag(argv, '--intent');
+  const outFile = flag(argv, '--out');
+  if (scoresFile === null || candidatesFile === null || (!emit && diffFile === null)) {
+    console.error(
+      'Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--diff-file <patch>] --emit-prompts\n' +
+        '       challenge --scores <file> --candidates <file> --diff-file <patch> [--out <file>] < verdicts.json',
+    );
+    return 2;
+  }
+  for (const name of ['--intent', '--diff-file', '--out']) {
+    if (argv.includes(name) && flag(argv, name) === null) {
+      console.error(`${name} needs a file path.`);
+      return 2;
+    }
+  }
+
+  const readJson = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8'));
+  let scores: unknown;
+  let candidates: ReturnType<typeof candidatesById>;
+  try {
+    scores = readJson(scoresFile);
+    candidates = candidatesById(readJson(candidatesFile));
+  } catch (error) {
+    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+
+  if (emit) {
+    let statements: ReturnType<typeof intentStatements> = [];
+    if (intentFile !== null) {
+      try {
+        statements = intentStatements(readJson(intentFile));
+      } catch (error) {
+        console.error(`Cannot read ${intentFile}: ${error instanceof Error ? error.message : String(error)}`);
+        return 2;
+      }
+    }
+    console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile) }, null, 2));
+    return 0;
+  }
+
+  let verdicts: unknown;
+  let hunks: Map<string, FileHunks>;
+  try {
+    hunks = parseHunks(readFileSync(diffFile!, 'utf8'));
+  } catch (error) {
+    console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  try {
+    verdicts = JSON.parse(readStdin());
+  } catch {
+    console.error('Cannot parse the challenger verdicts on stdin as JSON.');
+    return 2;
+  }
+
+  const result = applyChallenge(scores, candidates, verdicts, hunks);
+  if (!result.ok) {
+    console.error('Challenge refused:');
+    for (const problem of result.problems) console.error(`  ${problem}`);
+    return 2;
+  }
+  const body = `${JSON.stringify(result.document, null, 2)}\n`;
+  if (outFile === null) {
+    process.stdout.write(body);
+  } else {
+    try {
+      writeFileSync(outFile, body);
+    } catch (error) {
+      console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    const { confirmed, held, moved } = result.summary;
+    console.log(JSON.stringify({ out: outFile, confirmed, held, moved }, null, 2));
+  }
+  return 0;
+}
+
 /** The list inside a JSON input, and how to put a filtered one back in its place. */
 function listIn(parsed: unknown, keys: readonly string[]): { list: Record<string, unknown>[]; rebuild: (list: unknown[]) => unknown } | null {
   if (Array.isArray(parsed)) return { list: parsed as Record<string, unknown>[], rebuild: (list) => list };
@@ -4208,7 +4298,9 @@ function carriedHeldFindings(runId: string, head: string): CarriedHeld[] {
         h.verdict === 'partly' ||
         h.verdict === 'repeat' ||
         h.verdict === 'below-gate' ||
-        h.verdict === 'owner-declined',
+        h.verdict === 'owner-declined' ||
+        h.verdict === 'challenge-refuted' ||
+        h.verdict === 'challenge-partly',
     );
     const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: '' }));
     const result = carryFindings(inputs, detail.headRef, head, process.cwd());
@@ -4870,6 +4962,9 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'reanchor':
       return reanchorCommand(argv.slice(1));
+
+    case 'challenge':
+      return challengeCommand(argv.slice(1));
 
     case 'carry-candidates':
       return carryCandidatesCommand(argv.slice(1));

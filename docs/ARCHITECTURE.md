@@ -19,6 +19,7 @@ agents. A command file orchestrates them.**
 | Candidate generation | `diff-analyst` | genuine judgment |
 | Evidence verification | `evidence-verifier` | genuine judgment |
 | Verifier tie-break | `tie-breaker` | genuine judgment, only on a dispute |
+| Independent challenge | `challenger`, verdicts checked by CLI | genuine judgment, blind to the verifier |
 | Precedent retrieval | CLI | an index query |
 | Preference scoring | CLI | **arithmetic - never ask a model to do this** |
 | Dedup and ranking | CLI | deterministic |
@@ -728,6 +729,24 @@ volume: three vague observations are not better evidence than one naming a line.
 
 A negative precedent lowers a candidate's score but cannot refute a verified
 defect. Precedent adjusts preference; it never manufactures or unmakes truth.
+
+### The independent challenge
+
+The evidence-verifier and the second pass both start from the analyst's
+framing. After `score`, each eligible finding goes to a `challenger` that is
+given the claim, the failure mode, the location, the diff and the intent the
+finding cites, and never the verifier's reasoning, confidence or evidence.
+`RV challenge --emit-prompts` builds those prompts from an allowlist of fields,
+so nothing added to a score later reaches the challenger by accident.
+
+`RV challenge` then applies the verdicts. A set that skips an eligible finding,
+or a verdict whose label contradicts its fields, is refused, as `reconcile`
+refuses a second-pass verdict. `confirmed` with the line confirmed passes;
+`confirmed` with a corrected line moves through the same check `reanchor` uses;
+everything else is held as `challenge-partly` or `challenge-refuted` and marked
+ineligible in `scores`, so neither validation nor posting can match a rendered
+finding to it. A challenger cannot raise a tier. See
+[ADR 0024](adr/0024-an-independent-challenge-gates-every-posted-finding.md).
 
 ### Fixes are verified separately
 

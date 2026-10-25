@@ -90,8 +90,20 @@ export function partlyAddressedOf(value: unknown): PartlyAddressedFinding | unde
  * `owner-declined` is the owner's answer to a held finding put to them: not
  * worth posting. It is set after the run by `decline` (#173) and holds a
  * repeat back like `refuted`, including on a related pull request.
+ *
+ * `challenge-refuted` and `challenge-partly` come from the independent
+ * challenge (docs/adr/0024), and hold a later repeat back like `refuted` and
+ * `partly`.
  */
-export type HeldVerdict = 'partly' | 'refuted' | 'unverified' | 'repeat' | 'below-gate' | 'owner-declined';
+export type HeldVerdict =
+  | 'partly'
+  | 'refuted'
+  | 'unverified'
+  | 'repeat'
+  | 'below-gate'
+  | 'owner-declined'
+  | 'challenge-refuted'
+  | 'challenge-partly';
 
 export interface HeldFinding {
   path: string;
@@ -105,7 +117,16 @@ export interface HeldFinding {
   text?: string | undefined;
 }
 
-export const HELD_VERDICTS: readonly HeldVerdict[] = ['partly', 'refuted', 'unverified', 'repeat', 'below-gate', 'owner-declined'];
+export const HELD_VERDICTS: readonly HeldVerdict[] = [
+  'partly',
+  'refuted',
+  'unverified',
+  'repeat',
+  'below-gate',
+  'owner-declined',
+  'challenge-refuted',
+  'challenge-partly',
+];
 
 /** Null when the entry is well formed, else what is wrong with it. */
 export function heldProblem(entry: unknown): string | null {

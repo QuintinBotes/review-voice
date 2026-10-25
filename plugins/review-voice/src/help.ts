@@ -1,5 +1,6 @@
 import { FEEDBACK_ACTIONS } from './store/feedback.ts';
 import { DEFAULT_LIMITS } from './contract/limits.ts';
+import { HELD_VERDICTS } from './store/runs.ts';
 
 /**
  * The one source of truth for what each command accepts. `review-voice
@@ -520,6 +521,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  --verdicts <path>      Verification verdicts, including findings that were dropped',
       '  --tie-breaks <path>    reconcile\'s output, with the rulings it applied',
       '  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]',
+      `                         or {"held": [...]}; verdict one of ${HELD_VERDICTS.join(', ')}`,
       '  --body-findings <path> One verified simplification from check-simplification; requires --diff-file',
       '  --carried-from <run>   Validate findings carried by `carry` (needs --head; run in its clone)',
       '  --carry <path>         carry.json of carry-candidates (needs --head)',
@@ -616,6 +618,37 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       'Reads: nothing on stdin.',
       'Writes: rewrites --scores (and --candidates when given); a summary on stdout.',
       'Exit codes: 0 moved, 1 refused (the line is not a changed line), 2 bad invocation or unreadable input.',
+    ),
+  },
+  challenge: {
+    summary: 'Build challenger prompts, or apply challenger verdicts to scores',
+    body: lines(
+      'review-voice challenge --scores <path> --candidates <path> [--intent <path>] --emit-prompts',
+      'review-voice challenge --scores <path> --candidates <path> --diff-file <path> [--out <path>] < verdicts.json',
+      '  The independent challenge (adr/0024). With --emit-prompts, print one challenger prompt per',
+      '  eligible finding: its claim, failure mode, category, location and the intent it cites, never',
+      "  the verifier's reasoning, confidence or evidence. Otherwise check the challenger verdicts on",
+      '  stdin and apply them: confirmed with line_ok passes; confirmed with corrected_line moves the',
+      '  anchor by the reanchor rules (a refused move holds it as challenge-partly); partly holds it',
+      '  as challenge-partly and refuted as challenge-refuted.',
+      '',
+      'Flags:',
+      '  --scores <path>        The JSON `score` printed (required)',
+      '  --candidates <path>    The checked candidates the scores came from (required)',
+      '  --emit-prompts         Print the prompts instead of applying verdicts',
+      '  --intent <path>        intent.json from check-intent, for the statement a finding cites',
+      '  --diff-file <path>     The reviewed diff; a corrected line must be changed in it (required',
+      '                         to apply; with --emit-prompts, named in each prompt)',
+      '  --out <path>           Write the challenged scores here instead of stdout',
+      'Reads: with --emit-prompts nothing on stdin; otherwise {"verdicts": [{"candidate_id",',
+      '  "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "reason"}]} on stdin.',
+      'Writes: with --emit-prompts {"prompts": [{"candidate_id", "prompt"}]} on stdout. Otherwise the',
+      '  scores with held findings moved from eligible[] to challengeHeld[] (record --held entries),',
+      '  moved anchors updated, and challenge: {confirmed, held, moved}; to --out (a summary on',
+      '  stdout) or stdout.',
+      'Exit codes: 0 ok, 2 bad invocation, unreadable input, or a refused verdict set: an eligible',
+      '  finding without a verdict, a verdict for one that is not eligible, or a verdict whose fields',
+      '  contradict its label (each is named on stderr).',
     ),
   },
   'carry-candidates': {

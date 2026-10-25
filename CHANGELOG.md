@@ -101,6 +101,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   confidence 0.85. Every score entry carries its `lane`. The new
   `structure-analyst` agent ships for a `structure` lane. (ADR 0023)
 
+- `challenge` gates every eligible finding behind an independent challenger
+  (ADR 0024). `--emit-prompts` prints one `challenger` prompt per eligible
+  finding, with its claim, failure mode, category, location and cited intent
+  but never the verifier's reasoning, confidence or evidence. Given the
+  verdicts on stdin, it refuses a set that skips a finding or whose labels
+  contradict their fields, keeps `confirmed` findings, moves a
+  `corrected_line` through the `reanchor` rules, and holds the rest in
+  `challengeHeld[]` as `challenge-partly` or `challenge-refuted`. `record
+  --held` accepts both verdicts, and `check-candidates --held-from` holds a
+  later repeat back like `partly` and `refuted`. `/review-voice:review` runs
+  the step after scoring. (ADR 0024)
+
 ## [1.18.0] - 2026-10-24
 
 ### Added
