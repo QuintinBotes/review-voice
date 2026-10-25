@@ -6,7 +6,6 @@ import type { PolicyLayer, ScopeType } from './schema.ts';
 import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publish/ci.ts';
 import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
 import { DEFAULT_STRUCTURE, type StructureConfig } from '../diff/structure.ts';
-import { MODEL_KEYS, MODES, type ModelOverrides, type RequestedMode } from '../review/plan.ts';
 import { DEFAULT_VERDICT_POLICY, type VerdictPolicy } from '../publish/verdict.ts';
 import { CHANGE_KINDS, MODEL_KEYS, MODES, type ChangeKind, type ModelOverrides, type RequestedMode, type Tier } from '../review/plan.ts';
 import { agentExists, DIFF_LANE, LANE_TIERS, type Lane } from '../review/lanes.ts';
