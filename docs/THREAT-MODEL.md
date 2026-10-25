@@ -103,6 +103,19 @@ only the variables it declares, and the repository it names always comes from
 the allowlist, so it can neither write nor reach another repository
 ([adr/0018](adr/0018-read-only-graphql-thread-state.md)).
 
+`queue` adds one read outside a repository path, GitHub search, because it is
+the only place GitHub answers "where is my review requested"
+([adr/0026](adr/0026-the-queue-reads-github-search-inside-the-allowlist.md)).
+A search can match any repository the token sees, so the client never takes a
+query from a caller: it builds one from a fixed set of sources, validates a
+team's names, and refuses a search sent any other way. Each result outside the
+allowlist is dropped and only counted, before anything else about it is read.
+An `owner/*` entry widens the allowlist to one owner on purpose, in the
+owner's configuration, and only for the queue; a bare `*` is refused. Every
+request is resolved against the API origin before the token is attached, and
+a path that could step out of a repository (a dot segment, an encoded dot or
+slash, or GitHub's `/repositories/{id}` form) is refused.
+
 Since [adr/0010](adr/0010-review-verdict-posting.md) there is one write, and
 it is bounded the same way. A separate writer can only create a review on a
 pull request, and its allowlist is the repository of the recorded run being

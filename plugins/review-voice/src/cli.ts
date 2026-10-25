@@ -105,6 +105,7 @@ import { computeReach } from './scoring/reach.ts';
 import { checkCitation } from './scoring/citation.ts';
 import { storeEvents, corpusCoverage } from './corpus/store.ts';
 import { buildConsentPlan, discoverRepositories } from './consent/plan.ts';
+import { queueCommand } from './queue/command.ts';
 import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
 import { retrievePrecedents, type Precedent } from './retrieval/retrieve.ts';
 import { resolveSyncWindow } from './sync/window.ts';
@@ -925,6 +926,19 @@ async function discoverCommand(): Promise<number> {
   return 0;
 }
 
+/**
+ * The allowlist entries a command reads by name. An `owner/*` pattern is
+ * skipped with a note, never expanded: expanding it would read repositories
+ * nobody listed.
+ */
+function namedRepositories(entries: string[], command: string): string[] {
+  return entries.filter((entry) => {
+    if (!entry.includes('*')) return true;
+    console.error(`${entry} is a pattern; ${command} reads only repositories listed by name.`);
+    return false;
+  });
+}
+
 function consentPlanCommand(argv: string[]): number {
   const root = repositoryRoot(process.cwd());
   const config = loadConfig(root);
@@ -935,9 +949,10 @@ function consentPlanCommand(argv: string[]): number {
     return 2;
   }
 
-  const repositories = argv.includes('--repo')
-    ? argv.filter((_, index) => argv[index - 1] === '--repo')
-    : config.allowlist;
+  const repositories = namedRepositories(
+    argv.includes('--repo') ? argv.filter((_, index) => argv[index - 1] === '--repo') : config.allowlist,
+    'consent-plan',
+  );
 
   if (repositories.length === 0) {
     console.error('No repositories selected. Pass --repo <owner/repo>, or allowlist some first.');
@@ -997,6 +1012,8 @@ async function syncCommand(argv: string[]): Promise<number> {
     console.error('No repositories are allowlisted. Run /review-voice:init first.');
     return 2;
   }
+  const repositories = namedRepositories(config.allowlist, 'sync');
+  if (repositories.length === 0) return 2;
   if (config.ownerReviewer === null) {
     console.error('No owner reviewer configured. Run /review-voice:init first.');
     return 2;
@@ -1006,7 +1023,7 @@ async function syncCommand(argv: string[]): Promise<number> {
   // does not read twelve hundred pull requests to keep two hundred and fifty
   // events. An explicit --target still wins.
   // --quick is a preset, not a bypass: the same consent plan applies.
-  const defaultTarget = scaledTarget(config.allowlist.length);
+  const defaultTarget = scaledTarget(repositories.length);
   const explicitTarget = argv.includes('--target') ? numericFlag(argv, '--target', defaultTarget) : undefined;
   const window = resolveSyncWindow({
     quick: argv.includes('--quick'),
@@ -1020,13 +1037,13 @@ async function syncCommand(argv: string[]): Promise<number> {
   const target = window.target ?? defaultTarget;
   const updatedSince = window.updatedSince;
   const maxPulls = numericFlag(argv, '--max-pulls', 60) ?? 60;
-  const repositoryShare = scaledRepositoryShare(config.allowlist.length);
+  const repositoryShare = scaledRepositoryShare(repositories.length);
   const dryRun = argv.includes('--dry-run');
 
-  const client = new GitHubClient({ allowlist: config.allowlist });
+  const client = new GitHubClient({ allowlist: repositories });
 
   const stateDb = openDatabase();
-  const syncRunId = beginSyncRun(stateDb, config.allowlist);
+  const syncRunId = beginSyncRun(stateDb, repositories);
   const stats: CollectionStats = {
     pullRequestsScanned: 0,
     pullRequestsUnchanged: 0,
@@ -1040,11 +1057,11 @@ async function syncCommand(argv: string[]): Promise<number> {
   const collected = [];
   const pendingWatermarks: Watermark[] = [];
 
-  for (const [index, repository] of config.allowlist.entries()) {
+  for (const [index, repository] of repositories.entries()) {
     // Progress on stderr, so stdout stays a single JSON document. A sync reads
     // every pull request before it writes anything, which is correct and also
     // means three silent minutes that read as a hang.
-    console.error(`[${index + 1}/${config.allowlist.length}] reading ${repository} ...`);
+    console.error(`[${index + 1}/${repositories.length}] reading ${repository} ...`);
 
     // A dry run deliberately ignores watermarks: its whole job is to report
     // what a full import would find, and reading only what changed since the
@@ -4731,7 +4748,7 @@ function statusCommand(): number {
     let maxRepositoryShare: number | undefined;
     try {
       const config = loadConfig(repositoryRoot(process.cwd()));
-      allowlist = config.allowlist;
+      allowlist = namedRepositories(config.allowlist, 'status');
       maxRepositoryShare = scaledRepositoryShare(allowlist.length);
     } catch {
       // Not in a repository; report counts without allowlist warnings.
@@ -4918,6 +4935,16 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'post-check':
       return postCheckCommand();
+
+    case 'queue':
+      return await queueCommand(argv.slice(1), {
+        config: repositoryConfig(),
+        client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true }),
+        openDb: () => openDatabase(),
+        now: new Date(),
+        out: (text) => console.log(text),
+        err: (text) => console.error(text),
+      });
 
     case 'calibrate':
       return calibrateCommand();

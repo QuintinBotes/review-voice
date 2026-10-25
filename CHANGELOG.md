@@ -113,6 +113,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   later repeat back like `partly` and `refuted`. `/review-voice:review` runs
   the step after scoring. (ADR 0024)
 
+- `queue [--json] [--source <s>]... [--max <n>]` lists the open pull requests
+  in the allowlist that need the owner's review, oldest first: review requests,
+  assignments, team requests from `queue.teams`, follow-ups (a recorded run
+  whose head has since moved) and pull requests whose latest own review was
+  dismissed. Each entry is `REVIEW`, `VERDICT-ONLY` (a run is recorded at the
+  head but nothing was posted), `RECHECK-CI` (the review posted at the head was
+  a `COMMENT` capped by red CI) or `SKIP` with the `queue.skip` rule that
+  matched: `own`, `drafts`, `authors`, `author_patterns` (bots, unless they
+  requested the owner personally), `assigned_to` or `approved_at_head_by`. At
+  most `queue.max_per_pass` review entries are listed; the rest are reported as
+  not reached. It reads only. (ADR 0026)
+
+- `repositories.include` accepts `owner/*` for every repository of one owner,
+  for `queue` only.
+  A bare `*`, `*/*` or any other glob is refused by the client and skipped from
+  the config with a warning. The client may send one request outside a
+  repository path, `GET /search/issues`, with a query it builds itself from a
+  typed source, and drops every result outside the allowlist before reading
+  anything else about it. `sync`, `consent-plan` and `status` read only
+  repositories listed by name: they skip an `owner/*` entry with a note on
+  stderr instead of expanding it, and `sync` exits 2 when every entry is a
+  pattern. (ADR 0026)
+
+### Fixed
+
+- The GitHub client sends the credential only to the API origin: a request or
+  pagination link to another host is refused, and a link contributes only its
+  query to the path just read. A path with a dot segment or an encoded dot,
+  slash or backslash is refused, the allowlist is checked on the resolved path,
+  and GitHub's `/repositories/{id}/...` form, which names no repository, is
+  refused. (ADR 0026)
+
 ## [1.18.0] - 2026-10-24
 
 ### Added

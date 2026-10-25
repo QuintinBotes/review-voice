@@ -148,14 +148,14 @@ function scanFindings(output) {
     if (current) blocks.push({ raw: current.raw.join("\n").trim(), startLine: current.startLine });
     current = null;
   };
-  output.split("\n").forEach((line2, index) => {
-    if (OPENS_FINDING.test(line2)) {
+  output.split("\n").forEach((line3, index) => {
+    if (OPENS_FINDING.test(line3)) {
       flush();
-      current = { raw: [line2], startLine: index + 1 };
-    } else if (line2.trim() === "") {
+      current = { raw: [line3], startLine: index + 1 };
+    } else if (line3.trim() === "") {
       flush();
     } else if (current) {
-      current.raw.push(line2);
+      current.raw.push(line3);
     } else if (blocks.length > 0) {
       stray.push(index + 1);
     }
@@ -269,10 +269,10 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
     if (pattern.test(output)) violations.push({ code, message });
   }
   const findings = splitFindings(output).map((block) => parseFinding(block.raw, block.startLine));
-  for (const line2 of strayLines(output)) {
+  for (const line3 of strayLines(output)) {
     violations.push({
       code: "stray_text",
-      line: line2,
+      line: line3,
       message: "Not part of any finding: a blank line ends the finding above it. The output is findings only."
     });
   }
@@ -369,14 +369,14 @@ function headerPath(raw) {
   if (path === "/dev/null") return null;
   return path.replace(/^[ab]\//, "").replace(/^\.\/+/, "");
 }
-function diffGitPath(line2) {
-  const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line2);
+function diffGitPath(line3) {
+  const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line3);
   if (quoted !== null) return headerPath(quoted[1]);
-  const match = /^diff --git (?:a\/)?(.+?) (?:b\/)?(.+)$/.exec(line2);
+  const match = /^diff --git (?:a\/)?(.+?) (?:b\/)?(.+)$/.exec(line3);
   return match === null ? null : headerPath(match[2]);
 }
-function hunkHeader(line2) {
-  const match = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line2);
+function hunkHeader(line3) {
+  const match = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line3);
   if (match === null) return null;
   const oldCount = match[1] === void 0 ? 1 : Number(match[1]);
   const start = Number(match[2]);
@@ -411,13 +411,13 @@ function parseHunks(diff) {
     if (path !== null && current !== null) files.set(path, current);
   };
   for (const [index, raw] of diff.split("\n").entries()) {
-    const line2 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const line3 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     const patchLine = index + 1;
-    if (line2.startsWith("diff --git ")) {
-      selectPath(diffGitPath(line2), true);
+    if (line3.startsWith("diff --git ")) {
+      selectPath(diffGitPath(line3), true);
       continue;
     }
-    const header = hunkHeader(line2);
+    const header = hunkHeader(line3);
     if (header !== null) {
       finishHunk();
       const file = current;
@@ -435,8 +435,8 @@ function parseHunks(diff) {
       continue;
     }
     if (active !== null) {
-      if (line2 === "\\ No newline at end of file") continue;
-      if (line2.startsWith("+")) {
+      if (line3 === "\\ No newline at end of file") continue;
+      if (line3.startsWith("+")) {
         settleDeletion(active, active.nextRightLine);
         active.file.added.add(active.nextRightLine);
         active.file.patchLines.set(patchLine, active.nextRightLine);
@@ -446,13 +446,13 @@ function parseHunks(diff) {
         finishWhenCounted();
         continue;
       }
-      if (line2.startsWith("-")) {
+      if (line3.startsWith("-")) {
         active.deleting = true;
         active.remainingOld -= 1;
         finishWhenCounted();
         continue;
       }
-      if (line2.startsWith(" ") || line2 === "" && active.remainingRight > 0 && active.remainingOld > 0) {
+      if (line3.startsWith(" ") || line3 === "" && active.remainingRight > 0 && active.remainingOld > 0) {
         settleDeletion(active, active.nextRightLine);
         active.file.context.add(active.nextRightLine);
         active.file.patchLines.set(patchLine, active.nextRightLine);
@@ -465,55 +465,55 @@ function parseHunks(diff) {
       }
       finishHunk();
     }
-    if (line2.startsWith("+++ ")) {
-      selectPath(headerPath(line2.slice(4)), false);
+    if (line3.startsWith("+++ ")) {
+      selectPath(headerPath(line3.slice(4)), false);
       continue;
     }
-    if (line2.startsWith("--- ")) continue;
+    if (line3.startsWith("--- ")) continue;
   }
   finishHunk();
   return files;
 }
-function changedLines(file, line2) {
+function changedLines(file, line3) {
   const byDistance = [.../* @__PURE__ */ new Set([...file.added, ...file.deletionSites])].sort(
-    (left, right) => Math.abs(left - line2) - Math.abs(right - line2) || left - right
+    (left, right) => Math.abs(left - line3) - Math.abs(right - line3) || left - right
   );
-  const near = byDistance.filter((changed) => Math.abs(changed - line2) <= 3);
+  const near = byDistance.filter((changed) => Math.abs(changed - line3) <= 3);
   return near.length > 0 ? near : byDistance.slice(0, 1);
 }
-function patchLineFor(hunks, line2) {
+function patchLineFor(hunks, line3) {
   for (const [path, file] of hunks) {
-    const fileLine = file.patchLines.get(line2);
+    const fileLine = file.patchLines.get(line3);
     if (fileLine !== void 0 && file.added.has(fileLine)) return { path, line: fileLine };
   }
   return null;
 }
-function classifyAnchor(hunks, path, line2) {
+function classifyAnchor(hunks, path, line3) {
   const literal = path.replace(/^\.\/+/, "");
   const normalised = hunks.has(literal) ? literal : normalisePath(path);
   const file = hunks.get(normalised);
-  const patchLine = patchLineFor(hunks, line2);
+  const patchLine = patchLineFor(hunks, line3);
   if (file === void 0) {
-    return { path: normalised, line: line2, kind: "file-not-in-diff", ok: false, nearest: [], patchLine, beyondHunks: false };
+    return { path: normalised, line: line3, kind: "file-not-in-diff", ok: false, nearest: [], patchLine, beyondHunks: false };
   }
-  const kind = file.added.has(line2) ? "added" : file.deletionSites.has(line2) ? "deletion-site" : file.context.has(line2) ? "context" : "outside-hunk";
+  const kind = file.added.has(line3) ? "added" : file.deletionSites.has(line3) ? "deletion-site" : file.context.has(line3) ? "context" : "outside-hunk";
   return {
     path: normalised,
-    line: line2,
+    line: line3,
     kind,
     ok: kind === "added" || kind === "deletion-site",
-    nearest: changedLines(file, line2),
+    nearest: changedLines(file, line3),
     patchLine,
-    beyondHunks: file.ranges.length > 0 && file.ranges.every((range) => line2 > range.end)
+    beyondHunks: file.ranges.length > 0 && file.ranges.every((range) => line3 > range.end)
   };
 }
-function classifyStaleConsumer(hunks, path, line2, causedBy) {
+function classifyStaleConsumer(hunks, path, line3, causedBy) {
   const consumer = path.replace(/^\.\/+/, "");
-  const consumerKind = classifyAnchor(hunks, path, line2).kind;
+  const consumerKind = classifyAnchor(hunks, path, line3).kind;
   if (causedBy === null) {
     return {
       path: consumer,
-      line: line2,
+      line: line3,
       kind: "stale-consumer",
       ok: false,
       nearest: [],
@@ -526,7 +526,7 @@ function classifyStaleConsumer(hunks, path, line2, causedBy) {
   const cause = classifyAnchor(hunks, causedBy.path, causedBy.line);
   return {
     path: consumer,
-    line: line2,
+    line: line3,
     kind: "stale-consumer",
     ok: cause.ok,
     nearest: cause.nearest,
@@ -537,7 +537,7 @@ function classifyStaleConsumer(hunks, path, line2, causedBy) {
   };
 }
 function reason(anchor) {
-  const { path, line: line2 } = anchor;
+  const { path, line: line3 } = anchor;
   if (anchor.kind === "stale-consumer") return staleConsumerReason(anchor);
   let detail;
   switch (anchor.kind) {
@@ -557,12 +557,12 @@ function reason(anchor) {
       detail = "in a file the diff does not touch";
       break;
   }
-  let rendered = `anchors on ${path}:${line2}, ${detail}`;
+  let rendered = `anchors on ${path}:${line3}, ${detail}`;
   if (!anchor.ok && anchor.nearest.length > 0) {
     rendered += anchor.nearest.length === 1 ? `; the nearest changed line is ${anchor.nearest[0]}` : `; the nearest changed lines are ${anchor.nearest.join(", ")}`;
   }
   if (!anchor.ok && anchor.patchLine !== null) {
-    return `${rendered}; line ${line2} of diff.patch is ${anchor.patchLine.path}:${anchor.patchLine.line} - was that the line meant?`;
+    return `${rendered}; line ${line3} of diff.patch is ${anchor.patchLine.path}:${anchor.patchLine.line} - was that the line meant?`;
   }
   return `${rendered}.`;
 }
@@ -807,9 +807,9 @@ function reviewFindings(output) {
 function isStaleConsumer(score) {
   return score.anchor === "stale-consumer" || score.anchorCheck?.kind === "stale-consumer";
 }
-function scoresAtLocation(scores, path, line2) {
+function scoresAtLocation(scores, path, line3) {
   return scores.filter(
-    (score) => typeof score === "object" && score !== null && score.path === path && (line2 === null || score.line === line2)
+    (score) => typeof score === "object" && score !== null && score.path === path && (line3 === null || score.line === line3)
   );
 }
 var MAX_CARRY_DEPTH = 8;
@@ -819,12 +819,12 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
   }
   let current = run;
   let path = finding.path;
-  let line2 = finding.line;
+  let line3 = finding.line;
   const severity = finding.severity;
   let reason2 = "no score was recorded for it";
   for (let depth = 0; depth <= MAX_CARRY_DEPTH; depth += 1) {
     const scores = Array.isArray(current.scores) ? current.scores : [];
-    const here = scoresAtLocation(scores, path, line2);
+    const here = scoresAtLocation(scores, path, line3);
     const same = here.filter((score) => score.severity?.severity === severity && !used.has(score));
     const backing = same.find((score) => score.confidenceSource === "verifier" && score.eligible === true);
     if (backing !== void 0) {
@@ -841,11 +841,11 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
     } else if (same.length > 0) {
       reason2 = "its confidence is the analyst's own, not the verifier's";
     } else if (here.length > 0) {
-      reason2 = `no unused score at ${line2 === null ? path : `${path}:${line2}`} was derived at ${severity}`;
+      reason2 = `no unused score at ${line3 === null ? path : `${path}:${line3}`} was derived at ${severity}`;
     }
-    if (line2 === null) break;
+    if (line3 === null) break;
     const stored = current.findings.find(
-      (candidate) => candidate.path === path && candidate.line === line2 && candidate.severity === severity
+      (candidate) => candidate.path === path && candidate.line === line3 && candidate.severity === severity
     );
     if (stored?.carriedFrom === void 0) break;
     const from = stored.carriedFrom;
@@ -857,7 +857,7 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
     }
     current = source;
     path = origin.path;
-    line2 = origin.line;
+    line3 = origin.line;
   }
   return { verified: false, reason: reason2, runId: current.reviewRunId };
 }
@@ -1138,9 +1138,9 @@ function withAnnotations(body, annotations) {
   return [body, ...annotations].join("\n\n");
 }
 function replaceAnnotations(body, previous, next) {
-  const suffix = previous.map((line2) => `
+  const suffix = previous.map((line3) => `
 
-${line2}`).join("");
+${line3}`).join("");
   const base = suffix.length > 0 && body.endsWith(suffix) ? body.slice(0, body.length - suffix.length) : body;
   return withAnnotations(base, next);
 }
@@ -1613,8 +1613,8 @@ function acquireDiff(options) {
   const mode = options.base !== null ? "base" : options.staged ? "staged" : "worktree";
   const entries = parseNameStatus(git(["diff", "--name-status", "-z", ...range], root));
   const numstat = /* @__PURE__ */ new Map();
-  for (const line2 of git(["diff", "--numstat", ...range], root).split("\n")) {
-    const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line2);
+  for (const line3 of git(["diff", "--numstat", ...range], root).split("\n")) {
+    const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line3);
     if (match === null) continue;
     numstat.set(match[3], {
       additions: match[1] === "-" ? 0 : Number(match[1]),
@@ -1696,10 +1696,10 @@ function frontmatterPaths(content) {
   const paths = [];
   let inPaths = false;
   for (const raw of block.split(/\r?\n/)) {
-    const line2 = raw.trimEnd();
-    if (/^paths\s*:/.test(line2)) {
+    const line3 = raw.trimEnd();
+    if (/^paths\s*:/.test(line3)) {
       inPaths = true;
-      const inline = line2.slice(line2.indexOf(":") + 1).trim();
+      const inline = line3.slice(line3.indexOf(":") + 1).trim();
       if (inline.startsWith("[")) {
         for (const item of inline.slice(1, -1).split(",")) paths.push(unquote(item));
         inPaths = false;
@@ -1707,11 +1707,11 @@ function frontmatterPaths(content) {
       continue;
     }
     if (!inPaths) continue;
-    if (/^\s*-\s+/.test(line2)) {
-      paths.push(unquote(line2.replace(/^\s*-\s+/, "")));
+    if (/^\s*-\s+/.test(line3)) {
+      paths.push(unquote(line3.replace(/^\s*-\s+/, "")));
       continue;
     }
-    if (/^\S/.test(line2)) inPaths = false;
+    if (/^\S/.test(line3)) inPaths = false;
   }
   return paths.filter((glob) => glob.length > 0);
 }
@@ -1776,9 +1776,9 @@ function pointerTargets(content) {
   if (body.length === 0) return [];
   const targets = [];
   for (const raw of body.split(/\r?\n/)) {
-    const line2 = raw.trim();
-    if (line2.length === 0 || line2.startsWith("<!--") || line2.startsWith("#")) continue;
-    const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(line2);
+    const line3 = raw.trim();
+    if (line3.length === 0 || line3.startsWith("<!--") || line3.startsWith("#")) continue;
+    const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(line3);
     if (match?.[1] === void 0) return [];
     targets.push(match[1]);
   }
@@ -1867,10 +1867,10 @@ function countHunks(diff, wanted) {
     hunk.branches.push({ scope, line: newLine, decisionPoints, removed });
   };
   for (const raw of diff.split("\n")) {
-    const line2 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const line3 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (current !== null && (remainingOld > 0 || remainingNew > 0)) {
-      const text4 = line2.slice(1);
-      if (line2.startsWith("+")) {
+      const text4 = line3.slice(1);
+      if (line3.startsWith("+")) {
         if (declarationIn(text4) !== null) {
           if (!replacing) scope = null;
           replacing = false;
@@ -1881,7 +1881,7 @@ function countHunks(diff, wanted) {
         newLine += 1;
         continue;
       }
-      if (line2.startsWith("-")) {
+      if (line3.startsWith("-")) {
         const declaration = declarationIn(text4);
         if (declaration !== null) {
           scope = declaration;
@@ -1891,7 +1891,7 @@ function countHunks(diff, wanted) {
         remainingOld -= 1;
         continue;
       }
-      if (line2.startsWith(" ") || line2 === "") {
+      if (line3.startsWith(" ") || line3 === "") {
         scope = declarationIn(text4) ?? scope;
         replacing = false;
         remainingOld -= 1;
@@ -1899,20 +1899,20 @@ function countHunks(diff, wanted) {
         newLine += 1;
         continue;
       }
-      if (line2.startsWith("\\")) continue;
+      if (line3.startsWith("\\")) continue;
     }
-    if (line2.startsWith("diff --git ")) {
+    if (line3.startsWith("diff --git ")) {
       path = null;
       current = null;
       remainingOld = 0;
       remainingNew = 0;
       continue;
     }
-    if (line2.startsWith("+++ ")) {
-      path = headerPath2(line2.slice(4));
+    if (line3.startsWith("+++ ")) {
+      path = headerPath2(line3.slice(4));
       continue;
     }
-    const header = HUNK_HEADER.exec(line2);
+    const header = HUNK_HEADER.exec(line3);
     if (header !== null && path !== null) {
       remainingOld = header[1] === void 0 ? 1 : Number(header[1]);
       remainingNew = header[3] === void 0 ? 1 : Number(header[3]);
@@ -2315,8 +2315,8 @@ function findTypeEscapes(diff, paths) {
   for (const hunk of countHunks(diff, new Set(paths))) {
     const language = LANGUAGES2[extname(hunk.path).toLowerCase()];
     if (language === void 0) continue;
-    for (const { line: line2, text: text4 } of hunk.added) {
-      for (const kind of kindsIn(text4, language)) found.push({ path: hunk.path, line: line2, kind });
+    for (const { line: line3, text: text4 } of hunk.added) {
+      for (const kind of kindsIn(text4, language)) found.push({ path: hunk.path, line: line3, kind });
     }
   }
   const byPathLineKind = (a, b) => {
@@ -2459,7 +2459,7 @@ function findStructureSignals(diff, paths, counts, limits = DEFAULT_STRUCTURE) {
       baseLines: lines2.base,
       headLines: lines2.head,
       threshold,
-      line: added.find((line2) => line2 > threshold) ?? added[0] ?? null
+      line: added.find((line3) => line3 > threshold) ?? added[0] ?? null
     });
   }
   return {
@@ -2744,19 +2744,19 @@ function linesByPath(diffText) {
   const counts = /* @__PURE__ */ new Map();
   let current = null;
   let inHunk = false;
-  for (const line2 of diffText.split("\n")) {
-    if (line2.startsWith("diff --git ")) {
-      const match = /^diff --git (?:"a\/.*?"|a\/\S+) ("b\/.*"|b\/.*)$/.exec(line2);
+  for (const line3 of diffText.split("\n")) {
+    if (line3.startsWith("diff --git ")) {
+      const match = /^diff --git (?:"a\/.*?"|a\/\S+) ("b\/.*"|b\/.*)$/.exec(line3);
       current = match === null ? null : unquoteGitPath(match[1]).slice(2);
       inHunk = false;
       continue;
     }
     if (current === null) continue;
-    if (line2.startsWith("@@")) {
+    if (line3.startsWith("@@")) {
       inHunk = true;
       continue;
     }
-    if (inHunk && (line2.startsWith("+") || line2.startsWith("-"))) {
+    if (inHunk && (line3.startsWith("+") || line3.startsWith("-"))) {
       counts.set(current, (counts.get(current) ?? 0) + 1);
     }
   }
@@ -3498,9 +3498,9 @@ function sentencesOf(description) {
   const sections2 = [];
   let open = null;
   let contentEnd = 0;
-  for (const line2 of description.split(/\r?\n/u)) {
-    const marked = LIST_OR_HEADING.test(line2);
-    const content = collapse(line2.replace(LIST_OR_HEADING, ""));
+  for (const line3 of description.split(/\r?\n/u)) {
+    const marked = LIST_OR_HEADING.test(line3);
+    const content = collapse(line3.replace(LIST_OR_HEADING, ""));
     if (content === "") {
       blank = true;
       continue;
@@ -3517,7 +3517,7 @@ function sentencesOf(description) {
       ends.add(text4.length + label2[0].length);
       starts.add(text4.length + label2[0].length + 1);
     }
-    const heading = HEADING.test(line2);
+    const heading = HEADING.test(line3);
     if (heading) {
       if (open !== null && open.from !== -1) sections2.push({ ...open, to: contentEnd });
       open = { heading: content, from: -1, to: -1 };
@@ -3713,6 +3713,39 @@ var GitHubError = class extends Error {
   }
 };
 var REPO_PATH = /^\/repos\/([^/]+\/[^/]+)(\/|$)/;
+var SEARCH_PATH = /^\/search(\/|$|\?)/i;
+var ID_REPO_PATH = /^\/repositories(\/|$|\?)/i;
+var PATH_ESCAPE = /(^|\/)\.\.?(\/|$)|%2e|%2f|%5c|\\/i;
+var GITHUB_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+function allowlistEntryProblem(entry) {
+  const parts = entry.split("/");
+  if (entry.includes("*")) {
+    if (parts.length === 2 && parts[1] === "*" && GITHUB_NAME.test(parts[0])) return null;
+    return `"${entry}" is not allowed: the only glob is owner/*, for every repository of one named owner.`;
+  }
+  if (parts.length !== 2 || parts[0] === "" || parts[1] === "") return `"${entry}" is not owner/repo or owner/*.`;
+  return null;
+}
+var SEARCH_BASE = "is:pr is:open draft:false";
+var SEARCH_PER_PAGE = 100;
+var SEARCH_MAX_PAGES = 5;
+function searchQuery(source) {
+  if (source === "requested") return `${SEARCH_BASE} user-review-requested:@me`;
+  if (source === "assigned") return `${SEARCH_BASE} assignee:@me`;
+  if (source === "reviewed") return `${SEARCH_BASE} reviewed-by:@me`;
+  if (typeof source === "string" && source.startsWith("team:")) {
+    const [org, slug, ...rest] = source.slice("team:".length).split("/");
+    if (org !== void 0 && slug !== void 0 && rest.length === 0 && GITHUB_NAME.test(org) && GITHUB_NAME.test(slug)) {
+      return `${SEARCH_BASE} team-review-requested:${org}/${slug}`;
+    }
+  }
+  throw new NotAllowlisted(`Refused a search source that is not one Review Voice builds: ${JSON.stringify(source)}.`);
+}
+function repositoryOf(repositoryUrl) {
+  if (typeof repositoryUrl !== "string") return null;
+  const match = /\/repos\/([^/?#]+)\/([^/?#]+)\/?$/.exec(repositoryUrl);
+  return match === null ? null : `${match[1]}/${match[2]}`;
+}
 var GRAPHQL_FORBIDDEN = /\b(?:mutation|subscription)\b/i;
 var REVIEW_THREADS_QUERY = `query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
@@ -3744,12 +3777,24 @@ function graphqlUrl(baseUrl) {
 }
 var GitHubClient = class {
   allowlist;
+  /** Owners whose every repository is allowlisted, from `owner/*` entries. */
+  allowedOwners;
   baseUrl;
   doFetch;
   sleep;
   token;
   constructor(options) {
-    this.allowlist = new Set(options.allowlist.map((name) => name.toLowerCase()));
+    this.allowlist = /* @__PURE__ */ new Set();
+    this.allowedOwners = /* @__PURE__ */ new Set();
+    for (const entry of options.allowlist) {
+      if (entry.includes("*")) {
+        const problem = options.allowGlobs === true ? allowlistEntryProblem(entry) : `"${entry}" is a pattern, and this client reads only repositories named one by one.`;
+        if (problem !== null) throw new NotAllowlisted(`Refused allowlist entry ${problem}`);
+        this.allowedOwners.add(entry.slice(0, -2).toLowerCase());
+      } else {
+        this.allowlist.add(entry.toLowerCase());
+      }
+    }
     this.baseUrl = options.baseUrl ?? "https://api.github.com";
     this.doFetch = options.fetchImpl ?? fetch;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -3759,11 +3804,45 @@ var GitHubClient = class {
     this.token ??= githubToken();
     return `Bearer ${this.token}`;
   }
+  /** Whether `owner/name` is inside the allowlist, by exact entry or `owner/*`. */
+  allows(repository) {
+    const name = repository.toLowerCase();
+    if (this.allowlist.has(name)) return true;
+    const [owner, repo, ...rest] = name.split("/");
+    return owner !== void 0 && repo !== void 0 && rest.length === 0 && GITHUB_NAME.test(repo) && this.allowedOwners.has(owner);
+  }
+  /**
+   * The URL a path is sent to, and its path below the API root.
+   *
+   * Every request goes through here, relative or absolute, so the credential
+   * only ever goes to the API's own origin, and the allowlist is checked on the
+   * path GitHub will actually serve: a dot segment or an encoded dot or slash
+   * could otherwise step out of an allowlisted repository after the check.
+   */
+  resolve(path) {
+    const rawPath = path.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i, "").split(/[?#]/, 1)[0];
+    if (PATH_ESCAPE.test(rawPath)) {
+      throw new NotAllowlisted(`Refused ${path}: a dot segment or an encoded dot or slash in the path.`);
+    }
+    const base = new URL(this.baseUrl);
+    const basePath = base.pathname.replace(/\/+$/, "");
+    const url = /^[a-z][a-z0-9+.-]*:/i.test(path) ? new URL(path) : new URL(`${base.origin}${basePath}${path}`);
+    if (url.origin !== base.origin || basePath !== "" && !url.pathname.startsWith(`${basePath}/`)) {
+      throw new NotAllowlisted(`Refused a request to ${url.origin}${url.pathname}: only ${this.baseUrl} receives the credential.`);
+    }
+    return { url, apiPath: `${url.pathname.slice(basePath.length)}${url.search}` };
+  }
   assertAllowed(path) {
-    const match = REPO_PATH.exec(path);
+    const { apiPath } = this.resolve(path);
+    if (ID_REPO_PATH.test(apiPath)) {
+      throw new NotAllowlisted(`Refused ${path}: a repository addressed by id cannot be checked against the allowlist.`);
+    }
+    if (SEARCH_PATH.test(apiPath)) {
+      throw new NotAllowlisted("Refused a search request: search is sent only with a query Review Voice builds itself.");
+    }
+    const match = REPO_PATH.exec(apiPath);
     if (match === null) return;
-    const repository = match[1].toLowerCase();
-    if (!this.allowlist.has(repository)) {
+    if (!this.allows(match[1])) {
       throw new NotAllowlisted(
         `${match[1]} is not in the allowlist. Add it with /review-voice:init before reading it.`
       );
@@ -3780,7 +3859,12 @@ var GitHubClient = class {
       );
     }
     this.assertAllowed(path);
-    const url = path.startsWith("http") ? path : `${this.baseUrl}${path}`;
+    return this.request(path, init.retryRateLimits !== false);
+  }
+  /** The GET itself, once the caller has checked the path. */
+  async request(path, retryRateLimits) {
+    const { url: resolved, apiPath } = this.resolve(path);
+    const url = resolved.href;
     for (let attempt = 0; ; attempt += 1) {
       const response = await this.doFetch(url, {
         method: "GET",
@@ -3794,7 +3878,7 @@ var GitHubClient = class {
       if (response.status === 403 || response.status === 429) {
         const retryAfter = Number(response.headers.get("retry-after") ?? "0");
         const remaining = response.headers.get("x-ratelimit-remaining");
-        if (init.retryRateLimits !== false && (remaining === "0" || retryAfter > 0) && attempt < 4) {
+        if (retryRateLimits && (remaining === "0" || retryAfter > 0) && attempt < 4) {
           const waitMs = retryAfter > 0 ? retryAfter * 1e3 : 2 ** attempt * 1e3;
           await this.sleep(waitMs);
           continue;
@@ -3807,7 +3891,8 @@ var GitHubClient = class {
         );
       }
       const link = response.headers.get("link");
-      const next = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
+      const href = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
+      const next = href === null ? null : `${apiPath.split("?", 1)[0]}${new URL(href, this.baseUrl).search}`;
       return { data: await response.json(), linkNext: next };
     }
   }
@@ -3874,6 +3959,46 @@ var GitHubClient = class {
       throw new GitHubError("GitHub GraphQL returned no data.", response.status);
     }
     return body.data;
+  }
+  /**
+   * Open, non-draft pull requests from one GitHub search (docs/adr/0026).
+   *
+   * The only request this client sends outside a repository path. The query is
+   * built here from `source`, never from caller text, because a query is the
+   * easiest place to reach outside the allowlist by accident. Each result's
+   * repository is matched against the allowlist before it is returned; one
+   * outside it is only counted, so nothing further is ever read about it.
+   * Pages are numbered here rather than followed from a Link header, and stop
+   * at five.
+   */
+  async searchPullRequests(source) {
+    const q = encodeURIComponent(searchQuery(source));
+    const pullRequests = [];
+    let outsideAllowlist = 0;
+    let truncated = false;
+    let seen = 0;
+    for (let page = 1; page <= SEARCH_MAX_PAGES; page += 1) {
+      const { data } = await this.request(
+        `/search/issues?q=${q}&sort=created&order=asc&per_page=${SEARCH_PER_PAGE}&page=${page}`,
+        true
+      );
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const total = typeof data?.total_count === "number" ? data.total_count : 0;
+      if (data?.incomplete_results === true) truncated = true;
+      seen += items.length;
+      for (const item of items) {
+        const repository = repositoryOf(item?.["repository_url"]);
+        const number = item?.["number"];
+        if (repository === null || !this.allows(repository) || !Number.isInteger(number) || number <= 0) {
+          outsideAllowlist += 1;
+          continue;
+        }
+        pullRequests.push({ repository, number });
+      }
+      if (items.length < SEARCH_PER_PAGE || seen >= total) break;
+      if (page === SEARCH_MAX_PAGES) truncated = true;
+    }
+    return { pullRequests, outsideAllowlist, truncated };
   }
   /** Follows pagination up to `limit` items, so a huge repository cannot run away. */
   async paginate(path, limit) {
@@ -3953,7 +4078,7 @@ function gitFailure(args, error) {
   const command = (end === -1 ? args : args.slice(0, end)).map((arg) => /^[0-9a-f]{40,64}$/.test(arg) ? arg.slice(0, 7) : arg).join(" ");
   const failure = error;
   const stderr = typeof failure.stderr === "string" ? failure.stderr : Buffer.isBuffer(failure.stderr) ? failure.stderr.toString("utf8") : "";
-  const said = stderr.split("\n").map((line2) => line2.trim()).find((line2) => line2.length > 0) ?? (typeof failure.status === "number" ? `exit status ${failure.status}` : String(failure.message ?? "unknown error").split("\n")[0]);
+  const said = stderr.split("\n").map((line3) => line3.trim()).find((line3) => line3.length > 0) ?? (typeof failure.status === "number" ? `exit status ${failure.status}` : String(failure.message ?? "unknown error").split("\n")[0]);
   return `${command} failed: ${said}`;
 }
 function firstLine(error) {
@@ -4059,17 +4184,17 @@ function changedReviewedFiles(files, changedPaths) {
 }
 function hunkKey(body) {
   const keep = /* @__PURE__ */ new Set();
-  body.forEach((line2, index) => {
-    if (!line2.startsWith("+") && !line2.startsWith("-") && !line2.startsWith("\\")) return;
+  body.forEach((line3, index) => {
+    if (!line3.startsWith("+") && !line3.startsWith("-") && !line3.startsWith("\\")) return;
     keep.add(index);
     if (index > 0 && body[index - 1].startsWith(" ")) keep.add(index - 1);
     if (index + 1 < body.length && body[index + 1].startsWith(" ")) keep.add(index + 1);
   });
   return [...keep].sort((x, y) => x - y).map((index) => body[index]).join("\n");
 }
-function gitHeaderPath(line2) {
-  const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line2);
-  const raw = quoted?.[1] ?? /^diff --git (?:a\/)?.+? (b\/.+)$/.exec(line2)?.[1] ?? null;
+function gitHeaderPath(line3) {
+  const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line3);
+  const raw = quoted?.[1] ?? /^diff --git (?:a\/)?.+? (b\/.+)$/.exec(line3)?.[1] ?? null;
   return raw === null ? null : unquoteGitPath(raw).replace(/^b\//, "");
 }
 function ownDiffFiles(patch) {
@@ -4084,22 +4209,22 @@ function ownDiffFiles(patch) {
     hunk = null;
   };
   for (const raw of patch.split("\n")) {
-    const line2 = raw;
-    if (line2.startsWith("diff --git ")) {
+    const line3 = raw;
+    if (line3.startsWith("diff --git ")) {
       closeHunk();
-      const path = gitHeaderPath(line2.endsWith("\r") ? line2.slice(0, -1) : line2);
+      const path = gitHeaderPath(line3.endsWith("\r") ? line3.slice(0, -1) : line3);
       file = { hunks: [] };
       if (path !== null) files.set(path, file);
       continue;
     }
-    if (line2.startsWith("@@ ")) {
+    if (line3.startsWith("@@ ")) {
       closeHunk();
-      hunk = [line2];
+      hunk = [line3];
       continue;
     }
     if (hunk !== null) {
-      if (line2.startsWith("+") || line2.startsWith("-") || line2.startsWith(" ") || line2.startsWith("\\") || line2 === "") {
-        hunk.push(line2);
+      if (line3.startsWith("+") || line3.startsWith("-") || line3.startsWith(" ") || line3.startsWith("\\") || line3 === "") {
+        hunk.push(line3);
         continue;
       }
       closeHunk();
@@ -4572,7 +4697,7 @@ async function acquirePullRequestDiff(options) {
           return null;
         }
       }
-      const added = (byName.get(path)?.patch ?? "").split("\n").filter((line2) => line2.startsWith("+")).map((line2) => line2.slice(1));
+      const added = (byName.get(path)?.patch ?? "").split("\n").filter((line3) => line3.startsWith("+")).map((line3) => line3.slice(1));
       return added.join("\n");
     }
   );
@@ -5148,12 +5273,12 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
     const lines2 = [];
     for (const record2 of output.split("\n")) {
       const [rawPath = "", number = "", ...rest] = record2.split("\0");
-      const line2 = Number(number);
+      const line3 = Number(number);
       const text4 = rest.join("\0");
-      if (!Number.isSafeInteger(line2) || line2 < 1) continue;
+      if (!Number.isSafeInteger(line3) || line3 < 1) continue;
       lines2.push({
         path: prefix !== "" && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
-        line: line2,
+        line: line3,
         text: text4
       });
     }
@@ -5431,8 +5556,8 @@ function headerPath3(raw) {
   if (path === "/dev/null") return null;
   return normalisePath2(path.replace(/^[ab]\//, ""));
 }
-function hunkHeader2(line2) {
-  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line2);
+function hunkHeader2(line3) {
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line3);
   if (match === null) return null;
   const oldLine = Number(match[1]);
   const newLine = Number(match[3]);
@@ -5449,26 +5574,26 @@ function declarationsFromDiff(diff) {
     if (active !== null && active.remainingOld <= 0 && active.remainingNew <= 0) active = null;
   };
   for (const raw of diff.split("\n")) {
-    const line2 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const line3 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (active !== null) {
-      if (line2 === "\\ No newline at end of file") continue;
-      if (line2.startsWith("+")) {
-        const name = declarationName(line2.slice(1));
+      if (line3 === "\\ No newline at end of file") continue;
+      if (line3.startsWith("+")) {
+        const name = declarationName(line3.slice(1));
         if (path !== null && name !== null) found.push({ path, name, line: active.newLine, added: true });
         active.newLine += 1;
         active.remainingNew -= 1;
         finishWhenCounted();
         continue;
       }
-      if (line2.startsWith("-")) {
-        const name = declarationName(line2.slice(1));
+      if (line3.startsWith("-")) {
+        const name = declarationName(line3.slice(1));
         if (path !== null && name !== null) found.push({ path, name, line: active.oldLine, added: false });
         active.oldLine += 1;
         active.remainingOld -= 1;
         finishWhenCounted();
         continue;
       }
-      if (line2.startsWith(" ") || line2 === "" && active.remainingOld > 0 && active.remainingNew > 0) {
+      if (line3.startsWith(" ") || line3 === "" && active.remainingOld > 0 && active.remainingNew > 0) {
         active.oldLine += 1;
         active.newLine += 1;
         active.remainingOld -= 1;
@@ -5478,15 +5603,15 @@ function declarationsFromDiff(diff) {
       }
       active = null;
     }
-    if (line2.startsWith("diff --git ")) {
+    if (line3.startsWith("diff --git ")) {
       path = null;
       continue;
     }
-    if (line2.startsWith("+++ ")) {
-      path = headerPath3(line2.slice(4));
+    if (line3.startsWith("+++ ")) {
+      path = headerPath3(line3.slice(4));
       continue;
     }
-    const header = hunkHeader2(line2);
+    const header = hunkHeader2(line3);
     if (header !== null) active = header;
   }
   return found;
@@ -5717,7 +5842,7 @@ function possibleExisting(declaration, hits, addedNames) {
     const score = union === 0 ? 0 : overlap2 / union;
     if (overlap2 >= 2 && score >= 0.5) matches.push({ path, line: hit.line, name, score });
   }
-  return matches.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path) || left.line - right.line).slice(0, MAX_POSSIBLE_EXISTING).map(({ path, line: line2, name }) => ({ path, line: line2, name }));
+  return matches.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path) || left.line - right.line).slice(0, MAX_POSSIBLE_EXISTING).map(({ path, line: line3, name }) => ({ path, line: line3, name }));
 }
 function timeBudgetDeclaration(declaration) {
   return {
@@ -6254,8 +6379,8 @@ function commitReadable(ref, cwd) {
 }
 function oldSideHunks(patch) {
   const hunks = [];
-  for (const line2 of patch.split("\n")) {
-    const match = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line2);
+  for (const line3 of patch.split("\n")) {
+    const match = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line3);
     if (match === null) continue;
     hunks.push({
       oldStart: Number(match[1]),
@@ -6265,9 +6390,9 @@ function oldSideHunks(patch) {
   }
   return hunks;
 }
-function remapLine(hunks, line2) {
-  const low = line2 - NEIGHBOURHOOD;
-  const high = line2 + NEIGHBOURHOOD;
+function remapLine(hunks, line3) {
+  const low = line3 - NEIGHBOURHOOD;
+  const high = line3 + NEIGHBOURHOOD;
   let shift = 0;
   for (const hunk of hunks) {
     const first = hunk.oldStart;
@@ -6275,7 +6400,7 @@ function remapLine(hunks, line2) {
     if (last >= low && first <= high) return { reason: "anchor or its neighbours changed" };
     if (last < low) shift += hunk.newCount - hunk.oldCount;
   }
-  return { line: line2 + shift };
+  return { line: line3 + shift };
 }
 var CarryError = class extends Error {
 };
@@ -6299,16 +6424,16 @@ function existsAt(ref, path, cwd) {
     return false;
   }
 }
-function followLine(previousHead, head, path, line2, cwd) {
+function followLine(previousHead, head, path, line3, cwd) {
   if (!existsAt(head, path, cwd)) return { reason: "file deleted or renamed" };
   const patch = gitOut(
     ["diff", "--unified=0", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", previousHead, head, "--", ...topPathspecs([path])],
     cwd
   );
-  return remapLine(oldSideHunks(patch), line2);
+  return remapLine(oldSideHunks(patch), line3);
 }
-function rewriteAnchor(text4, path, oldLine, line2) {
-  return text4.replace(`\`${path}:${oldLine}\``, `\`${path}:${line2}\``);
+function rewriteAnchor(text4, path, oldLine, line3) {
+  return text4.replace(`\`${path}:${oldLine}\``, `\`${path}:${line3}\``);
 }
 function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map(), noLongerChanged = /* @__PURE__ */ new Set()) {
   for (const ref of [previousHead, head]) {
@@ -7265,13 +7390,13 @@ var Directives = class _Directives {
    * @param onError - May be called even if the action was successful
    * @returns `true` on success
    */
-  add(line2, onError) {
+  add(line3, onError) {
     if (this.atNextDocument) {
       this.yaml = { explicit: _Directives.defaultYaml.explicit, version: "1.1" };
       this.tags = Object.assign({}, _Directives.defaultTags);
       this.atNextDocument = false;
     }
-    const parts = line2.trim().split(/[ \t]+/);
+    const parts = line3.trim().split(/[ \t]+/);
     const name = parts.shift();
     switch (name) {
       case "%TAG": {
@@ -8692,9 +8817,9 @@ function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, fl
   } else {
     str = lines2[0];
     for (let i = 1; i < lines2.length; ++i) {
-      const line2 = lines2[i];
-      str += line2 ? `
-${indent}${line2}` : "\n";
+      const line3 = lines2[i];
+      str += line3 ? `
+${indent}${line3}` : "\n";
     }
   }
   if (comment) {
@@ -8752,7 +8877,7 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
       str += ",";
     } else if (ctx.options.trailingComma) {
       if (ctx.options.lineWidth > 0) {
-        reqNewline || (reqNewline = lines2.reduce((sum, line2) => sum + line2.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
+        reqNewline || (reqNewline = lines2.reduce((sum, line3) => sum + line3.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
       }
       if (reqNewline) {
         str += ",";
@@ -8768,14 +8893,14 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
     return start + end;
   } else {
     if (!reqNewline) {
-      const len = lines2.reduce((sum, line2) => sum + line2.length + 2, 2);
+      const len = lines2.reduce((sum, line3) => sum + line3.length + 2, 2);
       reqNewline = ctx.options.lineWidth > 0 && len > ctx.options.lineWidth;
     }
     if (reqNewline) {
       let str = start;
-      for (const line2 of lines2)
-        str += line2 ? `
-${indentStep}${indent}${line2}` : "\n";
+      for (const line3 of lines2)
+        str += line3 ? `
+${indentStep}${indent}${line3}` : "\n";
       return `${str}
 ${indent}${end}`;
     } else {
@@ -10240,10 +10365,10 @@ var prettifyError = (src, lc) => (error) => {
   if (error.pos[0] === -1)
     return;
   error.linePos = error.pos.map((pos) => lc.linePos(pos));
-  const { line: line2, col } = error.linePos[0];
-  error.message += ` at line ${line2}, column ${col}`;
+  const { line: line3, col } = error.linePos[0];
+  error.message += ` at line ${line3}, column ${col}`;
   let ci = col - 1;
-  let lineStr = src.substring(lc.lineStarts[line2 - 1], lc.lineStarts[line2]).replace(/[\n\r]+$/, "");
+  let lineStr = src.substring(lc.lineStarts[line3 - 1], lc.lineStarts[line3]).replace(/[\n\r]+$/, "");
   if (ci >= 60 && lineStr.length > 80) {
     const trimStart = Math.min(ci - 39, lineStr.length - 79);
     lineStr = "\u2026" + lineStr.substring(trimStart);
@@ -10251,8 +10376,8 @@ var prettifyError = (src, lc) => (error) => {
   }
   if (lineStr.length > 80)
     lineStr = lineStr.substring(0, 79) + "\u2026";
-  if (line2 > 1 && /^ *$/.test(lineStr.substring(0, ci))) {
-    let prev = src.substring(lc.lineStarts[line2 - 2], lc.lineStarts[line2 - 1]);
+  if (line3 > 1 && /^ *$/.test(lineStr.substring(0, ci))) {
+    let prev = src.substring(lc.lineStarts[line3 - 2], lc.lineStarts[line3 - 1]);
     if (prev.length > 80)
       prev = prev.substring(0, 79) + "\u2026\n";
     lineStr = prev + lineStr;
@@ -10260,7 +10385,7 @@ var prettifyError = (src, lc) => (error) => {
   if (/[^ ]/.test(lineStr)) {
     let count3 = 1;
     const end = error.linePos[1];
-    if (end?.line === line2 && end.col > col) {
+    if (end?.line === line3 && end.col > col) {
       count3 = Math.max(1, Math.min(end.col - col, 80 - ci));
     }
     const pointer = " ".repeat(ci) + "^".repeat(count3);
@@ -11111,8 +11236,8 @@ function singleQuotedValue(source, onError) {
   return unfoldLines(source.slice(1, -1)).replace(/''/g, "'");
 }
 function unfoldLines(source) {
-  const line2 = /(.*?)\r?\n/sy;
-  let match = line2.exec(source);
+  const line3 = /(.*?)\r?\n/sy;
+  let match = line3.exec(source);
   if (!match)
     return source;
   let trimEnd, trimBoth;
@@ -11125,8 +11250,8 @@ function unfoldLines(source) {
   }
   let res = match[1].replace(trimEnd, "");
   let sep2 = " ";
-  let pos = line2.lastIndex;
-  while (match = line2.exec(source)) {
+  let pos = line3.lastIndex;
+  while (match = line3.exec(source)) {
     const lm = match[1].replace(trimBoth, "");
     if (lm === "") {
       if (sep2 === "\n")
@@ -11137,7 +11262,7 @@ function unfoldLines(source) {
       res += sep2 + lm;
       sep2 = " ";
     }
-    pos = line2.lastIndex;
+    pos = line3.lastIndex;
   }
   const last = /[ \t]*(.*)/sy;
   last.lastIndex = pos;
@@ -11917,40 +12042,40 @@ var Lexer = class {
     }
   }
   *parseStream() {
-    let line2 = this.getLine();
-    if (line2 === null)
+    let line3 = this.getLine();
+    if (line3 === null)
       return this.setNext("stream");
-    if (line2[0] === BOM) {
+    if (line3[0] === BOM) {
       yield* this.pushCount(1);
-      line2 = line2.substring(1);
+      line3 = line3.substring(1);
     }
-    if (line2[0] === "%") {
-      let dirEnd = line2.length;
-      let cs = line2.indexOf("#");
+    if (line3[0] === "%") {
+      let dirEnd = line3.length;
+      let cs = line3.indexOf("#");
       while (cs !== -1) {
-        const ch = line2[cs - 1];
+        const ch = line3[cs - 1];
         if (ch === " " || ch === "	") {
           dirEnd = cs - 1;
           break;
         } else {
-          cs = line2.indexOf("#", cs + 1);
+          cs = line3.indexOf("#", cs + 1);
         }
       }
       while (true) {
-        const ch = line2[dirEnd - 1];
+        const ch = line3[dirEnd - 1];
         if (ch === " " || ch === "	")
           dirEnd -= 1;
         else
           break;
       }
       const n = (yield* this.pushCount(dirEnd)) + (yield* this.pushSpaces(true));
-      yield* this.pushCount(line2.length - n);
+      yield* this.pushCount(line3.length - n);
       this.pushNewline();
       return "stream";
     }
     if (this.atLineEnd()) {
       const sp = yield* this.pushSpaces(true);
-      yield* this.pushCount(line2.length - sp);
+      yield* this.pushCount(line3.length - sp);
       yield* this.pushNewline();
       return "stream";
     }
@@ -11991,13 +12116,13 @@ var Lexer = class {
   }
   *parseDocument() {
     yield* this.pushSpaces(true);
-    const line2 = this.getLine();
-    if (line2 === null)
+    const line3 = this.getLine();
+    if (line3 === null)
       return this.setNext("doc");
     let n = yield* this.pushIndicators();
-    switch (line2[n]) {
+    switch (line3[n]) {
       case "#":
-        yield* this.pushCount(line2.length - n);
+        yield* this.pushCount(line3.length - n);
       // fallthrough
       case void 0:
         yield* this.pushNewline();
@@ -12022,7 +12147,7 @@ var Lexer = class {
       case ">":
         n += yield* this.parseBlockScalarHeader();
         n += yield* this.pushSpaces(true);
-        yield* this.pushCount(line2.length - n);
+        yield* this.pushCount(line3.length - n);
         yield* this.pushNewline();
         return yield* this.parseBlockScalar();
       default:
@@ -12042,11 +12167,11 @@ var Lexer = class {
       }
       sp += yield* this.pushSpaces(true);
     } while (nl + sp > 0);
-    const line2 = this.getLine();
-    if (line2 === null)
+    const line3 = this.getLine();
+    if (line3 === null)
       return this.setNext("flow");
-    if (indent !== -1 && indent < this.indentNext && line2[0] !== "#" || indent === 0 && (line2.startsWith("---") || line2.startsWith("...")) && isEmpty(line2[3])) {
-      const atFlowEndMarker = indent === this.indentNext - 1 && this.flowLevel === 1 && (line2[0] === "]" || line2[0] === "}");
+    if (indent !== -1 && indent < this.indentNext && line3[0] !== "#" || indent === 0 && (line3.startsWith("---") || line3.startsWith("...")) && isEmpty(line3[3])) {
+      const atFlowEndMarker = indent === this.indentNext - 1 && this.flowLevel === 1 && (line3[0] === "]" || line3[0] === "}");
       if (!atFlowEndMarker) {
         this.flowLevel = 0;
         yield FLOW_END;
@@ -12054,17 +12179,17 @@ var Lexer = class {
       }
     }
     let n = 0;
-    while (line2[n] === ",") {
+    while (line3[n] === ",") {
       n += yield* this.pushCount(1);
       n += yield* this.pushSpaces(true);
       this.flowKey = false;
     }
     n += yield* this.pushIndicators();
-    switch (line2[n]) {
+    switch (line3[n]) {
       case void 0:
         return "flow";
       case "#":
-        yield* this.pushCount(line2.length - n);
+        yield* this.pushCount(line3.length - n);
         return "flow";
       case "{":
       case "[":
@@ -13498,6 +13623,26 @@ async function readCi(client, repository, sha, gates = [], now = Date.now(), rul
   }, rules);
 }
 
+// plugins/review-voice/src/queue/config.ts
+var QUEUE_SOURCES = ["requested", "assigned", "team", "follow-up", "dismissed"];
+var DEFAULT_AUTHOR_PATTERNS = ["\\[bot\\]$", "-bot$", "^renovate", "^dependabot"];
+function defaultQueueConfig() {
+  return {
+    sources: ["requested", "assigned", "follow-up", "dismissed"],
+    teams: [],
+    maxPerPass: 20,
+    followUpDays: 30,
+    skip: {
+      authors: [],
+      authorPatterns: [...DEFAULT_AUTHOR_PATTERNS],
+      allowBotsWhenRequested: true,
+      assignedTo: [],
+      approvedAtHeadBy: { logins: [], sources: ["team"] },
+      drafts: true
+    }
+  };
+}
+
 // plugins/review-voice/src/policy/load.ts
 function asRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
@@ -13772,6 +13917,96 @@ function readVerdictPolicy(block, result) {
   policy.carryApprovalOnUnchanged = enabled("carry_approval_on_unchanged", DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
   policy.recheckThreadBeforePost = enabled("recheck_thread_before_post", DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
 }
+var TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
+function readQueue(block, result) {
+  if (block === null) return;
+  const queue = result.queue;
+  const list = (value, key) => {
+    if (value === void 0) return void 0;
+    if (Array.isArray(value)) return value;
+    result.warnings.push(`queue.${key} must be a list; using the default.`);
+    return void 0;
+  };
+  const logins = (value, key) => {
+    const entries = list(value, key);
+    if (entries === void 0) return void 0;
+    const kept = [];
+    for (const entry of entries) {
+      if (typeof entry === "string" && entry.length > 0) kept.push(entry);
+      else result.warnings.push(`queue.${key}: ${JSON.stringify(entry)} is not a login; skipping it.`);
+    }
+    return kept;
+  };
+  const sourceList = (value, key) => {
+    const entries = list(value, key);
+    if (entries === void 0) return void 0;
+    const kept = [];
+    for (const entry of entries) {
+      if (typeof entry === "string" && QUEUE_SOURCES.includes(entry)) kept.push(entry);
+      else result.warnings.push(`queue.${key}: ${JSON.stringify(entry)} is not one of ${QUEUE_SOURCES.join(", ")}; skipping it.`);
+    }
+    return kept;
+  };
+  const wholeAboveZero = (key) => {
+    const value = block[key];
+    if (value === void 0) return void 0;
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+    result.warnings.push(`queue.${key} must be a whole number above zero; using the default.`);
+    return void 0;
+  };
+  const flag2 = (record2, key) => {
+    const value = record2[key];
+    if (value === void 0) return void 0;
+    if (typeof value === "boolean") return value;
+    result.warnings.push(`queue.skip.${key} must be true or false; using the default.`);
+    return void 0;
+  };
+  queue.sources = sourceList(block["sources"], "sources") ?? queue.sources;
+  const teams = list(block["teams"], "teams");
+  if (teams !== void 0) {
+    queue.teams = [];
+    for (const entry of teams) {
+      if (typeof entry === "string" && TEAM.test(entry)) queue.teams.push(entry);
+      else result.warnings.push(`queue.teams: ${JSON.stringify(entry)} is not org/team-slug; skipping it.`);
+    }
+  }
+  queue.maxPerPass = wholeAboveZero("max_per_pass") ?? queue.maxPerPass;
+  queue.followUpDays = wholeAboveZero("follow_up_days") ?? queue.followUpDays;
+  if (block["skip"] === void 0) return;
+  const skip = asRecord(block["skip"]);
+  if (skip === null) {
+    result.warnings.push("queue.skip must be a mapping; using the defaults.");
+    return;
+  }
+  queue.skip.authors = logins(skip["authors"], "skip.authors") ?? queue.skip.authors;
+  queue.skip.assignedTo = logins(skip["assigned_to"], "skip.assigned_to") ?? queue.skip.assignedTo;
+  const patterns = list(skip["author_patterns"], "skip.author_patterns");
+  if (patterns !== void 0) {
+    queue.skip.authorPatterns = [];
+    for (const entry of patterns) {
+      try {
+        if (typeof entry !== "string" || entry.length === 0) throw new Error("not text");
+        new RegExp(entry, "i");
+        queue.skip.authorPatterns.push(entry);
+      } catch {
+        result.warnings.push(`queue.skip.author_patterns: ${JSON.stringify(entry)} is not a regular expression; skipping it.`);
+      }
+    }
+  }
+  queue.skip.allowBotsWhenRequested = flag2(skip, "allow_bots_when_requested") ?? queue.skip.allowBotsWhenRequested;
+  queue.skip.drafts = flag2(skip, "drafts") ?? queue.skip.drafts;
+  if (skip["approved_at_head_by"] !== void 0) {
+    const approved = asRecord(skip["approved_at_head_by"]);
+    if (approved === null) {
+      result.warnings.push("queue.skip.approved_at_head_by must be a mapping; ignoring it.");
+    } else {
+      queue.skip.approvedAtHeadBy = {
+        logins: logins(approved["logins"], "skip.approved_at_head_by.logins") ?? [],
+        sources: sourceList(approved["sources"], "skip.approved_at_head_by.sources") ?? queue.skip.approvedAtHeadBy.sources
+      };
+    }
+  }
+}
 function contentHash(text4) {
   return createHash4("sha256").update(text4).digest("hex").slice(0, 16);
 }
@@ -13828,6 +14063,7 @@ function loadConfig(repositoryRoot2) {
     ciGateChecks: [],
     ciRules: {},
     allowlist: [],
+    queue: defaultQueueConfig(),
     staticEvidence: { enabled: false, commands: [] },
     verification: { enabled: false, command: "", blockPresent: false },
     humanReview: {
@@ -13857,7 +14093,15 @@ function loadConfig(repositoryRoot2) {
         }
         readReviewers(identity2, result);
         const repositories = asRecord(doc["repositories"]);
-        result.allowlist = asStringArray(repositories?.["include"]);
+        for (const entry of asStringArray(repositories?.["include"])) {
+          const problem = allowlistEntryProblem(entry);
+          if (problem === null) result.allowlist.push(entry);
+          else result.warnings.push(`repositories.include: ${problem} Skipping it.`);
+        }
+        if (doc["queue"] !== void 0 && asRecord(doc["queue"]) === null) {
+          result.warnings.push("queue must be a mapping; using the defaults.");
+        }
+        readQueue(asRecord(doc["queue"]), result);
         const staticEvidence = asRecord(doc["static_evidence"]);
         if (staticEvidence !== null) {
           result.staticEvidence.enabled = staticEvidence["enabled"] === true;
@@ -13993,11 +14237,11 @@ function resolvePolicy(layers) {
 import { spawnSync } from "node:child_process";
 
 // plugins/review-voice/src/evidence/parsers.ts
-function signal(tool, kind, path, line2, claim, raw) {
+function signal(tool, kind, path, line3, claim, raw) {
   return {
     kind,
     path,
-    line: line2,
+    line: line3,
     claim,
     evidence: [raw.trim()],
     // A compiler or type checker reporting a concrete diagnostic is about as
@@ -14013,21 +14257,21 @@ var ADAPTERS = [
   {
     name: "typescript",
     matches: (command, output) => /tsc|typecheck|tsgo/i.test(command) || TSC.test(output.split("\n")[0] ?? ""),
-    parse: (output, tool) => output.split("\n").map((line2) => TSC.exec(line2)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
+    parse: (output, tool) => output.split("\n").map((line3) => TSC.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
       (match) => signal(tool, "type_error", match[1], Number(match[2]), `${match[5]}: ${match[6]}`, match[0])
     )
   },
   {
     name: "dotnet",
     matches: (command) => /dotnet|msbuild|csc\b/i.test(command),
-    parse: (output, tool) => output.split("\n").map((line2) => DOTNET.exec(line2)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
+    parse: (output, tool) => output.split("\n").map((line3) => DOTNET.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
       (match) => signal(tool, "compile_error", match[1], Number(match[2]), `${match[5]}: ${match[6]}`, match[0])
     ).filter((current, index, all) => all.findIndex((other) => other.claim === current.claim && other.path === current.path && other.line === current.line) === index)
   },
   {
     name: "python",
     matches: (command) => /mypy|ruff|flake8|pylint|pytest/i.test(command),
-    parse: (output, tool) => output.split("\n").map((line2) => PYTHON2.exec(line2)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(
+    parse: (output, tool) => output.split("\n").map((line3) => PYTHON2.exec(line3)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(
       (match) => signal(tool, "lint_or_type_error", match[1], Number(match[2]), `${match[4]}: ${match[5]}`, match[0])
     )
   },
@@ -14037,14 +14281,14 @@ var ADAPTERS = [
     parse: (output, tool) => {
       const signals = [];
       let file = null;
-      for (const line2 of output.split("\n")) {
-        if (/^\S.*\.(ts|tsx|js|jsx|mjs|cjs)$/.test(line2.trim())) {
-          file = line2.trim();
+      for (const line3 of output.split("\n")) {
+        if (/^\S.*\.(ts|tsx|js|jsx|mjs|cjs)$/.test(line3.trim())) {
+          file = line3.trim();
           continue;
         }
-        const match = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/.exec(line2);
+        const match = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/.exec(line3);
         if (match !== null && match[3] === "error") {
-          signals.push(signal(tool, "lint_error", file, Number(match[1]), `${match[5]}: ${match[4]}`, line2));
+          signals.push(signal(tool, "lint_error", file, Number(match[1]), `${match[5]}: ${match[4]}`, line3));
         }
       }
       return signals;
@@ -14589,7 +14833,7 @@ function challengePrompt(finding, candidate, statements, diffFile) {
   const pick = (snake, camel) => text3(candidate?.[snake]) ?? text3(candidate?.[camel]) ?? text3(finding[snake]) ?? text3(finding[camel]);
   const id = idOf2(finding) ?? (candidate === void 0 ? null : idOf2(candidate)) ?? "unknown";
   const path = text3(finding["path"]) ?? text3(candidate?.["path"]) ?? "unknown";
-  const line2 = Number.isInteger(finding["line"]) ? finding["line"] : candidate?.["line"];
+  const line3 = Number.isInteger(finding["line"]) ? finding["line"] : candidate?.["line"];
   const intentRef = pick("intent_ref", "intentRef");
   const cited = intentRef === null ? [] : statements.filter((s) => s.id === intentRef);
   const causedBy = isRecord2(finding["causedBy"]) ? finding["causedBy"] : isRecord2(candidate?.["caused_by"]) ? candidate["caused_by"] : null;
@@ -14599,7 +14843,7 @@ function challengePrompt(finding, candidate, statements, diffFile) {
     `Claim: ${pick("claim", "claim") ?? ""}`,
     `Failure mode: ${pick("failure_mode", "failureMode") ?? ""}`,
     `Category: ${pick("category", "category") ?? ""}`,
-    `Anchored at: ${path}:${line2 ?? "unknown"}`
+    `Anchored at: ${path}:${line3 ?? "unknown"}`
   ];
   if (causedBy !== null && typeof causedBy["path"] === "string" && Number.isInteger(causedBy["line"])) {
     rows.push(`Stale consumer of the changed line: ${causedBy["path"]}:${String(causedBy["line"])}`);
@@ -14809,9 +15053,9 @@ var AUTOMATION_STATUS = [
 var STRUCTURE_LINE = /^\s*(?:-\s*\[[ x]\]\s|#{1,3}\s|\|.*\||-{3,}\s*$)/i;
 var TEMPLATE_HEADING = /^\s*#{1,3}\s*(description|checklist|type of change|how has this been tested)/im;
 function isTemplate(body) {
-  const lines2 = body.split("\n").filter((line2) => line2.trim().length > 0);
+  const lines2 = body.split("\n").filter((line3) => line3.trim().length > 0);
   if (lines2.length === 0) return true;
-  const structural = lines2.filter((line2) => STRUCTURE_LINE.test(line2)).length;
+  const structural = lines2.filter((line3) => STRUCTURE_LINE.test(line3)).length;
   const structureRatio = structural / lines2.length;
   if (TEMPLATE_HEADING.test(body) && structureRatio >= 0.4) return true;
   return structureRatio >= 0.6;
@@ -15102,14 +15346,14 @@ function sections(text4) {
       out.push({ heading, body: buffer.join("\n") });
     }
   };
-  for (const line2 of text4.split(/\r?\n/)) {
-    if (/^#{1,3} /.test(line2)) {
+  for (const line3 of text4.split(/\r?\n/)) {
+    if (/^#{1,3} /.test(line3)) {
       flush();
-      heading = line2;
+      heading = line3;
       buffer = [];
       continue;
     }
-    buffer.push(line2);
+    buffer.push(line3);
   }
   flush();
   return out;
@@ -15495,7 +15739,7 @@ function checkCitation(candidatePath, cwd, ref, diff) {
   let tracked;
   try {
     const args = ref === null ? ["ls-files"] : ["ls-tree", "-r", "--name-only", ref];
-    tracked = git4(args, cwd).split("\n").filter((line2) => line2.length > 0);
+    tracked = git4(args, cwd).split("\n").filter((line3) => line3.length > 0);
   } catch {
     return { resolves: false, suggestion: null, inconclusive: true };
   }
@@ -15700,6 +15944,251 @@ async function discoverRepositories(client, limit = 100) {
     archived: repo.archived,
     pushedAt: repo.pushed_at
   }));
+}
+
+// plugins/review-voice/src/queue/store.ts
+function recentlyReviewedPulls(db, since) {
+  const rows = db.prepare(
+    `SELECT repository, pull_number, head_ref
+       FROM review_runs
+       WHERE repository IS NOT NULL AND pull_number IS NOT NULL AND head_ref IS NOT NULL
+         AND created_at >= ?
+       ORDER BY created_at DESC, rowid DESC`
+  ).all(since);
+  const latest = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const key = `${row.repository.toLowerCase()}#${row.pull_number}`;
+    if (!latest.has(key)) latest.set(key, { repository: row.repository, pull: row.pull_number, head: row.head_ref });
+  }
+  return [...latest.values()];
+}
+function runRecordedAtHead(db, repository, pull, head) {
+  const row = db.prepare(
+    `SELECT 1 FROM review_runs
+       WHERE LOWER(repository) = LOWER(?) AND pull_number = ? AND LOWER(head_ref) = LOWER(?)
+       LIMIT 1`
+  ).get(repository, pull, head);
+  return row !== void 0;
+}
+function lastSentAtHead(db, repository, pull, head) {
+  const rows = db.prepare(
+    `SELECT metadata_json FROM audit_events
+       WHERE action = 'review_post_sent' AND subject_id = ?
+       ORDER BY created_at DESC, rowid DESC`
+  ).all(`${repository.toLowerCase()}#${pull}`);
+  for (const row of rows) {
+    let meta;
+    try {
+      meta = JSON.parse(row.metadata_json);
+    } catch {
+      continue;
+    }
+    if (typeof meta["head"] !== "string" || meta["head"].toLowerCase() !== head.toLowerCase()) continue;
+    const event = typeof meta["event"] === "string" ? meta["event"] : null;
+    return { event, cappedByCi: event === "COMMENT" && (meta["cappedByCi"] === true || meta["cappedBy"] === "ci") };
+  }
+  return null;
+}
+
+// plugins/review-voice/src/queue/queue.ts
+var SOURCE_ORDER = ["requested", "assigned", "team", "follow-up", "dismissed"];
+var MAX_REVIEWS = 1e3;
+var lower = (value) => value.toLowerCase();
+function reviewsOf(client, repository, pull) {
+  return client.paginate(`/repos/${repository}/pulls/${pull}/reviews?per_page=100`, MAX_REVIEWS);
+}
+async function buildQueue(deps) {
+  const { client, db, config: config2, me } = deps;
+  const candidates = /* @__PURE__ */ new Map();
+  let outsideAllowlist = 0;
+  let truncated = false;
+  const add = (repository, pull, source) => {
+    const key = `${lower(repository)}#${pull}`;
+    let candidate = candidates.get(key);
+    if (candidate === void 0) {
+      candidate = { repository, pull, sources: /* @__PURE__ */ new Set() };
+      candidates.set(key, candidate);
+    }
+    candidate.sources.add(source);
+    return candidate;
+  };
+  const search = async (source) => {
+    const result = await client.searchPullRequests(source);
+    outsideAllowlist += result.outsideAllowlist;
+    truncated ||= result.truncated;
+    return result.pullRequests;
+  };
+  const enabled = new Set(config2.sources);
+  if (enabled.has("requested")) for (const pr of await search("requested")) add(pr.repository, pr.number, "requested");
+  if (enabled.has("assigned")) for (const pr of await search("assigned")) add(pr.repository, pr.number, "assigned");
+  if (enabled.has("team")) {
+    for (const team of config2.teams) {
+      for (const pr of await search(`team:${team}`)) add(pr.repository, pr.number, "team");
+    }
+  }
+  if (enabled.has("dismissed")) {
+    for (const pr of await search("reviewed")) {
+      if (await latestOwnReviewDismissed(client, pr.repository, pr.number, me)) add(pr.repository, pr.number, "dismissed");
+    }
+  }
+  if (enabled.has("follow-up")) {
+    const since = new Date(deps.now.getTime() - config2.followUpDays * 864e5).toISOString();
+    for (const recent of recentlyReviewedPulls(db, since)) {
+      if (!client.allows(recent.repository)) continue;
+      add(recent.repository, recent.pull, "follow-up").followUpFrom = recent.head;
+    }
+  }
+  const listed = [];
+  for (const candidate of candidates.values()) {
+    const entry = await classify2(deps, candidate);
+    if (entry !== null) listed.push(entry);
+  }
+  listed.sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.repository.localeCompare(b.repository) || a.pull - b.pull
+  );
+  const entries = [];
+  const notReached = [];
+  let reviews = 0;
+  for (const entry of listed) {
+    if (entry.action.kind === "review") {
+      if (reviews >= config2.maxPerPass) {
+        notReached.push(entry);
+        continue;
+      }
+      reviews += 1;
+    }
+    entries.push(entry);
+  }
+  return { entries, notReached, outsideAllowlist, truncated };
+}
+async function latestOwnReviewDismissed(client, repository, pull, me) {
+  const own = (await reviewsOf(client, repository, pull)).filter(
+    (review) => lower(review.user?.login ?? "") === lower(me) && review.state !== "PENDING"
+  );
+  return own.at(-1)?.state === "DISMISSED";
+}
+async function classify2(deps, candidate) {
+  const { client, db } = deps;
+  const { data: pull } = await client.get(`/repos/${candidate.repository}/pulls/${candidate.pull}`);
+  const head = pull.head?.sha;
+  if (pull.state !== "open" || typeof head !== "string" || head.length === 0) return null;
+  if (candidate.followUpFrom !== void 0 && lower(candidate.followUpFrom) === lower(head)) {
+    candidate.sources.delete("follow-up");
+    if (candidate.sources.size === 0) return null;
+  }
+  const sources = SOURCE_ORDER.filter((source) => candidate.sources.has(source));
+  const sent = lastSentAtHead(db, candidate.repository, candidate.pull, head);
+  if (sent !== null && !sent.cappedByCi) return null;
+  const author = pull.user?.login ?? "";
+  const entry = (action) => ({
+    repository: candidate.repository,
+    pull: candidate.pull,
+    head,
+    author,
+    sources,
+    action,
+    createdAt: pull.created_at ?? ""
+  });
+  const rule = await skipRule(deps, candidate, pull, head, sources);
+  if (rule !== null) return entry({ kind: "skip", rule });
+  if (sent !== null) return entry({ kind: "recheck-ci" });
+  if (runRecordedAtHead(db, candidate.repository, candidate.pull, head)) return entry({ kind: "verdict-only" });
+  return entry({ kind: "review" });
+}
+async function skipRule(deps, candidate, pull, head, sources) {
+  const { client, me } = deps;
+  const skip = deps.config.skip;
+  const author = lower(pull.user?.login ?? "");
+  if (author === lower(me)) return "own";
+  if (skip.drafts && pull.draft === true) return "drafts";
+  if (skip.authors.some((login) => lower(login) === author)) return "authors";
+  const botLike = lower(pull.user?.type ?? "") === "bot" || skip.authorPatterns.some((pattern) => new RegExp(pattern, "i").test(author));
+  if (botLike && !(skip.allowBotsWhenRequested && sources.includes("requested"))) return "author_patterns";
+  const assignees = (pull.assignees ?? []).map((assignee) => lower(assignee.login ?? ""));
+  if (skip.assignedTo.some((login) => assignees.includes(lower(login)))) return "assigned_to";
+  const approvers = skip.approvedAtHeadBy.logins.map(lower);
+  if (approvers.length > 0 && sources.some((source) => skip.approvedAtHeadBy.sources.includes(source))) {
+    const standing = /* @__PURE__ */ new Map();
+    for (const review of await reviewsOf(client, candidate.repository, candidate.pull)) {
+      const login = lower(review.user?.login ?? "");
+      if (approvers.includes(login) && review.state !== "PENDING" && review.state !== "COMMENTED") standing.set(login, review);
+    }
+    const approved = [...standing.values()].some(
+      (review) => review.state === "APPROVED" && lower(review.commit_id ?? "") === lower(head)
+    );
+    if (approved) return "approved_at_head_by";
+  }
+  return null;
+}
+
+// plugins/review-voice/src/queue/command.ts
+var LABEL = {
+  review: "REVIEW",
+  "verdict-only": "VERDICT-ONLY",
+  "recheck-ci": "RECHECK-CI",
+  skip: "SKIP"
+};
+function line2(entry) {
+  const rule = entry.action.kind === "skip" ? ` (${entry.action.rule})` : "";
+  return `${LABEL[entry.action.kind]} ${entry.repository}#${entry.pull} ${entry.head.slice(0, 7)} @${entry.author} [${entry.sources.join(", ")}]${rule}`;
+}
+function renderQueue(result) {
+  return [
+    ...result.entries.map(line2),
+    `${result.entries.length} listed, ${result.notReached.length} not reached, ${result.outsideAllowlist} outside the allowlist, truncated: ${result.truncated ? "yes" : "no"}`
+  ].join("\n");
+}
+async function queueCommand(argv, deps) {
+  const sources = [];
+  for (const [index, arg] of argv.entries()) {
+    if (arg !== "--source") continue;
+    const value = argv[index + 1];
+    if (value === void 0 || !QUEUE_SOURCES.includes(value)) {
+      deps.err(`--source takes one of ${QUEUE_SOURCES.join(", ")}.`);
+      return 2;
+    }
+    sources.push(value);
+  }
+  let max;
+  const maxIndex = argv.indexOf("--max");
+  if (maxIndex !== -1) {
+    max = Number(argv[maxIndex + 1]);
+    if (!Number.isInteger(max) || max <= 0) {
+      deps.err("--max takes a whole number above zero.");
+      return 2;
+    }
+  }
+  const config2 = deps.config;
+  for (const warning of config2?.warnings ?? []) deps.err(`Warning: ${warning}`);
+  if (config2 === null || config2.allowlist.length === 0) {
+    deps.err("No repositories are allowlisted. Run /review-voice:init first.");
+    return 2;
+  }
+  const queue = {
+    ...config2.queue,
+    // Teams turn the team search on whether or not `team` is listed; an
+    // explicit --source list is taken as it is.
+    sources: sources.length > 0 ? [...new Set(sources)] : [.../* @__PURE__ */ new Set([...config2.queue.sources, ...config2.queue.teams.length > 0 ? ["team"] : []])],
+    maxPerPass: max ?? config2.queue.maxPerPass
+  };
+  if (sources.includes("team") && queue.teams.length === 0) {
+    deps.err("--source team needs queue.teams in the config.");
+    return 2;
+  }
+  const client = deps.client(config2.allowlist);
+  const { data: viewer } = await client.get("/user");
+  if (typeof viewer?.login !== "string" || viewer.login.length === 0) {
+    deps.err("Could not read the authenticated GitHub user.");
+    return 1;
+  }
+  const db = deps.openDb();
+  try {
+    const result = await buildQueue({ client, db, config: queue, me: viewer.login, now: deps.now });
+    deps.out(argv.includes("--json") ? JSON.stringify(result, null, 2) : renderQueue(result));
+    return 0;
+  } finally {
+    db.close();
+  }
 }
 
 // plugins/review-voice/src/consent/purge.ts
@@ -16162,17 +16651,17 @@ function classifyReply(body) {
 }
 function patchTouches(patch, first, last) {
   let oldLine = 0;
-  for (const line2 of patch.split("\n")) {
-    const header = /^@@ -(\d+)(?:,\d+)? \+\d+/.exec(line2);
+  for (const line3 of patch.split("\n")) {
+    const header = /^@@ -(\d+)(?:,\d+)? \+\d+/.exec(line3);
     if (header !== null) {
       oldLine = Number(header[1]);
       continue;
     }
-    if (line2.startsWith("\\")) continue;
-    if (line2.startsWith("-")) {
+    if (line3.startsWith("\\")) continue;
+    if (line3.startsWith("-")) {
       if (oldLine >= first && oldLine <= last) return true;
       oldLine += 1;
-    } else if (line2.startsWith("+")) {
+    } else if (line3.startsWith("+")) {
       if (oldLine > first && oldLine <= last) return true;
     } else {
       oldLine += 1;
@@ -16686,10 +17175,10 @@ function candidateSetAgreement(db) {
     }
     const list = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
     const located = list.map((candidate) => {
-      const line2 = Number(candidate["line"]);
+      const line3 = Number(candidate["line"]);
       return {
         path: String(candidate["path"] ?? ""),
-        line: Number.isFinite(line2) ? line2 : null
+        line: Number.isFinite(line3) ? line3 : null
       };
     }).filter((entry) => entry.path !== "");
     if (located.length === 0) continue;
@@ -16997,9 +17486,9 @@ function pullRequestComplexity(run, loadRun) {
   }
   return found;
 }
-var MAX_REVIEWS = 300;
+var MAX_REVIEWS2 = 300;
 async function standingOwnerReview(client, repository, pullNumber, owner) {
-  const reviews = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`, MAX_REVIEWS);
+  const reviews = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`, MAX_REVIEWS2);
   const deciding = reviews.filter(
     (review) => typeof review.user?.login === "string" && review.user.login.toLowerCase() === owner.toLowerCase() && (review.state === "APPROVED" || review.state === "CHANGES_REQUESTED" || review.state === "DISMISSED")
   );
@@ -17737,7 +18226,8 @@ var COMMAND_HELP = {
       "  --dry-run                 Report the import without storing it",
       "Reads: nothing on stdin (reads GitHub, read-only).",
       "Writes: events and watermarks to the local store (not with --dry-run); JSON summary on stdout.",
-      "Exit codes: 0 ok, 2 no allowlist, no owner reviewer, bad --since, or credential problem."
+      "Exit codes: 0 ok, 2 no allowlist (owner/* patterns are skipped, not expanded),",
+      "  no owner reviewer, bad --since, or credential problem."
     )
   },
   discover: {
@@ -17974,6 +18464,26 @@ var COMMAND_HELP = {
       "  3 the head moved, 4 CI still running on an approval, 5 CI red, 6 CI needs a rerun,",
       '  8 the thread re-check found a finding someone else raised ({refused: "thread-changed",',
       "  findings: [{path, line, raisedBy, commentUrl}]}); nothing is sent."
+    )
+  },
+  queue: {
+    summary: "List the pull requests that need your review (reads only)",
+    body: lines(
+      "review-voice queue [flags]",
+      "  List the open pull requests in the allowlist that need your review, oldest first,",
+      "  with the queue.skip rules applied. Reads only.",
+      "",
+      "Flags:",
+      "  --source <s>           Only this source, repeatable: requested, assigned, team,",
+      "                         follow-up or dismissed (default queue.sources, plus team",
+      "                         when queue.teams is set)",
+      "  --max <n>              REVIEW entries to list; the rest are not reached",
+      "                         (default queue.max_per_pass, 20)",
+      "  --json                 Emit { entries, notReached, outsideAllowlist, truncated }",
+      "Reads: nothing on stdin; GitHub search and pull requests (read-only), the local store and config.",
+      "Writes: one line per entry on stdout (REVIEW, VERDICT-ONLY, RECHECK-CI or SKIP with its",
+      "  rule), then a totals line; or JSON with --json. Nothing is written to the store.",
+      "Exit codes: 0 ok, 1 a GitHub read failed, 2 bad invocation, empty allowlist or credential problem."
     )
   },
   record: {
@@ -18400,8 +18910,8 @@ function remoteRepositories(cwd) {
     return [];
   }
   const slugs = [];
-  for (const line2 of out.split("\n")) {
-    const match = /^remote\.(.+)\.url\s+.*github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(line2.trim());
+  for (const line3 of out.split("\n")) {
+    const match = /^remote\.(.+)\.url\s+.*github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(line3.trim());
     if (match === null) continue;
     if (match[1] === "origin") slugs.unshift(match[2]);
     else slugs.push(match[2]);
@@ -18809,6 +19319,13 @@ async function discoverCommand() {
   console.log(JSON.stringify({ repositories }, null, 2));
   return 0;
 }
+function namedRepositories(entries, command) {
+  return entries.filter((entry) => {
+    if (!entry.includes("*")) return true;
+    console.error(`${entry} is a pattern; ${command} reads only repositories listed by name.`);
+    return false;
+  });
+}
 function consentPlanCommand(argv) {
   const root = repositoryRoot(process.cwd());
   const config2 = loadConfig(root);
@@ -18817,7 +19334,10 @@ function consentPlanCommand(argv) {
     console.error("No owner reviewer yet. Pass --owner <login>.");
     return 2;
   }
-  const repositories = argv.includes("--repo") ? argv.filter((_, index) => argv[index - 1] === "--repo") : config2.allowlist;
+  const repositories = namedRepositories(
+    argv.includes("--repo") ? argv.filter((_, index) => argv[index - 1] === "--repo") : config2.allowlist,
+    "consent-plan"
+  );
   if (repositories.length === 0) {
     console.error("No repositories selected. Pass --repo <owner/repo>, or allowlist some first.");
     return 2;
@@ -18868,11 +19388,13 @@ async function syncCommand(argv) {
     console.error("No repositories are allowlisted. Run /review-voice:init first.");
     return 2;
   }
+  const repositories = namedRepositories(config2.allowlist, "sync");
+  if (repositories.length === 0) return 2;
   if (config2.ownerReviewer === null) {
     console.error("No owner reviewer configured. Run /review-voice:init first.");
     return 2;
   }
-  const defaultTarget = scaledTarget(config2.allowlist.length);
+  const defaultTarget = scaledTarget(repositories.length);
   const explicitTarget = argv.includes("--target") ? numericFlag(argv, "--target", defaultTarget) : void 0;
   const window = resolveSyncWindow({
     quick: argv.includes("--quick"),
@@ -18886,11 +19408,11 @@ async function syncCommand(argv) {
   const target = window.target ?? defaultTarget;
   const updatedSince = window.updatedSince;
   const maxPulls = numericFlag(argv, "--max-pulls", 60) ?? 60;
-  const repositoryShare = scaledRepositoryShare(config2.allowlist.length);
+  const repositoryShare = scaledRepositoryShare(repositories.length);
   const dryRun = argv.includes("--dry-run");
-  const client = new GitHubClient({ allowlist: config2.allowlist });
+  const client = new GitHubClient({ allowlist: repositories });
   const stateDb = openDatabase();
-  const syncRunId = beginSyncRun(stateDb, config2.allowlist);
+  const syncRunId = beginSyncRun(stateDb, repositories);
   const stats = {
     pullRequestsScanned: 0,
     pullRequestsUnchanged: 0,
@@ -18902,8 +19424,8 @@ async function syncCommand(argv) {
   };
   const collected = [];
   const pendingWatermarks = [];
-  for (const [index, repository] of config2.allowlist.entries()) {
-    console.error(`[${index + 1}/${config2.allowlist.length}] reading ${repository} ...`);
+  for (const [index, repository] of repositories.entries()) {
+    console.error(`[${index + 1}/${repositories.length}] reading ${repository} ...`);
     const watermarks = dryRun ? void 0 : loadWatermarks(stateDb, repository);
     const result = await collectRepository(
       client,
@@ -20500,10 +21022,10 @@ function carryCommand(argv) {
 }
 function reanchorCommand(argv) {
   const candidateId = flag(argv, "--candidate");
-  const line2 = Number(flag(argv, "--line"));
+  const line3 = Number(flag(argv, "--line"));
   const scoresFile = flag(argv, "--scores");
   const diffFile = flag(argv, "--diff-file");
-  if (candidateId === null || !Number.isInteger(line2) || line2 < 1 || scoresFile === null || diffFile === null) {
+  if (candidateId === null || !Number.isInteger(line3) || line3 < 1 || scoresFile === null || diffFile === null) {
     console.error("Usage: reanchor --candidate <id> --line <n> [--path <p>] --scores <file> --diff-file <patch> [--candidates <file>]");
     return 2;
   }
@@ -20521,7 +21043,7 @@ function reanchorCommand(argv) {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
-  const result = reanchorScores(scores, candidateId, { path: flag(argv, "--path"), line: line2 }, hunks);
+  const result = reanchorScores(scores, candidateId, { path: flag(argv, "--path"), line: line3 }, hunks);
   if (!result.ok) {
     console.error(`Not re-anchored: ${result.refused}`);
     return 1;
@@ -20788,9 +21310,9 @@ function carryCandidatesCommand(argv) {
     );
     for (const entry of heldIn?.list ?? []) {
       const path = entry["path"];
-      const line2 = entry["line"];
-      const moved = followLine(since, head, path, line2, process.cwd());
-      if ("reason" in moved) heldDropped.push({ path, line: line2, reason: moved.reason });
+      const line3 = entry["line"];
+      const moved = followLine(since, head, path, line3, process.cwd());
+      if ("reason" in moved) heldDropped.push({ path, line: line3, reason: moved.reason });
       else heldKept.push({ ...entry, line: moved.line });
     }
   } catch (error) {
@@ -21697,7 +22219,7 @@ function statusCommand() {
     let maxRepositoryShare;
     try {
       const config2 = loadConfig(repositoryRoot(process.cwd()));
-      allowlist = config2.allowlist;
+      allowlist = namedRepositories(config2.allowlist, "status");
       maxRepositoryShare = scaledRepositoryShare(allowlist.length);
     } catch {
     }
@@ -21836,6 +22358,15 @@ ${topLevelHelp()}`);
       return await postCommand(argv.slice(1));
     case "post-check":
       return postCheckCommand();
+    case "queue":
+      return await queueCommand(argv.slice(1), {
+        config: repositoryConfig(),
+        client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true }),
+        openDb: () => openDatabase(),
+        now: /* @__PURE__ */ new Date(),
+        out: (text4) => console.log(text4),
+        err: (text4) => console.error(text4)
+      });
     case "calibrate":
       return calibrateCommand();
     case "policy":

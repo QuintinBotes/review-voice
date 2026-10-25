@@ -819,6 +819,25 @@ document that is exactly one of a fixed set of queries is sent, with only the
 variables it declares and the repository from the allowlist; anything else is
 refused before it is sent (ADR 0018).
 
+Search is the one read that can name any repository, so it has its own door
+(ADR 0026). `searchPullRequests` sends `GET /search/issues` with a query it
+builds from a typed source (`requested`, `assigned`, `reviewed`, or
+`team:<org>/<slug>` with both names checked), always with `is:pr is:open
+draft:false`, at most five numbered pages. No caller text reaches the query,
+and `get` refuses any search path, relative or absolute. Each result's
+repository is matched against the allowlist before it is returned; one outside
+it is counted and never read further. An allowlist entry is `owner/repo` or
+`owner/*`, and only the queue's client accepts `owner/*`; every other client,
+and any bare `*` or other glob, is refused when the client is built.
+
+Every request path, relative or absolute, is resolved against the API root
+before it is sent. Another origin is refused, so the token never leaves the API
+host. A dot segment or an encoded dot, slash or backslash in the path is
+refused, and the allowlist is checked on the resolved path. A pagination link
+contributes only its query, applied to the path just read, because GitHub may
+spell the next page as `/repositories/{id}/...`, which names no repository; a
+request to that id form is refused.
+
 The allowlist matters more than it looks. The credential comes from `gh` and
 carries whatever scopes the user already had - almost always broader than
 Review Voice needs. So the allowlist, not the token, is what actually bounds

@@ -189,7 +189,7 @@ queue:                               # ADR 0026
   max_per_pass: 20
   skip:
     authors: [carol]                 # never review these authors
-    author_patterns: ['\[bot\]$', 'bot$', '^renovate', '^dependabot']
+    author_patterns: ['\[bot\]$', '-bot$', '^renovate', '^dependabot']
     allow_bots_when_requested: true  # a bot PR that requests the owner personally is reviewed
     assigned_to: [carol]             # skip PRs assigned to these logins
     approved_at_head_by: { logins: [release-bot], sources: [team] }

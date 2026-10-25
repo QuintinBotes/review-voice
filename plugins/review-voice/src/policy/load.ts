@@ -9,6 +9,8 @@ import { DEFAULT_STRUCTURE, type StructureConfig } from '../diff/structure.ts';
 import { DEFAULT_VERDICT_POLICY, type VerdictPolicy } from '../publish/verdict.ts';
 import { CHANGE_KINDS, MODEL_KEYS, MODES, type ChangeKind, type ModelOverrides, type RequestedMode, type Tier } from '../review/plan.ts';
 import { agentExists, DIFF_LANE, LANE_TIERS, type Lane } from '../review/lanes.ts';
+import { allowlistEntryProblem } from '../github/client.ts';
+import { defaultQueueConfig, QUEUE_SOURCES, type QueueConfig, type QueueSource } from '../queue/config.ts';
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
@@ -27,7 +29,10 @@ export interface LoadedConfig {
   ciGateChecks: GateCheck[];
   /** Stuck thresholds and rerun signatures from `ci:`; empty means the built-in defaults (docs/adr/0013). */
   ciRules: CiRules;
+  /** `owner/repo` and `owner/*` entries (docs/adr/0026). */
   allowlist: string[];
+  /** What `queue` lists and skips (docs/adr/0026). */
+  queue: QueueConfig;
   staticEvidence: { enabled: boolean; commands: { name: string; run: string; timeoutSeconds?: number }[] };
   /** A second, ideally different-model, verification pass. Off by default. */
   verification: {
@@ -357,6 +362,106 @@ function readVerdictPolicy(block: Record<string, unknown> | null, result: Loaded
   policy.recheckThreadBeforePost = enabled('recheck_thread_before_post', DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
 }
 
+const TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * The `queue:` block. A value of the wrong shape keeps the default and says
+ * so; a bad entry in a list is dropped and named.
+ */
+function readQueue(block: Record<string, unknown> | null, result: LoadedConfig): void {
+  if (block === null) return;
+  const queue = result.queue;
+
+  const list = (value: unknown, key: string): unknown[] | undefined => {
+    if (value === undefined) return undefined;
+    if (Array.isArray(value)) return value;
+    result.warnings.push(`queue.${key} must be a list; using the default.`);
+    return undefined;
+  };
+  const logins = (value: unknown, key: string): string[] | undefined => {
+    const entries = list(value, key);
+    if (entries === undefined) return undefined;
+    const kept: string[] = [];
+    for (const entry of entries) {
+      if (typeof entry === 'string' && entry.length > 0) kept.push(entry);
+      else result.warnings.push(`queue.${key}: ${JSON.stringify(entry)} is not a login; skipping it.`);
+    }
+    return kept;
+  };
+  const sourceList = (value: unknown, key: string): QueueSource[] | undefined => {
+    const entries = list(value, key);
+    if (entries === undefined) return undefined;
+    const kept: QueueSource[] = [];
+    for (const entry of entries) {
+      if (typeof entry === 'string' && (QUEUE_SOURCES as readonly string[]).includes(entry)) kept.push(entry as QueueSource);
+      else result.warnings.push(`queue.${key}: ${JSON.stringify(entry)} is not one of ${QUEUE_SOURCES.join(', ')}; skipping it.`);
+    }
+    return kept;
+  };
+  const wholeAboveZero = (key: string): number | undefined => {
+    const value = block[key];
+    if (value === undefined) return undefined;
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
+    result.warnings.push(`queue.${key} must be a whole number above zero; using the default.`);
+    return undefined;
+  };
+  const flag = (record: Record<string, unknown>, key: string): boolean | undefined => {
+    const value = record[key];
+    if (value === undefined) return undefined;
+    if (typeof value === 'boolean') return value;
+    result.warnings.push(`queue.skip.${key} must be true or false; using the default.`);
+    return undefined;
+  };
+
+  queue.sources = sourceList(block['sources'], 'sources') ?? queue.sources;
+  const teams = list(block['teams'], 'teams');
+  if (teams !== undefined) {
+    queue.teams = [];
+    for (const entry of teams) {
+      if (typeof entry === 'string' && TEAM.test(entry)) queue.teams.push(entry);
+      else result.warnings.push(`queue.teams: ${JSON.stringify(entry)} is not org/team-slug; skipping it.`);
+    }
+  }
+  queue.maxPerPass = wholeAboveZero('max_per_pass') ?? queue.maxPerPass;
+  queue.followUpDays = wholeAboveZero('follow_up_days') ?? queue.followUpDays;
+
+  if (block['skip'] === undefined) return;
+  const skip = asRecord(block['skip']);
+  if (skip === null) {
+    result.warnings.push('queue.skip must be a mapping; using the defaults.');
+    return;
+  }
+  queue.skip.authors = logins(skip['authors'], 'skip.authors') ?? queue.skip.authors;
+  queue.skip.assignedTo = logins(skip['assigned_to'], 'skip.assigned_to') ?? queue.skip.assignedTo;
+  const patterns = list(skip['author_patterns'], 'skip.author_patterns');
+  if (patterns !== undefined) {
+    queue.skip.authorPatterns = [];
+    for (const entry of patterns) {
+      try {
+        if (typeof entry !== 'string' || entry.length === 0) throw new Error('not text');
+        new RegExp(entry, 'i');
+        queue.skip.authorPatterns.push(entry);
+      } catch {
+        result.warnings.push(`queue.skip.author_patterns: ${JSON.stringify(entry)} is not a regular expression; skipping it.`);
+      }
+    }
+  }
+  queue.skip.allowBotsWhenRequested = flag(skip, 'allow_bots_when_requested') ?? queue.skip.allowBotsWhenRequested;
+  queue.skip.drafts = flag(skip, 'drafts') ?? queue.skip.drafts;
+
+  if (skip['approved_at_head_by'] !== undefined) {
+    const approved = asRecord(skip['approved_at_head_by']);
+    if (approved === null) {
+      result.warnings.push('queue.skip.approved_at_head_by must be a mapping; ignoring it.');
+    } else {
+      queue.skip.approvedAtHeadBy = {
+        logins: logins(approved['logins'], 'skip.approved_at_head_by.logins') ?? [],
+        sources: sourceList(approved['sources'], 'skip.approved_at_head_by.sources') ?? queue.skip.approvedAtHeadBy.sources,
+      };
+    }
+  }
+}
+
 function contentHash(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
@@ -438,6 +543,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
     ciGateChecks: [],
     ciRules: {},
     allowlist: [],
+    queue: defaultQueueConfig(),
     staticEvidence: { enabled: false, commands: [] },
     verification: { enabled: false, command: '', blockPresent: false },
     humanReview: {
@@ -468,7 +574,15 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
         }
         readReviewers(identity, result);
         const repositories = asRecord(doc['repositories']);
-        result.allowlist = asStringArray(repositories?.['include']);
+        for (const entry of asStringArray(repositories?.['include'])) {
+          const problem = allowlistEntryProblem(entry);
+          if (problem === null) result.allowlist.push(entry);
+          else result.warnings.push(`repositories.include: ${problem} Skipping it.`);
+        }
+        if (doc['queue'] !== undefined && asRecord(doc['queue']) === null) {
+          result.warnings.push('queue must be a mapping; using the defaults.');
+        }
+        readQueue(asRecord(doc['queue']), result);
 
         const staticEvidence = asRecord(doc['static_evidence']);
         if (staticEvidence !== null) {
