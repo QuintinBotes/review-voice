@@ -19,6 +19,7 @@ function repository() {
   const git = (...args) => execFileSync('git', args, { cwd: directory, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');
   git('config', 'user.name', 'Test');
+  git('config', 'user.email', 'test@example.com');
   git('config', 'user.useConfigOnly', 'false');
   mkdirSync(join(directory, '.review-voice'));
   mkdirSync(join(directory, 'src'));
