@@ -145,6 +145,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and GitHub's `/repositories/{id}/...` form, which names no repository, is
   refused. (ADR 0026)
 
+- `agent --name <agent> --model <model> --schema <file.json> [--cwd <dir>]
+  [--timeout <seconds>]` runs one agent as its own `claude -p --restricted`
+  process in the clone and prints its schema-valid output with the cost and
+  seconds. Agents get read-only file tools only (`Read`, `Grep`, `Glob`): a
+  declared `Bash(git:*)` is dropped, because git options can run arbitrary
+  commands, and any other tool is refused before anything starts. A call past
+  its timeout (default 10 minutes, at most 3600 seconds) is killed with
+  everything it started, as is every live agent when the CLI is interrupted.
+  `REVIEW_VOICE_FAKE_AGENTS=<dir>` serves canned output instead, for tests.
+  `doctor` reports whether `claude` is installed, without failing when it is
+  not. (ADR 0021)
+
 ## [1.18.0] - 2026-10-24
 
 ### Added

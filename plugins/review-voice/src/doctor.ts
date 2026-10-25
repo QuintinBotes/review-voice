@@ -50,6 +50,25 @@ function checkBinary(name: string, args: string[]): Check {
   }
 }
 
+/**
+ * Only `review` and `watch` start agents, so a missing claude is reported but
+ * never fails doctor (docs/adr/0021).
+ */
+function checkClaude(): Check {
+  const bin = process.env['REVIEW_VOICE_CLAUDE_BIN'] || 'claude';
+  const found = checkBinary(bin, ['--version']);
+  return {
+    name: 'claude',
+    ok: found.ok,
+    detail: found.ok
+      ? `found (login not checked): ${found.detail}`
+      : `${bin} not found on PATH (needed only by review and watch)`,
+  };
+}
+
+/** Checks reported for information; their failure does not fail doctor. */
+export const OPTIONAL_CHECKS = new Set(['gh', 'claude']);
+
 export function runDoctor(): Check[] {
   return [
     checkNode(),
@@ -57,5 +76,6 @@ export function runDoctor(): Check[] {
     checkBinary('git', ['--version']),
     // gh is how Review Voice borrows GitHub credentials; see docs/adr/0002.
     checkBinary('gh', ['--version']),
+    checkClaude(),
   ];
 }
