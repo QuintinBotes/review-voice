@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `review --pr <n> [--repository <owner/repo>] [--mode <mode>] [--post]
+  [--no-recheck-thread] [--expect-head <sha>] [--out <dir>] [--since <sha>]
+  [--full] [--json]` reviews one pull request end to end. It walks a fixed stage table, calling the
+  existing command for every step and check and launching each agent through
+  the confined runner in a worktree of the head, with base copies and history
+  of the changed files on disk. A refused agent output is relaunched once, and
+  a second refusal stops the run with exit 7 and nothing recorded. An
+  unchanged scope carries the earlier run. The head is checked again before
+  `record` (exit 3), and `--expect-head` names the head the caller expects.
+  The head checkout runs no repository code: hooks, LFS filters, fsmonitor and
+  submodules are off. The worktree is removed on every exit, SIGINT and
+  SIGTERM included. `--post` posts through `post` and its guards, re-reading
+  the thread first unless `--no-recheck-thread` is given.
+  `REVIEW_VOICE_NO_COMMANDS=1` skips the static evidence and second-pass
+  commands. Recorded stages now keep each agent's model, one per call, and its
+  cost. In `fast` mode a challenger's corrected line cannot land on an
+  unchallenged nit. Fixes #207. (ADR 0022)
+
 - `plan --files <files.json> --diff-file <diff.patch> [--mode]` prints the
   stage plan a cost mode resolves to: which review stages run and on which
   model. `fast`, `standard` and `thorough` follow the table in the spec, and

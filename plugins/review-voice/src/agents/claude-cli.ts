@@ -32,14 +32,28 @@ export function agentTimeoutMs(spec: AgentSpec): number {
  * reaches them. While any is live, SIGINT and SIGTERM kill every group first.
  */
 const live = new Set<ChildProcess>();
+let signalsOwned = false;
+
+/** Kills every live agent's process group. */
+export function stopAll(): void {
+  for (const child of live) killTree(child);
+}
+
+/**
+ * The review driver handles SIGINT and SIGTERM itself while it runs, so it can
+ * remove its worktree after stopAll and before it exits.
+ */
+export function ownSignals(owned: boolean): void {
+  signalsOwned = owned;
+}
 
 function onSignal(signal: NodeJS.Signals): void {
-  for (const child of live) killTree(child);
+  stopAll();
   process.exit(signal === 'SIGINT' ? 130 : 143);
 }
 
 function track(child: ChildProcess): void {
-  if (live.size === 0) {
+  if (live.size === 0 && !signalsOwned) {
     process.on('SIGINT', onSignal);
     process.on('SIGTERM', onSignal);
   }
