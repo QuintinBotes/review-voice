@@ -7,6 +7,7 @@ import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publi
 import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
 import { DEFAULT_STRUCTURE, type StructureConfig } from '../diff/structure.ts';
 import { MODEL_KEYS, MODES, type ModelOverrides, type RequestedMode } from '../review/plan.ts';
+import { DEFAULT_VERDICT_POLICY, type VerdictPolicy } from '../publish/verdict.ts';
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
@@ -50,6 +51,8 @@ export interface LoadedConfig {
   structure: StructureConfig;
   /** `review.mode` and `review.models` (docs/adr/0025). */
   costMode: { mode: RequestedMode; models: ModelOverrides };
+  /** `verdict:` and `review.human_review.cap_approval`; see docs/adr/0028. */
+  verdictPolicy: VerdictPolicy;
   layers: PolicyLayer[];
   /** Repository-supplied layers awaiting owner approval. */
   unapproved: { source: string; contentHash: string }[];
@@ -97,6 +100,12 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
   result.humanReview.sensitiveExemptPaths = globs('sensitive_exempt_paths') ?? result.humanReview.sensitiveExemptPaths;
   result.humanReview.testPaths = globs('test_paths') ?? result.humanReview.testPaths;
   result.humanReview.generatedPaths = globs('generated_paths') ?? result.humanReview.generatedPaths;
+
+  const cap = block['cap_approval'];
+  if (cap !== undefined) {
+    if (typeof cap === 'boolean') result.verdictPolicy.capApproval = cap;
+    else result.warnings.push('review.human_review.cap_approval must be true or false; using true.');
+  }
 
   const structure = block['structure'];
   if (structure === undefined) return;
@@ -250,6 +259,31 @@ function readCiRules(block: Record<string, unknown> | null, result: LoadedConfig
   }
 }
 
+/** Each setting on its own: a bad value warns and keeps that setting's default. */
+function readVerdictPolicy(block: Record<string, unknown> | null, result: LoadedConfig): void {
+  if (block === null) return;
+  const choice = <T extends string>(key: string, options: readonly T[], fallback: T): T => {
+    const value = block[key];
+    if (value === undefined) return fallback;
+    if (typeof value === 'string' && (options as readonly string[]).includes(value)) return value as T;
+    result.warnings.push(`verdict.${key} must be one of ${options.join(', ')}; using ${fallback}.`);
+    return fallback;
+  };
+  const enabled = (key: string, fallback: boolean): boolean => {
+    const value = block[key];
+    if (value === undefined) return fallback;
+    if (typeof value === 'boolean') return value;
+    result.warnings.push(`verdict.${key} must be true or false; using ${String(fallback)}.`);
+    return fallback;
+  };
+  const policy = result.verdictPolicy;
+  policy.ciPending = choice('ci_pending', ['wait', 'proceed'], DEFAULT_VERDICT_POLICY.ciPending);
+  policy.ciRed = choice('ci_red', ['cap', 'annotate'], DEFAULT_VERDICT_POLICY.ciRed);
+  policy.ciNeedsRerun = choice('ci_needs_rerun', ['hold', 'annotate'], DEFAULT_VERDICT_POLICY.ciNeedsRerun);
+  policy.carryApprovalOnUnchanged = enabled('carry_approval_on_unchanged', DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
+  policy.recheckThreadBeforePost = enabled('recheck_thread_before_post', DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
+}
+
 function contentHash(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
@@ -343,6 +377,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
     },
     structure: { ...DEFAULT_STRUCTURE },
     costMode: { mode: 'auto', models: {} },
+    verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
     layers: [],
     unapproved: [],
     warnings: [],
@@ -403,6 +438,12 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
         }
 
         readCiRules(ci, result);
+
+        if (doc['verdict'] !== undefined) {
+          const verdict = asRecord(doc['verdict']);
+          if (verdict === null) result.warnings.push('verdict must be a mapping; using the defaults.');
+          readVerdictPolicy(verdict, result);
+        }
 
         const verification = asRecord(doc['verification']);
         if (verification !== null) {

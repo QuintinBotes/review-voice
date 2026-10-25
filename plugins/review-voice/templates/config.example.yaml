@@ -71,6 +71,9 @@ review:
   human_review:
     max_decision_points: 40         # branches added across the whole change
     max_hunk_decision_points: 15    # branches added in the densest hunk
+    # false lets a clean high-complexity change approve; the local note and
+    # flag stay, and nothing about it is posted (docs/adr/0028).
+    cap_approval: true
     # Opt in only when either structural regression should leave approval to a
     # human. These cap APPROVE at COMMENT; they do not add a finding or text to
     # the posted review (docs/adr/0020).
@@ -135,6 +138,29 @@ ci:
   rerun_signatures: []
   # Set to false to use only the phrases listed above.
   builtin_rerun_signatures: true
+
+# How the verdict treats CI and an unchanged scope (docs/adr/0028). The
+# defaults are the original rules. A moved head, the single writer endpoint,
+# the idempotency key and the CI re-read before an approval always apply.
+verdict:
+  # wait | proceed. proceed approves while CI is still running, so an approval
+  # can land on a head CI has not cleared.
+  ci_pending: wait
+  # cap | annotate. cap posts COMMENT instead of APPROVE on red CI; annotate
+  # keeps the event and adds "Heads up: <checks> failing on this head."
+  ci_red: cap
+  # hold | annotate. hold posts nothing until a check that needs a rerun has
+  # been rerun; annotate posts the code verdict and adds "Heads up: <checks>
+  # need a rerun." Annotations name at most five checks.
+  ci_needs_rerun: hold
+  # true posts nothing when a clean approval's scope is unchanged since the
+  # commit the owner approved and that approval still stands (it needs
+  # identity.owner_reviewer).
+  carry_approval_on_unchanged: false
+  # true re-reads the thread just before posting and refuses (exit 8) if
+  # someone else raised one of the findings meanwhile, as post
+  # --recheck-thread does.
+  recheck_thread_before_post: false
 
 static_evidence:
   # Commands are opt-in. Review Voice will suggest what it detects but never
