@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/QuintinBotes/review-voice/schemas/challenge.schema.json",
+  "title": "Challenge verdicts",
+  "description": "Output of the challenger agent: one verdict per eligible finding. `challenge` also refuses a set that skips an eligible finding, names one that is not eligible, or whose corrected_line is the line already anchored on.",
+  "type": "object",
+  "required": ["verdicts"],
+  "additionalProperties": false,
+  "properties": {
+    "verdicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "verdict", "line_ok", "decisive_evidence", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": { "type": "string", "minLength": 1 },
+          "verdict": { "enum": ["confirmed", "partly", "refuted"] },
+          "line_ok": {
+            "type": "boolean",
+            "description": "True only when the anchored line is the one the claim is about."
+          },
+          "corrected_line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The right line in the same file, only when line_ok is false. It must be an added line or deletion site of the diff, or the move is refused and the finding held."
+          },
+          "decisive_evidence": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^\\S(.*\\S)?:[0-9]+(-[0-9]+)?$" },
+            "description": "The path:line references the verdict turns on."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required non-empty on partly and refuted. A worse impact than the claim states is noted here; it never raises the tier."
+          }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "verdict": { "const": "confirmed" } } },
+            "then": { "properties": { "decisive_evidence": { "minItems": 1 } } }
+          },
+          {
+            "if": { "properties": { "verdict": { "const": "confirmed" }, "line_ok": { "const": false } } },
+            "then": { "required": ["corrected_line"] }
+          },
+          {
+            "if": { "properties": { "line_ok": { "const": true } } },
+            "then": { "not": { "required": ["corrected_line"] } }
+          },
+          {
+            "if": { "properties": { "verdict": { "enum": ["partly", "refuted"] } } },
+            "then": { "properties": { "reason": { "pattern": "\\S" } } }
+          }
+        ]
+      }
+    }
+  }
+}
