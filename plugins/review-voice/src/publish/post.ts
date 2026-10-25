@@ -529,6 +529,9 @@ function recordedCandidates(db: Database, runId: string): Candidate[] {
   });
 }
 
+/** Shortest colleague text that counts as pasted from this tool's own review. */
+const PASTED_TEXT_MIN = 40;
+
 /**
  * The payload's findings that someone other than the token's user raised on
  * the pull request after the run was recorded, read fresh just before sending
@@ -537,9 +540,6 @@ function recordedCandidates(db: Database, runId: string): Candidate[] {
  * `check-candidates --thread` drops a repeat by, so a point is a repeat here
  * exactly when it would have been one there. GET only.
  */
-/** Shortest colleague text that counts as pasted from this tool's own review. */
-const PASTED_TEXT_MIN = 40;
-
 async function raisedByOthers(
   options: { client: GitHubClient; repository: string; pullNumber: number; db: Database },
   run: RunDetail,
