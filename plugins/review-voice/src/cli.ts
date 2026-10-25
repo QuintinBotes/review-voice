@@ -76,6 +76,7 @@ import {
 } from './store/runs.ts';
 import { heldBackFindings, parseThreadFile, postedReviewIds } from './diff/held.ts';
 import { carryCandidates, carryFindings, CarryError, commitReadable, followLine, seriousNotCarried, type CarriedFinding } from './diff/carry.ts';
+import { productionChange, resolvePlan, MODES, type RequestedMode } from './review/plan.ts';
 import { candidateAnchor, reanchorCandidates, reanchorScores } from './diff/reanchor.ts';
 import { fetchPriorHead, latestOwnReview, resolveCommit, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
@@ -1151,6 +1152,54 @@ function reviewTarget(argv: string[], command: string): ReviewTarget | string {
   const review = readStdin();
   if (review.trim().length === 0) return 'Nothing on stdin. Pipe the validated review in.';
   return { repository, pullNumber, head, review, runId: flag(argv, '--run') ?? undefined };
+}
+
+function planCommand(argv: string[]): number {
+  const filesPath = flag(argv, '--files');
+  const diffPath = flag(argv, '--diff-file');
+  const modeFlag = flag(argv, '--mode');
+  const requested = MODES.find((mode) => mode === modeFlag);
+  if (filesPath === null || diffPath === null || (argv.includes('--mode') && requested === undefined)) {
+    console.error('Usage: plan --files <files.json> --diff-file <diff.patch> [--mode fast|standard|thorough|auto]');
+    return 2;
+  }
+
+  let manifest: Record<string, unknown>;
+  let diffText: string;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(filesPath, 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('not a JSON object');
+    manifest = parsed as Record<string, unknown>;
+    diffText = readFileSync(diffPath, 'utf8');
+  } catch (error) {
+    console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const files = manifest['files'];
+  if (!Array.isArray(files) || !files.every((file) => typeof file === 'object' && file !== null && typeof file.path === 'string')) {
+    console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
+    return 2;
+  }
+
+  const config = repositoryConfig();
+  for (const warning of config?.warnings ?? []) console.error(`Warning: ${warning}`);
+  const changed = files as ChangedFile[];
+  const generated = markedGenerated({ ...manifest, diff: diffText } as unknown as EmittedDiff);
+  const change = productionChange(changed, diffText, config?.humanReview, generated);
+  const complexity = asLevel(manifest['complexity']);
+  const plan = resolvePlan({
+    requested: (requested ?? config?.costMode.mode ?? 'auto') as RequestedMode,
+    models: config?.costMode.models ?? {},
+    ...change,
+    complexity,
+    secondPassConfigured: config?.verification.enabled ?? false,
+  });
+  console.log(JSON.stringify(plan, null, 2));
+  return 0;
+}
+
+function asLevel(value: unknown): 'normal' | 'high' {
+  return typeof value === 'object' && value !== null && (value as { level?: unknown }).level === 'high' ? 'high' : 'normal';
 }
 
 function repositoryConfig(): ReturnType<typeof loadConfig> | null {
@@ -4624,6 +4673,9 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'carry':
       return carryCommand(argv.slice(1));
+
+    case 'plan':
+      return planCommand(argv.slice(1));
 
     case 'reanchor':
       return reanchorCommand(argv.slice(1));

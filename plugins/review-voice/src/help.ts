@@ -509,6 +509,24 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       'Exit codes: 0 ok, 1 with --text nothing carried or a serious finding did not, 2 bad invocation.',
     ),
   },
+  plan: {
+    summary: 'Print the stage plan a cost mode resolves to',
+    body: lines(
+      'review-voice plan --files <files.json> --diff-file <diff.patch> [--mode fast|standard|thorough|auto]',
+      '  Print which review stages run and on which model, as JSON (docs/adr/0025).',
+      '  `auto` picks fast when no production source changed, thorough when',
+      '  complexity is high or over 150 production lines changed, else standard.',
+      '',
+      'Flags:',
+      '  --files <path>         files.json from `diff --out` (required)',
+      '  --diff-file <path>     diff.patch from `diff --out` (required)',
+      '  --mode <mode>          fast, standard, thorough or auto; beats review.mode',
+      'Reads: --files, --diff-file, and review.mode, review.models and verification.enabled',
+      '  from .review-voice/config.yaml when the working directory has one.',
+      'Writes: the StagePlan JSON on stdout; config warnings on stderr.',
+      'Exit codes: 0 ok, 2 bad invocation or unreadable input.',
+    ),
+  },
   reanchor: {
     summary: 'Move one scored candidate to a corrected changed line',
     body: lines(

@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `plan --files <files.json> --diff-file <diff.patch> [--mode]` prints the
+  stage plan a cost mode resolves to: which review stages run and on which
+  model. `fast`, `standard` and `thorough` follow the table in the spec, and
+  `auto` picks `fast` when no production source changed, `thorough` when
+  complexity is high or more than 150 production lines changed, and `standard`
+  otherwise. Verification always runs, and a finding above a nit always gets a
+  challenge. `review.mode` and `review.models` in `config.yaml` set the default
+  mode and a model per stage; an unknown value warns and is ignored. (ADR 0025)
+
 ## [1.18.0] - 2026-10-24
 
 ### Added
