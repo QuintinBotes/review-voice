@@ -315,7 +315,7 @@ function config(partial: HumanReviewConfigInput | undefined): HumanReviewConfig 
   };
 }
 
-type Kind = 'production' | 'generated' | 'test' | 'documentation';
+export type Kind = 'production' | 'generated' | 'test' | 'documentation';
 
 const matchesAny = (matchers: readonly RegExp[], path: string): boolean => matchers.some((matcher) => matcher.test(path));
 
@@ -375,6 +375,15 @@ function reviewedKinds(
     if (file.reviewed) kinds.set(file.path, kindOf(file));
   }
   return { kinds, reasons };
+}
+
+/** Each reviewed file's kind, by the rules the decision-point count uses. */
+export function reviewedFileKinds(
+  files: readonly ChangedFile[],
+  partial?: HumanReviewConfigInput,
+  markedGenerated: ReadonlySet<string> = new Set(),
+): Map<string, Kind> {
+  return reviewedKinds(files, config(partial), markedGenerated).kinds;
 }
 
 /**

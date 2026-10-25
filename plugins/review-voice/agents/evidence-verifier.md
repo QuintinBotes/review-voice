@@ -89,6 +89,22 @@ consequence; reject a preference with no nameable consequence. These are
   Keep it only when the stated invariant makes the fallback hide a real
   violation; legitimate optional input or expected error handling refutes it.
 
+## A candidate with a blocker class
+
+A lane candidate may carry `blocker_class`. Set `blocker_confirmed: true` only
+when that class's evidence holds exactly; otherwise set it false. It is read
+only for a lane with an escalate rule, and even then the tier rises only with
+`impact_traced` true and your confidence of at least 0.85.
+
+- `file-crosses-limit`: the file is listed in `structure.sizeCrossings` and the
+  named seam exists in the code.
+- `existing-helper-duplicate`: the cited `path:line` helper does the same job
+  for the same inputs as the new code.
+- `conditional-tangles-shared-flow`: the quoted conditional sits in the quoted
+  flow, other callers share that flow, and they neither select nor need it.
+- `scattered-feature-checks`: every listed site exists and has the same check,
+  and a search of the head finds no site the list missed.
+
 ## Opt-in simplification verification
 
 Follow this section only when the request explicitly labels this a
@@ -421,8 +437,8 @@ JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `technical_confidence`, `contradictions`, `required_context_missing`, `reason`,
 `fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`,
 `impact_traced`, `impact_class` for a boundary finding when it applies,
-`premises_verified` for a question, and `partly_addressed` only when it
-applies. When you were given `followUps`, return an object
+`premises_verified` for a question, `blocker_confirmed` for a candidate with
+a `blocker_class`, and `partly_addressed` only when it applies. When you were given `followUps`, return an object
 `{"verifications": [<the entries>], "follow_ups": [<one ruling each>]}`
 instead of a bare array.
 

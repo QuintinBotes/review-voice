@@ -77,6 +77,7 @@ import {
 import { heldBackFindings, parseThreadFile, postedReviewIds } from './diff/held.ts';
 import { carryCandidates, carryFindings, CarryError, commitReadable, followLine, seriousNotCarried, type CarriedFinding } from './diff/carry.ts';
 import { productionChange, resolvePlan, MODES, type RequestedMode } from './review/plan.ts';
+import { DIFF_LANE, eligibleLanes, laneNamed } from './review/lanes.ts';
 import { candidateAnchor, reanchorCandidates, reanchorScores } from './diff/reanchor.ts';
 import { fetchPriorHead, latestOwnReview, resolveCommit, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
@@ -1182,27 +1183,12 @@ function planCommand(argv: string[]): number {
     return 2;
   }
 
-  let manifest: Record<string, unknown>;
-  let diffText: string;
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(filesPath, 'utf8'));
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('not a JSON object');
-    manifest = parsed as Record<string, unknown>;
-    diffText = readFileSync(diffPath, 'utf8');
-  } catch (error) {
-    console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  const files = manifest['files'];
-  if (!Array.isArray(files) || !files.every((file) => typeof file === 'object' && file !== null && typeof file.path === 'string')) {
-    console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
-    return 2;
-  }
+  const input = readFilesAndDiff(filesPath, diffPath);
+  if (input === null) return 2;
+  const { manifest, changed, diffText, generated } = input;
 
   const config = repositoryConfig();
   for (const warning of config?.warnings ?? []) console.error(`Warning: ${warning}`);
-  const changed = files as ChangedFile[];
-  const generated = markedGenerated({ ...manifest, diff: diffText } as unknown as EmittedDiff);
   const change = productionChange(changed, diffText, config?.humanReview, generated);
   const complexity = asLevel(manifest['complexity']);
   const plan = resolvePlan({
@@ -1213,6 +1199,51 @@ function planCommand(argv: string[]): number {
     secondPassConfigured: config?.verification.enabled ?? false,
   });
   console.log(JSON.stringify(plan, null, 2));
+  return 0;
+}
+
+/** files.json and diff.patch from `diff --out`, or null after saying what was wrong. */
+function readFilesAndDiff(
+  filesPath: string,
+  diffPath: string,
+): { manifest: Record<string, unknown>; changed: ChangedFile[]; diffText: string; generated: Set<string> } | null {
+  let manifest: Record<string, unknown>;
+  let diffText: string;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(filesPath, 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('not a JSON object');
+    manifest = parsed as Record<string, unknown>;
+    diffText = readFileSync(diffPath, 'utf8');
+  } catch (error) {
+    console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  const files = manifest['files'];
+  if (!Array.isArray(files) || !files.every((file) => typeof file === 'object' && file !== null && typeof file.path === 'string')) {
+    console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
+    return null;
+  }
+  const generated = markedGenerated({ ...manifest, diff: diffText } as unknown as EmittedDiff);
+  return { manifest, changed: files as ChangedFile[], diffText, generated };
+}
+
+/** Which configured lanes run on this change (docs/adr/0023). */
+function lanesCommand(argv: string[]): number {
+  const filesPath = flag(argv, '--files');
+  const diffPath = flag(argv, '--diff-file');
+  if (filesPath === null || diffPath === null) {
+    console.error('Usage: lanes --files <files.json> --diff-file <diff.patch>');
+    return 2;
+  }
+  const input = readFilesAndDiff(filesPath, diffPath);
+  if (input === null) return 2;
+  const config = repositoryConfig();
+  for (const warning of config?.warnings ?? []) console.error(`Warning: ${warning}`);
+  const lanes = eligibleLanes(config?.lanes ?? [DIFF_LANE], input.changed, input.diffText, {
+    humanReview: config?.humanReview,
+    markedGenerated: input.generated,
+  });
+  console.log(JSON.stringify(lanes, null, 2));
   return 0;
 }
 
@@ -1676,6 +1707,7 @@ function scoreCommand(argv: string[]): number {
         const premisesVerified = raw['premises_verified'] ?? raw['premisesVerified'];
         const verified = raw['verified'];
         const reason = raw['reason'];
+        const blockerConfirmed = raw['blocker_confirmed'] ?? raw['blockerConfirmed'];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: (raw['evidence_quality'] ?? raw['evidenceQuality']) as Verification['evidenceQuality'],
@@ -1698,6 +1730,7 @@ function scoreCommand(argv: string[]): number {
           impactClass: isImpactClass(impactClass) ? impactClass : undefined,
           premisesVerified: typeof premisesVerified === 'boolean' ? premisesVerified : undefined,
           verified: typeof verified === 'boolean' ? verified : undefined,
+          blockerConfirmed: typeof blockerConfirmed === 'boolean' ? blockerConfirmed : undefined,
           reason: typeof reason === 'string' ? reason : undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
             raw['requiredContextMissing']) as MissingContext[] | undefined,
@@ -1828,6 +1861,8 @@ function scoreCommand(argv: string[]): number {
     return 2;
   }
 
+  const lanes = repositoryConfig()?.lanes ?? [DIFF_LANE];
+
   const db = openDatabase();
   try {
     const kept: Candidate[] = [];
@@ -1855,6 +1890,7 @@ function scoreCommand(argv: string[]): number {
         kept,
         thresholds,
         verifications.get(candidate.candidateId),
+        laneNamed(lanes, candidate.lane),
       );
       const override = severityOverrides.get(candidate.candidateId);
       if (override !== undefined) {
@@ -3876,6 +3912,10 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     if (premises !== undefined && typeof premises !== 'boolean') {
       return `${who}: premises_verified must be true or false.`;
     }
+    const blocker = entry['blocker_confirmed'] ?? entry['blockerConfirmed'];
+    if (blocker !== undefined && typeof blocker !== 'boolean') {
+      return `${who}: blocker_confirmed must be true or false.`;
+    }
     // Refused rather than ignored: a misspelt "no exposure" would otherwise
     // read as absent and leave a boundary finding blocking with no word why.
     const impactClass = entry['impact_class'] ?? entry['impactClass'];
@@ -4298,6 +4338,33 @@ function checkCandidatesCommand(argv: string[]): number {
     const candidates = raw.map((candidate, index) => normaliseCandidate(candidate as RawCandidate, index));
     assertUniqueCandidateIds(candidates);
 
+    // A lane's prefix keeps ids from two lanes apart and ties each candidate to
+    // its severity rule, so a wrong one goes back like an anchor (docs/adr/0023).
+    // A candidate naming no lane keeps any id, as before lanes existed, unless
+    // the id carries another lane's prefix: that lane's analyst dropped `lane`.
+    const lanes = repositoryConfig()?.lanes ?? [DIFF_LANE];
+    const laneFailures = candidates.flatMap(({ candidateId, lane: name }) => {
+      if (name === undefined) {
+        const owner = lanes.find((lane) => lane.name !== DIFF_LANE.name && candidateId.startsWith(lane.prefix));
+        return owner === undefined
+          ? []
+          : [{ candidateId, lane: DIFF_LANE.name, reason: `${candidateId} carries lane ${owner.name}'s prefix ${owner.prefix} but names no lane; set lane: "${owner.name}"` }];
+      }
+      const lane = laneNamed(lanes, name);
+      if (lane === undefined) {
+        return [{ candidateId, lane: name, reason: `lane ${name} is not configured (${lanes.map((known) => known.name).join(', ')})` }];
+      }
+      return candidateId.startsWith(lane.prefix)
+        ? []
+        : [{ candidateId, lane: lane.name, reason: `${candidateId} is from lane ${lane.name}, so its candidate_id must start with ${lane.prefix}` }];
+    });
+    const laneExtra = laneFailures.length > 0 ? { laneFailures } : {};
+    const reportLaneFailures = (): void => {
+      if (laneFailures.length > 0) {
+        console.error(`${laneFailures.length} candidate lane failure${laneFailures.length === 1 ? '' : 's'}.`);
+      }
+    };
+
     // An intent_ref naming no statement would send the verifier to re-read
     // intent nobody extracted; it fails like an anchor, so only it goes back.
     let intentFailures: { candidateId: string; intentRef: string; reason: string }[] = [];
@@ -4323,9 +4390,12 @@ function checkCandidatesCommand(argv: string[]): number {
       );
     }
     const intentExtra = intentFailures.length > 0 ? { intentFailures } : {};
-    if (intentFailures.length > 0 && !argv.includes('--diff-file')) {
-      console.log(JSON.stringify({ valid: false, intentFailures }, null, 2));
-      console.error(`${intentFailures.length} candidate intent_ref failure${intentFailures.length === 1 ? '' : 's'}.`);
+    if ((intentFailures.length > 0 || laneFailures.length > 0) && !argv.includes('--diff-file')) {
+      console.log(JSON.stringify({ valid: false, ...laneExtra, ...intentExtra }, null, 2));
+      reportLaneFailures();
+      if (intentFailures.length > 0) {
+        console.error(`${intentFailures.length} candidate intent_ref failure${intentFailures.length === 1 ? '' : 's'}.`);
+      }
       return 1;
     }
 
@@ -4375,8 +4445,11 @@ function checkCandidatesCommand(argv: string[]): number {
         ...(anchor.causedBy === undefined ? {} : { causedBy: anchor.causedBy }),
       }));
 
-    if (anchorFailures.length > 0 || intentFailures.length > 0) {
-      console.log(JSON.stringify({ valid: false, ...(anchorFailures.length > 0 ? { anchorFailures } : {}), ...intentExtra }, null, 2));
+    if (anchorFailures.length > 0 || intentFailures.length > 0 || laneFailures.length > 0) {
+      console.log(
+        JSON.stringify({ valid: false, ...(anchorFailures.length > 0 ? { anchorFailures } : {}), ...laneExtra, ...intentExtra }, null, 2),
+      );
+      reportLaneFailures();
       if (anchorFailures.length > 0) {
         console.error(`${anchorFailures.length} candidate anchor failure${anchorFailures.length === 1 ? '' : 's'}.`);
       }
@@ -4791,6 +4864,9 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'plan':
       return planCommand(argv.slice(1));
+
+    case 'lanes':
+      return lanesCommand(argv.slice(1));
 
     case 'reanchor':
       return reanchorCommand(argv.slice(1));

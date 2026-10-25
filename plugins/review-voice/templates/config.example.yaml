@@ -42,6 +42,22 @@ review:
   # challenge, edit. Defaults are sonnet, or opus where the mode calls for it.
   # models:
   #   verify: opus
+  # Extra analyst lanes beside the built-in diff lane, which always runs and
+  # cannot be redefined (docs/adr/0023). `agent` names a file under agents/.
+  # Every candidate_id from a lane starts with its `prefix` (lower-case letters
+  # and _). A lane runs when the change has at least min_changed_source_lines
+  # changed source lines, counting only files matching `paths` when given.
+  # `exclude_kinds` lists the kinds of file that do not count, from test, docs,
+  # config and generated; all four are left out when it is not set.
+  # `severity` may cap the derived tier, and raise it to `escalate.to` only when
+  # the verifier sets blocker_confirmed and traced the impact at confidence of
+  # at least 0.85. An invalid lane is reported and dropped.
+  # lanes:
+  #   - name: structure
+  #     agent: structure-analyst
+  #     prefix: st_
+  #     when: { min_changed_source_lines: 40, paths: ['src/**'], exclude_kinds: [test, docs, config, generated] }
+  #     severity: { cap: minor, escalate: { to: important, requires: blocker_confirmed } }
   # Uncomment to impose a cap. There is none by default: volume is bounded by
   # the word budget, which scales with the size of the change. A layer may
   # tighten a limit but never loosen one.

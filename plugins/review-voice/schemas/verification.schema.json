@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/QuintinBotes/review-voice/schemas/verification.schema.json",
   "title": "Verification entry",
-  "description": "One entry of the evidence-verifier agent's output. The CLI also accepts the camelCase spelling of every field name (candidateId, evidenceQuality, technicalConfidence, fixVerdict, fixConfidence, fixReason, fixDirection, impactTraced, impactClass, premisesVerified, requiredContextMissing, partlyAddressed). `verdict` and `confidence` belong to the second-pass verifier and are refused here; use `verified` and `technical_confidence`. Keep the checks in `verificationProblem` in src/cli.ts in step with this file.",
+  "description": "One entry of the evidence-verifier agent's output. The CLI also accepts the camelCase spelling of every field name (candidateId, evidenceQuality, technicalConfidence, fixVerdict, fixConfidence, fixReason, fixDirection, impactTraced, impactClass, premisesVerified, requiredContextMissing, partlyAddressed, blockerConfirmed). `verdict` and `confidence` belong to the second-pass verifier and are refused here; use `verified` and `technical_confidence`. Keep the checks in `verificationProblem` in src/cli.ts in step with this file.",
   "type": "object",
   "required": [
     "candidate_id"
@@ -77,6 +77,10 @@
     "premises_verified": {
       "type": "boolean",
       "description": "For a question: whether the facts it rests on hold. A question is eligible without a verified answer, but only when this is true (or `verified` is true); false or omitted rejects it."
+    },
+    "blocker_confirmed": {
+      "type": "boolean",
+      "description": "For a candidate with a blocker_class: true only when that class's evidence holds exactly. Read only for a candidate whose lane has an escalate rule, and even then the escalation needs impact_traced and confidence of at least 0.85."
     },
     "reason": {
       "type": "string",

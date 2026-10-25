@@ -1,5 +1,6 @@
 import type { ChangedFile } from '../diff/acquire.ts';
-import { productionPaths, type HumanReviewConfigInput } from '../diff/complexity.ts';
+import { reviewedFileKinds, type HumanReviewConfigInput, type Kind } from '../diff/complexity.ts';
+import { isConfiguration } from '../diff/classify.ts';
 import { unquoteGitPath } from '../diff/hunks.ts';
 
 /** Cost modes and the stage plan (docs/adr/0025). Pure: nothing here reads a file or calls a model. */
@@ -109,6 +110,17 @@ export function modelForFinding(
   return { run: true, model };
 }
 
+/** Kinds of changed file the production line count can leave out; all of them by default. */
+export const CHANGE_KINDS = ['test', 'docs', 'config', 'generated'] as const;
+export type ChangeKind = (typeof CHANGE_KINDS)[number];
+
+const CHANGE_KIND: Record<Kind, ChangeKind | 'production'> = {
+  production: 'production',
+  test: 'test',
+  documentation: 'docs',
+  generated: 'generated',
+};
+
 export interface ProductionChange {
   productionSourceChanged: boolean;
   productionLinesChanged: number;
@@ -140,8 +152,10 @@ function linesByPath(diffText: string): Map<string, number> {
 
 /**
  * Production source changed and how many lines of it, by the classification
- * the complexity assessment uses (test, documentation, configuration and
- * generated files are left out). A file's own additions and deletions win;
+ * the complexity assessment uses, plus a configuration kind of its own that
+ * the decision-point count does not have. `exclude` names the kinds left out
+ * (all of them by default, as `plan` uses it); `counts` narrows which files
+ * count, as a lane's `paths` does. A file's own additions and deletions win;
  * the diff text is counted only for a file that records neither.
  */
 export function productionChange(
@@ -149,8 +163,17 @@ export function productionChange(
   diffText: string,
   partial?: HumanReviewConfigInput,
   markedGenerated: ReadonlySet<string> = new Set(),
+  options: { exclude?: readonly ChangeKind[] | undefined; counts?: ((path: string) => boolean) | undefined } = {},
 ): ProductionChange {
-  const production = new Set(productionPaths(files, partial, markedGenerated));
+  const exclude = new Set<string>(options.exclude ?? CHANGE_KINDS);
+  const lockfiles = new Set(files.filter((file) => file.class === 'lockfile').map((file) => file.path));
+  const kindOf = (path: string, kind: Kind): ChangeKind | 'production' =>
+    (kind === 'production' || lockfiles.has(path)) && isConfiguration(path) ? 'config' : CHANGE_KIND[kind];
+  const production = new Set(
+    [...reviewedFileKinds(files, partial, markedGenerated)]
+      .filter(([path, kind]) => !exclude.has(kindOf(path, kind)) && (options.counts?.(path) ?? true))
+      .map(([path]) => path),
+  );
   let fromDiff: Map<string, number> | null = null;
   let lines = 0;
   for (const file of files) {

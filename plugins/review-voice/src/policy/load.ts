@@ -6,8 +6,9 @@ import type { PolicyLayer, ScopeType } from './schema.ts';
 import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publish/ci.ts';
 import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
 import { DEFAULT_STRUCTURE, type StructureConfig } from '../diff/structure.ts';
-import { MODEL_KEYS, MODES, type ModelOverrides, type RequestedMode } from '../review/plan.ts';
 import { DEFAULT_VERDICT_POLICY, type VerdictPolicy } from '../publish/verdict.ts';
+import { CHANGE_KINDS, MODEL_KEYS, MODES, type ChangeKind, type ModelOverrides, type RequestedMode, type Tier } from '../review/plan.ts';
+import { agentExists, DIFF_LANE, LANE_TIERS, type Lane } from '../review/lanes.ts';
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
@@ -53,6 +54,8 @@ export interface LoadedConfig {
   costMode: { mode: RequestedMode; models: ModelOverrides };
   /** `verdict:` and `review.human_review.cap_approval`; see docs/adr/0028. */
   verdictPolicy: VerdictPolicy;
+  /** `review.lanes` after the built-in diff lane, which is always first (docs/adr/0023). */
+  lanes: Lane[];
   layers: PolicyLayer[];
   /** Repository-supplied layers awaiting owner approval. */
   unapproved: { source: string; contentHash: string }[];
@@ -173,6 +176,76 @@ function readCostMode(review: Record<string, unknown>, result: LoadedConfig): vo
       result.costMode.models[known] = value.trim();
     }
   }
+}
+
+/** What is wrong with one `review.lanes` entry, or the lane it describes. */
+function parseLane(entry: unknown, taken: readonly Lane[]): Lane | string {
+  const block = asRecord(entry);
+  if (block === null) return 'must be a mapping';
+  const { name, agent, prefix } = block;
+  if (typeof name !== 'string' || !/^[a-z][a-z0-9-]*$/.test(name)) return 'name must be lower-case letters, digits and dashes';
+  if (name === DIFF_LANE.name) return 'diff is built in and cannot be redefined';
+  if (taken.some((lane) => lane.name === name)) return `name ${name} is already used`;
+  if (typeof prefix !== 'string' || !/^[a-z]+_$/.test(prefix)) return 'prefix must be lower-case letters followed by _';
+  if (taken.some((lane) => lane.prefix === prefix)) return `prefix ${prefix} is already used`;
+  if (typeof agent !== 'string' || !agentExists(agent)) return `agent ${String(agent)} is not an agent under agents/`;
+
+  const when: Lane['when'] = {};
+  if (block['when'] !== undefined) {
+    const rule = asRecord(block['when']);
+    if (rule === null) return 'when must be a mapping';
+    const min = rule['min_changed_source_lines'];
+    if (min !== undefined) {
+      if (typeof min !== 'number' || !Number.isInteger(min) || min < 0) return 'when.min_changed_source_lines must be a whole number';
+      when.minChangedSourceLines = min;
+    }
+    const paths = rule['paths'];
+    if (paths !== undefined) {
+      if (!Array.isArray(paths) || !paths.every((path) => typeof path === 'string' && path.length > 0)) return 'when.paths must be a list of globs';
+      when.paths = paths as string[];
+    }
+    const kinds = rule['exclude_kinds'];
+    if (kinds !== undefined) {
+      if (!Array.isArray(kinds) || !kinds.every((kind) => (CHANGE_KINDS as readonly unknown[]).includes(kind))) {
+        return `when.exclude_kinds must list only ${CHANGE_KINDS.join(', ')}`;
+      }
+      when.excludeKinds = kinds as ChangeKind[];
+    }
+  }
+
+  const severity: Lane['severity'] = {};
+  if (block['severity'] !== undefined) {
+    const rule = asRecord(block['severity']);
+    if (rule === null) return 'severity must be a mapping';
+    const tier = (value: unknown): Tier | undefined => LANE_TIERS.find((known) => known === value);
+    if (rule['cap'] !== undefined) {
+      const cap = tier(rule['cap']);
+      if (cap === undefined) return `severity.cap must be one of ${LANE_TIERS.join(', ')}`;
+      severity.cap = cap;
+    }
+    if (rule['escalate'] !== undefined) {
+      const escalate = asRecord(rule['escalate']);
+      const to = tier(escalate?.['to']);
+      if (to === undefined) return `severity.escalate.to must be one of ${LANE_TIERS.join(', ')}`;
+      if (escalate?.['requires'] !== 'blocker_confirmed') return 'severity.escalate.requires must be blocker_confirmed';
+      severity.escalate = { to, requires: 'blocker_confirmed' };
+    }
+  }
+  return { name, agent, prefix, when, severity };
+}
+
+/** An invalid lane is reported and dropped; the rest still load. */
+function readLanes(value: unknown, result: LoadedConfig): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    result.warnings.push('review.lanes must be a list; ignoring it.');
+    return;
+  }
+  value.forEach((entry, index) => {
+    const lane = parseLane(entry, result.lanes);
+    if (typeof lane === 'string') result.warnings.push(`review.lanes[${index}]: ${lane}; dropping the lane.`);
+    else result.lanes.push(lane);
+  });
 }
 
 /** Words that appear in nearly every failure, so alone they would turn every failure into a rerun. */
@@ -378,6 +451,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
     structure: { ...DEFAULT_STRUCTURE },
     costMode: { mode: 'auto', models: {} },
     verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
+    lanes: [DIFF_LANE],
     layers: [],
     unapproved: [],
     warnings: [],
@@ -465,6 +539,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
           readHumanReview(asRecord(review['human_review']), result);
           readStructure(asRecord(review['structure']), result);
           readCostMode(review, result);
+          readLanes(review['lanes'], result);
           result.layers.push({
             scope: { type: 'repository', key: repositoryRoot },
             source: '.review-voice/config.yaml',
