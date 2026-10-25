@@ -216,6 +216,25 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE review_runs ADD COLUMN complexity_json TEXT;
   `,
+
+  // v10 - what became of each posted finding (docs/adr/0029).
+  //
+  // One row per finding, replaced by a newer check. Separate from `feedback`,
+  // which stays the owner's word; this is what the pull request itself shows.
+  `
+  CREATE TABLE IF NOT EXISTS finding_outcomes (
+    review_run_id TEXT NOT NULL,
+    finding_id TEXT NOT NULL,
+    repository TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    comment_id INTEGER NOT NULL,
+    outcome TEXT NOT NULL,
+    strength TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (review_run_id, finding_id)
+  );
+  `,
 ];
 
 function migrate(db: Database): void {

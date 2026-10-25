@@ -25,6 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   policies, outcome tracking for posted findings, team profiles and a GitHub
   Action. ADRs 0021 to 0031 record the decisions.
 
+- `outcomes [--repository <owner/repo>] [--since <Nd>] [--json]` follows each
+  inline comment Review Voice posted to an outcome and stores it in a new
+  `finding_outcomes` table. `fixed` (the anchored lines changed and the thread
+  was resolved or the author agreed) and `dismissed` (a rejecting reply, or the
+  owner's `dismiss`) are strong; `resolved`, `outdated`, `open` and `unknown`
+  are weak, and an unanswered comment is never `dismissed`. It reads review
+  threads, replies and later commits and writes nothing to GitHub. (ADR 0029)
+
+- `evaluate` reports `posted_findings_tracked`, `posted_fixed_rate` and
+  `posted_dismissed_rate` over strong outcomes only, and with `--json` a
+  `posted_breakdown` by severity and by lane. They are reported, not gated.
+  (ADR 0029)
+
 ## [1.18.0] - 2026-10-24
 
 ### Added
