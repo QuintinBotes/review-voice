@@ -90,6 +90,8 @@ export interface CoverageOptions {
   /** Repositories the user allowlisted, so absent ones can be named. */
   allowlist?: readonly string[];
   maxRepositoryShare?: number;
+  /** Events count as the owner's signal only when this login wrote them; pooled reviewers share the owner role. */
+  ownerReviewer?: string | null;
   /** Fixed clock, so the unfinished-sync grace period is testable. */
   now?: Date;
 }
@@ -161,7 +163,15 @@ export function corpusCoverage(db: Database, options: CoverageOptions = {}): Cor
     }
   }
 
-  if (total > 0 && (byRole['owner'] ?? 0) === 0) {
+  const ownerAuthored =
+    options.ownerReviewer === undefined || options.ownerReviewer === null
+      ? (byRole['owner'] ?? 0)
+      : (
+          db
+            .prepare('SELECT COUNT(*) AS n FROM review_events WHERE LOWER(reviewer_login) = LOWER(?)')
+            .get(options.ownerReviewer) as { n: number }
+        ).n;
+  if (total > 0 && ownerAuthored === 0) {
     // Rule activation requires at least one owner signal, so a corpus with
     // none can never produce a rule. Without this the failure is silent:
     // calibrate simply keeps proposing nothing.
