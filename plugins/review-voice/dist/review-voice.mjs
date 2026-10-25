@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync6, readSync, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2, renameSync, rmSync, existsSync as existsSync4 } from "node:fs";
-import { dirname as dirname5, join as join8 } from "node:path";
+import { readFileSync as readFileSync7, readSync, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2, renameSync, rmSync, existsSync as existsSync5 } from "node:fs";
+import { dirname as dirname6, join as join9 } from "node:path";
 import { execFileSync as execFileSync11 } from "node:child_process";
 
 // plugins/review-voice/src/warnings.ts
@@ -898,98 +898,178 @@ function planFindings(output, run, loadRun) {
   if (heldBackApproval) mapped = "COMMENT";
   return { inline, unanchored, held, mapped, heldBackApproval };
 }
+var DEFAULT_VERDICT_POLICY = Object.freeze({
+  ciPending: "wait",
+  ciRed: "cap",
+  ciNeedsRerun: "hold",
+  capApproval: true,
+  carryApprovalOnUnchanged: false,
+  recheckThreadBeforePost: false
+});
+function verdictPolicy(policy) {
+  return { ...DEFAULT_VERDICT_POLICY, ...policy };
+}
+var MAX_ANNOTATED_CHECKS = 5;
+var MAX_CHECK_NAME = 60;
+function safeCheckName(name) {
+  const flat = name.replace(/[\u202a-\u202e\u2066-\u2069\u200b-\u200d\ufeff`]/g, "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+  const points = [...flat];
+  return points.length > MAX_CHECK_NAME ? `${points.slice(0, MAX_CHECK_NAME - 1).join("")}\u2026` : flat;
+}
+function checkNames(entries) {
+  const names = [...new Set(entries.map((entry) => safeCheckName(entry.name)).filter((name) => name.length > 0))].sort();
+  return names.length === 0 ? "some checks" : names.slice(0, MAX_ANNOTATED_CHECKS).map((name) => `\`${name}\``).join(", ");
+}
+function ciAnnotations(ci, policy) {
+  if (ci?.state === "red" && policy.ciRed === "annotate") {
+    return [`Heads up: ${checkNames(ci.failed)} failing on this head.`];
+  }
+  if (ci?.state === "needs-rerun" && policy.ciNeedsRerun === "annotate") {
+    return [`Heads up: ${checkNames(ci.rerun)} need a rerun.`];
+  }
+  return [];
+}
+function ciAllowsApproval(state, policy) {
+  if (state === "green") return true;
+  if (state === "pending") return policy.ciPending === "proceed";
+  if (state === "red") return policy.ciRed === "annotate";
+  return policy.ciNeedsRerun === "annotate";
+}
 function decide(input) {
+  const policy = verdictPolicy(input.policy);
   const reasons = [];
+  const done = (decision, annotations2 = []) => ({
+    ...decision,
+    annotations: decision.action === "post" ? annotations2 : [],
+    carriedReviewUrl: null
+  });
   if (input.heldBackApproval === true) {
     reasons.push("an unverified finding above a nit was held back, so this comments rather than approves");
   }
   if (input.headMoved) {
-    return {
+    return done({
       event: input.mapped,
       action: "refuse",
       reasons: [...reasons, "the pull request head moved since the review read it; review the new head"],
       exitCode: 3,
       cappedByCi: false
-    };
+    });
   }
-  if (input.ci === "needs-rerun") {
-    const named = (input.rerun ?? []).map((entry) => `${entry.name} (${entry.detail})`);
+  if (typeof input.carriedReviewUrl === "string" && input.mapped === "APPROVE" && input.heldBackApproval !== true && input.uncoveredCarry !== true) {
     return {
       event: null,
-      action: "wait",
-      reasons: [...reasons, `CI needs a rerun${named.length > 0 ? `: ${named.join(", ")}` : ""}`],
-      exitCode: 6,
-      cappedByCi: false
+      action: "carry",
+      reasons: [...reasons, "the scope is unchanged and the owner's approval still stands, so nothing is posted"],
+      exitCode: 0,
+      cappedByCi: false,
+      annotations: [],
+      carriedReviewUrl: input.carriedReviewUrl
     };
+  }
+  const annotations = input.recheck ? [] : ciAnnotations({ state: input.ci ?? "green", failed: [...input.failed ?? []], rerun: [...input.rerun ?? []] }, policy);
+  if (input.ci === "needs-rerun") {
+    const named = (input.rerun ?? []).map((entry) => `${entry.name} (${entry.detail})`);
+    const why = `CI needs a rerun${named.length > 0 ? `: ${named.join(", ")}` : ""}`;
+    if (input.recheck || policy.ciNeedsRerun === "hold") {
+      return done({ event: null, action: "wait", reasons: [...reasons, why], exitCode: 6, cappedByCi: false });
+    }
+    reasons.push(`${why}; posting the code verdict with a note, as verdict.ci_needs_rerun is annotate`);
   }
   if (input.uncoveredCarry === true && input.mapped === "APPROVE") {
     const why = "candidates were carried to this head without a review of the commits since, so this comments rather than approves";
     if (input.recheck) {
-      return { event: "COMMENT", action: "refuse", reasons: [...reasons, why], exitCode: 2, cappedByCi: false };
+      return done({ event: "COMMENT", action: "refuse", reasons: [...reasons, why], exitCode: 2, cappedByCi: false });
     }
-    return { event: "COMMENT", action: "post", reasons: [...reasons, why], exitCode: 0, cappedByCi: false };
+    return done({ event: "COMMENT", action: "post", reasons: [...reasons, why], exitCode: 0, cappedByCi: false }, annotations);
   }
   if (input.needsHuman === true && input.mapped === "APPROVE") {
-    if (input.recheck) {
-      return {
+    if (!policy.capApproval) {
+      reasons.push("the change was raised for human review; approving anyway, as review.human_review.cap_approval is false");
+    } else if (input.recheck) {
+      return done({
         event: "COMMENT",
         action: "refuse",
         reasons: [...reasons, "the change was raised for human review, so there is no approval to re-check"],
         exitCode: 2,
         cappedByCi: false
-      };
+      });
+    } else {
+      return done(
+        {
+          event: "COMMENT",
+          action: "post",
+          reasons: [...reasons, "the change was raised for human review, so this comments rather than approves"],
+          exitCode: 0,
+          cappedByCi: false
+        },
+        annotations
+      );
     }
-    return {
-      event: "COMMENT",
-      action: "post",
-      reasons: [...reasons, "the change was raised for human review, so this comments rather than approves"],
-      exitCode: 0,
-      cappedByCi: false
-    };
   }
   if (input.recheck) {
     if (input.mapped !== "APPROVE") {
-      return {
+      return done({
         event: input.mapped,
         action: "refuse",
         reasons: [...reasons, `the review maps to ${input.mapped}, so there is no approval to re-check`],
         exitCode: 2,
         cappedByCi: false
-      };
+      });
     }
     if (input.ci === "pending") {
-      return { event: "APPROVE", action: "wait", reasons: [...reasons, "CI is still running"], exitCode: 4, cappedByCi: false };
+      return done({ event: "APPROVE", action: "wait", reasons: [...reasons, "CI is still running"], exitCode: 4, cappedByCi: false });
     }
     if (input.ci !== "green") {
-      return {
+      return done({
         event: "COMMENT",
         action: "refuse",
         reasons: [...reasons, "CI is red, so there is no approval to send"],
         exitCode: 5,
         cappedByCi: true
-      };
+      });
     }
-    return { event: "APPROVE", action: "post", reasons: [...reasons, "head unchanged and CI green"], exitCode: 0, cappedByCi: false };
+    return done({ event: "APPROVE", action: "post", reasons: [...reasons, "head unchanged and CI green"], exitCode: 0, cappedByCi: false });
   }
   if (input.mapped === "APPROVE" && input.ci === "red") {
-    return {
+    if (policy.ciRed === "annotate") {
+      return done(
+        {
+          event: "APPROVE",
+          action: "post",
+          reasons: [...reasons, "CI is red; approving with a note, as verdict.ci_red is annotate"],
+          exitCode: 0,
+          cappedByCi: false
+        },
+        annotations
+      );
+    }
+    return done({
       event: "COMMENT",
       action: "post",
       reasons: [...reasons, "CI is red, so the approval is capped at COMMENT"],
       exitCode: 0,
       cappedByCi: true
-    };
+    });
   }
-  if (input.mapped === "APPROVE" && input.ci !== "green") {
-    return {
+  if (input.mapped === "APPROVE" && input.ci !== "green" && input.ci !== "needs-rerun") {
+    if (policy.ciPending === "proceed") {
+      return done({
+        event: "APPROVE",
+        action: "post",
+        reasons: [...reasons, "CI is still running; approving now, as verdict.ci_pending is proceed"],
+        exitCode: 0,
+        cappedByCi: false
+      });
+    }
+    return done({
       event: "APPROVE",
       action: "wait",
       reasons: [...reasons, "CI is still running; approve once it is green with verdict --recheck"],
       exitCode: 4,
       cappedByCi: false
-    };
+    });
   }
-  return { event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false };
+  return done({ event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false }, annotations);
 }
 function plural(count3, word) {
   return `${count3} ${word}${count3 === 1 ? "" : "s"}`;
@@ -1053,6 +1133,16 @@ function buildPayload(input) {
     body,
     comments: input.planned.inline.map(inlineComment)
   };
+}
+function withAnnotations(body, annotations) {
+  return [body, ...annotations].join("\n\n");
+}
+function replaceAnnotations(body, previous, next) {
+  const suffix = previous.map((line2) => `
+
+${line2}`).join("");
+  const base = suffix.length > 0 && body.endsWith(suffix) ? body.slice(0, body.length - suffix.length) : body;
+  return withAnnotations(base, next);
 }
 function renderPreview(input) {
   const { payload } = input;
@@ -4704,7 +4794,8 @@ async function readThread(options) {
       ...typeof raw.pull_request_review_id === "number" ? { reviewId: raw.pull_request_review_id } : {},
       ...typeof raw.in_reply_to_id === "number" ? { inReplyTo: raw.in_reply_to_id } : {},
       ...state?.resolved === true ? { resolved: true } : {},
-      ...state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {}
+      ...state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {},
+      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
     });
   }
   const reviews = await client.paginate(
@@ -4723,7 +4814,15 @@ async function readThread(options) {
     }
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
-    comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: "review-body" });
+    comments.push({
+      path: null,
+      line: null,
+      author: kept.author,
+      body: kept.body,
+      kind: "review-body",
+      ...typeof raw.submitted_at === "string" ? { createdAt: raw.submitted_at } : {},
+      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
+    });
   }
   if (threadReviews.some((review) => review.state === "DISMISSED")) {
     try {
@@ -4751,7 +4850,15 @@ async function readThread(options) {
   for (const raw of conversation) {
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
-    comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: "conversation" });
+    comments.push({
+      path: null,
+      line: null,
+      author: kept.author,
+      body: kept.body,
+      kind: "conversation",
+      ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
+      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
+    });
   }
   return {
     repository: options.repository,
@@ -6004,6 +6111,24 @@ var MIGRATIONS = [
   // Null on older rows, which means unknown rather than normal.
   `
   ALTER TABLE review_runs ADD COLUMN complexity_json TEXT;
+  `,
+  // v10 - what became of each posted finding (docs/adr/0029).
+  //
+  // One row per finding, replaced by a newer check. Separate from `feedback`,
+  // which stays the owner's word; this is what the pull request itself shows.
+  `
+  CREATE TABLE IF NOT EXISTS finding_outcomes (
+    review_run_id TEXT NOT NULL,
+    finding_id TEXT NOT NULL,
+    repository TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    comment_id INTEGER NOT NULL,
+    outcome TEXT NOT NULL,
+    strength TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (review_run_id, finding_id)
+  );
   `
 ];
 function migrate(db) {
@@ -13396,6 +13521,11 @@ function readHumanReview(block, result) {
   result.humanReview.sensitiveExemptPaths = globs("sensitive_exempt_paths") ?? result.humanReview.sensitiveExemptPaths;
   result.humanReview.testPaths = globs("test_paths") ?? result.humanReview.testPaths;
   result.humanReview.generatedPaths = globs("generated_paths") ?? result.humanReview.generatedPaths;
+  const cap = block["cap_approval"];
+  if (cap !== void 0) {
+    if (typeof cap === "boolean") result.verdictPolicy.capApproval = cap;
+    else result.warnings.push("review.human_review.cap_approval must be true or false; using true.");
+  }
   const structure = block["structure"];
   if (structure === void 0) return;
   const signals = asRecord(structure);
@@ -13610,6 +13740,29 @@ function readCiRules(block, result) {
     result.ciRules.rerunSignatures = [...builtin === false ? [] : BUILTIN_RERUN_SIGNATURES, ...added];
   }
 }
+function readVerdictPolicy(block, result) {
+  if (block === null) return;
+  const choice = (key, options, fallback) => {
+    const value = block[key];
+    if (value === void 0) return fallback;
+    if (typeof value === "string" && options.includes(value)) return value;
+    result.warnings.push(`verdict.${key} must be one of ${options.join(", ")}; using ${fallback}.`);
+    return fallback;
+  };
+  const enabled = (key, fallback) => {
+    const value = block[key];
+    if (value === void 0) return fallback;
+    if (typeof value === "boolean") return value;
+    result.warnings.push(`verdict.${key} must be true or false; using ${String(fallback)}.`);
+    return fallback;
+  };
+  const policy = result.verdictPolicy;
+  policy.ciPending = choice("ci_pending", ["wait", "proceed"], DEFAULT_VERDICT_POLICY.ciPending);
+  policy.ciRed = choice("ci_red", ["cap", "annotate"], DEFAULT_VERDICT_POLICY.ciRed);
+  policy.ciNeedsRerun = choice("ci_needs_rerun", ["hold", "annotate"], DEFAULT_VERDICT_POLICY.ciNeedsRerun);
+  policy.carryApprovalOnUnchanged = enabled("carry_approval_on_unchanged", DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
+  policy.recheckThreadBeforePost = enabled("recheck_thread_before_post", DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
+}
 function contentHash(text3) {
   return createHash4("sha256").update(text3).digest("hex").slice(0, 16);
 }
@@ -13634,9 +13787,34 @@ function layerFromPolicyFile(text3, source, fallbackKey) {
     priorities
   };
 }
+function readReviewers(identity2, result) {
+  const raw = identity2?.["reviewers"];
+  const listed = [];
+  if (raw !== void 0) {
+    if (!Array.isArray(raw)) {
+      result.warnings.push("identity.reviewers must be a list of GitHub logins; ignoring it.");
+    } else {
+      for (const entry of raw) {
+        if (typeof entry !== "string" || entry.trim() === "") {
+          result.warnings.push("identity.reviewers: skipped an entry that is not a login.");
+          continue;
+        }
+        const login = entry.trim();
+        if (!listed.some((existing) => existing.toLowerCase() === login.toLowerCase())) listed.push(login);
+      }
+    }
+  }
+  if (result.ownerReviewer === null && listed.length > 0) result.ownerReviewer = listed[0];
+  const owner = result.ownerReviewer;
+  if (owner !== null && !listed.some((login) => login.toLowerCase() === owner.toLowerCase())) {
+    listed.unshift(owner);
+  }
+  result.reviewers = listed;
+}
 function loadConfig(repositoryRoot2) {
   const result = {
     ownerReviewer: null,
+    reviewers: [],
     postingEnabled: false,
     ciGateChecks: [],
     ciRules: {},
@@ -13653,6 +13831,7 @@ function loadConfig(repositoryRoot2) {
     },
     structure: { ...DEFAULT_STRUCTURE },
     costMode: { mode: "auto", models: {} },
+    verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
     lanes: [DIFF_LANE],
     layers: [],
     unapproved: [],
@@ -13667,6 +13846,7 @@ function loadConfig(repositoryRoot2) {
         if (typeof identity2?.["owner_reviewer"] === "string") {
           result.ownerReviewer = identity2["owner_reviewer"];
         }
+        readReviewers(identity2, result);
         const repositories = asRecord(doc["repositories"]);
         result.allowlist = asStringArray(repositories?.["include"]);
         const staticEvidence = asRecord(doc["static_evidence"]);
@@ -13706,6 +13886,11 @@ function loadConfig(repositoryRoot2) {
           });
         }
         readCiRules(ci, result);
+        if (doc["verdict"] !== void 0) {
+          const verdict = asRecord(doc["verdict"]);
+          if (verdict === null) result.warnings.push("verdict must be a mapping; using the defaults.");
+          readVerdictPolicy(verdict, result);
+        }
         const verification2 = asRecord(doc["verification"]);
         if (verification2 !== null) {
           const command = verification2["command"];
@@ -14379,8 +14564,10 @@ function isBot(login, accountType) {
 }
 function classifyReviewer(input) {
   if (isBot(input.login, input.accountType)) return "bot";
-  if (input.login.toLowerCase() === input.ownerLogin.toLowerCase()) return "owner";
-  const team = (input.teamLogins ?? []).map((login) => login.toLowerCase());
+  const login = input.login.toLowerCase();
+  if (login === input.ownerLogin.toLowerCase()) return "owner";
+  if ((input.reviewerLogins ?? []).some((reviewer) => reviewer.toLowerCase() === login)) return "owner";
+  const team = (input.teamLogins ?? []).map((login2) => login2.toLowerCase());
   if (team.includes(input.login.toLowerCase())) return "team";
   const association = (input.authorAssociation ?? "").toUpperCase();
   if (association === "OWNER" || association === "MEMBER" || association === "COLLABORATOR") {
@@ -14458,6 +14645,7 @@ async function collectRepository(client, options, stats) {
   const seenKeys = /* @__PURE__ */ new Set();
   const watermarks = [];
   for (const pull of pulls) {
+    if (options.updatedSince !== void 0 && pull.updated_at < options.updatedSince) continue;
     if (!options.includeForks && pull.head?.repo?.fork === true) continue;
     if (options.watermarks?.get(pull.number) === pull.updated_at) {
       stats.pullRequestsUnchanged += 1;
@@ -14476,6 +14664,7 @@ async function collectRepository(client, options, stats) {
         login: raw.login,
         accountType: raw.accountType,
         ownerLogin: options.ownerLogin,
+        reviewerLogins: options.reviewerLogins,
         teamLogins: options.teamLogins,
         authorAssociation: raw.association
       });
@@ -15255,8 +15444,10 @@ function corpusCoverage(db, options = {}) {
 
 // plugins/review-voice/src/consent/plan.ts
 function buildConsentPlan(input) {
+  const pooled = input.reviewerLogins ?? [];
   return {
     ownerLogin: input.ownerLogin,
+    ...pooled.length > 1 ? { reviewerLogins: [...pooled] } : {},
     repositories: [...input.repositories],
     targetEvents: input.targetEvents,
     dataCategories: [
@@ -15319,6 +15510,7 @@ function executePurge(db, scope) {
       db.prepare("DELETE FROM sync_watermarks").run();
       db.prepare("DELETE FROM review_runs").run();
       db.prepare("DELETE FROM feedback").run();
+      db.prepare("DELETE FROM finding_outcomes").run();
     } else if (scope.repository !== void 0) {
       db.prepare("DELETE FROM sync_watermarks WHERE repository = ?").run(scope.repository);
     }
@@ -15514,6 +15706,38 @@ function retrievePrecedents(db, query) {
   return [...negative, ...positive];
 }
 
+// plugins/review-voice/src/sync/window.ts
+var QUICK_TARGET = 50;
+var QUICK_SINCE = "90d";
+function resolveSyncWindow(input, now = /* @__PURE__ */ new Date()) {
+  const since = input.since ?? (input.quick ? QUICK_SINCE : null);
+  let updatedSince;
+  if (since !== null) {
+    const days = /^(\d+)d$/.exec(since);
+    if (days === null || Number(days[1]) === 0) {
+      return { error: `--since ${JSON.stringify(since)} must be a number of days such as 90d.` };
+    }
+    updatedSince = new Date(now.getTime() - Number(days[1]) * 864e5).toISOString();
+  }
+  return { target: input.target ?? (input.quick ? QUICK_TARGET : null), updatedSince };
+}
+
+// plugins/review-voice/src/retrieval/baseline.ts
+import { existsSync as existsSync4, readFileSync as readFileSync6 } from "node:fs";
+import { dirname as dirname5, join as join8 } from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+function isCorpusEmpty(db) {
+  return db.prepare("SELECT COUNT(*) AS n FROM review_events").get().n === 0;
+}
+function baselineVoice() {
+  const here = dirname5(fileURLToPath3(import.meta.url));
+  for (const relative of ["..", "../.."]) {
+    const candidate = join8(here, relative, "templates", "voice.baseline.md");
+    if (existsSync4(candidate)) return readFileSync6(candidate, "utf8").trim();
+  }
+  throw new Error("templates/voice.baseline.md is missing from the plugin.");
+}
+
 // plugins/review-voice/src/policy/compile.ts
 var MIN_CORROBORATING = 3;
 function canActivate(evidence) {
@@ -15704,6 +15928,337 @@ function listPolicies(db, scopeKey = "owner") {
   }));
 }
 
+// plugins/review-voice/src/store/outcomes.ts
+var NEGATED_ACK = /\bnot (?:yet )?(?:fixed|done|addressed|changed|updated)\b/i;
+var REJECT = /\b(?:won'?t fix|wontfix|not a (?:bug|issue|problem)|false positive|by design|intentional(?:ly)?|working as (?:intended|designed)|disagree|(?:does not|doesn'?t) apply|not applicable|not needed|unnecessary|incorrect|this is wrong|that'?s wrong)\b/i;
+var ACKNOWLEDGE = /\b(?:fixed|done|addressed|good catch|nice catch|will fix|will do|updated|applied|agreed|makes sense|you'?re right|thanks|thank you)\b/i;
+function classifyReply(body) {
+  if (REJECT.test(body)) return "reject";
+  if (NEGATED_ACK.test(body)) return "other";
+  if (ACKNOWLEDGE.test(body)) return "acknowledge";
+  return "other";
+}
+function patchTouches(patch, first, last) {
+  let oldLine = 0;
+  for (const line2 of patch.split("\n")) {
+    const header = /^@@ -(\d+)(?:,\d+)? \+\d+/.exec(line2);
+    if (header !== null) {
+      oldLine = Number(header[1]);
+      continue;
+    }
+    if (line2.startsWith("\\")) continue;
+    if (line2.startsWith("-")) {
+      if (oldLine >= first && oldLine <= last) return true;
+      oldLine += 1;
+    } else if (line2.startsWith("+")) {
+      if (oldLine > first && oldLine <= last) return true;
+    } else {
+      oldLine += 1;
+    }
+  }
+  return false;
+}
+var READ_LIMIT = 1e3;
+async function readStates(client, repository, pullNumber) {
+  const states = /* @__PURE__ */ new Map();
+  let cursor = null;
+  for (let read = 0; read < READ_LIMIT; read += 100) {
+    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
+    const threads = data?.repository?.pullRequest?.reviewThreads;
+    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
+    for (const thread of threads.nodes) {
+      const state = { resolved: thread?.isResolved === true, outdated: thread?.isOutdated === true };
+      for (const comment of thread?.comments?.nodes ?? []) {
+        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
+      }
+    }
+    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
+    cursor = threads.pageInfo.endCursor;
+  }
+  return states;
+}
+function sentRuns(db, options) {
+  const attempts = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(`SELECT audit_id, json_extract(metadata_json, '$.run') AS run FROM audit_events WHERE action = 'review_post_attempted'`).all()) {
+    if (typeof row.run === "string") attempts.set(row.audit_id, row.run);
+  }
+  const reviewIdsByRun = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ?`).all(options.since)) {
+    let meta;
+    try {
+      meta = JSON.parse(row.metadata_json);
+    } catch {
+      continue;
+    }
+    const run = typeof meta.attempt === "string" ? attempts.get(meta.attempt) : void 0;
+    if (run === void 0) continue;
+    const ids = reviewIdsByRun.get(run) ?? [];
+    const id = Number(meta.reviewId);
+    if (Number.isInteger(id) && id > 0) ids.push(id);
+    reviewIdsByRun.set(run, ids);
+  }
+  const rows = db.prepare(
+    `SELECT review_run_id, repository, pull_number, head_ref FROM review_runs
+       WHERE repository IS NOT NULL AND pull_number IS NOT NULL ORDER BY created_at, rowid`
+  ).all();
+  const wanted = options.repository?.toLowerCase();
+  const runs = [];
+  for (const row of rows) {
+    const reviewIds = reviewIdsByRun.get(row.review_run_id);
+    if (reviewIds === void 0) continue;
+    if (wanted !== void 0 && row.repository.toLowerCase() !== wanted) continue;
+    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, headRef: row.head_ref, reviewIds });
+  }
+  return runs;
+}
+var isBot2 = (user) => user?.type === "Bot" || (user?.login ?? "").endsWith("[bot]");
+function sameHead(a, b) {
+  const left = a.toLowerCase();
+  const right = b.toLowerCase();
+  return left === right || left.length >= 7 && right.startsWith(left) || right.length >= 7 && left.startsWith(right);
+}
+async function checkOutcomes(options) {
+  const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
+  const result = { outcomes: [], skipped: [], warnings: [] };
+  const byPull = /* @__PURE__ */ new Map();
+  for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
+    const key = `${run.repository.toLowerCase()}#${run.pullNumber}`;
+    byPull.set(key, [...byPull.get(key) ?? [], run]);
+  }
+  let viewer = null;
+  const viewerLogin = () => {
+    viewer ??= options.client.get("/user").then(({ data }) => data.login?.toLowerCase() ?? null).catch(() => null);
+    return viewer;
+  };
+  for (const runs of byPull.values()) {
+    const first = runs[0];
+    const { repository, pullNumber } = first;
+    if (!allowed.has(repository.toLowerCase())) {
+      result.skipped.push({ repository, pullNumber, reason: "not in the allowlist" });
+      continue;
+    }
+    try {
+      const context = await readPull(options.client, repository, pullNumber, result.warnings);
+      for (const run of runs) {
+        result.outcomes.push(...await followRun(options, context, run, viewerLogin));
+      }
+    } catch (error) {
+      result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
+    }
+  }
+  return result;
+}
+async function readPull(client, repository, pullNumber, warnings) {
+  const { data: pull } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
+  const replies = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/comments?per_page=100`, READ_LIMIT);
+  let states = null;
+  try {
+    states = await readStates(client, repository, pullNumber);
+  } catch (error) {
+    warnings.push(
+      `${repository}#${pullNumber}: could not read which threads are resolved (${error instanceof Error ? error.message.slice(0, 120) : String(error)}); resolution is unknown`
+    );
+  }
+  const sha = pull?.head?.sha;
+  return { repository, pullNumber, currentHead: typeof sha === "string" ? sha : null, replies, states, compares: /* @__PURE__ */ new Map() };
+}
+async function reviewIdsOf(options, run, viewerLogin) {
+  if (run.reviewIds.length > 0) return { ids: run.reviewIds, source: "audit" };
+  const login = await viewerLogin();
+  if (login === null || run.headRef === null) return { ids: [], source: "reviews-list" };
+  const reviews = await options.client.paginate(`/repos/${run.repository}/pulls/${run.pullNumber}/reviews?per_page=100`, READ_LIMIT);
+  const ids = reviews.filter((review) => typeof review.id === "number" && review.user?.login?.toLowerCase() === login).filter((review) => typeof review.commit_id === "string" && sameHead(review.commit_id, run.headRef)).map((review) => review.id);
+  return { ids, source: "reviews-list" };
+}
+function severityPrefix(finding) {
+  return `**${finding.severity}** - `;
+}
+function matchComments(findings, comments) {
+  const taken = /* @__PURE__ */ new Set();
+  const matched = /* @__PURE__ */ new Map();
+  for (const finding of findings) {
+    const words = significantWords(finding.text);
+    const candidates = comments.filter(
+      (comment) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line)
+    );
+    let best;
+    let bestScore = -1;
+    for (const comment of candidates) {
+      const body = comment.body ?? "";
+      const score = overlap(words, significantWords(body)) + (body.startsWith(severityPrefix(finding)) ? 0.01 : 0);
+      if (score > bestScore) {
+        best = comment;
+        bestScore = score;
+      }
+    }
+    if (best !== void 0) {
+      taken.add(best.id);
+      matched.set(finding.findingId, best);
+    }
+  }
+  return matched;
+}
+async function followRun(options, context, run, viewerLogin) {
+  const detail = runDetail(options.db, run.runId);
+  if (detail === null) return [];
+  const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
+  const comments = [];
+  for (const id of ids) {
+    comments.push(
+      ...await options.client.paginate(
+        `/repos/${run.repository}/pulls/${run.pullNumber}/reviews/${id}/comments?per_page=100`,
+        READ_LIMIT
+      )
+    );
+  }
+  const matched = matchComments(detail.findings, comments);
+  const checkedAt = (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+  const outcomes = [];
+  for (const finding of detail.findings) {
+    const comment = matched.get(finding.findingId);
+    if (comment === void 0) continue;
+    const decided = await decide2(options, context, run, finding, comment);
+    const outcome = {
+      reviewRunId: run.runId,
+      findingId: finding.findingId,
+      repository: run.repository,
+      pullNumber: run.pullNumber,
+      commentId: comment.id,
+      ...decided,
+      evidence: source === "reviews-list" ? `${decided.evidence}; review found by commit and author` : decided.evidence,
+      checkedAt,
+      path: finding.path,
+      line: finding.line,
+      reviewIdSource: source
+    };
+    saveOutcome(options.db, outcome);
+    outcomes.push(outcome);
+  }
+  return outcomes;
+}
+async function linesChanged(options, context, run, comment, finding) {
+  if (run.headRef === null || context.currentHead === null) return null;
+  if (sameHead(run.headRef, context.currentHead)) return false;
+  const key = run.headRef.toLowerCase();
+  let compare = context.compares.get(key);
+  if (compare === void 0) {
+    compare = options.client.paginateWrapped(`/repos/${run.repository}/compare/${run.headRef}...${context.currentHead}?per_page=100`, "files", READ_LIMIT).catch(() => null);
+    context.compares.set(key, compare);
+  }
+  const files = await compare;
+  if (files === null) return null;
+  const file = files.find((entry) => entry.filename === finding.path || entry.previous_filename === finding.path);
+  if (file === void 0) return false;
+  if (typeof file.patch !== "string") return null;
+  const start = comment.start_line ?? comment.original_start_line ?? finding.line;
+  return patchTouches(file.patch, Math.min(start, finding.line), finding.line);
+}
+async function decide2(options, context, run, finding, comment) {
+  const dismissedByOwner = options.db.prepare(`SELECT 1 FROM feedback WHERE review_run_id = ? AND finding_id = ? AND action = 'dismiss'`).get(run.runId, finding.findingId);
+  if (dismissedByOwner !== void 0) {
+    return { outcome: "dismissed", strength: "strong", evidence: "the owner recorded dismiss for this finding" };
+  }
+  const poster = comment.user?.login?.toLowerCase();
+  const answers = context.replies.filter((reply) => reply.in_reply_to_id === comment.id && !isBot2(reply.user) && reply.user?.login?.toLowerCase() !== poster).map((reply) => ({ stance: classifyReply(reply.body ?? ""), at: reply.created_at ?? "", author: reply.user?.login ?? "unknown" })).filter((answer) => answer.stance !== "other").sort((a, b) => a.at.localeCompare(b.at));
+  const latest = answers[answers.length - 1];
+  if (latest?.stance === "reject") {
+    return { outcome: "dismissed", strength: "strong", evidence: `${latest.author} replied turning it down` };
+  }
+  const state = context.states?.get(comment.id) ?? null;
+  const changed = await linesChanged(options, context, run, comment, finding) ?? (state?.outdated === true ? true : null);
+  const resolved = state === null ? null : state.resolved;
+  const agreed = latest?.stance === "acknowledge";
+  if (changed === true && (resolved === true || agreed)) {
+    return {
+      outcome: "fixed",
+      strength: "strong",
+      evidence: `the anchored lines changed after the comment and ${resolved === true ? "the thread was resolved" : `${latest.author} agreed`}`
+    };
+  }
+  if (resolved === true) {
+    return {
+      outcome: "resolved",
+      strength: "weak",
+      evidence: changed === false ? "the thread was resolved and the anchored lines are unchanged" : "the thread was resolved; whether the lines changed could not be read"
+    };
+  }
+  if (resolved === false && changed === true) {
+    return { outcome: "outdated", strength: "weak", evidence: "the anchored lines changed and the thread is still open" };
+  }
+  if (resolved === false && changed === false) {
+    return {
+      outcome: "open",
+      strength: "weak",
+      evidence: agreed ? "agreed in reply, but the lines are unchanged and the thread is open" : "nothing has changed and the thread is open"
+    };
+  }
+  return { outcome: "unknown", strength: "weak", evidence: "the thread state or the later commits could not be read" };
+}
+function saveOutcome(db, outcome) {
+  db.prepare(
+    `INSERT INTO finding_outcomes
+       (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (review_run_id, finding_id) DO UPDATE SET
+       repository = excluded.repository, pull_number = excluded.pull_number, comment_id = excluded.comment_id,
+       outcome = excluded.outcome, strength = excluded.strength, evidence = excluded.evidence, checked_at = excluded.checked_at`
+  ).run(
+    outcome.reviewRunId,
+    outcome.findingId,
+    outcome.repository,
+    outcome.pullNumber,
+    outcome.commentId,
+    outcome.outcome,
+    outcome.strength,
+    outcome.evidence,
+    outcome.checkedAt
+  );
+}
+function statsOf(rows) {
+  const strong = rows.filter((row) => row.strength === "strong");
+  const fixed = strong.filter((row) => row.outcome === "fixed").length;
+  const dismissed = strong.filter((row) => row.outcome === "dismissed").length;
+  const decided = fixed + dismissed;
+  return {
+    tracked: rows.length,
+    fixed,
+    dismissed,
+    fixedRate: decided === 0 ? null : fixed / decided,
+    dismissedRate: decided === 0 ? null : dismissed / decided
+  };
+}
+function postedStats(db) {
+  return statsOf(db.prepare("SELECT outcome, strength FROM finding_outcomes").all());
+}
+function postedBreakdown(db) {
+  const rows = db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all();
+  const findings = /* @__PURE__ */ new Map();
+  const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map() };
+  for (const row of rows) {
+    let known = findings.get(row.review_run_id);
+    if (known === void 0) {
+      known = /* @__PURE__ */ new Map();
+      findings.set(row.review_run_id, known);
+      const stored = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(row.review_run_id);
+      try {
+        const parsed = JSON.parse(stored?.output_json ?? "{}");
+        for (const finding of parsed.findings ?? []) {
+          known.set(String(finding["findingId"]), {
+            severity: typeof finding["severity"] === "string" ? finding["severity"] : "unknown",
+            lane: typeof finding["lane"] === "string" ? finding["lane"] : "diff"
+          });
+        }
+      } catch {
+      }
+    }
+    const info = known.get(row.finding_id) ?? { severity: "unknown", lane: "diff" };
+    groups.severity.set(info.severity, [...groups.severity.get(info.severity) ?? [], row]);
+    groups.lane.set(info.lane, [...groups.lane.get(info.lane) ?? [], row]);
+  }
+  const collect = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, list]) => [key, statsOf(list)]));
+  return { bySeverity: collect(groups.severity), byLane: collect(groups.lane) };
+}
+
 // plugins/review-voice/src/evaluate/metrics.ts
 function percentile(values, p) {
   if (values.length === 0) return null;
@@ -15760,6 +16315,7 @@ function computeMetrics(db) {
   const dismissed = by["dismiss"] ?? 0;
   const labelled = kept + dismissed;
   const ratio = (numerator, denominator) => denominator === 0 ? null : numerator / denominator;
+  const posted = postedStats(db);
   const metric = (name, value, target, meets, basis, kind = "gate") => ({
     name,
     value,
@@ -15847,6 +16403,33 @@ function computeMetrics(db) {
       "= 1.00",
       (v) => v >= 1,
       `${exactNoFindings}/${noFindingsRuns} empty reviews used the exact string`
+    ),
+    // What GitHub shows happened to the comments this tool posted (docs/adr/0029).
+    // Rates count strong outcomes only, so an unanswered comment is neither
+    // fixed nor dismissed, and are reported rather than gated.
+    metric(
+      "posted_findings_tracked",
+      posted.tracked === 0 ? null : posted.tracked,
+      "no target",
+      () => true,
+      "posted findings with any recorded outcome; run `review-voice outcomes` to check",
+      "goal"
+    ),
+    metric(
+      "posted_fixed_rate",
+      posted.fixedRate,
+      "no target",
+      () => true,
+      `${posted.fixed} fixed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
+      "goal"
+    ),
+    metric(
+      "posted_dismissed_rate",
+      posted.dismissedRate,
+      "no target",
+      () => true,
+      `${posted.dismissed} dismissed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
+      "goal"
     )
   ];
 }
@@ -16164,6 +16747,8 @@ function refusal(head, reason2) {
       wouldHaveEvent: null,
       wouldHaveSummary: null,
       staleRequestChanges: null,
+      annotations: [],
+      carriedReviewUrl: null,
       payload: null,
       alreadyInline: 0,
       key: null,
@@ -16191,18 +16776,50 @@ function pullRequestComplexity(run, loadRun) {
   return found;
 }
 var MAX_REVIEWS = 300;
-async function standingRequestChanges(client, repository, pullNumber, owner) {
+async function standingOwnerReview(client, repository, pullNumber, owner) {
   const reviews = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`, MAX_REVIEWS);
   const deciding = reviews.filter(
     (review) => typeof review.user?.login === "string" && review.user.login.toLowerCase() === owner.toLowerCase() && (review.state === "APPROVED" || review.state === "CHANGES_REQUESTED" || review.state === "DISMISSED")
   );
   const latest = deciding[deciding.length - 1];
-  if (latest === void 0 || latest.state !== "CHANGES_REQUESTED" || typeof latest.id !== "number") return null;
+  if (latest === void 0 || typeof latest.id !== "number") return null;
   return {
-    reviewId: latest.id,
+    id: latest.id,
+    state: String(latest.state),
     submittedAt: typeof latest.submitted_at === "string" ? latest.submitted_at : null,
-    url: typeof latest.html_url === "string" ? latest.html_url : null
+    url: typeof latest.html_url === "string" ? latest.html_url : null,
+    commitId: typeof latest.commit_id === "string" ? latest.commit_id.toLowerCase() : null
   };
+}
+async function standingRequestChanges(client, repository, pullNumber, owner) {
+  const latest = await standingOwnerReview(client, repository, pullNumber, owner);
+  if (latest === null || latest.state !== "CHANGES_REQUESTED") return null;
+  return { reviewId: latest.id, submittedAt: latest.submittedAt, url: latest.url };
+}
+async function carriedApproval(options, run, reasons) {
+  if (run.scope?.kind !== "unchanged") return null;
+  const since = run.scope.since.toLowerCase();
+  const owner = options.owner ?? null;
+  if (owner === null || owner.length === 0) {
+    reasons.push("identity.owner_reviewer is not set, so a standing approval to carry was not looked for");
+    return null;
+  }
+  try {
+    const latest = await standingOwnerReview(options.client, options.repository, options.pullNumber, owner);
+    if (latest?.state !== "APPROVED") return null;
+    if (latest.commitId !== since) {
+      reasons.push(`${owner}'s standing approval is of ${latest.commitId ?? "an unknown commit"}, not ${since}, so it is not carried`);
+      return null;
+    }
+    if (latest.url === null) {
+      reasons.push(`${owner}'s standing approval has no link, so it is not carried`);
+      return null;
+    }
+    return latest.url;
+  } catch (error) {
+    reasons.push(`could not read the pull request's reviews for a standing approval: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
 }
 async function staleRequest(options, planned, reasons) {
   const severities = [
@@ -16268,18 +16885,25 @@ async function computeVerdict(options) {
   const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {});
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === "high";
+  const policy = verdictPolicy(options.policy);
+  const lookupReasons = [];
+  const carriedReviewUrl = !headMoved && policy.carryApprovalOnUnchanged ? await carriedApproval(options, run, lookupReasons) : null;
   const decision = decide({
     mapped: planned.mapped,
     headMoved,
     ci: ci?.state ?? null,
     rerun: ci?.rerun,
+    failed: ci?.failed,
     recheck: options.recheck === true,
     heldBackApproval: planned.heldBackApproval,
     needsHuman,
-    uncoveredCarry: run.carry?.covered === false
+    uncoveredCarry: run.carry?.covered === false,
+    carriedReviewUrl,
+    policy
   });
+  decision.reasons.push(...lookupReasons);
   if (complexity === null) decision.reasons.push("no complexity assessment was recorded for this run");
-  const staleRequestChanges = needsHuman ? await staleRequest(options, planned, decision.reasons) : null;
+  const staleRequestChanges = needsHuman && !(decision.event === "APPROVE" && decision.action !== "refuse") ? await staleRequest(options, planned, decision.reasons) : null;
   let payload = null;
   let preview = null;
   let key = null;
@@ -16293,13 +16917,13 @@ async function computeVerdict(options) {
       // One plain summary line whichever cap applies: CI first, then a held
       // finding or an uncovered carry, then complexity. None of them names
       // human review or the carry in the posted body.
-      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || run.carry?.covered === false && planned.mapped === "APPROVE" ? "held" : needsHuman && planned.mapped === "APPROVE" ? "complexity" : null
+      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || run.carry?.covered === false && planned.mapped === "APPROVE" ? "held" : needsHuman && policy.capApproval && planned.mapped === "APPROVE" ? "complexity" : null
     });
     key = idempotencyKey(options.repository, options.pullNumber, full2);
     const sent = sentInline(options.db, options.repository, options.pullNumber, head);
     const comments = full2.comments.filter((comment) => !sent.has(commentSignature(comment)));
     alreadyInline = full2.comments.length - comments.length;
-    payload = { ...full2, comments };
+    payload = { ...full2, body: withAnnotations(full2.body, decision.annotations), comments };
     preview = renderPreview({
       repository: options.repository,
       pullNumber: options.pullNumber,
@@ -16311,6 +16935,8 @@ async function computeVerdict(options) {
   return {
     exitCode: decision.exitCode,
     run,
+    planned,
+    cappedByCi: decision.cappedByCi,
     output: {
       event: decision.event,
       action: decision.action,
@@ -16324,12 +16950,67 @@ async function computeVerdict(options) {
       wouldHaveEvent: needsHuman ? planned.mapped : null,
       wouldHaveSummary: needsHuman ? wouldHaveSummary(planned) : null,
       staleRequestChanges,
+      annotations: decision.annotations,
+      carriedReviewUrl: decision.carriedReviewUrl,
       payload,
       alreadyInline,
       key,
       preview
     }
   };
+}
+function recordedCandidates(db, runId) {
+  const row = db.prepare("SELECT candidates_json FROM review_runs WHERE review_run_id = ?").get(runId);
+  let raw;
+  try {
+    raw = JSON.parse(row?.candidates_json ?? "[]");
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry, index) => {
+    try {
+      return [normaliseCandidate(entry, index)];
+    } catch {
+      return [];
+    }
+  });
+}
+async function raisedByOthers(options, run, findings) {
+  if (findings.length === 0) return [];
+  const { data: viewer } = await options.client.get("/user");
+  if (typeof viewer?.login !== "string") throw new Error("GitHub did not say whose token this is");
+  const me = viewer.login.toLowerCase();
+  const { comments } = await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client });
+  const mine = new Set(comments.filter((c) => c.author.toLowerCase() === me && c.id !== void 0).map((c) => c.id));
+  const started = Date.parse(run.createdAt);
+  const thread = comments.filter((comment) => comment.author.toLowerCase() !== me).filter((comment) => comment.createdAt === void 0 || !(Date.parse(comment.createdAt) <= started)).filter((comment) => comment.inReplyTo === void 0 || !mine.has(comment.inReplyTo)).flatMap((comment) => citedLocations([comment]).map((located) => ({ comment: located, url: comment.url ?? null })));
+  if (thread.length === 0) return [];
+  const candidates = recordedCandidates(options.db, run.reviewRunId);
+  const raised = [];
+  for (const finding of findings) {
+    if (finding.path === null || finding.severity === null) continue;
+    const candidate = candidates.find((c) => c.path === finding.path && c.line === finding.line) ?? {
+      candidateId: finding.findingId ?? `${finding.path}:${finding.line ?? ""}`,
+      path: finding.path,
+      // A finding with no line is compared with every comment on its file:
+      // no comment line is ever within the window of NaN, nor outside it.
+      line: finding.line ?? Number.NaN,
+      category: "posted",
+      severity: finding.severity,
+      claim: finding.prose,
+      failureMode: "",
+      evidence: [],
+      suggestedFix: null,
+      fixConfidence: null,
+      technicalConfidence: 0
+    };
+    const match = thread.find((entry) => alreadySaidOnThread(candidate, [entry.comment]) !== null);
+    if (match !== void 0) {
+      raised.push({ path: finding.path, line: finding.line, raisedBy: match.comment.author, commentUrl: match.url });
+    }
+  }
+  return raised;
 }
 function keyBlocked(db, key) {
   const rows = db.prepare(
@@ -16369,14 +17050,15 @@ function claimKey(db, key, subject, metadata) {
 async function postReview(options) {
   const subject = { type: "pull_request", id: subjectId(options.repository, options.pullNumber) };
   const postCheck = evaluatePostingGate(options.db, options.postingEnabled);
-  const refuse = (exitCode2, reasons, verdict2, key2) => {
+  const refuse = (exitCode2, reasons, verdict2, key2, extra = {}) => {
     recordAudit(options.db, "review_post_refused", subject, {
       reasons,
       key: key2,
       head: options.head,
-      event: verdict2?.event ?? null
+      event: verdict2?.event ?? null,
+      ...extra
     });
-    return { exitCode: exitCode2, output: { status: "refused", reasons, key: key2, verdict: verdict2, postCheck } };
+    return { exitCode: exitCode2, output: { status: "refused", reasons, key: key2, verdict: verdict2, postCheck, ...extra } };
   };
   if (!options.postingEnabled) {
     return refuse(2, ["writes.github_posting_enabled is false in .review-voice/config.yaml"], null, null);
@@ -16395,11 +17077,30 @@ async function postReview(options) {
   } catch (error) {
     return refuse(1, [`could not read the pull request or its CI: ${error instanceof Error ? error.message : String(error)}`], null, null);
   }
-  const { exitCode, output: verdict, run } = computed;
+  const { exitCode, run } = computed;
+  let verdict = computed.output;
+  if (verdict.action === "carry" && verdict.carriedReviewUrl !== null && run !== null) {
+    if (run.repository === null || run.repository.toLowerCase() !== options.repository.toLowerCase()) {
+      return refuse(2, [`run ${run.reviewRunId} reviewed ${run.repository ?? "no repository"}, not ${options.repository}`], verdict, null);
+    }
+    if (options.confirm) {
+      recordAudit(options.db, "review_carried", subject, {
+        repository: options.repository,
+        pull: options.pullNumber,
+        head: verdict.head.expected,
+        reviewUrl: verdict.carriedReviewUrl
+      });
+    }
+    return {
+      exitCode: 0,
+      output: { status: "carried", carried: true, reviewUrl: verdict.carriedReviewUrl, reasons: verdict.reasons, key: null, verdict, postCheck }
+    };
+  }
   if (verdict.action !== "post" || verdict.payload === null || verdict.key === null || run === null) {
     return refuse(exitCode === 0 ? 2 : exitCode, verdict.reasons, verdict, null);
   }
-  const payload = verdict.payload;
+  const policy = verdictPolicy(options.policy);
+  let payload = verdict.payload;
   const key = verdict.key;
   const blocked = keyBlocked(options.db, key);
   if (blocked !== null) return refuse(2, [blocked], verdict, key);
@@ -16417,6 +17118,25 @@ async function postReview(options) {
   if (run.repository === null || run.repository.toLowerCase() !== options.repository.toLowerCase()) {
     return refuse(2, [`run ${run.reviewRunId} reviewed ${run.repository ?? "no repository"}, not ${options.repository}`], verdict, key);
   }
+  if (options.recheckThread === true || policy.recheckThreadBeforePost) {
+    const inPayload = (finding) => payload.comments.some((comment) => comment.path === finding.path && comment.line === finding.line);
+    const findings = computed.planned === void 0 ? [] : [...computed.planned.inline.filter(inPayload), ...computed.planned.unanchored];
+    let raised;
+    try {
+      raised = await raisedByOthers(options, run, findings);
+    } catch (error) {
+      return refuse(1, [`could not re-read the thread before sending: ${error instanceof Error ? error.message : String(error)}`], verdict, key);
+    }
+    if (raised.length > 0) {
+      return refuse(
+        8,
+        [`${raised.length} finding${raised.length === 1 ? " was" : "s were"} raised on the thread by someone else during the review; nothing was sent`],
+        verdict,
+        key,
+        { refused: "thread-changed", findings: raised }
+      );
+    }
+  }
   if (payload.event === "APPROVE") {
     let reread;
     try {
@@ -16430,13 +17150,30 @@ async function postReview(options) {
     if (reread.head !== payload.commit_id) {
       return refuse(3, ["the pull request head moved before sending; review the new head"], verdict, key);
     }
-    if (reread.ci.state !== "green") {
+    if (!ciAllowsApproval(reread.ci.state, policy)) {
       return refuse(
         reread.ci.state === "pending" ? 4 : reread.ci.state === "needs-rerun" ? 6 : 5,
         [`CI turned ${reread.ci.state} before sending; not approving`],
         { ...verdict, ci: reread.ci },
         key
       );
+    }
+    const annotations = ciAnnotations(reread.ci, policy);
+    if (annotations.join("\n") !== verdict.annotations.join("\n")) {
+      payload = { ...payload, body: replaceAnnotations(payload.body, verdict.annotations, annotations) };
+      verdict = {
+        ...verdict,
+        ci: reread.ci,
+        annotations,
+        payload,
+        preview: renderPreview({
+          repository: options.repository,
+          pullNumber: options.pullNumber,
+          payload,
+          held: verdict.held,
+          alreadyInline: verdict.alreadyInline
+        })
+      };
     }
   }
   const claimed = claimKey(options.db, key, subject, {
@@ -16456,6 +17193,8 @@ async function postReview(options) {
       head: payload.commit_id,
       event: payload.event,
       inline: payload.comments.map(commentSignature),
+      // The queue finds a COMMENT posted only because CI was red by this.
+      cappedByCi: computed.cappedByCi === true,
       reviewId: review.id,
       url: review.htmlUrl
     });
@@ -16764,16 +17503,19 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice sync [flags]",
       "  Ingest review history from allowlisted repositories.",
+      "  Every login in identity.reviewers is collected as the owner is. --quick needs the same consent plan.",
       "",
       "Flags:",
       "  --target <n>              Non-owner events to import (default 60 per",
       "                            repository, 250 to 1500); owner events all",
+      "  --since <Nd>              Only pull requests updated in the last N days (such as 90d)",
+      "  --quick                   Preset for a first sync: --target 50 --since 90d; explicit flags win",
       "  --max-pulls <n>           Pull requests inspected per repository (default 60)",
       "  --include-conversation    Also read pull-request conversation comments",
       "  --dry-run                 Report the import without storing it",
       "Reads: nothing on stdin (reads GitHub, read-only).",
       "Writes: events and watermarks to the local store (not with --dry-run); JSON summary on stdout.",
-      "Exit codes: 0 ok, 2 no allowlist, no owner reviewer, or credential problem."
+      "Exit codes: 0 ok, 2 no allowlist, no owner reviewer, bad --since, or credential problem."
     )
   },
   discover: {
@@ -16823,6 +17565,8 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice retrieve --text <query> [flags]",
       "  Find weighted precedents for a candidate finding.",
+      "  With no synced history it also returns baseline: true and voice, the baseline",
+      "  voice guide the editor writes from. Each precedent names its reviewerLogin.",
       "",
       "Flags:",
       "  --text <query>        Candidate claim and failure mode (required)",
@@ -16898,10 +17642,27 @@ var COMMAND_HELP = {
       "  Report the evaluation metrics against their targets.",
       "",
       "Flags:",
-      "  --json                 Emit the metrics as JSON",
+      "  --json                 Emit the metrics as JSON, with posted-finding outcomes by severity and lane",
       "Reads: nothing on stdin; the local store.",
       "Writes: text (or JSON) on stdout.",
       "Exit codes: 0 ok."
+    )
+  },
+  outcomes: {
+    summary: "Follow posted comments to an outcome (reads GitHub only)",
+    body: lines(
+      "review-voice outcomes [flags]",
+      "  Follow each inline comment Review Voice posted to an outcome: fixed, dismissed,",
+      "  resolved, outdated, open or unknown. Fixed and dismissed are strong; the rest are weak.",
+      "  Reads GitHub and writes nothing there. `evaluate` reports precision from the strong ones.",
+      "",
+      "Flags:",
+      "  --repository <name>    Only runs for owner/repo; naming it allows reading it",
+      "  --since <Nd>           Only reviews sent in the last N days (default 30d)",
+      "  --json                 Emit one row per finding as JSON",
+      "Reads: the local store, the allowlist in the repository config, and GitHub comments, threads and commits.",
+      "Writes: one line per finding and totals on stdout (JSON with --json); outcomes in the local store.",
+      "Exit codes: 0 ok, 2 bad invocation."
     )
   },
   draft: {
@@ -16941,11 +17702,27 @@ var COMMAND_HELP = {
       "  --head <sha>           Head commit the review read (required)",
       "  --repository <name>    owner/repo; inferred from the git remote if absent",
       "  --run <run-id>         Recorded run to use; default the newest for the pull request",
-      "  --recheck              Re-read CI once more before answering",
+      "  --recheck              Re-read CI once more before answering; asks for green CI",
+      "                         whatever the verdict settings say",
+      "",
+      "Settings (.review-voice/config.yaml, docs/adr/0028; defaults first):",
+      "  verdict.ci_pending: wait|proceed        proceed approves while CI is still running",
+      "  verdict.ci_red: cap|annotate            annotate keeps the event and adds",
+      '                                          "Heads up: <checks> failing on this head."',
+      "  verdict.ci_needs_rerun: hold|annotate   annotate posts the code verdict and adds",
+      '                                          "Heads up: <checks> need a rerun."',
+      "  review.human_review.cap_approval: true  false lets a clean complex change approve;",
+      "                                          the local note stays",
+      "  verdict.carry_approval_on_unchanged: false",
+      '                                          true returns action "carry" and posts nothing',
+      "                                          when a clean approval's scope is unchanged and",
+      "                                          the owner's approval of its start still stands",
+      "                                          (carriedReviewUrl)",
+      '  An annotation names at most five checks and appears in "annotations".',
       "Reads: the validated review on stdin.",
       "Writes: JSON on stdout. Nothing is sent to GitHub.",
-      "Exit codes: 0 ok, 2 refused or bad invocation, 3 the head moved, 4 CI still running",
-      "  on an approval, 5 a re-check found CI red, 6 CI needs a rerun."
+      "Exit codes: 0 ok or carried, 2 refused or bad invocation, 3 the head moved, 4 CI still",
+      "  running on an approval, 5 a re-check found CI red, 6 CI needs a rerun."
     )
   },
   post: {
@@ -16961,10 +17738,20 @@ var COMMAND_HELP = {
       "  --run <run-id>         Recorded run to use; default the newest for the pull request",
       "  --confirm              Send the review; without it, only a preview",
       "  --event <EVENT>        The review event to send (COMMENT, APPROVE or REQUEST_CHANGES)",
+      "  --recheck-thread       Re-read the thread (comments and review bodies) before sending;",
+      "                         a finding someone else raised meanwhile refuses with exit 8",
+      "",
+      "Settings: the verdict settings apply as in `review-voice verdict --help`, including",
+      "  to the CI re-read just before an approval is sent. Annotations are appended to the",
+      "  body, each on its own line, and left out of the idempotency key. A carry sends",
+      "  nothing and prints {carried: true, reviewUrl}. verdict.recheck_thread_before_post:",
+      "  true always does what --recheck-thread does.",
       "Reads: the validated review on stdin.",
       "Writes: JSON on stdout. With --confirm, WRITES the review to GitHub (the plugin's only write).",
-      "Exit codes: 0 sent or previewed, 1 the send failed, 2 refused or bad invocation,",
-      "  3 the head moved, 4 CI still running on an approval, 5 CI red, 6 CI needs a rerun."
+      "Exit codes: 0 sent, previewed or carried, 1 the send failed, 2 refused or bad invocation,",
+      "  3 the head moved, 4 CI still running on an approval, 5 CI red, 6 CI needs a rerun,",
+      '  8 the thread re-check found a finding someone else raised ({refused: "thread-changed",',
+      "  findings: [{path, line, raisedBy, commentUrl}]}); nothing is sent."
     )
   },
   record: {
@@ -17145,6 +17932,7 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice status",
       "  Show what is stored locally. Takes no flags.",
+      "  Says whether the baseline voice is in use or how many reviewers the corpus covers.",
       "",
       "Reads: nothing on stdin; the local store and config.",
       "Writes: text on stdout.",
@@ -17305,7 +18093,7 @@ function validateOutputCommand(argv) {
   if (scoresFlag !== null) {
     let entries;
     try {
-      entries = scoredEntries(JSON.parse(readFileSync6(scoresFlag, "utf8")));
+      entries = scoredEntries(JSON.parse(readFileSync7(scoresFlag, "utf8")));
     } catch (error) {
       console.error(`Cannot read ${scoresFlag}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -17577,8 +18365,8 @@ function emitDiff(acquired, outDir) {
   }
   try {
     mkdirSync2(outDir, { recursive: true });
-    const patchPath = join8(outDir, "diff.patch");
-    const metaPath = join8(outDir, "files.json");
+    const patchPath = join9(outDir, "diff.patch");
+    const metaPath = join9(outDir, "files.json");
     writeFileSync(patchPath, result.diff);
     writeFileSync(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
     console.log(
@@ -17626,7 +18414,7 @@ function symbolsCommand(argv) {
   }
   let diff;
   try {
-    diff = readFileSync6(diffFile, "utf8");
+    diff = readFileSync7(diffFile, "utf8");
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -17689,7 +18477,7 @@ function flag(argv, name) {
 function resolveOutPath(out, defaultName) {
   let target = out;
   try {
-    if (out.endsWith("/") || statSync2(out).isDirectory()) target = join8(out, defaultName);
+    if (out.endsWith("/") || statSync2(out).isDirectory()) target = join9(out, defaultName);
   } catch (error) {
     if (error.code !== "ENOENT") {
       throw new Error(
@@ -17698,7 +18486,7 @@ function resolveOutPath(out, defaultName) {
     }
   }
   try {
-    mkdirSync2(dirname5(target), { recursive: true });
+    mkdirSync2(dirname6(target), { recursive: true });
   } catch (error) {
     throw new Error(
       `${out}: expected a file path or a directory (${error instanceof Error ? error.message : String(error)})`
@@ -17710,7 +18498,7 @@ function contextCommand() {
   try {
     const root = repositoryRoot(process.cwd());
     const config2 = loadConfig(root);
-    const configPath = join8(root, ".review-voice", "config.yaml");
+    const configPath = join9(root, ".review-voice", "config.yaml");
     const policy = resolvePolicy(config2.layers);
     console.log(
       JSON.stringify(
@@ -17738,7 +18526,7 @@ function contextCommand() {
           // Not raised on top of a parse failure: a config that did not parse
           // says nothing about whether it has a verification block, and the
           // parse error is the actionable item.
-          warnings: config2.verification.blockPresent || config2.warnings.length > 0 ? config2.warnings : existsSync4(configPath) ? [
+          warnings: config2.verification.blockPresent || config2.warnings.length > 0 ? config2.warnings : existsSync5(configPath) ? [
             ...config2.warnings,
             "No verification block in .review-voice/config.yaml, so the second-pass verifier never runs. Configs written before it existed do not have one. See the second-pass verification section of the README."
           ] : [
@@ -17783,6 +18571,7 @@ function consentPlanCommand(argv) {
     JSON.stringify(
       buildConsentPlan({
         ownerLogin: owner,
+        reviewerLogins: config2.reviewers,
         repositories,
         targetEvents: numericFlag(argv, "--target", 250) ?? 250,
         storageLocation: dataDirectory()
@@ -17829,7 +18618,18 @@ async function syncCommand(argv) {
     return 2;
   }
   const defaultTarget = scaledTarget(config2.allowlist.length);
-  const target = numericFlag(argv, "--target", defaultTarget) ?? defaultTarget;
+  const explicitTarget = argv.includes("--target") ? numericFlag(argv, "--target", defaultTarget) : void 0;
+  const window = resolveSyncWindow({
+    quick: argv.includes("--quick"),
+    target: explicitTarget,
+    since: flag(argv, "--since")
+  });
+  if ("error" in window) {
+    console.error(window.error);
+    return 2;
+  }
+  const target = window.target ?? defaultTarget;
+  const updatedSince = window.updatedSince;
   const maxPulls = numericFlag(argv, "--max-pulls", 60) ?? 60;
   const repositoryShare = scaledRepositoryShare(config2.allowlist.length);
   const dryRun = argv.includes("--dry-run");
@@ -17855,6 +18655,8 @@ async function syncCommand(argv) {
       {
         repository,
         ownerLogin: config2.ownerReviewer,
+        reviewerLogins: config2.reviewers,
+        updatedSince,
         maxPullRequests: maxPulls,
         maxCommentsPerPull: 200,
         includeForks: false,
@@ -17979,10 +18781,10 @@ function readFilesAndDiff(filesPath, diffPath) {
   let manifest;
   let diffText;
   try {
-    const parsed = JSON.parse(readFileSync6(filesPath, "utf8"));
+    const parsed = JSON.parse(readFileSync7(filesPath, "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not a JSON object");
     manifest = parsed;
-    diffText = readFileSync6(diffPath, "utf8");
+    diffText = readFileSync7(diffPath, "utf8");
   } catch (error) {
     console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
     return null;
@@ -18039,7 +18841,8 @@ async function verdictCommand(argv) {
       recheck: argv.includes("--recheck"),
       gateChecks: config2?.ciGateChecks ?? [],
       ciRules: config2?.ciRules ?? {},
-      owner: config2?.ownerReviewer ?? null
+      owner: config2?.ownerReviewer ?? null,
+      policy: config2?.verdictPolicy
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -18067,7 +18870,9 @@ async function postCommand(argv) {
       postingEnabled: config2?.postingEnabled ?? false,
       gateChecks: config2?.ciGateChecks ?? [],
       ciRules: config2?.ciRules ?? {},
-      owner: config2?.ownerReviewer ?? null
+      owner: config2?.ownerReviewer ?? null,
+      policy: config2?.verdictPolicy,
+      recheckThread: argv.includes("--recheck-thread")
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -18080,16 +18885,85 @@ function evaluateCommand(argv) {
   try {
     const metrics = computeMetrics(db);
     if (argv.includes("--json")) {
-      console.log(JSON.stringify({ metrics }, null, 2));
+      const { bySeverity, byLane } = postedBreakdown(db);
+      console.log(JSON.stringify({ metrics, posted_breakdown: { by_severity: bySeverity, by_lane: byLane } }, null, 2));
     } else {
       for (const metric of metrics) {
-        const value = metric.value === null ? "no data" : metric.value.toFixed(2);
+        const value = metric.value === null ? "no data" : Number.isInteger(metric.value) && metric.name.endsWith("_tracked") ? String(metric.value) : metric.value.toFixed(2);
         const mark = metric.meets === null || metric.target === "no target" ? "  -" : metric.meets ? "  ok" : metric.kind === "goal" ? "over" : "FAIL";
         const target = metric.target === "no target" ? "reported, not scored" : metric.kind === "goal" ? `goal ${metric.target}` : `target ${metric.target}`;
         console.log(`${mark}  ${metric.name.padEnd(32)} ${value.padStart(8)}  ${target}`);
         console.log(`      ${metric.basis}`);
       }
     }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+async function outcomesCommand(argv) {
+  const repository = flag(argv, "--repository");
+  if (argv.includes("--repository") && (repository === null || !/^[^/\s]+\/[^/\s]+$/.test(repository))) {
+    console.error("--repository takes owner/repo.");
+    return 2;
+  }
+  const sinceFlag = flag(argv, "--since");
+  const days = sinceFlag === null ? 30 : /^(\d+)d$/.exec(sinceFlag)?.[1];
+  if (days === void 0 || argv.includes("--since") && sinceFlag === null) {
+    console.error("--since takes a number of days such as 30d.");
+    return 2;
+  }
+  const since = new Date(Date.now() - Number(days) * 864e5).toISOString();
+  let allowlist = repository === null ? [] : [repository];
+  if (repository === null) {
+    try {
+      allowlist = loadConfig(repositoryRoot(process.cwd())).allowlist;
+    } catch {
+    }
+  }
+  const db = openDatabase();
+  try {
+    const result = await checkOutcomes({
+      db,
+      client: new GitHubClient({ allowlist }),
+      allowlist,
+      repository: repository ?? void 0,
+      since
+    });
+    for (const warning of result.warnings) console.error(warning);
+    for (const skipped of result.skipped) {
+      console.error(`${skipped.repository}#${skipped.pullNumber}: skipped, ${skipped.reason}`);
+    }
+    if (argv.includes("--json")) {
+      console.log(
+        JSON.stringify(
+          result.outcomes.map((o) => ({
+            run: o.reviewRunId,
+            finding: o.findingId,
+            repository: o.repository,
+            pull: o.pullNumber,
+            path: o.path,
+            line: o.line,
+            commentId: o.commentId,
+            outcome: o.outcome,
+            strength: o.strength,
+            evidence: o.evidence,
+            checkedAt: o.checkedAt,
+            reviewIdSource: o.reviewIdSource
+          })),
+          null,
+          2
+        )
+      );
+      return 0;
+    }
+    for (const o of result.outcomes) {
+      console.log(`${o.repository}#${o.pullNumber} ${o.findingId} ${o.path}:${o.line} ${o.outcome} (${o.strength}): ${o.evidence}`);
+    }
+    const count3 = (name) => result.outcomes.filter((o) => o.outcome === name).length;
+    console.log(
+      `${result.outcomes.length} finding(s) tracked: ${count3("fixed")} fixed, ${count3("dismissed")} dismissed, ${count3("resolved")} resolved, ${count3("outdated")} outdated, ${count3("open")} open, ${count3("unknown")} unknown`
+    );
     return 0;
   } finally {
     db.close();
@@ -18272,7 +19146,7 @@ function scoreCommand(argv) {
   const verificationFlag = flag(argv, "--verification");
   if (verificationFlag !== null) {
     try {
-      const parsed = JSON.parse(readFileSync6(verificationFlag, "utf8"));
+      const parsed = JSON.parse(readFileSync7(verificationFlag, "utf8"));
       const list = verdictList(parsed);
       const problem = verificationProblem(list);
       if (problem !== null) {
@@ -18359,7 +19233,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      reachDiff = readFileSync6(path, "utf8");
+      reachDiff = readFileSync7(path, "utf8");
       anchorHunks = parseHunks(reachDiff);
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -18374,7 +19248,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync6(path, "utf8"));
+      const parsed = JSON.parse(readFileSync7(path, "utf8"));
       thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -18739,7 +19613,10 @@ function retrieveCommand(argv) {
       maxPositive: numericFlag(argv, "--max-positive", 3) ?? 3,
       maxNegative: numericFlag(argv, "--max-negative", 2) ?? 2
     });
-    console.log(JSON.stringify({ precedents }, null, 2));
+    const baseline = isCorpusEmpty(db);
+    console.log(
+      JSON.stringify({ precedents, ...baseline ? { baseline: true, voice: baselineVoice() } : {} }, null, 2)
+    );
     return 0;
   } finally {
     db.close();
@@ -18757,9 +19634,9 @@ function anchorsCommand(argv) {
   let hunks = null;
   let scores = [];
   try {
-    if (diffFile !== null) hunks = parseHunks(readFileSync6(diffFile, "utf8"));
+    if (diffFile !== null) hunks = parseHunks(readFileSync7(diffFile, "utf8"));
     if (scoresFile !== null) {
-      const parsed = JSON.parse(readFileSync6(scoresFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(scoresFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed.scores;
       scores = Array.isArray(list) ? list : [];
     }
@@ -18848,7 +19725,7 @@ function reconcileCommand(argv) {
   }
   let verifications;
   try {
-    verifications = verdictList(JSON.parse(readFileSync6(verificationFile, "utf8")));
+    verifications = verdictList(JSON.parse(readFileSync7(verificationFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read ${verificationFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -18864,7 +19741,7 @@ function reconcileCommand(argv) {
   }
   let secondPass;
   try {
-    secondPass = parseSecondPass(JSON.parse(readFileSync6(secondPassFile, "utf8")));
+    secondPass = parseSecondPass(JSON.parse(readFileSync7(secondPassFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read the second pass from ${secondPassFile}: ${error.message}`);
     return 2;
@@ -18873,7 +19750,7 @@ function reconcileCommand(argv) {
   const tieBreaksFile = flag(argv, "--tie-breaks");
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync6(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync7(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -18948,7 +19825,7 @@ function recordCommand(argv) {
   let diff = "";
   if (diffFile !== null) {
     try {
-      diff = readFileSync6(diffFile, "utf8");
+      diff = readFileSync7(diffFile, "utf8");
     } catch {
       console.error(`Cannot read ${diffFile}.`);
       return 2;
@@ -18970,7 +19847,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync6(bodyFindingsFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(bodyFindingsFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null && Array.isArray(parsed.bodyFindings) ? parsed.bodyFindings : null;
       if (list === null) throw new Error('expected an array or {"bodyFindings": [...]}');
       if (list.length > 1) throw new Error("at most one body-only simplification is allowed per review");
@@ -18996,7 +19873,7 @@ function recordCommand(argv) {
   let complexity = null;
   if (filesFile !== null) {
     try {
-      const manifest = JSON.parse(readFileSync6(filesFile, "utf8"));
+      const manifest = JSON.parse(readFileSync7(filesFile, "utf8"));
       if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
         pullNumber = manifest.pullNumber;
       }
@@ -19016,7 +19893,7 @@ function recordCommand(argv) {
   let candidates = [];
   if (candidatesFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync6(candidatesFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(candidatesFile, "utf8"));
       candidates = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
     } catch {
       console.error(`Cannot read candidates from ${candidatesFile}.`);
@@ -19027,7 +19904,7 @@ function recordCommand(argv) {
   let scores = [];
   if (scoresFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync6(scoresFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(scoresFile, "utf8"));
       scores = boundLists(Array.isArray(parsed) ? parsed : parsed.scores ?? []);
     } catch {
       console.error(`Cannot read scores from ${scoresFile}.`);
@@ -19038,7 +19915,7 @@ function recordCommand(argv) {
   let verdicts = [];
   if (verdictsFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync6(verdictsFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(verdictsFile, "utf8"));
       verdicts = Array.isArray(parsed) ? parsed : parsed.verdicts ?? [];
     } catch {
       console.error(`Cannot read verdicts from ${verdictsFile}.`);
@@ -19049,7 +19926,7 @@ function recordCommand(argv) {
   let tieBreaks = [];
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync6(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync7(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -19059,7 +19936,7 @@ function recordCommand(argv) {
   let held = [];
   if (heldFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync6(heldFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(heldFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed?.held;
       if (!Array.isArray(list)) throw new Error('expected an array or {"held": [...]}');
       list.forEach((entry, index) => {
@@ -19076,7 +19953,7 @@ function recordCommand(argv) {
   let stages = [];
   if (stagesFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync6(stagesFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(stagesFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed.stages ?? [];
       stages = (Array.isArray(list) ? list : []).filter(
         (stage) => typeof stage === "object" && stage !== null && typeof stage.name === "string" && Number.isFinite(stage.seconds)
@@ -19096,7 +19973,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync6(followUpThreadFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(followUpThreadFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed.comments;
       if (!Array.isArray(list)) throw new Error("comments is not a list");
       followUpThread = list;
@@ -19114,7 +19991,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      rulings = parseFollowUpRulings(JSON.parse(readFileSync6(rulingsFile, "utf8")));
+      rulings = parseFollowUpRulings(JSON.parse(readFileSync7(rulingsFile, "utf8")));
     } catch (error) {
       const why = error instanceof FollowUpRulingError ? error.message : `cannot read it (${error.message})`;
       console.error(`Cannot read follow-up rulings from ${rulingsFile}: ${why}.`);
@@ -19154,7 +20031,7 @@ function recordCommand(argv) {
       const head = flag(argv, "--head");
       let marker = null;
       try {
-        const parsed = JSON.parse(readFileSync6(carryFile, "utf8"));
+        const parsed = JSON.parse(readFileSync7(carryFile, "utf8"));
         const refused = Array.isArray(parsed["refused"]) ? parsed["refused"].map((r) => String(r?.candidateId)) : null;
         const interdiff = parsed["interdiff"];
         if (refused !== null && typeof parsed["since"] === "string" && typeof parsed["head"] === "string") {
@@ -19282,7 +20159,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   if (threadFile !== null) {
     let text3;
     try {
-      text3 = readFileSync6(threadFile, "utf8");
+      text3 = readFileSync7(threadFile, "utf8");
     } catch (error) {
       throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -19292,7 +20169,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   let noLongerChanged = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
-      const files = JSON.parse(readFileSync6(filesFile, "utf8"));
+      const files = JSON.parse(readFileSync7(filesFile, "utf8"));
       const listed = files.scope?.noLongerChanged;
       noLongerChanged = new Set(Array.isArray(listed) ? listed.filter((path) => typeof path === "string") : []);
     } catch (error) {
@@ -19379,12 +20256,12 @@ function reanchorCommand(argv) {
     console.error("--path needs the file the finding belongs in.");
     return 2;
   }
-  const readJson = (path) => JSON.parse(readFileSync6(path, "utf8"));
+  const readJson = (path) => JSON.parse(readFileSync7(path, "utf8"));
   let scores;
   let hunks;
   try {
     scores = readJson(scoresFile);
-    hunks = parseHunks(readFileSync6(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync7(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -19454,8 +20331,8 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let manifest;
   let hunks;
   try {
-    manifest = JSON.parse(readFileSync6(join8(dir, "files.json"), "utf8"));
-    hunks = parseHunks(readFileSync6(join8(dir, "diff.patch"), "utf8"));
+    manifest = JSON.parse(readFileSync7(join9(dir, "files.json"), "utf8"));
+    hunks = parseHunks(readFileSync7(join9(dir, "diff.patch"), "utf8"));
   } catch (error) {
     return `Cannot read the interdiff in ${dir}: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -19470,7 +20347,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let candidates;
   let verification2;
   try {
-    const parsed = listIn(JSON.parse(readFileSync6(candidatesFile, "utf8")), ["candidates"]);
+    const parsed = listIn(JSON.parse(readFileSync7(candidatesFile, "utf8")), ["candidates"]);
     if (parsed === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidates = parsed.list;
     const normalised = candidates.map((raw, index) => normaliseCandidate(raw, index));
@@ -19478,11 +20355,11 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
     const misplaced = normalised.filter((c) => !candidateAnchor(hunks, c).ok);
     if (misplaced.length > 0) {
       throw new Error(
-        `interdiff candidate(s) not on a changed line of ${join8(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
+        `interdiff candidate(s) not on a changed line of ${join9(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
       );
     }
     candidates = candidates.map((raw, index) => withId(raw, normalised[index].candidateId));
-    const parsedVerification = listIn(JSON.parse(readFileSync6(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync7(verificationFile, "utf8")), VERDICT_KEYS);
     verification2 = parsedVerification?.list ?? [];
     if (parsedVerification === null && candidates.length > 0) throw new Error(`${verificationFile} contains no verifications`);
     const problem = verificationProblem(verification2);
@@ -19495,7 +20372,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
 function partialDiffReason(diffFile) {
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync6(join8(dirname5(diffFile), "files.json"), "utf8"));
+    manifest = JSON.parse(readFileSync7(join9(dirname6(diffFile), "files.json"), "utf8"));
   } catch {
     return null;
   }
@@ -19527,24 +20404,24 @@ function carryCandidatesCommand(argv) {
   let hunks;
   let heldIn = null;
   try {
-    const parsedCandidates = listIn(JSON.parse(readFileSync6(candidatesFile, "utf8")), ["candidates"]);
+    const parsedCandidates = listIn(JSON.parse(readFileSync7(candidatesFile, "utf8")), ["candidates"]);
     if (parsedCandidates === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidatesIn = parsedCandidates;
     candidates = candidatesIn.list.map((raw, index) => normaliseCandidate(raw, index));
     assertUniqueCandidateIds(candidates);
-    const parsedVerification = listIn(JSON.parse(readFileSync6(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync7(verificationFile, "utf8")), VERDICT_KEYS);
     if (parsedVerification === null || parsedVerification.list.length === 0) {
       throw new Error(`${verificationFile} contains no verifications`);
     }
     verificationIn = parsedVerification;
     const problem = verificationProblem(verificationIn.list);
     if (problem !== null) throw new Error(`malformed verification - ${problem}`);
-    hunks = parseHunks(readFileSync6(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync7(diffFile, "utf8"));
     const partial = partialDiffReason(diffFile);
     if (partial !== null) throw new Error(partial);
     const heldFile = flag(argv, "--held");
     if (heldFile !== null) {
-      heldIn = listIn(JSON.parse(readFileSync6(heldFile, "utf8")), ["held"]);
+      heldIn = listIn(JSON.parse(readFileSync7(heldFile, "utf8")), ["held"]);
       if (heldIn === null) throw new Error(`${heldFile} is not an array or {"held": [...]}`);
       heldIn.list.forEach((entry, index) => {
         const heldError = heldProblem(entry);
@@ -19638,18 +20515,18 @@ function carryCandidatesCommand(argv) {
   try {
     mkdirSync2(outDir, { recursive: true });
     writeFileSync(
-      join8(outDir, "candidates.json"),
+      join9(outDir, "candidates.json"),
       `${JSON.stringify(candidatesIn.rebuild([...carriedCandidates, ...interdiffCandidates]), null, 2)}
 `
     );
     writeFileSync(
-      join8(outDir, "verification.json"),
+      join9(outDir, "verification.json"),
       `${JSON.stringify(verificationIn.rebuild([...carriedVerification, ...interdiffVerification]), null, 2)}
 `
     );
-    if (heldIn !== null) writeFileSync(join8(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
+    if (heldIn !== null) writeFileSync(join9(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
 `);
-    writeFileSync(join8(outDir, "carry.json"), `${JSON.stringify(record2, null, 2)}
+    writeFileSync(join9(outDir, "carry.json"), `${JSON.stringify(record2, null, 2)}
 `);
   } catch (error) {
     console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -19678,10 +20555,10 @@ function carryCandidatesCommand(argv) {
         carried: result.carried.length,
         refused,
         interdiffReviewed: interdiff !== null,
-        candidates: join8(outDir, "candidates.json"),
-        verification: join8(outDir, "verification.json"),
-        ...heldIn === null ? {} : { held: join8(outDir, "held.json") },
-        carry: join8(outDir, "carry.json")
+        candidates: join9(outDir, "candidates.json"),
+        verification: join9(outDir, "verification.json"),
+        ...heldIn === null ? {} : { held: join9(outDir, "held.json") },
+        carry: join9(outDir, "carry.json")
       },
       null,
       2
@@ -19911,7 +20788,7 @@ function conventionsCommand(argv) {
   const changed = [];
   if (filesFlag !== null) {
     try {
-      changed.push(...changedPathsFrom(JSON.parse(readFileSync6(filesFlag, "utf8"))));
+      changed.push(...changedPathsFrom(JSON.parse(readFileSync7(filesFlag, "utf8"))));
     } catch (error) {
       console.error(`Cannot read ${filesFlag}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -19997,7 +20874,7 @@ function checkVerificationCommand(argv) {
   let keptIds = null;
   if (candidatesFile !== null) {
     try {
-      keptIds = keptCandidateIds(JSON.parse(readFileSync6(candidatesFile, "utf8")));
+      keptIds = keptCandidateIds(JSON.parse(readFileSync7(candidatesFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -20043,7 +20920,7 @@ function checkIntentCommand(argv) {
   }
   let description;
   try {
-    description = descriptionOf(JSON.parse(readFileSync6(threadFile, "utf8")));
+    description = descriptionOf(JSON.parse(readFileSync7(threadFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -20083,7 +20960,7 @@ function checkSimplificationCommand(argv) {
   }
   let hunks;
   try {
-    hunks = parseHunks(readFileSync6(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync7(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -20115,7 +20992,7 @@ function checkSimplificationCommand(argv) {
   }
   let candidateDocument;
   try {
-    candidateDocument = JSON.parse(readFileSync6(candidateFile, "utf8"));
+    candidateDocument = JSON.parse(readFileSync7(candidateFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${candidateFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -20288,7 +21165,7 @@ function checkCandidatesCommand(argv) {
       }
       let ids;
       try {
-        const statements = JSON.parse(readFileSync6(intentFile, "utf8")).statements;
+        const statements = JSON.parse(readFileSync7(intentFile, "utf8")).statements;
         if (!Array.isArray(statements)) throw new Error("statements is not a list");
         ids = new Set(statements.map((statement) => statement?.id).filter((id) => typeof id === "string"));
       } catch (error) {
@@ -20319,7 +21196,7 @@ function checkCandidatesCommand(argv) {
     }
     let hunks;
     try {
-      hunks = parseHunks(readFileSync6(diffFile, "utf8"));
+      hunks = parseHunks(readFileSync7(diffFile, "utf8"));
     } catch (error) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -20378,7 +21255,7 @@ function checkCandidatesCommand(argv) {
         return 2;
       }
       try {
-        const parsed = JSON.parse(readFileSync6(threadFile, "utf8"));
+        const parsed = JSON.parse(readFileSync7(threadFile, "utf8"));
         thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
         if (!Array.isArray(thread)) throw new Error("comments is not a list");
       } catch (error) {
@@ -20477,6 +21354,9 @@ function checkCandidatesCommand(argv) {
     throw error;
   }
 }
+function distinctReviewers(db) {
+  return db.prepare("SELECT COUNT(DISTINCT reviewer_login) AS n FROM review_events").get().n;
+}
 function statusCommand() {
   const db = openDatabase();
   try {
@@ -20518,6 +21398,9 @@ function statusCommand() {
     const sync = lastSync(db);
     console.log(
       `last sync        ${sync === null ? "never completed" : `${sync.finishedAt ?? sync.startedAt}, ${sync.imported} imported from ${sync.repositories.length} repository/ies`}`
+    );
+    console.log(
+      coverage.total === 0 ? "Corpus: baseline voice in use (no synced history)" : `Corpus: ${coverage.total} events from ${distinctReviewers(db)} reviewer(s)`
     );
     console.log(
       `corpus           ${coverage.total} event(s)` + (coverage.total === 0 ? "" : ` - ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(", ")}`)
@@ -20610,6 +21493,8 @@ ${topLevelHelp()}`);
       return scoreCommand(argv.slice(1));
     case "evaluate":
       return evaluateCommand(argv.slice(1));
+    case "outcomes":
+      return outcomesCommand(argv.slice(1));
     case "draft":
       return draftCommand(argv.slice(1));
     case "verdict":
