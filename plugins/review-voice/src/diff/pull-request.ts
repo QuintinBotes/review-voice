@@ -463,8 +463,10 @@ export async function acquirePullRequestDiff(options: {
   maxFiles?: number;
   /** Where to check for, and fetch, the pull request's commits. */
   cwd?: string;
+  /** Injectable so a test can stub fetch. */
+  client?: GitHubClient;
 }): Promise<PullRequestDiff> {
-  const client = new GitHubClient({ allowlist: [options.repository] });
+  const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
 
   const { data: pull } = await client.get<RawPull>(
     `/repos/${options.repository}/pulls/${options.pullNumber}`,

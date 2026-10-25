@@ -89,6 +89,39 @@ SIGINT or SIGTERM to the CLI kills every live group before it exits.
 one test share the numbering. `review-voice agent` runs a single call, which
 is how the runner is exercised on its own.
 
+### The review driver
+
+`review-voice review --pr <n>` runs a whole review in a clone
+(docs/adr/0022). `src/review/stages.ts` is the stage table: prep, carry,
+intent, lanes, verify, second-pass, tie-break, score, challenge, edit, record
+and post, each naming its commands and agents. `src/review/driver.ts` walks it
+in order. Every CLI step and every check is the existing command, run in the
+same process with its output captured (`runInProcess` in `src/cli.ts`), so the
+driver holds no review logic of its own; it moves files between stages and
+applies the failure rules. A refused agent output goes back once with the
+refusal, and a second refusal stops the run with exit 7 and nothing recorded.
+Only failing candidates go back to their lane to re-anchor. A failed intent
+call carries on without intent, an unsettled dispute stays unsettled, and a
+challenger that fails holds its finding.
+
+Before the first agent, the driver adds a detached worktree of the head under
+the run directory as the agents' working directory, with hooks, LFS filters,
+fsmonitor and submodule recursion turned off so the checkout runs no code
+from the pull request. It writes the base version of each changed file to
+`base/` and its recent history to `history/<URI-encoded path>.txt`, since
+agents get no shell; a write that would clash with another path is skipped
+with a note. The worktree is removed on every exit. While a review runs, the
+driver owns SIGINT and SIGTERM: it stops every agent through the runner's
+`stopAll`, removes the worktree, then exits 130 or 143. Every stage's
+input and output stays in the run directory, with each command and its stderr
+in `commands.log`, so a stopped run can be continued by hand. The head is read
+at the start and again before `record`; a move is exit 3. In `fast` mode a nit
+or question skips the challenge, so the driver challenges the rest and puts
+those findings back in render order; they stay eligible in the score list the
+challenge reads, so a corrected line cannot land on one. `src/review/prompts.ts` holds each agent's
+prompt and output envelope; a test holds `commands/review.md` to the agents in
+the stage table.
+
 ### Diff acquisition
 
 `review-voice diff` emits the change under review as JSON: base and head, every

@@ -10,6 +10,7 @@
 import { readFileSync, readSync, writeFileSync, mkdirSync, statSync, renameSync, rmSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { format } from 'node:util';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
 import { pluginVersion } from './version.ts';
 import { OPTIONAL_CHECKS, runDoctor } from './doctor.ts';
@@ -159,6 +160,7 @@ import { hashDiff } from './store/runs.ts';
 import { cleanStages, describeStage, shallowPassWarning } from './store/effort.ts';
 import { recordAudit } from './store/audit.ts';
 import { commandHelp, topLevelHelp } from './help.ts';
+import { runReview, reportText } from './review/driver.ts';
 
 /** What each stdin-reading command expects, for the message a terminal gets. */
 const STDIN_INPUT: Record<string, string> = {
@@ -184,7 +186,19 @@ function noFindingsHint(): string {
   return `A run with no findings pipes exactly ${DEFAULT_LIMITS.noFindingsResponse}, e.g. echo '${DEFAULT_LIMITS.noFindingsResponse}' | RV record ...`;
 }
 
+/**
+ * Set while the review driver runs a command in this process (docs/adr/0022):
+ * stdin comes from the driver, and GitHub reads may use an injected fetch.
+ */
+let inProcess: { stdin: string; fetchImpl: typeof fetch | undefined } | null = null;
+
+/** The read-only client every command builds, so an in-process run can inject its fetch. */
+function githubClient(allowlist: string[]): GitHubClient {
+  return new GitHubClient({ allowlist, ...(inProcess?.fetchImpl === undefined ? {} : { fetchImpl: inProcess.fetchImpl }) });
+}
+
 function readStdin(): string {
+  if (inProcess !== null) return inProcess.stdin;
   // Run from a terminal with nothing piped, a read blocks forever and looks
   // like a hang. Say what to pipe and stop at once; piped input is untouched.
   if (process.stdin.isTTY === true) {
@@ -345,7 +359,7 @@ async function threadCommand(argv: string[]): Promise<number> {
     return 2;
   }
 
-  const result = await readThread({ repository, pullNumber });
+  const result = await readThread({ repository, pullNumber, client: githubClient([repository]) });
   // Local only, never posted: the review goes on without thread resolution.
   for (const warning of result.warnings ?? []) console.error(`Warning: ${warning}`);
   const out = flag(argv, '--out');
@@ -437,6 +451,7 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
     pullNumber,
     includeGenerated: argv.includes('--include-generated'),
     cwd: process.cwd(),
+    client: githubClient([repository]),
   });
 
   let recorded: RecordedRun[] = [];
@@ -466,7 +481,7 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
     ownReview: () =>
       uncoveredPrior !== null
         ? Promise.resolve(null)
-        : latestOwnReview(new GitHubClient({ allowlist: [repository] }), repository, pullNumber),
+        : latestOwnReview(githubClient([repository]), repository, pullNumber),
   });
   if (uncoveredPrior !== null && since === null) {
     console.error(`Run ${uncoveredPrior} carried candidates without reviewing the commits before it, so the whole pull request is read.`);
@@ -1298,7 +1313,7 @@ async function verdictCommand(argv: string[]): Promise<number> {
     const { exitCode, output } = await computeVerdict({
       ...target,
       db,
-      client: new GitHubClient({ allowlist: [target.repository] }),
+      client: githubClient([target.repository]),
       recheck: argv.includes('--recheck'),
       gateChecks: config?.ciGateChecks ?? [],
       ciRules: config?.ciRules ?? {},
@@ -1328,9 +1343,10 @@ async function postCommand(argv: string[]): Promise<number> {
     const { exitCode, output } = await postReview({
       ...target,
       db,
-      client: new GitHubClient({ allowlist: [target.repository] }),
+      client: githubClient([target.repository]),
       // Built from the recorded run's repository, not from --repository.
-      writerFor: (allowlist) => new ReviewWriter({ allowlist }),
+      writerFor: (allowlist) =>
+        new ReviewWriter({ allowlist, ...(inProcess?.fetchImpl === undefined ? {} : { fetchImpl: inProcess.fetchImpl }) }),
       confirm: argv.includes('--confirm'),
       event: flag(argv, '--event')?.toUpperCase(),
       postingEnabled: config?.postingEnabled ?? false,
@@ -5088,6 +5104,9 @@ async function dispatch(argv: string[]): Promise<number> {
     case 'agent':
       return await agentCommand(argv.slice(1));
 
+    case 'review':
+      return await reviewCommand(argv.slice(1));
+
     case 'doctor': {
       const checks = runDoctor();
       for (const check of checks) {
@@ -5105,26 +5124,113 @@ async function dispatch(argv: string[]): Promise<number> {
   }
 }
 
+/**
+ * The exit code and message for an error a command threw. Network and
+ * credential problems are ordinary operating conditions, not crashes, and a
+ * stack trace tells the user nothing they can act on.
+ */
+function failureOf(error: unknown): { code: number; message: string } {
+  const message = error instanceof Error ? error.message : String(error);
+  const expected =
+    error instanceof AuthError ||
+    error instanceof NotAllowlisted ||
+    error instanceof ReadOnlyViolation ||
+    error instanceof WriteViolation ||
+    error instanceof GitError;
+  return { code: expected ? 2 : 1, message };
+}
+
+export interface CommandResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Runs one command in this process with its output captured, for the review
+ * driver: every stage calls the command itself, so the driver adds no review
+ * logic of its own (docs/adr/0022). One command at a time.
+ */
+export async function runInProcess(
+  argv: string[],
+  options: { stdin?: string; fetchImpl?: typeof fetch } = {},
+): Promise<CommandResult> {
+  if (inProcess !== null) throw new Error('A command is already running in this process.');
+  const out: string[] = [];
+  const err: string[] = [];
+  const saved = { log: console.log, error: console.error, write: process.stdout.write };
+  inProcess = { stdin: options.stdin ?? '', fetchImpl: options.fetchImpl };
+  console.log = (...args: unknown[]) => void out.push(`${format(...args)}\n`);
+  console.error = (...args: unknown[]) => void err.push(`${format(...args)}\n`);
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    out.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  let code: number;
+  try {
+    code = await dispatch(argv);
+  } catch (error) {
+    const failure = failureOf(error);
+    err.push(`${failure.message}\n`);
+    code = failure.code;
+  } finally {
+    console.log = saved.log;
+    console.error = saved.error;
+    process.stdout.write = saved.write;
+    inProcess = null;
+  }
+  return { code, stdout: out.join(''), stderr: err.join('') };
+}
+
+/** Runs the whole review of one pull request (docs/adr/0022). */
+async function reviewCommand(argv: string[]): Promise<number> {
+  const pullNumber = Number(flag(argv, '--pr'));
+  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+    console.error('--pr needs a pull request number.');
+    return 2;
+  }
+  const modeFlag = flag(argv, '--mode');
+  const mode = MODES.find((known) => known === modeFlag);
+  if (argv.includes('--mode') && mode === undefined) {
+    console.error(`--mode takes one of ${MODES.join(', ')}.`);
+    return 2;
+  }
+  for (const name of ['--out', '--since', '--repository', '--expect-head']) {
+    if (argv.includes(name) && flag(argv, name) === null) {
+      console.error(`${name} needs a value.`);
+      return 2;
+    }
+  }
+  const repository = flag(argv, '--repository') ?? inferRepository(process.cwd());
+  if (repository === null) {
+    console.error('Cannot tell which repository. Pass --repository <owner/repo>.');
+    return 2;
+  }
+  const report = await runReview(
+    {
+      repository,
+      pullNumber,
+      mode,
+      post: argv.includes('--post'),
+      out: flag(argv, '--out'),
+      since: flag(argv, '--since'),
+      full: argv.includes('--full'),
+      recheckThread: !argv.includes('--no-recheck-thread'),
+      expectHead: flag(argv, '--expect-head'),
+    },
+    { command: (args, stdin) => runInProcess(args, { stdin }), client: githubClient([repository]) },
+  );
+  if (argv.includes('--json')) console.log(JSON.stringify(report, null, 2));
+  else console.log(reportText(report));
+  return report.exitCode;
+}
+
 suppressSqliteExperimentalWarning();
 
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
-  // Network and credential problems are ordinary operating conditions, not
-  // crashes, and a stack trace tells the user nothing they can act on.
-  if (
-    error instanceof AuthError ||
-    error instanceof NotAllowlisted ||
-    error instanceof ReadOnlyViolation ||
-    error instanceof WriteViolation
-  ) {
-    console.error(error.message);
-    process.exitCode = 2;
-  } else if (error instanceof GitError) {
-    console.error(error.message);
-    process.exitCode = 2;
-  } else {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
+  const failure = failureOf(error);
+  console.error(failure.message);
+  process.exitCode = failure.code;
 }

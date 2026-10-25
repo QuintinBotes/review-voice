@@ -39,9 +39,17 @@ export function cleanStages(stages: StageTiming[], diff: string | null): StageTi
     const toolCalls = count(stage.toolCalls);
     const tokens = count(stage.tokens);
     const filesRead = count(stage.filesRead);
+    const costUsd = count(stage.costUsd);
+    // A model name is configuration text; bounded so it cannot carry a payload.
+    const modelName = (value: unknown): value is string => typeof value === 'string' && /^[\w.:\[\]-]{1,100}$/.test(value);
+    const model = modelName(stage.model) ? stage.model : undefined;
+    const models = Array.isArray(stage.models) ? stage.models.filter(modelName).slice(0, 200) : [];
     return {
       name: stage.name,
       seconds: stage.seconds,
+      ...(model === undefined ? {} : { model }),
+      ...(models.length === 0 ? {} : { models }),
+      ...(costUsd === undefined ? {} : { costUsd }),
       ...(toolCalls === undefined ? {} : { toolCalls }),
       ...(tokens === undefined ? {} : { tokens }),
       ...(filesRead === undefined ? {} : { filesRead }),
