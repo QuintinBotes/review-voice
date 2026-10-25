@@ -38,6 +38,8 @@ export interface StoredFinding {
    * follow-up is posted as an ordinary inline comment.
    */
   partlyAddressed?: PartlyAddressedFinding | undefined;
+  /** The lane of the candidate this finding came from; `diff` when none (docs/adr/0023). */
+  lane?: string | undefined;
 }
 
 export interface PartlyAddressedFinding {
@@ -188,6 +190,9 @@ export interface CandidateHint {
   path: string;
   line: number;
   category?: string | undefined;
+  lane?: unknown;
+  blocker_class?: unknown;
+  blockerClass?: unknown;
   /** As `score` hands it on; read with `partlyAddressedOf`. */
   possibleRepeatOf?: unknown;
 }
@@ -302,6 +307,16 @@ function attribute(
   return { hint: undefined, how: 'none' };
 }
 
+const laneOf = (hint: CandidateHint | undefined): string =>
+  typeof hint?.lane === 'string' && hint.lane.length > 0 ? hint.lane : 'diff';
+
+/** The stored form of a candidate: its lane (default `diff`) and blocker class are always kept. */
+function storedCandidate(hint: CandidateHint): CandidateHint {
+  const blocker = hint.blocker_class ?? hint.blockerClass;
+  const { blockerClass: _camel, ...rest } = hint;
+  return { ...rest, lane: laneOf(hint), ...(blocker === undefined ? {} : { blocker_class: blocker }) };
+}
+
 function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
   const taken = new Set<CandidateHint>();
   return splitFindings(output)
@@ -321,6 +336,7 @@ function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
         // Absent when a review ran without candidates to hand. Null is honest;
         // guessing a category from the wording would invent evidence.
         category: hint?.category,
+        lane: laneOf(hint),
         // Stated so a disagreement between what the analyst cited and what
         // shipped is visible rather than showing up as a missing category.
         ...(how === 'exact' || how === 'none' ? {} : { attributedBy: how }),
@@ -366,7 +382,7 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
     hashDiff(input.diff),
     JSON.stringify([]),
     JSON.stringify(input.precedents ?? []),
-    JSON.stringify(input.candidates ?? []),
+    JSON.stringify((input.candidates ?? []).map(storedCandidate)),
     JSON.stringify({
       output: input.output,
       findings,

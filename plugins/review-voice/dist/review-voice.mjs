@@ -7043,6 +7043,12 @@ function attribute(finding, hints, taken) {
   if (sameLine.length === 1) return { hint: sameLine[0], how: "line" };
   return { hint: void 0, how: "none" };
 }
+var laneOf = (hint) => typeof hint?.lane === "string" && hint.lane.length > 0 ? hint.lane : "diff";
+function storedCandidate(hint) {
+  const blocker = hint.blocker_class ?? hint.blockerClass;
+  const { blockerClass: _camel, ...rest } = hint;
+  return { ...rest, lane: laneOf(hint), ...blocker === void 0 ? {} : { blocker_class: blocker } };
+}
 function assignIds(output, hints) {
   const taken = /* @__PURE__ */ new Set();
   return splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null).map((finding, index) => {
@@ -7059,6 +7065,7 @@ function assignIds(output, hints) {
       // Absent when a review ran without candidates to hand. Null is honest;
       // guessing a category from the wording would invent evidence.
       category: hint?.category,
+      lane: laneOf(hint),
       // Stated so a disagreement between what the analyst cited and what
       // shipped is visible rather than showing up as a missing category.
       ...how === "exact" || how === "none" ? {} : { attributedBy: how },
@@ -7099,7 +7106,7 @@ function recordRun(db, input) {
     hashDiff(input.diff),
     JSON.stringify([]),
     JSON.stringify(input.precedents ?? []),
-    JSON.stringify(input.candidates ?? []),
+    JSON.stringify((input.candidates ?? []).map(storedCandidate)),
     JSON.stringify({
       output: input.output,
       findings,
@@ -18064,6 +18071,7 @@ function recordedCandidates(db, runId) {
     }
   });
 }
+var PASTED_TEXT_MIN = 40;
 async function raisedByOthers(options, run, findings) {
   if (findings.length === 0) return [];
   const { data: viewer } = await options.client.get("/user");
@@ -18072,7 +18080,12 @@ async function raisedByOthers(options, run, findings) {
   const { comments } = await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client });
   const mine = new Set(comments.filter((c) => c.author.toLowerCase() === me && c.id !== void 0).map((c) => c.id));
   const started = Date.parse(run.createdAt);
-  const thread = comments.filter((comment) => comment.author.toLowerCase() !== me).filter((comment) => comment.createdAt === void 0 || !(Date.parse(comment.createdAt) <= started)).filter((comment) => comment.inReplyTo === void 0 || !mine.has(comment.inReplyTo)).flatMap((comment) => citedLocations([comment]).map((located) => ({ comment: located, url: comment.url ?? null })));
+  const squash = (text4) => text4.toLowerCase().replace(/\s+/g, " ").trim();
+  const ownTexts = comments.filter((c) => c.author.toLowerCase() === me).map((c) => squash(c.body));
+  const thread = comments.filter((comment) => comment.author.toLowerCase() !== me).map((comment) => ({ ...comment, body: comment.body.split("\n").filter((line3) => !/^\s*>/.test(line3)).join("\n") })).filter((comment) => {
+    const text4 = squash(comment.body);
+    return text4 !== "" && !(text4.length >= PASTED_TEXT_MIN && ownTexts.some((own) => own.includes(text4)));
+  }).filter((comment) => comment.createdAt === void 0 || !(Date.parse(comment.createdAt) <= started)).filter((comment) => comment.inReplyTo === void 0 || !mine.has(comment.inReplyTo)).flatMap((comment) => citedLocations([comment]).map((located) => ({ comment: located, url: comment.url ?? null })));
   if (thread.length === 0) return [];
   const candidates = recordedCandidates(options.db, run.reviewRunId);
   const raised = [];
