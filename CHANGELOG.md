@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   challenge. `review.mode` and `review.models` in `config.yaml` set the default
   mode and a model per stage; an unknown value warns and is ignored. (ADR 0025)
 
+- `docs/WATCHER.md` specifies Review Voice as a watcher and reviewer that runs
+  end to end without a host: a `review` driver with a confined headless agent
+  runner, configured analyst lanes, an independent challenge before posting,
+  cost modes, a `queue` and `watch` with per-head state, configurable verdict
+  policies, outcome tracking for posted findings, team profiles and a GitHub
+  Action. ADRs 0021 to 0031 record the decisions.
+
 ## [1.18.0] - 2026-10-24
 
 ### Added
