@@ -7,6 +7,12 @@ identity:
   # Resolved from your authenticated GitHub account at init. Whoever runs the
   # plugin is the owner reviewer; there is no default person.
   owner_reviewer: your-github-login
+  # Optional. Logins whose review history forms one shared corpus. Each is
+  # collected the way the owner is, and every event keeps its author. The owner
+  # stays the only policy authority and defaults to the first login listed.
+  # reviewers:
+  #   - your-github-login
+  #   - teammate-login
 
 repositories:
   # allowlist is the only supported mode. Review Voice never scans every

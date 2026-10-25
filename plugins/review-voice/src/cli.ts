@@ -59,7 +59,7 @@ import {
   type FollowUpState,
 } from './store/follow-ups.ts';
 import { collectSymbolContext, DEFAULT_MAX_MS } from './diff/symbols.ts';
-import { openDatabase } from './store/db.ts';
+import { openDatabase, type Database } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
 import {
   recordRun,
@@ -105,6 +105,8 @@ import { storeEvents, corpusCoverage } from './corpus/store.ts';
 import { buildConsentPlan, discoverRepositories } from './consent/plan.ts';
 import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
 import { retrievePrecedents, type Precedent } from './retrieval/retrieve.ts';
+import { resolveSyncWindow } from './sync/window.ts';
+import { baselineVoice, isCorpusEmpty } from './retrieval/baseline.ts';
 import {
   scoreCandidate,
   applyQuestionCap,
@@ -943,6 +945,7 @@ function consentPlanCommand(argv: string[]): number {
     JSON.stringify(
       buildConsentPlan({
         ownerLogin: owner,
+        reviewerLogins: config.reviewers,
         repositories,
         targetEvents: numericFlag(argv, '--target', 250) ?? 250,
         storageLocation: dataDirectory(),
@@ -999,8 +1002,20 @@ async function syncCommand(argv: string[]): Promise<number> {
   // Scaled to the allowlist rather than fixed, so a twenty-repository sync
   // does not read twelve hundred pull requests to keep two hundred and fifty
   // events. An explicit --target still wins.
+  // --quick is a preset, not a bypass: the same consent plan applies.
   const defaultTarget = scaledTarget(config.allowlist.length);
-  const target = numericFlag(argv, '--target', defaultTarget) ?? defaultTarget;
+  const explicitTarget = argv.includes('--target') ? numericFlag(argv, '--target', defaultTarget) : undefined;
+  const window = resolveSyncWindow({
+    quick: argv.includes('--quick'),
+    target: explicitTarget,
+    since: flag(argv, '--since'),
+  });
+  if ('error' in window) {
+    console.error(window.error);
+    return 2;
+  }
+  const target = window.target ?? defaultTarget;
+  const updatedSince = window.updatedSince;
   const maxPulls = numericFlag(argv, '--max-pulls', 60) ?? 60;
   const repositoryShare = scaledRepositoryShare(config.allowlist.length);
   const dryRun = argv.includes('--dry-run');
@@ -1038,6 +1053,8 @@ async function syncCommand(argv: string[]): Promise<number> {
       {
         repository,
         ownerLogin: config.ownerReviewer,
+        reviewerLogins: config.reviewers,
+        updatedSince,
         maxPullRequests: maxPulls,
         maxCommentsPerPull: 200,
         includeForks: false,
@@ -2252,7 +2269,12 @@ function retrieveCommand(argv: string[]): number {
       maxPositive: numericFlag(argv, '--max-positive', 3) ?? 3,
       maxNegative: numericFlag(argv, '--max-negative', 2) ?? 2,
     });
-    console.log(JSON.stringify({ precedents }, null, 2));
+    // Before any history is synced the editor writes from the shipped baseline
+    // voice, and says so (ADR 0030).
+    const baseline = isCorpusEmpty(db);
+    console.log(
+      JSON.stringify({ precedents, ...(baseline ? { baseline: true, voice: baselineVoice() } : {}) }, null, 2),
+    );
     return 0;
   } finally {
     db.close();
@@ -4527,6 +4549,10 @@ function checkCandidatesCommand(argv: string[]): number {
   }
 }
 
+function distinctReviewers(db: Database): number {
+  return (db.prepare('SELECT COUNT(DISTINCT reviewer_login) AS n FROM review_events').get() as { n: number }).n;
+}
+
 function statusCommand(): number {
   const db = openDatabase();
   try {
@@ -4584,6 +4610,11 @@ function statusCommand(): number {
           ? 'never completed'
           : `${sync.finishedAt ?? sync.startedAt}, ${sync.imported} imported from ${sync.repositories.length} repository/ies`
       }`,
+    );
+    console.log(
+      coverage.total === 0
+        ? 'Corpus: baseline voice in use (no synced history)'
+        : `Corpus: ${coverage.total} events from ${distinctReviewers(db)} reviewer(s)`,
     );
     console.log(
       `corpus           ${coverage.total} event(s)` +

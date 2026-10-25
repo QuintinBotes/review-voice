@@ -13,6 +13,11 @@ export interface RoleInput {
   /** GitHub's own account type, when the API supplied it. */
   accountType?: string | undefined;
   ownerLogin: string;
+  /**
+   * Every login whose history forms the corpus (ADR 0030). Each is treated as
+   * the owner is: the owner role means "one of the listed reviewers".
+   */
+  reviewerLogins?: readonly string[] | undefined;
   /** Logins the user has chosen to treat as teammates. */
   teamLogins?: readonly string[] | undefined;
   /** Association GitHub reports for the comment author on that repository. */
@@ -30,7 +35,9 @@ export function isBot(login: string, accountType?: string): boolean {
 
 export function classifyReviewer(input: RoleInput): ReviewerRole {
   if (isBot(input.login, input.accountType)) return 'bot';
-  if (input.login.toLowerCase() === input.ownerLogin.toLowerCase()) return 'owner';
+  const login = input.login.toLowerCase();
+  if (login === input.ownerLogin.toLowerCase()) return 'owner';
+  if ((input.reviewerLogins ?? []).some((reviewer) => reviewer.toLowerCase() === login)) return 'owner';
 
   const team = (input.teamLogins ?? []).map((login) => login.toLowerCase());
   if (team.includes(input.login.toLowerCase())) return 'team';

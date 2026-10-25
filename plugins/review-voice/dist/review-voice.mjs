@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync6, readSync, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2, renameSync, rmSync, existsSync as existsSync3 } from "node:fs";
-import { dirname as dirname4, join as join7 } from "node:path";
+import { readFileSync as readFileSync7, readSync, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2, renameSync, rmSync, existsSync as existsSync4 } from "node:fs";
+import { dirname as dirname5, join as join8 } from "node:path";
 import { execFileSync as execFileSync11 } from "node:child_process";
 
 // plugins/review-voice/src/warnings.ts
@@ -13487,9 +13487,34 @@ function layerFromPolicyFile(text3, source, fallbackKey) {
     priorities
   };
 }
+function readReviewers(identity2, result) {
+  const raw = identity2?.["reviewers"];
+  const listed = [];
+  if (raw !== void 0) {
+    if (!Array.isArray(raw)) {
+      result.warnings.push("identity.reviewers must be a list of GitHub logins; ignoring it.");
+    } else {
+      for (const entry of raw) {
+        if (typeof entry !== "string" || entry.trim() === "") {
+          result.warnings.push("identity.reviewers: skipped an entry that is not a login.");
+          continue;
+        }
+        const login = entry.trim();
+        if (!listed.some((existing) => existing.toLowerCase() === login.toLowerCase())) listed.push(login);
+      }
+    }
+  }
+  if (result.ownerReviewer === null && listed.length > 0) result.ownerReviewer = listed[0];
+  const owner = result.ownerReviewer;
+  if (owner !== null && !listed.some((login) => login.toLowerCase() === owner.toLowerCase())) {
+    listed.unshift(owner);
+  }
+  result.reviewers = listed;
+}
 function loadConfig(repositoryRoot2) {
   const result = {
     ownerReviewer: null,
+    reviewers: [],
     postingEnabled: false,
     ciGateChecks: [],
     ciRules: {},
@@ -13519,6 +13544,7 @@ function loadConfig(repositoryRoot2) {
         if (typeof identity2?.["owner_reviewer"] === "string") {
           result.ownerReviewer = identity2["owner_reviewer"];
         }
+        readReviewers(identity2, result);
         const repositories = asRecord(doc["repositories"]);
         result.allowlist = asStringArray(repositories?.["include"]);
         const staticEvidence = asRecord(doc["static_evidence"]);
@@ -14230,8 +14256,10 @@ function isBot(login, accountType) {
 }
 function classifyReviewer(input) {
   if (isBot(input.login, input.accountType)) return "bot";
-  if (input.login.toLowerCase() === input.ownerLogin.toLowerCase()) return "owner";
-  const team = (input.teamLogins ?? []).map((login) => login.toLowerCase());
+  const login = input.login.toLowerCase();
+  if (login === input.ownerLogin.toLowerCase()) return "owner";
+  if ((input.reviewerLogins ?? []).some((reviewer) => reviewer.toLowerCase() === login)) return "owner";
+  const team = (input.teamLogins ?? []).map((login2) => login2.toLowerCase());
   if (team.includes(input.login.toLowerCase())) return "team";
   const association = (input.authorAssociation ?? "").toUpperCase();
   if (association === "OWNER" || association === "MEMBER" || association === "COLLABORATOR") {
@@ -14309,6 +14337,7 @@ async function collectRepository(client, options, stats) {
   const seenKeys = /* @__PURE__ */ new Set();
   const watermarks = [];
   for (const pull of pulls) {
+    if (options.updatedSince !== void 0 && pull.updated_at < options.updatedSince) continue;
     if (!options.includeForks && pull.head?.repo?.fork === true) continue;
     if (options.watermarks?.get(pull.number) === pull.updated_at) {
       stats.pullRequestsUnchanged += 1;
@@ -14327,6 +14356,7 @@ async function collectRepository(client, options, stats) {
         login: raw.login,
         accountType: raw.accountType,
         ownerLogin: options.ownerLogin,
+        reviewerLogins: options.reviewerLogins,
         teamLogins: options.teamLogins,
         authorAssociation: raw.association
       });
@@ -15106,8 +15136,10 @@ function corpusCoverage(db, options = {}) {
 
 // plugins/review-voice/src/consent/plan.ts
 function buildConsentPlan(input) {
+  const pooled = input.reviewerLogins ?? [];
   return {
     ownerLogin: input.ownerLogin,
+    ...pooled.length > 1 ? { reviewerLogins: [...pooled] } : {},
     repositories: [...input.repositories],
     targetEvents: input.targetEvents,
     dataCategories: [
@@ -15364,6 +15396,38 @@ function retrievePrecedents(db, query) {
   const positive = scored.filter((p) => p.weight > 0).sort(rank2).slice(0, query.maxPositive);
   const negative = scored.filter((p) => p.weight < 0).sort(rank2).slice(0, query.maxNegative);
   return [...negative, ...positive];
+}
+
+// plugins/review-voice/src/sync/window.ts
+var QUICK_TARGET = 50;
+var QUICK_SINCE = "90d";
+function resolveSyncWindow(input, now = /* @__PURE__ */ new Date()) {
+  const since = input.since ?? (input.quick ? QUICK_SINCE : null);
+  let updatedSince;
+  if (since !== null) {
+    const days = /^(\d+)d$/.exec(since);
+    if (days === null || Number(days[1]) === 0) {
+      return { error: `--since ${JSON.stringify(since)} must be a number of days such as 90d.` };
+    }
+    updatedSince = new Date(now.getTime() - Number(days[1]) * 864e5).toISOString();
+  }
+  return { target: input.target ?? (input.quick ? QUICK_TARGET : null), updatedSince };
+}
+
+// plugins/review-voice/src/retrieval/baseline.ts
+import { existsSync as existsSync3, readFileSync as readFileSync6 } from "node:fs";
+import { dirname as dirname4, join as join7 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+function isCorpusEmpty(db) {
+  return db.prepare("SELECT COUNT(*) AS n FROM review_events").get().n === 0;
+}
+function baselineVoice() {
+  const here = dirname4(fileURLToPath2(import.meta.url));
+  for (const relative of ["..", "../.."]) {
+    const candidate = join7(here, relative, "templates", "voice.baseline.md");
+    if (existsSync3(candidate)) return readFileSync6(candidate, "utf8").trim();
+  }
+  throw new Error("templates/voice.baseline.md is missing from the plugin.");
 }
 
 // plugins/review-voice/src/policy/compile.ts
@@ -16972,16 +17036,19 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice sync [flags]",
       "  Ingest review history from allowlisted repositories.",
+      "  Every login in identity.reviewers is collected as the owner is. --quick needs the same consent plan.",
       "",
       "Flags:",
       "  --target <n>              Non-owner events to import (default 60 per",
       "                            repository, 250 to 1500); owner events all",
+      "  --since <Nd>              Only pull requests updated in the last N days (such as 90d)",
+      "  --quick                   Preset for a first sync: --target 50 --since 90d; explicit flags win",
       "  --max-pulls <n>           Pull requests inspected per repository (default 60)",
       "  --include-conversation    Also read pull-request conversation comments",
       "  --dry-run                 Report the import without storing it",
       "Reads: nothing on stdin (reads GitHub, read-only).",
       "Writes: events and watermarks to the local store (not with --dry-run); JSON summary on stdout.",
-      "Exit codes: 0 ok, 2 no allowlist, no owner reviewer, or credential problem."
+      "Exit codes: 0 ok, 2 no allowlist, no owner reviewer, bad --since, or credential problem."
     )
   },
   discover: {
@@ -17031,6 +17098,8 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice retrieve --text <query> [flags]",
       "  Find weighted precedents for a candidate finding.",
+      "  With no synced history it also returns baseline: true and voice, the baseline",
+      "  voice guide the editor writes from. Each precedent names its reviewerLogin.",
       "",
       "Flags:",
       "  --text <query>        Candidate claim and failure mode (required)",
@@ -17349,6 +17418,7 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice status",
       "  Show what is stored locally. Takes no flags.",
+      "  Says whether the baseline voice is in use or how many reviewers the corpus covers.",
       "",
       "Reads: nothing on stdin; the local store and config.",
       "Writes: text on stdout.",
@@ -17509,7 +17579,7 @@ function validateOutputCommand(argv) {
   if (scoresFlag !== null) {
     let entries;
     try {
-      entries = scoredEntries(JSON.parse(readFileSync6(scoresFlag, "utf8")));
+      entries = scoredEntries(JSON.parse(readFileSync7(scoresFlag, "utf8")));
     } catch (error) {
       console.error(`Cannot read ${scoresFlag}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -17781,8 +17851,8 @@ function emitDiff(acquired, outDir) {
   }
   try {
     mkdirSync2(outDir, { recursive: true });
-    const patchPath = join7(outDir, "diff.patch");
-    const metaPath = join7(outDir, "files.json");
+    const patchPath = join8(outDir, "diff.patch");
+    const metaPath = join8(outDir, "files.json");
     writeFileSync(patchPath, result.diff);
     writeFileSync(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
     console.log(
@@ -17830,7 +17900,7 @@ function symbolsCommand(argv) {
   }
   let diff;
   try {
-    diff = readFileSync6(diffFile, "utf8");
+    diff = readFileSync7(diffFile, "utf8");
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -17893,7 +17963,7 @@ function flag(argv, name) {
 function resolveOutPath(out, defaultName) {
   let target = out;
   try {
-    if (out.endsWith("/") || statSync2(out).isDirectory()) target = join7(out, defaultName);
+    if (out.endsWith("/") || statSync2(out).isDirectory()) target = join8(out, defaultName);
   } catch (error) {
     if (error.code !== "ENOENT") {
       throw new Error(
@@ -17902,7 +17972,7 @@ function resolveOutPath(out, defaultName) {
     }
   }
   try {
-    mkdirSync2(dirname4(target), { recursive: true });
+    mkdirSync2(dirname5(target), { recursive: true });
   } catch (error) {
     throw new Error(
       `${out}: expected a file path or a directory (${error instanceof Error ? error.message : String(error)})`
@@ -17914,7 +17984,7 @@ function contextCommand() {
   try {
     const root = repositoryRoot(process.cwd());
     const config2 = loadConfig(root);
-    const configPath = join7(root, ".review-voice", "config.yaml");
+    const configPath = join8(root, ".review-voice", "config.yaml");
     const policy = resolvePolicy(config2.layers);
     console.log(
       JSON.stringify(
@@ -17942,7 +18012,7 @@ function contextCommand() {
           // Not raised on top of a parse failure: a config that did not parse
           // says nothing about whether it has a verification block, and the
           // parse error is the actionable item.
-          warnings: config2.verification.blockPresent || config2.warnings.length > 0 ? config2.warnings : existsSync3(configPath) ? [
+          warnings: config2.verification.blockPresent || config2.warnings.length > 0 ? config2.warnings : existsSync4(configPath) ? [
             ...config2.warnings,
             "No verification block in .review-voice/config.yaml, so the second-pass verifier never runs. Configs written before it existed do not have one. See the second-pass verification section of the README."
           ] : [
@@ -17987,6 +18057,7 @@ function consentPlanCommand(argv) {
     JSON.stringify(
       buildConsentPlan({
         ownerLogin: owner,
+        reviewerLogins: config2.reviewers,
         repositories,
         targetEvents: numericFlag(argv, "--target", 250) ?? 250,
         storageLocation: dataDirectory()
@@ -18033,7 +18104,18 @@ async function syncCommand(argv) {
     return 2;
   }
   const defaultTarget = scaledTarget(config2.allowlist.length);
-  const target = numericFlag(argv, "--target", defaultTarget) ?? defaultTarget;
+  const explicitTarget = argv.includes("--target") ? numericFlag(argv, "--target", defaultTarget) : void 0;
+  const window = resolveSyncWindow({
+    quick: argv.includes("--quick"),
+    target: explicitTarget,
+    since: flag(argv, "--since")
+  });
+  if ("error" in window) {
+    console.error(window.error);
+    return 2;
+  }
+  const target = window.target ?? defaultTarget;
+  const updatedSince = window.updatedSince;
   const maxPulls = numericFlag(argv, "--max-pulls", 60) ?? 60;
   const repositoryShare = scaledRepositoryShare(config2.allowlist.length);
   const dryRun = argv.includes("--dry-run");
@@ -18059,6 +18141,8 @@ async function syncCommand(argv) {
       {
         repository,
         ownerLogin: config2.ownerReviewer,
+        reviewerLogins: config2.reviewers,
+        updatedSince,
         maxPullRequests: maxPulls,
         maxCommentsPerPull: 200,
         includeForks: false,
@@ -18165,10 +18249,10 @@ function planCommand(argv) {
   let manifest;
   let diffText;
   try {
-    const parsed = JSON.parse(readFileSync6(filesPath, "utf8"));
+    const parsed = JSON.parse(readFileSync7(filesPath, "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not a JSON object");
     manifest = parsed;
-    diffText = readFileSync6(diffPath, "utf8");
+    diffText = readFileSync7(diffPath, "utf8");
   } catch (error) {
     console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -18522,7 +18606,7 @@ function scoreCommand(argv) {
   const verificationFlag = flag(argv, "--verification");
   if (verificationFlag !== null) {
     try {
-      const parsed = JSON.parse(readFileSync6(verificationFlag, "utf8"));
+      const parsed = JSON.parse(readFileSync7(verificationFlag, "utf8"));
       const list = verdictList(parsed);
       const problem = verificationProblem(list);
       if (problem !== null) {
@@ -18607,7 +18691,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      reachDiff = readFileSync6(path, "utf8");
+      reachDiff = readFileSync7(path, "utf8");
       anchorHunks = parseHunks(reachDiff);
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -18622,7 +18706,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync6(path, "utf8"));
+      const parsed = JSON.parse(readFileSync7(path, "utf8"));
       thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -18985,7 +19069,10 @@ function retrieveCommand(argv) {
       maxPositive: numericFlag(argv, "--max-positive", 3) ?? 3,
       maxNegative: numericFlag(argv, "--max-negative", 2) ?? 2
     });
-    console.log(JSON.stringify({ precedents }, null, 2));
+    const baseline = isCorpusEmpty(db);
+    console.log(
+      JSON.stringify({ precedents, ...baseline ? { baseline: true, voice: baselineVoice() } : {} }, null, 2)
+    );
     return 0;
   } finally {
     db.close();
@@ -19003,9 +19090,9 @@ function anchorsCommand(argv) {
   let hunks = null;
   let scores = [];
   try {
-    if (diffFile !== null) hunks = parseHunks(readFileSync6(diffFile, "utf8"));
+    if (diffFile !== null) hunks = parseHunks(readFileSync7(diffFile, "utf8"));
     if (scoresFile !== null) {
-      const parsed = JSON.parse(readFileSync6(scoresFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(scoresFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed.scores;
       scores = Array.isArray(list) ? list : [];
     }
@@ -19094,7 +19181,7 @@ function reconcileCommand(argv) {
   }
   let verifications;
   try {
-    verifications = verdictList(JSON.parse(readFileSync6(verificationFile, "utf8")));
+    verifications = verdictList(JSON.parse(readFileSync7(verificationFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read ${verificationFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -19110,7 +19197,7 @@ function reconcileCommand(argv) {
   }
   let secondPass;
   try {
-    secondPass = parseSecondPass(JSON.parse(readFileSync6(secondPassFile, "utf8")));
+    secondPass = parseSecondPass(JSON.parse(readFileSync7(secondPassFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read the second pass from ${secondPassFile}: ${error.message}`);
     return 2;
@@ -19119,7 +19206,7 @@ function reconcileCommand(argv) {
   const tieBreaksFile = flag(argv, "--tie-breaks");
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync6(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync7(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -19194,7 +19281,7 @@ function recordCommand(argv) {
   let diff = "";
   if (diffFile !== null) {
     try {
-      diff = readFileSync6(diffFile, "utf8");
+      diff = readFileSync7(diffFile, "utf8");
     } catch {
       console.error(`Cannot read ${diffFile}.`);
       return 2;
@@ -19216,7 +19303,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync6(bodyFindingsFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(bodyFindingsFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null && Array.isArray(parsed.bodyFindings) ? parsed.bodyFindings : null;
       if (list === null) throw new Error('expected an array or {"bodyFindings": [...]}');
       if (list.length > 1) throw new Error("at most one body-only simplification is allowed per review");
@@ -19242,7 +19329,7 @@ function recordCommand(argv) {
   let complexity = null;
   if (filesFile !== null) {
     try {
-      const manifest = JSON.parse(readFileSync6(filesFile, "utf8"));
+      const manifest = JSON.parse(readFileSync7(filesFile, "utf8"));
       if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
         pullNumber = manifest.pullNumber;
       }
@@ -19262,7 +19349,7 @@ function recordCommand(argv) {
   let candidates = [];
   if (candidatesFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync6(candidatesFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(candidatesFile, "utf8"));
       candidates = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
     } catch {
       console.error(`Cannot read candidates from ${candidatesFile}.`);
@@ -19273,7 +19360,7 @@ function recordCommand(argv) {
   let scores = [];
   if (scoresFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync6(scoresFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(scoresFile, "utf8"));
       scores = boundLists(Array.isArray(parsed) ? parsed : parsed.scores ?? []);
     } catch {
       console.error(`Cannot read scores from ${scoresFile}.`);
@@ -19284,7 +19371,7 @@ function recordCommand(argv) {
   let verdicts = [];
   if (verdictsFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync6(verdictsFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(verdictsFile, "utf8"));
       verdicts = Array.isArray(parsed) ? parsed : parsed.verdicts ?? [];
     } catch {
       console.error(`Cannot read verdicts from ${verdictsFile}.`);
@@ -19295,7 +19382,7 @@ function recordCommand(argv) {
   let tieBreaks = [];
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync6(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync7(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -19305,7 +19392,7 @@ function recordCommand(argv) {
   let held = [];
   if (heldFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync6(heldFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(heldFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed?.held;
       if (!Array.isArray(list)) throw new Error('expected an array or {"held": [...]}');
       list.forEach((entry, index) => {
@@ -19322,7 +19409,7 @@ function recordCommand(argv) {
   let stages = [];
   if (stagesFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync6(stagesFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(stagesFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed.stages ?? [];
       stages = (Array.isArray(list) ? list : []).filter(
         (stage) => typeof stage === "object" && stage !== null && typeof stage.name === "string" && Number.isFinite(stage.seconds)
@@ -19342,7 +19429,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync6(followUpThreadFile, "utf8"));
+      const parsed = JSON.parse(readFileSync7(followUpThreadFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed.comments;
       if (!Array.isArray(list)) throw new Error("comments is not a list");
       followUpThread = list;
@@ -19360,7 +19447,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      rulings = parseFollowUpRulings(JSON.parse(readFileSync6(rulingsFile, "utf8")));
+      rulings = parseFollowUpRulings(JSON.parse(readFileSync7(rulingsFile, "utf8")));
     } catch (error) {
       const why = error instanceof FollowUpRulingError ? error.message : `cannot read it (${error.message})`;
       console.error(`Cannot read follow-up rulings from ${rulingsFile}: ${why}.`);
@@ -19400,7 +19487,7 @@ function recordCommand(argv) {
       const head = flag(argv, "--head");
       let marker = null;
       try {
-        const parsed = JSON.parse(readFileSync6(carryFile, "utf8"));
+        const parsed = JSON.parse(readFileSync7(carryFile, "utf8"));
         const refused = Array.isArray(parsed["refused"]) ? parsed["refused"].map((r) => String(r?.candidateId)) : null;
         const interdiff = parsed["interdiff"];
         if (refused !== null && typeof parsed["since"] === "string" && typeof parsed["head"] === "string") {
@@ -19528,7 +19615,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   if (threadFile !== null) {
     let text3;
     try {
-      text3 = readFileSync6(threadFile, "utf8");
+      text3 = readFileSync7(threadFile, "utf8");
     } catch (error) {
       throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -19538,7 +19625,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   let noLongerChanged = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
-      const files = JSON.parse(readFileSync6(filesFile, "utf8"));
+      const files = JSON.parse(readFileSync7(filesFile, "utf8"));
       const listed = files.scope?.noLongerChanged;
       noLongerChanged = new Set(Array.isArray(listed) ? listed.filter((path) => typeof path === "string") : []);
     } catch (error) {
@@ -19625,12 +19712,12 @@ function reanchorCommand(argv) {
     console.error("--path needs the file the finding belongs in.");
     return 2;
   }
-  const readJson = (path) => JSON.parse(readFileSync6(path, "utf8"));
+  const readJson = (path) => JSON.parse(readFileSync7(path, "utf8"));
   let scores;
   let hunks;
   try {
     scores = readJson(scoresFile);
-    hunks = parseHunks(readFileSync6(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync7(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -19700,8 +19787,8 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let manifest;
   let hunks;
   try {
-    manifest = JSON.parse(readFileSync6(join7(dir, "files.json"), "utf8"));
-    hunks = parseHunks(readFileSync6(join7(dir, "diff.patch"), "utf8"));
+    manifest = JSON.parse(readFileSync7(join8(dir, "files.json"), "utf8"));
+    hunks = parseHunks(readFileSync7(join8(dir, "diff.patch"), "utf8"));
   } catch (error) {
     return `Cannot read the interdiff in ${dir}: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -19716,7 +19803,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let candidates;
   let verification2;
   try {
-    const parsed = listIn(JSON.parse(readFileSync6(candidatesFile, "utf8")), ["candidates"]);
+    const parsed = listIn(JSON.parse(readFileSync7(candidatesFile, "utf8")), ["candidates"]);
     if (parsed === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidates = parsed.list;
     const normalised = candidates.map((raw, index) => normaliseCandidate(raw, index));
@@ -19724,11 +19811,11 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
     const misplaced = normalised.filter((c) => !candidateAnchor(hunks, c).ok);
     if (misplaced.length > 0) {
       throw new Error(
-        `interdiff candidate(s) not on a changed line of ${join7(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
+        `interdiff candidate(s) not on a changed line of ${join8(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
       );
     }
     candidates = candidates.map((raw, index) => withId(raw, normalised[index].candidateId));
-    const parsedVerification = listIn(JSON.parse(readFileSync6(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync7(verificationFile, "utf8")), VERDICT_KEYS);
     verification2 = parsedVerification?.list ?? [];
     if (parsedVerification === null && candidates.length > 0) throw new Error(`${verificationFile} contains no verifications`);
     const problem = verificationProblem(verification2);
@@ -19741,7 +19828,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
 function partialDiffReason(diffFile) {
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync6(join7(dirname4(diffFile), "files.json"), "utf8"));
+    manifest = JSON.parse(readFileSync7(join8(dirname5(diffFile), "files.json"), "utf8"));
   } catch {
     return null;
   }
@@ -19773,24 +19860,24 @@ function carryCandidatesCommand(argv) {
   let hunks;
   let heldIn = null;
   try {
-    const parsedCandidates = listIn(JSON.parse(readFileSync6(candidatesFile, "utf8")), ["candidates"]);
+    const parsedCandidates = listIn(JSON.parse(readFileSync7(candidatesFile, "utf8")), ["candidates"]);
     if (parsedCandidates === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidatesIn = parsedCandidates;
     candidates = candidatesIn.list.map((raw, index) => normaliseCandidate(raw, index));
     assertUniqueCandidateIds(candidates);
-    const parsedVerification = listIn(JSON.parse(readFileSync6(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync7(verificationFile, "utf8")), VERDICT_KEYS);
     if (parsedVerification === null || parsedVerification.list.length === 0) {
       throw new Error(`${verificationFile} contains no verifications`);
     }
     verificationIn = parsedVerification;
     const problem = verificationProblem(verificationIn.list);
     if (problem !== null) throw new Error(`malformed verification - ${problem}`);
-    hunks = parseHunks(readFileSync6(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync7(diffFile, "utf8"));
     const partial = partialDiffReason(diffFile);
     if (partial !== null) throw new Error(partial);
     const heldFile = flag(argv, "--held");
     if (heldFile !== null) {
-      heldIn = listIn(JSON.parse(readFileSync6(heldFile, "utf8")), ["held"]);
+      heldIn = listIn(JSON.parse(readFileSync7(heldFile, "utf8")), ["held"]);
       if (heldIn === null) throw new Error(`${heldFile} is not an array or {"held": [...]}`);
       heldIn.list.forEach((entry, index) => {
         const heldError = heldProblem(entry);
@@ -19884,18 +19971,18 @@ function carryCandidatesCommand(argv) {
   try {
     mkdirSync2(outDir, { recursive: true });
     writeFileSync(
-      join7(outDir, "candidates.json"),
+      join8(outDir, "candidates.json"),
       `${JSON.stringify(candidatesIn.rebuild([...carriedCandidates, ...interdiffCandidates]), null, 2)}
 `
     );
     writeFileSync(
-      join7(outDir, "verification.json"),
+      join8(outDir, "verification.json"),
       `${JSON.stringify(verificationIn.rebuild([...carriedVerification, ...interdiffVerification]), null, 2)}
 `
     );
-    if (heldIn !== null) writeFileSync(join7(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
+    if (heldIn !== null) writeFileSync(join8(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
 `);
-    writeFileSync(join7(outDir, "carry.json"), `${JSON.stringify(record2, null, 2)}
+    writeFileSync(join8(outDir, "carry.json"), `${JSON.stringify(record2, null, 2)}
 `);
   } catch (error) {
     console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -19924,10 +20011,10 @@ function carryCandidatesCommand(argv) {
         carried: result.carried.length,
         refused,
         interdiffReviewed: interdiff !== null,
-        candidates: join7(outDir, "candidates.json"),
-        verification: join7(outDir, "verification.json"),
-        ...heldIn === null ? {} : { held: join7(outDir, "held.json") },
-        carry: join7(outDir, "carry.json")
+        candidates: join8(outDir, "candidates.json"),
+        verification: join8(outDir, "verification.json"),
+        ...heldIn === null ? {} : { held: join8(outDir, "held.json") },
+        carry: join8(outDir, "carry.json")
       },
       null,
       2
@@ -20157,7 +20244,7 @@ function conventionsCommand(argv) {
   const changed = [];
   if (filesFlag !== null) {
     try {
-      changed.push(...changedPathsFrom(JSON.parse(readFileSync6(filesFlag, "utf8"))));
+      changed.push(...changedPathsFrom(JSON.parse(readFileSync7(filesFlag, "utf8"))));
     } catch (error) {
       console.error(`Cannot read ${filesFlag}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -20239,7 +20326,7 @@ function checkVerificationCommand(argv) {
   let keptIds = null;
   if (candidatesFile !== null) {
     try {
-      keptIds = keptCandidateIds(JSON.parse(readFileSync6(candidatesFile, "utf8")));
+      keptIds = keptCandidateIds(JSON.parse(readFileSync7(candidatesFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -20285,7 +20372,7 @@ function checkIntentCommand(argv) {
   }
   let description;
   try {
-    description = descriptionOf(JSON.parse(readFileSync6(threadFile, "utf8")));
+    description = descriptionOf(JSON.parse(readFileSync7(threadFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -20325,7 +20412,7 @@ function checkSimplificationCommand(argv) {
   }
   let hunks;
   try {
-    hunks = parseHunks(readFileSync6(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync7(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -20357,7 +20444,7 @@ function checkSimplificationCommand(argv) {
   }
   let candidateDocument;
   try {
-    candidateDocument = JSON.parse(readFileSync6(candidateFile, "utf8"));
+    candidateDocument = JSON.parse(readFileSync7(candidateFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${candidateFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -20512,7 +20599,7 @@ function checkCandidatesCommand(argv) {
       }
       let ids;
       try {
-        const statements = JSON.parse(readFileSync6(intentFile, "utf8")).statements;
+        const statements = JSON.parse(readFileSync7(intentFile, "utf8")).statements;
         if (!Array.isArray(statements)) throw new Error("statements is not a list");
         ids = new Set(statements.map((statement) => statement?.id).filter((id) => typeof id === "string"));
       } catch (error) {
@@ -20540,7 +20627,7 @@ function checkCandidatesCommand(argv) {
     }
     let hunks;
     try {
-      hunks = parseHunks(readFileSync6(diffFile, "utf8"));
+      hunks = parseHunks(readFileSync7(diffFile, "utf8"));
     } catch (error) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -20596,7 +20683,7 @@ function checkCandidatesCommand(argv) {
         return 2;
       }
       try {
-        const parsed = JSON.parse(readFileSync6(threadFile, "utf8"));
+        const parsed = JSON.parse(readFileSync7(threadFile, "utf8"));
         thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
         if (!Array.isArray(thread)) throw new Error("comments is not a list");
       } catch (error) {
@@ -20695,6 +20782,9 @@ function checkCandidatesCommand(argv) {
     throw error;
   }
 }
+function distinctReviewers(db) {
+  return db.prepare("SELECT COUNT(DISTINCT reviewer_login) AS n FROM review_events").get().n;
+}
 function statusCommand() {
   const db = openDatabase();
   try {
@@ -20736,6 +20826,9 @@ function statusCommand() {
     const sync = lastSync(db);
     console.log(
       `last sync        ${sync === null ? "never completed" : `${sync.finishedAt ?? sync.startedAt}, ${sync.imported} imported from ${sync.repositories.length} repository/ies`}`
+    );
+    console.log(
+      coverage.total === 0 ? "Corpus: baseline voice in use (no synced history)" : `Corpus: ${coverage.total} events from ${distinctReviewers(db)} reviewer(s)`
     );
     console.log(
       `corpus           ${coverage.total} event(s)` + (coverage.total === 0 ? "" : ` - ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(", ")}`)

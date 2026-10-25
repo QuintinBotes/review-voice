@@ -248,16 +248,19 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     body: lines(
       'review-voice sync [flags]',
       '  Ingest review history from allowlisted repositories.',
+      '  Every login in identity.reviewers is collected as the owner is. --quick needs the same consent plan.',
       '',
       'Flags:',
       '  --target <n>              Non-owner events to import (default 60 per',
       '                            repository, 250 to 1500); owner events all',
+      '  --since <Nd>              Only pull requests updated in the last N days (such as 90d)',
+      '  --quick                   Preset for a first sync: --target 50 --since 90d; explicit flags win',
       '  --max-pulls <n>           Pull requests inspected per repository (default 60)',
       '  --include-conversation    Also read pull-request conversation comments',
       '  --dry-run                 Report the import without storing it',
       'Reads: nothing on stdin (reads GitHub, read-only).',
       'Writes: events and watermarks to the local store (not with --dry-run); JSON summary on stdout.',
-      'Exit codes: 0 ok, 2 no allowlist, no owner reviewer, or credential problem.',
+      'Exit codes: 0 ok, 2 no allowlist, no owner reviewer, bad --since, or credential problem.',
     ),
   },
   discover: {
@@ -307,6 +310,8 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     body: lines(
       'review-voice retrieve --text <query> [flags]',
       '  Find weighted precedents for a candidate finding.',
+      '  With no synced history it also returns baseline: true and voice, the baseline',
+      '  voice guide the editor writes from. Each precedent names its reviewerLogin.',
       '',
       'Flags:',
       '  --text <query>        Candidate claim and failure mode (required)',
@@ -625,6 +630,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     body: lines(
       'review-voice status',
       '  Show what is stored locally. Takes no flags.',
+      '  Says whether the baseline voice is in use or how many reviewers the corpus covers.',
       '',
       'Reads: nothing on stdin; the local store and config.',
       'Writes: text on stdout.',
