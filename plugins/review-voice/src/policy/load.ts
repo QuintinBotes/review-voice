@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
+import { homedir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import type { PolicyLayer, ScopeType } from './schema.ts';
 import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publish/ci.ts';
@@ -11,6 +12,7 @@ import { CHANGE_KINDS, MODEL_KEYS, MODES, type ChangeKind, type ModelOverrides, 
 import { agentExists, DIFF_LANE, LANE_TIERS, type Lane } from '../review/lanes.ts';
 import { allowlistEntryProblem } from '../github/client.ts';
 import { defaultQueueConfig, QUEUE_SOURCES, type QueueConfig, type QueueSource } from '../queue/config.ts';
+import { defaultWatchConfig, MAX_REVIEW_TIMEOUT_MS, parseDuration, type WatchConfig } from '../watch/config.ts';
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
@@ -33,6 +35,8 @@ export interface LoadedConfig {
   allowlist: string[];
   /** What `queue` lists and skips (docs/adr/0026). */
   queue: QueueConfig;
+  /** Where and how often `watch` runs (docs/adr/0027). */
+  watch: WatchConfig;
   staticEvidence: { enabled: boolean; commands: { name: string; run: string; timeoutSeconds?: number }[] };
   /** A second, ideally different-model, verification pass. Off by default. */
   verification: {
@@ -462,6 +466,53 @@ function readQueue(block: Record<string, unknown> | null, result: LoadedConfig):
   }
 }
 
+/** A bad value warns and keeps the default, like every other block. */
+function readWatch(block: Record<string, unknown> | null, result: LoadedConfig): void {
+  if (block === null) {
+    result.warnings.push('watch must be a mapping; using the defaults.');
+    return;
+  }
+  const { workspace, interval, post } = block;
+  if (workspace !== undefined) {
+    if (typeof workspace === 'string' && workspace.trim().length > 0) {
+      const path = workspace.trim();
+      result.watch.workspace = path === '~' || path.startsWith('~/') ? join(homedir(), path.slice(1)) : path;
+    } else {
+      result.warnings.push('watch.workspace must be a directory path; using <data directory>/clones.');
+    }
+  }
+  if (interval !== undefined) {
+    const ms = typeof interval === 'string' ? parseDuration(interval) : null;
+    if (ms === null) result.warnings.push('watch.interval must be a duration such as 30m or 2h; using 2h.');
+    else result.watch.intervalMs = ms;
+  }
+  if (post !== undefined) {
+    if (typeof post === 'boolean') result.watch.post = post;
+    else result.warnings.push('watch.post must be true or false; using false.');
+  }
+  const port = block['lock_port'];
+  if (port !== undefined) {
+    if (typeof port === 'number' && Number.isInteger(port) && port >= 1024 && port <= 65535) result.watch.lockPort = port;
+    else result.warnings.push('watch.lock_port must be a whole number from 1024 to 65535; deriving it from the data directory.');
+  }
+  const commands = block['run_repository_commands'];
+  if (commands !== undefined) {
+    if (typeof commands === 'boolean') result.watch.runRepositoryCommands = commands;
+    else result.warnings.push('watch.run_repository_commands must be true or false; using false.');
+  }
+  const timeout = block['review_timeout'];
+  if (timeout !== undefined) {
+    const ms = typeof timeout === 'string' ? parseDuration(timeout) : null;
+    if (ms === null || ms > MAX_REVIEW_TIMEOUT_MS) result.warnings.push('watch.review_timeout must be a duration up to 6h, such as 45m; using 45m.');
+    else result.watch.reviewTimeoutMs = ms;
+  }
+  const attempts = block['max_attempts_per_head'];
+  if (attempts !== undefined) {
+    if (typeof attempts === 'number' && Number.isInteger(attempts) && attempts > 0) result.watch.maxAttemptsPerHead = attempts;
+    else result.warnings.push('watch.max_attempts_per_head must be a whole number above zero; using 2.');
+  }
+}
+
 function contentHash(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
@@ -535,7 +586,22 @@ function readReviewers(identity: Record<string, unknown> | null, result: LoadedC
   result.reviewers = listed;
 }
 
-export function loadConfig(repositoryRoot: string): LoadedConfig {
+/**
+ * `REVIEW_VOICE_CONFIG`, when it is an absolute path, else the repository's
+ * own. `watch` sets it for the review it starts in a clone, so the clone's
+ * config, which is repository content (docs/adr/0006), never decides posting.
+ */
+export function configFile(repositoryRoot: string, warnings: string[] = []): string {
+  const override = process.env['REVIEW_VOICE_CONFIG'];
+  if (override !== undefined && override.length > 0) {
+    if (isAbsolute(override)) return override;
+    warnings.push(`REVIEW_VOICE_CONFIG must be an absolute path; reading .review-voice/config.yaml instead.`);
+  }
+  return join(repositoryRoot, '.review-voice', 'config.yaml');
+}
+
+/** `path` reads that config file instead of the one `configFile` names; `watch` passes its own copy. */
+export function loadConfig(repositoryRoot: string, path?: string): LoadedConfig {
   const result: LoadedConfig = {
     ownerReviewer: null,
     reviewers: [],
@@ -544,6 +610,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
     ciRules: {},
     allowlist: [],
     queue: defaultQueueConfig(),
+    watch: defaultWatchConfig(),
     staticEvidence: { enabled: false, commands: [] },
     verification: { enabled: false, command: '', blockPresent: false },
     humanReview: {
@@ -563,7 +630,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
     warnings: [],
   };
 
-  const configPath = join(repositoryRoot, '.review-voice', 'config.yaml');
+  const configPath = path ?? configFile(repositoryRoot, result.warnings);
   if (existsSync(configPath)) {
     try {
       const doc = asRecord(parseYaml(readFileSync(configPath, 'utf8')));
@@ -583,6 +650,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
           result.warnings.push('queue must be a mapping; using the defaults.');
         }
         readQueue(asRecord(doc['queue']), result);
+        if (doc['watch'] !== undefined) readWatch(asRecord(doc['watch']), result);
 
         const staticEvidence = asRecord(doc['static_evidence']);
         if (staticEvidence !== null) {

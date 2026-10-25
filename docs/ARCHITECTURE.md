@@ -1092,6 +1092,64 @@ dismissals is 100% precision and tells you nothing.
 The preview is rendered from the payload that would be sent. A preview
 generated separately from what gets posted is a mock-up.
 
+### The watcher
+
+`watch` (ADR 0027) adds no review or posting rule of its own. Each pass builds
+the queue and handles one entry at a time: a new head runs `review` as a child
+process in the repository's clone under `watch.workspace`, and a recorded run
+goes through `computeVerdict` and `postReview` in process, with the thread
+re-read before the post. The review step is an injected function, so tests
+replace it.
+
+The clone is repository content, so its `.review-voice/config.yaml` must not
+decide posting or the allowlist (ADR 0006). `loadConfig` reads
+`REVIEW_VOICE_CONFIG` instead when it is an absolute path. `watch` copies its
+config to `<dataDir>/watch-config.yaml` at the start of every pass, reads the
+copy, and points every review child at it, so an edit or a branch switch in
+the operator's checkout mid-pass changes nothing, and a change to posting, the
+allowlist or a policy takes effect at the next pass. Before posting a recorded
+run, the watcher checks the run's repository against the current allowlist.
+
+The child runs in its own process group with `--expect-head` (the driver exits
+3 when the pull request moved before it started) and `--recheck-thread` when
+posting. Unless `watch.run_repository_commands` is true it also gets
+`REVIEW_VOICE_NO_COMMANDS=1`: the driver's config loading, `evidence` and
+`verify` must then run no configured repository command, since nobody is
+watching what they do. After `watch.review_timeout`, or when the watcher is
+interrupted, the group gets SIGTERM and, ten seconds later, SIGKILL, or at
+once when the review itself exits, while its group id cannot have been reused;
+the
+review settles on the child's exit or at the end of that grace period, never
+only on its pipes closing, which a stray descendant can delay forever. Git lock
+files older than ten minutes, which a killed fetch leaves, are removed from the
+clone before the next review. Agents run in process groups of their own
+under the runner's watchdog, which kills them when their parent dies, so
+ending the review's group ends them too. The copy is written to a fresh
+`.tmp-<pid>` file (mode 0600, exclusive, not following symlinks), synced and
+renamed over the old one.
+
+`watch_heads` holds one row per repository, pull request and head. The row is
+written only after the action returns: a crash leaves no row, the next pass
+redoes the head, and `post`'s idempotency key stops a second send. The queue
+reads the rows through its store seam (`queue/store.ts`). A head the watcher
+posted, carried, skipped or held, or that failed `watch.max_attempts_per_head`
+times, counts as sent and drops out before `max_per_pass` is applied, so stuck
+heads cannot crowd out new ones. A COMMENT sent only because CI was red stays
+in the queue as `recheck-ci` until the approval goes out. A moved head (exit 3)
+leaves no row.
+
+One watcher runs per data directory, and the kernel enforces it: the watcher
+listens, exclusively, on a 127.0.0.1 port derived from the data directory
+(49152 plus the SHA-256 of its real path modulo 16000; `watch.lock_port`
+overrides). Only one process can listen, and the port is freed when that
+process exits or dies, so there is no stale lock to judge and no takeover. A
+second watcher that finds the port in use sends a one-line probe: a watcher
+answers with its pid and data directory, and anything else is reported as
+another program on the port. `watch.lock` holds the pid for people to read and
+decides nothing. The lock is released on exit, and on SIGINT or SIGTERM after
+any running review has been stopped. Passes run one after another; a pass that runs past the
+interval delays the next rather than overlapping it.
+
 ## Trust boundary
 
 Everything read from a repository or from GitHub is **untrusted data**: source,

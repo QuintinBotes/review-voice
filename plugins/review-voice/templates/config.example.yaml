@@ -254,6 +254,25 @@ queue:
     approved_at_head_by: { logins: [], sources: [team] }
     drafts: true
 
+# What `review-voice watch` does each pass (docs/adr/0027). Every key is
+# optional; the values below are the defaults unless marked as an example.
+watch:
+  # One partial clone per repository, as <workspace>/<owner>/<repo>. Your own
+  # working trees are never touched. Default: <data directory>/clones.
+  # workspace: ~/review-voice-clones   # example
+  interval: 2h                       # between passes, such as 30m or 2h; --interval overrides
+  post: false                        # true posts as --post does; needs writes.github_posting_enabled
+  max_attempts_per_head: 2           # a head that failed this often is left for you
+  review_timeout: 45m                # a review running longer is killed and recorded as failed; at most 6h
+  # false runs each review with REVIEW_VOICE_NO_COMMANDS=1, so the static
+  # evidence and second-pass verification commands in this config do not run
+  # unattended. true lets them run.
+  run_repository_commands: false
+  # The 127.0.0.1 port that keeps a second watcher on this data directory
+  # from starting. Derived from the data directory by default (49152 to
+  # 65151); set it only if another program uses that port.
+  # lock_port: 50123                 # example
+
 writes:
   # Review Voice is read-only through v1. This exists so the setting is visible,
   # not because flipping it does anything yet.

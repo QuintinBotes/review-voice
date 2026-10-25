@@ -9,6 +9,7 @@
  */
 import { readFileSync, readSync, writeFileSync, mkdirSync, statSync, renameSync, rmSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { format } from 'node:util';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
@@ -89,7 +90,7 @@ import {
   unlabelledFindings,
   FEEDBACK_ACTIONS,
 } from './store/feedback.ts';
-import { loadConfig } from './policy/load.ts';
+import { configFile, loadConfig } from './policy/load.ts';
 import { resolvePolicy } from './policy/schema.ts';
 import { repositoryRoot } from './diff/acquire.ts';
 import { collectEvidence } from './evidence/run.ts';
@@ -108,6 +109,10 @@ import { checkCitation } from './scoring/citation.ts';
 import { storeEvents, corpusCoverage } from './corpus/store.ts';
 import { buildConsentPlan, discoverRepositories } from './consent/plan.ts';
 import { queueCommand } from './queue/command.ts';
+import { CONFIG_COPY, watchCommand } from './watch/command.ts';
+import { spawnReview } from './watch/review.ts';
+import { gitPrepareClone } from './watch/workspace.ts';
+import { watchSummary } from './store/watch.ts';
 import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
 import { retrievePrecedents, type Precedent } from './retrieval/retrieve.ts';
 import { resolveSyncWindow } from './sync/window.ts';
@@ -4829,6 +4834,7 @@ function statusCommand(): number {
       console.log(`  ${repository.padEnd(45)} ${n}`);
     }
     for (const warning of coverage.warnings) console.log(`  warning        ${warning}`);
+    for (const line of watchSummary(db)) console.log(line);
     return 0;
   } finally {
     db.close();
@@ -5035,6 +5041,33 @@ async function dispatch(argv: string[]): Promise<number> {
         out: (text) => console.log(text),
         err: (text) => console.error(text),
       });
+
+    case 'watch': {
+      let root: string | null = null;
+      try {
+        root = repositoryRoot(process.cwd());
+      } catch {
+        // Not in a repository: there is no config, and watch refuses to start.
+      }
+      const dataDir = dataDirectory();
+      const review = spawnReview(fileURLToPath(import.meta.url), { configPath: join(dataDir, CONFIG_COPY) });
+      return await watchCommand(argv.slice(1), {
+        configSource: root === null ? null : configFile(root),
+        loadSettings: (path) => loadConfig(root ?? process.cwd(), path),
+        client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true }),
+        // Built from the recorded run's repository by post, as for the post command.
+        writerFor: (allowlist) => new ReviewWriter({ allowlist }),
+        openDb: () => openDatabase(),
+        dataDir,
+        review,
+        stopReview: review.stop,
+        prepareClone: gitPrepareClone(),
+        now: () => new Date(),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        out: (text) => console.log(text),
+        err: (text) => console.error(text),
+      });
+    }
 
     case 'calibrate':
       return calibrateCommand();
