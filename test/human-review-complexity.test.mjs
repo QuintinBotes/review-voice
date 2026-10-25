@@ -372,10 +372,11 @@ test('a database from before the column migrates and its runs read as unassessed
     const old = record(db, 'No actionable findings.', { complexity: HIGH });
     db.close();
 
-    // Take the store back to the schema before this column existed.
+    // Take the store back to the schema before this column existed (migration 9,
+    // so version 8), whichever migrations have been added since.
     const raw = new DatabaseSync(path);
     raw.exec('ALTER TABLE review_runs DROP COLUMN complexity_json');
-    raw.exec('UPDATE schema_version SET version = version - 1');
+    raw.exec('UPDATE schema_version SET version = 8');
     raw.close();
 
     const reopened = openDatabase(path);

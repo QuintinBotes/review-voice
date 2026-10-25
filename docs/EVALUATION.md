@@ -50,6 +50,34 @@ over-reporting this document exists to prevent.
 | Median findings per PR | A count is a property of the diff, not the reviewer |
 | 95th percentile findings per PR | As above |
 | Candidate set agreement | Measured, published, and not yet targeted |
+| Posted findings tracked | How many posted comments have a recorded outcome |
+| Posted fixed rate, posted dismissed rate | What the pull request shows became of posted comments; see below |
+
+#### Posted findings
+
+`RV outcomes` follows each inline comment Review Voice posted to an outcome
+(ADR 0029), using the strength rules of ADR 0004:
+
+| Outcome | Strength | When |
+|---|---|---|
+| `fixed` | strong | The anchored lines changed after the comment, and the thread was resolved or the author agreed in a reply |
+| `dismissed` | strong | A reply from someone other than the poster, and not a bot, turned it down, or the owner recorded `dismiss` |
+| `resolved` | weak | The thread was resolved and the lines are unchanged |
+| `outdated` | weak | The lines changed, the thread is open and nobody agreed or refused |
+| `open` | weak | Nothing changed and the thread is open |
+| `unknown` | weak | The thread state or the later commits could not be read |
+
+```
+posted_fixed_rate     = fixed / (fixed + dismissed)
+posted_dismissed_rate = dismissed / (fixed + dismissed)
+```
+
+Both count strong outcomes only and are null until there is one. Weak
+outcomes are tracked and left out, and silence is never a dismissal. The owner's
+`dismiss` always decides a finding; a recorded `keep` or `rewrite` says the
+finding was right, not that the author acted on it, so it leaves the outcome
+as the pull request shows it. `RV evaluate --json` adds `posted_breakdown`
+by severity and by lane (a finding with no lane counts as `diff`).
 
 #### Candidate set agreement
 

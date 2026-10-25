@@ -5819,6 +5819,24 @@ var MIGRATIONS = [
   // Null on older rows, which means unknown rather than normal.
   `
   ALTER TABLE review_runs ADD COLUMN complexity_json TEXT;
+  `,
+  // v10 - what became of each posted finding (docs/adr/0029).
+  //
+  // One row per finding, replaced by a newer check. Separate from `feedback`,
+  // which stays the owner's word; this is what the pull request itself shows.
+  `
+  CREATE TABLE IF NOT EXISTS finding_outcomes (
+    review_run_id TEXT NOT NULL,
+    finding_id TEXT NOT NULL,
+    repository TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    comment_id INTEGER NOT NULL,
+    outcome TEXT NOT NULL,
+    strength TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (review_run_id, finding_id)
+  );
   `
 ];
 function migrate(db) {
@@ -15152,6 +15170,7 @@ function executePurge(db, scope) {
       db.prepare("DELETE FROM sync_watermarks").run();
       db.prepare("DELETE FROM review_runs").run();
       db.prepare("DELETE FROM feedback").run();
+      db.prepare("DELETE FROM finding_outcomes").run();
     } else if (scope.repository !== void 0) {
       db.prepare("DELETE FROM sync_watermarks WHERE repository = ?").run(scope.repository);
     }
@@ -15537,6 +15556,337 @@ function listPolicies(db, scopeKey = "owner") {
   }));
 }
 
+// plugins/review-voice/src/store/outcomes.ts
+var NEGATED_ACK = /\bnot (?:yet )?(?:fixed|done|addressed|changed|updated)\b/i;
+var REJECT = /\b(?:won'?t fix|wontfix|not a (?:bug|issue|problem)|false positive|by design|intentional(?:ly)?|working as (?:intended|designed)|disagree|(?:does not|doesn'?t) apply|not applicable|not needed|unnecessary|incorrect|this is wrong|that'?s wrong)\b/i;
+var ACKNOWLEDGE = /\b(?:fixed|done|addressed|good catch|nice catch|will fix|will do|updated|applied|agreed|makes sense|you'?re right|thanks|thank you)\b/i;
+function classifyReply(body) {
+  if (REJECT.test(body)) return "reject";
+  if (NEGATED_ACK.test(body)) return "other";
+  if (ACKNOWLEDGE.test(body)) return "acknowledge";
+  return "other";
+}
+function patchTouches(patch, first, last) {
+  let oldLine = 0;
+  for (const line2 of patch.split("\n")) {
+    const header = /^@@ -(\d+)(?:,\d+)? \+\d+/.exec(line2);
+    if (header !== null) {
+      oldLine = Number(header[1]);
+      continue;
+    }
+    if (line2.startsWith("\\")) continue;
+    if (line2.startsWith("-")) {
+      if (oldLine >= first && oldLine <= last) return true;
+      oldLine += 1;
+    } else if (line2.startsWith("+")) {
+      if (oldLine > first && oldLine <= last) return true;
+    } else {
+      oldLine += 1;
+    }
+  }
+  return false;
+}
+var READ_LIMIT = 1e3;
+async function readStates(client, repository, pullNumber) {
+  const states = /* @__PURE__ */ new Map();
+  let cursor = null;
+  for (let read = 0; read < READ_LIMIT; read += 100) {
+    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
+    const threads = data?.repository?.pullRequest?.reviewThreads;
+    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
+    for (const thread of threads.nodes) {
+      const state = { resolved: thread?.isResolved === true, outdated: thread?.isOutdated === true };
+      for (const comment of thread?.comments?.nodes ?? []) {
+        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
+      }
+    }
+    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
+    cursor = threads.pageInfo.endCursor;
+  }
+  return states;
+}
+function sentRuns(db, options) {
+  const attempts = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(`SELECT audit_id, json_extract(metadata_json, '$.run') AS run FROM audit_events WHERE action = 'review_post_attempted'`).all()) {
+    if (typeof row.run === "string") attempts.set(row.audit_id, row.run);
+  }
+  const reviewIdsByRun = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ?`).all(options.since)) {
+    let meta;
+    try {
+      meta = JSON.parse(row.metadata_json);
+    } catch {
+      continue;
+    }
+    const run = typeof meta.attempt === "string" ? attempts.get(meta.attempt) : void 0;
+    if (run === void 0) continue;
+    const ids = reviewIdsByRun.get(run) ?? [];
+    const id = Number(meta.reviewId);
+    if (Number.isInteger(id) && id > 0) ids.push(id);
+    reviewIdsByRun.set(run, ids);
+  }
+  const rows = db.prepare(
+    `SELECT review_run_id, repository, pull_number, head_ref FROM review_runs
+       WHERE repository IS NOT NULL AND pull_number IS NOT NULL ORDER BY created_at, rowid`
+  ).all();
+  const wanted = options.repository?.toLowerCase();
+  const runs = [];
+  for (const row of rows) {
+    const reviewIds = reviewIdsByRun.get(row.review_run_id);
+    if (reviewIds === void 0) continue;
+    if (wanted !== void 0 && row.repository.toLowerCase() !== wanted) continue;
+    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, headRef: row.head_ref, reviewIds });
+  }
+  return runs;
+}
+var isBot2 = (user) => user?.type === "Bot" || (user?.login ?? "").endsWith("[bot]");
+function sameHead(a, b) {
+  const left = a.toLowerCase();
+  const right = b.toLowerCase();
+  return left === right || left.length >= 7 && right.startsWith(left) || right.length >= 7 && left.startsWith(right);
+}
+async function checkOutcomes(options) {
+  const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
+  const result = { outcomes: [], skipped: [], warnings: [] };
+  const byPull = /* @__PURE__ */ new Map();
+  for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
+    const key = `${run.repository.toLowerCase()}#${run.pullNumber}`;
+    byPull.set(key, [...byPull.get(key) ?? [], run]);
+  }
+  let viewer = null;
+  const viewerLogin = () => {
+    viewer ??= options.client.get("/user").then(({ data }) => data.login?.toLowerCase() ?? null).catch(() => null);
+    return viewer;
+  };
+  for (const runs of byPull.values()) {
+    const first = runs[0];
+    const { repository, pullNumber } = first;
+    if (!allowed.has(repository.toLowerCase())) {
+      result.skipped.push({ repository, pullNumber, reason: "not in the allowlist" });
+      continue;
+    }
+    try {
+      const context = await readPull(options.client, repository, pullNumber, result.warnings);
+      for (const run of runs) {
+        result.outcomes.push(...await followRun(options, context, run, viewerLogin));
+      }
+    } catch (error) {
+      result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
+    }
+  }
+  return result;
+}
+async function readPull(client, repository, pullNumber, warnings) {
+  const { data: pull } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
+  const replies = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/comments?per_page=100`, READ_LIMIT);
+  let states = null;
+  try {
+    states = await readStates(client, repository, pullNumber);
+  } catch (error) {
+    warnings.push(
+      `${repository}#${pullNumber}: could not read which threads are resolved (${error instanceof Error ? error.message.slice(0, 120) : String(error)}); resolution is unknown`
+    );
+  }
+  const sha = pull?.head?.sha;
+  return { repository, pullNumber, currentHead: typeof sha === "string" ? sha : null, replies, states, compares: /* @__PURE__ */ new Map() };
+}
+async function reviewIdsOf(options, run, viewerLogin) {
+  if (run.reviewIds.length > 0) return { ids: run.reviewIds, source: "audit" };
+  const login = await viewerLogin();
+  if (login === null || run.headRef === null) return { ids: [], source: "reviews-list" };
+  const reviews = await options.client.paginate(`/repos/${run.repository}/pulls/${run.pullNumber}/reviews?per_page=100`, READ_LIMIT);
+  const ids = reviews.filter((review) => typeof review.id === "number" && review.user?.login?.toLowerCase() === login).filter((review) => typeof review.commit_id === "string" && sameHead(review.commit_id, run.headRef)).map((review) => review.id);
+  return { ids, source: "reviews-list" };
+}
+function severityPrefix(finding) {
+  return `**${finding.severity}** - `;
+}
+function matchComments(findings, comments) {
+  const taken = /* @__PURE__ */ new Set();
+  const matched = /* @__PURE__ */ new Map();
+  for (const finding of findings) {
+    const words = significantWords(finding.text);
+    const candidates = comments.filter(
+      (comment) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line)
+    );
+    let best;
+    let bestScore = -1;
+    for (const comment of candidates) {
+      const body = comment.body ?? "";
+      const score = overlap(words, significantWords(body)) + (body.startsWith(severityPrefix(finding)) ? 0.01 : 0);
+      if (score > bestScore) {
+        best = comment;
+        bestScore = score;
+      }
+    }
+    if (best !== void 0) {
+      taken.add(best.id);
+      matched.set(finding.findingId, best);
+    }
+  }
+  return matched;
+}
+async function followRun(options, context, run, viewerLogin) {
+  const detail = runDetail(options.db, run.runId);
+  if (detail === null) return [];
+  const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
+  const comments = [];
+  for (const id of ids) {
+    comments.push(
+      ...await options.client.paginate(
+        `/repos/${run.repository}/pulls/${run.pullNumber}/reviews/${id}/comments?per_page=100`,
+        READ_LIMIT
+      )
+    );
+  }
+  const matched = matchComments(detail.findings, comments);
+  const checkedAt = (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+  const outcomes = [];
+  for (const finding of detail.findings) {
+    const comment = matched.get(finding.findingId);
+    if (comment === void 0) continue;
+    const decided = await decide2(options, context, run, finding, comment);
+    const outcome = {
+      reviewRunId: run.runId,
+      findingId: finding.findingId,
+      repository: run.repository,
+      pullNumber: run.pullNumber,
+      commentId: comment.id,
+      ...decided,
+      evidence: source === "reviews-list" ? `${decided.evidence}; review found by commit and author` : decided.evidence,
+      checkedAt,
+      path: finding.path,
+      line: finding.line,
+      reviewIdSource: source
+    };
+    saveOutcome(options.db, outcome);
+    outcomes.push(outcome);
+  }
+  return outcomes;
+}
+async function linesChanged(options, context, run, comment, finding) {
+  if (run.headRef === null || context.currentHead === null) return null;
+  if (sameHead(run.headRef, context.currentHead)) return false;
+  const key = run.headRef.toLowerCase();
+  let compare = context.compares.get(key);
+  if (compare === void 0) {
+    compare = options.client.paginateWrapped(`/repos/${run.repository}/compare/${run.headRef}...${context.currentHead}?per_page=100`, "files", READ_LIMIT).catch(() => null);
+    context.compares.set(key, compare);
+  }
+  const files = await compare;
+  if (files === null) return null;
+  const file = files.find((entry) => entry.filename === finding.path || entry.previous_filename === finding.path);
+  if (file === void 0) return false;
+  if (typeof file.patch !== "string") return null;
+  const start = comment.start_line ?? comment.original_start_line ?? finding.line;
+  return patchTouches(file.patch, Math.min(start, finding.line), finding.line);
+}
+async function decide2(options, context, run, finding, comment) {
+  const dismissedByOwner = options.db.prepare(`SELECT 1 FROM feedback WHERE review_run_id = ? AND finding_id = ? AND action = 'dismiss'`).get(run.runId, finding.findingId);
+  if (dismissedByOwner !== void 0) {
+    return { outcome: "dismissed", strength: "strong", evidence: "the owner recorded dismiss for this finding" };
+  }
+  const poster = comment.user?.login?.toLowerCase();
+  const answers = context.replies.filter((reply) => reply.in_reply_to_id === comment.id && !isBot2(reply.user) && reply.user?.login?.toLowerCase() !== poster).map((reply) => ({ stance: classifyReply(reply.body ?? ""), at: reply.created_at ?? "", author: reply.user?.login ?? "unknown" })).filter((answer) => answer.stance !== "other").sort((a, b) => a.at.localeCompare(b.at));
+  const latest = answers[answers.length - 1];
+  if (latest?.stance === "reject") {
+    return { outcome: "dismissed", strength: "strong", evidence: `${latest.author} replied turning it down` };
+  }
+  const state = context.states?.get(comment.id) ?? null;
+  const changed = await linesChanged(options, context, run, comment, finding) ?? (state?.outdated === true ? true : null);
+  const resolved = state === null ? null : state.resolved;
+  const agreed = latest?.stance === "acknowledge";
+  if (changed === true && (resolved === true || agreed)) {
+    return {
+      outcome: "fixed",
+      strength: "strong",
+      evidence: `the anchored lines changed after the comment and ${resolved === true ? "the thread was resolved" : `${latest.author} agreed`}`
+    };
+  }
+  if (resolved === true) {
+    return {
+      outcome: "resolved",
+      strength: "weak",
+      evidence: changed === false ? "the thread was resolved and the anchored lines are unchanged" : "the thread was resolved; whether the lines changed could not be read"
+    };
+  }
+  if (resolved === false && changed === true) {
+    return { outcome: "outdated", strength: "weak", evidence: "the anchored lines changed and the thread is still open" };
+  }
+  if (resolved === false && changed === false) {
+    return {
+      outcome: "open",
+      strength: "weak",
+      evidence: agreed ? "agreed in reply, but the lines are unchanged and the thread is open" : "nothing has changed and the thread is open"
+    };
+  }
+  return { outcome: "unknown", strength: "weak", evidence: "the thread state or the later commits could not be read" };
+}
+function saveOutcome(db, outcome) {
+  db.prepare(
+    `INSERT INTO finding_outcomes
+       (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (review_run_id, finding_id) DO UPDATE SET
+       repository = excluded.repository, pull_number = excluded.pull_number, comment_id = excluded.comment_id,
+       outcome = excluded.outcome, strength = excluded.strength, evidence = excluded.evidence, checked_at = excluded.checked_at`
+  ).run(
+    outcome.reviewRunId,
+    outcome.findingId,
+    outcome.repository,
+    outcome.pullNumber,
+    outcome.commentId,
+    outcome.outcome,
+    outcome.strength,
+    outcome.evidence,
+    outcome.checkedAt
+  );
+}
+function statsOf(rows) {
+  const strong = rows.filter((row) => row.strength === "strong");
+  const fixed = strong.filter((row) => row.outcome === "fixed").length;
+  const dismissed = strong.filter((row) => row.outcome === "dismissed").length;
+  const decided = fixed + dismissed;
+  return {
+    tracked: rows.length,
+    fixed,
+    dismissed,
+    fixedRate: decided === 0 ? null : fixed / decided,
+    dismissedRate: decided === 0 ? null : dismissed / decided
+  };
+}
+function postedStats(db) {
+  return statsOf(db.prepare("SELECT outcome, strength FROM finding_outcomes").all());
+}
+function postedBreakdown(db) {
+  const rows = db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all();
+  const findings = /* @__PURE__ */ new Map();
+  const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map() };
+  for (const row of rows) {
+    let known = findings.get(row.review_run_id);
+    if (known === void 0) {
+      known = /* @__PURE__ */ new Map();
+      findings.set(row.review_run_id, known);
+      const stored = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(row.review_run_id);
+      try {
+        const parsed = JSON.parse(stored?.output_json ?? "{}");
+        for (const finding of parsed.findings ?? []) {
+          known.set(String(finding["findingId"]), {
+            severity: typeof finding["severity"] === "string" ? finding["severity"] : "unknown",
+            lane: typeof finding["lane"] === "string" ? finding["lane"] : "diff"
+          });
+        }
+      } catch {
+      }
+    }
+    const info = known.get(row.finding_id) ?? { severity: "unknown", lane: "diff" };
+    groups.severity.set(info.severity, [...groups.severity.get(info.severity) ?? [], row]);
+    groups.lane.set(info.lane, [...groups.lane.get(info.lane) ?? [], row]);
+  }
+  const collect = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, list]) => [key, statsOf(list)]));
+  return { bySeverity: collect(groups.severity), byLane: collect(groups.lane) };
+}
+
 // plugins/review-voice/src/evaluate/metrics.ts
 function percentile(values, p) {
   if (values.length === 0) return null;
@@ -15593,6 +15943,7 @@ function computeMetrics(db) {
   const dismissed = by["dismiss"] ?? 0;
   const labelled = kept + dismissed;
   const ratio = (numerator, denominator) => denominator === 0 ? null : numerator / denominator;
+  const posted = postedStats(db);
   const metric = (name, value, target, meets, basis, kind = "gate") => ({
     name,
     value,
@@ -15680,6 +16031,33 @@ function computeMetrics(db) {
       "= 1.00",
       (v) => v >= 1,
       `${exactNoFindings}/${noFindingsRuns} empty reviews used the exact string`
+    ),
+    // What GitHub shows happened to the comments this tool posted (docs/adr/0029).
+    // Rates count strong outcomes only, so an unanswered comment is neither
+    // fixed nor dismissed, and are reported rather than gated.
+    metric(
+      "posted_findings_tracked",
+      posted.tracked === 0 ? null : posted.tracked,
+      "no target",
+      () => true,
+      "posted findings with any recorded outcome; run `review-voice outcomes` to check",
+      "goal"
+    ),
+    metric(
+      "posted_fixed_rate",
+      posted.fixedRate,
+      "no target",
+      () => true,
+      `${posted.fixed} fixed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
+      "goal"
+    ),
+    metric(
+      "posted_dismissed_rate",
+      posted.dismissedRate,
+      "no target",
+      () => true,
+      `${posted.dismissed} dismissed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
+      "goal"
     )
   ];
 }
@@ -16727,10 +17105,27 @@ var COMMAND_HELP = {
       "  Report the evaluation metrics against their targets.",
       "",
       "Flags:",
-      "  --json                 Emit the metrics as JSON",
+      "  --json                 Emit the metrics as JSON, with posted-finding outcomes by severity and lane",
       "Reads: nothing on stdin; the local store.",
       "Writes: text (or JSON) on stdout.",
       "Exit codes: 0 ok."
+    )
+  },
+  outcomes: {
+    summary: "Follow posted comments to an outcome (reads GitHub only)",
+    body: lines(
+      "review-voice outcomes [flags]",
+      "  Follow each inline comment Review Voice posted to an outcome: fixed, dismissed,",
+      "  resolved, outdated, open or unknown. Fixed and dismissed are strong; the rest are weak.",
+      "  Reads GitHub and writes nothing there. `evaluate` reports precision from the strong ones.",
+      "",
+      "Flags:",
+      "  --repository <name>    Only runs for owner/repo; naming it allows reading it",
+      "  --since <Nd>           Only reviews sent in the last N days (default 30d)",
+      "  --json                 Emit one row per finding as JSON",
+      "Reads: the local store, the allowlist in the repository config, and GitHub comments, threads and commits.",
+      "Writes: one line per finding and totals on stdout (JSON with --json); outcomes in the local store.",
+      "Exit codes: 0 ok, 2 bad invocation."
     )
   },
   draft: {
@@ -17866,16 +18261,85 @@ function evaluateCommand(argv) {
   try {
     const metrics = computeMetrics(db);
     if (argv.includes("--json")) {
-      console.log(JSON.stringify({ metrics }, null, 2));
+      const { bySeverity, byLane } = postedBreakdown(db);
+      console.log(JSON.stringify({ metrics, posted_breakdown: { by_severity: bySeverity, by_lane: byLane } }, null, 2));
     } else {
       for (const metric of metrics) {
-        const value = metric.value === null ? "no data" : metric.value.toFixed(2);
+        const value = metric.value === null ? "no data" : Number.isInteger(metric.value) && metric.name.endsWith("_tracked") ? String(metric.value) : metric.value.toFixed(2);
         const mark = metric.meets === null || metric.target === "no target" ? "  -" : metric.meets ? "  ok" : metric.kind === "goal" ? "over" : "FAIL";
         const target = metric.target === "no target" ? "reported, not scored" : metric.kind === "goal" ? `goal ${metric.target}` : `target ${metric.target}`;
         console.log(`${mark}  ${metric.name.padEnd(32)} ${value.padStart(8)}  ${target}`);
         console.log(`      ${metric.basis}`);
       }
     }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+async function outcomesCommand(argv) {
+  const repository = flag(argv, "--repository");
+  if (argv.includes("--repository") && (repository === null || !/^[^/\s]+\/[^/\s]+$/.test(repository))) {
+    console.error("--repository takes owner/repo.");
+    return 2;
+  }
+  const sinceFlag = flag(argv, "--since");
+  const days = sinceFlag === null ? 30 : /^(\d+)d$/.exec(sinceFlag)?.[1];
+  if (days === void 0 || argv.includes("--since") && sinceFlag === null) {
+    console.error("--since takes a number of days such as 30d.");
+    return 2;
+  }
+  const since = new Date(Date.now() - Number(days) * 864e5).toISOString();
+  let allowlist = repository === null ? [] : [repository];
+  if (repository === null) {
+    try {
+      allowlist = loadConfig(repositoryRoot(process.cwd())).allowlist;
+    } catch {
+    }
+  }
+  const db = openDatabase();
+  try {
+    const result = await checkOutcomes({
+      db,
+      client: new GitHubClient({ allowlist }),
+      allowlist,
+      repository: repository ?? void 0,
+      since
+    });
+    for (const warning of result.warnings) console.error(warning);
+    for (const skipped of result.skipped) {
+      console.error(`${skipped.repository}#${skipped.pullNumber}: skipped, ${skipped.reason}`);
+    }
+    if (argv.includes("--json")) {
+      console.log(
+        JSON.stringify(
+          result.outcomes.map((o) => ({
+            run: o.reviewRunId,
+            finding: o.findingId,
+            repository: o.repository,
+            pull: o.pullNumber,
+            path: o.path,
+            line: o.line,
+            commentId: o.commentId,
+            outcome: o.outcome,
+            strength: o.strength,
+            evidence: o.evidence,
+            checkedAt: o.checkedAt,
+            reviewIdSource: o.reviewIdSource
+          })),
+          null,
+          2
+        )
+      );
+      return 0;
+    }
+    for (const o of result.outcomes) {
+      console.log(`${o.repository}#${o.pullNumber} ${o.findingId} ${o.path}:${o.line} ${o.outcome} (${o.strength}): ${o.evidence}`);
+    }
+    const count3 = (name) => result.outcomes.filter((o) => o.outcome === name).length;
+    console.log(
+      `${result.outcomes.length} finding(s) tracked: ${count3("fixed")} fixed, ${count3("dismissed")} dismissed, ${count3("resolved")} resolved, ${count3("outdated")} outdated, ${count3("open")} open, ${count3("unknown")} unknown`
+    );
     return 0;
   } finally {
     db.close();
@@ -20364,6 +20828,8 @@ ${topLevelHelp()}`);
       return scoreCommand(argv.slice(1));
     case "evaluate":
       return evaluateCommand(argv.slice(1));
+    case "outcomes":
+      return outcomesCommand(argv.slice(1));
     case "draft":
       return draftCommand(argv.slice(1));
     case "verdict":
