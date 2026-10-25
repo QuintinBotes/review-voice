@@ -154,6 +154,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stderr instead of expanding it, and `sync` exits 2 when every entry is a
   pattern. (ADR 0026)
 
+- `sync` infers an outcome for each collected inline comment from what it
+  already fetched, with no extra request: a reply turning the comment down is
+  `dismissed` and strong, and anchored lines a later commit changed are
+  `accepted`, strong when someone agreed in reply and weak otherwise. Silence
+  stays `unknown`, never negative. A re-read pull request updates an outcome it
+  can now see and keeps one it no longer can. Retrieval weighs strong outcomes
+  and treats a weak one as `unknown`. Thread resolution is not read during
+  `sync`. (ADR 0004) (#200)
+
 ### Fixed
 
 - `config.example.yaml` no longer lists keys that `loadConfig` never read
@@ -205,6 +214,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   earlier text: blockquote lines are dropped before matching, and a comment
   whose remaining text is contained in a review or comment the token's user
   posted no longer holds the post with exit 8. (#204)
+
+- `challenge --candidates` reads the `{"kept": [...]}` file `check-candidates`
+  writes, as well as `{"candidates": [...]}` and a bare list. Given the
+  `checked.json` that `commands/review.md` passes, each challenger prompt had
+  lost the candidate's category and the intent statement it cites. (ADR 0024)
+  (#206)
+
+- A SIGKILL to the CLI no longer leaves agent processes running. Each `claude`
+  runs under a small node wrapper that leads its process group and kills the
+  group within two seconds of the CLI's pid going away. (ADR 0021) (#205)
+
+### Removed
+
+- The `precedent-ranker` and `static-evidence-interpreter` agents. No command,
+  skill or pipeline stage launched either: precedent ranking and static
+  evidence parsing run in the CLI. They are recoverable from git history.
+  (#199)
 
 ## [1.18.0] - 2026-10-24
 
