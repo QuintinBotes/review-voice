@@ -16,11 +16,14 @@ identity:
 
 repositories:
   # allowlist is the only supported mode. Review Voice never scans every
-  # repository your token can reach.
+  # repository your token can reach. An entry is owner/repo, or owner/* for
+  # every repository of one owner. A bare * or any other glob is skipped with a
+  # warning.
   mode: allowlist
   include:
     - your-org/your-repo
     - your-org/another-repo
+    # - your-other-org/*
   exclude:
     - "*/archive"
     - "*/sandbox"
@@ -231,6 +234,25 @@ sync:
   mode: manual
   incremental_batch_size: 50
   enabled: true
+
+# What `review-voice queue` lists (docs/adr/0026). Every key is optional; the
+# values below are the defaults unless marked as an example.
+queue:
+  # requested, assigned, follow-up (a reviewed pull request whose head moved)
+  # and dismissed (your latest review on it was dismissed). team is added when
+  # teams is set.
+  sources: [requested, assigned, follow-up, dismissed]
+  teams: []                          # example: [your-org/your-team]
+  max_per_pass: 20                   # REVIEW entries per pass; the rest are not reached
+  follow_up_days: 30                 # how far back a recorded run counts for a follow-up
+  skip:
+    authors: []                      # never review these logins
+    author_patterns: ['\[bot\]$', '-bot$', '^renovate', '^dependabot']  # Bot accounts are skipped by type too
+    allow_bots_when_requested: true  # a bot pull request that requests you personally is listed
+    assigned_to: []                  # skip pull requests assigned to any of these logins
+    # Skip a team request one of these logins already approved at the current head.
+    approved_at_head_by: { logins: [], sources: [team] }
+    drafts: true
 
 writes:
   # Review Voice is read-only through v1. This exists so the setting is visible,
