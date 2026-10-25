@@ -4,6 +4,7 @@ import { DEFAULT_LIMITS } from '../contract/limits.ts';
 import { countWords } from '../contract/words.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { hashDiff } from '../store/runs.ts';
+import { postedStats } from '../store/outcomes.ts';
 
 export interface Metric {
   name: string;
@@ -120,6 +121,8 @@ export function computeMetrics(db: Database): Metric[] {
   const ratio = (numerator: number, denominator: number): number | null =>
     denominator === 0 ? null : numerator / denominator;
 
+  const posted = postedStats(db);
+
   const metric = (
     name: string,
     value: number | null,
@@ -217,6 +220,33 @@ export function computeMetrics(db: Database): Metric[] {
       '= 1.00',
       (v) => v >= 1,
       `${exactNoFindings}/${noFindingsRuns} empty reviews used the exact string`,
+    ),
+    // What GitHub shows happened to the comments this tool posted (docs/adr/0029).
+    // Rates count strong outcomes only, so an unanswered comment is neither
+    // fixed nor dismissed, and are reported rather than gated.
+    metric(
+      'posted_findings_tracked',
+      posted.tracked === 0 ? null : posted.tracked,
+      'no target',
+      () => true,
+      'posted findings with any recorded outcome; run `review-voice outcomes` to check',
+      'goal',
+    ),
+    metric(
+      'posted_fixed_rate',
+      posted.fixedRate,
+      'no target',
+      () => true,
+      `${posted.fixed} fixed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
+      'goal',
+    ),
+    metric(
+      'posted_dismissed_rate',
+      posted.dismissedRate,
+      'no target',
+      () => true,
+      `${posted.dismissed} dismissed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
+      'goal',
     ),
   ];
 }

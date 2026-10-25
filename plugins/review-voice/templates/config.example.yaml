@@ -28,6 +28,14 @@ bootstrap:
   include_bot_comments: false
 
 review:
+  # Which stages run and on which model (docs/adr/0025): fast, standard,
+  # thorough, or auto, which picks from the diff. `--mode` beats this.
+  mode: auto
+  # Set the model for a stage in every mode; an override never turns a stage
+  # on or off. Keys: intent, analyst (the diff lane), lanes, verify, tie-break,
+  # challenge, edit. Defaults are sonnet, or opus where the mode calls for it.
+  # models:
+  #   verify: opus
   # Uncomment to impose a cap. There is none by default: volume is bounded by
   # the word budget, which scales with the size of the change. A layer may
   # tighten a limit but never loosen one.

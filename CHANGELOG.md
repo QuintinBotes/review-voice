@@ -5,6 +5,39 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `plan --files <files.json> --diff-file <diff.patch> [--mode]` prints the
+  stage plan a cost mode resolves to: which review stages run and on which
+  model. `fast`, `standard` and `thorough` follow the table in the spec, and
+  `auto` picks `fast` when no production source changed, `thorough` when
+  complexity is high or more than 150 production lines changed, and `standard`
+  otherwise. Verification always runs, and a finding above a nit always gets a
+  challenge. `review.mode` and `review.models` in `config.yaml` set the default
+  mode and a model per stage; an unknown value warns and is ignored. (ADR 0025)
+
+- `docs/WATCHER.md` specifies Review Voice as a watcher and reviewer that runs
+  end to end without a host: a `review` driver with a confined headless agent
+  runner, configured analyst lanes, an independent challenge before posting,
+  cost modes, a `queue` and `watch` with per-head state, configurable verdict
+  policies, outcome tracking for posted findings, team profiles and a GitHub
+  Action. ADRs 0021 to 0031 record the decisions.
+
+- `outcomes [--repository <owner/repo>] [--since <Nd>] [--json]` follows each
+  inline comment Review Voice posted to an outcome and stores it in a new
+  `finding_outcomes` table. `fixed` (the anchored lines changed and the thread
+  was resolved or the author agreed) and `dismissed` (a rejecting reply, or the
+  owner's `dismiss`) are strong; `resolved`, `outdated`, `open` and `unknown`
+  are weak, and an unanswered comment is never `dismissed`. It reads review
+  threads, replies and later commits and writes nothing to GitHub. (ADR 0029)
+
+- `evaluate` reports `posted_findings_tracked`, `posted_fixed_rate` and
+  `posted_dismissed_rate` over strong outcomes only, and with `--json` a
+  `posted_breakdown` by severity and by lane. They are reported, not gated.
+  (ADR 0029)
+
 ## [1.18.0] - 2026-10-24
 
 ### Added

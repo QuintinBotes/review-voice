@@ -76,6 +76,7 @@ import {
 } from './store/runs.ts';
 import { heldBackFindings, parseThreadFile, postedReviewIds } from './diff/held.ts';
 import { carryCandidates, carryFindings, CarryError, commitReadable, followLine, seriousNotCarried, type CarriedFinding } from './diff/carry.ts';
+import { productionChange, resolvePlan, MODES, type RequestedMode } from './review/plan.ts';
 import { candidateAnchor, reanchorCandidates, reanchorScores } from './diff/reanchor.ts';
 import { fetchPriorHead, latestOwnReview, resolveCommit, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
@@ -140,6 +141,7 @@ import {
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
 import { computeMetrics } from './evaluate/metrics.ts';
+import { checkOutcomes, postedBreakdown } from './store/outcomes.ts';
 import { beginSyncRun, finishSyncRun, lastSync } from './sync/state.ts';
 import { loadWatermarks, saveWatermarks, type Watermark } from './sync/watermark.ts';
 import { evaluatePostingGate } from './publish/gate.ts';
@@ -1153,6 +1155,54 @@ function reviewTarget(argv: string[], command: string): ReviewTarget | string {
   return { repository, pullNumber, head, review, runId: flag(argv, '--run') ?? undefined };
 }
 
+function planCommand(argv: string[]): number {
+  const filesPath = flag(argv, '--files');
+  const diffPath = flag(argv, '--diff-file');
+  const modeFlag = flag(argv, '--mode');
+  const requested = MODES.find((mode) => mode === modeFlag);
+  if (filesPath === null || diffPath === null || (argv.includes('--mode') && requested === undefined)) {
+    console.error('Usage: plan --files <files.json> --diff-file <diff.patch> [--mode fast|standard|thorough|auto]');
+    return 2;
+  }
+
+  let manifest: Record<string, unknown>;
+  let diffText: string;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(filesPath, 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('not a JSON object');
+    manifest = parsed as Record<string, unknown>;
+    diffText = readFileSync(diffPath, 'utf8');
+  } catch (error) {
+    console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const files = manifest['files'];
+  if (!Array.isArray(files) || !files.every((file) => typeof file === 'object' && file !== null && typeof file.path === 'string')) {
+    console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
+    return 2;
+  }
+
+  const config = repositoryConfig();
+  for (const warning of config?.warnings ?? []) console.error(`Warning: ${warning}`);
+  const changed = files as ChangedFile[];
+  const generated = markedGenerated({ ...manifest, diff: diffText } as unknown as EmittedDiff);
+  const change = productionChange(changed, diffText, config?.humanReview, generated);
+  const complexity = asLevel(manifest['complexity']);
+  const plan = resolvePlan({
+    requested: (requested ?? config?.costMode.mode ?? 'auto') as RequestedMode,
+    models: config?.costMode.models ?? {},
+    ...change,
+    complexity,
+    secondPassConfigured: config?.verification.enabled ?? false,
+  });
+  console.log(JSON.stringify(plan, null, 2));
+  return 0;
+}
+
+function asLevel(value: unknown): 'normal' | 'high' {
+  return typeof value === 'object' && value !== null && (value as { level?: unknown }).level === 'high' ? 'high' : 'normal';
+}
+
 function repositoryConfig(): ReturnType<typeof loadConfig> | null {
   try {
     return loadConfig(repositoryRoot(process.cwd()));
@@ -1230,10 +1280,11 @@ function evaluateCommand(argv: string[]): number {
   try {
     const metrics = computeMetrics(db);
     if (argv.includes('--json')) {
-      console.log(JSON.stringify({ metrics }, null, 2));
+      const { bySeverity, byLane } = postedBreakdown(db);
+      console.log(JSON.stringify({ metrics, posted_breakdown: { by_severity: bySeverity, by_lane: byLane } }, null, 2));
     } else {
       for (const metric of metrics) {
-        const value = metric.value === null ? 'no data' : metric.value.toFixed(2);
+        const value = metric.value === null ? 'no data' : (Number.isInteger(metric.value) && metric.name.endsWith('_tracked') ? String(metric.value) : metric.value.toFixed(2));
         // A goal that is not met is not a failure, and printing it as one
         // trains the reader to ignore the word.
         const mark =
@@ -1255,6 +1306,81 @@ function evaluateCommand(argv: string[]): number {
       }
     }
     // A metric below target is information, not a command failure.
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function outcomesCommand(argv: string[]): Promise<number> {
+  const repository = flag(argv, '--repository');
+  if (argv.includes('--repository') && (repository === null || !/^[^/\s]+\/[^/\s]+$/.test(repository))) {
+    console.error('--repository takes owner/repo.');
+    return 2;
+  }
+  const sinceFlag = flag(argv, '--since');
+  const days = sinceFlag === null ? 30 : /^(\d+)d$/.exec(sinceFlag)?.[1];
+  if (days === undefined || (argv.includes('--since') && sinceFlag === null)) {
+    console.error('--since takes a number of days such as 30d.');
+    return 2;
+  }
+  const since = new Date(Date.now() - Number(days) * 86_400_000).toISOString();
+
+  // Naming a repository is the consent for reading it, as `thread` treats it.
+  // Otherwise only the allowlisted ones are read, and a run for any other is skipped.
+  let allowlist: string[] = repository === null ? [] : [repository];
+  if (repository === null) {
+    try {
+      allowlist = loadConfig(repositoryRoot(process.cwd())).allowlist;
+    } catch {
+      // Not in a repository: no allowlist, so nothing is read.
+    }
+  }
+
+  const db = openDatabase();
+  try {
+    const result = await checkOutcomes({
+      db,
+      client: new GitHubClient({ allowlist }),
+      allowlist,
+      repository: repository ?? undefined,
+      since,
+    });
+    for (const warning of result.warnings) console.error(warning);
+    for (const skipped of result.skipped) {
+      console.error(`${skipped.repository}#${skipped.pullNumber}: skipped, ${skipped.reason}`);
+    }
+    if (argv.includes('--json')) {
+      console.log(
+        JSON.stringify(
+          result.outcomes.map((o) => ({
+            run: o.reviewRunId,
+            finding: o.findingId,
+            repository: o.repository,
+            pull: o.pullNumber,
+            path: o.path,
+            line: o.line,
+            commentId: o.commentId,
+            outcome: o.outcome,
+            strength: o.strength,
+            evidence: o.evidence,
+            checkedAt: o.checkedAt,
+            reviewIdSource: o.reviewIdSource,
+          })),
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
+    for (const o of result.outcomes) {
+      console.log(`${o.repository}#${o.pullNumber} ${o.findingId} ${o.path}:${o.line} ${o.outcome} (${o.strength}): ${o.evidence}`);
+    }
+    const count = (name: string): number => result.outcomes.filter((o) => o.outcome === name).length;
+    console.log(
+      `${result.outcomes.length} finding(s) tracked: ${count('fixed')} fixed, ${count('dismissed')} dismissed, ` +
+        `${count('resolved')} resolved, ${count('outdated')} outdated, ${count('open')} open, ${count('unknown')} unknown`,
+    );
     return 0;
   } finally {
     db.close();
@@ -4578,6 +4704,9 @@ async function dispatch(argv: string[]): Promise<number> {
     case 'evaluate':
       return evaluateCommand(argv.slice(1));
 
+    case 'outcomes':
+      return outcomesCommand(argv.slice(1));
+
     case 'draft':
       return draftCommand(argv.slice(1));
 
@@ -4624,6 +4753,9 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'carry':
       return carryCommand(argv.slice(1));
+
+    case 'plan':
+      return planCommand(argv.slice(1));
 
     case 'reanchor':
       return reanchorCommand(argv.slice(1));

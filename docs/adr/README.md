@@ -7,23 +7,24 @@ edit.
 0001 to 0008 close the eight open decisions the specification left for
 implementation, and were reviewed and approved by the owner on 2026-09-16,
 which is the gate M1 was waiting on. Later records close decisions that arose
-after that gate.
+after that gate. 0021 to 0031 make Review Voice a watcher; see
+[WATCHER.md](../WATCHER.md).
 
 | # | Decision | Status |
 |---|---|---|
 | [0001](0001-embedding-implementation.md) | Embedding and retrieval implementation | Accepted |
-| [0002](0002-github-auth-model.md) | GitHub authentication model | Accepted, amended 2026-10-06 by 0018 |
+| [0002](0002-github-auth-model.md) | GitHub authentication model | Accepted, amended 2026-10-06 by 0018 and 2026-10-25 by 0026 |
 | [0003](0003-static-analysis-adapters.md) | Static analysis adapter strategy | Accepted |
-| [0004](0004-outcome-inference-limits.md) | Outcome inference limits | Accepted |
+| [0004](0004-outcome-inference-limits.md) | Outcome inference limits | Accepted, amended by 0029 |
 | [0005](0005-data-encryption.md) | Data encryption at rest | Accepted |
 | [0006](0006-team-governance.md) | Team and policy governance | Accepted |
 | [0007](0007-comment-posting.md) | GitHub comment posting | Accepted, superseded in part by 0010 |
 | [0008](0008-policy-sharing.md) | Policy sharing and export | Accepted |
 | [0009](0009-severity-from-computed-reach.md) | Severity from category and computed reach | Accepted, amended 2026-10-06 |
-| [0010](0010-review-verdict-posting.md) | Posting a review with its verdict | Accepted, amended by 0012, 0013, 0017 and 0018 |
+| [0010](0010-review-verdict-posting.md) | Posting a review with its verdict | Accepted, amended by 0012, 0013, 0017, 0018 and 0028 |
 | [0011](0011-severity-escalation-needs-traced-impact.md) | Severity escalation needs traced impact | Accepted |
-| [0012](0012-complex-changes-need-human-approval.md) | Complex changes are raised for a human's approval | Accepted, amended 2026-10-06 (posted body; production-source count; would-have verdict and stale request for changes), and by 0020 |
-| [0013](0013-ci-needs-rerun.md) | CI that needs a rerun holds every event | Accepted, amended 2026-10-06 |
+| [0012](0012-complex-changes-need-human-approval.md) | Complex changes are raised for a human's approval | Accepted, amended 2026-10-06 (posted body; production-source count; would-have verdict and stale request for changes), and by 0020 and 0028 |
+| [0013](0013-ci-needs-rerun.md) | CI that needs a rerun holds every event | Accepted, amended 2026-10-06 and by 0028 |
 | [0014](0014-verifier-tie-break.md) | A tie-break settles a disputed traced impact | Accepted, amended 2026-10-06 and by 0019 |
 | [0015](0015-untraced-document-consumers.md) | A stale document may be reported untraced at nit | Accepted |
 | [0016](0016-what-the-verifier-could-not-check.md) | What the verifier could not check | Accepted |
@@ -31,3 +32,14 @@ after that gate.
 | [0018](0018-read-only-graphql-thread-state.md) | Reading review-thread state through a GraphQL query | Accepted |
 | [0019](0019-cross-check-may-raise-through-tie-break.md) | A cross-check may raise a severity only through the tie-break | Accepted |
 | [0020](0020-structural-signals-may-opt-into-human-review.md) | Structural signals may opt into human review | Accepted |
+| [0021](0021-agents-run-in-a-confined-headless-runner.md) | Agents run in a confined headless runner | Accepted |
+| [0022](0022-one-command-drives-a-review.md) | One command drives a review | Accepted |
+| [0023](0023-analyst-lanes-are-configured.md) | Analyst lanes are configured, each with its own severity rule | Accepted |
+| [0024](0024-an-independent-challenge-gates-every-posted-finding.md) | An independent challenge gates every posted finding | Accepted |
+| [0025](0025-cost-modes-choose-stages-and-models.md) | Cost modes choose stages and models | Accepted |
+| [0026](0026-the-queue-reads-github-search-inside-the-allowlist.md) | The queue reads GitHub search, inside the allowlist | Accepted |
+| [0027](0027-one-watcher-remembers-every-head.md) | One watcher remembers every head | Accepted |
+| [0028](0028-verdict-policies-are-configurable.md) | Verdict policies for CI and complexity are configurable | Accepted |
+| [0029](0029-posted-findings-are-followed-to-an-outcome.md) | Posted findings are followed to an outcome | Accepted |
+| [0030](0030-team-profiles-and-cold-start.md) | Team profiles pool reviewers, and a new install starts from a baseline | Accepted |
+| [0031](0031-a-github-action-runs-one-review-per-pull-request-event.md) | A GitHub Action runs one review per pull request event | Accepted |
