@@ -2,6 +2,8 @@ import type { GitHubClient } from '../github/client.ts';
 
 export interface ConsentPlan {
   ownerLogin: string;
+  /** Present only when more than one reviewer's history is pooled. */
+  reviewerLogins?: string[];
   repositories: string[];
   targetEvents: number;
   /** Exactly what will be read, in the user's terms rather than the API's. */
@@ -20,12 +22,15 @@ export interface ConsentPlan {
  */
 export function buildConsentPlan(input: {
   ownerLogin: string;
+  reviewerLogins?: readonly string[];
   repositories: string[];
   targetEvents: number;
   storageLocation: string;
 }): ConsentPlan {
+  const pooled = input.reviewerLogins ?? [];
   return {
     ownerLogin: input.ownerLogin,
+    ...(pooled.length > 1 ? { reviewerLogins: [...pooled] } : {}),
     repositories: [...input.repositories],
     targetEvents: input.targetEvents,
     dataCategories: [

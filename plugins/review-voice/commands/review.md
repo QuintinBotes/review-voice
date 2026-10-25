@@ -770,6 +770,11 @@ resolves the thread: what remains is posted, if at all, as one more inline
 comment in the normal review, through the same single create-review request as
 every other finding.
 
+Before launching it, run `RV retrieve --text "<the first eligible claim>"` once.
+When its output has `baseline: true`, no review history has been synced: pass
+its `voice` to the editor along with `baseline: true`, and say in the review
+summary that the baseline voice was used. Otherwise pass neither.
+
 **Inline the candidate JSON for each eligible entry. Do not pass a file path.**
 The editor declares no tools at all, deliberately: its own authority limit - that
 it cannot add a technical claim - rests on having no way to verify one. Handed

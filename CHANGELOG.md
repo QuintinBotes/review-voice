@@ -38,6 +38,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `posted_breakdown` by severity and by lane. They are reported, not gated.
   (ADR 0029)
 
+- `identity.reviewers` pools several reviewers' history into one corpus. `sync`
+  and `consent-plan` treat every listed login the way they treat the owner,
+  each stored event keeps its actual author, and retrieval weights them
+  equally. `owner_reviewer` stays the only policy authority and defaults to the
+  first reviewer; without `reviewers` the corpus is the owner's alone, as
+  before. (ADR 0030)
+
+- With no synced history, `retrieve` returns `baseline: true` and `voice`, the
+  shipped `templates/voice.baseline.md`, and the editor writes from it. `status`
+  prints `Corpus: baseline voice in use (no synced history)` or the event and
+  reviewer counts. (ADR 0030)
+
+- `sync --since <Nd>` limits a sync to pull requests updated in the last N
+  days, and `sync --quick` is the first-sync preset `--target 50 --since 90d`.
+  It needs the same consent plan as `sync`, and `/review-voice:init` offers it.
+  (ADR 0030)
+
 ## [1.18.0] - 2026-10-24
 
 ### Added

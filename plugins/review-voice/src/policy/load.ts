@@ -10,6 +10,12 @@ import { MODEL_KEYS, MODES, type ModelOverrides, type RequestedMode } from '../r
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
+  /**
+   * Logins whose review history forms the corpus (ADR 0030). Always contains
+   * the owner when there is one, so a config without `reviewers` is
+   * `[ownerReviewer]` and behaves as before.
+   */
+  reviewers: string[];
   /** Necessary for posting but nowhere near sufficient; see publish/gate.ts. */
   postingEnabled: boolean;
   /**
@@ -286,9 +292,41 @@ function layerFromPolicyFile(text: string, source: string, fallbackKey: string):
   };
 }
 
+/**
+ * `identity.reviewers` pools several people's history. The owner stays the
+ * policy authority: it defaults to the first reviewer, and is always part of
+ * the pool so its own comments are never dropped.
+ */
+function readReviewers(identity: Record<string, unknown> | null, result: LoadedConfig): void {
+  const raw = identity?.['reviewers'];
+  const listed: string[] = [];
+  if (raw !== undefined) {
+    if (!Array.isArray(raw)) {
+      result.warnings.push('identity.reviewers must be a list of GitHub logins; ignoring it.');
+    } else {
+      for (const entry of raw) {
+        if (typeof entry !== 'string' || entry.trim() === '') {
+          result.warnings.push('identity.reviewers: skipped an entry that is not a login.');
+          continue;
+        }
+        const login = entry.trim();
+        if (!listed.some((existing) => existing.toLowerCase() === login.toLowerCase())) listed.push(login);
+      }
+    }
+  }
+
+  if (result.ownerReviewer === null && listed.length > 0) result.ownerReviewer = listed[0]!;
+  const owner = result.ownerReviewer;
+  if (owner !== null && !listed.some((login) => login.toLowerCase() === owner.toLowerCase())) {
+    listed.unshift(owner);
+  }
+  result.reviewers = listed;
+}
+
 export function loadConfig(repositoryRoot: string): LoadedConfig {
   const result: LoadedConfig = {
     ownerReviewer: null,
+    reviewers: [],
     postingEnabled: false,
     ciGateChecks: [],
     ciRules: {},
@@ -319,6 +357,7 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
         if (typeof identity?.['owner_reviewer'] === 'string') {
           result.ownerReviewer = identity['owner_reviewer'];
         }
+        readReviewers(identity, result);
         const repositories = asRecord(doc['repositories']);
         result.allowlist = asStringArray(repositories?.['include']);
 

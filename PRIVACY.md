@@ -16,7 +16,7 @@ With GitHub ingestion enabled, from allowlisted repositories only:
 - Thread resolution metadata and commits following a comment
 - Check runs and CI status
 
-Bot comments are excluded from voice learning by default. Forks are excluded
+If you list several logins under `identity.reviewers`, their review comments are read and stored like the owner's, each with its author's login; you are choosing to pool those people's comments, so tell them. Bot comments are excluded from voice learning by default. Forks are excluded
 unless you opt in.
 
 **From the repository you are reviewing, locally:** the diff, whatever static

@@ -60,10 +60,14 @@ interface RawPull {
 export interface CollectOptions {
   repository: string;
   ownerLogin: string;
+  /** All reviewers whose comments count as the owner's (ADR 0030). */
+  reviewerLogins?: readonly string[];
   teamLogins?: readonly string[];
   /** Upper bound on pull requests inspected, so one sync cannot run away. */
   maxPullRequests: number;
   maxCommentsPerPull: number;
+  /** Skip pull requests last updated before this instant (ISO 8601). */
+  updatedSince?: string | undefined;
   includeForks: boolean;
   /**
    * Pull-request conversation comments. Off by default: the thread is where
@@ -113,6 +117,7 @@ export async function collectRepository(
   const watermarks: { pullNumber: number; updatedAt: string }[] = [];
 
   for (const pull of pulls) {
+    if (options.updatedSince !== undefined && pull.updated_at < options.updatedSince) continue;
     // Fork content is somebody else's repository; it is opt-in.
     if (!options.includeForks && pull.head?.repo?.fork === true) continue;
 
@@ -150,6 +155,7 @@ export async function collectRepository(
         login: raw.login,
         accountType: raw.accountType,
         ownerLogin: options.ownerLogin,
+        reviewerLogins: options.reviewerLogins,
         teamLogins: options.teamLogins,
         authorAssociation: raw.association,
       });
