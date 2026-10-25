@@ -349,10 +349,11 @@ ADR 0029. For each posted inline comment:
 
 The threat model's boundaries do not move.
 - **Agents read untrusted input.** The runner starts `claude -p --restricted
-  --strict-mcp-config` in the clone, with the agent's declared tools only, Bash
-  limited to `git` subcommands, and output validated against a schema. User
-  settings, hooks and MCP servers are not loaded. A prompt-injected agent can
-  produce bad JSON, which a check refuses. It cannot write, fetch or run other
+  --strict-mcp-config` in a head checkout, with Read, Grep and Glob only, and
+  output validated against a schema. No shell and no git: git's own options can
+  run commands, so the driver writes base copies and history to disk instead.
+  User settings, hooks and MCP servers are not loaded. A prompt-injected agent
+  can produce bad JSON, which a check refuses. It cannot write, fetch or run
   commands.
 - **Search is a read outside one repository.** ADR 0026 allows exactly one
   search endpoint, and every result is filtered against the allowlist before

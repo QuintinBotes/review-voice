@@ -17,15 +17,17 @@ system prompt file, a model, an allowed-tool list and a JSON Schema the final
 answer must satisfy, and it prints a JSON envelope with the structured output
 and the cost. In restricted mode it ignores user, project and local settings
 files, drops code-running tools unless they are named, and confines file tools
-to the working directories. A probe on 2026-10-25 confirmed it. A haiku agent
-with `Read` and `Bash(git:*)` returned schema-valid output, ran `git log`, and
-was denied `curl`.
+to the working directories. A probe on 2026-10-25 confirmed the confinement for
+file tools and for a denied `curl`. A second probe showed the limit of a
+command allow rule. `Bash(git:*)` matches by prefix, and git's own options can
+run an arbitrary command. A hook passed through `--settings` did not fire in
+restricted mode, so it cannot filter them.
 
 ## Decision
 
-**The CLI starts each agent as its own `claude -p --restricted` process in the
-repository clone, with the agent's declared tools only, and accepts only
-schema-valid output.**
+**The CLI starts each agent as its own `claude -p --restricted` process with
+read-only file tools only (Read, Grep, Glob), in a head checkout of the pull
+request, and accepts only schema-valid output. Agents get no shell and no git.**
 
 - **One interface.** `runAgent(spec, prompt, cwd) -> AgentResult`, in
   `src/agents/`. Callers never build a command line.
@@ -35,9 +37,16 @@ schema-valid output.**
   Bash narrowed to Bash(git:*)> --json-schema <schema> --output-format json`,
   with the clone as the working directory. It adds `--bare` when
   `ANTHROPIC_API_KEY` is set, because bare mode skips OAuth and keychain reads.
-- **Tools come from the agent file.** The runner reads the `tools:` frontmatter.
-  An agent that declares no tools gets none, and the editor's input is passed in
-  the prompt.
+- **Tools come from the agent file, narrowed.** The runner reads the `tools:`
+  frontmatter and keeps only Read, Grep and Glob. A declared `Bash(git:*)` is
+  dropped, because the same files serve the interactive host. Any other tool is
+  refused before the process starts. An agent that declares no tools gets none,
+  and the editor's input is passed in the prompt.
+- **What git used to provide is on disk.** The driver checks out the head (its
+  own workspace clone, or a worktree in the run directory when it runs in the
+  user's clone) and writes the base version of every changed file, and recent
+  history for each, under the run directory. The prompt names those
+  directories.
 - **Schemas come from `schemas/`.** The JSON Schema given to the runner is the
   one the matching `check-*` command already enforces. The check still runs
   afterwards, because a schema cannot express anchor or intent rules.
@@ -53,8 +62,10 @@ schema-valid output.**
 
 - `review` and `watch` can run anywhere Claude Code is installed and
   authenticated, including CI with an API key.
-- PR content that injects a prompt meets an agent that can read the clone and
-  run `git`, and nothing else. Its output still has to pass a check.
+- PR content that injects a prompt meets an agent that can read files and
+  nothing else. Its output still has to pass a check.
+- Agents lose ad hoc history queries. The driver's prepared base copies and
+  per-file history cover what the verifier used `git` for.
 - The interactive command keeps using the host's agents. The agent files are
   shared, so both paths run the same prompts.
 - Claude Code is a runtime dependency of `review` and `watch`, not of any other
@@ -73,3 +84,7 @@ which is the problem being solved.
 **Run agents unrestricted with the user's settings.** Rejected. User hooks and
 plugins would run against untrusted pull request content, and the probe showed
 restricted mode costs nothing.
+
+**Allow git through a narrower rule or a hook.** Rejected. Prefix rules cannot
+exclude an option placed later in the command, and the hook did not run in
+restricted mode. Removing the shell removes the whole class.
