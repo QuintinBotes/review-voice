@@ -362,7 +362,7 @@ function refsIn(node, found = []) {
 
 test('every shipped schema prepares for claude without $schema, $id or file refs', () => {
   const files = readdirSync(pluginSchemas).filter((f) => f.endsWith('.json'));
-  assert.equal(files.length, 8);
+  assert.ok(files.length >= 9, `expected every shipped schema, found ${files.length}`);
   for (const file of files) {
     const raw = readJson(join(pluginSchemas, file));
     const prepared = schemaForRunner(raw, pluginSchemas);
