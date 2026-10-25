@@ -436,6 +436,24 @@ requested tier because it traced that the boundary still holds elsewhere.
 establish the answer and the author can, which is a kind of finding rather than
 a level of consequence, and no category implies it.
 
+### Analyst lanes
+
+A lane is a configured analyst: an agent file, an eligibility rule, a
+candidate id prefix and a severity rule (ADR 0023). The `diff` lane
+(`diff-analyst`, `cand_`) is built in and always runs; `review.lanes` adds
+others, such as the shipped `structure` lane (`structure-analyst`, `st_`).
+`lanes` prints which of them run on a change: a lane runs when its changed
+lines reach `min_changed_source_lines`. `productionChange` counts them: by
+default it leaves out tests, documentation, generated files and configuration
+(a kind only this count has, so the decision-point count is unchanged), a
+lane's `exclude_kinds` replaces that list, and its `paths` narrow it. Lane candidates are merged before
+`check-candidates`, which refuses a candidate whose `lane` is not configured or
+whose id lacks that lane's prefix. In `score` the lane rule runs last, on the
+tier already derived and bounded: `cap` only lowers it, and `escalate` raises
+it only when the verifier set `blocker_confirmed` and the traced-impact bar
+above holds, so a lane cannot raise a tier further than any other finding could
+rise. Every score entry names its `lane`.
+
 ### Claims of absence
 
 "X does not exist" is the cheapest claim in a review to check and the most

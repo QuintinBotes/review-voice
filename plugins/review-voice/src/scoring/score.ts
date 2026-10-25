@@ -3,6 +3,7 @@ import type { ReachCheck } from './reach.ts';
 import { deriveSeverity, type DerivedSeverity } from './severity.ts';
 import { ESCALATION_CONFIDENCE, verifierConfidence } from './confidence.ts';
 import { SEVERITIES } from '../contract/limits.ts';
+import { DIFF_LANE, type Lane } from '../review/lanes.ts';
 
 /**
  * A candidate as the schema publishes it. `schemas/candidate.schema.json` is
@@ -37,6 +38,10 @@ export interface RawCandidate {
   intentRef?: unknown;
   /** Set by `check-candidates --thread`; see `Candidate.ownComment`. */
   possibleRepeatOf?: unknown;
+  /** See `Candidate.lane` and `Candidate.blockerClass`. */
+  lane?: unknown;
+  blocker_class?: unknown;
+  blockerClass?: unknown;
 }
 
 /** The one anchor a candidate may declare; see `classifyStaleConsumer`. */
@@ -89,6 +94,10 @@ export interface Candidate {
    * to. Only that kind is kept: it is the one a follow-up may be posted for.
    */
   ownComment?: PriorComment | undefined;
+  /** The configured lane that produced it; absent means `diff` (docs/adr/0023). */
+  lane?: string | undefined;
+  /** The concrete blocker a lane analyst claims, for the verifier to confirm. */
+  blockerClass?: string | null | undefined;
 }
 
 /** Where an earlier comment on the pull request sits, and who wrote it. */
@@ -206,6 +215,8 @@ export interface Verification {
    * listed locally, when what stopped it was context it could not obtain.
    */
   verified?: boolean | undefined;
+  /** The verifier confirmed the candidate's `blocker_class`; read only by a lane escalate rule. */
+  blockerConfirmed?: boolean | undefined;
 }
 
 /** Longest verifier reason quoted in a rejection. */
@@ -364,6 +375,46 @@ function raisedBecause(result: DerivedSeverity, requested: string, why: string):
 }
 
 /**
+ * A lane's severity rule, applied to the tier scoring already derived and
+ * bounded (docs/adr/0023). `cap` only lowers it. `escalate` raises it only on
+ * the verifier's `blocker_confirmed` and only past the bar
+ * `boundSeverityByEvidence` sets for any escalation, so a lane never raises a
+ * tier further than docs/adr/0011 allows. A question is not a tier.
+ */
+export function applyLaneSeverity(
+  derived: DerivedSeverity,
+  candidate: Candidate,
+  lane: Lane | undefined,
+  verification?: Verification | undefined,
+): DerivedSeverity {
+  const { cap, escalate } = lane?.severity ?? {};
+  if (lane === undefined || derived.severity === 'question') return derived;
+  const rank = (tier: string): number => TIER_ORDER.indexOf(tier as (typeof TIER_ORDER)[number]);
+  let result = derived;
+  if (cap !== undefined && rank(result.severity) > rank(cap)) {
+    result = { ...result, severity: cap, reason: `${result.reason}, capped at ${cap} by lane ${lane.name}` };
+  }
+  if (escalate === undefined || verification?.blockerConfirmed !== true || rank(result.severity) >= rank(escalate.to)) {
+    return result;
+  }
+  const confidence = verifierConfidence(verification.technicalConfidence, verification.evidenceQuality);
+  const held = (why: string): DerivedSeverity => ({ ...result, reason: `${result.reason}; blocker confirmed but ${why}` });
+  if (verification.impactTraced !== true) return held('impact not traced');
+  if (confidence === null || confidence < ESCALATION_CONFIDENCE) {
+    return held(`verifier confidence ${confidence === null ? 'is unknown' : confidence.toFixed(2)}, under ${ESCALATION_CONFIDENCE}`);
+  }
+  if (candidate.impactDisputed === true) return held('the second pass disputed the traced impact');
+  if (isInterrogativeClaim(candidate.claim)) return held('the claim is framed as a question');
+  return {
+    ...result,
+    severity: escalate.to,
+    reason:
+      `${result.reason}, raised to ${escalate.to} by lane ${lane.name} because the verifier confirmed ` +
+      `the blocker and traced its impact at confidence ${confidence.toFixed(2)}`,
+  };
+}
+
+/**
  * The ceiling for a claim nobody could check.
  *
  * Below every default gate, so such a candidate is rejected rather than merely
@@ -412,6 +463,8 @@ export interface FixRendering {
 
 export interface ScoreBreakdown {
   candidateId: string;
+  /** The lane the candidate came from, `diff` when it named none (docs/adr/0023). */
+  lane: string;
   /**
    * Location, carried so a breakdown can be matched back to the finding it
    * produced. A candidate id is meaningless to anything downstream: the
@@ -942,6 +995,13 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
   if (intentRef !== undefined && (typeof intentRef !== 'string' || !/^int_[0-9]{3,}$/.test(intentRef))) {
     throw new MalformedCandidate(`${candidateId}: intent_ref must match int_NNN when supplied`);
   }
+  if (raw.lane !== undefined && (typeof raw.lane !== 'string' || raw.lane.length === 0)) {
+    throw new MalformedCandidate(`${candidateId}: lane must be a lane name when supplied`);
+  }
+  const blockerClass = raw.blocker_class !== undefined ? raw.blocker_class : raw.blockerClass;
+  if (blockerClass !== undefined && blockerClass !== null && typeof blockerClass !== 'string') {
+    throw new MalformedCandidate(`${candidateId}: blocker_class must be a string or null when supplied`);
+  }
 
   return {
     candidateId,
@@ -963,6 +1023,8 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     ...(impactDisputed === true ? { impactDisputed: true as const } : {}),
     ...(intentRef === undefined ? {} : { intentRef }),
     ...(ownComment === null ? {} : { ownComment }),
+    ...(raw.lane === undefined ? {} : { lane: raw.lane as string }),
+    ...(blockerClass === undefined ? {} : { blockerClass: blockerClass as string | null }),
   };
 }
 
@@ -1407,6 +1469,7 @@ export function scoreCandidate(
   kept: Candidate[],
   thresholds: Thresholds = DEFAULT_THRESHOLDS,
   verification?: Verification | undefined,
+  lane?: Lane | undefined,
 ): ScoreBreakdown {
   const analystConfidence = candidate.technicalConfidence;
 
@@ -1564,7 +1627,12 @@ export function scoreCandidate(
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
 
-  const severity = withLegacyTierHint(boundSeverityByEvidence(derivedSeverity, candidate, verification), candidate, verification);
+  const severity = applyLaneSeverity(
+    withLegacyTierHint(boundSeverityByEvidence(derivedSeverity, candidate, verification), candidate, verification),
+    candidate,
+    lane,
+    verification,
+  );
 
   // A stale consumer sits on code the diff did not touch, so nothing in the
   // diff shows it breaking. Only the verifier following it back to its cause
@@ -1605,6 +1673,7 @@ export function scoreCandidate(
 
   return {
     candidateId: candidate.candidateId,
+    lane: candidate.lane ?? DIFF_LANE.name,
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,

@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `plan --files <files.json> --diff-file <diff.patch> [--mode]` prints the
   stage plan a cost mode resolves to: which review stages run and on which
   model. `fast`, `standard` and `thorough` follow the table in the spec, and
-  `auto` picks `fast` when no production source changed, `thorough` when
+  `auto` picks `fast` when no production source changed (tests, documentation,
+  generated files and configuration such as YAML, JSON, TOML, `.env` and
+  lockfiles do not count; `.github/workflows/` does), `thorough` when
   complexity is high or more than 150 production lines changed, and `standard`
   otherwise. Verification always runs, and a finding above a nit always gets a
   challenge. `review.mode` and `review.models` in `config.yaml` set the default
@@ -84,6 +86,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for review bodies and conversation comments. (ADR 0028)
 
 - The `review_post_sent` audit row records `cappedByCi`. (ADR 0028)
+
+- Analyst lanes: `review.lanes` in `config.yaml` adds analysts beside the
+  built-in `diff` lane, each with an agent, a candidate id prefix, an
+  eligibility rule (`min_changed_source_lines`, `paths`, and `exclude_kinds`,
+  which replaces the kinds of file left out of the line count) and a
+  severity rule (`cap`, and `escalate` on `blocker_confirmed`). An invalid lane
+  warns and is dropped. `lanes --files <files.json> --diff-file <diff.patch>`
+  prints which lanes run on a change and why. Candidates take optional `lane`
+  and `blocker_class`; `check-candidates` refuses a lane candidate whose id
+  lacks its lane's prefix, or that names an unknown lane. Verification takes
+  optional `blocker_confirmed`. `score` applies the lane rule after deriving
+  the tier: a cap only lowers it, and an escalation also needs traced impact at
+  confidence 0.85. Every score entry carries its `lane`. The new
+  `structure-analyst` agent ships for a `structure` lane. (ADR 0023)
 
 ## [1.18.0] - 2026-10-24
 

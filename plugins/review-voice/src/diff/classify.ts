@@ -108,6 +108,18 @@ const DOCUMENTATION_NAMES = new Set([
   'readme', 'license', 'licence', 'changelog', 'changes', 'notice', 'authors', 'contributors', 'copying',
 ]);
 
+const CONFIGURATION_EXTENSIONS = new Set(['yaml', 'yml', 'json', 'jsonc', 'toml', 'ini', 'cfg', 'conf', 'properties', 'env', 'lock']);
+
+/**
+ * Configuration rather than production source, for the production line count
+ * only (`plan`, lanes). A CI workflow is code: it runs, and it can break.
+ */
+export function isConfiguration(path: string): boolean {
+  if (path.startsWith('.github/workflows/')) return false;
+  const name = (path.split('/').pop() ?? '').toLowerCase();
+  return name === '.env' || CONFIGURATION_EXTENSIONS.has(extensionOf(path)) || classify(path) === 'lockfile';
+}
+
 export function isDocumentation(path: string): boolean {
   const segments = path.split('/');
   const name = (segments.pop() ?? '').toLowerCase();

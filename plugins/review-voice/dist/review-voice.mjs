@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync7, readSync, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2, renameSync, rmSync, existsSync as existsSync4 } from "node:fs";
+import { readFileSync as readFileSync6, readSync, writeFileSync, mkdirSync as mkdirSync2, statSync as statSync2, renameSync, rmSync, existsSync as existsSync4 } from "node:fs";
 import { dirname as dirname5, join as join8 } from "node:path";
 import { execFileSync as execFileSync11 } from "node:child_process";
 
@@ -898,178 +898,98 @@ function planFindings(output, run, loadRun) {
   if (heldBackApproval) mapped = "COMMENT";
   return { inline, unanchored, held, mapped, heldBackApproval };
 }
-var DEFAULT_VERDICT_POLICY = Object.freeze({
-  ciPending: "wait",
-  ciRed: "cap",
-  ciNeedsRerun: "hold",
-  capApproval: true,
-  carryApprovalOnUnchanged: false,
-  recheckThreadBeforePost: false
-});
-function verdictPolicy(policy) {
-  return { ...DEFAULT_VERDICT_POLICY, ...policy };
-}
-var MAX_ANNOTATED_CHECKS = 5;
-var MAX_CHECK_NAME = 60;
-function safeCheckName(name) {
-  const flat = name.replace(/[\u202a-\u202e\u2066-\u2069\u200b-\u200d\ufeff`]/g, "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
-  const points = [...flat];
-  return points.length > MAX_CHECK_NAME ? `${points.slice(0, MAX_CHECK_NAME - 1).join("")}\u2026` : flat;
-}
-function checkNames(entries) {
-  const names = [...new Set(entries.map((entry) => safeCheckName(entry.name)).filter((name) => name.length > 0))].sort();
-  return names.length === 0 ? "some checks" : names.slice(0, MAX_ANNOTATED_CHECKS).map((name) => `\`${name}\``).join(", ");
-}
-function ciAnnotations(ci, policy) {
-  if (ci?.state === "red" && policy.ciRed === "annotate") {
-    return [`Heads up: ${checkNames(ci.failed)} failing on this head.`];
-  }
-  if (ci?.state === "needs-rerun" && policy.ciNeedsRerun === "annotate") {
-    return [`Heads up: ${checkNames(ci.rerun)} need a rerun.`];
-  }
-  return [];
-}
-function ciAllowsApproval(state, policy) {
-  if (state === "green") return true;
-  if (state === "pending") return policy.ciPending === "proceed";
-  if (state === "red") return policy.ciRed === "annotate";
-  return policy.ciNeedsRerun === "annotate";
-}
 function decide(input) {
-  const policy = verdictPolicy(input.policy);
   const reasons = [];
-  const done = (decision, annotations2 = []) => ({
-    ...decision,
-    annotations: decision.action === "post" ? annotations2 : [],
-    carriedReviewUrl: null
-  });
   if (input.heldBackApproval === true) {
     reasons.push("an unverified finding above a nit was held back, so this comments rather than approves");
   }
   if (input.headMoved) {
-    return done({
+    return {
       event: input.mapped,
       action: "refuse",
       reasons: [...reasons, "the pull request head moved since the review read it; review the new head"],
       exitCode: 3,
       cappedByCi: false
-    });
-  }
-  if (typeof input.carriedReviewUrl === "string" && input.mapped === "APPROVE" && input.heldBackApproval !== true && input.uncoveredCarry !== true) {
-    return {
-      event: null,
-      action: "carry",
-      reasons: [...reasons, "the scope is unchanged and the owner's approval still stands, so nothing is posted"],
-      exitCode: 0,
-      cappedByCi: false,
-      annotations: [],
-      carriedReviewUrl: input.carriedReviewUrl
     };
   }
-  const annotations = input.recheck ? [] : ciAnnotations({ state: input.ci ?? "green", failed: [...input.failed ?? []], rerun: [...input.rerun ?? []] }, policy);
   if (input.ci === "needs-rerun") {
     const named = (input.rerun ?? []).map((entry) => `${entry.name} (${entry.detail})`);
-    const why = `CI needs a rerun${named.length > 0 ? `: ${named.join(", ")}` : ""}`;
-    if (input.recheck || policy.ciNeedsRerun === "hold") {
-      return done({ event: null, action: "wait", reasons: [...reasons, why], exitCode: 6, cappedByCi: false });
-    }
-    reasons.push(`${why}; posting the code verdict with a note, as verdict.ci_needs_rerun is annotate`);
+    return {
+      event: null,
+      action: "wait",
+      reasons: [...reasons, `CI needs a rerun${named.length > 0 ? `: ${named.join(", ")}` : ""}`],
+      exitCode: 6,
+      cappedByCi: false
+    };
   }
   if (input.uncoveredCarry === true && input.mapped === "APPROVE") {
     const why = "candidates were carried to this head without a review of the commits since, so this comments rather than approves";
     if (input.recheck) {
-      return done({ event: "COMMENT", action: "refuse", reasons: [...reasons, why], exitCode: 2, cappedByCi: false });
+      return { event: "COMMENT", action: "refuse", reasons: [...reasons, why], exitCode: 2, cappedByCi: false };
     }
-    return done({ event: "COMMENT", action: "post", reasons: [...reasons, why], exitCode: 0, cappedByCi: false }, annotations);
+    return { event: "COMMENT", action: "post", reasons: [...reasons, why], exitCode: 0, cappedByCi: false };
   }
   if (input.needsHuman === true && input.mapped === "APPROVE") {
-    if (!policy.capApproval) {
-      reasons.push("the change was raised for human review; approving anyway, as review.human_review.cap_approval is false");
-    } else if (input.recheck) {
-      return done({
+    if (input.recheck) {
+      return {
         event: "COMMENT",
         action: "refuse",
         reasons: [...reasons, "the change was raised for human review, so there is no approval to re-check"],
         exitCode: 2,
         cappedByCi: false
-      });
-    } else {
-      return done(
-        {
-          event: "COMMENT",
-          action: "post",
-          reasons: [...reasons, "the change was raised for human review, so this comments rather than approves"],
-          exitCode: 0,
-          cappedByCi: false
-        },
-        annotations
-      );
+      };
     }
+    return {
+      event: "COMMENT",
+      action: "post",
+      reasons: [...reasons, "the change was raised for human review, so this comments rather than approves"],
+      exitCode: 0,
+      cappedByCi: false
+    };
   }
   if (input.recheck) {
     if (input.mapped !== "APPROVE") {
-      return done({
+      return {
         event: input.mapped,
         action: "refuse",
         reasons: [...reasons, `the review maps to ${input.mapped}, so there is no approval to re-check`],
         exitCode: 2,
         cappedByCi: false
-      });
+      };
     }
     if (input.ci === "pending") {
-      return done({ event: "APPROVE", action: "wait", reasons: [...reasons, "CI is still running"], exitCode: 4, cappedByCi: false });
+      return { event: "APPROVE", action: "wait", reasons: [...reasons, "CI is still running"], exitCode: 4, cappedByCi: false };
     }
     if (input.ci !== "green") {
-      return done({
+      return {
         event: "COMMENT",
         action: "refuse",
         reasons: [...reasons, "CI is red, so there is no approval to send"],
         exitCode: 5,
         cappedByCi: true
-      });
+      };
     }
-    return done({ event: "APPROVE", action: "post", reasons: [...reasons, "head unchanged and CI green"], exitCode: 0, cappedByCi: false });
+    return { event: "APPROVE", action: "post", reasons: [...reasons, "head unchanged and CI green"], exitCode: 0, cappedByCi: false };
   }
   if (input.mapped === "APPROVE" && input.ci === "red") {
-    if (policy.ciRed === "annotate") {
-      return done(
-        {
-          event: "APPROVE",
-          action: "post",
-          reasons: [...reasons, "CI is red; approving with a note, as verdict.ci_red is annotate"],
-          exitCode: 0,
-          cappedByCi: false
-        },
-        annotations
-      );
-    }
-    return done({
+    return {
       event: "COMMENT",
       action: "post",
       reasons: [...reasons, "CI is red, so the approval is capped at COMMENT"],
       exitCode: 0,
       cappedByCi: true
-    });
+    };
   }
-  if (input.mapped === "APPROVE" && input.ci !== "green" && input.ci !== "needs-rerun") {
-    if (policy.ciPending === "proceed") {
-      return done({
-        event: "APPROVE",
-        action: "post",
-        reasons: [...reasons, "CI is still running; approving now, as verdict.ci_pending is proceed"],
-        exitCode: 0,
-        cappedByCi: false
-      });
-    }
-    return done({
+  if (input.mapped === "APPROVE" && input.ci !== "green") {
+    return {
       event: "APPROVE",
       action: "wait",
       reasons: [...reasons, "CI is still running; approve once it is green with verdict --recheck"],
       exitCode: 4,
       cappedByCi: false
-    });
+    };
   }
-  return done({ event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false }, annotations);
+  return { event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false };
 }
 function plural(count3, word) {
   return `${count3} ${word}${count3 === 1 ? "" : "s"}`;
@@ -1133,16 +1053,6 @@ function buildPayload(input) {
     body,
     comments: input.planned.inline.map(inlineComment)
   };
-}
-function withAnnotations(body, annotations) {
-  return [body, ...annotations].join("\n\n");
-}
-function replaceAnnotations(body, previous, next) {
-  const suffix = previous.map((line2) => `
-
-${line2}`).join("");
-  const base = suffix.length > 0 && body.endsWith(suffix) ? body.slice(0, body.length - suffix.length) : body;
-  return withAnnotations(base, next);
 }
 function renderPreview(input) {
   const { payload } = input;
@@ -1445,6 +1355,12 @@ var DOCUMENTATION_NAMES = /* @__PURE__ */ new Set([
   "contributors",
   "copying"
 ]);
+var CONFIGURATION_EXTENSIONS = /* @__PURE__ */ new Set(["yaml", "yml", "json", "jsonc", "toml", "ini", "cfg", "conf", "properties", "env", "lock"]);
+function isConfiguration(path) {
+  if (path.startsWith(".github/workflows/")) return false;
+  const name = (path.split("/").pop() ?? "").toLowerCase();
+  return name === ".env" || CONFIGURATION_EXTENSIONS.has(extensionOf(path)) || classify(path) === "lockfile";
+}
 function isDocumentation(path) {
   const segments = path.split("/");
   const name = (segments.pop() ?? "").toLowerCase();
@@ -1979,6 +1895,9 @@ function reviewedKinds(files, limits, markedGenerated2) {
     if (file.reviewed) kinds.set(file.path, kindOf(file));
   }
   return { kinds, reasons };
+}
+function reviewedFileKinds(files, partial, markedGenerated2 = /* @__PURE__ */ new Set()) {
+  return reviewedKinds(files, config(partial), markedGenerated2).kinds;
 }
 function productionPaths(files, partial, markedGenerated2 = /* @__PURE__ */ new Set()) {
   const { kinds } = reviewedKinds(files, config(partial), markedGenerated2);
@@ -2673,6 +2592,142 @@ function verifierConfidence(technicalConfidence, evidenceQuality2) {
   return QUALITY_CONFIDENCE[evidenceQuality2] ?? null;
 }
 
+// plugins/review-voice/src/review/lanes.ts
+import { existsSync } from "node:fs";
+import { dirname as dirname2, join as join4 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// plugins/review-voice/src/review/plan.ts
+var MODES = ["fast", "standard", "thorough", "auto"];
+var MODEL_KEYS = ["intent", "analyst", "lanes", "verify", "tie-break", "challenge", "edit"];
+var SONNET = "sonnet";
+var OPUS = "opus";
+var THOROUGH_LINE_LIMIT = 150;
+function autoMode(input) {
+  if (!input.productionSourceChanged) return { mode: "fast", reason: "auto: no production source changed" };
+  if (input.complexity === "high") return { mode: "thorough", reason: "auto: complexity is high" };
+  if (input.productionLinesChanged > THOROUGH_LINE_LIMIT) {
+    return {
+      mode: "thorough",
+      reason: `auto: ${input.productionLinesChanged} production lines changed (over ${THOROUGH_LINE_LIMIT})`
+    };
+  }
+  return { mode: "standard", reason: "auto: production source changed within the standard limits" };
+}
+function resolvePlan(input) {
+  const overrides = input.models ?? {};
+  const chosen = input.requested === "auto" ? autoMode(input) : { mode: input.requested, reason: `mode set to ${input.requested}` };
+  const { mode } = chosen;
+  const fast = mode === "fast";
+  const thorough = mode === "thorough";
+  const diffLane = overrides.analyst ?? overrides.lanes ?? (thorough ? OPUS : SONNET);
+  const otherLanes = fast ? null : overrides.lanes ?? (thorough ? OPUS : SONNET);
+  const secondPass = input.secondPassConfigured && !fast;
+  return {
+    mode,
+    requested: input.requested,
+    reason: chosen.reason,
+    stages: {
+      intent: { run: true, model: overrides.intent ?? SONNET },
+      lanes: { run: true, model: diffLane },
+      // The verifier is a floor: no mode turns it off.
+      verify: { run: true, model: overrides.verify ?? (thorough ? OPUS : SONNET) },
+      // The second pass is a configured command, so it has no model of its own.
+      "second-pass": { run: secondPass, model: null },
+      "tie-break": { run: true, model: overrides["tie-break"] ?? (fast ? SONNET : OPUS) },
+      // In fast the stage is off by default; modelForFinding applies the floor for findings above a nit.
+      challenge: fast ? { run: false, model: null } : { run: true, model: overrides.challenge ?? (thorough ? OPUS : SONNET) },
+      edit: { run: true, model: overrides.edit ?? SONNET }
+    },
+    laneModels: { diff: diffLane, others: otherLanes },
+    overrides
+  };
+}
+var CHANGE_KINDS = ["test", "docs", "config", "generated"];
+var CHANGE_KIND = {
+  production: "production",
+  test: "test",
+  documentation: "docs",
+  generated: "generated"
+};
+function linesByPath(diffText) {
+  const counts = /* @__PURE__ */ new Map();
+  let current = null;
+  let inHunk = false;
+  for (const line2 of diffText.split("\n")) {
+    if (line2.startsWith("diff --git ")) {
+      const match = /^diff --git (?:"a\/.*?"|a\/\S+) ("b\/.*"|b\/.*)$/.exec(line2);
+      current = match === null ? null : unquoteGitPath(match[1]).slice(2);
+      inHunk = false;
+      continue;
+    }
+    if (current === null) continue;
+    if (line2.startsWith("@@")) {
+      inHunk = true;
+      continue;
+    }
+    if (inHunk && (line2.startsWith("+") || line2.startsWith("-"))) {
+      counts.set(current, (counts.get(current) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+function productionChange(files, diffText, partial, markedGenerated2 = /* @__PURE__ */ new Set(), options = {}) {
+  const exclude = new Set(options.exclude ?? CHANGE_KINDS);
+  const lockfiles = new Set(files.filter((file) => file.class === "lockfile").map((file) => file.path));
+  const kindOf = (path, kind) => (kind === "production" || lockfiles.has(path)) && isConfiguration(path) ? "config" : CHANGE_KIND[kind];
+  const production = new Set(
+    [...reviewedFileKinds(files, partial, markedGenerated2)].filter(([path, kind]) => !exclude.has(kindOf(path, kind)) && (options.counts?.(path) ?? true)).map(([path]) => path)
+  );
+  let fromDiff = null;
+  let lines2 = 0;
+  for (const file of files) {
+    if (!production.has(file.path)) continue;
+    if (Number.isFinite(file.additions) && Number.isFinite(file.deletions)) {
+      lines2 += file.additions + file.deletions;
+    } else {
+      fromDiff ??= linesByPath(diffText);
+      lines2 += fromDiff.get(file.path) ?? 0;
+    }
+  }
+  return { productionSourceChanged: production.size > 0, productionLinesChanged: lines2 };
+}
+
+// plugins/review-voice/src/review/lanes.ts
+var LANE_TIERS = ["nit", "minor", "important", "blocking"];
+var DIFF_LANE = { name: "diff", agent: "diff-analyst", prefix: "cand_", when: {}, severity: {} };
+function laneNamed(lanes, name) {
+  return lanes.find((lane) => lane.name === (name ?? DIFF_LANE.name));
+}
+function agentsDirectory() {
+  let dir = dirname2(fileURLToPath2(import.meta.url));
+  for (let depth = 0; depth < 4; depth += 1) {
+    const candidate = join4(dir, "agents");
+    if (existsSync(join4(candidate, `${DIFF_LANE.agent}.md`))) return candidate;
+    dir = dirname2(dir);
+  }
+  return null;
+}
+function agentExists(name) {
+  if (!/^[a-z][a-z0-9-]*$/.test(name)) return false;
+  const dir = agentsDirectory();
+  return dir !== null && existsSync(join4(dir, `${name}.md`));
+}
+function eligibleLanes(lanes, files, diffText, options = {}) {
+  return lanes.map((lane) => {
+    if (lane.name === DIFF_LANE.name) return { lane, eligible: true, reason: "the diff lane always runs" };
+    const paths = lane.when.paths;
+    const counts = paths === void 0 ? void 0 : (path) => governsAny(paths, [path]);
+    const { productionLinesChanged: lines2 } = productionChange(files, diffText, options.humanReview, options.markedGenerated, {
+      exclude: lane.when.excludeKinds,
+      counts
+    });
+    const measured = `${lines2} changed source line${lines2 === 1 ? "" : "s"}${paths === void 0 ? "" : ` in ${paths.join(", ")}`}`;
+    const minimum = lane.when.minChangedSourceLines ?? 0;
+    return lines2 >= minimum ? { lane, eligible: true, reason: `${measured}, at least ${minimum}` } : { lane, eligible: false, reason: `${measured}, under the minimum of ${minimum}` };
+  });
+}
+
 // plugins/review-voice/src/scoring/score.ts
 var STALE_CONSUMER = "stale-consumer";
 var DOCUMENTATION_PATH = /\.(?:md|rst|adoc)$/i;
@@ -2774,6 +2829,31 @@ function raisedBecause(result, requested, why) {
   const got = TIER_ORDER.indexOf(result.severity);
   if (asked === -1 || got === -1 || got <= asked) return result;
   return { ...result, reason: `${result.reason}, raised above the requested ${requested} because ${why}` };
+}
+function applyLaneSeverity(derived, candidate, lane, verification2) {
+  const { cap, escalate } = lane?.severity ?? {};
+  if (lane === void 0 || derived.severity === "question") return derived;
+  const rank2 = (tier) => TIER_ORDER.indexOf(tier);
+  let result = derived;
+  if (cap !== void 0 && rank2(result.severity) > rank2(cap)) {
+    result = { ...result, severity: cap, reason: `${result.reason}, capped at ${cap} by lane ${lane.name}` };
+  }
+  if (escalate === void 0 || verification2?.blockerConfirmed !== true || rank2(result.severity) >= rank2(escalate.to)) {
+    return result;
+  }
+  const confidence = verifierConfidence(verification2.technicalConfidence, verification2.evidenceQuality);
+  const held = (why) => ({ ...result, reason: `${result.reason}; blocker confirmed but ${why}` });
+  if (verification2.impactTraced !== true) return held("impact not traced");
+  if (confidence === null || confidence < ESCALATION_CONFIDENCE) {
+    return held(`verifier confidence ${confidence === null ? "is unknown" : confidence.toFixed(2)}, under ${ESCALATION_CONFIDENCE}`);
+  }
+  if (candidate.impactDisputed === true) return held("the second pass disputed the traced impact");
+  if (isInterrogativeClaim(candidate.claim)) return held("the claim is framed as a question");
+  return {
+    ...result,
+    severity: escalate.to,
+    reason: `${result.reason}, raised to ${escalate.to} by lane ${lane.name} because the verifier confirmed the blocker and traced its impact at confidence ${confidence.toFixed(2)}`
+  };
 }
 var UNVERIFIABLE_CONFIDENCE = 0.6;
 var DOCUMENT_NIT_HINT = "lower it with `--severity <id>=nit` to post it as a nit";
@@ -2968,6 +3048,13 @@ function normaliseCandidate(raw, index) {
   if (intentRef !== void 0 && (typeof intentRef !== "string" || !/^int_[0-9]{3,}$/.test(intentRef))) {
     throw new MalformedCandidate(`${candidateId}: intent_ref must match int_NNN when supplied`);
   }
+  if (raw.lane !== void 0 && (typeof raw.lane !== "string" || raw.lane.length === 0)) {
+    throw new MalformedCandidate(`${candidateId}: lane must be a lane name when supplied`);
+  }
+  const blockerClass = raw.blocker_class !== void 0 ? raw.blocker_class : raw.blockerClass;
+  if (blockerClass !== void 0 && blockerClass !== null && typeof blockerClass !== "string") {
+    throw new MalformedCandidate(`${candidateId}: blocker_class must be a string or null when supplied`);
+  }
   return {
     candidateId,
     path: raw.path,
@@ -2987,7 +3074,9 @@ function normaliseCandidate(raw, index) {
     ...raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {},
     ...impactDisputed === true ? { impactDisputed: true } : {},
     ...intentRef === void 0 ? {} : { intentRef },
-    ...ownComment === null ? {} : { ownComment }
+    ...ownComment === null ? {} : { ownComment },
+    ...raw.lane === void 0 ? {} : { lane: raw.lane },
+    ...blockerClass === void 0 ? {} : { blockerClass }
   };
 }
 function ownCommentOf(value) {
@@ -3192,7 +3281,7 @@ function withLegacyTierHint(severity, candidate, verification2) {
     reason: `${severity.reason}; reach is unknown, so the requested ${severity.requested} was not applied. If it breaks things for the whole repository, raise it with \`--severity ${candidate.candidateId}=${severity.requested}\``
   };
 }
-function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2) {
+function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2, lane) {
   const analystConfidence = candidate.technicalConfidence;
   const verifiedConfidence = verification2 === void 0 ? null : verifierConfidence(verification2.technicalConfidence, verification2.evidenceQuality);
   let confidence = verifiedConfidence ?? analystConfidence;
@@ -3250,7 +3339,12 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
-  const severity = withLegacyTierHint(boundSeverityByEvidence(derivedSeverity, candidate, verification2), candidate, verification2);
+  const severity = applyLaneSeverity(
+    withLegacyTierHint(boundSeverityByEvidence(derivedSeverity, candidate, verification2), candidate, verification2),
+    candidate,
+    lane,
+    verification2
+  );
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
   const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit" && confidenceSource === "verifier";
   if (staleConsumer && verification2?.impactTraced !== true && !untracedDocumentNit) {
@@ -3262,6 +3356,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const fix = renderFix(candidate, verification2, thresholds);
   return {
     candidateId: candidate.candidateId,
+    lane: candidate.lane ?? DIFF_LANE.name,
     path: candidate.path,
     line: candidate.line,
     technicalConfidence: confidence,
@@ -4609,8 +4704,7 @@ async function readThread(options) {
       ...typeof raw.pull_request_review_id === "number" ? { reviewId: raw.pull_request_review_id } : {},
       ...typeof raw.in_reply_to_id === "number" ? { inReplyTo: raw.in_reply_to_id } : {},
       ...state?.resolved === true ? { resolved: true } : {},
-      ...state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {},
-      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
+      ...state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {}
     });
   }
   const reviews = await client.paginate(
@@ -4629,15 +4723,7 @@ async function readThread(options) {
     }
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
-    comments.push({
-      path: null,
-      line: null,
-      author: kept.author,
-      body: kept.body,
-      kind: "review-body",
-      ...typeof raw.submitted_at === "string" ? { createdAt: raw.submitted_at } : {},
-      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
-    });
+    comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: "review-body" });
   }
   if (threadReviews.some((review) => review.state === "DISMISSED")) {
     try {
@@ -4665,15 +4751,7 @@ async function readThread(options) {
   for (const raw of conversation) {
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
-    comments.push({
-      path: null,
-      line: null,
-      author: kept.author,
-      body: kept.body,
-      kind: "conversation",
-      ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
-      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
-    });
+    comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: "conversation" });
   }
   return {
     repository: options.repository,
@@ -5701,30 +5779,30 @@ function collectSymbolContext(options) {
 // plugins/review-voice/src/store/db.ts
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, chmodSync } from "node:fs";
-import { dirname as dirname2 } from "node:path";
+import { dirname as dirname3 } from "node:path";
 
 // plugins/review-voice/src/store/paths.ts
 import { homedir } from "node:os";
-import { join as join4 } from "node:path";
+import { join as join5 } from "node:path";
 function dataDirectory(env = process.env) {
   const override = env["REVIEW_VOICE_DATA_DIR"];
   if (override !== void 0 && override.length > 0) return override;
   const home = homedir();
   switch (process.platform) {
     case "darwin":
-      return join4(home, "Library", "Application Support", "review-voice");
+      return join5(home, "Library", "Application Support", "review-voice");
     case "win32": {
       const appData = env["APPDATA"];
-      return appData !== void 0 && appData.length > 0 ? join4(appData, "review-voice") : join4(home, "AppData", "Roaming", "review-voice");
+      return appData !== void 0 && appData.length > 0 ? join5(appData, "review-voice") : join5(home, "AppData", "Roaming", "review-voice");
     }
     default: {
       const xdg = env["XDG_DATA_HOME"];
-      return xdg !== void 0 && xdg.length > 0 ? join4(xdg, "review-voice") : join4(home, ".local", "share", "review-voice");
+      return xdg !== void 0 && xdg.length > 0 ? join5(xdg, "review-voice") : join5(home, ".local", "share", "review-voice");
     }
   }
 }
 function databasePath(env) {
-  return join4(dataDirectory(env), "review-voice.db");
+  return join5(dataDirectory(env), "review-voice.db");
 }
 
 // plugins/review-voice/src/store/db.ts
@@ -5926,24 +6004,6 @@ var MIGRATIONS = [
   // Null on older rows, which means unknown rather than normal.
   `
   ALTER TABLE review_runs ADD COLUMN complexity_json TEXT;
-  `,
-  // v10 - what became of each posted finding (docs/adr/0029).
-  //
-  // One row per finding, replaced by a newer check. Separate from `feedback`,
-  // which stays the owner's word; this is what the pull request itself shows.
-  `
-  CREATE TABLE IF NOT EXISTS finding_outcomes (
-    review_run_id TEXT NOT NULL,
-    finding_id TEXT NOT NULL,
-    repository TEXT NOT NULL,
-    pull_number INTEGER NOT NULL,
-    comment_id INTEGER NOT NULL,
-    outcome TEXT NOT NULL,
-    strength TEXT NOT NULL,
-    evidence TEXT NOT NULL,
-    checked_at TEXT NOT NULL,
-    PRIMARY KEY (review_run_id, finding_id)
-  );
   `
 ];
 function migrate(db) {
@@ -5965,7 +6025,7 @@ function migrate(db) {
   }
 }
 function openDatabase(path = databasePath()) {
-  const directory = dirname2(path);
+  const directory = dirname3(path);
   mkdirSync(directory, { recursive: true, mode: 448 });
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL");
@@ -6622,90 +6682,6 @@ function heldBackFindings(findings, thread, run, reviewIds) {
   return held;
 }
 
-// plugins/review-voice/src/review/plan.ts
-var MODES = ["fast", "standard", "thorough", "auto"];
-var MODEL_KEYS = ["intent", "analyst", "lanes", "verify", "tie-break", "challenge", "edit"];
-var SONNET = "sonnet";
-var OPUS = "opus";
-var THOROUGH_LINE_LIMIT = 150;
-function autoMode(input) {
-  if (!input.productionSourceChanged) return { mode: "fast", reason: "auto: no production source changed" };
-  if (input.complexity === "high") return { mode: "thorough", reason: "auto: complexity is high" };
-  if (input.productionLinesChanged > THOROUGH_LINE_LIMIT) {
-    return {
-      mode: "thorough",
-      reason: `auto: ${input.productionLinesChanged} production lines changed (over ${THOROUGH_LINE_LIMIT})`
-    };
-  }
-  return { mode: "standard", reason: "auto: production source changed within the standard limits" };
-}
-function resolvePlan(input) {
-  const overrides = input.models ?? {};
-  const chosen = input.requested === "auto" ? autoMode(input) : { mode: input.requested, reason: `mode set to ${input.requested}` };
-  const { mode } = chosen;
-  const fast = mode === "fast";
-  const thorough = mode === "thorough";
-  const diffLane = overrides.analyst ?? overrides.lanes ?? (thorough ? OPUS : SONNET);
-  const otherLanes = fast ? null : overrides.lanes ?? (thorough ? OPUS : SONNET);
-  const secondPass = input.secondPassConfigured && !fast;
-  return {
-    mode,
-    requested: input.requested,
-    reason: chosen.reason,
-    stages: {
-      intent: { run: true, model: overrides.intent ?? SONNET },
-      lanes: { run: true, model: diffLane },
-      // The verifier is a floor: no mode turns it off.
-      verify: { run: true, model: overrides.verify ?? (thorough ? OPUS : SONNET) },
-      // The second pass is a configured command, so it has no model of its own.
-      "second-pass": { run: secondPass, model: null },
-      "tie-break": { run: true, model: overrides["tie-break"] ?? (fast ? SONNET : OPUS) },
-      // In fast the stage is off by default; modelForFinding applies the floor for findings above a nit.
-      challenge: fast ? { run: false, model: null } : { run: true, model: overrides.challenge ?? (thorough ? OPUS : SONNET) },
-      edit: { run: true, model: overrides.edit ?? SONNET }
-    },
-    laneModels: { diff: diffLane, others: otherLanes },
-    overrides
-  };
-}
-function linesByPath(diffText) {
-  const counts = /* @__PURE__ */ new Map();
-  let current = null;
-  let inHunk = false;
-  for (const line2 of diffText.split("\n")) {
-    if (line2.startsWith("diff --git ")) {
-      const match = /^diff --git (?:"a\/.*?"|a\/\S+) ("b\/.*"|b\/.*)$/.exec(line2);
-      current = match === null ? null : unquoteGitPath(match[1]).slice(2);
-      inHunk = false;
-      continue;
-    }
-    if (current === null) continue;
-    if (line2.startsWith("@@")) {
-      inHunk = true;
-      continue;
-    }
-    if (inHunk && (line2.startsWith("+") || line2.startsWith("-"))) {
-      counts.set(current, (counts.get(current) ?? 0) + 1);
-    }
-  }
-  return counts;
-}
-function productionChange(files, diffText, partial, markedGenerated2 = /* @__PURE__ */ new Set()) {
-  const production = new Set(productionPaths(files, partial, markedGenerated2));
-  let fromDiff = null;
-  let lines2 = 0;
-  for (const file of files) {
-    if (!production.has(file.path)) continue;
-    if (Number.isFinite(file.additions) && Number.isFinite(file.deletions)) {
-      lines2 += file.additions + file.deletions;
-    } else {
-      fromDiff ??= linesByPath(diffText);
-      lines2 += fromDiff.get(file.path) ?? 0;
-    }
-  }
-  return { productionSourceChanged: production.size > 0, productionLinesChanged: lines2 };
-}
-
 // plugins/review-voice/src/diff/prior.ts
 import { execFileSync as execFileSync9 } from "node:child_process";
 function git3(args, cwd) {
@@ -6918,9 +6894,9 @@ function feedbackTotals(db) {
 }
 
 // plugins/review-voice/src/policy/load.ts
-import { readFileSync as readFileSync4, existsSync } from "node:fs";
+import { readFileSync as readFileSync4, existsSync as existsSync2 } from "node:fs";
 import { createHash as createHash4 } from "node:crypto";
-import { join as join5 } from "node:path";
+import { join as join6 } from "node:path";
 
 // node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
@@ -13420,11 +13396,6 @@ function readHumanReview(block, result) {
   result.humanReview.sensitiveExemptPaths = globs("sensitive_exempt_paths") ?? result.humanReview.sensitiveExemptPaths;
   result.humanReview.testPaths = globs("test_paths") ?? result.humanReview.testPaths;
   result.humanReview.generatedPaths = globs("generated_paths") ?? result.humanReview.generatedPaths;
-  const cap = block["cap_approval"];
-  if (cap !== void 0) {
-    if (typeof cap === "boolean") result.verdictPolicy.capApproval = cap;
-    else result.warnings.push("review.human_review.cap_approval must be true or false; using true.");
-  }
   const structure = block["structure"];
   if (structure === void 0) return;
   const signals = asRecord(structure);
@@ -13483,6 +13454,70 @@ function readCostMode(review, result) {
       result.costMode.models[known] = value.trim();
     }
   }
+}
+function parseLane(entry, taken) {
+  const block = asRecord(entry);
+  if (block === null) return "must be a mapping";
+  const { name, agent, prefix } = block;
+  if (typeof name !== "string" || !/^[a-z][a-z0-9-]*$/.test(name)) return "name must be lower-case letters, digits and dashes";
+  if (name === DIFF_LANE.name) return "diff is built in and cannot be redefined";
+  if (taken.some((lane) => lane.name === name)) return `name ${name} is already used`;
+  if (typeof prefix !== "string" || !/^[a-z]+_$/.test(prefix)) return "prefix must be lower-case letters followed by _";
+  if (taken.some((lane) => lane.prefix === prefix)) return `prefix ${prefix} is already used`;
+  if (typeof agent !== "string" || !agentExists(agent)) return `agent ${String(agent)} is not an agent under agents/`;
+  const when = {};
+  if (block["when"] !== void 0) {
+    const rule = asRecord(block["when"]);
+    if (rule === null) return "when must be a mapping";
+    const min = rule["min_changed_source_lines"];
+    if (min !== void 0) {
+      if (typeof min !== "number" || !Number.isInteger(min) || min < 0) return "when.min_changed_source_lines must be a whole number";
+      when.minChangedSourceLines = min;
+    }
+    const paths = rule["paths"];
+    if (paths !== void 0) {
+      if (!Array.isArray(paths) || !paths.every((path) => typeof path === "string" && path.length > 0)) return "when.paths must be a list of globs";
+      when.paths = paths;
+    }
+    const kinds = rule["exclude_kinds"];
+    if (kinds !== void 0) {
+      if (!Array.isArray(kinds) || !kinds.every((kind) => CHANGE_KINDS.includes(kind))) {
+        return `when.exclude_kinds must list only ${CHANGE_KINDS.join(", ")}`;
+      }
+      when.excludeKinds = kinds;
+    }
+  }
+  const severity = {};
+  if (block["severity"] !== void 0) {
+    const rule = asRecord(block["severity"]);
+    if (rule === null) return "severity must be a mapping";
+    const tier = (value) => LANE_TIERS.find((known) => known === value);
+    if (rule["cap"] !== void 0) {
+      const cap = tier(rule["cap"]);
+      if (cap === void 0) return `severity.cap must be one of ${LANE_TIERS.join(", ")}`;
+      severity.cap = cap;
+    }
+    if (rule["escalate"] !== void 0) {
+      const escalate = asRecord(rule["escalate"]);
+      const to = tier(escalate?.["to"]);
+      if (to === void 0) return `severity.escalate.to must be one of ${LANE_TIERS.join(", ")}`;
+      if (escalate?.["requires"] !== "blocker_confirmed") return "severity.escalate.requires must be blocker_confirmed";
+      severity.escalate = { to, requires: "blocker_confirmed" };
+    }
+  }
+  return { name, agent, prefix, when, severity };
+}
+function readLanes(value, result) {
+  if (value === void 0) return;
+  if (!Array.isArray(value)) {
+    result.warnings.push("review.lanes must be a list; ignoring it.");
+    return;
+  }
+  value.forEach((entry, index) => {
+    const lane = parseLane(entry, result.lanes);
+    if (typeof lane === "string") result.warnings.push(`review.lanes[${index}]: ${lane}; dropping the lane.`);
+    else result.lanes.push(lane);
+  });
 }
 var GENERIC_SIGNATURE_WORDS = /* @__PURE__ */ new Set([
   "error",
@@ -13575,29 +13610,6 @@ function readCiRules(block, result) {
     result.ciRules.rerunSignatures = [...builtin === false ? [] : BUILTIN_RERUN_SIGNATURES, ...added];
   }
 }
-function readVerdictPolicy(block, result) {
-  if (block === null) return;
-  const choice = (key, options, fallback) => {
-    const value = block[key];
-    if (value === void 0) return fallback;
-    if (typeof value === "string" && options.includes(value)) return value;
-    result.warnings.push(`verdict.${key} must be one of ${options.join(", ")}; using ${fallback}.`);
-    return fallback;
-  };
-  const enabled = (key, fallback) => {
-    const value = block[key];
-    if (value === void 0) return fallback;
-    if (typeof value === "boolean") return value;
-    result.warnings.push(`verdict.${key} must be true or false; using ${String(fallback)}.`);
-    return fallback;
-  };
-  const policy = result.verdictPolicy;
-  policy.ciPending = choice("ci_pending", ["wait", "proceed"], DEFAULT_VERDICT_POLICY.ciPending);
-  policy.ciRed = choice("ci_red", ["cap", "annotate"], DEFAULT_VERDICT_POLICY.ciRed);
-  policy.ciNeedsRerun = choice("ci_needs_rerun", ["hold", "annotate"], DEFAULT_VERDICT_POLICY.ciNeedsRerun);
-  policy.carryApprovalOnUnchanged = enabled("carry_approval_on_unchanged", DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
-  policy.recheckThreadBeforePost = enabled("recheck_thread_before_post", DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
-}
 function contentHash(text3) {
   return createHash4("sha256").update(text3).digest("hex").slice(0, 16);
 }
@@ -13622,34 +13634,9 @@ function layerFromPolicyFile(text3, source, fallbackKey) {
     priorities
   };
 }
-function readReviewers(identity2, result) {
-  const raw = identity2?.["reviewers"];
-  const listed = [];
-  if (raw !== void 0) {
-    if (!Array.isArray(raw)) {
-      result.warnings.push("identity.reviewers must be a list of GitHub logins; ignoring it.");
-    } else {
-      for (const entry of raw) {
-        if (typeof entry !== "string" || entry.trim() === "") {
-          result.warnings.push("identity.reviewers: skipped an entry that is not a login.");
-          continue;
-        }
-        const login = entry.trim();
-        if (!listed.some((existing) => existing.toLowerCase() === login.toLowerCase())) listed.push(login);
-      }
-    }
-  }
-  if (result.ownerReviewer === null && listed.length > 0) result.ownerReviewer = listed[0];
-  const owner = result.ownerReviewer;
-  if (owner !== null && !listed.some((login) => login.toLowerCase() === owner.toLowerCase())) {
-    listed.unshift(owner);
-  }
-  result.reviewers = listed;
-}
 function loadConfig(repositoryRoot2) {
   const result = {
     ownerReviewer: null,
-    reviewers: [],
     postingEnabled: false,
     ciGateChecks: [],
     ciRules: {},
@@ -13666,13 +13653,13 @@ function loadConfig(repositoryRoot2) {
     },
     structure: { ...DEFAULT_STRUCTURE },
     costMode: { mode: "auto", models: {} },
-    verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
+    lanes: [DIFF_LANE],
     layers: [],
     unapproved: [],
     warnings: []
   };
-  const configPath = join5(repositoryRoot2, ".review-voice", "config.yaml");
-  if (existsSync(configPath)) {
+  const configPath = join6(repositoryRoot2, ".review-voice", "config.yaml");
+  if (existsSync2(configPath)) {
     try {
       const doc = asRecord(parse(readFileSync4(configPath, "utf8")));
       if (doc !== null) {
@@ -13680,7 +13667,6 @@ function loadConfig(repositoryRoot2) {
         if (typeof identity2?.["owner_reviewer"] === "string") {
           result.ownerReviewer = identity2["owner_reviewer"];
         }
-        readReviewers(identity2, result);
         const repositories = asRecord(doc["repositories"]);
         result.allowlist = asStringArray(repositories?.["include"]);
         const staticEvidence = asRecord(doc["static_evidence"]);
@@ -13720,11 +13706,6 @@ function loadConfig(repositoryRoot2) {
           });
         }
         readCiRules(ci, result);
-        if (doc["verdict"] !== void 0) {
-          const verdict = asRecord(doc["verdict"]);
-          if (verdict === null) result.warnings.push("verdict must be a mapping; using the defaults.");
-          readVerdictPolicy(verdict, result);
-        }
         const verification2 = asRecord(doc["verification"]);
         if (verification2 !== null) {
           const command = verification2["command"];
@@ -13742,6 +13723,7 @@ function loadConfig(repositoryRoot2) {
           readHumanReview(asRecord(review["human_review"]), result);
           readStructure(asRecord(review["structure"]), result);
           readCostMode(review, result);
+          readLanes(review["lanes"], result);
           result.layers.push({
             scope: { type: "repository", key: repositoryRoot2 },
             source: ".review-voice/config.yaml",
@@ -13756,8 +13738,8 @@ function loadConfig(repositoryRoot2) {
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }
   }
-  const policyPath = join5(repositoryRoot2, ".review-voice", "policy.yaml");
-  if (existsSync(policyPath)) {
+  const policyPath = join6(repositoryRoot2, ".review-voice", "policy.yaml");
+  if (existsSync2(policyPath)) {
     try {
       const text3 = readFileSync4(policyPath, "utf8");
       const layer = layerFromPolicyFile(text3, ".review-voice/policy.yaml", repositoryRoot2);
@@ -14397,10 +14379,8 @@ function isBot(login, accountType) {
 }
 function classifyReviewer(input) {
   if (isBot(input.login, input.accountType)) return "bot";
-  const login = input.login.toLowerCase();
-  if (login === input.ownerLogin.toLowerCase()) return "owner";
-  if ((input.reviewerLogins ?? []).some((reviewer) => reviewer.toLowerCase() === login)) return "owner";
-  const team = (input.teamLogins ?? []).map((login2) => login2.toLowerCase());
+  if (input.login.toLowerCase() === input.ownerLogin.toLowerCase()) return "owner";
+  const team = (input.teamLogins ?? []).map((login) => login.toLowerCase());
   if (team.includes(input.login.toLowerCase())) return "team";
   const association = (input.authorAssociation ?? "").toUpperCase();
   if (association === "OWNER" || association === "MEMBER" || association === "COLLABORATOR") {
@@ -14478,7 +14458,6 @@ async function collectRepository(client, options, stats) {
   const seenKeys = /* @__PURE__ */ new Set();
   const watermarks = [];
   for (const pull of pulls) {
-    if (options.updatedSince !== void 0 && pull.updated_at < options.updatedSince) continue;
     if (!options.includeForks && pull.head?.repo?.fork === true) continue;
     if (options.watermarks?.get(pull.number) === pull.updated_at) {
       stats.pullRequestsUnchanged += 1;
@@ -14497,7 +14476,6 @@ async function collectRepository(client, options, stats) {
         login: raw.login,
         accountType: raw.accountType,
         ownerLogin: options.ownerLogin,
-        reviewerLogins: options.reviewerLogins,
         teamLogins: options.teamLogins,
         authorAssociation: raw.association
       });
@@ -14669,8 +14647,8 @@ function scaledRepositoryShare(repositoryCount) {
 }
 
 // plugins/review-voice/src/conventions/discover.ts
-import { existsSync as existsSync2, readFileSync as readFileSync5, readdirSync, statSync } from "node:fs";
-import { dirname as dirname3, join as join6, sep } from "node:path";
+import { existsSync as existsSync3, readFileSync as readFileSync5, readdirSync, statSync } from "node:fs";
+import { dirname as dirname4, join as join7, sep } from "node:path";
 var REPOSITORY_FILES = [
   { path: "CLAUDE.md", kind: "claude" },
   { path: ".claude/CLAUDE.md", kind: "claude" },
@@ -14683,9 +14661,9 @@ var NESTED_FILES = [
   { name: "AGENTS.md", kind: "agents" }
 ];
 var RULE_DIRECTORIES = [
-  { path: join6(".claude", "skills"), kind: "skill" },
-  { path: join6(".agents", "rules"), kind: "rule" },
-  { path: join6(".claude", "rules"), kind: "rule" }
+  { path: join7(".claude", "skills"), kind: "skill" },
+  { path: join7(".agents", "rules"), kind: "rule" },
+  { path: join7(".claude", "rules"), kind: "rule" }
 ];
 var TOTAL_BYTES = 6e4;
 var PER_DOCUMENT_SHARE = 0.25;
@@ -14825,31 +14803,31 @@ function ancestors(changedPath) {
   return out;
 }
 function resolvePointer(root, pointerPath, target) {
-  const own = dirname3(pointerPath);
-  const candidates = own === "." || own === "" ? [] : [join6(own, target)];
-  let directory = dirname3(pointerPath);
+  const own = dirname4(pointerPath);
+  const candidates = own === "." || own === "" ? [] : [join7(own, target)];
+  let directory = dirname4(pointerPath);
   while (directory !== "." && directory !== "" && directory !== sep) {
-    const base = dirname3(directory);
+    const base = dirname4(directory);
     const name = directory.split(sep).pop();
-    if (name === ".claude" || name === ".agents") candidates.push(join6(base === "." ? "" : base, target));
+    if (name === ".claude" || name === ".agents") candidates.push(join7(base === "." ? "" : base, target));
     directory = base;
   }
   candidates.push(target);
   for (const candidate of candidates) {
-    if (existsSync2(join6(root, candidate))) return candidate;
+    if (existsSync3(join7(root, candidate))) return candidate;
   }
   return null;
 }
 function listRuleDocuments(root, directory) {
   const out = [];
   for (const { path: relative, kind } of RULE_DIRECTORIES) {
-    const base = join6(root, directory, relative);
-    if (!existsSync2(base)) continue;
+    const base = join7(root, directory, relative);
+    if (!existsSync3(base)) continue;
     try {
       for (const entry of readdirSync(base).sort()) {
-        for (const candidate of [join6(directory, relative, entry, "SKILL.md"), join6(directory, relative, entry)]) {
+        for (const candidate of [join7(directory, relative, entry, "SKILL.md"), join7(directory, relative, entry)]) {
           if (!candidate.endsWith(".md")) continue;
-          if (!existsSync2(join6(root, candidate))) continue;
+          if (!existsSync3(join7(root, candidate))) continue;
           out.push({ path: candidate, kind });
           break;
         }
@@ -14879,7 +14857,7 @@ function discoverConventions(root, changedPaths = []) {
   for (const changed of changedPaths) {
     for (const directory of ancestors(changed)) {
       for (const { name } of NESTED_FILES) {
-        const candidate = join6(directory, name);
+        const candidate = join7(directory, name);
         const existing = governed.get(candidate);
         if (existing === void 0) governed.set(candidate, [changed]);
         else existing.push(changed);
@@ -14943,9 +14921,9 @@ function discoverConventions(root, changedPaths = []) {
     let governs = [];
     let followed = [];
     try {
-      bytes = statSync(join6(root, entry.path)).size;
+      bytes = statSync(join7(root, entry.path)).size;
       {
-        const head = readHead(join6(root, entry.path), CHEAP_BYTES);
+        const head = readHead(join7(root, entry.path), CHEAP_BYTES);
         governs = frontmatterPaths(head);
         const targets = pointerTargets(head);
         for (const target of targets) {
@@ -14971,7 +14949,7 @@ function discoverConventions(root, changedPaths = []) {
     return followed.map((path) => {
       let targetBytes = Number.POSITIVE_INFINITY;
       try {
-        targetBytes = statSync(join6(root, path)).size;
+        targetBytes = statSync(join7(root, path)).size;
       } catch {
         targetBytes = Number.POSITIVE_INFINITY;
       }
@@ -14980,7 +14958,7 @@ function discoverConventions(root, changedPaths = []) {
   });
   const fitsWhole = (entry) => {
     try {
-      return statSync(join6(root, entry.path)).size <= PER_DOCUMENT_BYTES;
+      return statSync(join7(root, entry.path)).size <= PER_DOCUMENT_BYTES;
     } catch {
       return false;
     }
@@ -15007,8 +14985,8 @@ function discoverConventions(root, changedPaths = []) {
   });
   for (const { entry } of sized) {
     if (seen.has(entry.path)) continue;
-    const absolute = join6(root, entry.path);
-    if (!existsSync2(absolute)) continue;
+    const absolute = join7(root, entry.path);
+    if (!existsSync3(absolute)) continue;
     try {
       if (!statSync(absolute).isFile()) continue;
     } catch {
@@ -15277,10 +15255,8 @@ function corpusCoverage(db, options = {}) {
 
 // plugins/review-voice/src/consent/plan.ts
 function buildConsentPlan(input) {
-  const pooled = input.reviewerLogins ?? [];
   return {
     ownerLogin: input.ownerLogin,
-    ...pooled.length > 1 ? { reviewerLogins: [...pooled] } : {},
     repositories: [...input.repositories],
     targetEvents: input.targetEvents,
     dataCategories: [
@@ -15343,7 +15319,6 @@ function executePurge(db, scope) {
       db.prepare("DELETE FROM sync_watermarks").run();
       db.prepare("DELETE FROM review_runs").run();
       db.prepare("DELETE FROM feedback").run();
-      db.prepare("DELETE FROM finding_outcomes").run();
     } else if (scope.repository !== void 0) {
       db.prepare("DELETE FROM sync_watermarks WHERE repository = ?").run(scope.repository);
     }
@@ -15539,38 +15514,6 @@ function retrievePrecedents(db, query) {
   return [...negative, ...positive];
 }
 
-// plugins/review-voice/src/sync/window.ts
-var QUICK_TARGET = 50;
-var QUICK_SINCE = "90d";
-function resolveSyncWindow(input, now = /* @__PURE__ */ new Date()) {
-  const since = input.since ?? (input.quick ? QUICK_SINCE : null);
-  let updatedSince;
-  if (since !== null) {
-    const days = /^(\d+)d$/.exec(since);
-    if (days === null || Number(days[1]) === 0) {
-      return { error: `--since ${JSON.stringify(since)} must be a number of days such as 90d.` };
-    }
-    updatedSince = new Date(now.getTime() - Number(days[1]) * 864e5).toISOString();
-  }
-  return { target: input.target ?? (input.quick ? QUICK_TARGET : null), updatedSince };
-}
-
-// plugins/review-voice/src/retrieval/baseline.ts
-import { existsSync as existsSync3, readFileSync as readFileSync6 } from "node:fs";
-import { dirname as dirname4, join as join7 } from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-function isCorpusEmpty(db) {
-  return db.prepare("SELECT COUNT(*) AS n FROM review_events").get().n === 0;
-}
-function baselineVoice() {
-  const here = dirname4(fileURLToPath2(import.meta.url));
-  for (const relative of ["..", "../.."]) {
-    const candidate = join7(here, relative, "templates", "voice.baseline.md");
-    if (existsSync3(candidate)) return readFileSync6(candidate, "utf8").trim();
-  }
-  throw new Error("templates/voice.baseline.md is missing from the plugin.");
-}
-
 // plugins/review-voice/src/policy/compile.ts
 var MIN_CORROBORATING = 3;
 function canActivate(evidence) {
@@ -15761,337 +15704,6 @@ function listPolicies(db, scopeKey = "owner") {
   }));
 }
 
-// plugins/review-voice/src/store/outcomes.ts
-var NEGATED_ACK = /\bnot (?:yet )?(?:fixed|done|addressed|changed|updated)\b/i;
-var REJECT = /\b(?:won'?t fix|wontfix|not a (?:bug|issue|problem)|false positive|by design|intentional(?:ly)?|working as (?:intended|designed)|disagree|(?:does not|doesn'?t) apply|not applicable|not needed|unnecessary|incorrect|this is wrong|that'?s wrong)\b/i;
-var ACKNOWLEDGE = /\b(?:fixed|done|addressed|good catch|nice catch|will fix|will do|updated|applied|agreed|makes sense|you'?re right|thanks|thank you)\b/i;
-function classifyReply(body) {
-  if (REJECT.test(body)) return "reject";
-  if (NEGATED_ACK.test(body)) return "other";
-  if (ACKNOWLEDGE.test(body)) return "acknowledge";
-  return "other";
-}
-function patchTouches(patch, first, last) {
-  let oldLine = 0;
-  for (const line2 of patch.split("\n")) {
-    const header = /^@@ -(\d+)(?:,\d+)? \+\d+/.exec(line2);
-    if (header !== null) {
-      oldLine = Number(header[1]);
-      continue;
-    }
-    if (line2.startsWith("\\")) continue;
-    if (line2.startsWith("-")) {
-      if (oldLine >= first && oldLine <= last) return true;
-      oldLine += 1;
-    } else if (line2.startsWith("+")) {
-      if (oldLine > first && oldLine <= last) return true;
-    } else {
-      oldLine += 1;
-    }
-  }
-  return false;
-}
-var READ_LIMIT = 1e3;
-async function readStates(client, repository, pullNumber) {
-  const states = /* @__PURE__ */ new Map();
-  let cursor = null;
-  for (let read = 0; read < READ_LIMIT; read += 100) {
-    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
-    const threads = data?.repository?.pullRequest?.reviewThreads;
-    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
-    for (const thread of threads.nodes) {
-      const state = { resolved: thread?.isResolved === true, outdated: thread?.isOutdated === true };
-      for (const comment of thread?.comments?.nodes ?? []) {
-        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
-      }
-    }
-    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
-    cursor = threads.pageInfo.endCursor;
-  }
-  return states;
-}
-function sentRuns(db, options) {
-  const attempts = /* @__PURE__ */ new Map();
-  for (const row of db.prepare(`SELECT audit_id, json_extract(metadata_json, '$.run') AS run FROM audit_events WHERE action = 'review_post_attempted'`).all()) {
-    if (typeof row.run === "string") attempts.set(row.audit_id, row.run);
-  }
-  const reviewIdsByRun = /* @__PURE__ */ new Map();
-  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ?`).all(options.since)) {
-    let meta;
-    try {
-      meta = JSON.parse(row.metadata_json);
-    } catch {
-      continue;
-    }
-    const run = typeof meta.attempt === "string" ? attempts.get(meta.attempt) : void 0;
-    if (run === void 0) continue;
-    const ids = reviewIdsByRun.get(run) ?? [];
-    const id = Number(meta.reviewId);
-    if (Number.isInteger(id) && id > 0) ids.push(id);
-    reviewIdsByRun.set(run, ids);
-  }
-  const rows = db.prepare(
-    `SELECT review_run_id, repository, pull_number, head_ref FROM review_runs
-       WHERE repository IS NOT NULL AND pull_number IS NOT NULL ORDER BY created_at, rowid`
-  ).all();
-  const wanted = options.repository?.toLowerCase();
-  const runs = [];
-  for (const row of rows) {
-    const reviewIds = reviewIdsByRun.get(row.review_run_id);
-    if (reviewIds === void 0) continue;
-    if (wanted !== void 0 && row.repository.toLowerCase() !== wanted) continue;
-    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, headRef: row.head_ref, reviewIds });
-  }
-  return runs;
-}
-var isBot2 = (user) => user?.type === "Bot" || (user?.login ?? "").endsWith("[bot]");
-function sameHead(a, b) {
-  const left = a.toLowerCase();
-  const right = b.toLowerCase();
-  return left === right || left.length >= 7 && right.startsWith(left) || right.length >= 7 && left.startsWith(right);
-}
-async function checkOutcomes(options) {
-  const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
-  const result = { outcomes: [], skipped: [], warnings: [] };
-  const byPull = /* @__PURE__ */ new Map();
-  for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
-    const key = `${run.repository.toLowerCase()}#${run.pullNumber}`;
-    byPull.set(key, [...byPull.get(key) ?? [], run]);
-  }
-  let viewer = null;
-  const viewerLogin = () => {
-    viewer ??= options.client.get("/user").then(({ data }) => data.login?.toLowerCase() ?? null).catch(() => null);
-    return viewer;
-  };
-  for (const runs of byPull.values()) {
-    const first = runs[0];
-    const { repository, pullNumber } = first;
-    if (!allowed.has(repository.toLowerCase())) {
-      result.skipped.push({ repository, pullNumber, reason: "not in the allowlist" });
-      continue;
-    }
-    try {
-      const context = await readPull(options.client, repository, pullNumber, result.warnings);
-      for (const run of runs) {
-        result.outcomes.push(...await followRun(options, context, run, viewerLogin));
-      }
-    } catch (error) {
-      result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
-    }
-  }
-  return result;
-}
-async function readPull(client, repository, pullNumber, warnings) {
-  const { data: pull } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
-  const replies = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/comments?per_page=100`, READ_LIMIT);
-  let states = null;
-  try {
-    states = await readStates(client, repository, pullNumber);
-  } catch (error) {
-    warnings.push(
-      `${repository}#${pullNumber}: could not read which threads are resolved (${error instanceof Error ? error.message.slice(0, 120) : String(error)}); resolution is unknown`
-    );
-  }
-  const sha = pull?.head?.sha;
-  return { repository, pullNumber, currentHead: typeof sha === "string" ? sha : null, replies, states, compares: /* @__PURE__ */ new Map() };
-}
-async function reviewIdsOf(options, run, viewerLogin) {
-  if (run.reviewIds.length > 0) return { ids: run.reviewIds, source: "audit" };
-  const login = await viewerLogin();
-  if (login === null || run.headRef === null) return { ids: [], source: "reviews-list" };
-  const reviews = await options.client.paginate(`/repos/${run.repository}/pulls/${run.pullNumber}/reviews?per_page=100`, READ_LIMIT);
-  const ids = reviews.filter((review) => typeof review.id === "number" && review.user?.login?.toLowerCase() === login).filter((review) => typeof review.commit_id === "string" && sameHead(review.commit_id, run.headRef)).map((review) => review.id);
-  return { ids, source: "reviews-list" };
-}
-function severityPrefix(finding) {
-  return `**${finding.severity}** - `;
-}
-function matchComments(findings, comments) {
-  const taken = /* @__PURE__ */ new Set();
-  const matched = /* @__PURE__ */ new Map();
-  for (const finding of findings) {
-    const words = significantWords(finding.text);
-    const candidates = comments.filter(
-      (comment) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line)
-    );
-    let best;
-    let bestScore = -1;
-    for (const comment of candidates) {
-      const body = comment.body ?? "";
-      const score = overlap(words, significantWords(body)) + (body.startsWith(severityPrefix(finding)) ? 0.01 : 0);
-      if (score > bestScore) {
-        best = comment;
-        bestScore = score;
-      }
-    }
-    if (best !== void 0) {
-      taken.add(best.id);
-      matched.set(finding.findingId, best);
-    }
-  }
-  return matched;
-}
-async function followRun(options, context, run, viewerLogin) {
-  const detail = runDetail(options.db, run.runId);
-  if (detail === null) return [];
-  const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
-  const comments = [];
-  for (const id of ids) {
-    comments.push(
-      ...await options.client.paginate(
-        `/repos/${run.repository}/pulls/${run.pullNumber}/reviews/${id}/comments?per_page=100`,
-        READ_LIMIT
-      )
-    );
-  }
-  const matched = matchComments(detail.findings, comments);
-  const checkedAt = (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
-  const outcomes = [];
-  for (const finding of detail.findings) {
-    const comment = matched.get(finding.findingId);
-    if (comment === void 0) continue;
-    const decided = await decide2(options, context, run, finding, comment);
-    const outcome = {
-      reviewRunId: run.runId,
-      findingId: finding.findingId,
-      repository: run.repository,
-      pullNumber: run.pullNumber,
-      commentId: comment.id,
-      ...decided,
-      evidence: source === "reviews-list" ? `${decided.evidence}; review found by commit and author` : decided.evidence,
-      checkedAt,
-      path: finding.path,
-      line: finding.line,
-      reviewIdSource: source
-    };
-    saveOutcome(options.db, outcome);
-    outcomes.push(outcome);
-  }
-  return outcomes;
-}
-async function linesChanged(options, context, run, comment, finding) {
-  if (run.headRef === null || context.currentHead === null) return null;
-  if (sameHead(run.headRef, context.currentHead)) return false;
-  const key = run.headRef.toLowerCase();
-  let compare = context.compares.get(key);
-  if (compare === void 0) {
-    compare = options.client.paginateWrapped(`/repos/${run.repository}/compare/${run.headRef}...${context.currentHead}?per_page=100`, "files", READ_LIMIT).catch(() => null);
-    context.compares.set(key, compare);
-  }
-  const files = await compare;
-  if (files === null) return null;
-  const file = files.find((entry) => entry.filename === finding.path || entry.previous_filename === finding.path);
-  if (file === void 0) return false;
-  if (typeof file.patch !== "string") return null;
-  const start = comment.start_line ?? comment.original_start_line ?? finding.line;
-  return patchTouches(file.patch, Math.min(start, finding.line), finding.line);
-}
-async function decide2(options, context, run, finding, comment) {
-  const dismissedByOwner = options.db.prepare(`SELECT 1 FROM feedback WHERE review_run_id = ? AND finding_id = ? AND action = 'dismiss'`).get(run.runId, finding.findingId);
-  if (dismissedByOwner !== void 0) {
-    return { outcome: "dismissed", strength: "strong", evidence: "the owner recorded dismiss for this finding" };
-  }
-  const poster = comment.user?.login?.toLowerCase();
-  const answers = context.replies.filter((reply) => reply.in_reply_to_id === comment.id && !isBot2(reply.user) && reply.user?.login?.toLowerCase() !== poster).map((reply) => ({ stance: classifyReply(reply.body ?? ""), at: reply.created_at ?? "", author: reply.user?.login ?? "unknown" })).filter((answer) => answer.stance !== "other").sort((a, b) => a.at.localeCompare(b.at));
-  const latest = answers[answers.length - 1];
-  if (latest?.stance === "reject") {
-    return { outcome: "dismissed", strength: "strong", evidence: `${latest.author} replied turning it down` };
-  }
-  const state = context.states?.get(comment.id) ?? null;
-  const changed = await linesChanged(options, context, run, comment, finding) ?? (state?.outdated === true ? true : null);
-  const resolved = state === null ? null : state.resolved;
-  const agreed = latest?.stance === "acknowledge";
-  if (changed === true && (resolved === true || agreed)) {
-    return {
-      outcome: "fixed",
-      strength: "strong",
-      evidence: `the anchored lines changed after the comment and ${resolved === true ? "the thread was resolved" : `${latest.author} agreed`}`
-    };
-  }
-  if (resolved === true) {
-    return {
-      outcome: "resolved",
-      strength: "weak",
-      evidence: changed === false ? "the thread was resolved and the anchored lines are unchanged" : "the thread was resolved; whether the lines changed could not be read"
-    };
-  }
-  if (resolved === false && changed === true) {
-    return { outcome: "outdated", strength: "weak", evidence: "the anchored lines changed and the thread is still open" };
-  }
-  if (resolved === false && changed === false) {
-    return {
-      outcome: "open",
-      strength: "weak",
-      evidence: agreed ? "agreed in reply, but the lines are unchanged and the thread is open" : "nothing has changed and the thread is open"
-    };
-  }
-  return { outcome: "unknown", strength: "weak", evidence: "the thread state or the later commits could not be read" };
-}
-function saveOutcome(db, outcome) {
-  db.prepare(
-    `INSERT INTO finding_outcomes
-       (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (review_run_id, finding_id) DO UPDATE SET
-       repository = excluded.repository, pull_number = excluded.pull_number, comment_id = excluded.comment_id,
-       outcome = excluded.outcome, strength = excluded.strength, evidence = excluded.evidence, checked_at = excluded.checked_at`
-  ).run(
-    outcome.reviewRunId,
-    outcome.findingId,
-    outcome.repository,
-    outcome.pullNumber,
-    outcome.commentId,
-    outcome.outcome,
-    outcome.strength,
-    outcome.evidence,
-    outcome.checkedAt
-  );
-}
-function statsOf(rows) {
-  const strong = rows.filter((row) => row.strength === "strong");
-  const fixed = strong.filter((row) => row.outcome === "fixed").length;
-  const dismissed = strong.filter((row) => row.outcome === "dismissed").length;
-  const decided = fixed + dismissed;
-  return {
-    tracked: rows.length,
-    fixed,
-    dismissed,
-    fixedRate: decided === 0 ? null : fixed / decided,
-    dismissedRate: decided === 0 ? null : dismissed / decided
-  };
-}
-function postedStats(db) {
-  return statsOf(db.prepare("SELECT outcome, strength FROM finding_outcomes").all());
-}
-function postedBreakdown(db) {
-  const rows = db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all();
-  const findings = /* @__PURE__ */ new Map();
-  const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map() };
-  for (const row of rows) {
-    let known = findings.get(row.review_run_id);
-    if (known === void 0) {
-      known = /* @__PURE__ */ new Map();
-      findings.set(row.review_run_id, known);
-      const stored = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(row.review_run_id);
-      try {
-        const parsed = JSON.parse(stored?.output_json ?? "{}");
-        for (const finding of parsed.findings ?? []) {
-          known.set(String(finding["findingId"]), {
-            severity: typeof finding["severity"] === "string" ? finding["severity"] : "unknown",
-            lane: typeof finding["lane"] === "string" ? finding["lane"] : "diff"
-          });
-        }
-      } catch {
-      }
-    }
-    const info = known.get(row.finding_id) ?? { severity: "unknown", lane: "diff" };
-    groups.severity.set(info.severity, [...groups.severity.get(info.severity) ?? [], row]);
-    groups.lane.set(info.lane, [...groups.lane.get(info.lane) ?? [], row]);
-  }
-  const collect = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, list]) => [key, statsOf(list)]));
-  return { bySeverity: collect(groups.severity), byLane: collect(groups.lane) };
-}
-
 // plugins/review-voice/src/evaluate/metrics.ts
 function percentile(values, p) {
   if (values.length === 0) return null;
@@ -16148,7 +15760,6 @@ function computeMetrics(db) {
   const dismissed = by["dismiss"] ?? 0;
   const labelled = kept + dismissed;
   const ratio = (numerator, denominator) => denominator === 0 ? null : numerator / denominator;
-  const posted = postedStats(db);
   const metric = (name, value, target, meets, basis, kind = "gate") => ({
     name,
     value,
@@ -16236,33 +15847,6 @@ function computeMetrics(db) {
       "= 1.00",
       (v) => v >= 1,
       `${exactNoFindings}/${noFindingsRuns} empty reviews used the exact string`
-    ),
-    // What GitHub shows happened to the comments this tool posted (docs/adr/0029).
-    // Rates count strong outcomes only, so an unanswered comment is neither
-    // fixed nor dismissed, and are reported rather than gated.
-    metric(
-      "posted_findings_tracked",
-      posted.tracked === 0 ? null : posted.tracked,
-      "no target",
-      () => true,
-      "posted findings with any recorded outcome; run `review-voice outcomes` to check",
-      "goal"
-    ),
-    metric(
-      "posted_fixed_rate",
-      posted.fixedRate,
-      "no target",
-      () => true,
-      `${posted.fixed} fixed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
-      "goal"
-    ),
-    metric(
-      "posted_dismissed_rate",
-      posted.dismissedRate,
-      "no target",
-      () => true,
-      `${posted.dismissed} dismissed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
-      "goal"
     )
   ];
 }
@@ -16580,8 +16164,6 @@ function refusal(head, reason2) {
       wouldHaveEvent: null,
       wouldHaveSummary: null,
       staleRequestChanges: null,
-      annotations: [],
-      carriedReviewUrl: null,
       payload: null,
       alreadyInline: 0,
       key: null,
@@ -16609,50 +16191,18 @@ function pullRequestComplexity(run, loadRun) {
   return found;
 }
 var MAX_REVIEWS = 300;
-async function standingOwnerReview(client, repository, pullNumber, owner) {
+async function standingRequestChanges(client, repository, pullNumber, owner) {
   const reviews = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`, MAX_REVIEWS);
   const deciding = reviews.filter(
     (review) => typeof review.user?.login === "string" && review.user.login.toLowerCase() === owner.toLowerCase() && (review.state === "APPROVED" || review.state === "CHANGES_REQUESTED" || review.state === "DISMISSED")
   );
   const latest = deciding[deciding.length - 1];
-  if (latest === void 0 || typeof latest.id !== "number") return null;
+  if (latest === void 0 || latest.state !== "CHANGES_REQUESTED" || typeof latest.id !== "number") return null;
   return {
-    id: latest.id,
-    state: String(latest.state),
+    reviewId: latest.id,
     submittedAt: typeof latest.submitted_at === "string" ? latest.submitted_at : null,
-    url: typeof latest.html_url === "string" ? latest.html_url : null,
-    commitId: typeof latest.commit_id === "string" ? latest.commit_id.toLowerCase() : null
+    url: typeof latest.html_url === "string" ? latest.html_url : null
   };
-}
-async function standingRequestChanges(client, repository, pullNumber, owner) {
-  const latest = await standingOwnerReview(client, repository, pullNumber, owner);
-  if (latest === null || latest.state !== "CHANGES_REQUESTED") return null;
-  return { reviewId: latest.id, submittedAt: latest.submittedAt, url: latest.url };
-}
-async function carriedApproval(options, run, reasons) {
-  if (run.scope?.kind !== "unchanged") return null;
-  const since = run.scope.since.toLowerCase();
-  const owner = options.owner ?? null;
-  if (owner === null || owner.length === 0) {
-    reasons.push("identity.owner_reviewer is not set, so a standing approval to carry was not looked for");
-    return null;
-  }
-  try {
-    const latest = await standingOwnerReview(options.client, options.repository, options.pullNumber, owner);
-    if (latest?.state !== "APPROVED") return null;
-    if (latest.commitId !== since) {
-      reasons.push(`${owner}'s standing approval is of ${latest.commitId ?? "an unknown commit"}, not ${since}, so it is not carried`);
-      return null;
-    }
-    if (latest.url === null) {
-      reasons.push(`${owner}'s standing approval has no link, so it is not carried`);
-      return null;
-    }
-    return latest.url;
-  } catch (error) {
-    reasons.push(`could not read the pull request's reviews for a standing approval: ${error instanceof Error ? error.message : String(error)}`);
-    return null;
-  }
 }
 async function staleRequest(options, planned, reasons) {
   const severities = [
@@ -16718,25 +16268,18 @@ async function computeVerdict(options) {
   const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {});
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === "high";
-  const policy = verdictPolicy(options.policy);
-  const lookupReasons = [];
-  const carriedReviewUrl = !headMoved && policy.carryApprovalOnUnchanged ? await carriedApproval(options, run, lookupReasons) : null;
   const decision = decide({
     mapped: planned.mapped,
     headMoved,
     ci: ci?.state ?? null,
     rerun: ci?.rerun,
-    failed: ci?.failed,
     recheck: options.recheck === true,
     heldBackApproval: planned.heldBackApproval,
     needsHuman,
-    uncoveredCarry: run.carry?.covered === false,
-    carriedReviewUrl,
-    policy
+    uncoveredCarry: run.carry?.covered === false
   });
-  decision.reasons.push(...lookupReasons);
   if (complexity === null) decision.reasons.push("no complexity assessment was recorded for this run");
-  const staleRequestChanges = needsHuman && !(decision.event === "APPROVE" && decision.action !== "refuse") ? await staleRequest(options, planned, decision.reasons) : null;
+  const staleRequestChanges = needsHuman ? await staleRequest(options, planned, decision.reasons) : null;
   let payload = null;
   let preview = null;
   let key = null;
@@ -16750,13 +16293,13 @@ async function computeVerdict(options) {
       // One plain summary line whichever cap applies: CI first, then a held
       // finding or an uncovered carry, then complexity. None of them names
       // human review or the carry in the posted body.
-      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || run.carry?.covered === false && planned.mapped === "APPROVE" ? "held" : needsHuman && policy.capApproval && planned.mapped === "APPROVE" ? "complexity" : null
+      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || run.carry?.covered === false && planned.mapped === "APPROVE" ? "held" : needsHuman && planned.mapped === "APPROVE" ? "complexity" : null
     });
     key = idempotencyKey(options.repository, options.pullNumber, full2);
     const sent = sentInline(options.db, options.repository, options.pullNumber, head);
     const comments = full2.comments.filter((comment) => !sent.has(commentSignature(comment)));
     alreadyInline = full2.comments.length - comments.length;
-    payload = { ...full2, body: withAnnotations(full2.body, decision.annotations), comments };
+    payload = { ...full2, comments };
     preview = renderPreview({
       repository: options.repository,
       pullNumber: options.pullNumber,
@@ -16768,8 +16311,6 @@ async function computeVerdict(options) {
   return {
     exitCode: decision.exitCode,
     run,
-    planned,
-    cappedByCi: decision.cappedByCi,
     output: {
       event: decision.event,
       action: decision.action,
@@ -16783,67 +16324,12 @@ async function computeVerdict(options) {
       wouldHaveEvent: needsHuman ? planned.mapped : null,
       wouldHaveSummary: needsHuman ? wouldHaveSummary(planned) : null,
       staleRequestChanges,
-      annotations: decision.annotations,
-      carriedReviewUrl: decision.carriedReviewUrl,
       payload,
       alreadyInline,
       key,
       preview
     }
   };
-}
-function recordedCandidates(db, runId) {
-  const row = db.prepare("SELECT candidates_json FROM review_runs WHERE review_run_id = ?").get(runId);
-  let raw;
-  try {
-    raw = JSON.parse(row?.candidates_json ?? "[]");
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((entry, index) => {
-    try {
-      return [normaliseCandidate(entry, index)];
-    } catch {
-      return [];
-    }
-  });
-}
-async function raisedByOthers(options, run, findings) {
-  if (findings.length === 0) return [];
-  const { data: viewer } = await options.client.get("/user");
-  if (typeof viewer?.login !== "string") throw new Error("GitHub did not say whose token this is");
-  const me = viewer.login.toLowerCase();
-  const { comments } = await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client });
-  const mine = new Set(comments.filter((c) => c.author.toLowerCase() === me && c.id !== void 0).map((c) => c.id));
-  const started = Date.parse(run.createdAt);
-  const thread = comments.filter((comment) => comment.author.toLowerCase() !== me).filter((comment) => comment.createdAt === void 0 || !(Date.parse(comment.createdAt) <= started)).filter((comment) => comment.inReplyTo === void 0 || !mine.has(comment.inReplyTo)).flatMap((comment) => citedLocations([comment]).map((located) => ({ comment: located, url: comment.url ?? null })));
-  if (thread.length === 0) return [];
-  const candidates = recordedCandidates(options.db, run.reviewRunId);
-  const raised = [];
-  for (const finding of findings) {
-    if (finding.path === null || finding.severity === null) continue;
-    const candidate = candidates.find((c) => c.path === finding.path && c.line === finding.line) ?? {
-      candidateId: finding.findingId ?? `${finding.path}:${finding.line ?? ""}`,
-      path: finding.path,
-      // A finding with no line is compared with every comment on its file:
-      // no comment line is ever within the window of NaN, nor outside it.
-      line: finding.line ?? Number.NaN,
-      category: "posted",
-      severity: finding.severity,
-      claim: finding.prose,
-      failureMode: "",
-      evidence: [],
-      suggestedFix: null,
-      fixConfidence: null,
-      technicalConfidence: 0
-    };
-    const match = thread.find((entry) => alreadySaidOnThread(candidate, [entry.comment]) !== null);
-    if (match !== void 0) {
-      raised.push({ path: finding.path, line: finding.line, raisedBy: match.comment.author, commentUrl: match.url });
-    }
-  }
-  return raised;
 }
 function keyBlocked(db, key) {
   const rows = db.prepare(
@@ -16883,15 +16369,14 @@ function claimKey(db, key, subject, metadata) {
 async function postReview(options) {
   const subject = { type: "pull_request", id: subjectId(options.repository, options.pullNumber) };
   const postCheck = evaluatePostingGate(options.db, options.postingEnabled);
-  const refuse = (exitCode2, reasons, verdict2, key2, extra = {}) => {
+  const refuse = (exitCode2, reasons, verdict2, key2) => {
     recordAudit(options.db, "review_post_refused", subject, {
       reasons,
       key: key2,
       head: options.head,
-      event: verdict2?.event ?? null,
-      ...extra
+      event: verdict2?.event ?? null
     });
-    return { exitCode: exitCode2, output: { status: "refused", reasons, key: key2, verdict: verdict2, postCheck, ...extra } };
+    return { exitCode: exitCode2, output: { status: "refused", reasons, key: key2, verdict: verdict2, postCheck } };
   };
   if (!options.postingEnabled) {
     return refuse(2, ["writes.github_posting_enabled is false in .review-voice/config.yaml"], null, null);
@@ -16910,30 +16395,11 @@ async function postReview(options) {
   } catch (error) {
     return refuse(1, [`could not read the pull request or its CI: ${error instanceof Error ? error.message : String(error)}`], null, null);
   }
-  const { exitCode, run } = computed;
-  let verdict = computed.output;
-  if (verdict.action === "carry" && verdict.carriedReviewUrl !== null && run !== null) {
-    if (run.repository === null || run.repository.toLowerCase() !== options.repository.toLowerCase()) {
-      return refuse(2, [`run ${run.reviewRunId} reviewed ${run.repository ?? "no repository"}, not ${options.repository}`], verdict, null);
-    }
-    if (options.confirm) {
-      recordAudit(options.db, "review_carried", subject, {
-        repository: options.repository,
-        pull: options.pullNumber,
-        head: verdict.head.expected,
-        reviewUrl: verdict.carriedReviewUrl
-      });
-    }
-    return {
-      exitCode: 0,
-      output: { status: "carried", carried: true, reviewUrl: verdict.carriedReviewUrl, reasons: verdict.reasons, key: null, verdict, postCheck }
-    };
-  }
+  const { exitCode, output: verdict, run } = computed;
   if (verdict.action !== "post" || verdict.payload === null || verdict.key === null || run === null) {
     return refuse(exitCode === 0 ? 2 : exitCode, verdict.reasons, verdict, null);
   }
-  const policy = verdictPolicy(options.policy);
-  let payload = verdict.payload;
+  const payload = verdict.payload;
   const key = verdict.key;
   const blocked = keyBlocked(options.db, key);
   if (blocked !== null) return refuse(2, [blocked], verdict, key);
@@ -16951,25 +16417,6 @@ async function postReview(options) {
   if (run.repository === null || run.repository.toLowerCase() !== options.repository.toLowerCase()) {
     return refuse(2, [`run ${run.reviewRunId} reviewed ${run.repository ?? "no repository"}, not ${options.repository}`], verdict, key);
   }
-  if (options.recheckThread === true || policy.recheckThreadBeforePost) {
-    const inPayload = (finding) => payload.comments.some((comment) => comment.path === finding.path && comment.line === finding.line);
-    const findings = computed.planned === void 0 ? [] : [...computed.planned.inline.filter(inPayload), ...computed.planned.unanchored];
-    let raised;
-    try {
-      raised = await raisedByOthers(options, run, findings);
-    } catch (error) {
-      return refuse(1, [`could not re-read the thread before sending: ${error instanceof Error ? error.message : String(error)}`], verdict, key);
-    }
-    if (raised.length > 0) {
-      return refuse(
-        8,
-        [`${raised.length} finding${raised.length === 1 ? " was" : "s were"} raised on the thread by someone else during the review; nothing was sent`],
-        verdict,
-        key,
-        { refused: "thread-changed", findings: raised }
-      );
-    }
-  }
   if (payload.event === "APPROVE") {
     let reread;
     try {
@@ -16983,30 +16430,13 @@ async function postReview(options) {
     if (reread.head !== payload.commit_id) {
       return refuse(3, ["the pull request head moved before sending; review the new head"], verdict, key);
     }
-    if (!ciAllowsApproval(reread.ci.state, policy)) {
+    if (reread.ci.state !== "green") {
       return refuse(
         reread.ci.state === "pending" ? 4 : reread.ci.state === "needs-rerun" ? 6 : 5,
         [`CI turned ${reread.ci.state} before sending; not approving`],
         { ...verdict, ci: reread.ci },
         key
       );
-    }
-    const annotations = ciAnnotations(reread.ci, policy);
-    if (annotations.join("\n") !== verdict.annotations.join("\n")) {
-      payload = { ...payload, body: replaceAnnotations(payload.body, verdict.annotations, annotations) };
-      verdict = {
-        ...verdict,
-        ci: reread.ci,
-        annotations,
-        payload,
-        preview: renderPreview({
-          repository: options.repository,
-          pullNumber: options.pullNumber,
-          payload,
-          held: verdict.held,
-          alreadyInline: verdict.alreadyInline
-        })
-      };
     }
   }
   const claimed = claimKey(options.db, key, subject, {
@@ -17026,8 +16456,6 @@ async function postReview(options) {
       head: payload.commit_id,
       event: payload.event,
       inline: payload.comments.map(commentSignature),
-      // The queue finds a COMMENT posted only because CI was red by this.
-      cappedByCi: computed.cappedByCi === true,
       reviewId: review.id,
       url: review.htmlUrl
     });
@@ -17196,9 +16624,11 @@ var COMMAND_HELP = {
       "                         run ids separated by commas, e.g. a stacked sibling's (needs --head)",
       "  --head <sha>           Head the candidates were produced against (with --held-from)",
       "  --intent <path>        intent.json from check-intent; every intent_ref must name a statement in it",
-      "Reads: candidates JSON on stdin.",
+      "Reads: candidates JSON on stdin; review.lanes from .review-voice/config.yaml. A candidate that",
+      "  names a lane needs a configured one and a candidate_id with that lane's prefix; one naming",
+      "  no lane is the diff lane, and its id must not carry another lane's prefix.",
       "Writes: JSON on stdout.",
-      "Exit codes: 0 valid, 1 anchor or intent_ref failures, 2 invalid candidates or bad invocation."
+      "Exit codes: 0 valid, 1 anchor, lane or intent_ref failures, 2 invalid candidates or bad invocation."
     )
   },
   "check-verification": {
@@ -17209,6 +16639,7 @@ var COMMAND_HELP = {
       "  Use verified and technical_confidence; verdict and confidence belong to the second pass.",
       "  --candidates  check-candidates output (or a candidates array); refuses output that",
       "                skips a kept candidate, so the verifier can be re-asked for it.",
+      "  blocker_confirmed, when present, must be true or false.",
       "",
       "Reads: the evidence-verifier output on stdin.",
       "Writes: JSON on stdout.",
@@ -17333,19 +16764,16 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice sync [flags]",
       "  Ingest review history from allowlisted repositories.",
-      "  Every login in identity.reviewers is collected as the owner is. --quick needs the same consent plan.",
       "",
       "Flags:",
       "  --target <n>              Non-owner events to import (default 60 per",
       "                            repository, 250 to 1500); owner events all",
-      "  --since <Nd>              Only pull requests updated in the last N days (such as 90d)",
-      "  --quick                   Preset for a first sync: --target 50 --since 90d; explicit flags win",
       "  --max-pulls <n>           Pull requests inspected per repository (default 60)",
       "  --include-conversation    Also read pull-request conversation comments",
       "  --dry-run                 Report the import without storing it",
       "Reads: nothing on stdin (reads GitHub, read-only).",
       "Writes: events and watermarks to the local store (not with --dry-run); JSON summary on stdout.",
-      "Exit codes: 0 ok, 2 no allowlist, no owner reviewer, bad --since, or credential problem."
+      "Exit codes: 0 ok, 2 no allowlist, no owner reviewer, or credential problem."
     )
   },
   discover: {
@@ -17395,8 +16823,6 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice retrieve --text <query> [flags]",
       "  Find weighted precedents for a candidate finding.",
-      "  With no synced history it also returns baseline: true and voice, the baseline",
-      "  voice guide the editor writes from. Each precedent names its reviewerLogin.",
       "",
       "Flags:",
       "  --text <query>        Candidate claim and failure mode (required)",
@@ -17431,8 +16857,9 @@ var COMMAND_HELP = {
       "  --owner-note <text>       Why the owner posts an unverifiable finding; recorded with it",
       "  --repository <name>       Prefer precedents from this repository",
       "  --owner <login>           Owner whose precedents count; default from config",
-      "Reads: candidates JSON on stdin.",
-      "Writes: JSON scores on stdout. Every entry names its candidate as candidate_id,",
+      "Reads: candidates JSON on stdin; review.lanes from .review-voice/config.yaml, whose",
+      "  severity rule (cap, escalate on blocker_confirmed) applies after the tier is derived.",
+      "Writes: JSON scores on stdout, each entry with its lane. Every entry names its candidate as candidate_id,",
       "  like candidates and verification; candidateId is still written beside it",
       "  but is deprecated.",
       "Exit codes: 0 ok, 2 malformed candidates or bad invocation."
@@ -17471,27 +16898,10 @@ var COMMAND_HELP = {
       "  Report the evaluation metrics against their targets.",
       "",
       "Flags:",
-      "  --json                 Emit the metrics as JSON, with posted-finding outcomes by severity and lane",
+      "  --json                 Emit the metrics as JSON",
       "Reads: nothing on stdin; the local store.",
       "Writes: text (or JSON) on stdout.",
       "Exit codes: 0 ok."
-    )
-  },
-  outcomes: {
-    summary: "Follow posted comments to an outcome (reads GitHub only)",
-    body: lines(
-      "review-voice outcomes [flags]",
-      "  Follow each inline comment Review Voice posted to an outcome: fixed, dismissed,",
-      "  resolved, outdated, open or unknown. Fixed and dismissed are strong; the rest are weak.",
-      "  Reads GitHub and writes nothing there. `evaluate` reports precision from the strong ones.",
-      "",
-      "Flags:",
-      "  --repository <name>    Only runs for owner/repo; naming it allows reading it",
-      "  --since <Nd>           Only reviews sent in the last N days (default 30d)",
-      "  --json                 Emit one row per finding as JSON",
-      "Reads: the local store, the allowlist in the repository config, and GitHub comments, threads and commits.",
-      "Writes: one line per finding and totals on stdout (JSON with --json); outcomes in the local store.",
-      "Exit codes: 0 ok, 2 bad invocation."
     )
   },
   draft: {
@@ -17531,27 +16941,11 @@ var COMMAND_HELP = {
       "  --head <sha>           Head commit the review read (required)",
       "  --repository <name>    owner/repo; inferred from the git remote if absent",
       "  --run <run-id>         Recorded run to use; default the newest for the pull request",
-      "  --recheck              Re-read CI once more before answering; asks for green CI",
-      "                         whatever the verdict settings say",
-      "",
-      "Settings (.review-voice/config.yaml, docs/adr/0028; defaults first):",
-      "  verdict.ci_pending: wait|proceed        proceed approves while CI is still running",
-      "  verdict.ci_red: cap|annotate            annotate keeps the event and adds",
-      '                                          "Heads up: <checks> failing on this head."',
-      "  verdict.ci_needs_rerun: hold|annotate   annotate posts the code verdict and adds",
-      '                                          "Heads up: <checks> need a rerun."',
-      "  review.human_review.cap_approval: true  false lets a clean complex change approve;",
-      "                                          the local note stays",
-      "  verdict.carry_approval_on_unchanged: false",
-      '                                          true returns action "carry" and posts nothing',
-      "                                          when a clean approval's scope is unchanged and",
-      "                                          the owner's approval of its start still stands",
-      "                                          (carriedReviewUrl)",
-      '  An annotation names at most five checks and appears in "annotations".',
+      "  --recheck              Re-read CI once more before answering",
       "Reads: the validated review on stdin.",
       "Writes: JSON on stdout. Nothing is sent to GitHub.",
-      "Exit codes: 0 ok or carried, 2 refused or bad invocation, 3 the head moved, 4 CI still",
-      "  running on an approval, 5 a re-check found CI red, 6 CI needs a rerun."
+      "Exit codes: 0 ok, 2 refused or bad invocation, 3 the head moved, 4 CI still running",
+      "  on an approval, 5 a re-check found CI red, 6 CI needs a rerun."
     )
   },
   post: {
@@ -17567,20 +16961,10 @@ var COMMAND_HELP = {
       "  --run <run-id>         Recorded run to use; default the newest for the pull request",
       "  --confirm              Send the review; without it, only a preview",
       "  --event <EVENT>        The review event to send (COMMENT, APPROVE or REQUEST_CHANGES)",
-      "  --recheck-thread       Re-read the thread (comments and review bodies) before sending;",
-      "                         a finding someone else raised meanwhile refuses with exit 8",
-      "",
-      "Settings: the verdict settings apply as in `review-voice verdict --help`, including",
-      "  to the CI re-read just before an approval is sent. Annotations are appended to the",
-      "  body, each on its own line, and left out of the idempotency key. A carry sends",
-      "  nothing and prints {carried: true, reviewUrl}. verdict.recheck_thread_before_post:",
-      "  true always does what --recheck-thread does.",
       "Reads: the validated review on stdin.",
       "Writes: JSON on stdout. With --confirm, WRITES the review to GitHub (the plugin's only write).",
-      "Exit codes: 0 sent, previewed or carried, 1 the send failed, 2 refused or bad invocation,",
-      "  3 the head moved, 4 CI still running on an approval, 5 CI red, 6 CI needs a rerun,",
-      '  8 the thread re-check found a finding someone else raised ({refused: "thread-changed",',
-      "  findings: [{path, line, raisedBy, commentUrl}]}); nothing is sent."
+      "Exit codes: 0 sent or previewed, 1 the send failed, 2 refused or bad invocation,",
+      "  3 the head moved, 4 CI still running on an approval, 5 CI red, 6 CI needs a rerun."
     )
   },
   record: {
@@ -17649,6 +17033,8 @@ var COMMAND_HELP = {
       "  Print which review stages run and on which model, as JSON (docs/adr/0025).",
       "  `auto` picks fast when no production source changed, thorough when",
       "  complexity is high or over 150 production lines changed, else standard.",
+      "  Tests, documentation, generated files and configuration (YAML, JSON, TOML,",
+      "  INI and similar files, .env, lockfiles) do not count; .github/workflows/ does.",
       "",
       "Flags:",
       "  --files <path>         files.json from `diff --out` (required)",
@@ -17657,6 +17043,24 @@ var COMMAND_HELP = {
       "Reads: --files, --diff-file, and review.mode, review.models and verification.enabled",
       "  from .review-voice/config.yaml when the working directory has one.",
       "Writes: the StagePlan JSON on stdout; config warnings on stderr.",
+      "Exit codes: 0 ok, 2 bad invocation or unreadable input."
+    )
+  },
+  lanes: {
+    summary: "Print which analyst lanes run on a change",
+    body: lines(
+      "review-voice lanes --files <files.json> --diff-file <diff.patch>",
+      "  Print every configured lane with whether it runs on this change and why, as JSON",
+      "  (docs/adr/0023). The diff lane always runs. Another lane runs when its changed",
+      "  lines, within its paths, reach min_changed_source_lines. Lines are counted as",
+      "  plan counts them, except that the lane's exclude_kinds replaces the kinds left out.",
+      "",
+      "Flags:",
+      "  --files <path>         files.json from `diff --out` (required)",
+      "  --diff-file <path>     diff.patch from `diff --out` (required)",
+      "Reads: --files, --diff-file, and review.lanes and review.human_review from",
+      "  .review-voice/config.yaml when the working directory has one.",
+      "Writes: a JSON list of {lane, eligible, reason} on stdout; config warnings on stderr.",
       "Exit codes: 0 ok, 2 bad invocation or unreadable input."
     )
   },
@@ -17741,7 +17145,6 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice status",
       "  Show what is stored locally. Takes no flags.",
-      "  Says whether the baseline voice is in use or how many reviewers the corpus covers.",
       "",
       "Reads: nothing on stdin; the local store and config.",
       "Writes: text on stdout.",
@@ -17902,7 +17305,7 @@ function validateOutputCommand(argv) {
   if (scoresFlag !== null) {
     let entries;
     try {
-      entries = scoredEntries(JSON.parse(readFileSync7(scoresFlag, "utf8")));
+      entries = scoredEntries(JSON.parse(readFileSync6(scoresFlag, "utf8")));
     } catch (error) {
       console.error(`Cannot read ${scoresFlag}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -18223,7 +17626,7 @@ function symbolsCommand(argv) {
   }
   let diff;
   try {
-    diff = readFileSync7(diffFile, "utf8");
+    diff = readFileSync6(diffFile, "utf8");
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -18380,7 +17783,6 @@ function consentPlanCommand(argv) {
     JSON.stringify(
       buildConsentPlan({
         ownerLogin: owner,
-        reviewerLogins: config2.reviewers,
         repositories,
         targetEvents: numericFlag(argv, "--target", 250) ?? 250,
         storageLocation: dataDirectory()
@@ -18427,18 +17829,7 @@ async function syncCommand(argv) {
     return 2;
   }
   const defaultTarget = scaledTarget(config2.allowlist.length);
-  const explicitTarget = argv.includes("--target") ? numericFlag(argv, "--target", defaultTarget) : void 0;
-  const window = resolveSyncWindow({
-    quick: argv.includes("--quick"),
-    target: explicitTarget,
-    since: flag(argv, "--since")
-  });
-  if ("error" in window) {
-    console.error(window.error);
-    return 2;
-  }
-  const target = window.target ?? defaultTarget;
-  const updatedSince = window.updatedSince;
+  const target = numericFlag(argv, "--target", defaultTarget) ?? defaultTarget;
   const maxPulls = numericFlag(argv, "--max-pulls", 60) ?? 60;
   const repositoryShare = scaledRepositoryShare(config2.allowlist.length);
   const dryRun = argv.includes("--dry-run");
@@ -18464,8 +17855,6 @@ async function syncCommand(argv) {
       {
         repository,
         ownerLogin: config2.ownerReviewer,
-        reviewerLogins: config2.reviewers,
-        updatedSince,
         maxPullRequests: maxPulls,
         maxCommentsPerPull: 200,
         includeForks: false,
@@ -18569,26 +17958,11 @@ function planCommand(argv) {
     console.error("Usage: plan --files <files.json> --diff-file <diff.patch> [--mode fast|standard|thorough|auto]");
     return 2;
   }
-  let manifest;
-  let diffText;
-  try {
-    const parsed = JSON.parse(readFileSync7(filesPath, "utf8"));
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not a JSON object");
-    manifest = parsed;
-    diffText = readFileSync7(diffPath, "utf8");
-  } catch (error) {
-    console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  const files = manifest["files"];
-  if (!Array.isArray(files) || !files.every((file) => typeof file === "object" && file !== null && typeof file.path === "string")) {
-    console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
-    return 2;
-  }
+  const input = readFilesAndDiff(filesPath, diffPath);
+  if (input === null) return 2;
+  const { manifest, changed, diffText, generated } = input;
   const config2 = repositoryConfig();
   for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
-  const changed = files;
-  const generated = markedGenerated({ ...manifest, diff: diffText });
   const change = productionChange(changed, diffText, config2?.humanReview, generated);
   const complexity = asLevel(manifest["complexity"]);
   const plan = resolvePlan({
@@ -18599,6 +17973,44 @@ function planCommand(argv) {
     secondPassConfigured: config2?.verification.enabled ?? false
   });
   console.log(JSON.stringify(plan, null, 2));
+  return 0;
+}
+function readFilesAndDiff(filesPath, diffPath) {
+  let manifest;
+  let diffText;
+  try {
+    const parsed = JSON.parse(readFileSync6(filesPath, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not a JSON object");
+    manifest = parsed;
+    diffText = readFileSync6(diffPath, "utf8");
+  } catch (error) {
+    console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  const files = manifest["files"];
+  if (!Array.isArray(files) || !files.every((file) => typeof file === "object" && file !== null && typeof file.path === "string")) {
+    console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
+    return null;
+  }
+  const generated = markedGenerated({ ...manifest, diff: diffText });
+  return { manifest, changed: files, diffText, generated };
+}
+function lanesCommand(argv) {
+  const filesPath = flag(argv, "--files");
+  const diffPath = flag(argv, "--diff-file");
+  if (filesPath === null || diffPath === null) {
+    console.error("Usage: lanes --files <files.json> --diff-file <diff.patch>");
+    return 2;
+  }
+  const input = readFilesAndDiff(filesPath, diffPath);
+  if (input === null) return 2;
+  const config2 = repositoryConfig();
+  for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
+  const lanes = eligibleLanes(config2?.lanes ?? [DIFF_LANE], input.changed, input.diffText, {
+    humanReview: config2?.humanReview,
+    markedGenerated: input.generated
+  });
+  console.log(JSON.stringify(lanes, null, 2));
   return 0;
 }
 function asLevel(value) {
@@ -18627,8 +18039,7 @@ async function verdictCommand(argv) {
       recheck: argv.includes("--recheck"),
       gateChecks: config2?.ciGateChecks ?? [],
       ciRules: config2?.ciRules ?? {},
-      owner: config2?.ownerReviewer ?? null,
-      policy: config2?.verdictPolicy
+      owner: config2?.ownerReviewer ?? null
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -18656,9 +18067,7 @@ async function postCommand(argv) {
       postingEnabled: config2?.postingEnabled ?? false,
       gateChecks: config2?.ciGateChecks ?? [],
       ciRules: config2?.ciRules ?? {},
-      owner: config2?.ownerReviewer ?? null,
-      policy: config2?.verdictPolicy,
-      recheckThread: argv.includes("--recheck-thread")
+      owner: config2?.ownerReviewer ?? null
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -18671,85 +18080,16 @@ function evaluateCommand(argv) {
   try {
     const metrics = computeMetrics(db);
     if (argv.includes("--json")) {
-      const { bySeverity, byLane } = postedBreakdown(db);
-      console.log(JSON.stringify({ metrics, posted_breakdown: { by_severity: bySeverity, by_lane: byLane } }, null, 2));
+      console.log(JSON.stringify({ metrics }, null, 2));
     } else {
       for (const metric of metrics) {
-        const value = metric.value === null ? "no data" : Number.isInteger(metric.value) && metric.name.endsWith("_tracked") ? String(metric.value) : metric.value.toFixed(2);
+        const value = metric.value === null ? "no data" : metric.value.toFixed(2);
         const mark = metric.meets === null || metric.target === "no target" ? "  -" : metric.meets ? "  ok" : metric.kind === "goal" ? "over" : "FAIL";
         const target = metric.target === "no target" ? "reported, not scored" : metric.kind === "goal" ? `goal ${metric.target}` : `target ${metric.target}`;
         console.log(`${mark}  ${metric.name.padEnd(32)} ${value.padStart(8)}  ${target}`);
         console.log(`      ${metric.basis}`);
       }
     }
-    return 0;
-  } finally {
-    db.close();
-  }
-}
-async function outcomesCommand(argv) {
-  const repository = flag(argv, "--repository");
-  if (argv.includes("--repository") && (repository === null || !/^[^/\s]+\/[^/\s]+$/.test(repository))) {
-    console.error("--repository takes owner/repo.");
-    return 2;
-  }
-  const sinceFlag = flag(argv, "--since");
-  const days = sinceFlag === null ? 30 : /^(\d+)d$/.exec(sinceFlag)?.[1];
-  if (days === void 0 || argv.includes("--since") && sinceFlag === null) {
-    console.error("--since takes a number of days such as 30d.");
-    return 2;
-  }
-  const since = new Date(Date.now() - Number(days) * 864e5).toISOString();
-  let allowlist = repository === null ? [] : [repository];
-  if (repository === null) {
-    try {
-      allowlist = loadConfig(repositoryRoot(process.cwd())).allowlist;
-    } catch {
-    }
-  }
-  const db = openDatabase();
-  try {
-    const result = await checkOutcomes({
-      db,
-      client: new GitHubClient({ allowlist }),
-      allowlist,
-      repository: repository ?? void 0,
-      since
-    });
-    for (const warning of result.warnings) console.error(warning);
-    for (const skipped of result.skipped) {
-      console.error(`${skipped.repository}#${skipped.pullNumber}: skipped, ${skipped.reason}`);
-    }
-    if (argv.includes("--json")) {
-      console.log(
-        JSON.stringify(
-          result.outcomes.map((o) => ({
-            run: o.reviewRunId,
-            finding: o.findingId,
-            repository: o.repository,
-            pull: o.pullNumber,
-            path: o.path,
-            line: o.line,
-            commentId: o.commentId,
-            outcome: o.outcome,
-            strength: o.strength,
-            evidence: o.evidence,
-            checkedAt: o.checkedAt,
-            reviewIdSource: o.reviewIdSource
-          })),
-          null,
-          2
-        )
-      );
-      return 0;
-    }
-    for (const o of result.outcomes) {
-      console.log(`${o.repository}#${o.pullNumber} ${o.findingId} ${o.path}:${o.line} ${o.outcome} (${o.strength}): ${o.evidence}`);
-    }
-    const count3 = (name) => result.outcomes.filter((o) => o.outcome === name).length;
-    console.log(
-      `${result.outcomes.length} finding(s) tracked: ${count3("fixed")} fixed, ${count3("dismissed")} dismissed, ${count3("resolved")} resolved, ${count3("outdated")} outdated, ${count3("open")} open, ${count3("unknown")} unknown`
-    );
     return 0;
   } finally {
     db.close();
@@ -18932,7 +18272,7 @@ function scoreCommand(argv) {
   const verificationFlag = flag(argv, "--verification");
   if (verificationFlag !== null) {
     try {
-      const parsed = JSON.parse(readFileSync7(verificationFlag, "utf8"));
+      const parsed = JSON.parse(readFileSync6(verificationFlag, "utf8"));
       const list = verdictList(parsed);
       const problem = verificationProblem(list);
       if (problem !== null) {
@@ -18951,6 +18291,7 @@ function scoreCommand(argv) {
         const premisesVerified = raw["premises_verified"] ?? raw["premisesVerified"];
         const verified = raw["verified"];
         const reason2 = raw["reason"];
+        const blockerConfirmed = raw["blocker_confirmed"] ?? raw["blockerConfirmed"];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: raw["evidence_quality"] ?? raw["evidenceQuality"],
@@ -18967,6 +18308,7 @@ function scoreCommand(argv) {
           impactClass: isImpactClass(impactClass) ? impactClass : void 0,
           premisesVerified: typeof premisesVerified === "boolean" ? premisesVerified : void 0,
           verified: typeof verified === "boolean" ? verified : void 0,
+          blockerConfirmed: typeof blockerConfirmed === "boolean" ? blockerConfirmed : void 0,
           reason: typeof reason2 === "string" ? reason2 : void 0,
           requiredContextMissing: raw["required_context_missing"] ?? raw["requiredContextMissing"],
           // Already checked by `verificationProblem`.
@@ -19017,7 +18359,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      reachDiff = readFileSync7(path, "utf8");
+      reachDiff = readFileSync6(path, "utf8");
       anchorHunks = parseHunks(reachDiff);
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -19032,7 +18374,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync7(path, "utf8"));
+      const parsed = JSON.parse(readFileSync6(path, "utf8"));
       thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -19062,6 +18404,7 @@ function scoreCommand(argv) {
     console.error("--exclude-pull needs a pull request number.");
     return 2;
   }
+  const lanes = repositoryConfig()?.lanes ?? [DIFF_LANE];
   const db = openDatabase();
   try {
     const kept = [];
@@ -19085,7 +18428,8 @@ function scoreCommand(argv) {
         precedents,
         kept,
         thresholds,
-        verifications.get(candidate.candidateId)
+        verifications.get(candidate.candidateId),
+        laneNamed(lanes, candidate.lane)
       );
       const override = severityOverrides.get(candidate.candidateId);
       if (override !== void 0) {
@@ -19395,10 +18739,7 @@ function retrieveCommand(argv) {
       maxPositive: numericFlag(argv, "--max-positive", 3) ?? 3,
       maxNegative: numericFlag(argv, "--max-negative", 2) ?? 2
     });
-    const baseline = isCorpusEmpty(db);
-    console.log(
-      JSON.stringify({ precedents, ...baseline ? { baseline: true, voice: baselineVoice() } : {} }, null, 2)
-    );
+    console.log(JSON.stringify({ precedents }, null, 2));
     return 0;
   } finally {
     db.close();
@@ -19416,9 +18757,9 @@ function anchorsCommand(argv) {
   let hunks = null;
   let scores = [];
   try {
-    if (diffFile !== null) hunks = parseHunks(readFileSync7(diffFile, "utf8"));
+    if (diffFile !== null) hunks = parseHunks(readFileSync6(diffFile, "utf8"));
     if (scoresFile !== null) {
-      const parsed = JSON.parse(readFileSync7(scoresFile, "utf8"));
+      const parsed = JSON.parse(readFileSync6(scoresFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed.scores;
       scores = Array.isArray(list) ? list : [];
     }
@@ -19507,7 +18848,7 @@ function reconcileCommand(argv) {
   }
   let verifications;
   try {
-    verifications = verdictList(JSON.parse(readFileSync7(verificationFile, "utf8")));
+    verifications = verdictList(JSON.parse(readFileSync6(verificationFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read ${verificationFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -19523,7 +18864,7 @@ function reconcileCommand(argv) {
   }
   let secondPass;
   try {
-    secondPass = parseSecondPass(JSON.parse(readFileSync7(secondPassFile, "utf8")));
+    secondPass = parseSecondPass(JSON.parse(readFileSync6(secondPassFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read the second pass from ${secondPassFile}: ${error.message}`);
     return 2;
@@ -19532,7 +18873,7 @@ function reconcileCommand(argv) {
   const tieBreaksFile = flag(argv, "--tie-breaks");
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync7(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync6(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -19607,7 +18948,7 @@ function recordCommand(argv) {
   let diff = "";
   if (diffFile !== null) {
     try {
-      diff = readFileSync7(diffFile, "utf8");
+      diff = readFileSync6(diffFile, "utf8");
     } catch {
       console.error(`Cannot read ${diffFile}.`);
       return 2;
@@ -19629,7 +18970,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync7(bodyFindingsFile, "utf8"));
+      const parsed = JSON.parse(readFileSync6(bodyFindingsFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null && Array.isArray(parsed.bodyFindings) ? parsed.bodyFindings : null;
       if (list === null) throw new Error('expected an array or {"bodyFindings": [...]}');
       if (list.length > 1) throw new Error("at most one body-only simplification is allowed per review");
@@ -19655,7 +18996,7 @@ function recordCommand(argv) {
   let complexity = null;
   if (filesFile !== null) {
     try {
-      const manifest = JSON.parse(readFileSync7(filesFile, "utf8"));
+      const manifest = JSON.parse(readFileSync6(filesFile, "utf8"));
       if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
         pullNumber = manifest.pullNumber;
       }
@@ -19675,7 +19016,7 @@ function recordCommand(argv) {
   let candidates = [];
   if (candidatesFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync7(candidatesFile, "utf8"));
+      const parsed = JSON.parse(readFileSync6(candidatesFile, "utf8"));
       candidates = Array.isArray(parsed) ? parsed : parsed.candidates ?? [];
     } catch {
       console.error(`Cannot read candidates from ${candidatesFile}.`);
@@ -19686,7 +19027,7 @@ function recordCommand(argv) {
   let scores = [];
   if (scoresFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync7(scoresFile, "utf8"));
+      const parsed = JSON.parse(readFileSync6(scoresFile, "utf8"));
       scores = boundLists(Array.isArray(parsed) ? parsed : parsed.scores ?? []);
     } catch {
       console.error(`Cannot read scores from ${scoresFile}.`);
@@ -19697,7 +19038,7 @@ function recordCommand(argv) {
   let verdicts = [];
   if (verdictsFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync7(verdictsFile, "utf8"));
+      const parsed = JSON.parse(readFileSync6(verdictsFile, "utf8"));
       verdicts = Array.isArray(parsed) ? parsed : parsed.verdicts ?? [];
     } catch {
       console.error(`Cannot read verdicts from ${verdictsFile}.`);
@@ -19708,7 +19049,7 @@ function recordCommand(argv) {
   let tieBreaks = [];
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync7(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync6(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -19718,7 +19059,7 @@ function recordCommand(argv) {
   let held = [];
   if (heldFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync7(heldFile, "utf8"));
+      const parsed = JSON.parse(readFileSync6(heldFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed?.held;
       if (!Array.isArray(list)) throw new Error('expected an array or {"held": [...]}');
       list.forEach((entry, index) => {
@@ -19735,7 +19076,7 @@ function recordCommand(argv) {
   let stages = [];
   if (stagesFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync7(stagesFile, "utf8"));
+      const parsed = JSON.parse(readFileSync6(stagesFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed.stages ?? [];
       stages = (Array.isArray(list) ? list : []).filter(
         (stage) => typeof stage === "object" && stage !== null && typeof stage.name === "string" && Number.isFinite(stage.seconds)
@@ -19755,7 +19096,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed = JSON.parse(readFileSync7(followUpThreadFile, "utf8"));
+      const parsed = JSON.parse(readFileSync6(followUpThreadFile, "utf8"));
       const list = Array.isArray(parsed) ? parsed : parsed.comments;
       if (!Array.isArray(list)) throw new Error("comments is not a list");
       followUpThread = list;
@@ -19773,7 +19114,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      rulings = parseFollowUpRulings(JSON.parse(readFileSync7(rulingsFile, "utf8")));
+      rulings = parseFollowUpRulings(JSON.parse(readFileSync6(rulingsFile, "utf8")));
     } catch (error) {
       const why = error instanceof FollowUpRulingError ? error.message : `cannot read it (${error.message})`;
       console.error(`Cannot read follow-up rulings from ${rulingsFile}: ${why}.`);
@@ -19813,7 +19154,7 @@ function recordCommand(argv) {
       const head = flag(argv, "--head");
       let marker = null;
       try {
-        const parsed = JSON.parse(readFileSync7(carryFile, "utf8"));
+        const parsed = JSON.parse(readFileSync6(carryFile, "utf8"));
         const refused = Array.isArray(parsed["refused"]) ? parsed["refused"].map((r) => String(r?.candidateId)) : null;
         const interdiff = parsed["interdiff"];
         if (refused !== null && typeof parsed["since"] === "string" && typeof parsed["head"] === "string") {
@@ -19941,7 +19282,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   if (threadFile !== null) {
     let text3;
     try {
-      text3 = readFileSync7(threadFile, "utf8");
+      text3 = readFileSync6(threadFile, "utf8");
     } catch (error) {
       throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -19951,7 +19292,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   let noLongerChanged = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
-      const files = JSON.parse(readFileSync7(filesFile, "utf8"));
+      const files = JSON.parse(readFileSync6(filesFile, "utf8"));
       const listed = files.scope?.noLongerChanged;
       noLongerChanged = new Set(Array.isArray(listed) ? listed.filter((path) => typeof path === "string") : []);
     } catch (error) {
@@ -20038,12 +19379,12 @@ function reanchorCommand(argv) {
     console.error("--path needs the file the finding belongs in.");
     return 2;
   }
-  const readJson = (path) => JSON.parse(readFileSync7(path, "utf8"));
+  const readJson = (path) => JSON.parse(readFileSync6(path, "utf8"));
   let scores;
   let hunks;
   try {
     scores = readJson(scoresFile);
-    hunks = parseHunks(readFileSync7(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync6(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -20113,8 +19454,8 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let manifest;
   let hunks;
   try {
-    manifest = JSON.parse(readFileSync7(join8(dir, "files.json"), "utf8"));
-    hunks = parseHunks(readFileSync7(join8(dir, "diff.patch"), "utf8"));
+    manifest = JSON.parse(readFileSync6(join8(dir, "files.json"), "utf8"));
+    hunks = parseHunks(readFileSync6(join8(dir, "diff.patch"), "utf8"));
   } catch (error) {
     return `Cannot read the interdiff in ${dir}: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -20129,7 +19470,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let candidates;
   let verification2;
   try {
-    const parsed = listIn(JSON.parse(readFileSync7(candidatesFile, "utf8")), ["candidates"]);
+    const parsed = listIn(JSON.parse(readFileSync6(candidatesFile, "utf8")), ["candidates"]);
     if (parsed === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidates = parsed.list;
     const normalised = candidates.map((raw, index) => normaliseCandidate(raw, index));
@@ -20141,7 +19482,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
       );
     }
     candidates = candidates.map((raw, index) => withId(raw, normalised[index].candidateId));
-    const parsedVerification = listIn(JSON.parse(readFileSync7(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync6(verificationFile, "utf8")), VERDICT_KEYS);
     verification2 = parsedVerification?.list ?? [];
     if (parsedVerification === null && candidates.length > 0) throw new Error(`${verificationFile} contains no verifications`);
     const problem = verificationProblem(verification2);
@@ -20154,7 +19495,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
 function partialDiffReason(diffFile) {
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync7(join8(dirname5(diffFile), "files.json"), "utf8"));
+    manifest = JSON.parse(readFileSync6(join8(dirname5(diffFile), "files.json"), "utf8"));
   } catch {
     return null;
   }
@@ -20186,24 +19527,24 @@ function carryCandidatesCommand(argv) {
   let hunks;
   let heldIn = null;
   try {
-    const parsedCandidates = listIn(JSON.parse(readFileSync7(candidatesFile, "utf8")), ["candidates"]);
+    const parsedCandidates = listIn(JSON.parse(readFileSync6(candidatesFile, "utf8")), ["candidates"]);
     if (parsedCandidates === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidatesIn = parsedCandidates;
     candidates = candidatesIn.list.map((raw, index) => normaliseCandidate(raw, index));
     assertUniqueCandidateIds(candidates);
-    const parsedVerification = listIn(JSON.parse(readFileSync7(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync6(verificationFile, "utf8")), VERDICT_KEYS);
     if (parsedVerification === null || parsedVerification.list.length === 0) {
       throw new Error(`${verificationFile} contains no verifications`);
     }
     verificationIn = parsedVerification;
     const problem = verificationProblem(verificationIn.list);
     if (problem !== null) throw new Error(`malformed verification - ${problem}`);
-    hunks = parseHunks(readFileSync7(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync6(diffFile, "utf8"));
     const partial = partialDiffReason(diffFile);
     if (partial !== null) throw new Error(partial);
     const heldFile = flag(argv, "--held");
     if (heldFile !== null) {
-      heldIn = listIn(JSON.parse(readFileSync7(heldFile, "utf8")), ["held"]);
+      heldIn = listIn(JSON.parse(readFileSync6(heldFile, "utf8")), ["held"]);
       if (heldIn === null) throw new Error(`${heldFile} is not an array or {"held": [...]}`);
       heldIn.list.forEach((entry, index) => {
         const heldError = heldProblem(entry);
@@ -20570,7 +19911,7 @@ function conventionsCommand(argv) {
   const changed = [];
   if (filesFlag !== null) {
     try {
-      changed.push(...changedPathsFrom(JSON.parse(readFileSync7(filesFlag, "utf8"))));
+      changed.push(...changedPathsFrom(JSON.parse(readFileSync6(filesFlag, "utf8"))));
     } catch (error) {
       console.error(`Cannot read ${filesFlag}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -20628,6 +19969,10 @@ function verificationProblem(list) {
     if (premises !== void 0 && typeof premises !== "boolean") {
       return `${who}: premises_verified must be true or false.`;
     }
+    const blocker = entry["blocker_confirmed"] ?? entry["blockerConfirmed"];
+    if (blocker !== void 0 && typeof blocker !== "boolean") {
+      return `${who}: blocker_confirmed must be true or false.`;
+    }
     const impactClass = entry["impact_class"] ?? entry["impactClass"];
     if (impactClass !== void 0 && !isImpactClass(impactClass)) {
       return `${who}: impact_class must be one of ${IMPACT_CLASSES.join(", ")}, not ${JSON.stringify(impactClass)}.`;
@@ -20652,7 +19997,7 @@ function checkVerificationCommand(argv) {
   let keptIds = null;
   if (candidatesFile !== null) {
     try {
-      keptIds = keptCandidateIds(JSON.parse(readFileSync7(candidatesFile, "utf8")));
+      keptIds = keptCandidateIds(JSON.parse(readFileSync6(candidatesFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -20698,7 +20043,7 @@ function checkIntentCommand(argv) {
   }
   let description;
   try {
-    description = descriptionOf(JSON.parse(readFileSync7(threadFile, "utf8")));
+    description = descriptionOf(JSON.parse(readFileSync6(threadFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -20738,7 +20083,7 @@ function checkSimplificationCommand(argv) {
   }
   let hunks;
   try {
-    hunks = parseHunks(readFileSync7(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync6(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -20770,7 +20115,7 @@ function checkSimplificationCommand(argv) {
   }
   let candidateDocument;
   try {
-    candidateDocument = JSON.parse(readFileSync7(candidateFile, "utf8"));
+    candidateDocument = JSON.parse(readFileSync6(candidateFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${candidateFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -20916,6 +20261,24 @@ function checkCandidatesCommand(argv) {
   try {
     const candidates = raw.map((candidate, index) => normaliseCandidate(candidate, index));
     assertUniqueCandidateIds(candidates);
+    const lanes = repositoryConfig()?.lanes ?? [DIFF_LANE];
+    const laneFailures = candidates.flatMap(({ candidateId, lane: name }) => {
+      if (name === void 0) {
+        const owner2 = lanes.find((lane2) => lane2.name !== DIFF_LANE.name && candidateId.startsWith(lane2.prefix));
+        return owner2 === void 0 ? [] : [{ candidateId, lane: DIFF_LANE.name, reason: `${candidateId} carries lane ${owner2.name}'s prefix ${owner2.prefix} but names no lane; set lane: "${owner2.name}"` }];
+      }
+      const lane = laneNamed(lanes, name);
+      if (lane === void 0) {
+        return [{ candidateId, lane: name, reason: `lane ${name} is not configured (${lanes.map((known) => known.name).join(", ")})` }];
+      }
+      return candidateId.startsWith(lane.prefix) ? [] : [{ candidateId, lane: lane.name, reason: `${candidateId} is from lane ${lane.name}, so its candidate_id must start with ${lane.prefix}` }];
+    });
+    const laneExtra = laneFailures.length > 0 ? { laneFailures } : {};
+    const reportLaneFailures = () => {
+      if (laneFailures.length > 0) {
+        console.error(`${laneFailures.length} candidate lane failure${laneFailures.length === 1 ? "" : "s"}.`);
+      }
+    };
     let intentFailures = [];
     if (argv.includes("--intent")) {
       const intentFile = flag(argv, "--intent");
@@ -20925,7 +20288,7 @@ function checkCandidatesCommand(argv) {
       }
       let ids;
       try {
-        const statements = JSON.parse(readFileSync7(intentFile, "utf8")).statements;
+        const statements = JSON.parse(readFileSync6(intentFile, "utf8")).statements;
         if (!Array.isArray(statements)) throw new Error("statements is not a list");
         ids = new Set(statements.map((statement) => statement?.id).filter((id) => typeof id === "string"));
       } catch (error) {
@@ -20937,9 +20300,12 @@ function checkCandidatesCommand(argv) {
       );
     }
     const intentExtra = intentFailures.length > 0 ? { intentFailures } : {};
-    if (intentFailures.length > 0 && !argv.includes("--diff-file")) {
-      console.log(JSON.stringify({ valid: false, intentFailures }, null, 2));
-      console.error(`${intentFailures.length} candidate intent_ref failure${intentFailures.length === 1 ? "" : "s"}.`);
+    if ((intentFailures.length > 0 || laneFailures.length > 0) && !argv.includes("--diff-file")) {
+      console.log(JSON.stringify({ valid: false, ...laneExtra, ...intentExtra }, null, 2));
+      reportLaneFailures();
+      if (intentFailures.length > 0) {
+        console.error(`${intentFailures.length} candidate intent_ref failure${intentFailures.length === 1 ? "" : "s"}.`);
+      }
       return 1;
     }
     if (!argv.includes("--diff-file")) {
@@ -20953,7 +20319,7 @@ function checkCandidatesCommand(argv) {
     }
     let hunks;
     try {
-      hunks = parseHunks(readFileSync7(diffFile, "utf8"));
+      hunks = parseHunks(readFileSync6(diffFile, "utf8"));
     } catch (error) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -20975,8 +20341,11 @@ function checkCandidatesCommand(argv) {
       nearest: anchor.nearest,
       ...anchor.causedBy === void 0 ? {} : { causedBy: anchor.causedBy }
     }));
-    if (anchorFailures.length > 0 || intentFailures.length > 0) {
-      console.log(JSON.stringify({ valid: false, ...anchorFailures.length > 0 ? { anchorFailures } : {}, ...intentExtra }, null, 2));
+    if (anchorFailures.length > 0 || intentFailures.length > 0 || laneFailures.length > 0) {
+      console.log(
+        JSON.stringify({ valid: false, ...anchorFailures.length > 0 ? { anchorFailures } : {}, ...laneExtra, ...intentExtra }, null, 2)
+      );
+      reportLaneFailures();
       if (anchorFailures.length > 0) {
         console.error(`${anchorFailures.length} candidate anchor failure${anchorFailures.length === 1 ? "" : "s"}.`);
       }
@@ -21009,7 +20378,7 @@ function checkCandidatesCommand(argv) {
         return 2;
       }
       try {
-        const parsed = JSON.parse(readFileSync7(threadFile, "utf8"));
+        const parsed = JSON.parse(readFileSync6(threadFile, "utf8"));
         thread = Array.isArray(parsed) ? parsed : parsed.comments ?? [];
         if (!Array.isArray(thread)) throw new Error("comments is not a list");
       } catch (error) {
@@ -21108,9 +20477,6 @@ function checkCandidatesCommand(argv) {
     throw error;
   }
 }
-function distinctReviewers(db) {
-  return db.prepare("SELECT COUNT(DISTINCT reviewer_login) AS n FROM review_events").get().n;
-}
 function statusCommand() {
   const db = openDatabase();
   try {
@@ -21152,9 +20518,6 @@ function statusCommand() {
     const sync = lastSync(db);
     console.log(
       `last sync        ${sync === null ? "never completed" : `${sync.finishedAt ?? sync.startedAt}, ${sync.imported} imported from ${sync.repositories.length} repository/ies`}`
-    );
-    console.log(
-      coverage.total === 0 ? "Corpus: baseline voice in use (no synced history)" : `Corpus: ${coverage.total} events from ${distinctReviewers(db)} reviewer(s)`
     );
     console.log(
       `corpus           ${coverage.total} event(s)` + (coverage.total === 0 ? "" : ` - ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(", ")}`)
@@ -21247,8 +20610,6 @@ ${topLevelHelp()}`);
       return scoreCommand(argv.slice(1));
     case "evaluate":
       return evaluateCommand(argv.slice(1));
-    case "outcomes":
-      return outcomesCommand(argv.slice(1));
     case "draft":
       return draftCommand(argv.slice(1));
     case "verdict":
@@ -21283,6 +20644,8 @@ ${topLevelHelp()}`);
       return carryCommand(argv.slice(1));
     case "plan":
       return planCommand(argv.slice(1));
+    case "lanes":
+      return lanesCommand(argv.slice(1));
     case "reanchor":
       return reanchorCommand(argv.slice(1));
     case "carry-candidates":

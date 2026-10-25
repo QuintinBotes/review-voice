@@ -29,7 +29,8 @@
         "properties": {
           "candidate_id": {
             "type": "string",
-            "pattern": "^cand_[0-9]{3,}$"
+            "pattern": "^[a-z]+_[0-9]{3,}$",
+            "description": "The lane's prefix and a number: cand_NNN from the diff lane, st_NNN from the structure lane."
           },
           "path": {
             "type": "string",
@@ -116,6 +117,18 @@
               }
             },
             "description": "With anchor stale-consumer: the added line or deletion site that made the consumer wrong."
+          },
+          "lane": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The configured lane that produced the candidate. Absent means the diff lane. candidate_id must start with that lane's prefix."
+          },
+          "blocker_class": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The concrete blocker a lane analyst claims, for the verifier to confirm with blocker_confirmed. A lane escalate rule reads it; null or absent claims none."
           }
         }
       }
