@@ -22,9 +22,12 @@ const PINNED = /^[^@\s]+@[0-9a-f]{40}$/;
 
 let failures = 0;
 
-for (const entry of await readdir(workflows)) {
-  if (!/\.ya?ml$/.test(entry)) continue;
-  const path = join(workflows, entry);
+const files = (await readdir(workflows))
+  .filter((entry) => /\.ya?ml$/.test(entry))
+  .map((entry) => join(workflows, entry));
+files.push(join(root, 'action.yml'));
+
+for (const path of files) {
   const lines = (await readFile(path, 'utf8')).split('\n');
 
   lines.forEach((line, index) => {

@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cost. In `fast` mode a challenger's corrected line cannot land on an
   unchallenged nit. Fixes #207. (ADR 0022)
 
+- A composite GitHub Action (`action.yml`) runs `review` for the pull request
+  that triggered the workflow, posts only when `post: true` and the repository
+  config allow it, skips cleanly for forks and a missing key, and refuses
+  `pull_request_target` on the head (ADR 0031). `docs/ACTION.md` explains it.
+
 - `plan --files <files.json> --diff-file <diff.patch> [--mode]` prints the
   stage plan a cost mode resolves to: which review stages run and on which
   model. `fast`, `standard` and `thorough` follow the table in the spec, and
