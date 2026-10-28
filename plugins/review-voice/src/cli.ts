@@ -144,6 +144,7 @@ import {
   type ScoreBreakdown,
   type MissingContext,
   type Verification,
+  ownerRaiseCeiling,
 } from './scoring/score.ts';
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
@@ -1648,20 +1649,19 @@ function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null
 
 /**
  * Applies one explicit owner override after deterministic derivation. It
- * lowers a tier, or raises one only where the legacy-tier hint offers it: a
- * verified finding with unknown reach, up to the tier the analyst requested (#216).
+ * lowers a tier, or raises one only up to `ceiling`, the tier the legacy-tier
+ * hint names (#216).
  */
-function applyOwnerSeverityOverride(breakdown: ScoreBreakdown, override: OwnerOverrideSeverity, verified: boolean): string | null {
-  const { severity: current, requested, reach } = breakdown.severity;
+function applyOwnerSeverityOverride(breakdown: ScoreBreakdown, override: OwnerOverrideSeverity, ceiling: Severity | null): string | null {
+  const current = breakdown.severity.severity;
   if (current === 'question') return `--severity cannot override question for ${breakdown.candidateId}.`;
   const raises = SEVERITY_ORDER[override] < SEVERITY_ORDER[current as Severity];
-  const raiseAllowed =
-    raises && verified && reach === null && requested in SEVERITY_ORDER && SEVERITY_ORDER[override] >= SEVERITY_ORDER[requested as Severity];
+  const raiseAllowed = raises && ceiling !== null && SEVERITY_ORDER[override] >= SEVERITY_ORDER[ceiling];
   if (SEVERITY_ORDER[override] === SEVERITY_ORDER[current as Severity] || (raises && !raiseAllowed)) {
     return (
       `--severity ${breakdown.candidateId}=${override} must lower the scored ${current} tier; ` +
-      'owner overrides cannot restate a severity, and raise one only for a verified finding with unknown reach, ' +
-      `up to the tier the analyst requested (${requested}).`
+      'owner overrides cannot restate a severity, and raise one only as far as its legacy-tier hint names' +
+      (ceiling === null ? ' (it names none).' : ` (${ceiling}).`)
     );
   }
   breakdown.severity = {
@@ -1931,17 +1931,12 @@ function scoreCommand(argv: string[]): number {
         maxPositive: 3,
         maxNegative: 2,
       });
-      const breakdown = scoreCandidate(
-        candidate,
-        precedents,
-        kept,
-        thresholds,
-        verifications.get(candidate.candidateId),
-        laneNamed(lanes, candidate.lane),
-      );
+      const verification = verifications.get(candidate.candidateId);
+      const lane = laneNamed(lanes, candidate.lane);
+      const breakdown = scoreCandidate(candidate, precedents, kept, thresholds, verification, lane);
       const override = severityOverrides.get(candidate.candidateId);
       if (override !== undefined) {
-        const problem = applyOwnerSeverityOverride(breakdown, override, verifications.get(candidate.candidateId)?.verified === true);
+        const problem = applyOwnerSeverityOverride(breakdown, override, ownerRaiseCeiling(breakdown.severity, candidate, verification, lane));
         if (problem !== null) {
           console.error(problem);
           return 2;

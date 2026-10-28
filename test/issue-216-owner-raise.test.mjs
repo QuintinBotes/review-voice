@@ -66,9 +66,44 @@ test('#216: a raise past the requested tier, or on an unverified finding, is ref
   withDir((dir) => {
     const past = score(dir, true, ['--severity', 'cand_001=blocking']);
     assert.equal(past.status, 2);
-    assert.match(past.stderr, /up to the tier the analyst requested \(important\)/);
+    assert.match(past.stderr, /raise one only as far as its legacy-tier hint names \(important\)/);
 
     const unverified = score(dir, false, ['--severity', 'cand_001=important']);
     assert.equal(unverified.status, 2);
     assert.match(unverified.stderr, /must lower the scored minor tier/);
   }));
+
+test('#216: no raise past a lane cap, on a question-framed claim, or on an untraced stale consumer', async () => {
+  const { scoreCandidate, ownerRaiseCeiling, DEFAULT_THRESHOLDS } = await import('../plugins/review-voice/src/scoring/score.ts');
+  const base = {
+    candidateId: 'cand_001',
+    path: '.github/workflows/build.yml',
+    line: 12,
+    category: 'ci',
+    severity: 'blocking',
+    claim: candidate.claim,
+    failureMode: candidate.failure_mode,
+    evidence: candidate.evidence,
+    technicalConfidence: 0.9,
+  };
+  const verified = { candidateId: 'cand_001', verified: true, technicalConfidence: 0.9 };
+  const ceiling = (over = {}, lane = undefined, verification = verified) => {
+    const finding = { ...base, ...over };
+    const { severity } = scoreCandidate(finding, [], [], DEFAULT_THRESHOLDS, verification, lane);
+    return [ownerRaiseCeiling(severity, finding, verification, lane), severity.reason];
+  };
+
+  assert.deepEqual(ceiling()[0], 'blocking');
+  const lane = { name: 'infra', agent: 'infra-analyst', prefix: 'inf_', when: {}, severity: { cap: 'important' } };
+  const [capped, cappedReason] = ceiling({}, lane);
+  assert.equal(capped, 'important');
+  assert.match(cappedReason, /--severity cand_001=important/);
+  assert.equal(ceiling({}, { ...lane, severity: { cap: 'minor' } })[0], null);
+
+  const [asked, askedReason] = ceiling({ claim: 'Does the build job still install from the lockfile?' });
+  assert.equal(asked, null);
+  assert.doesNotMatch(askedReason, /--severity/);
+
+  assert.equal(ceiling({ anchor: 'stale-consumer' })[0], null);
+  assert.equal(ceiling({ anchor: 'stale-consumer' }, undefined, { ...verified, impactTraced: true })[0], 'blocking');
+});

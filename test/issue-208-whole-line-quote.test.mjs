@@ -17,7 +17,7 @@ const bundle = join(root, 'plugins/review-voice/dist/review-voice.mjs');
 const description =
   '## Summary\nRenames the notes routes in every menu.\nNo code changes.\n\n' +
   '## Checklist\n- [ ] Tests: not applicable\n- Docs updated for the new routes\n\n' +
-  'The archive keeps its old layout. Archive moves later.';
+  'The archive keeps its old layout. Archive moves later.\n\n**Checklist:**\n- Docs reviewed';
 
 function checkIntent(statements) {
   const dir = mkdtempSync(join(tmpdir(), 'rv-issue-208-'));
@@ -55,4 +55,14 @@ test('#208: a short sentence that shares its line with another still drops', () 
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout).statements.map(({ id }) => id), ['int_001']);
   assert.match(result.stderr, /Dropped statement int_002 \(statements\[1\]\.reason must be at least 4 words/);
+});
+
+test('#208: a line that is only a label is not kept as a quote', () => {
+  const result = checkIntent([
+    { id: 'int_001', kind: 'goal', statement: 'Notes routes are renamed in every menu.', quote: 'Renames the notes routes in every menu.' },
+    { id: 'int_002', kind: 'qa', statement: 'The checklist names testing.', quote: '**Checklist:**' },
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).statements.map(({ id }) => id), ['int_001']);
+  assert.match(result.stderr, /Dropped statement int_002 \(statements\[1\]\.quote must be at least 4 words/);
 });

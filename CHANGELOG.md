@@ -172,9 +172,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The command the legacy-tier hint prints now works: `score --severity
   <id>=<tier>` may raise a verified finding whose reach is unknown, up to the
-  tier the analyst requested, and records "raised at <tier> by an explicit
-  owner override" in the reason. Any other raise, and a restatement, is still
-  refused. (#216)
+  tier the analyst requested and within its lane's cap, and records "raised at
+  <tier> by an explicit owner override" in the reason. A question-framed claim
+  or an untraced stale consumer gets neither the hint nor the raise. Any other
+  raise, and a restatement, is still refused. (#216)
 
 - `check-intent` keeps a quote under four words when it fills a whole line of
   the description, such as `No code changes.` on its own line or a whole list

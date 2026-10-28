@@ -119,6 +119,8 @@ function sentencesOf(description: string): Sentences {
  * sentences or a whole list item, so a short quote stands on its own (#208).
  */
 function isWholeLine(wanted: string, sentences: Sentences): boolean {
+  // A line that is only a label (`**Testing:**`) states nothing.
+  if (LEAD_LABEL.exec(wanted)?.[0] === wanted) return false;
   return sentences.lines.some(
     ({ from, to }) => sentences.starts.has(from) && sentences.ends.has(to) && sentences.text.slice(from, to) === wanted,
   );
