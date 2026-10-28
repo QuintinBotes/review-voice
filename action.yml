@@ -1,0 +1,116 @@
+name: Review Voice
+description: Run one Review Voice review for the pull request that triggered the workflow.
+inputs:
+  mode:
+    description: Cost mode (auto, fast, standard or thorough).
+    default: auto
+  post:
+    description: Post the review to the pull request. Also needs writes.github_posting_enabled in the repository config.
+    default: 'false'
+  anthropic-api-key:
+    description: Anthropic API key. When empty the action skips.
+    required: false
+    default: ''
+  github-token:
+    description: Token used to read the pull request and, when posting, to author the review.
+    default: ${{ github.token }}
+  claude-code-version:
+    description: Version of @anthropic-ai/claude-code to install.
+    default: 2.1.273
+  config:
+    description: Repository config file. A path other than the default is copied over it before the run.
+    default: .review-voice/config.yaml
+runs:
+  using: composite
+  steps:
+    - name: Refuse pull_request_target on the pull request head
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+      run: |
+        if [ "$EVENT_NAME" = "pull_request_target" ]; then
+          head_sha=$(jq -r '.pull_request.head.sha // empty' "$GITHUB_EVENT_PATH")
+          if [ -n "$head_sha" ] && [ "$(git rev-parse HEAD)" = "$head_sha" ]; then
+            echo "::error::Refusing to run under pull_request_target with the pull request head checked out: that runs untrusted code with secrets. Use the pull_request event."
+            exit 1
+          fi
+        fi
+
+    - name: Decide whether to run
+      id: gate
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        API_KEY: ${{ inputs.anthropic-api-key }}
+      run: |
+        skip() {
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          echo "Review Voice skipped: $1" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        }
+        case "$EVENT_NAME" in pull_request | pull_request_target) ;; *) skip "not a pull request event." ;; esac
+        [ -n "$API_KEY" ] || skip "no Anthropic API key is available (fork pull requests receive no secrets)."
+        echo "skip=false" >> "$GITHUB_OUTPUT"
+        echo "pr=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")" >> "$GITHUB_OUTPUT"
+
+    - if: steps.gate.outputs.skip != 'true'
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      with:
+        node-version: 22
+
+    - if: steps.gate.outputs.skip != 'true'
+      shell: bash
+      env:
+        CLAUDE_CODE_VERSION: ${{ inputs.claude-code-version }}
+      run: npm install -g "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+
+    - if: steps.gate.outputs.skip != 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/review-voice
+        key: review-voice-${{ github.repository }}-${{ github.run_id }}
+        restore-keys: review-voice-${{ github.repository }}-
+
+    - name: Review
+      id: review
+      if: steps.gate.outputs.skip != 'true'
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        REVIEW_VOICE_DATA_DIR: ${{ runner.temp }}/review-voice
+        PR: ${{ steps.gate.outputs.pr }}
+        MODE: ${{ inputs.mode }}
+        POST: ${{ inputs.post }}
+        CONFIG: ${{ inputs.config }}
+      run: |
+        mkdir -p "$REVIEW_VOICE_DATA_DIR"
+        if [ "$CONFIG" != ".review-voice/config.yaml" ]; then
+          mkdir -p .review-voice
+          cp "$CONFIG" .review-voice/config.yaml
+        fi
+        args=(review --pr "$PR" --repository "$GITHUB_REPOSITORY" --mode "$MODE" --json)
+        [ "$POST" = "true" ] && args+=(--post)
+        report="$REVIEW_VOICE_DATA_DIR/report.json"
+        set +e
+        node "$GITHUB_ACTION_PATH/plugins/review-voice/dist/review-voice.mjs" "${args[@]}" > "$report"
+        code=$?
+        set -e
+        {
+          echo "## Review Voice"
+          if jq -e . "$report" > /dev/null 2>&1; then
+            jq -r '"Verdict: \(.verdict.event // .verdict.action // "none")", "Findings: \((.findings // []) | length) posted, \((.held // []) | length) held", "Posted: \(.posted // false)\(if .carried then " (carried)" else "" end)", "Review: \(.reviewUrl // "n/a")", "Mode: \(.plan.mode // "n/a")", "Cost: $\(.costUsd // "n/a") in \(.seconds // "n/a") s"' "$report"
+            echo
+            echo '<details><summary>Report</summary>'
+            echo
+            echo '```json'
+            cat "$report"
+            echo '```'
+            echo '</details>'
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+        case "$code" in
+          3) echo "Review Voice: the head moved during the review; a newer run covers it." >> "$GITHUB_STEP_SUMMARY"; code=0 ;;
+          4 | 6) echo "Review Voice: CI is pending or needs a rerun, so no review was posted." >> "$GITHUB_STEP_SUMMARY"; code=0 ;;
+        esac
+        exit "$code"
