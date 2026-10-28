@@ -749,9 +749,52 @@ A negative precedent means this reviewer has dismissed something like this
 before. It lowers the score; it does not refute a verified defect. If a
 candidate clears the threshold anyway, emit it.
 
+## Step 4b - Challenge every eligible finding
+
+Skip this step when `eligible[]` is empty.
+
+Every eligible finding goes to a fresh `challenger` agent that never sees the
+verifier's output (ADR 0024). The evidence-verifier and the second pass both
+start from the analyst's framing; the challenger starts from the claim and the
+code, tries to refute it, and confirms the line. Only a `confirmed` verdict
+with the line confirmed, or moved, lets a finding through.
+
+Write the JSON `RV score` printed to `<tmpdir>/scores.json`, then run
+`RV challenge --scores <tmpdir>/scores.json --candidates <tmpdir>/checked.json --diff-file <tmpdir>/diff.patch --emit-prompts`,
+adding `--intent <tmpdir>/intent.json` when step 1f wrote one. It prints
+`{"prompts": [{"candidate_id", "prompt"}]}`, one per eligible finding.
+
+Launch the `challenger` agent **once per prompt**, with that prompt as it is.
+**Do not add the verifier's reasoning, confidence or evidence, the analyst's
+evidence, the score, or your own view of the finding.** That framing is what
+the challenger exists to break, and a challenger shown it agrees with it. Each
+returns `{"verdicts": [...]}` with one verdict; gather every verdict into one
+`{"verdicts": [...]}` and pipe it into
+`RV challenge --scores <tmpdir>/scores.json --candidates <tmpdir>/checked.json --diff-file <tmpdir>/diff.patch --out <tmpdir>/scores.challenged.json`.
+
+- Exit 0: `confirmed` with `line_ok` stays eligible. `confirmed` with
+  `corrected_line` is moved by the `reanchor` rules and the editor renders it
+  at the new line; a move `reanchor` would refuse holds the finding as
+  `challenge-partly`. `partly` holds it as `challenge-partly` and `refuted` as
+  `challenge-refuted`, each with the challenger's reason. Held findings leave
+  `eligible[]` for `challengeHeld[]`, and `challenge.moved` lists each move.
+- Exit 2: it names every verdict it refused: an eligible finding with no
+  verdict, a verdict for one that is not eligible, or a verdict whose label
+  contradicts its fields, such as `confirmed` with no `decisive_evidence`.
+  **Relaunch the challenger for the named findings once with the schema
+  restated**, and do not edit its output. If the second attempt is also
+  refused, hold those findings: they are not posted.
+
+A challenger cannot raise a tier. A worse impact it traced is in its `reason`
+only; the step 3c tie-break is the one way a tier rises.
+
+From here on, `<tmpdir>/scores.challenged.json` is the score file: steps 5 and
+6 read it wherever they say "the JSON `RV score` printed".
+
 ## Step 5 - Edit
 
-Launch the `concise-editor` agent with each surviving `eligible[]` entry. Each
+Launch the `concise-editor` agent with each `eligible[]` entry of the
+challenged scores from step 4b. Each
 carries what the editor writes from - `claim`, `failureMode`, `evidence`, the
 derived `severity` - and a `fix` object. It returns the rendered review and
 nothing else.
@@ -769,6 +812,11 @@ earlier comment. **It is never a reply on that comment's thread**, and nothing
 resolves the thread: what remains is posted, if at all, as one more inline
 comment in the normal review, through the same single create-review request as
 every other finding.
+
+Before launching it, run `RV retrieve --text "<the first eligible claim>"` once.
+When its output has `baseline: true`, no review history has been synced: pass
+its `voice` to the editor along with `baseline: true`, and say in the review
+summary that the baseline voice was used. Otherwise pass neither.
 
 **Inline the candidate JSON for each eligible entry. Do not pass a file path.**
 The editor declares no tools at all, deliberately: its own authority limit - that
@@ -822,8 +870,12 @@ stray directory and another project's notes took the reviewed count from 11 to
   `Absence contradicted (not posted)` and then one line per entry:
   `[severity] path:line - claim (found: <found>)`. The verifier confirmed them
   but the repository holds what the claim says is absent; they are never
-  posted either. Then
-  record it. Write the scored candidates to a temporary file and pass it:
+  posted either. When `challengeHeld[]` from step 4b is not empty, print after
+  that a line `Held by the challenge (not posted)` and then one line per entry:
+  `[severity] path:line - text (verdict: reason)`. Then
+  record it. Write the scored candidates, the challenged scores' `eligible[]`
+  so a finding step 4b moved carries its category at its new line, to a
+  temporary file and pass it:
   `RV record --repository <owner/repo> --base <ref> --head <sha> --candidates <file>
   --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --stages <file>` with the validated output on
   stdin. Only when step 3d produced a non-empty `bodyFindings` array, add
@@ -881,10 +933,12 @@ stray directory and another project's notes took the reviewed count from 11 to
 
   Pass every candidate that was held back rather than reported with
   `--held <file>` (an array of `{path, line, verdict, source, reason, text}`, verdict
-  one of `partly`, `refuted`, `unverified`, `repeat`, `below-gate`): the
+  one of `partly`, `refuted`, `unverified`, `repeat`, `below-gate`,
+  `challenge-partly`, `challenge-refuted`): the
   `droppedAsRepeat` from step 2 as `repeat`, any cross-check result of PARTLY or
-  REFUTED, each `belowGate` entry from step 4 as `below-gate`, and each
-  `unverified` entry from step 4 as `unverified`. Give each
+  REFUTED, each `belowGate` entry from step 4 as `below-gate`, each
+  `unverified` entry from step 4 as `unverified`, and every `challengeHeld[]`
+  entry from step 4b as it is. Give each
   entry `text`, the candidate's claim, so the next review can match on wording. Malformed
   entries exit 2. `/review-voice:explain` lists them under "Held back".
 

@@ -84,8 +84,7 @@ review-voice/
 │   ├── .claude-plugin/plugin.json
 │   ├── commands/                        # review, init, sync, status, feedback,
 │   │                                    #   calibrate, explain, policy, purge
-│   ├── agents/                          # diff-analyst, static-evidence-interpreter,
-│   │                                    #   evidence-verifier, precedent-ranker,
+│   ├── agents/                          # diff-analyst, evidence-verifier,
 │   │                                    #   concise-editor
 │   ├── skills/review-voice-policy/       # policy authoring guidance
 │   ├── src/                             # TypeScript: cli, git, evidence, store,

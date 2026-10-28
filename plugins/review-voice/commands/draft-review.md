@@ -27,7 +27,8 @@ RV verdict --repository <owner/repo> --pr <number> --head <sha> [--run <id>] < <
 `--run` defaults to the newest recorded run of that pull request. Nothing is
 sent. The JSON carries `event`, `action`, `reasons`, `head`, `ci`, `held`,
 `complexity`, `humanReviewNote`, `wouldHaveEvent`, `wouldHaveSummary`,
-`staleRequestChanges`, `payload` and `preview`.
+`staleRequestChanges`, `annotations`, `carriedReviewUrl`, `payload` and
+`preview`.
 
 `RV verdict` computes the whole decision - event, action, reasons, CI, the
 complexity cap, held findings and the payload preview - and never posts. A
@@ -35,6 +36,33 @@ loop that drives reviews should call it rather than re-implement these rules.
 Exit codes: 0 ready, 2 nothing to post or re-check (or a bad invocation), 3
 head moved, 4 CI still running on an approval, 5 CI red on a re-check, 6 CI
 needs a rerun.
+
+The settings under `verdict:` in `.review-voice/config.yaml` (docs/adr/0028)
+change some of the rules below; the defaults are the rules as written:
+
+- `ci_pending: proceed` approves while CI is still running instead of waiting.
+- `ci_red: annotate` keeps the event on red CI instead of capping an approval.
+- `ci_needs_rerun: annotate` posts the code verdict instead of holding it.
+- `review.human_review.cap_approval: false` lets a clean high-complexity
+  change approve; `humanReviewNote` and the would-have fields still come back.
+- `carry_approval_on_unchanged: true` carries the owner's standing approval
+  (below).
+- `recheck_thread_before_post: true` makes every `post` re-check the thread
+  (step 3).
+
+`--recheck` still asks only whether CI is green.
+
+- **Annotations.** Under an `annotate` setting, `annotations` holds a line
+  such as ``Heads up: `build` failing on this head.``, naming at most five
+  checks. It is appended to the posted body, each line on its own, and it is
+  in the preview. It is not part of the idempotency key, so a CI change on
+  the same head does not make the same review a second post.
+- **A carry.** `action: "carry"` means the scope is unchanged since the
+  commit the owner approved, that approval still stands, and this review
+  would approve anyway. `event` and `payload` are null, exit 0, and there is
+  nothing to confirm. Tell the user their approval (`carriedReviewUrl`)
+  stands and stop. `post` gives the same answer as `status: "carried"` with
+  `reviewUrl`, and sends nothing.
 
 - **The event** is fixed in code from the severities of the findings that will
   post: none or only `nit` approves, `minor` or `question` comments,
@@ -124,13 +152,18 @@ refuses without sending when:
 - the head moved (exit 3), an approval is waiting on CI (exit 4), or CI needs
   a rerun (exit 6, for every event);
 - the same review of the same head was already sent, or an earlier attempt got
-  no definite answer from GitHub and may have posted.
+  no definite answer from GitHub and may have posted;
+- with `--recheck-thread` (or `verdict.recheck_thread_before_post: true`), a
+  finding in the payload was raised on the thread by someone else after the
+  run was recorded (exit 8, `refused: "thread-changed"`, with each finding's
+  `path`, `line`, `raisedBy` and `commentUrl`). Do not post. Tell the user who
+  raised what, and run the review again without those findings.
 
 For an APPROVE, head and CI are re-read immediately before the request; a
 change between the two refuses the post.
 
 The idempotency key is the repository, pull request, head and a hash of the
-payload. It is written to the audit log as `review_post_attempted` before the
+payload without its annotations. It is written to the audit log as `review_post_attempted` before the
 request, and every outcome is audited: `review_post_sent`,
 `review_post_refused` with the reason, `review_post_failed` with GitHub's
 status. Report a failure as GitHub stated it; GitHub refuses an approval of

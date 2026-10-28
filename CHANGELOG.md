@@ -5,6 +5,238 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `review --pr <n> [--repository <owner/repo>] [--mode <mode>] [--post]
+  [--no-recheck-thread] [--expect-head <sha>] [--out <dir>] [--since <sha>]
+  [--full] [--json]` reviews one pull request end to end. It walks a fixed stage table, calling the
+  existing command for every step and check and launching each agent through
+  the confined runner in a worktree of the head, with base copies and history
+  of the changed files on disk. A refused agent output is relaunched once, and
+  a second refusal stops the run with exit 7 and nothing recorded. An
+  unchanged scope carries the earlier run. The head is checked again before
+  `record` (exit 3), and `--expect-head` names the head the caller expects.
+  The head checkout runs no repository code: hooks, LFS filters, fsmonitor and
+  submodules are off. The worktree is removed on every exit, SIGINT and
+  SIGTERM included. `--post` posts through `post` and its guards, re-reading
+  the thread first unless `--no-recheck-thread` is given.
+  `REVIEW_VOICE_NO_COMMANDS=1` skips the static evidence and second-pass
+  commands. Recorded stages now keep each agent's model, one per call, and its
+  cost. In `fast` mode a challenger's corrected line cannot land on an
+  unchallenged nit. Fixes #207. (ADR 0022)
+
+- A composite GitHub Action (`action.yml`) runs `review` for the pull request
+  that triggered the workflow, posts only when `post: true` and the repository
+  config allow it, skips cleanly for forks and a missing key, and refuses
+  `pull_request_target` on the head (ADR 0031). `docs/ACTION.md` explains it.
+
+- `plan --files <files.json> --diff-file <diff.patch> [--mode]` prints the
+  stage plan a cost mode resolves to: which review stages run and on which
+  model. `fast`, `standard` and `thorough` follow the table in the spec, and
+  `auto` picks `fast` when no production source changed (tests, documentation,
+  generated files and configuration such as YAML, JSON, TOML, `.env` and
+  lockfiles do not count; `.github/workflows/` does), `thorough` when
+  complexity is high or more than 150 production lines changed, and `standard`
+  otherwise. Verification always runs, and a finding above a nit always gets a
+  challenge. `review.mode` and `review.models` in `config.yaml` set the default
+  mode and a model per stage; an unknown value warns and is ignored. (ADR 0025)
+
+- `docs/WATCHER.md` specifies Review Voice as a watcher and reviewer that runs
+  end to end without a host: a `review` driver with a confined headless agent
+  runner, configured analyst lanes, an independent challenge before posting,
+  cost modes, a `queue` and `watch` with per-head state, configurable verdict
+  policies, outcome tracking for posted findings, team profiles and a GitHub
+  Action. ADRs 0021 to 0031 record the decisions.
+
+- `outcomes [--repository <owner/repo>] [--since <Nd>] [--json]` follows each
+  inline comment Review Voice posted to an outcome and stores it in a new
+  `finding_outcomes` table. `fixed` (the anchored lines changed and the thread
+  was resolved or the author agreed) and `dismissed` (a rejecting reply, or the
+  owner's `dismiss`) are strong; `resolved`, `outdated`, `open` and `unknown`
+  are weak, and an unanswered comment is never `dismissed`. It reads review
+  threads, replies and later commits and writes nothing to GitHub. (ADR 0029)
+
+- `evaluate` reports `posted_findings_tracked`, `posted_fixed_rate` and
+  `posted_dismissed_rate` over strong outcomes only, and with `--json` a
+  `posted_breakdown` by severity and by lane. They are reported, not gated.
+  (ADR 0029)
+
+- `identity.reviewers` pools several reviewers' history into one corpus. `sync`
+  and `consent-plan` treat every listed login the way they treat the owner,
+  each stored event keeps its actual author, and retrieval weights them
+  equally. `owner_reviewer` stays the only policy authority and defaults to the
+  first reviewer; without `reviewers` the corpus is the owner's alone, as
+  before. (ADR 0030)
+
+- With no synced history, `retrieve` returns `baseline: true` and `voice`, the
+  shipped `templates/voice.baseline.md`, and the editor writes from it. `status`
+  prints `Corpus: baseline voice in use (no synced history)` or the event and
+  reviewer counts. (ADR 0030)
+
+- `sync --since <Nd>` limits a sync to pull requests updated in the last N
+  days, and `sync --quick` is the first-sync preset `--target 50 --since 90d`.
+  It needs the same consent plan as `sync`, and `/review-voice:init` offers it.
+  (ADR 0030)
+
+- Verdict policies: `verdict.ci_pending` (`wait` | `proceed`), `verdict.ci_red`
+  (`cap` | `annotate`), `verdict.ci_needs_rerun` (`hold` | `annotate`),
+  `review.human_review.cap_approval` and
+  `verdict.carry_approval_on_unchanged` make the CI, complexity and
+  unchanged-scope rules settings whose defaults are the old rules. `annotate`
+  keeps the event and appends `Heads up: <checks> failing on this head.` or
+  `Heads up: <checks> need a rerun.` to the posted body, naming at most five
+  checks as inline code, sorted; `verdict` reports it in `annotations`. The
+  idempotency key leaves the note out, so a CI change on the same head does
+  not make the same review a second post. The CI re-read before an approval
+  applies the same settings. A carry needs a clean approval and the owner's
+  standing approval of the commit the unchanged scope is measured from; it
+  returns `action: "carry"` with `carriedReviewUrl`, and `post` sends nothing,
+  prints `{carried: true, reviewUrl}`, and with `--confirm` records
+  `review_carried`.
+  `--recheck` still asks for green CI. A moved head, the single writer
+  endpoint and the idempotency key are unchanged. (ADR 0028)
+
+- `post --recheck-thread`, or `verdict.recheck_thread_before_post: true`,
+  re-reads the thread as `thread` does just before the approval's head and CI
+  re-read, and refuses with the new exit code 8
+  (`{refused: "thread-changed", findings}`) when someone else raised one of
+  the findings after the run was recorded. It matches the recorded
+  candidate's claim and failure mode by the repeat rule
+  `check-candidates --thread` uses, and ignores replies in threads the tool
+  started. `thread` output now carries each comment's `url`, and `createdAt`
+  for review bodies and conversation comments. (ADR 0028)
+
+- The `review_post_sent` audit row records `cappedByCi`. (ADR 0028)
+
+- Analyst lanes: `review.lanes` in `config.yaml` adds analysts beside the
+  built-in `diff` lane, each with an agent, a candidate id prefix, an
+  eligibility rule (`min_changed_source_lines`, `paths`, and `exclude_kinds`,
+  which replaces the kinds of file left out of the line count) and a
+  severity rule (`cap`, and `escalate` on `blocker_confirmed`). An invalid lane
+  warns and is dropped. `lanes --files <files.json> --diff-file <diff.patch>`
+  prints which lanes run on a change and why. Candidates take optional `lane`
+  and `blocker_class`; `check-candidates` refuses a lane candidate whose id
+  lacks its lane's prefix, or that names an unknown lane. Verification takes
+  optional `blocker_confirmed`. `score` applies the lane rule after deriving
+  the tier: a cap only lowers it, and an escalation also needs traced impact at
+  confidence 0.85. Every score entry carries its `lane`. The new
+  `structure-analyst` agent ships for a `structure` lane. (ADR 0023)
+
+- `challenge` gates every eligible finding behind an independent challenger
+  (ADR 0024). `--emit-prompts` prints one `challenger` prompt per eligible
+  finding, with its claim, failure mode, category, location and cited intent
+  but never the verifier's reasoning, confidence or evidence. Given the
+  verdicts on stdin, it refuses a set that skips a finding or whose labels
+  contradict their fields, keeps `confirmed` findings, moves a
+  `corrected_line` through the `reanchor` rules, and holds the rest in
+  `challengeHeld[]` as `challenge-partly` or `challenge-refuted`. `record
+  --held` accepts both verdicts, and `check-candidates --held-from` holds a
+  later repeat back like `partly` and `refuted`. `/review-voice:review` runs
+  the step after scoring. (ADR 0024)
+
+- `queue [--json] [--source <s>]... [--max <n>]` lists the open pull requests
+  in the allowlist that need the owner's review, oldest first: review requests,
+  assignments, team requests from `queue.teams`, follow-ups (a recorded run
+  whose head has since moved) and pull requests whose latest own review was
+  dismissed. Each entry is `REVIEW`, `VERDICT-ONLY` (a run is recorded at the
+  head but nothing was posted), `RECHECK-CI` (the review posted at the head was
+  a `COMMENT` capped by red CI) or `SKIP` with the `queue.skip` rule that
+  matched: `own`, `drafts`, `authors`, `author_patterns` (bots, unless they
+  requested the owner personally), `assigned_to` or `approved_at_head_by`. At
+  most `queue.max_per_pass` review entries are listed; the rest are reported as
+  not reached. It reads only. (ADR 0026)
+
+- `repositories.include` accepts `owner/*` for every repository of one owner,
+  for `queue` only.
+  A bare `*`, `*/*` or any other glob is refused by the client and skipped from
+  the config with a warning. The client may send one request outside a
+  repository path, `GET /search/issues`, with a query it builds itself from a
+  typed source, and drops every result outside the allowlist before reading
+  anything else about it. `sync`, `consent-plan` and `status` read only
+  repositories listed by name: they skip an `owner/*` entry with a note on
+  stderr instead of expanding it, and `sync` exits 2 when every entry is a
+  pattern. (ADR 0026)
+
+- `sync` infers an outcome for each collected inline comment from what it
+  already fetched, with no extra request: a reply turning the comment down is
+  `dismissed` and strong, and anchored lines a later commit changed are
+  `accepted`, strong when someone agreed in reply and weak otherwise. Silence
+  stays `unknown`, never negative. A re-read pull request updates an outcome it
+  can now see and keeps one it no longer can. Retrieval weighs strong outcomes
+  and treats a weak one as `unknown`. Thread resolution is not read during
+  `sync`. (ADR 0004) (#200)
+
+### Fixed
+
+- `config.example.yaml` no longer lists keys that `loadConfig` never read
+  (`version`, `repositories.mode` and `exclude`, `bootstrap`, `privacy`,
+  `sync`, `review.no_findings_response`, `review.suppress_hedge_phrases` and
+  `writes.require_preview_and_confirmation`). `review.confidence_threshold` and
+  `review.final_score_threshold` are now read as the defaults for `score
+  --min-confidence` and `--min-score`, and the example shows 0.68 for the
+  latter. An unknown top-level key in `config.yaml` warns. (#197)
+
+- `policies/baseline-global.yaml` is now the broadest policy layer, so a new
+  install starts from it; a narrower layer can still only tighten it, and a
+  missing file falls back to the built-in limits. (#198)
+
+- Only the owner's own feedback counts as the owner signal that lets `calibrate`
+  mark a rule activatable; other actors still inform voice and precedent.
+  (#203)
+
+- The GitHub client sends the credential only to the API origin: a request or
+  pagination link to another host is refused, and a link contributes only its
+  query to the path just read. A path with a dot segment or an encoded dot,
+  slash or backslash is refused, the allowlist is checked on the resolved path,
+  and GitHub's `/repositories/{id}/...` form, which names no repository, is
+  refused. (ADR 0026)
+
+- `agent --name <agent> --model <model> --schema <file.json> [--cwd <dir>]
+  [--timeout <seconds>]` runs one agent as its own `claude -p --restricted`
+  process in the clone and prints its schema-valid output with the cost and
+  seconds. Agents get read-only file tools only (`Read`, `Grep`, `Glob`): a
+  declared `Bash(git:*)` is dropped, because git options can run arbitrary
+  commands, and any other tool is refused before anything starts. A call past
+  its timeout (default 10 minutes, at most 3600 seconds) is killed with
+  everything it started, as is every live agent when the CLI is interrupted.
+  `REVIEW_VOICE_FAKE_AGENTS=<dir>` serves canned output instead, for tests.
+  `doctor` reports whether `claude` is installed, without failing when it is
+  not. (ADR 0021)
+
+- `record` keeps each candidate's `lane` (default `diff`) and `blocker_class` in
+  the stored candidates, and each stored finding carries the lane of the
+  candidate it came from, so `evaluate --json` reports precision per lane
+  instead of counting every posted finding under `diff`. (#201, ADR 0023)
+
+- The Posting section of `docs/ARCHITECTURE.md` describes what `verdict` and
+  `post` do today: the guard order, the verdict policies, carry, the thread
+  re-check, the idempotency key and the audit rows, instead of saying posting is
+  not implemented. (#202)
+
+- `post --recheck-thread` ignores a comment that only quotes the tool's own
+  earlier text: blockquote lines are dropped before matching, and a comment
+  whose remaining text is contained in a review or comment the token's user
+  posted no longer holds the post with exit 8. (#204)
+
+- `challenge --candidates` reads the `{"kept": [...]}` file `check-candidates`
+  writes, as well as `{"candidates": [...]}` and a bare list. Given the
+  `checked.json` that `commands/review.md` passes, each challenger prompt had
+  lost the candidate's category and the intent statement it cites. (ADR 0024)
+  (#206)
+
+- A SIGKILL to the CLI no longer leaves agent processes running. Each `claude`
+  runs under a small node wrapper that leads its process group and kills the
+  group within two seconds of the CLI's pid going away. (ADR 0021) (#205)
+
+### Removed
+
+- The `precedent-ranker` and `static-evidence-interpreter` agents. No command,
+  skill or pipeline stage launched either: precedent ranking and static
+  evidence parsing run in the CLI. They are recoverable from git history.
+  (#199)
+
 ## [1.18.0] - 2026-10-24
 
 ### Added

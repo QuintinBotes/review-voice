@@ -35,6 +35,11 @@ so the allowlist is what actually bounds access.
 
 ## 4 - Show the consent plan
 
+A team can pool several reviewers' history into one voice: ask whether to list
+more logins under `identity.reviewers` in step 5. The owner stays the only
+policy authority, and each listed login is read the way the owner is, so the
+consent plan lists them all.
+
 Run `RV consent-plan --owner <login> --repo <owner/repo> ...` and show the
 result in full: what will be read, where it will be stored, what is discarded,
 and that no write operation occurs.
@@ -74,6 +79,13 @@ Show the numbers. If the corpus is small, say so plainly rather than implying
 the policy rests on more than it does. Below roughly 30 events, tell the user
 explicit feedback via `/review-voice:feedback` will matter more than history
 for a while.
+
+## 6b - Offer a quick start
+
+For a first try, offer `RV sync --quick`: at most 50 events from pull requests
+updated in the last 90 days, followed by `/review-voice:calibrate`. It needs the
+same consent as a full sync. Without any sync, reviews use a generic baseline
+voice until history exists.
 
 ## 7 - Sync only on a second confirmation
 

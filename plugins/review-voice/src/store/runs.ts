@@ -38,6 +38,8 @@ export interface StoredFinding {
    * follow-up is posted as an ordinary inline comment.
    */
   partlyAddressed?: PartlyAddressedFinding | undefined;
+  /** The lane of the candidate this finding came from; `diff` when none (docs/adr/0023). */
+  lane?: string | undefined;
 }
 
 export interface PartlyAddressedFinding {
@@ -90,8 +92,20 @@ export function partlyAddressedOf(value: unknown): PartlyAddressedFinding | unde
  * `owner-declined` is the owner's answer to a held finding put to them: not
  * worth posting. It is set after the run by `decline` (#173) and holds a
  * repeat back like `refuted`, including on a related pull request.
+ *
+ * `challenge-refuted` and `challenge-partly` come from the independent
+ * challenge (docs/adr/0024), and hold a later repeat back like `refuted` and
+ * `partly`.
  */
-export type HeldVerdict = 'partly' | 'refuted' | 'unverified' | 'repeat' | 'below-gate' | 'owner-declined';
+export type HeldVerdict =
+  | 'partly'
+  | 'refuted'
+  | 'unverified'
+  | 'repeat'
+  | 'below-gate'
+  | 'owner-declined'
+  | 'challenge-refuted'
+  | 'challenge-partly';
 
 export interface HeldFinding {
   path: string;
@@ -105,7 +119,16 @@ export interface HeldFinding {
   text?: string | undefined;
 }
 
-export const HELD_VERDICTS: readonly HeldVerdict[] = ['partly', 'refuted', 'unverified', 'repeat', 'below-gate', 'owner-declined'];
+export const HELD_VERDICTS: readonly HeldVerdict[] = [
+  'partly',
+  'refuted',
+  'unverified',
+  'repeat',
+  'below-gate',
+  'owner-declined',
+  'challenge-refuted',
+  'challenge-partly',
+];
 
 /** Null when the entry is well formed, else what is wrong with it. */
 export function heldProblem(entry: unknown): string | null {
@@ -167,6 +190,9 @@ export interface CandidateHint {
   path: string;
   line: number;
   category?: string | undefined;
+  lane?: unknown;
+  blocker_class?: unknown;
+  blockerClass?: unknown;
   /** As `score` hands it on; read with `partlyAddressedOf`. */
   possibleRepeatOf?: unknown;
 }
@@ -232,6 +258,11 @@ export interface StageTiming {
   filesRead?: number | undefined;
   /** Added and removed lines of the diff the stage read; set on `analyst` at record time. */
   diffLines?: number | undefined;
+  /** The model and cost of an agent stage the review driver ran (docs/adr/0021). */
+  model?: string | undefined;
+  /** One model per agent call, in order: the challenge stage picks one per finding. */
+  models?: string[] | undefined;
+  costUsd?: number | undefined;
 }
 
 /**
@@ -281,6 +312,16 @@ function attribute(
   return { hint: undefined, how: 'none' };
 }
 
+const laneOf = (hint: CandidateHint | undefined): string =>
+  typeof hint?.lane === 'string' && hint.lane.length > 0 ? hint.lane : 'diff';
+
+/** The stored form of a candidate: its lane (default `diff`) and blocker class are always kept. */
+function storedCandidate(hint: CandidateHint): CandidateHint {
+  const blocker = hint.blocker_class ?? hint.blockerClass;
+  const { blockerClass: _camel, ...rest } = hint;
+  return { ...rest, lane: laneOf(hint), ...(blocker === undefined ? {} : { blocker_class: blocker }) };
+}
+
 function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
   const taken = new Set<CandidateHint>();
   return splitFindings(output)
@@ -300,6 +341,7 @@ function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
         // Absent when a review ran without candidates to hand. Null is honest;
         // guessing a category from the wording would invent evidence.
         category: hint?.category,
+        lane: laneOf(hint),
         // Stated so a disagreement between what the analyst cited and what
         // shipped is visible rather than showing up as a missing category.
         ...(how === 'exact' || how === 'none' ? {} : { attributedBy: how }),
@@ -345,7 +387,7 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
     hashDiff(input.diff),
     JSON.stringify([]),
     JSON.stringify(input.precedents ?? []),
-    JSON.stringify(input.candidates ?? []),
+    JSON.stringify((input.candidates ?? []).map(storedCandidate)),
     JSON.stringify({
       output: input.output,
       findings,

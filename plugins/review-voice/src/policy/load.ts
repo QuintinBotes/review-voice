@@ -1,14 +1,26 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import type { PolicyLayer, ScopeType } from './schema.ts';
 import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publish/ci.ts';
 import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
 import { DEFAULT_STRUCTURE, type StructureConfig } from '../diff/structure.ts';
+import { DEFAULT_VERDICT_POLICY, type VerdictPolicy } from '../publish/verdict.ts';
+import { CHANGE_KINDS, MODEL_KEYS, MODES, type ChangeKind, type ModelOverrides, type RequestedMode, type Tier } from '../review/plan.ts';
+import { agentExists, DIFF_LANE, LANE_TIERS, type Lane } from '../review/lanes.ts';
+import { allowlistEntryProblem } from '../github/client.ts';
+import { defaultQueueConfig, QUEUE_SOURCES, type QueueConfig, type QueueSource } from '../queue/config.ts';
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
+  /**
+   * Logins whose review history forms the corpus (ADR 0030). Always contains
+   * the owner when there is one, so a config without `reviewers` is
+   * `[ownerReviewer]` and behaves as before.
+   */
+  reviewers: string[];
   /** Necessary for posting but nowhere near sufficient; see publish/gate.ts. */
   postingEnabled: boolean;
   /**
@@ -18,7 +30,10 @@ export interface LoadedConfig {
   ciGateChecks: GateCheck[];
   /** Stuck thresholds and rerun signatures from `ci:`; empty means the built-in defaults (docs/adr/0013). */
   ciRules: CiRules;
+  /** `owner/repo` and `owner/*` entries (docs/adr/0026). */
   allowlist: string[];
+  /** What `queue` lists and skips (docs/adr/0026). */
+  queue: QueueConfig;
   staticEvidence: { enabled: boolean; commands: { name: string; run: string; timeoutSeconds?: number }[] };
   /** A second, ideally different-model, verification pass. Off by default. */
   verification: {
@@ -41,6 +56,14 @@ export interface LoadedConfig {
   humanReview: HumanReviewConfig;
   /** Limits and opt-ins for structural review. */
   structure: StructureConfig;
+  /** `review.mode` and `review.models` (docs/adr/0025). */
+  costMode: { mode: RequestedMode; models: ModelOverrides };
+  /** `verdict:` and `review.human_review.cap_approval`; see docs/adr/0028. */
+  verdictPolicy: VerdictPolicy;
+  /** `review.lanes` after the built-in diff lane, which is always first (docs/adr/0023). */
+  lanes: Lane[];
+  /** `review.confidence_threshold` and `review.final_score_threshold`: defaults for `score` when its flags are absent. */
+  thresholds: { technicalConfidence?: number; finalScore?: number };
   layers: PolicyLayer[];
   /** Repository-supplied layers awaiting owner approval. */
   unapproved: { source: string; contentHash: string }[];
@@ -89,6 +112,12 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
   result.humanReview.testPaths = globs('test_paths') ?? result.humanReview.testPaths;
   result.humanReview.generatedPaths = globs('generated_paths') ?? result.humanReview.generatedPaths;
 
+  const cap = block['cap_approval'];
+  if (cap !== undefined) {
+    if (typeof cap === 'boolean') result.verdictPolicy.capApproval = cap;
+    else result.warnings.push('review.human_review.cap_approval must be true or false; using true.');
+  }
+
   const structure = block['structure'];
   if (structure === undefined) return;
   const signals = asRecord(structure);
@@ -127,6 +156,104 @@ function readStructure(block: Record<string, unknown> | null, result: LoadedConf
     if (typeof simplify === 'boolean') result.structure.simplify = simplify;
     else result.warnings.push('review.structure.simplify must be true or false; using the default.');
   }
+}
+
+/** An unknown mode or model key is reported and ignored, so a typo never changes what runs silently. */
+function readCostMode(review: Record<string, unknown>, result: LoadedConfig): void {
+  const mode = review['mode'];
+  if (mode !== undefined) {
+    const known = MODES.find((candidate) => candidate === mode);
+    if (known === undefined) result.warnings.push(`review.mode must be one of ${MODES.join(', ')}; using auto.`);
+    else result.costMode.mode = known;
+  }
+
+  const models = review['models'];
+  if (models === undefined) return;
+  const block = asRecord(models);
+  if (block === null) {
+    result.warnings.push('review.models must be a map of stage to model name; ignoring it.');
+    return;
+  }
+  for (const [key, value] of Object.entries(block)) {
+    const known = MODEL_KEYS.find((candidate) => candidate === key);
+    if (known === undefined) {
+      result.warnings.push(`review.models.${key} is not a stage (${MODEL_KEYS.join(', ')}); ignoring it.`);
+    } else if (typeof value !== 'string' || value.trim().length === 0) {
+      result.warnings.push(`review.models.${key} must be a model name; using the default.`);
+    } else {
+      result.costMode.models[known] = value.trim();
+    }
+  }
+}
+
+/** What is wrong with one `review.lanes` entry, or the lane it describes. */
+function parseLane(entry: unknown, taken: readonly Lane[]): Lane | string {
+  const block = asRecord(entry);
+  if (block === null) return 'must be a mapping';
+  const { name, agent, prefix } = block;
+  if (typeof name !== 'string' || !/^[a-z][a-z0-9-]*$/.test(name)) return 'name must be lower-case letters, digits and dashes';
+  if (name === DIFF_LANE.name) return 'diff is built in and cannot be redefined';
+  if (taken.some((lane) => lane.name === name)) return `name ${name} is already used`;
+  if (typeof prefix !== 'string' || !/^[a-z]+_$/.test(prefix)) return 'prefix must be lower-case letters followed by _';
+  if (taken.some((lane) => lane.prefix === prefix)) return `prefix ${prefix} is already used`;
+  if (typeof agent !== 'string' || !agentExists(agent)) return `agent ${String(agent)} is not an agent under agents/`;
+
+  const when: Lane['when'] = {};
+  if (block['when'] !== undefined) {
+    const rule = asRecord(block['when']);
+    if (rule === null) return 'when must be a mapping';
+    const min = rule['min_changed_source_lines'];
+    if (min !== undefined) {
+      if (typeof min !== 'number' || !Number.isInteger(min) || min < 0) return 'when.min_changed_source_lines must be a whole number';
+      when.minChangedSourceLines = min;
+    }
+    const paths = rule['paths'];
+    if (paths !== undefined) {
+      if (!Array.isArray(paths) || !paths.every((path) => typeof path === 'string' && path.length > 0)) return 'when.paths must be a list of globs';
+      when.paths = paths as string[];
+    }
+    const kinds = rule['exclude_kinds'];
+    if (kinds !== undefined) {
+      if (!Array.isArray(kinds) || !kinds.every((kind) => (CHANGE_KINDS as readonly unknown[]).includes(kind))) {
+        return `when.exclude_kinds must list only ${CHANGE_KINDS.join(', ')}`;
+      }
+      when.excludeKinds = kinds as ChangeKind[];
+    }
+  }
+
+  const severity: Lane['severity'] = {};
+  if (block['severity'] !== undefined) {
+    const rule = asRecord(block['severity']);
+    if (rule === null) return 'severity must be a mapping';
+    const tier = (value: unknown): Tier | undefined => LANE_TIERS.find((known) => known === value);
+    if (rule['cap'] !== undefined) {
+      const cap = tier(rule['cap']);
+      if (cap === undefined) return `severity.cap must be one of ${LANE_TIERS.join(', ')}`;
+      severity.cap = cap;
+    }
+    if (rule['escalate'] !== undefined) {
+      const escalate = asRecord(rule['escalate']);
+      const to = tier(escalate?.['to']);
+      if (to === undefined) return `severity.escalate.to must be one of ${LANE_TIERS.join(', ')}`;
+      if (escalate?.['requires'] !== 'blocker_confirmed') return 'severity.escalate.requires must be blocker_confirmed';
+      severity.escalate = { to, requires: 'blocker_confirmed' };
+    }
+  }
+  return { name, agent, prefix, when, severity };
+}
+
+/** An invalid lane is reported and dropped; the rest still load. */
+function readLanes(value: unknown, result: LoadedConfig): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    result.warnings.push('review.lanes must be a list; ignoring it.');
+    return;
+  }
+  value.forEach((entry, index) => {
+    const lane = parseLane(entry, result.lanes);
+    if (typeof lane === 'string') result.warnings.push(`review.lanes[${index}]: ${lane}; dropping the lane.`);
+    else result.lanes.push(lane);
+  });
 }
 
 /** Words that appear in nearly every failure, so alone they would turn every failure into a rerun. */
@@ -213,6 +340,131 @@ function readCiRules(block: Record<string, unknown> | null, result: LoadedConfig
   }
 }
 
+/** Each setting on its own: a bad value warns and keeps that setting's default. */
+function readVerdictPolicy(block: Record<string, unknown> | null, result: LoadedConfig): void {
+  if (block === null) return;
+  const choice = <T extends string>(key: string, options: readonly T[], fallback: T): T => {
+    const value = block[key];
+    if (value === undefined) return fallback;
+    if (typeof value === 'string' && (options as readonly string[]).includes(value)) return value as T;
+    result.warnings.push(`verdict.${key} must be one of ${options.join(', ')}; using ${fallback}.`);
+    return fallback;
+  };
+  const enabled = (key: string, fallback: boolean): boolean => {
+    const value = block[key];
+    if (value === undefined) return fallback;
+    if (typeof value === 'boolean') return value;
+    result.warnings.push(`verdict.${key} must be true or false; using ${String(fallback)}.`);
+    return fallback;
+  };
+  const policy = result.verdictPolicy;
+  policy.ciPending = choice('ci_pending', ['wait', 'proceed'], DEFAULT_VERDICT_POLICY.ciPending);
+  policy.ciRed = choice('ci_red', ['cap', 'annotate'], DEFAULT_VERDICT_POLICY.ciRed);
+  policy.ciNeedsRerun = choice('ci_needs_rerun', ['hold', 'annotate'], DEFAULT_VERDICT_POLICY.ciNeedsRerun);
+  policy.carryApprovalOnUnchanged = enabled('carry_approval_on_unchanged', DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
+  policy.recheckThreadBeforePost = enabled('recheck_thread_before_post', DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
+}
+
+const TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * The `queue:` block. A value of the wrong shape keeps the default and says
+ * so; a bad entry in a list is dropped and named.
+ */
+function readQueue(block: Record<string, unknown> | null, result: LoadedConfig): void {
+  if (block === null) return;
+  const queue = result.queue;
+
+  const list = (value: unknown, key: string): unknown[] | undefined => {
+    if (value === undefined) return undefined;
+    if (Array.isArray(value)) return value;
+    result.warnings.push(`queue.${key} must be a list; using the default.`);
+    return undefined;
+  };
+  const logins = (value: unknown, key: string): string[] | undefined => {
+    const entries = list(value, key);
+    if (entries === undefined) return undefined;
+    const kept: string[] = [];
+    for (const entry of entries) {
+      if (typeof entry === 'string' && entry.length > 0) kept.push(entry);
+      else result.warnings.push(`queue.${key}: ${JSON.stringify(entry)} is not a login; skipping it.`);
+    }
+    return kept;
+  };
+  const sourceList = (value: unknown, key: string): QueueSource[] | undefined => {
+    const entries = list(value, key);
+    if (entries === undefined) return undefined;
+    const kept: QueueSource[] = [];
+    for (const entry of entries) {
+      if (typeof entry === 'string' && (QUEUE_SOURCES as readonly string[]).includes(entry)) kept.push(entry as QueueSource);
+      else result.warnings.push(`queue.${key}: ${JSON.stringify(entry)} is not one of ${QUEUE_SOURCES.join(', ')}; skipping it.`);
+    }
+    return kept;
+  };
+  const wholeAboveZero = (key: string): number | undefined => {
+    const value = block[key];
+    if (value === undefined) return undefined;
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
+    result.warnings.push(`queue.${key} must be a whole number above zero; using the default.`);
+    return undefined;
+  };
+  const flag = (record: Record<string, unknown>, key: string): boolean | undefined => {
+    const value = record[key];
+    if (value === undefined) return undefined;
+    if (typeof value === 'boolean') return value;
+    result.warnings.push(`queue.skip.${key} must be true or false; using the default.`);
+    return undefined;
+  };
+
+  queue.sources = sourceList(block['sources'], 'sources') ?? queue.sources;
+  const teams = list(block['teams'], 'teams');
+  if (teams !== undefined) {
+    queue.teams = [];
+    for (const entry of teams) {
+      if (typeof entry === 'string' && TEAM.test(entry)) queue.teams.push(entry);
+      else result.warnings.push(`queue.teams: ${JSON.stringify(entry)} is not org/team-slug; skipping it.`);
+    }
+  }
+  queue.maxPerPass = wholeAboveZero('max_per_pass') ?? queue.maxPerPass;
+  queue.followUpDays = wholeAboveZero('follow_up_days') ?? queue.followUpDays;
+
+  if (block['skip'] === undefined) return;
+  const skip = asRecord(block['skip']);
+  if (skip === null) {
+    result.warnings.push('queue.skip must be a mapping; using the defaults.');
+    return;
+  }
+  queue.skip.authors = logins(skip['authors'], 'skip.authors') ?? queue.skip.authors;
+  queue.skip.assignedTo = logins(skip['assigned_to'], 'skip.assigned_to') ?? queue.skip.assignedTo;
+  const patterns = list(skip['author_patterns'], 'skip.author_patterns');
+  if (patterns !== undefined) {
+    queue.skip.authorPatterns = [];
+    for (const entry of patterns) {
+      try {
+        if (typeof entry !== 'string' || entry.length === 0) throw new Error('not text');
+        new RegExp(entry, 'i');
+        queue.skip.authorPatterns.push(entry);
+      } catch {
+        result.warnings.push(`queue.skip.author_patterns: ${JSON.stringify(entry)} is not a regular expression; skipping it.`);
+      }
+    }
+  }
+  queue.skip.allowBotsWhenRequested = flag(skip, 'allow_bots_when_requested') ?? queue.skip.allowBotsWhenRequested;
+  queue.skip.drafts = flag(skip, 'drafts') ?? queue.skip.drafts;
+
+  if (skip['approved_at_head_by'] !== undefined) {
+    const approved = asRecord(skip['approved_at_head_by']);
+    if (approved === null) {
+      result.warnings.push('queue.skip.approved_at_head_by must be a mapping; ignoring it.');
+    } else {
+      queue.skip.approvedAtHeadBy = {
+        logins: logins(approved['logins'], 'skip.approved_at_head_by.logins') ?? [],
+        sources: sourceList(approved['sources'], 'skip.approved_at_head_by.sources') ?? queue.skip.approvedAtHeadBy.sources,
+      };
+    }
+  }
+}
+
 function contentHash(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
@@ -255,13 +507,101 @@ function layerFromPolicyFile(text: string, source: string, fallbackKey: string):
   };
 }
 
-export function loadConfig(repositoryRoot: string): LoadedConfig {
+/** The plugin root holds `.claude-plugin/plugin.json`; src/ and dist/ sit at different depths below it. */
+function pluginRoot(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  while (!existsSync(join(dir, '.claude-plugin', 'plugin.json')) && dirname(dir) !== dir) dir = dirname(dir);
+  return dir;
+}
+
+/**
+ * The shipped baseline is the broadest layer, so a new install starts from it
+ * (docs/adr/0030). It is trusted content, so it needs no approval; a narrower
+ * layer can still only tighten it. A missing or unreadable file means the
+ * built-in limits apply.
+ */
+export function loadBaselineLayer(owner: string | null, path = join(pluginRoot(), 'policies', 'baseline-global.yaml')): PolicyLayer | null {
+  if (!existsSync(path)) return null;
+  try {
+    const doc = asRecord(parseYaml(readFileSync(path, 'utf8')));
+    if (doc === null) return null;
+    const voice = asRecord(doc['voice']);
+    const maxFindings = positiveInt(voice?.['max_findings']);
+    const maxWords = positiveInt(voice?.['max_words_per_finding']);
+    const maxTotal = positiveInt(voice?.['max_total_words']);
+    return {
+      scope: { type: 'global', key: owner ?? 'owner' },
+      source: 'policies/baseline-global.yaml',
+      requiresApproval: false,
+      ...(maxFindings === undefined ? {} : { maxFindings }),
+      ...(maxWords === undefined ? {} : { maxWordsPerFinding: maxWords }),
+      ...(maxTotal === undefined ? {} : { maxTotalWords: maxTotal }),
+      forbiddenPhrases: asStringArray(doc['forbidden_phrases']),
+      suppressedPatterns: asStringArray(doc['suppressed_patterns']),
+      priorities: asStringArray(doc['priorities']).map((category) => ({ category, weight: 'normal' })),
+    };
+  } catch {
+    return null;
+  }
+}
+
+const KNOWN_TOP_LEVEL = ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'verification', 'queue', 'writes'];
+
+/** A score gate must be a fraction in (0, 1]. */
+function readThresholds(review: Record<string, unknown>, result: LoadedConfig): void {
+  const read = (key: string): number | undefined => {
+    const value = review[key];
+    if (value === undefined) return undefined;
+    if (typeof value === 'number' && value > 0 && value <= 1) return value;
+    result.warnings.push(`review.${key} must be a number above 0 and at most 1; using the default.`);
+    return undefined;
+  };
+  const confidence = read('confidence_threshold');
+  const score = read('final_score_threshold');
+  if (confidence !== undefined) result.thresholds.technicalConfidence = confidence;
+  if (score !== undefined) result.thresholds.finalScore = score;
+}
+
+/**
+ * `identity.reviewers` pools several people's history. The owner stays the
+ * policy authority: it defaults to the first reviewer, and is always part of
+ * the pool so its own comments are never dropped.
+ */
+function readReviewers(identity: Record<string, unknown> | null, result: LoadedConfig): void {
+  const raw = identity?.['reviewers'];
+  const listed: string[] = [];
+  if (raw !== undefined) {
+    if (!Array.isArray(raw)) {
+      result.warnings.push('identity.reviewers must be a list of GitHub logins; ignoring it.');
+    } else {
+      for (const entry of raw) {
+        if (typeof entry !== 'string' || entry.trim() === '') {
+          result.warnings.push('identity.reviewers: skipped an entry that is not a login.');
+          continue;
+        }
+        const login = entry.trim();
+        if (!listed.some((existing) => existing.toLowerCase() === login.toLowerCase())) listed.push(login);
+      }
+    }
+  }
+
+  if (result.ownerReviewer === null && listed.length > 0) result.ownerReviewer = listed[0]!;
+  const owner = result.ownerReviewer;
+  if (owner !== null && !listed.some((login) => login.toLowerCase() === owner.toLowerCase())) {
+    listed.unshift(owner);
+  }
+  result.reviewers = listed;
+}
+
+export function loadConfig(repositoryRoot: string, baselinePath?: string): LoadedConfig {
   const result: LoadedConfig = {
     ownerReviewer: null,
+    reviewers: [],
     postingEnabled: false,
     ciGateChecks: [],
     ciRules: {},
     allowlist: [],
+    queue: defaultQueueConfig(),
     staticEvidence: { enabled: false, commands: [] },
     verification: { enabled: false, command: '', blockPresent: false },
     humanReview: {
@@ -273,6 +613,10 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
       structure: { ...DEFAULT_HUMAN_REVIEW.structure },
     },
     structure: { ...DEFAULT_STRUCTURE },
+    costMode: { mode: 'auto', models: {} },
+    verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
+    lanes: [DIFF_LANE],
+    thresholds: {},
     layers: [],
     unapproved: [],
     warnings: [],
@@ -283,12 +627,24 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
     try {
       const doc = asRecord(parseYaml(readFileSync(configPath, 'utf8')));
       if (doc !== null) {
+        for (const key of Object.keys(doc)) {
+          if (!KNOWN_TOP_LEVEL.includes(key)) result.warnings.push(`${key} is not a setting Review Voice reads; ignoring it.`);
+        }
         const identity = asRecord(doc['identity']);
         if (typeof identity?.['owner_reviewer'] === 'string') {
           result.ownerReviewer = identity['owner_reviewer'];
         }
+        readReviewers(identity, result);
         const repositories = asRecord(doc['repositories']);
-        result.allowlist = asStringArray(repositories?.['include']);
+        for (const entry of asStringArray(repositories?.['include'])) {
+          const problem = allowlistEntryProblem(entry);
+          if (problem === null) result.allowlist.push(entry);
+          else result.warnings.push(`repositories.include: ${problem} Skipping it.`);
+        }
+        if (doc['queue'] !== undefined && asRecord(doc['queue']) === null) {
+          result.warnings.push('queue must be a mapping; using the defaults.');
+        }
+        readQueue(asRecord(doc['queue']), result);
 
         const staticEvidence = asRecord(doc['static_evidence']);
         if (staticEvidence !== null) {
@@ -333,6 +689,12 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
 
         readCiRules(ci, result);
 
+        if (doc['verdict'] !== undefined) {
+          const verdict = asRecord(doc['verdict']);
+          if (verdict === null) result.warnings.push('verdict must be a mapping; using the defaults.');
+          readVerdictPolicy(verdict, result);
+        }
+
         const verification = asRecord(doc['verification']);
         if (verification !== null) {
           const command = verification['command'];
@@ -352,6 +714,9 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
           // The user's own config is trusted: they wrote it, in their checkout.
           readHumanReview(asRecord(review['human_review']), result);
           readStructure(asRecord(review['structure']), result);
+          readCostMode(review, result);
+          readThresholds(review, result);
+          readLanes(review['lanes'], result);
           result.layers.push({
             scope: { type: 'repository', key: repositoryRoot },
             source: '.review-voice/config.yaml',
@@ -372,6 +737,9 @@ export function loadConfig(repositoryRoot: string): LoadedConfig {
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }
   }
+
+  const baseline = loadBaselineLayer(result.ownerReviewer, baselinePath);
+  if (baseline !== null) result.layers.unshift(baseline);
 
   const policyPath = join(repositoryRoot, '.review-voice', 'policy.yaml');
   if (existsSync(policyPath)) {

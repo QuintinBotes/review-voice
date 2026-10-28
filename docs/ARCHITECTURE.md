@@ -19,6 +19,7 @@ agents. A command file orchestrates them.**
 | Candidate generation | `diff-analyst` | genuine judgment |
 | Evidence verification | `evidence-verifier` | genuine judgment |
 | Verifier tie-break | `tie-breaker` | genuine judgment, only on a dispute |
+| Independent challenge | `challenger`, verdicts checked by CLI | genuine judgment, blind to the verifier |
 | Precedent retrieval | CLI | an index query |
 | Preference scoring | CLI | **arithmetic - never ask a model to do this** |
 | Dedup and ranking | CLI | deterministic |
@@ -59,6 +60,69 @@ startup because it concerns a dependency choice the user never made.
 
 The committed bundle is a real risk: it can drift from source. CI rebuilds and
 diffs on every push, so a stale bundle cannot ship.
+
+### Agent runner
+
+`src/agents/` starts one agent per process: `runAgent(spec, prompt, cwd,
+addDirs)` runs `claude -p --restricted --strict-mcp-config` in the pull
+request's head checkout, with `agents/<name>.md` as the system prompt, the
+agent's JSON Schema, and `--add-dir` for each extra directory it may read,
+such as base copies of changed files (docs/adr/0021). Agents get read-only
+file tools only: `Read`, `Grep` and `Glob`. A `Bash(git:*)` in an agent's
+frontmatter serves the interactive host and is dropped here, because git
+options can run arbitrary commands and a tool prefix cannot narrow them.
+Any other tool is refused before a process starts. So an injected
+instruction meets an agent that can read files and do nothing else, and the
+runner appends a fixed note to every prompt saying which tools exist.
+The schema is passed with `$schema` and `$id` removed and each sibling-file
+`$ref` inlined, because claude's validator cannot load either; a `$ref` it
+could not follow is refused first. `--safe-mode` keeps CLAUDE.md, skills, commands and agents in the checkout
+from loading, the prompt always goes on stdin after the runner's note, and
+the child's environment drops GitHub tokens and `REVIEW_VOICE_*` settings.
+`runAgents` caps the calls in flight (default 4) and keeps results in input
+order. Each call has a timeout (default 10 minutes, at most an hour) and a
+32 MiB output cap, either of which kills its whole process group, and
+SIGINT or SIGTERM to the CLI kills every live group before it exits. A
+SIGKILL cannot be caught, so each claude runs under a small node wrapper that
+leads its group and kills it within two seconds of the CLI's pid going away.
+
+`REVIEW_VOICE_FAKE_AGENTS=<dir>` swaps in canned answers from
+`<dir>/<name>.<n>.json`, counting calls on disk so separate CLI processes in
+one test share the numbering. `review-voice agent` runs a single call, which
+is how the runner is exercised on its own.
+
+### The review driver
+
+`review-voice review --pr <n>` runs a whole review in a clone
+(docs/adr/0022). `src/review/stages.ts` is the stage table: prep, carry,
+intent, lanes, verify, second-pass, tie-break, score, challenge, edit, record
+and post, each naming its commands and agents. `src/review/driver.ts` walks it
+in order. Every CLI step and every check is the existing command, run in the
+same process with its output captured (`runInProcess` in `src/cli.ts`), so the
+driver holds no review logic of its own; it moves files between stages and
+applies the failure rules. A refused agent output goes back once with the
+refusal, and a second refusal stops the run with exit 7 and nothing recorded.
+Only failing candidates go back to their lane to re-anchor. A failed intent
+call carries on without intent, an unsettled dispute stays unsettled, and a
+challenger that fails holds its finding.
+
+Before the first agent, the driver adds a detached worktree of the head under
+the run directory as the agents' working directory, with hooks, LFS filters,
+fsmonitor and submodule recursion turned off so the checkout runs no code
+from the pull request. It writes the base version of each changed file to
+`base/` and its recent history to `history/<URI-encoded path>.txt`, since
+agents get no shell; a write that would clash with another path is skipped
+with a note. The worktree is removed on every exit. While a review runs, the
+driver owns SIGINT and SIGTERM: it stops every agent through the runner's
+`stopAll`, removes the worktree, then exits 130 or 143. Every stage's
+input and output stays in the run directory, with each command and its stderr
+in `commands.log`, so a stopped run can be continued by hand. The head is read
+at the start and again before `record`; a move is exit 3. In `fast` mode a nit
+or question skips the challenge, so the driver challenges the rest and puts
+those findings back in render order; they stay eligible in the score list the
+challenge reads, so a corrected line cannot land on one. `src/review/prompts.ts` holds each agent's
+prompt and output envelope; a test holds `commands/review.md` to the agents in
+the stage table.
 
 ### Diff acquisition
 
@@ -436,6 +500,24 @@ requested tier because it traced that the boundary still holds elsewhere.
 establish the answer and the author can, which is a kind of finding rather than
 a level of consequence, and no category implies it.
 
+### Analyst lanes
+
+A lane is a configured analyst: an agent file, an eligibility rule, a
+candidate id prefix and a severity rule (ADR 0023). The `diff` lane
+(`diff-analyst`, `cand_`) is built in and always runs; `review.lanes` adds
+others, such as the shipped `structure` lane (`structure-analyst`, `st_`).
+`lanes` prints which of them run on a change: a lane runs when its changed
+lines reach `min_changed_source_lines`. `productionChange` counts them: by
+default it leaves out tests, documentation, generated files and configuration
+(a kind only this count has, so the decision-point count is unchanged), a
+lane's `exclude_kinds` replaces that list, and its `paths` narrow it. Lane candidates are merged before
+`check-candidates`, which refuses a candidate whose `lane` is not configured or
+whose id lacks that lane's prefix. In `score` the lane rule runs last, on the
+tier already derived and bounded: `cap` only lowers it, and `escalate` raises
+it only when the verifier set `blocker_confirmed` and the traced-impact bar
+above holds, so a lane cannot raise a tier further than any other finding could
+rise. Every score entry names its `lane`.
+
 ### Claims of absence
 
 "X does not exist" is the cheapest claim in a review to check and the most
@@ -711,6 +793,24 @@ volume: three vague observations are not better evidence than one naming a line.
 A negative precedent lowers a candidate's score but cannot refute a verified
 defect. Precedent adjusts preference; it never manufactures or unmakes truth.
 
+### The independent challenge
+
+The evidence-verifier and the second pass both start from the analyst's
+framing. After `score`, each eligible finding goes to a `challenger` that is
+given the claim, the failure mode, the location, the diff and the intent the
+finding cites, and never the verifier's reasoning, confidence or evidence.
+`RV challenge --emit-prompts` builds those prompts from an allowlist of fields,
+so nothing added to a score later reaches the challenger by accident.
+
+`RV challenge` then applies the verdicts. A set that skips an eligible finding,
+or a verdict whose label contradicts its fields, is refused, as `reconcile`
+refuses a second-pass verdict. `confirmed` with the line confirmed passes;
+`confirmed` with a corrected line moves through the same check `reanchor` uses;
+everything else is held as `challenge-partly` or `challenge-refuted` and marked
+ineligible in `scores`, so neither validation nor posting can match a rendered
+finding to it. A challenger cannot raise a tier. See
+[ADR 0024](adr/0024-an-independent-challenge-gates-every-posted-finding.md).
+
 ### Fixes are verified separately
 
 A defect can be real while its suggested repair is unsafe. The verifier traces
@@ -781,6 +881,25 @@ a GraphQL query, for review-thread state that REST does not expose. Only a
 document that is exactly one of a fixed set of queries is sent, with only the
 variables it declares and the repository from the allowlist; anything else is
 refused before it is sent (ADR 0018).
+
+Search is the one read that can name any repository, so it has its own door
+(ADR 0026). `searchPullRequests` sends `GET /search/issues` with a query it
+builds from a typed source (`requested`, `assigned`, `reviewed`, or
+`team:<org>/<slug>` with both names checked), always with `is:pr is:open
+draft:false`, at most five numbered pages. No caller text reaches the query,
+and `get` refuses any search path, relative or absolute. Each result's
+repository is matched against the allowlist before it is returned; one outside
+it is counted and never read further. An allowlist entry is `owner/repo` or
+`owner/*`, and only the queue's client accepts `owner/*`; every other client,
+and any bare `*` or other glob, is refused when the client is built.
+
+Every request path, relative or absolute, is resolved against the API root
+before it is sent. Another origin is refused, so the token never leaves the API
+host. A dot segment or an encoded dot, slash or backslash in the path is
+refused, and the allowlist is checked on the resolved path. A pagination link
+contributes only its query, applied to the path just read, because GitHub may
+spell the next page as `/repositories/{id}/...`, which names no repository; a
+request to that id form is refused.
 
 The allowlist matters more than it looks. The credential comes from `gh` and
 carries whatever scopes the user already had - almost always broader than
@@ -871,30 +990,109 @@ the cap is twice a fair share between 0.15 and 0.5.
 
 ### Posting
 
-ADR 0007 gates posting on measured quality. `evaluatePostingGate` reads what
-was actually measured - precision at 0.80 or better over at least 20 labelled
-findings, with full contract compliance - rather than a configuration flag. A
-boolean in a config file is a promise the user makes to themselves; this gate
-has to hold when they would rather it did not, so it takes no override
-argument.
+`RV verdict` computes the posting decision and never writes. `RV post` repeats
+it, applies more guards and, with `--confirm`, makes the single write. An
+external loop should call these instead of re-implementing the rules.
 
+**The event** comes from the severities of the findings that post
+(`eventFor`, ADR 0010), never from model prose: a blocking or important finding
+requests changes, a minor or question finding comments, anything else
+approves. Only verified findings post. A finding is verified when a score at
+its path, line and derived severity came from the verifier and cleared every
+gate, matched one to one. The rest are held back and listed in the preview. An
+unverified finding above a nit still keeps an approval at COMMENT, because
+approving past a concern nobody checked is the false approval this design
+exists to prevent.
+
+**CI and the other caps** are applied by `decide()` in a fixed order: a moved
+head refuses (exit 3); a standing owner approval on an unchanged scope is
+carried when `carry_approval_on_unchanged` is on (nothing is posted); CI that
+needs a rerun holds every event (exit 6, ADR 0013) unless `ci_needs_rerun` is
+`annotate`; carried candidates not reviewed since cap an approval at COMMENT
+(ADR 0017); a high-complexity change caps an approval at COMMENT (ADR 0012)
+unless `review.human_review.cap_approval` is false; then red CI caps an
+approval at COMMENT, and pending CI makes an approval wait (exit 4). COMMENT and
+REQUEST_CHANGES never wait on CI. `verdict --recheck` asks only whether the
+approval can now be sent: head unchanged and CI green, else exit 4 (pending),
+5 (red) or 6 (needs rerun), and exit 2 when there is no approval to re-check.
+Exit codes: 0 ready, 1 failure, 2 nothing to post or refused, 3 head moved or
+event changed, 4 CI running, 5 CI red, 6 CI needs a rerun, 8 the thread changed
+(`post` only).
+
+**Verdict policies** (ADR 0028) turn the pending, red, needs-rerun, complexity
+and unchanged-scope rules into `verdict:` settings, whose defaults are the
+rules above: `ci_pending` (`wait` or `proceed`), `ci_red` (`cap` or
+`annotate`), `ci_needs_rerun` (`hold` or `annotate`),
+`carry_approval_on_unchanged` and `recheck_thread_before_post`. `annotate`
+keeps the event and appends one line naming at most five checks to the body.
+Check names are flattened to inline code so no markdown or mention renders.
+`decide()` takes the settings as a `VerdictPolicy`; the head guard, the
+writer's single endpoint and the idempotency key are not settings.
+
+**Carry.** With `carry_approval_on_unchanged`, a run whose scope is `unchanged`
+and that maps to a clean approval looks for the owner's latest deciding review.
+If it is an approval of the commit the scope is unchanged since, the action is
+`carry`: nothing is posted, the approval's link is reported, and a confirmed
+`post` records only a `review_carried` audit row. A held finding, an uncovered
+carry or a request for changes is news the standing approval does not cover, so
+those post as usual.
+
+**Idempotency.** The key is repository, pull request, head and a hash of the
+whole payload before already-posted comments are filtered out, so the same
+review of the same head is refused a second time even once its comments are all
+on the pull request, while a new head or a different review is a different post.
+Annotations are appended after the key is taken, so a CI change cannot make the
+same review a second post. Inline comments already sent on this head by an
+earlier post (a COMMENT while CI was red, then the approval) are not sent again.
+
+**Guard order in `post`.**
+
+1. `writes.github_posting_enabled` must be true, else exit 2.
+2. With `--confirm`, `--event` must be one of the three events, else exit 2.
+3. The verdict is computed fresh: the head is read live and compared with
+   `--head`, and the review on stdin must be the recorded run for that head. A
+   carry returns here. Anything but `post` refuses with the verdict's exit code.
+4. The idempotency key must not be blocked: a key already sent, or attempted
+   with no definite answer from GitHub, refuses. A 4xx answer does not block a
+   retry.
+5. Without `--confirm`, nothing is sent (exit 2). The confirmed event must equal
+   the event now computed, else exit 3.
+6. The run's repository must match the pull request's.
+7. The thread re-check, with `--recheck-thread` or `recheck_thread_before_post`:
+   the thread is read again and the payload's findings are matched with the rule
+   `check-candidates --thread` drops a repeat by. A finding someone other than
+   the token's user raised after the run was recorded refuses with exit 8,
+   naming each. Replies to this tool's own inline comments are ignored, and so
+   is a comment that only quotes the tool's earlier text (blockquote lines are
+   dropped, and text contained in a review or comment the token's user posted is
+   skipped). An unreadable thread refuses with exit 1.
+8. For an approval only, head and CI are read again, the last read before
+   sending. A moved head refuses (exit 3); CI that no longer allows an approval
+   refuses (exit 4, 5 or 6); a changed CI state rewrites the annotation in the
+   body and the preview without changing the key.
+9. The key is claimed as an `review_post_attempted` audit row inside one
+   transaction that rechecks the block, so two concurrent posts cannot both
+   claim it.
+10. The single write, `POST /pulls/{n}/reviews`, through the writer.
+
+**Audit rows.** Every refusal writes `review_post_refused` with its reasons,
+key, head and event. A claimed attempt writes `review_post_attempted`, then
+either `review_post_sent` (key, attempt, head, event, inline comment
+signatures, whether CI capped it, review id and URL) or `review_post_failed`.
+A failure marks `uncertain` unless the request was refused in code or GitHub
+answered with a 4xx, and an uncertain attempt blocks a retry until someone
+checks the pull request. `review_carried` records a confirmed carry.
+
+**The posting gate** (ADR 0007) is reported, not enforced. `evaluatePostingGate`
+reads what was measured (precision at 0.80 or better over at least 20 labelled
+findings, with full contract compliance) and `post` includes it in every result
+as `postCheck`. Since ADR 0010, verification is the gate for a finding; the
+measurement stays visible rather than binding. It takes no override argument.
 The minimum sample matters as much as the threshold: five keeps and no
 dismissals is 100% precision and tells you nothing.
 
-The draft's preview is rendered from the payload that would be sent. A preview
-generated separately from what gets posted is a mock-up. The idempotency key
-combines repository, pull request and diff hash, so a retry after a timeout
-cannot double-post while a re-review after a force-push is correctly a
-different post.
-
-The posting call itself is not implemented. The gate has never opened.
-
-`RV verdict` computes the full posting decision as JSON - event, action,
-reasons, CI state, the complexity cap, held findings and the payload preview -
-and never posts. An external loop should call it instead of re-implementing
-these rules. Exit codes: 0 ready, 2 nothing to post or re-check, 3 head moved,
-4 CI still running on an approval, 5 CI red on a re-check, 6 CI needs a rerun
-(an infrastructure failure or a stuck check, ADR 0013; no event is sent).
+The preview is rendered from the payload that would be sent. A preview
+generated separately from what gets posted is a mock-up.
 
 ## Trust boundary
 

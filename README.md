@@ -116,6 +116,8 @@ Then:
 history ingestion. There is no install step - the plugin ships a single
 pre-built bundle with zero runtime dependencies.
 
+To review every pull request in CI instead, see [docs/ACTION.md](docs/ACTION.md).
+
 ## Privacy in one paragraph
 
 Review Voice is local-first and reads before it writes. It reads only repositories you

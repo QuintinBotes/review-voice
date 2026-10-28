@@ -38,12 +38,14 @@ export interface ThreadComment {
   resolved?: boolean;
   /** Who resolved the thread, when it is resolved and GitHub said. */
   resolvedBy?: string;
-  /** GitHub's id for an inline comment, and when it was written. */
+  /** GitHub's id for an inline comment, and when it was written (submitted, for a review body). */
   id?: number;
   createdAt?: string;
   /** The review an inline comment was posted in, and the comment it replies to. */
   reviewId?: number;
   inReplyTo?: number;
+  /** GitHub's link to the comment, or to the review a review body belongs to. */
+  url?: string;
 }
 
 /**
@@ -75,6 +77,7 @@ interface RawInline {
   original_line?: number | null;
   body?: string;
   user?: { login?: string };
+  html_url?: string;
 }
 
 interface RawReview {
@@ -83,6 +86,7 @@ interface RawReview {
   submitted_at?: string | null;
   body?: string;
   user?: { login?: string };
+  html_url?: string;
 }
 
 interface RawIssueEvent {
@@ -93,6 +97,8 @@ interface RawIssueEvent {
 interface RawIssueComment {
   body?: string;
   user?: { login?: string };
+  html_url?: string;
+  created_at?: string;
 }
 
 const MAX_COMMENTS = 300;
@@ -168,6 +174,7 @@ export async function readThread(options: {
       ...(typeof raw.in_reply_to_id === 'number' ? { inReplyTo: raw.in_reply_to_id } : {}),
       ...(state?.resolved === true ? { resolved: true } : {}),
       ...(state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {}),
+      ...(typeof raw.html_url === 'string' ? { url: raw.html_url } : {}),
     });
   }
 
@@ -187,7 +194,15 @@ export async function readThread(options: {
     }
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
-    comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: 'review-body' });
+    comments.push({
+      path: null,
+      line: null,
+      author: kept.author,
+      body: kept.body,
+      kind: 'review-body',
+      ...(typeof raw.submitted_at === 'string' ? { createdAt: raw.submitted_at } : {}),
+      ...(typeof raw.html_url === 'string' ? { url: raw.html_url } : {}),
+    });
   }
   // Only a dismissed review has a message to read, and only the issue's
   // events carry it, so the extra read is made when there is one.
@@ -220,7 +235,15 @@ export async function readThread(options: {
   for (const raw of conversation) {
     const kept = clean(raw.body, raw.user?.login);
     if (kept === null) continue;
-    comments.push({ path: null, line: null, author: kept.author, body: kept.body, kind: 'conversation' });
+    comments.push({
+      path: null,
+      line: null,
+      author: kept.author,
+      body: kept.body,
+      kind: 'conversation',
+      ...(typeof raw.created_at === 'string' ? { createdAt: raw.created_at } : {}),
+      ...(typeof raw.html_url === 'string' ? { url: raw.html_url } : {}),
+    });
   }
 
   // Named, so a thread file cannot be applied to another pull request's run.

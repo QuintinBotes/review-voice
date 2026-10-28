@@ -265,19 +265,109 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
   return { inline, unanchored, held, mapped, heldBackApproval };
 }
 
-export type Action = 'post' | 'wait' | 'refuse';
+export type Action = 'post' | 'wait' | 'refuse' | 'carry';
+
+/**
+ * The verdict behaviours an owner may choose (docs/adr/0028). The defaults are
+ * the fixed rules of 0010, 0012 and 0013; the head, writer and idempotency
+ * guards are not here because they are not negotiable.
+ */
+export interface VerdictPolicy {
+  ciPending: 'wait' | 'proceed';
+  ciRed: 'cap' | 'annotate';
+  ciNeedsRerun: 'hold' | 'annotate';
+  /** `review.human_review.cap_approval`. */
+  capApproval: boolean;
+  carryApprovalOnUnchanged: boolean;
+  recheckThreadBeforePost: boolean;
+}
+
+export const DEFAULT_VERDICT_POLICY: Readonly<VerdictPolicy> = Object.freeze({
+  ciPending: 'wait',
+  ciRed: 'cap',
+  ciNeedsRerun: 'hold',
+  capApproval: true,
+  carryApprovalOnUnchanged: false,
+  recheckThreadBeforePost: false,
+});
+
+export function verdictPolicy(policy: Partial<VerdictPolicy> | undefined): VerdictPolicy {
+  return { ...DEFAULT_VERDICT_POLICY, ...policy };
+}
+
+/** How many checks an annotation names; past it the line stops being read. */
+export const MAX_ANNOTATED_CHECKS = 5;
+
+/** Longest check name an annotation shows, ellipsis included. */
+const MAX_CHECK_NAME = 60;
+
+/**
+ * A check name is whatever the CI integration chose, so it goes into the posted
+ * body as inline code on one line: no markdown, link or mention can render.
+ */
+function safeCheckName(name: string): string {
+  const flat = name
+    // Bidi controls and zero-width characters can reorder or hide text.
+    .replace(/[\u202a-\u202e\u2066-\u2069\u200b-\u200d\ufeff`]/g, '')
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // By code point, so a surrogate pair is never split.
+  const points = [...flat];
+  return points.length > MAX_CHECK_NAME ? `${points.slice(0, MAX_CHECK_NAME - 1).join('')}…` : flat;
+}
+
+function checkNames(entries: readonly CiEntry[]): string {
+  // `readCi` already keeps only the newest run of each check, so a name seen
+  // twice is a check run and a status sharing it. Sorted, so the note, and the
+  // body it is in, does not change with the order GitHub lists checks in.
+  const names = [...new Set(entries.map((entry) => safeCheckName(entry.name)).filter((name) => name.length > 0))].sort();
+  return names.length === 0 ? 'some checks' : names.slice(0, MAX_ANNOTATED_CHECKS).map((name) => `\`${name}\``).join(', ');
+}
+
+/**
+ * The lines an `annotate` policy adds to a posted review for this CI state.
+ * Empty under the defaults, and for green or pending CI.
+ */
+export function ciAnnotations(
+  ci: Pick<CiState, 'state' | 'failed' | 'rerun'> | null,
+  policy: Pick<VerdictPolicy, 'ciRed' | 'ciNeedsRerun'>,
+): string[] {
+  if (ci?.state === 'red' && policy.ciRed === 'annotate') {
+    return [`Heads up: ${checkNames(ci.failed)} failing on this head.`];
+  }
+  if (ci?.state === 'needs-rerun' && policy.ciNeedsRerun === 'annotate') {
+    return [`Heads up: ${checkNames(ci.rerun)} need a rerun.`];
+  }
+  return [];
+}
+
+/** Whether an approval may be sent on CI in this state, under the policy. */
+export function ciAllowsApproval(
+  state: CiState['state'],
+  policy: Pick<VerdictPolicy, 'ciPending' | 'ciRed' | 'ciNeedsRerun'>,
+): boolean {
+  if (state === 'green') return true;
+  if (state === 'pending') return policy.ciPending === 'proceed';
+  if (state === 'red') return policy.ciRed === 'annotate';
+  return policy.ciNeedsRerun === 'annotate';
+}
 
 export interface Decision {
-  /** Null when no event may be sent at all until CI is rerun. */
+  /** Null when no event may be sent at all until CI is rerun, or when a standing approval is carried. */
   event: ReviewEvent | null;
   action: Action;
   reasons: string[];
   /**
-   * 0 ready, 2 nothing to recheck, 3 head moved, 4 CI still running, 5 CI red
-   * on a recheck, 6 CI needs a rerun.
+   * 0 ready or carried, 2 nothing to recheck, 3 head moved, 4 CI still
+   * running, 5 CI red on a recheck, 6 CI needs a rerun.
    */
   exitCode: number;
   cappedByCi: boolean;
+  /** Lines appended to the posted body; only ever set on a `post`. */
+  annotations: string[];
+  /** The owner's standing approval, on a `carry`. */
+  carriedReviewUrl: string | null;
 }
 
 /**
@@ -286,7 +376,9 @@ export interface Decision {
  * Red CI caps an approval at COMMENT: the findings still post, and a review
  * that approves a failing head is not one anybody meant. Pending CI turns an
  * approval into a wait, because the approval is the only part that depends on
- * it. COMMENT and REQUEST_CHANGES never wait on CI.
+ * it. COMMENT and REQUEST_CHANGES never wait on CI. Each of these is the
+ * default of a setting (docs/adr/0028); a moved head is not, and `--recheck`
+ * still asks only whether CI is green now.
  */
 export function decide(input: {
   mapped: ReviewEvent;
@@ -294,6 +386,8 @@ export function decide(input: {
   ci: CiState['state'] | null;
   /** The checks behind a needs-rerun state, named in the reasons. */
   rerun?: readonly CiEntry[] | undefined;
+  /** The failing checks behind a red state, named in an `annotate` line. */
+  failed?: readonly CiEntry[] | undefined;
   recheck: boolean;
   heldBackApproval?: boolean;
   /** The change was assessed high-complexity, so a person, not this tool, approves it. */
@@ -303,20 +397,57 @@ export function decide(input: {
    * in between, or with a candidate refused (docs/adr/0017).
    */
   uncoveredCarry?: boolean;
+  /**
+   * The owner's approval that still stands on an unchanged scope, when
+   * `carry_approval_on_unchanged` is on and one was found.
+   */
+  carriedReviewUrl?: string | null | undefined;
+  policy?: Partial<VerdictPolicy> | undefined;
 }): Decision {
+  const policy = verdictPolicy(input.policy);
   const reasons: string[] = [];
+  const done = (decision: Omit<Decision, 'annotations' | 'carriedReviewUrl'>, annotations: string[] = []): Decision => ({
+    ...decision,
+    annotations: decision.action === 'post' ? annotations : [],
+    carriedReviewUrl: null,
+  });
   if (input.heldBackApproval === true) {
     reasons.push('an unverified finding above a nit was held back, so this comments rather than approves');
   }
   if (input.headMoved) {
-    return {
+    return done({
       event: input.mapped,
       action: 'refuse',
       reasons: [...reasons, 'the pull request head moved since the review read it; review the new head'],
       exitCode: 3,
       cappedByCi: false,
+    });
+  }
+
+  // Nothing is sent, so no CI state can make it unsafe. Only a clean approval
+  // carries: a held finding, an uncovered carry or a request for changes is
+  // news the standing approval does not cover.
+  if (
+    typeof input.carriedReviewUrl === 'string' &&
+    input.mapped === 'APPROVE' &&
+    input.heldBackApproval !== true &&
+    input.uncoveredCarry !== true
+  ) {
+    return {
+      event: null,
+      action: 'carry',
+      reasons: [...reasons, 'the scope is unchanged and the owner\'s approval still stands, so nothing is posted'],
+      exitCode: 0,
+      cappedByCi: false,
+      annotations: [],
+      carriedReviewUrl: input.carriedReviewUrl,
     };
   }
+
+  // A re-check asks whether CI is green now, whatever the policy says.
+  const annotations = input.recheck
+    ? []
+    : ciAnnotations({ state: input.ci ?? 'green', failed: [...(input.failed ?? [])], rerun: [...(input.rerun ?? [])] }, policy);
 
   // A check CI never finished says nothing about the change, so no event is
   // fair: an approval would skip it and a comment or request for changes
@@ -324,13 +455,11 @@ export function decide(input: {
   // it holds for every mapped event and for a re-check (docs/adr/0013).
   if (input.ci === 'needs-rerun') {
     const named = (input.rerun ?? []).map((entry) => `${entry.name} (${entry.detail})`);
-    return {
-      event: null,
-      action: 'wait',
-      reasons: [...reasons, `CI needs a rerun${named.length > 0 ? `: ${named.join(', ')}` : ''}`],
-      exitCode: 6,
-      cappedByCi: false,
-    };
+    const why = `CI needs a rerun${named.length > 0 ? `: ${named.join(', ')}` : ''}`;
+    if (input.recheck || policy.ciNeedsRerun === 'hold') {
+      return done({ event: null, action: 'wait', reasons: [...reasons, why], exitCode: 6, cappedByCi: false });
+    }
+    reasons.push(`${why}; posting the code verdict with a note, as verdict.ci_needs_rerun is annotate`);
   }
 
   // Code nobody analysed is not approved. The reason stays local: the posted
@@ -338,76 +467,104 @@ export function decide(input: {
   if (input.uncoveredCarry === true && input.mapped === 'APPROVE') {
     const why = 'candidates were carried to this head without a review of the commits since, so this comments rather than approves';
     if (input.recheck) {
-      return { event: 'COMMENT', action: 'refuse', reasons: [...reasons, why], exitCode: 2, cappedByCi: false };
+      return done({ event: 'COMMENT', action: 'refuse', reasons: [...reasons, why], exitCode: 2, cappedByCi: false });
     }
-    return { event: 'COMMENT', action: 'post', reasons: [...reasons, why], exitCode: 0, cappedByCi: false };
+    return done({ event: 'COMMENT', action: 'post', reasons: [...reasons, why], exitCode: 0, cappedByCi: false }, annotations);
   }
 
   // Before the CI guard, so pending CI cannot turn a capped approval into a
   // wait for an approval that will never be sent (docs/adr/0012).
   if (input.needsHuman === true && input.mapped === 'APPROVE') {
-    if (input.recheck) {
-      return {
+    if (!policy.capApproval) {
+      reasons.push('the change was raised for human review; approving anyway, as review.human_review.cap_approval is false');
+    } else if (input.recheck) {
+      return done({
         event: 'COMMENT',
         action: 'refuse',
         reasons: [...reasons, 'the change was raised for human review, so there is no approval to re-check'],
         exitCode: 2,
         cappedByCi: false,
-      };
+      });
+    } else {
+      return done(
+        {
+          event: 'COMMENT',
+          action: 'post',
+          reasons: [...reasons, 'the change was raised for human review, so this comments rather than approves'],
+          exitCode: 0,
+          cappedByCi: false,
+        },
+        annotations,
+      );
     }
-    return {
-      event: 'COMMENT',
-      action: 'post',
-      reasons: [...reasons, 'the change was raised for human review, so this comments rather than approves'],
-      exitCode: 0,
-      cappedByCi: false,
-    };
   }
 
   if (input.recheck) {
     if (input.mapped !== 'APPROVE') {
-      return {
+      return done({
         event: input.mapped,
         action: 'refuse',
         reasons: [...reasons, `the review maps to ${input.mapped}, so there is no approval to re-check`],
         exitCode: 2,
         cappedByCi: false,
-      };
+      });
     }
     if (input.ci === 'pending') {
-      return { event: 'APPROVE', action: 'wait', reasons: [...reasons, 'CI is still running'], exitCode: 4, cappedByCi: false };
+      return done({ event: 'APPROVE', action: 'wait', reasons: [...reasons, 'CI is still running'], exitCode: 4, cappedByCi: false });
     }
     if (input.ci !== 'green') {
-      return {
+      return done({
         event: 'COMMENT',
         action: 'refuse',
         reasons: [...reasons, 'CI is red, so there is no approval to send'],
         exitCode: 5,
         cappedByCi: true,
-      };
+      });
     }
-    return { event: 'APPROVE', action: 'post', reasons: [...reasons, 'head unchanged and CI green'], exitCode: 0, cappedByCi: false };
+    return done({ event: 'APPROVE', action: 'post', reasons: [...reasons, 'head unchanged and CI green'], exitCode: 0, cappedByCi: false });
   }
 
   if (input.mapped === 'APPROVE' && input.ci === 'red') {
-    return {
+    if (policy.ciRed === 'annotate') {
+      return done(
+        {
+          event: 'APPROVE',
+          action: 'post',
+          reasons: [...reasons, 'CI is red; approving with a note, as verdict.ci_red is annotate'],
+          exitCode: 0,
+          cappedByCi: false,
+        },
+        annotations,
+      );
+    }
+    return done({
       event: 'COMMENT',
       action: 'post',
       reasons: [...reasons, 'CI is red, so the approval is capped at COMMENT'],
       exitCode: 0,
       cappedByCi: true,
-    };
+    });
   }
-  if (input.mapped === 'APPROVE' && input.ci !== 'green') {
-    return {
+  // Needs-rerun reaches here only under `annotate`; anything else unsettled waits.
+  if (input.mapped === 'APPROVE' && input.ci !== 'green' && input.ci !== 'needs-rerun') {
+    if (policy.ciPending === 'proceed') {
+      return done({
+        event: 'APPROVE',
+        action: 'post',
+        reasons: [...reasons, 'CI is still running; approving now, as verdict.ci_pending is proceed'],
+        exitCode: 0,
+        cappedByCi: false,
+      });
+    }
+    return done({
       event: 'APPROVE',
       action: 'wait',
       reasons: [...reasons, 'CI is still running; approve once it is green with verdict --recheck'],
       exitCode: 4,
       cappedByCi: false,
-    };
+    });
   }
-  return { event: input.mapped, action: 'post', reasons, exitCode: 0, cappedByCi: false };
+  return done({ event: input.mapped, action: 'post', reasons, exitCode: 0, cappedByCi: false }, annotations);
 }
 
 function plural(count: number, word: string): string {
@@ -504,6 +661,25 @@ export function buildPayload(input: {
     body,
     comments: input.planned.inline.map(inlineComment),
   };
+}
+
+/**
+ * Policy notes (docs/adr/0028), each on its own line at the end of the body.
+ * Appended after the idempotency key is taken: they follow CI, and the same
+ * review of the same head must stay one post whatever CI said.
+ */
+export function withAnnotations(body: string, annotations: readonly string[]): string {
+  return [body, ...annotations].join('\n\n');
+}
+
+/**
+ * The same body with `previous` annotations swapped for `next`, for when CI
+ * read again just before sending has changed what the note should say.
+ */
+export function replaceAnnotations(body: string, previous: readonly string[], next: readonly string[]): string {
+  const suffix = previous.map((line) => `\n\n${line}`).join('');
+  const base = suffix.length > 0 && body.endsWith(suffix) ? body.slice(0, body.length - suffix.length) : body;
+  return withAnnotations(base, next);
 }
 
 /**

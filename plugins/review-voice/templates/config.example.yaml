@@ -1,33 +1,52 @@
 # Copy to .review-voice/config.yaml in the repository you want reviewed,
 # or let `/review-voice:init` write it for you.
 
-version: 1
-
 identity:
   # Resolved from your authenticated GitHub account at init. Whoever runs the
   # plugin is the owner reviewer; there is no default person.
   owner_reviewer: your-github-login
+  # Optional. Logins whose review history forms one shared corpus. Each is
+  # collected the way the owner is, and every event keeps its author. The owner
+  # stays the only policy authority and defaults to the first login listed.
+  # reviewers:
+  #   - your-github-login
+  #   - teammate-login
 
 repositories:
-  # allowlist is the only supported mode. Review Voice never scans every
-  # repository your token can reach.
-  mode: allowlist
+  # Review Voice never scans every
+  # repository your token can reach. An entry is owner/repo, or owner/* for
+  # every repository of one owner. A bare * or any other glob is skipped with a
+  # warning.
   include:
     - your-org/your-repo
     - your-org/another-repo
-  exclude:
-    - "*/archive"
-    - "*/sandbox"
-
-bootstrap:
-  target_review_events: 250
-  max_repository_share: 0.50      # no single repo may dominate global policy
-  owner_weight_multiplier: 3.0    # your judgment outweighs other reviewers'
-  recency_half_life_days: 180
-  include_pr_conversation_comments: true
-  include_bot_comments: false
+    # - your-other-org/*
 
 review:
+  # Which stages run and on which model (docs/adr/0025): fast, standard,
+  # thorough, or auto, which picks from the diff. `--mode` beats this.
+  mode: auto
+  # Set the model for a stage in every mode; an override never turns a stage
+  # on or off. Keys: intent, analyst (the diff lane), lanes, verify, tie-break,
+  # challenge, edit. Defaults are sonnet, or opus where the mode calls for it.
+  # models:
+  #   verify: opus
+  # Extra analyst lanes beside the built-in diff lane, which always runs and
+  # cannot be redefined (docs/adr/0023). `agent` names a file under agents/.
+  # Every candidate_id from a lane starts with its `prefix` (lower-case letters
+  # and _). A lane runs when the change has at least min_changed_source_lines
+  # changed source lines, counting only files matching `paths` when given.
+  # `exclude_kinds` lists the kinds of file that do not count, from test, docs,
+  # config and generated; all four are left out when it is not set.
+  # `severity` may cap the derived tier, and raise it to `escalate.to` only when
+  # the verifier sets blocker_confirmed and traced the impact at confidence of
+  # at least 0.85. An invalid lane is reported and dropped.
+  # lanes:
+  #   - name: structure
+  #     agent: structure-analyst
+  #     prefix: st_
+  #     when: { min_changed_source_lines: 40, paths: ['src/**'], exclude_kinds: [test, docs, config, generated] }
+  #     severity: { cap: minor, escalate: { to: important, requires: blocker_confirmed } }
   # Uncomment to impose a cap. There is none by default: volume is bounded by
   # the word budget, which scales with the size of the change. A layer may
   # tighten a limit but never loosen one.
@@ -35,10 +54,9 @@ review:
   max_words_per_finding: 40
   # A runaway guard rather than a trim target - see docs/ARCHITECTURE.md.
   max_total_words: 600
+  # Defaults for `score --min-confidence` and `--min-score`; the flags win.
   confidence_threshold: 0.80
-  final_score_threshold: 0.78
-  no_findings_response: "No actionable findings."
-  suppress_hedge_phrases: true
+  final_score_threshold: 0.68
   # Structural evidence for the analyst. It never affects the verdict.
   structure:
     # A production file this change grows from at most this many lines to
@@ -57,6 +75,9 @@ review:
   human_review:
     max_decision_points: 40         # branches added across the whole change
     max_hunk_decision_points: 15    # branches added in the densest hunk
+    # false lets a clean high-complexity change approve; the local note and
+    # flag stay, and nothing about it is posted (docs/adr/0028).
+    cap_approval: true
     # Opt in only when either structural regression should leave approval to a
     # human. These cap APPROVE at COMMENT; they do not add a finding or text to
     # the posted review (docs/adr/0020).
@@ -122,6 +143,29 @@ ci:
   # Set to false to use only the phrases listed above.
   builtin_rerun_signatures: true
 
+# How the verdict treats CI and an unchanged scope (docs/adr/0028). The
+# defaults are the original rules. A moved head, the single writer endpoint,
+# the idempotency key and the CI re-read before an approval always apply.
+verdict:
+  # wait | proceed. proceed approves while CI is still running, so an approval
+  # can land on a head CI has not cleared.
+  ci_pending: wait
+  # cap | annotate. cap posts COMMENT instead of APPROVE on red CI; annotate
+  # keeps the event and adds "Heads up: <checks> failing on this head."
+  ci_red: cap
+  # hold | annotate. hold posts nothing until a check that needs a rerun has
+  # been rerun; annotate posts the code verdict and adds "Heads up: <checks>
+  # need a rerun." Annotations name at most five checks.
+  ci_needs_rerun: hold
+  # true posts nothing when a clean approval's scope is unchanged since the
+  # commit the owner approved and that approval still stands (it needs
+  # identity.owner_reviewer).
+  carry_approval_on_unchanged: false
+  # true re-reads the thread just before posting and refuses (exit 8) if
+  # someone else raised one of the findings meanwhile, as post
+  # --recheck-thread does.
+  recheck_thread_before_post: false
+
 static_evidence:
   # Commands are opt-in. Review Voice will suggest what it detects but never
   # runs a project script you did not list. See docs/adr/0003.
@@ -164,20 +208,26 @@ verification:
   # evidence.
   drop_threshold: 0.8
 
-privacy:
-  raw_retention_days: 30
-  keep_normalized_events: true
-  redact_secrets: true
-  allow_remote_embeddings: false
-  local_only_index: true
-
-sync:
-  mode: manual
-  incremental_batch_size: 50
-  enabled: true
+# What `review-voice queue` lists (docs/adr/0026). Every key is optional; the
+# values below are the defaults unless marked as an example.
+queue:
+  # requested, assigned, follow-up (a reviewed pull request whose head moved)
+  # and dismissed (your latest review on it was dismissed). team is added when
+  # teams is set.
+  sources: [requested, assigned, follow-up, dismissed]
+  teams: []                          # example: [your-org/your-team]
+  max_per_pass: 20                   # REVIEW entries per pass; the rest are not reached
+  follow_up_days: 30                 # how far back a recorded run counts for a follow-up
+  skip:
+    authors: []                      # never review these logins
+    author_patterns: ['\[bot\]$', '-bot$', '^renovate', '^dependabot']  # Bot accounts are skipped by type too
+    allow_bots_when_requested: true  # a bot pull request that requests you personally is listed
+    assigned_to: []                  # skip pull requests assigned to any of these logins
+    # Skip a team request one of these logins already approved at the current head.
+    approved_at_head_by: { logins: [], sources: [team] }
+    drafts: true
 
 writes:
   # Review Voice is read-only through v1. This exists so the setting is visible,
   # not because flipping it does anything yet.
   github_posting_enabled: false
-  require_preview_and_confirmation: true

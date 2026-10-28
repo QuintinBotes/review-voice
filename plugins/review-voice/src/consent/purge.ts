@@ -82,6 +82,7 @@ export function executePurge(db: Database, scope: PurgeScope): PurgePreview {
       db.prepare('DELETE FROM sync_watermarks').run();
       db.prepare('DELETE FROM review_runs').run();
       db.prepare('DELETE FROM feedback').run();
+      db.prepare('DELETE FROM finding_outcomes').run();
     } else if (scope.repository !== undefined) {
       db.prepare('DELETE FROM sync_watermarks WHERE repository = ?').run(scope.repository);
     }

@@ -8,11 +8,13 @@
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
 import { readFileSync, readSync, writeFileSync, mkdirSync, statSync, renameSync, rmSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { format } from 'node:util';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
 import { pluginVersion } from './version.ts';
-import { runDoctor } from './doctor.ts';
+import { OPTIONAL_CHECKS, runDoctor } from './doctor.ts';
+import { AgentSpecError, readAgentTools, runAgent, runnerTools, schemaForRunner } from './agents/runner.ts';
 import { validateOutput } from './contract/validate.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
 import { checkSeverityAgainstScores, scoredEntries } from './contract/severity-check.ts';
@@ -59,7 +61,7 @@ import {
   type FollowUpState,
 } from './store/follow-ups.ts';
 import { collectSymbolContext, DEFAULT_MAX_MS } from './diff/symbols.ts';
-import { openDatabase } from './store/db.ts';
+import { openDatabase, type Database } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
 import {
   recordRun,
@@ -76,6 +78,8 @@ import {
 } from './store/runs.ts';
 import { heldBackFindings, parseThreadFile, postedReviewIds } from './diff/held.ts';
 import { carryCandidates, carryFindings, CarryError, commitReadable, followLine, seriousNotCarried, type CarriedFinding } from './diff/carry.ts';
+import { productionChange, resolvePlan, MODES, type RequestedMode } from './review/plan.ts';
+import { DIFF_LANE, eligibleLanes, laneNamed } from './review/lanes.ts';
 import { candidateAnchor, reanchorCandidates, reanchorScores } from './diff/reanchor.ts';
 import { fetchPriorHead, latestOwnReview, resolveCommit, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
 import {
@@ -91,6 +95,7 @@ import { repositoryRoot } from './diff/acquire.ts';
 import { collectEvidence } from './evidence/run.ts';
 import { verifyFindings, type VerifiableFinding } from './verify/external.ts';
 import { parseSecondPass, parseTieBreaks, reconcile, ReconcileInputError, type TieBreak } from './verify/reconcile.ts';
+import { applyChallenge, candidatesById, challengePrompts, intentStatements } from './verify/challenge.ts';
 import { redact } from './redact/redact.ts';
 import { GitHubClient, NotAllowlisted, ReadOnlyViolation } from './github/client.ts';
 import { AuthError } from './github/auth.ts';
@@ -102,8 +107,11 @@ import { computeReach } from './scoring/reach.ts';
 import { checkCitation } from './scoring/citation.ts';
 import { storeEvents, corpusCoverage } from './corpus/store.ts';
 import { buildConsentPlan, discoverRepositories } from './consent/plan.ts';
+import { queueCommand } from './queue/command.ts';
 import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
 import { retrievePrecedents, type Precedent } from './retrieval/retrieve.ts';
+import { resolveSyncWindow } from './sync/window.ts';
+import { baselineVoice, isCorpusEmpty } from './retrieval/baseline.ts';
 import {
   scoreCandidate,
   applyQuestionCap,
@@ -140,6 +148,7 @@ import {
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
 import { computeMetrics } from './evaluate/metrics.ts';
+import { checkOutcomes, postedBreakdown } from './store/outcomes.ts';
 import { beginSyncRun, finishSyncRun, lastSync } from './sync/state.ts';
 import { loadWatermarks, saveWatermarks, type Watermark } from './sync/watermark.ts';
 import { evaluatePostingGate } from './publish/gate.ts';
@@ -151,6 +160,7 @@ import { hashDiff } from './store/runs.ts';
 import { cleanStages, describeStage, shallowPassWarning } from './store/effort.ts';
 import { recordAudit } from './store/audit.ts';
 import { commandHelp, topLevelHelp } from './help.ts';
+import { runReview, reportText } from './review/driver.ts';
 
 /** What each stdin-reading command expects, for the message a terminal gets. */
 const STDIN_INPUT: Record<string, string> = {
@@ -164,6 +174,7 @@ const STDIN_INPUT: Record<string, string> = {
   anchors: 'the validated review',
   verify: 'candidates JSON',
   reconcile: 'candidates JSON',
+  challenge: 'the challenger verdicts',
   redact: 'the text to redact',
   draft: 'the validated review',
   verdict: 'the validated review',
@@ -175,7 +186,19 @@ function noFindingsHint(): string {
   return `A run with no findings pipes exactly ${DEFAULT_LIMITS.noFindingsResponse}, e.g. echo '${DEFAULT_LIMITS.noFindingsResponse}' | RV record ...`;
 }
 
+/**
+ * Set while the review driver runs a command in this process (docs/adr/0022):
+ * stdin comes from the driver, and GitHub reads may use an injected fetch.
+ */
+let inProcess: { stdin: string; fetchImpl: typeof fetch | undefined } | null = null;
+
+/** The read-only client every command builds, so an in-process run can inject its fetch. */
+function githubClient(allowlist: string[]): GitHubClient {
+  return new GitHubClient({ allowlist, ...(inProcess?.fetchImpl === undefined ? {} : { fetchImpl: inProcess.fetchImpl }) });
+}
+
 function readStdin(): string {
+  if (inProcess !== null) return inProcess.stdin;
   // Run from a terminal with nothing piped, a read blocks forever and looks
   // like a hang. Say what to pipe and stop at once; piped input is untouched.
   if (process.stdin.isTTY === true) {
@@ -336,7 +359,7 @@ async function threadCommand(argv: string[]): Promise<number> {
     return 2;
   }
 
-  const result = await readThread({ repository, pullNumber });
+  const result = await readThread({ repository, pullNumber, client: githubClient([repository]) });
   // Local only, never posted: the review goes on without thread resolution.
   for (const warning of result.warnings ?? []) console.error(`Warning: ${warning}`);
   const out = flag(argv, '--out');
@@ -428,6 +451,7 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
     pullNumber,
     includeGenerated: argv.includes('--include-generated'),
     cwd: process.cwd(),
+    client: githubClient([repository]),
   });
 
   let recorded: RecordedRun[] = [];
@@ -457,7 +481,7 @@ async function pullRequestDiffCommand(argv: string[]): Promise<number> {
     ownReview: () =>
       uncoveredPrior !== null
         ? Promise.resolve(null)
-        : latestOwnReview(new GitHubClient({ allowlist: [repository] }), repository, pullNumber),
+        : latestOwnReview(githubClient([repository]), repository, pullNumber),
   });
   if (uncoveredPrior !== null && since === null) {
     console.error(`Run ${uncoveredPrior} carried candidates without reviewing the commits before it, so the whole pull request is read.`);
@@ -918,6 +942,19 @@ async function discoverCommand(): Promise<number> {
   return 0;
 }
 
+/**
+ * The allowlist entries a command reads by name. An `owner/*` pattern is
+ * skipped with a note, never expanded: expanding it would read repositories
+ * nobody listed.
+ */
+function namedRepositories(entries: string[], command: string): string[] {
+  return entries.filter((entry) => {
+    if (!entry.includes('*')) return true;
+    console.error(`${entry} is a pattern; ${command} reads only repositories listed by name.`);
+    return false;
+  });
+}
+
 function consentPlanCommand(argv: string[]): number {
   const root = repositoryRoot(process.cwd());
   const config = loadConfig(root);
@@ -928,9 +965,10 @@ function consentPlanCommand(argv: string[]): number {
     return 2;
   }
 
-  const repositories = argv.includes('--repo')
-    ? argv.filter((_, index) => argv[index - 1] === '--repo')
-    : config.allowlist;
+  const repositories = namedRepositories(
+    argv.includes('--repo') ? argv.filter((_, index) => argv[index - 1] === '--repo') : config.allowlist,
+    'consent-plan',
+  );
 
   if (repositories.length === 0) {
     console.error('No repositories selected. Pass --repo <owner/repo>, or allowlist some first.');
@@ -941,6 +979,7 @@ function consentPlanCommand(argv: string[]): number {
     JSON.stringify(
       buildConsentPlan({
         ownerLogin: owner,
+        reviewerLogins: config.reviewers,
         repositories,
         targetEvents: numericFlag(argv, '--target', 250) ?? 250,
         storageLocation: dataDirectory(),
@@ -989,6 +1028,8 @@ async function syncCommand(argv: string[]): Promise<number> {
     console.error('No repositories are allowlisted. Run /review-voice:init first.');
     return 2;
   }
+  const repositories = namedRepositories(config.allowlist, 'sync');
+  if (repositories.length === 0) return 2;
   if (config.ownerReviewer === null) {
     console.error('No owner reviewer configured. Run /review-voice:init first.');
     return 2;
@@ -997,16 +1038,28 @@ async function syncCommand(argv: string[]): Promise<number> {
   // Scaled to the allowlist rather than fixed, so a twenty-repository sync
   // does not read twelve hundred pull requests to keep two hundred and fifty
   // events. An explicit --target still wins.
-  const defaultTarget = scaledTarget(config.allowlist.length);
-  const target = numericFlag(argv, '--target', defaultTarget) ?? defaultTarget;
+  // --quick is a preset, not a bypass: the same consent plan applies.
+  const defaultTarget = scaledTarget(repositories.length);
+  const explicitTarget = argv.includes('--target') ? numericFlag(argv, '--target', defaultTarget) : undefined;
+  const window = resolveSyncWindow({
+    quick: argv.includes('--quick'),
+    target: explicitTarget,
+    since: flag(argv, '--since'),
+  });
+  if ('error' in window) {
+    console.error(window.error);
+    return 2;
+  }
+  const target = window.target ?? defaultTarget;
+  const updatedSince = window.updatedSince;
   const maxPulls = numericFlag(argv, '--max-pulls', 60) ?? 60;
-  const repositoryShare = scaledRepositoryShare(config.allowlist.length);
+  const repositoryShare = scaledRepositoryShare(repositories.length);
   const dryRun = argv.includes('--dry-run');
 
-  const client = new GitHubClient({ allowlist: config.allowlist });
+  const client = new GitHubClient({ allowlist: repositories });
 
   const stateDb = openDatabase();
-  const syncRunId = beginSyncRun(stateDb, config.allowlist);
+  const syncRunId = beginSyncRun(stateDb, repositories);
   const stats: CollectionStats = {
     pullRequestsScanned: 0,
     pullRequestsUnchanged: 0,
@@ -1020,11 +1073,11 @@ async function syncCommand(argv: string[]): Promise<number> {
   const collected = [];
   const pendingWatermarks: Watermark[] = [];
 
-  for (const [index, repository] of config.allowlist.entries()) {
+  for (const [index, repository] of repositories.entries()) {
     // Progress on stderr, so stdout stays a single JSON document. A sync reads
     // every pull request before it writes anything, which is correct and also
     // means three silent minutes that read as a hang.
-    console.error(`[${index + 1}/${config.allowlist.length}] reading ${repository} ...`);
+    console.error(`[${index + 1}/${repositories.length}] reading ${repository} ...`);
 
     // A dry run deliberately ignores watermarks: its whole job is to report
     // what a full import would find, and reading only what changed since the
@@ -1036,6 +1089,8 @@ async function syncCommand(argv: string[]): Promise<number> {
       {
         repository,
         ownerLogin: config.ownerReviewer,
+        reviewerLogins: config.reviewers,
+        updatedSince,
         maxPullRequests: maxPulls,
         maxCommentsPerPull: 200,
         includeForks: false,
@@ -1086,7 +1141,7 @@ async function syncCommand(argv: string[]): Promise<number> {
             repositories: selection.perRepository,
           },
           stored,
-          coverage: corpusCoverage(db),
+          coverage: corpusCoverage(db, { ownerReviewer: config.ownerReviewer }),
           lastSync: lastSync(db),
         },
         null,
@@ -1153,6 +1208,84 @@ function reviewTarget(argv: string[], command: string): ReviewTarget | string {
   return { repository, pullNumber, head, review, runId: flag(argv, '--run') ?? undefined };
 }
 
+function planCommand(argv: string[]): number {
+  const filesPath = flag(argv, '--files');
+  const diffPath = flag(argv, '--diff-file');
+  const modeFlag = flag(argv, '--mode');
+  const requested = MODES.find((mode) => mode === modeFlag);
+  if (filesPath === null || diffPath === null || (argv.includes('--mode') && requested === undefined)) {
+    console.error('Usage: plan --files <files.json> --diff-file <diff.patch> [--mode fast|standard|thorough|auto]');
+    return 2;
+  }
+
+  const input = readFilesAndDiff(filesPath, diffPath);
+  if (input === null) return 2;
+  const { manifest, changed, diffText, generated } = input;
+
+  const config = repositoryConfig();
+  for (const warning of config?.warnings ?? []) console.error(`Warning: ${warning}`);
+  const change = productionChange(changed, diffText, config?.humanReview, generated);
+  const complexity = asLevel(manifest['complexity']);
+  const plan = resolvePlan({
+    requested: (requested ?? config?.costMode.mode ?? 'auto') as RequestedMode,
+    models: config?.costMode.models ?? {},
+    ...change,
+    complexity,
+    secondPassConfigured: config?.verification.enabled ?? false,
+  });
+  console.log(JSON.stringify(plan, null, 2));
+  return 0;
+}
+
+/** files.json and diff.patch from `diff --out`, or null after saying what was wrong. */
+function readFilesAndDiff(
+  filesPath: string,
+  diffPath: string,
+): { manifest: Record<string, unknown>; changed: ChangedFile[]; diffText: string; generated: Set<string> } | null {
+  let manifest: Record<string, unknown>;
+  let diffText: string;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(filesPath, 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('not a JSON object');
+    manifest = parsed as Record<string, unknown>;
+    diffText = readFileSync(diffPath, 'utf8');
+  } catch (error) {
+    console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  const files = manifest['files'];
+  if (!Array.isArray(files) || !files.every((file) => typeof file === 'object' && file !== null && typeof file.path === 'string')) {
+    console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
+    return null;
+  }
+  const generated = markedGenerated({ ...manifest, diff: diffText } as unknown as EmittedDiff);
+  return { manifest, changed: files as ChangedFile[], diffText, generated };
+}
+
+/** Which configured lanes run on this change (docs/adr/0023). */
+function lanesCommand(argv: string[]): number {
+  const filesPath = flag(argv, '--files');
+  const diffPath = flag(argv, '--diff-file');
+  if (filesPath === null || diffPath === null) {
+    console.error('Usage: lanes --files <files.json> --diff-file <diff.patch>');
+    return 2;
+  }
+  const input = readFilesAndDiff(filesPath, diffPath);
+  if (input === null) return 2;
+  const config = repositoryConfig();
+  for (const warning of config?.warnings ?? []) console.error(`Warning: ${warning}`);
+  const lanes = eligibleLanes(config?.lanes ?? [DIFF_LANE], input.changed, input.diffText, {
+    humanReview: config?.humanReview,
+    markedGenerated: input.generated,
+  });
+  console.log(JSON.stringify(lanes, null, 2));
+  return 0;
+}
+
+function asLevel(value: unknown): 'normal' | 'high' {
+  return typeof value === 'object' && value !== null && (value as { level?: unknown }).level === 'high' ? 'high' : 'normal';
+}
+
 function repositoryConfig(): ReturnType<typeof loadConfig> | null {
   try {
     return loadConfig(repositoryRoot(process.cwd()));
@@ -1165,7 +1298,8 @@ function repositoryConfig(): ReturnType<typeof loadConfig> | null {
  * The review event, head guard and CI guard, computed and printed. Reads only;
  * see docs/adr/0010. Exit 3 means the head moved, 4 that CI is still running
  * on an approval, 5 that a re-check found CI red, 6 that CI needs a rerun
- * before any event is sent (docs/adr/0013).
+ * before any event is sent (docs/adr/0013). The `verdict:` settings change
+ * which of these apply (docs/adr/0028).
  */
 async function verdictCommand(argv: string[]): Promise<number> {
   const target = reviewTarget(argv, 'verdict');
@@ -1179,11 +1313,12 @@ async function verdictCommand(argv: string[]): Promise<number> {
     const { exitCode, output } = await computeVerdict({
       ...target,
       db,
-      client: new GitHubClient({ allowlist: [target.repository] }),
+      client: githubClient([target.repository]),
       recheck: argv.includes('--recheck'),
       gateChecks: config?.ciGateChecks ?? [],
       ciRules: config?.ciRules ?? {},
       owner: config?.ownerReviewer ?? null,
+      policy: config?.verdictPolicy,
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -1208,15 +1343,18 @@ async function postCommand(argv: string[]): Promise<number> {
     const { exitCode, output } = await postReview({
       ...target,
       db,
-      client: new GitHubClient({ allowlist: [target.repository] }),
+      client: githubClient([target.repository]),
       // Built from the recorded run's repository, not from --repository.
-      writerFor: (allowlist) => new ReviewWriter({ allowlist }),
+      writerFor: (allowlist) =>
+        new ReviewWriter({ allowlist, ...(inProcess?.fetchImpl === undefined ? {} : { fetchImpl: inProcess.fetchImpl }) }),
       confirm: argv.includes('--confirm'),
       event: flag(argv, '--event')?.toUpperCase(),
       postingEnabled: config?.postingEnabled ?? false,
       gateChecks: config?.ciGateChecks ?? [],
       ciRules: config?.ciRules ?? {},
       owner: config?.ownerReviewer ?? null,
+      policy: config?.verdictPolicy,
+      recheckThread: argv.includes('--recheck-thread'),
     });
     console.log(JSON.stringify(output, null, 2));
     return exitCode;
@@ -1230,10 +1368,11 @@ function evaluateCommand(argv: string[]): number {
   try {
     const metrics = computeMetrics(db);
     if (argv.includes('--json')) {
-      console.log(JSON.stringify({ metrics }, null, 2));
+      const { bySeverity, byLane } = postedBreakdown(db);
+      console.log(JSON.stringify({ metrics, posted_breakdown: { by_severity: bySeverity, by_lane: byLane } }, null, 2));
     } else {
       for (const metric of metrics) {
-        const value = metric.value === null ? 'no data' : metric.value.toFixed(2);
+        const value = metric.value === null ? 'no data' : (Number.isInteger(metric.value) && metric.name.endsWith('_tracked') ? String(metric.value) : metric.value.toFixed(2));
         // A goal that is not met is not a failure, and printing it as one
         // trains the reader to ignore the word.
         const mark =
@@ -1255,6 +1394,81 @@ function evaluateCommand(argv: string[]): number {
       }
     }
     // A metric below target is information, not a command failure.
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+async function outcomesCommand(argv: string[]): Promise<number> {
+  const repository = flag(argv, '--repository');
+  if (argv.includes('--repository') && (repository === null || !/^[^/\s]+\/[^/\s]+$/.test(repository))) {
+    console.error('--repository takes owner/repo.');
+    return 2;
+  }
+  const sinceFlag = flag(argv, '--since');
+  const days = sinceFlag === null ? 30 : /^(\d+)d$/.exec(sinceFlag)?.[1];
+  if (days === undefined || (argv.includes('--since') && sinceFlag === null)) {
+    console.error('--since takes a number of days such as 30d.');
+    return 2;
+  }
+  const since = new Date(Date.now() - Number(days) * 86_400_000).toISOString();
+
+  // Naming a repository is the consent for reading it, as `thread` treats it.
+  // Otherwise only the allowlisted ones are read, and a run for any other is skipped.
+  let allowlist: string[] = repository === null ? [] : [repository];
+  if (repository === null) {
+    try {
+      allowlist = loadConfig(repositoryRoot(process.cwd())).allowlist;
+    } catch {
+      // Not in a repository: no allowlist, so nothing is read.
+    }
+  }
+
+  const db = openDatabase();
+  try {
+    const result = await checkOutcomes({
+      db,
+      client: new GitHubClient({ allowlist }),
+      allowlist,
+      repository: repository ?? undefined,
+      since,
+    });
+    for (const warning of result.warnings) console.error(warning);
+    for (const skipped of result.skipped) {
+      console.error(`${skipped.repository}#${skipped.pullNumber}: skipped, ${skipped.reason}`);
+    }
+    if (argv.includes('--json')) {
+      console.log(
+        JSON.stringify(
+          result.outcomes.map((o) => ({
+            run: o.reviewRunId,
+            finding: o.findingId,
+            repository: o.repository,
+            pull: o.pullNumber,
+            path: o.path,
+            line: o.line,
+            commentId: o.commentId,
+            outcome: o.outcome,
+            strength: o.strength,
+            evidence: o.evidence,
+            checkedAt: o.checkedAt,
+            reviewIdSource: o.reviewIdSource,
+          })),
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
+    for (const o of result.outcomes) {
+      console.log(`${o.repository}#${o.pullNumber} ${o.findingId} ${o.path}:${o.line} ${o.outcome} (${o.strength}): ${o.evidence}`);
+    }
+    const count = (name: string): number => result.outcomes.filter((o) => o.outcome === name).length;
+    console.log(
+      `${result.outcomes.length} finding(s) tracked: ${count('fixed')} fixed, ${count('dismissed')} dismissed, ` +
+        `${count('resolved')} resolved, ${count('outdated')} outdated, ${count('open')} open, ${count('unknown')} unknown`,
+    );
     return 0;
   } finally {
     db.close();
@@ -1495,12 +1709,15 @@ function scoreCommand(argv: string[]): number {
   }
   const unverifiableNote = allowUnverifiable ? ownerNote!.trim() : null;
 
+  const configured = repositoryConfig()?.thresholds ?? {};
   const thresholds = {
-    technicalConfidence: Number(flag(argv, '--min-confidence') ?? DEFAULT_THRESHOLDS.technicalConfidence),
+    technicalConfidence: Number(
+      flag(argv, '--min-confidence') ?? configured.technicalConfidence ?? DEFAULT_THRESHOLDS.technicalConfidence,
+    ),
     analystOnlyConfidence: Number(
       flag(argv, '--min-analyst-confidence') ?? DEFAULT_THRESHOLDS.analystOnlyConfidence,
     ),
-    finalScore: Number(flag(argv, '--min-score') ?? DEFAULT_THRESHOLDS.finalScore),
+    finalScore: Number(flag(argv, '--min-score') ?? configured.finalScore ?? DEFAULT_THRESHOLDS.finalScore),
   };
 
   // The evidence-verifier's conclusions, keyed by candidate. Without them the
@@ -1529,6 +1746,7 @@ function scoreCommand(argv: string[]): number {
         const premisesVerified = raw['premises_verified'] ?? raw['premisesVerified'];
         const verified = raw['verified'];
         const reason = raw['reason'];
+        const blockerConfirmed = raw['blocker_confirmed'] ?? raw['blockerConfirmed'];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: (raw['evidence_quality'] ?? raw['evidenceQuality']) as Verification['evidenceQuality'],
@@ -1551,6 +1769,7 @@ function scoreCommand(argv: string[]): number {
           impactClass: isImpactClass(impactClass) ? impactClass : undefined,
           premisesVerified: typeof premisesVerified === 'boolean' ? premisesVerified : undefined,
           verified: typeof verified === 'boolean' ? verified : undefined,
+          blockerConfirmed: typeof blockerConfirmed === 'boolean' ? blockerConfirmed : undefined,
           reason: typeof reason === 'string' ? reason : undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
             raw['requiredContextMissing']) as MissingContext[] | undefined,
@@ -1681,6 +1900,8 @@ function scoreCommand(argv: string[]): number {
     return 2;
   }
 
+  const lanes = repositoryConfig()?.lanes ?? [DIFF_LANE];
+
   const db = openDatabase();
   try {
     const kept: Candidate[] = [];
@@ -1708,6 +1929,7 @@ function scoreCommand(argv: string[]): number {
         kept,
         thresholds,
         verifications.get(candidate.candidateId),
+        laneNamed(lanes, candidate.lane),
       );
       const override = severityOverrides.get(candidate.candidateId);
       if (override !== undefined) {
@@ -2126,7 +2348,12 @@ function retrieveCommand(argv: string[]): number {
       maxPositive: numericFlag(argv, '--max-positive', 3) ?? 3,
       maxNegative: numericFlag(argv, '--max-negative', 2) ?? 2,
     });
-    console.log(JSON.stringify({ precedents }, null, 2));
+    // Before any history is synced the editor writes from the shipped baseline
+    // voice, and says so (ADR 0030).
+    const baseline = isCorpusEmpty(db);
+    console.log(
+      JSON.stringify({ precedents, ...(baseline ? { baseline: true, voice: baselineVoice() } : {}) }, null, 2),
+    );
     return 0;
   } finally {
     db.close();
@@ -2984,6 +3211,94 @@ function reanchorCommand(argv: string[]): number {
   return 0;
 }
 
+/**
+ * The independent challenge (docs/adr/0024): `--emit-prompts` builds one
+ * challenger prompt per eligible finding; otherwise the challenger verdicts on
+ * stdin are checked and applied to the score document.
+ */
+function challengeCommand(argv: string[]): number {
+  const scoresFile = flag(argv, '--scores');
+  const candidatesFile = flag(argv, '--candidates');
+  const emit = argv.includes('--emit-prompts');
+  const diffFile = flag(argv, '--diff-file');
+  const intentFile = flag(argv, '--intent');
+  const outFile = flag(argv, '--out');
+  if (scoresFile === null || candidatesFile === null || (!emit && diffFile === null)) {
+    console.error(
+      'Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--diff-file <patch>] --emit-prompts\n' +
+        '       challenge --scores <file> --candidates <file> --diff-file <patch> [--out <file>] < verdicts.json',
+    );
+    return 2;
+  }
+  for (const name of ['--intent', '--diff-file', '--out']) {
+    if (argv.includes(name) && flag(argv, name) === null) {
+      console.error(`${name} needs a file path.`);
+      return 2;
+    }
+  }
+
+  const readJson = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8'));
+  let scores: unknown;
+  let candidates: ReturnType<typeof candidatesById>;
+  try {
+    scores = readJson(scoresFile);
+    candidates = candidatesById(readJson(candidatesFile));
+  } catch (error) {
+    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+
+  if (emit) {
+    let statements: ReturnType<typeof intentStatements> = [];
+    if (intentFile !== null) {
+      try {
+        statements = intentStatements(readJson(intentFile));
+      } catch (error) {
+        console.error(`Cannot read ${intentFile}: ${error instanceof Error ? error.message : String(error)}`);
+        return 2;
+      }
+    }
+    console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile) }, null, 2));
+    return 0;
+  }
+
+  let verdicts: unknown;
+  let hunks: Map<string, FileHunks>;
+  try {
+    hunks = parseHunks(readFileSync(diffFile!, 'utf8'));
+  } catch (error) {
+    console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  try {
+    verdicts = JSON.parse(readStdin());
+  } catch {
+    console.error('Cannot parse the challenger verdicts on stdin as JSON.');
+    return 2;
+  }
+
+  const result = applyChallenge(scores, candidates, verdicts, hunks);
+  if (!result.ok) {
+    console.error('Challenge refused:');
+    for (const problem of result.problems) console.error(`  ${problem}`);
+    return 2;
+  }
+  const body = `${JSON.stringify(result.document, null, 2)}\n`;
+  if (outFile === null) {
+    process.stdout.write(body);
+  } else {
+    try {
+      writeFileSync(outFile, body);
+    } catch (error) {
+      console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    const { confirmed, held, moved } = result.summary;
+    console.log(JSON.stringify({ out: outFile, confirmed, held, moved }, null, 2));
+  }
+  return 0;
+}
+
 /** The list inside a JSON input, and how to put a filtered one back in its place. */
 function listIn(parsed: unknown, keys: readonly string[]): { list: Record<string, unknown>[]; rebuild: (list: unknown[]) => unknown } | null {
   if (Array.isArray(parsed)) return { list: parsed as Record<string, unknown>[], rebuild: (list) => list };
@@ -3724,6 +4039,10 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     if (premises !== undefined && typeof premises !== 'boolean') {
       return `${who}: premises_verified must be true or false.`;
     }
+    const blocker = entry['blocker_confirmed'] ?? entry['blockerConfirmed'];
+    if (blocker !== undefined && typeof blocker !== 'boolean') {
+      return `${who}: blocker_confirmed must be true or false.`;
+    }
     // Refused rather than ignored: a misspelt "no exposure" would otherwise
     // read as absent and leave a boundary finding blocking with no word why.
     const impactClass = entry['impact_class'] ?? entry['impactClass'];
@@ -4016,7 +4335,9 @@ function carriedHeldFindings(runId: string, head: string): CarriedHeld[] {
         h.verdict === 'partly' ||
         h.verdict === 'repeat' ||
         h.verdict === 'below-gate' ||
-        h.verdict === 'owner-declined',
+        h.verdict === 'owner-declined' ||
+        h.verdict === 'challenge-refuted' ||
+        h.verdict === 'challenge-partly',
     );
     const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: '' }));
     const result = carryFindings(inputs, detail.headRef, head, process.cwd());
@@ -4146,6 +4467,33 @@ function checkCandidatesCommand(argv: string[]): number {
     const candidates = raw.map((candidate, index) => normaliseCandidate(candidate as RawCandidate, index));
     assertUniqueCandidateIds(candidates);
 
+    // A lane's prefix keeps ids from two lanes apart and ties each candidate to
+    // its severity rule, so a wrong one goes back like an anchor (docs/adr/0023).
+    // A candidate naming no lane keeps any id, as before lanes existed, unless
+    // the id carries another lane's prefix: that lane's analyst dropped `lane`.
+    const lanes = repositoryConfig()?.lanes ?? [DIFF_LANE];
+    const laneFailures = candidates.flatMap(({ candidateId, lane: name }) => {
+      if (name === undefined) {
+        const owner = lanes.find((lane) => lane.name !== DIFF_LANE.name && candidateId.startsWith(lane.prefix));
+        return owner === undefined
+          ? []
+          : [{ candidateId, lane: DIFF_LANE.name, reason: `${candidateId} carries lane ${owner.name}'s prefix ${owner.prefix} but names no lane; set lane: "${owner.name}"` }];
+      }
+      const lane = laneNamed(lanes, name);
+      if (lane === undefined) {
+        return [{ candidateId, lane: name, reason: `lane ${name} is not configured (${lanes.map((known) => known.name).join(', ')})` }];
+      }
+      return candidateId.startsWith(lane.prefix)
+        ? []
+        : [{ candidateId, lane: lane.name, reason: `${candidateId} is from lane ${lane.name}, so its candidate_id must start with ${lane.prefix}` }];
+    });
+    const laneExtra = laneFailures.length > 0 ? { laneFailures } : {};
+    const reportLaneFailures = (): void => {
+      if (laneFailures.length > 0) {
+        console.error(`${laneFailures.length} candidate lane failure${laneFailures.length === 1 ? '' : 's'}.`);
+      }
+    };
+
     // An intent_ref naming no statement would send the verifier to re-read
     // intent nobody extracted; it fails like an anchor, so only it goes back.
     let intentFailures: { candidateId: string; intentRef: string; reason: string }[] = [];
@@ -4171,9 +4519,12 @@ function checkCandidatesCommand(argv: string[]): number {
       );
     }
     const intentExtra = intentFailures.length > 0 ? { intentFailures } : {};
-    if (intentFailures.length > 0 && !argv.includes('--diff-file')) {
-      console.log(JSON.stringify({ valid: false, intentFailures }, null, 2));
-      console.error(`${intentFailures.length} candidate intent_ref failure${intentFailures.length === 1 ? '' : 's'}.`);
+    if ((intentFailures.length > 0 || laneFailures.length > 0) && !argv.includes('--diff-file')) {
+      console.log(JSON.stringify({ valid: false, ...laneExtra, ...intentExtra }, null, 2));
+      reportLaneFailures();
+      if (intentFailures.length > 0) {
+        console.error(`${intentFailures.length} candidate intent_ref failure${intentFailures.length === 1 ? '' : 's'}.`);
+      }
       return 1;
     }
 
@@ -4223,8 +4574,11 @@ function checkCandidatesCommand(argv: string[]): number {
         ...(anchor.causedBy === undefined ? {} : { causedBy: anchor.causedBy }),
       }));
 
-    if (anchorFailures.length > 0 || intentFailures.length > 0) {
-      console.log(JSON.stringify({ valid: false, ...(anchorFailures.length > 0 ? { anchorFailures } : {}), ...intentExtra }, null, 2));
+    if (anchorFailures.length > 0 || intentFailures.length > 0 || laneFailures.length > 0) {
+      console.log(
+        JSON.stringify({ valid: false, ...(anchorFailures.length > 0 ? { anchorFailures } : {}), ...laneExtra, ...intentExtra }, null, 2),
+      );
+      reportLaneFailures();
       if (anchorFailures.length > 0) {
         console.error(`${anchorFailures.length} candidate anchor failure${anchorFailures.length === 1 ? '' : 's'}.`);
       }
@@ -4401,6 +4755,10 @@ function checkCandidatesCommand(argv: string[]): number {
   }
 }
 
+function distinctReviewers(db: Database): number {
+  return (db.prepare('SELECT COUNT(DISTINCT reviewer_login) AS n FROM review_events').get() as { n: number }).n;
+}
+
 function statusCommand(): number {
   const db = openDatabase();
   try {
@@ -4408,14 +4766,16 @@ function statusCommand(): number {
     // knows. Outside a repository the counts still work.
     let allowlist: string[] = [];
     let maxRepositoryShare: number | undefined;
+    let ownerReviewer: string | null = null;
     try {
       const config = loadConfig(repositoryRoot(process.cwd()));
-      allowlist = config.allowlist;
+      ownerReviewer = config.ownerReviewer;
+      allowlist = namedRepositories(config.allowlist, 'status');
       maxRepositoryShare = scaledRepositoryShare(allowlist.length);
     } catch {
       // Not in a repository; report counts without allowlist warnings.
     }
-    const coverage = corpusCoverage(db, { allowlist, ...(maxRepositoryShare === undefined ? {} : { maxRepositoryShare }) });
+    const coverage = corpusCoverage(db, { allowlist, ownerReviewer, ...(maxRepositoryShare === undefined ? {} : { maxRepositoryShare }) });
     const runs = (db.prepare('SELECT COUNT(*) AS n FROM review_runs').get() as { n: number }).n;
     const audits = (db.prepare('SELECT COUNT(*) AS n FROM audit_events').get() as { n: number }).n;
     const totals = feedbackTotals(db);
@@ -4460,6 +4820,11 @@ function statusCommand(): number {
       }`,
     );
     console.log(
+      coverage.total === 0
+        ? 'Corpus: baseline voice in use (no synced history)'
+        : `Corpus: ${coverage.total} events from ${distinctReviewers(db)} reviewer(s)`,
+    );
+    console.log(
       `corpus           ${coverage.total} event(s)` +
         (coverage.total === 0
           ? ''
@@ -4483,6 +4848,79 @@ async function main(argv: string[]): Promise<number> {
     console.error(`Run "review-voice ${command} --help" for its flags.`);
   }
   return exit;
+}
+
+/**
+ * Runs one agent through the runner (docs/adr/0021): the prompt on stdin, the
+ * AgentResult as JSON on stdout. Tools come from the agent file, never a flag,
+ * and the runner narrows them to read-only file tools.
+ */
+async function agentCommand(argv: string[]): Promise<number> {
+  const name = flag(argv, '--name');
+  const model = flag(argv, '--model');
+  const schemaPath = flag(argv, '--schema');
+  if (name === null || model === null || schemaPath === null) {
+    console.error('agent needs --name <agent>, --model <model> and --schema <file.json>.');
+    return 2;
+  }
+  let tools: string[];
+  try {
+    tools = readAgentTools(name);
+    runnerTools(tools);
+  } catch (error) {
+    if (error instanceof AgentSpecError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+  let schema: unknown;
+  try {
+    schema = JSON.parse(readFileSync(schemaPath, 'utf8')) as unknown;
+  } catch (error) {
+    console.error(`Cannot read the schema ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) {
+    console.error(`The schema ${schemaPath} must be a JSON object.`);
+    return 2;
+  }
+  // Relative $refs resolve next to the schema file, as they would for a validator.
+  const schemaDir = dirname(resolve(schemaPath));
+  try {
+    schemaForRunner(schema, schemaDir);
+  } catch (error) {
+    if (error instanceof AgentSpecError) {
+      console.error(`The schema ${schemaPath} cannot be given to an agent: ${error.message}`);
+      return 2;
+    }
+    throw error;
+  }
+  const cwd = flag(argv, '--cwd') ?? process.cwd();
+  let isDirectory = false;
+  try {
+    isDirectory = statSync(cwd).isDirectory();
+  } catch {
+    isDirectory = false;
+  }
+  if (!isDirectory) {
+    console.error(`--cwd ${cwd} is not a directory.`);
+    return 2;
+  }
+  const timeout = numericFlag(argv, '--timeout', 0);
+  if (timeout === null || (argv.includes('--timeout') && timeout === 0) || timeout > 3600) {
+    console.error('--timeout takes a whole number of seconds from 1 to 3600.');
+    return 2;
+  }
+
+  const prompt = readStdin();
+  const result = await runAgent(
+    { name, model, tools, schema, schemaDir, ...(timeout > 0 ? { timeoutMs: timeout * 1000 } : {}) },
+    prompt,
+    cwd,
+  );
+  console.log(JSON.stringify(result, null, 2));
+  return result.ok ? 0 : 1;
 }
 
 async function dispatch(argv: string[]): Promise<number> {
@@ -4578,6 +5016,9 @@ async function dispatch(argv: string[]): Promise<number> {
     case 'evaluate':
       return evaluateCommand(argv.slice(1));
 
+    case 'outcomes':
+      return outcomesCommand(argv.slice(1));
+
     case 'draft':
       return draftCommand(argv.slice(1));
 
@@ -4589,6 +5030,16 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'post-check':
       return postCheckCommand();
+
+    case 'queue':
+      return await queueCommand(argv.slice(1), {
+        config: repositoryConfig(),
+        client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true }),
+        openDb: () => openDatabase(),
+        now: new Date(),
+        out: (text) => console.log(text),
+        err: (text) => console.error(text),
+      });
 
     case 'calibrate':
       return calibrateCommand();
@@ -4625,8 +5076,17 @@ async function dispatch(argv: string[]): Promise<number> {
     case 'carry':
       return carryCommand(argv.slice(1));
 
+    case 'plan':
+      return planCommand(argv.slice(1));
+
+    case 'lanes':
+      return lanesCommand(argv.slice(1));
+
     case 'reanchor':
       return reanchorCommand(argv.slice(1));
+
+    case 'challenge':
+      return challengeCommand(argv.slice(1));
 
     case 'carry-candidates':
       return carryCandidatesCommand(argv.slice(1));
@@ -4646,6 +5106,12 @@ async function dispatch(argv: string[]): Promise<number> {
     case 'validate-output':
       return validateOutputCommand(argv.slice(1));
 
+    case 'agent':
+      return await agentCommand(argv.slice(1));
+
+    case 'review':
+      return await reviewCommand(argv.slice(1));
+
     case 'doctor': {
       const checks = runDoctor();
       for (const check of checks) {
@@ -4653,7 +5119,7 @@ async function dispatch(argv: string[]): Promise<number> {
       }
       // git and node:sqlite are required; gh is only needed once GitHub history
       // ingestion is enabled, so its absence is reported but not fatal.
-      const required = checks.filter((c) => c.name !== 'gh');
+      const required = checks.filter((c) => !OPTIONAL_CHECKS.has(c.name));
       return required.every((c) => c.ok) ? 0 : 1;
     }
 
@@ -4663,26 +5129,113 @@ async function dispatch(argv: string[]): Promise<number> {
   }
 }
 
+/**
+ * The exit code and message for an error a command threw. Network and
+ * credential problems are ordinary operating conditions, not crashes, and a
+ * stack trace tells the user nothing they can act on.
+ */
+function failureOf(error: unknown): { code: number; message: string } {
+  const message = error instanceof Error ? error.message : String(error);
+  const expected =
+    error instanceof AuthError ||
+    error instanceof NotAllowlisted ||
+    error instanceof ReadOnlyViolation ||
+    error instanceof WriteViolation ||
+    error instanceof GitError;
+  return { code: expected ? 2 : 1, message };
+}
+
+export interface CommandResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Runs one command in this process with its output captured, for the review
+ * driver: every stage calls the command itself, so the driver adds no review
+ * logic of its own (docs/adr/0022). One command at a time.
+ */
+export async function runInProcess(
+  argv: string[],
+  options: { stdin?: string; fetchImpl?: typeof fetch } = {},
+): Promise<CommandResult> {
+  if (inProcess !== null) throw new Error('A command is already running in this process.');
+  const out: string[] = [];
+  const err: string[] = [];
+  const saved = { log: console.log, error: console.error, write: process.stdout.write };
+  inProcess = { stdin: options.stdin ?? '', fetchImpl: options.fetchImpl };
+  console.log = (...args: unknown[]) => void out.push(`${format(...args)}\n`);
+  console.error = (...args: unknown[]) => void err.push(`${format(...args)}\n`);
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    out.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  let code: number;
+  try {
+    code = await dispatch(argv);
+  } catch (error) {
+    const failure = failureOf(error);
+    err.push(`${failure.message}\n`);
+    code = failure.code;
+  } finally {
+    console.log = saved.log;
+    console.error = saved.error;
+    process.stdout.write = saved.write;
+    inProcess = null;
+  }
+  return { code, stdout: out.join(''), stderr: err.join('') };
+}
+
+/** Runs the whole review of one pull request (docs/adr/0022). */
+async function reviewCommand(argv: string[]): Promise<number> {
+  const pullNumber = Number(flag(argv, '--pr'));
+  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+    console.error('--pr needs a pull request number.');
+    return 2;
+  }
+  const modeFlag = flag(argv, '--mode');
+  const mode = MODES.find((known) => known === modeFlag);
+  if (argv.includes('--mode') && mode === undefined) {
+    console.error(`--mode takes one of ${MODES.join(', ')}.`);
+    return 2;
+  }
+  for (const name of ['--out', '--since', '--repository', '--expect-head']) {
+    if (argv.includes(name) && flag(argv, name) === null) {
+      console.error(`${name} needs a value.`);
+      return 2;
+    }
+  }
+  const repository = flag(argv, '--repository') ?? inferRepository(process.cwd());
+  if (repository === null) {
+    console.error('Cannot tell which repository. Pass --repository <owner/repo>.');
+    return 2;
+  }
+  const report = await runReview(
+    {
+      repository,
+      pullNumber,
+      mode,
+      post: argv.includes('--post'),
+      out: flag(argv, '--out'),
+      since: flag(argv, '--since'),
+      full: argv.includes('--full'),
+      recheckThread: !argv.includes('--no-recheck-thread'),
+      expectHead: flag(argv, '--expect-head'),
+    },
+    { command: (args, stdin) => runInProcess(args, { stdin }), client: githubClient([repository]) },
+  );
+  if (argv.includes('--json')) console.log(JSON.stringify(report, null, 2));
+  else console.log(reportText(report));
+  return report.exitCode;
+}
+
 suppressSqliteExperimentalWarning();
 
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
-  // Network and credential problems are ordinary operating conditions, not
-  // crashes, and a stack trace tells the user nothing they can act on.
-  if (
-    error instanceof AuthError ||
-    error instanceof NotAllowlisted ||
-    error instanceof ReadOnlyViolation ||
-    error instanceof WriteViolation
-  ) {
-    console.error(error.message);
-    process.exitCode = 2;
-  } else if (error instanceof GitError) {
-    console.error(error.message);
-    process.exitCode = 2;
-  } else {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
+  const failure = failureOf(error);
+  console.error(failure.message);
+  process.exitCode = failure.code;
 }

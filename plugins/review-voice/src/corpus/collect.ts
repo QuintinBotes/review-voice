@@ -1,8 +1,10 @@
 import type { GitHubClient } from '../github/client.ts';
-import { classifyReviewer, type ReviewerRole } from '../github/roles.ts';
+import { classifyReviewer, isBot, type ReviewerRole } from '../github/roles.ts';
 import { redact, REDACTION_VERSION } from '../redact/redact.ts';
 import { ineligibleReason, type Ineligible } from './eligibility.ts';
 import { contentKey } from './dedup.ts';
+import { inferOutcome, type EventOutcome } from './outcome.ts';
+import { classifyReply } from '../store/outcomes.ts';
 
 export interface CollectedEvent {
   eventId: string;
@@ -22,6 +24,8 @@ export interface CollectedEvent {
   contentKey: string;
   redactionVersion: string;
   redactionCounts: Record<string, number>;
+  /** Unknown when absent. */
+  outcome?: EventOutcome | undefined;
 }
 
 export interface CollectionStats {
@@ -44,6 +48,7 @@ interface RawComment {
   path?: string;
   line?: number | null;
   original_line?: number | null;
+  in_reply_to_id?: number | null;
   diff_hunk?: string;
   html_url?: string;
   author_association?: string;
@@ -60,10 +65,14 @@ interface RawPull {
 export interface CollectOptions {
   repository: string;
   ownerLogin: string;
+  /** All reviewers whose comments count as the owner's (ADR 0030). */
+  reviewerLogins?: readonly string[];
   teamLogins?: readonly string[];
   /** Upper bound on pull requests inspected, so one sync cannot run away. */
   maxPullRequests: number;
   maxCommentsPerPull: number;
+  /** Skip pull requests last updated before this instant (ISO 8601). */
+  updatedSince?: string | undefined;
   includeForks: boolean;
   /**
    * Pull-request conversation comments. Off by default: the thread is where
@@ -113,6 +122,7 @@ export async function collectRepository(
   const watermarks: { pullNumber: number; updatedAt: string }[] = [];
 
   for (const pull of pulls) {
+    if (options.updatedSince !== undefined && pull.updated_at < options.updatedSince) continue;
     // Fork content is somebody else's repository; it is opt-in.
     if (!options.includeForks && pull.head?.repo?.fork === true) continue;
 
@@ -142,6 +152,7 @@ export async function collectRepository(
       line?: number | undefined;
       diffHunk?: string | undefined;
       idPrefix: string;
+      outcome?: EventOutcome | undefined;
     }): void => {
       stats.commentsSeen += 1;
       if (raw.login === undefined || raw.body.length === 0) return;
@@ -150,6 +161,7 @@ export async function collectRepository(
         login: raw.login,
         accountType: raw.accountType,
         ownerLogin: options.ownerLogin,
+        reviewerLogins: options.reviewerLogins,
         teamLogins: options.teamLogins,
         authorAssociation: raw.association,
       });
@@ -205,8 +217,33 @@ export async function collectRepository(
           ...redactedBody.counts,
           ...(redactedHunk === undefined ? {} : redactedHunk.counts),
         },
+        outcome: raw.outcome,
       });
       stats.eligible += 1;
+    };
+
+    /** From the replies and anchors on this page only; no request is made for it. */
+    const outcomeOf = (comment: RawComment): EventOutcome | undefined => {
+      if (comment.in_reply_to_id != null) return undefined;
+      const poster = comment.user?.login?.toLowerCase();
+      const stances = comments
+        .filter(
+          (reply) =>
+            reply.in_reply_to_id === comment.id &&
+            reply.user?.login !== undefined &&
+            !isBot(reply.user.login, reply.user.type) &&
+            reply.user.login.toLowerCase() !== poster,
+        )
+        .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
+        .map((reply) => classifyReply(reply.body ?? ''))
+        .filter((stance): stance is 'acknowledge' | 'reject' => stance !== 'other');
+      return inferOutcome({
+        reply: stances.at(-1) ?? null,
+        // Thread resolution is GraphQL-only, and collection does not read it.
+        resolved: null,
+        // GitHub nulls `line` once a later commit in the pull request changes the anchored lines.
+        changed: comment.line === null && typeof comment.original_line === 'number',
+      });
     };
 
     for (const comment of comments) {
@@ -222,6 +259,7 @@ export async function collectRepository(
         line: comment.line ?? comment.original_line ?? undefined,
         diffHunk: comment.diff_hunk,
         idPrefix: 'ghc_',
+        outcome: outcomeOf(comment),
       });
     }
 
