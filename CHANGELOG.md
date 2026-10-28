@@ -223,6 +223,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mark a rule activatable; other actors still inform voice and precedent.
   (#203)
 
+- The thread re-check's short-comment rule is covered by a behavioural test, and its constant no longer sits between `raisedByOthers` and its doc comment. Both were found by the first live end-to-end `review` run. (#204)
+
 - The GitHub client sends the credential only to the API origin: a request or
   pagination link to another host is refused, and a link contributes only its
   query to the path just read. A path with a dot segment or an encoded dot,
