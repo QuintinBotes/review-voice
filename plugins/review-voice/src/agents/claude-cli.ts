@@ -32,14 +32,28 @@ export function agentTimeoutMs(spec: AgentSpec): number {
  * reaches them. While any is live, SIGINT and SIGTERM kill every group first.
  */
 const live = new Set<ChildProcess>();
+let signalsOwned = false;
+
+/** Kills every live agent's process group. */
+export function stopAll(): void {
+  for (const child of live) killTree(child);
+}
+
+/**
+ * The review driver handles SIGINT and SIGTERM itself while it runs, so it can
+ * remove its worktree after stopAll and before it exits.
+ */
+export function ownSignals(owned: boolean): void {
+  signalsOwned = owned;
+}
 
 function onSignal(signal: NodeJS.Signals): void {
-  for (const child of live) killTree(child);
+  stopAll();
   process.exit(signal === 'SIGINT' ? 130 : 143);
 }
 
 function track(child: ChildProcess): void {
-  if (live.size === 0) {
+  if (live.size === 0 && !signalsOwned) {
     process.on('SIGINT', onSignal);
     process.on('SIGTERM', onSignal);
   }
@@ -51,6 +65,32 @@ function untrack(child: ChildProcess): void {
   process.off('SIGINT', onSignal);
   process.off('SIGTERM', onSignal);
 }
+
+/**
+ * A SIGKILL to the CLI cannot be caught, so claude runs under this wrapper. It
+ * leads the process group the runner kills, and kills that group itself once
+ * the CLI's pid is gone: no portable parent-death signal exists, so it polls.
+ * The argv after `--` is the claude command line; stdio passes straight through.
+ */
+export const WATCHDOG = `
+const { spawn } = require('node:child_process');
+const parent = process.ppid;
+const [bin, ...args] = process.argv.slice(1);
+const child = spawn(bin, args, { stdio: 'inherit' });
+const poll = setInterval(() => {
+  if (process.ppid === parent) return;
+  try { process.kill(-process.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); process.exit(1); }
+}, 2000);
+child.on('error', (error) => {
+  process.stderr.write('could not start ' + bin + ': ' + error.message);
+  process.exit(127);
+});
+child.on('exit', (code, signal) => {
+  clearInterval(poll);
+  if (signal) process.kill(process.pid, signal);
+  process.exitCode = code ?? 1;
+});
+`;
 
 export function claudeBin(env: NodeJS.ProcessEnv): string {
   return env['REVIEW_VOICE_CLAUDE_BIN'] || 'claude';
@@ -132,7 +172,7 @@ export function runClaudeCli(
 
   return new Promise((resolve) => {
     // Its own process group, so a timeout can kill everything it started.
-    const child = spawn(bin, args, {
+    const child = spawn(process.execPath, ['-e', WATCHDOG, '--', bin, ...args], {
       cwd,
       env: childEnv(env),
       detached: process.platform !== 'win32',

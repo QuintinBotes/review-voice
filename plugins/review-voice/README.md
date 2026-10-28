@@ -39,9 +39,35 @@ Full documentation, install instructions and threat model live in the
 | `/review-voice:sync` | Pull new review history (read-only) |
 | `/review-voice:purge` | Delete stored data by repo, age, or entirely |
 
+## Run a review end to end
+
+In a clone of the repository, one command runs every stage, agents included,
+records the run and computes the verdict:
+
+```
+node dist/review-voice.mjs review --pr 123 --repository acme/api [--mode auto] [--post] [--json]
+```
+
+Agents run as confined headless Claude Code processes, so `claude` must be
+installed and logged in. Each stage's files land in a run directory under the
+data directory (or `--out`). `--post` posts through the same guards as
+`/review-voice:draft-review`, and only when `writes.github_posting_enabled` is
+true. It re-reads the thread first and holds any point someone else raised
+during the run; `--no-recheck-thread` turns that off. `--expect-head <sha>`
+stops with exit 3 unless the pull request is at that commit, and
+`REVIEW_VOICE_NO_COMMANDS=1` skips the configured static evidence and
+second-pass commands. It re-reads the thread first and holds any point someone else raised
+during the run; `--no-recheck-thread` turns that off. `--expect-head <sha>`
+stops with exit 3 unless the pull request is at that commit, and
+`REVIEW_VOICE_NO_COMMANDS=1` skips the configured static evidence and
+second-pass commands. Exit codes: 0 done, 2 refused, 3 head moved, 4 waiting on CI, 6 CI needs
+a rerun, 7 an agent failed twice, 8 thread changed before posting.
+
 ## Requirements
 
 Node 22 or newer. `git`. `gh` only if you enable GitHub history ingestion.
 
 No `npm install` - the plugin ships a single pre-built bundle with zero runtime
 dependencies.
+
+To review every pull request in CI, see [the GitHub Action guide](../../docs/ACTION.md).

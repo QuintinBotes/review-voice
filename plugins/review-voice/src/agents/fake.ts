@@ -8,7 +8,13 @@ import type { AgentResult, AgentSpec } from './types.ts';
  * test can drive several separate CLI processes and still address each call
  * as `<name>.<n>.json`.
  */
-export function runFake(spec: AgentSpec, prompt: string, dir: string): Omit<AgentResult, 'seconds'> {
+export function runFake(
+  spec: AgentSpec,
+  prompt: string,
+  dir: string,
+  cwd = '',
+  addDirs: string[] = [],
+): Omit<AgentResult, 'seconds'> {
   checkAgentName(spec.name);
   const calls = join(dir, '.calls');
   mkdirSync(calls, { recursive: true });
@@ -18,7 +24,7 @@ export function runFake(spec: AgentSpec, prompt: string, dir: string): Omit<Agen
   writeFileSync(join(calls, `${spec.name}.${n}.prompt.txt`), prompt);
   writeFileSync(
     join(calls, `${spec.name}.${n}.spec.json`),
-    `${JSON.stringify({ name: spec.name, model: spec.model, tools: spec.tools, timeoutMs: spec.timeoutMs ?? null }, null, 2)}\n`,
+    `${JSON.stringify({ name: spec.name, model: spec.model, tools: spec.tools, timeoutMs: spec.timeoutMs ?? null, cwd, addDirs }, null, 2)}\n`,
   );
 
   const numbered = join(dir, `${spec.name}.${n}.json`);

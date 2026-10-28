@@ -16,7 +16,7 @@ import {
 
 export { agentsDir, readAgentTools, runnerTools, schemasDir, AgentSpecError } from './tools.ts';
 export { schemaForRunner } from './schema.ts';
-export { agentTimeoutMs, MAX_STDOUT_BYTES } from './claude-cli.ts';
+export { agentTimeoutMs, MAX_STDOUT_BYTES, ownSignals, stopAll } from './claude-cli.ts';
 
 /**
  * Put before every prompt, so the agent does not plan around tools it lacks and
@@ -44,7 +44,7 @@ export async function runAgent(
     const granted: AgentSpec = { ...spec, tools: runnerTools(spec.tools) };
     const sent = `${RUNNER_PREAMBLE}\n\n${prompt}`;
     const fakeDir = env['REVIEW_VOICE_FAKE_AGENTS'];
-    if (fakeDir) return { ...runFake(granted, sent, fakeDir), seconds: elapsed(started) };
+    if (fakeDir) return { ...runFake(granted, sent, fakeDir, cwd, addDirs), seconds: elapsed(started) };
     // Asking for the fake runner without its directory must not fall through
     // to a real, billed model.
     if (env['REVIEW_VOICE_AGENT_RUNNER'] === 'fake') {
