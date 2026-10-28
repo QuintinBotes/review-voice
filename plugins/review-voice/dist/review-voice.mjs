@@ -2,8 +2,8 @@
 
 // plugins/review-voice/src/cli.ts
 import { readFileSync as readFileSync13, readSync, writeFileSync as writeFileSync4, mkdirSync as mkdirSync6, statSync as statSync3, renameSync as renameSync2, rmSync as rmSync2, existsSync as existsSync9 } from "node:fs";
-import { dirname as dirname10, join as join16, resolve as resolve3 } from "node:path";
-import { fileURLToPath as fileURLToPath5 } from "node:url";
+import { dirname as dirname11, join as join16, resolve as resolve3 } from "node:path";
+import { fileURLToPath as fileURLToPath6 } from "node:url";
 import { execFileSync as execFileSync13 } from "node:child_process";
 import { format } from "node:util";
 
@@ -195,6 +195,25 @@ function untrack(child) {
   process.off("SIGINT", onSignal);
   process.off("SIGTERM", onSignal);
 }
+var WATCHDOG = `
+const { spawn } = require('node:child_process');
+const parent = process.ppid;
+const [bin, ...args] = process.argv.slice(1);
+const child = spawn(bin, args, { stdio: 'inherit' });
+const poll = setInterval(() => {
+  if (process.ppid === parent) return;
+  try { process.kill(-process.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); process.exit(1); }
+}, 2000);
+child.on('error', (error) => {
+  process.stderr.write('could not start ' + bin + ': ' + error.message);
+  process.exit(127);
+});
+child.on('exit', (code, signal) => {
+  clearInterval(poll);
+  if (signal) process.kill(process.pid, signal);
+  process.exitCode = code ?? 1;
+});
+`;
 function claudeBin(env) {
   return env["REVIEW_VOICE_CLAUDE_BIN"] || "claude";
 }
@@ -249,7 +268,7 @@ function runClaudeCli(spec, prompt, cwd, addDirs, env) {
   const timeoutMs = agentTimeoutMs(spec);
   const bin = claudeBin(env);
   return new Promise((resolve4) => {
-    const child = spawn(bin, args, {
+    const child = spawn(process.execPath, ["-e", WATCHDOG, "--", bin, ...args], {
       cwd,
       env: childEnv(env),
       detached: process.platform !== "win32",
@@ -7577,8 +7596,9 @@ function feedbackTotals(db) {
 // plugins/review-voice/src/policy/load.ts
 import { readFileSync as readFileSync7, existsSync as existsSync4 } from "node:fs";
 import { createHash as createHash4 } from "node:crypto";
-import { isAbsolute as isAbsolute2, join as join8 } from "node:path";
+import { dirname as dirname6, isAbsolute as isAbsolute2, join as join8 } from "node:path";
 import { homedir as homedir2 } from "node:os";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
@@ -14517,6 +14537,49 @@ function layerFromPolicyFile(text4, source, fallbackKey) {
     priorities
   };
 }
+function pluginRoot2() {
+  let dir = dirname6(fileURLToPath4(import.meta.url));
+  while (!existsSync4(join8(dir, ".claude-plugin", "plugin.json")) && dirname6(dir) !== dir) dir = dirname6(dir);
+  return dir;
+}
+function loadBaselineLayer(owner, path = join8(pluginRoot2(), "policies", "baseline-global.yaml")) {
+  if (!existsSync4(path)) return null;
+  try {
+    const doc = asRecord(parse(readFileSync7(path, "utf8")));
+    if (doc === null) return null;
+    const voice = asRecord(doc["voice"]);
+    const maxFindings = positiveInt(voice?.["max_findings"]);
+    const maxWords = positiveInt(voice?.["max_words_per_finding"]);
+    const maxTotal = positiveInt(voice?.["max_total_words"]);
+    return {
+      scope: { type: "global", key: owner ?? "owner" },
+      source: "policies/baseline-global.yaml",
+      requiresApproval: false,
+      ...maxFindings === void 0 ? {} : { maxFindings },
+      ...maxWords === void 0 ? {} : { maxWordsPerFinding: maxWords },
+      ...maxTotal === void 0 ? {} : { maxTotalWords: maxTotal },
+      forbiddenPhrases: asStringArray(doc["forbidden_phrases"]),
+      suppressedPatterns: asStringArray(doc["suppressed_patterns"]),
+      priorities: asStringArray(doc["priorities"]).map((category) => ({ category, weight: "normal" }))
+    };
+  } catch {
+    return null;
+  }
+}
+var KNOWN_TOP_LEVEL = ["identity", "repositories", "review", "ci", "verdict", "static_evidence", "verification", "queue", "watch", "writes"];
+function readThresholds(review2, result) {
+  const read = (key2) => {
+    const value = review2[key2];
+    if (value === void 0) return void 0;
+    if (typeof value === "number" && value > 0 && value <= 1) return value;
+    result.warnings.push(`review.${key2} must be a number above 0 and at most 1; using the default.`);
+    return void 0;
+  };
+  const confidence = read("confidence_threshold");
+  const score2 = read("final_score_threshold");
+  if (confidence !== void 0) result.thresholds.technicalConfidence = confidence;
+  if (score2 !== void 0) result.thresholds.finalScore = score2;
+}
 function readReviewers(identity2, result) {
   const raw = identity2?.["reviewers"];
   const listed = [];
@@ -14549,7 +14612,7 @@ function configFile(repositoryRoot2, warnings = []) {
   }
   return join8(repositoryRoot2, ".review-voice", "config.yaml");
 }
-function loadConfig(repositoryRoot2, path) {
+function loadConfig(repositoryRoot2, baselinePath, path) {
   const result = {
     ownerReviewer: null,
     reviewers: [],
@@ -14573,6 +14636,7 @@ function loadConfig(repositoryRoot2, path) {
     costMode: { mode: "auto", models: {} },
     verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
     lanes: [DIFF_LANE],
+    thresholds: {},
     layers: [],
     unapproved: [],
     warnings: []
@@ -14582,6 +14646,9 @@ function loadConfig(repositoryRoot2, path) {
     try {
       const doc = asRecord(parse(readFileSync7(configPath, "utf8")));
       if (doc !== null) {
+        for (const key2 of Object.keys(doc)) {
+          if (!KNOWN_TOP_LEVEL.includes(key2)) result.warnings.push(`${key2} is not a setting Review Voice reads; ignoring it.`);
+        }
         const identity2 = asRecord(doc["identity"]);
         if (typeof identity2?.["owner_reviewer"] === "string") {
           result.ownerReviewer = identity2["owner_reviewer"];
@@ -14657,6 +14724,7 @@ function loadConfig(repositoryRoot2, path) {
           readHumanReview(asRecord(review2["human_review"]), result);
           readStructure(asRecord(review2["structure"]), result);
           readCostMode(review2, result);
+          readThresholds(review2, result);
           readLanes(review2["lanes"], result);
           result.layers.push({
             scope: { type: "repository", key: repositoryRoot2 },
@@ -14672,6 +14740,8 @@ function loadConfig(repositoryRoot2, path) {
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }
   }
+  const baseline = loadBaselineLayer(result.ownerReviewer, baselinePath);
+  if (baseline !== null) result.layers.unshift(baseline);
   const policyPath = join8(repositoryRoot2, ".review-voice", "policy.yaml");
   if (existsSync4(policyPath)) {
     try {
@@ -15312,7 +15382,8 @@ function eligibleFindings(scores) {
   return isRecord2(scores) && Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord2) : [];
 }
 function candidatesById(parsed2) {
-  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord2(parsed2) && Array.isArray(parsed2["candidates"]) ? parsed2["candidates"] : [];
+  const key2 = isRecord2(parsed2) ? ["candidates", "kept"].find((k) => Array.isArray(parsed2[k])) : void 0;
+  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord2(parsed2) && key2 !== void 0 ? parsed2[key2] : [];
   const out = /* @__PURE__ */ new Map();
   for (const entry of list2) {
     if (!isRecord2(entry)) continue;
@@ -15597,6 +15668,349 @@ function contentKey(parts) {
   ).digest("hex").slice(0, 32);
 }
 
+// plugins/review-voice/src/corpus/outcome.ts
+function inferOutcome(signals) {
+  if (signals.reply === "reject") return { status: "dismissed", certainty: "strong" };
+  if (signals.changed && (signals.resolved === true || signals.reply === "acknowledge")) {
+    return { status: "accepted", certainty: "strong" };
+  }
+  if (signals.changed || signals.resolved === true || signals.reply === "acknowledge") {
+    return { status: "accepted", certainty: "weak" };
+  }
+  return { status: "unknown", certainty: "weak" };
+}
+
+// plugins/review-voice/src/store/outcomes.ts
+var NEGATED_ACK = /\bnot (?:yet )?(?:fixed|done|addressed|changed|updated)\b/i;
+var REJECT = /\b(?:won'?t fix|wontfix|not a (?:bug|issue|problem)|false positive|by design|intentional(?:ly)?|working as (?:intended|designed)|disagree|(?:does not|doesn'?t) apply|not applicable|not needed|unnecessary|incorrect|this is wrong|that'?s wrong)\b/i;
+var ACKNOWLEDGE = /\b(?:fixed|done|addressed|good catch|nice catch|will fix|will do|updated|applied|agreed|makes sense|you'?re right|thanks|thank you)\b/i;
+function classifyReply(body) {
+  if (REJECT.test(body)) return "reject";
+  if (NEGATED_ACK.test(body)) return "other";
+  if (ACKNOWLEDGE.test(body)) return "acknowledge";
+  return "other";
+}
+function patchTouches(patch, first, last) {
+  let oldLine = 0;
+  for (const line3 of patch.split("\n")) {
+    const header = /^@@ -(\d+)(?:,\d+)? \+\d+/.exec(line3);
+    if (header !== null) {
+      oldLine = Number(header[1]);
+      continue;
+    }
+    if (line3.startsWith("\\")) continue;
+    if (line3.startsWith("-")) {
+      if (oldLine >= first && oldLine <= last) return true;
+      oldLine += 1;
+    } else if (line3.startsWith("+")) {
+      if (oldLine > first && oldLine <= last) return true;
+    } else {
+      oldLine += 1;
+    }
+  }
+  return false;
+}
+var READ_LIMIT = 1e3;
+async function readStates(client, repository, pullNumber) {
+  const states = /* @__PURE__ */ new Map();
+  let cursor = null;
+  for (let read = 0; read < READ_LIMIT; read += 100) {
+    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
+    const threads = data?.repository?.pullRequest?.reviewThreads;
+    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
+    for (const thread of threads.nodes) {
+      const state = { resolved: thread?.isResolved === true, outdated: thread?.isOutdated === true };
+      for (const comment of thread?.comments?.nodes ?? []) {
+        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
+      }
+    }
+    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
+    cursor = threads.pageInfo.endCursor;
+  }
+  return states;
+}
+function sentRuns(db, options) {
+  const attempts = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(`SELECT audit_id, json_extract(metadata_json, '$.run') AS run FROM audit_events WHERE action = 'review_post_attempted'`).all()) {
+    if (typeof row.run === "string") attempts.set(row.audit_id, row.run);
+  }
+  const reviewIdsByRun = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ?`).all(options.since)) {
+    let meta;
+    try {
+      meta = JSON.parse(row.metadata_json);
+    } catch {
+      continue;
+    }
+    const run = typeof meta.attempt === "string" ? attempts.get(meta.attempt) : void 0;
+    if (run === void 0) continue;
+    const ids = reviewIdsByRun.get(run) ?? [];
+    const id = Number(meta.reviewId);
+    if (Number.isInteger(id) && id > 0) ids.push(id);
+    reviewIdsByRun.set(run, ids);
+  }
+  const rows = db.prepare(
+    `SELECT review_run_id, repository, pull_number, head_ref FROM review_runs
+       WHERE repository IS NOT NULL AND pull_number IS NOT NULL ORDER BY created_at, rowid`
+  ).all();
+  const wanted = options.repository?.toLowerCase();
+  const runs = [];
+  for (const row of rows) {
+    const reviewIds = reviewIdsByRun.get(row.review_run_id);
+    if (reviewIds === void 0) continue;
+    if (wanted !== void 0 && row.repository.toLowerCase() !== wanted) continue;
+    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, headRef: row.head_ref, reviewIds });
+  }
+  return runs;
+}
+var isBot2 = (user) => user?.type === "Bot" || (user?.login ?? "").endsWith("[bot]");
+function sameHead(a, b) {
+  const left = a.toLowerCase();
+  const right = b.toLowerCase();
+  return left === right || left.length >= 7 && right.startsWith(left) || right.length >= 7 && left.startsWith(right);
+}
+async function checkOutcomes(options) {
+  const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
+  const result = { outcomes: [], skipped: [], warnings: [] };
+  const byPull = /* @__PURE__ */ new Map();
+  for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
+    const key2 = `${run.repository.toLowerCase()}#${run.pullNumber}`;
+    byPull.set(key2, [...byPull.get(key2) ?? [], run]);
+  }
+  let viewer = null;
+  const viewerLogin = () => {
+    viewer ??= options.client.get("/user").then(({ data }) => data.login?.toLowerCase() ?? null).catch(() => null);
+    return viewer;
+  };
+  for (const runs of byPull.values()) {
+    const first = runs[0];
+    const { repository, pullNumber } = first;
+    if (!allowed.has(repository.toLowerCase())) {
+      result.skipped.push({ repository, pullNumber, reason: "not in the allowlist" });
+      continue;
+    }
+    try {
+      const context2 = await readPull(options.client, repository, pullNumber, result.warnings);
+      for (const run of runs) {
+        result.outcomes.push(...await followRun(options, context2, run, viewerLogin));
+      }
+    } catch (error) {
+      result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
+    }
+  }
+  return result;
+}
+async function readPull(client, repository, pullNumber, warnings) {
+  const { data: pull } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
+  const replies = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/comments?per_page=100`, READ_LIMIT);
+  let states = null;
+  try {
+    states = await readStates(client, repository, pullNumber);
+  } catch (error) {
+    warnings.push(
+      `${repository}#${pullNumber}: could not read which threads are resolved (${error instanceof Error ? error.message.slice(0, 120) : String(error)}); resolution is unknown`
+    );
+  }
+  const sha = pull?.head?.sha;
+  return { repository, pullNumber, currentHead: typeof sha === "string" ? sha : null, replies, states, compares: /* @__PURE__ */ new Map() };
+}
+async function reviewIdsOf(options, run, viewerLogin) {
+  if (run.reviewIds.length > 0) return { ids: run.reviewIds, source: "audit" };
+  const login = await viewerLogin();
+  if (login === null || run.headRef === null) return { ids: [], source: "reviews-list" };
+  const reviews = await options.client.paginate(`/repos/${run.repository}/pulls/${run.pullNumber}/reviews?per_page=100`, READ_LIMIT);
+  const ids = reviews.filter((review2) => typeof review2.id === "number" && review2.user?.login?.toLowerCase() === login).filter((review2) => typeof review2.commit_id === "string" && sameHead(review2.commit_id, run.headRef)).map((review2) => review2.id);
+  return { ids, source: "reviews-list" };
+}
+function severityPrefix(finding) {
+  return `**${finding.severity}** - `;
+}
+function matchComments(findings, comments) {
+  const taken = /* @__PURE__ */ new Set();
+  const matched = /* @__PURE__ */ new Map();
+  for (const finding of findings) {
+    const words = significantWords(finding.text);
+    const candidates = comments.filter(
+      (comment) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line)
+    );
+    let best;
+    let bestScore = -1;
+    for (const comment of candidates) {
+      const body = comment.body ?? "";
+      const score2 = overlap(words, significantWords(body)) + (body.startsWith(severityPrefix(finding)) ? 0.01 : 0);
+      if (score2 > bestScore) {
+        best = comment;
+        bestScore = score2;
+      }
+    }
+    if (best !== void 0) {
+      taken.add(best.id);
+      matched.set(finding.findingId, best);
+    }
+  }
+  return matched;
+}
+async function followRun(options, context2, run, viewerLogin) {
+  const detail = runDetail(options.db, run.runId);
+  if (detail === null) return [];
+  const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
+  const comments = [];
+  for (const id of ids) {
+    comments.push(
+      ...await options.client.paginate(
+        `/repos/${run.repository}/pulls/${run.pullNumber}/reviews/${id}/comments?per_page=100`,
+        READ_LIMIT
+      )
+    );
+  }
+  const matched = matchComments(detail.findings, comments);
+  const checkedAt = (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+  const outcomes = [];
+  for (const finding of detail.findings) {
+    const comment = matched.get(finding.findingId);
+    if (comment === void 0) continue;
+    const decided = await decide2(options, context2, run, finding, comment);
+    const outcome = {
+      reviewRunId: run.runId,
+      findingId: finding.findingId,
+      repository: run.repository,
+      pullNumber: run.pullNumber,
+      commentId: comment.id,
+      ...decided,
+      evidence: source === "reviews-list" ? `${decided.evidence}; review found by commit and author` : decided.evidence,
+      checkedAt,
+      path: finding.path,
+      line: finding.line,
+      reviewIdSource: source
+    };
+    saveOutcome(options.db, outcome);
+    outcomes.push(outcome);
+  }
+  return outcomes;
+}
+async function linesChanged(options, context2, run, comment, finding) {
+  if (run.headRef === null || context2.currentHead === null) return null;
+  if (sameHead(run.headRef, context2.currentHead)) return false;
+  const key2 = run.headRef.toLowerCase();
+  let compare = context2.compares.get(key2);
+  if (compare === void 0) {
+    compare = options.client.paginateWrapped(`/repos/${run.repository}/compare/${run.headRef}...${context2.currentHead}?per_page=100`, "files", READ_LIMIT).catch(() => null);
+    context2.compares.set(key2, compare);
+  }
+  const files2 = await compare;
+  if (files2 === null) return null;
+  const file2 = files2.find((entry) => entry.filename === finding.path || entry.previous_filename === finding.path);
+  if (file2 === void 0) return false;
+  if (typeof file2.patch !== "string") return null;
+  const start = comment.start_line ?? comment.original_start_line ?? finding.line;
+  return patchTouches(file2.patch, Math.min(start, finding.line), finding.line);
+}
+async function decide2(options, context2, run, finding, comment) {
+  const dismissedByOwner = options.db.prepare(`SELECT 1 FROM feedback WHERE review_run_id = ? AND finding_id = ? AND action = 'dismiss'`).get(run.runId, finding.findingId);
+  if (dismissedByOwner !== void 0) {
+    return { outcome: "dismissed", strength: "strong", evidence: "the owner recorded dismiss for this finding" };
+  }
+  const poster = comment.user?.login?.toLowerCase();
+  const answers = context2.replies.filter((reply) => reply.in_reply_to_id === comment.id && !isBot2(reply.user) && reply.user?.login?.toLowerCase() !== poster).map((reply) => ({ stance: classifyReply(reply.body ?? ""), at: reply.created_at ?? "", author: reply.user?.login ?? "unknown" })).filter((answer2) => answer2.stance !== "other").sort((a, b) => a.at.localeCompare(b.at));
+  const latest = answers[answers.length - 1];
+  if (latest?.stance === "reject") {
+    return { outcome: "dismissed", strength: "strong", evidence: `${latest.author} replied turning it down` };
+  }
+  const state = context2.states?.get(comment.id) ?? null;
+  const changed = await linesChanged(options, context2, run, comment, finding) ?? (state?.outdated === true ? true : null);
+  const resolved = state === null ? null : state.resolved;
+  const agreed = latest?.stance === "acknowledge";
+  if (changed === true && (resolved === true || agreed)) {
+    return {
+      outcome: "fixed",
+      strength: "strong",
+      evidence: `the anchored lines changed after the comment and ${resolved === true ? "the thread was resolved" : `${latest.author} agreed`}`
+    };
+  }
+  if (resolved === true) {
+    return {
+      outcome: "resolved",
+      strength: "weak",
+      evidence: changed === false ? "the thread was resolved and the anchored lines are unchanged" : "the thread was resolved; whether the lines changed could not be read"
+    };
+  }
+  if (resolved === false && changed === true) {
+    return { outcome: "outdated", strength: "weak", evidence: "the anchored lines changed and the thread is still open" };
+  }
+  if (resolved === false && changed === false) {
+    return {
+      outcome: "open",
+      strength: "weak",
+      evidence: agreed ? "agreed in reply, but the lines are unchanged and the thread is open" : "nothing has changed and the thread is open"
+    };
+  }
+  return { outcome: "unknown", strength: "weak", evidence: "the thread state or the later commits could not be read" };
+}
+function saveOutcome(db, outcome) {
+  db.prepare(
+    `INSERT INTO finding_outcomes
+       (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (review_run_id, finding_id) DO UPDATE SET
+       repository = excluded.repository, pull_number = excluded.pull_number, comment_id = excluded.comment_id,
+       outcome = excluded.outcome, strength = excluded.strength, evidence = excluded.evidence, checked_at = excluded.checked_at`
+  ).run(
+    outcome.reviewRunId,
+    outcome.findingId,
+    outcome.repository,
+    outcome.pullNumber,
+    outcome.commentId,
+    outcome.outcome,
+    outcome.strength,
+    outcome.evidence,
+    outcome.checkedAt
+  );
+}
+function statsOf(rows) {
+  const strong = rows.filter((row) => row.strength === "strong");
+  const fixed = strong.filter((row) => row.outcome === "fixed").length;
+  const dismissed = strong.filter((row) => row.outcome === "dismissed").length;
+  const decided = fixed + dismissed;
+  return {
+    tracked: rows.length,
+    fixed,
+    dismissed,
+    fixedRate: decided === 0 ? null : fixed / decided,
+    dismissedRate: decided === 0 ? null : dismissed / decided
+  };
+}
+function postedStats(db) {
+  return statsOf(db.prepare("SELECT outcome, strength FROM finding_outcomes").all());
+}
+function postedBreakdown(db) {
+  const rows = db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all();
+  const findings = /* @__PURE__ */ new Map();
+  const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map() };
+  for (const row of rows) {
+    let known = findings.get(row.review_run_id);
+    if (known === void 0) {
+      known = /* @__PURE__ */ new Map();
+      findings.set(row.review_run_id, known);
+      const stored = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(row.review_run_id);
+      try {
+        const parsed2 = JSON.parse(stored?.output_json ?? "{}");
+        for (const finding of parsed2.findings ?? []) {
+          known.set(String(finding["findingId"]), {
+            severity: typeof finding["severity"] === "string" ? finding["severity"] : "unknown",
+            lane: typeof finding["lane"] === "string" ? finding["lane"] : "diff"
+          });
+        }
+      } catch {
+      }
+    }
+    const info = known.get(row.finding_id) ?? { severity: "unknown", lane: "diff" };
+    groups.severity.set(info.severity, [...groups.severity.get(info.severity) ?? [], row]);
+    groups.lane.set(info.lane, [...groups.lane.get(info.lane) ?? [], row]);
+  }
+  const collect = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list2]) => [key2, statsOf(list2)]));
+  return { bySeverity: collect(groups.severity), byLane: collect(groups.lane) };
+}
+
 // plugins/review-voice/src/corpus/collect.ts
 async function collectRepository(client, options, stats) {
   const pulls = await client.paginate(
@@ -15673,9 +16087,24 @@ async function collectRepository(client, options, stats) {
         redactionCounts: {
           ...redactedBody.counts,
           ...redactedHunk === void 0 ? {} : redactedHunk.counts
-        }
+        },
+        outcome: raw.outcome
       });
       stats.eligible += 1;
+    };
+    const outcomeOf = (comment) => {
+      if (comment.in_reply_to_id != null) return void 0;
+      const poster = comment.user?.login?.toLowerCase();
+      const stances = comments.filter(
+        (reply) => reply.in_reply_to_id === comment.id && reply.user?.login !== void 0 && !isBot(reply.user.login, reply.user.type) && reply.user.login.toLowerCase() !== poster
+      ).sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? "")).map((reply) => classifyReply(reply.body ?? "")).filter((stance) => stance !== "other");
+      return inferOutcome({
+        reply: stances.at(-1) ?? null,
+        // Thread resolution is GraphQL-only, and collection does not read it.
+        resolved: null,
+        // GitHub nulls `line` once a later commit in the pull request changes the anchored lines.
+        changed: comment.line === null && typeof comment.original_line === "number"
+      });
     };
     for (const comment of comments) {
       stats.bySource.inline += 1;
@@ -15689,7 +16118,8 @@ async function collectRepository(client, options, stats) {
         filePath: comment.path,
         line: comment.line ?? comment.original_line ?? void 0,
         diffHunk: comment.diff_hunk,
-        idPrefix: "ghc_"
+        idPrefix: "ghc_",
+        outcome: outcomeOf(comment)
       });
     }
     const reviews = await client.paginate(
@@ -15799,7 +16229,7 @@ function scaledRepositoryShare(repositoryCount) {
 
 // plugins/review-voice/src/conventions/discover.ts
 import { existsSync as existsSync5, readFileSync as readFileSync8, readdirSync, statSync } from "node:fs";
-import { dirname as dirname6, join as join9, sep } from "node:path";
+import { dirname as dirname7, join as join9, sep } from "node:path";
 var REPOSITORY_FILES = [
   { path: "CLAUDE.md", kind: "claude" },
   { path: ".claude/CLAUDE.md", kind: "claude" },
@@ -15954,11 +16384,11 @@ function ancestors(changedPath) {
   return out;
 }
 function resolvePointer(root, pointerPath, target) {
-  const own = dirname6(pointerPath);
+  const own = dirname7(pointerPath);
   const candidates = own === "." || own === "" ? [] : [join9(own, target)];
-  let directory = dirname6(pointerPath);
+  let directory = dirname7(pointerPath);
   while (directory !== "." && directory !== "" && directory !== sep) {
-    const base = dirname6(directory);
+    const base = dirname7(directory);
     const name = directory.split(sep).pop();
     if (name === ".claude" || name === ".agents") candidates.push(join9(base === "." ? "" : base, target));
     directory = base;
@@ -16312,6 +16742,9 @@ function storeEvents(db, events) {
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (content_key) DO NOTHING`
   );
+  const updateOutcome = db.prepare(
+    `UPDATE review_events SET outcome_status = ?, outcome_certainty = ? WHERE content_key = ?`
+  );
   let inserted = 0;
   db.exec("BEGIN");
   try {
@@ -16331,15 +16764,17 @@ function storeEvents(db, events) {
         event.filePath ?? null,
         event.lineStart ?? null,
         event.diffHunkRedacted ?? null,
-        // Outcomes are inferred in a later pass; unknown is the honest default
-        // and carries a middling weight rather than zero.
-        "unknown",
-        "weak",
+        // Unknown is the honest default and carries a middling weight rather than zero.
+        event.outcome?.status ?? "unknown",
+        event.outcome?.certainty ?? "weak",
         event.redactionVersion,
         JSON.stringify(event.redactionCounts),
         (/* @__PURE__ */ new Date()).toISOString()
       );
       if (result.changes > 0) inserted += 1;
+      else if (event.outcome !== void 0 && event.outcome.status !== "unknown") {
+        updateOutcome.run(event.outcome.status, event.outcome.certainty, event.contentKey);
+      }
     }
     db.exec("COMMIT");
   } catch (error) {
@@ -16396,7 +16831,8 @@ function corpusCoverage(db, options = {}) {
       }
     }
   }
-  if (total > 0 && (byRole["owner"] ?? 0) === 0) {
+  const ownerAuthored = options.ownerReviewer === void 0 || options.ownerReviewer === null ? byRole["owner"] ?? 0 : db.prepare("SELECT COUNT(*) AS n FROM review_events WHERE LOWER(reviewer_login) = LOWER(?)").get(options.ownerReviewer).n;
+  if (total > 0 && ownerAuthored === 0) {
     warnings.push(
       "No events authored by the owner reviewer. Policy rules need at least one owner signal, so nothing in this corpus can activate a rule. Check identity.owner_reviewer matches your GitHub login."
     );
@@ -16880,337 +17316,6 @@ function assertPayload(payload) {
   if (keys !== "body,comments,commit_id,event") {
     throw new WriteViolation(`Refused a review with unexpected fields: ${keys}.`);
   }
-}
-
-// plugins/review-voice/src/store/outcomes.ts
-var NEGATED_ACK = /\bnot (?:yet )?(?:fixed|done|addressed|changed|updated)\b/i;
-var REJECT = /\b(?:won'?t fix|wontfix|not a (?:bug|issue|problem)|false positive|by design|intentional(?:ly)?|working as (?:intended|designed)|disagree|(?:does not|doesn'?t) apply|not applicable|not needed|unnecessary|incorrect|this is wrong|that'?s wrong)\b/i;
-var ACKNOWLEDGE = /\b(?:fixed|done|addressed|good catch|nice catch|will fix|will do|updated|applied|agreed|makes sense|you'?re right|thanks|thank you)\b/i;
-function classifyReply(body) {
-  if (REJECT.test(body)) return "reject";
-  if (NEGATED_ACK.test(body)) return "other";
-  if (ACKNOWLEDGE.test(body)) return "acknowledge";
-  return "other";
-}
-function patchTouches(patch, first, last) {
-  let oldLine = 0;
-  for (const line3 of patch.split("\n")) {
-    const header = /^@@ -(\d+)(?:,\d+)? \+\d+/.exec(line3);
-    if (header !== null) {
-      oldLine = Number(header[1]);
-      continue;
-    }
-    if (line3.startsWith("\\")) continue;
-    if (line3.startsWith("-")) {
-      if (oldLine >= first && oldLine <= last) return true;
-      oldLine += 1;
-    } else if (line3.startsWith("+")) {
-      if (oldLine > first && oldLine <= last) return true;
-    } else {
-      oldLine += 1;
-    }
-  }
-  return false;
-}
-var READ_LIMIT = 1e3;
-async function readStates(client, repository, pullNumber) {
-  const states = /* @__PURE__ */ new Map();
-  let cursor = null;
-  for (let read = 0; read < READ_LIMIT; read += 100) {
-    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
-    const threads = data?.repository?.pullRequest?.reviewThreads;
-    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
-    for (const thread of threads.nodes) {
-      const state = { resolved: thread?.isResolved === true, outdated: thread?.isOutdated === true };
-      for (const comment of thread?.comments?.nodes ?? []) {
-        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
-      }
-    }
-    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
-    cursor = threads.pageInfo.endCursor;
-  }
-  return states;
-}
-function sentRuns(db, options) {
-  const attempts = /* @__PURE__ */ new Map();
-  for (const row of db.prepare(`SELECT audit_id, json_extract(metadata_json, '$.run') AS run FROM audit_events WHERE action = 'review_post_attempted'`).all()) {
-    if (typeof row.run === "string") attempts.set(row.audit_id, row.run);
-  }
-  const reviewIdsByRun = /* @__PURE__ */ new Map();
-  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ?`).all(options.since)) {
-    let meta;
-    try {
-      meta = JSON.parse(row.metadata_json);
-    } catch {
-      continue;
-    }
-    const run = typeof meta.attempt === "string" ? attempts.get(meta.attempt) : void 0;
-    if (run === void 0) continue;
-    const ids = reviewIdsByRun.get(run) ?? [];
-    const id = Number(meta.reviewId);
-    if (Number.isInteger(id) && id > 0) ids.push(id);
-    reviewIdsByRun.set(run, ids);
-  }
-  const rows = db.prepare(
-    `SELECT review_run_id, repository, pull_number, head_ref FROM review_runs
-       WHERE repository IS NOT NULL AND pull_number IS NOT NULL ORDER BY created_at, rowid`
-  ).all();
-  const wanted = options.repository?.toLowerCase();
-  const runs = [];
-  for (const row of rows) {
-    const reviewIds = reviewIdsByRun.get(row.review_run_id);
-    if (reviewIds === void 0) continue;
-    if (wanted !== void 0 && row.repository.toLowerCase() !== wanted) continue;
-    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, headRef: row.head_ref, reviewIds });
-  }
-  return runs;
-}
-var isBot2 = (user) => user?.type === "Bot" || (user?.login ?? "").endsWith("[bot]");
-function sameHead(a, b) {
-  const left = a.toLowerCase();
-  const right = b.toLowerCase();
-  return left === right || left.length >= 7 && right.startsWith(left) || right.length >= 7 && left.startsWith(right);
-}
-async function checkOutcomes(options) {
-  const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
-  const result = { outcomes: [], skipped: [], warnings: [] };
-  const byPull = /* @__PURE__ */ new Map();
-  for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
-    const key2 = `${run.repository.toLowerCase()}#${run.pullNumber}`;
-    byPull.set(key2, [...byPull.get(key2) ?? [], run]);
-  }
-  let viewer = null;
-  const viewerLogin = () => {
-    viewer ??= options.client.get("/user").then(({ data }) => data.login?.toLowerCase() ?? null).catch(() => null);
-    return viewer;
-  };
-  for (const runs of byPull.values()) {
-    const first = runs[0];
-    const { repository, pullNumber } = first;
-    if (!allowed.has(repository.toLowerCase())) {
-      result.skipped.push({ repository, pullNumber, reason: "not in the allowlist" });
-      continue;
-    }
-    try {
-      const context2 = await readPull(options.client, repository, pullNumber, result.warnings);
-      for (const run of runs) {
-        result.outcomes.push(...await followRun(options, context2, run, viewerLogin));
-      }
-    } catch (error) {
-      result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
-    }
-  }
-  return result;
-}
-async function readPull(client, repository, pullNumber, warnings) {
-  const { data: pull } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
-  const replies = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/comments?per_page=100`, READ_LIMIT);
-  let states = null;
-  try {
-    states = await readStates(client, repository, pullNumber);
-  } catch (error) {
-    warnings.push(
-      `${repository}#${pullNumber}: could not read which threads are resolved (${error instanceof Error ? error.message.slice(0, 120) : String(error)}); resolution is unknown`
-    );
-  }
-  const sha = pull?.head?.sha;
-  return { repository, pullNumber, currentHead: typeof sha === "string" ? sha : null, replies, states, compares: /* @__PURE__ */ new Map() };
-}
-async function reviewIdsOf(options, run, viewerLogin) {
-  if (run.reviewIds.length > 0) return { ids: run.reviewIds, source: "audit" };
-  const login = await viewerLogin();
-  if (login === null || run.headRef === null) return { ids: [], source: "reviews-list" };
-  const reviews = await options.client.paginate(`/repos/${run.repository}/pulls/${run.pullNumber}/reviews?per_page=100`, READ_LIMIT);
-  const ids = reviews.filter((review2) => typeof review2.id === "number" && review2.user?.login?.toLowerCase() === login).filter((review2) => typeof review2.commit_id === "string" && sameHead(review2.commit_id, run.headRef)).map((review2) => review2.id);
-  return { ids, source: "reviews-list" };
-}
-function severityPrefix(finding) {
-  return `**${finding.severity}** - `;
-}
-function matchComments(findings, comments) {
-  const taken = /* @__PURE__ */ new Set();
-  const matched = /* @__PURE__ */ new Map();
-  for (const finding of findings) {
-    const words = significantWords(finding.text);
-    const candidates = comments.filter(
-      (comment) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line)
-    );
-    let best;
-    let bestScore = -1;
-    for (const comment of candidates) {
-      const body = comment.body ?? "";
-      const score2 = overlap(words, significantWords(body)) + (body.startsWith(severityPrefix(finding)) ? 0.01 : 0);
-      if (score2 > bestScore) {
-        best = comment;
-        bestScore = score2;
-      }
-    }
-    if (best !== void 0) {
-      taken.add(best.id);
-      matched.set(finding.findingId, best);
-    }
-  }
-  return matched;
-}
-async function followRun(options, context2, run, viewerLogin) {
-  const detail = runDetail(options.db, run.runId);
-  if (detail === null) return [];
-  const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
-  const comments = [];
-  for (const id of ids) {
-    comments.push(
-      ...await options.client.paginate(
-        `/repos/${run.repository}/pulls/${run.pullNumber}/reviews/${id}/comments?per_page=100`,
-        READ_LIMIT
-      )
-    );
-  }
-  const matched = matchComments(detail.findings, comments);
-  const checkedAt = (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
-  const outcomes = [];
-  for (const finding of detail.findings) {
-    const comment = matched.get(finding.findingId);
-    if (comment === void 0) continue;
-    const decided = await decide2(options, context2, run, finding, comment);
-    const outcome = {
-      reviewRunId: run.runId,
-      findingId: finding.findingId,
-      repository: run.repository,
-      pullNumber: run.pullNumber,
-      commentId: comment.id,
-      ...decided,
-      evidence: source === "reviews-list" ? `${decided.evidence}; review found by commit and author` : decided.evidence,
-      checkedAt,
-      path: finding.path,
-      line: finding.line,
-      reviewIdSource: source
-    };
-    saveOutcome(options.db, outcome);
-    outcomes.push(outcome);
-  }
-  return outcomes;
-}
-async function linesChanged(options, context2, run, comment, finding) {
-  if (run.headRef === null || context2.currentHead === null) return null;
-  if (sameHead(run.headRef, context2.currentHead)) return false;
-  const key2 = run.headRef.toLowerCase();
-  let compare = context2.compares.get(key2);
-  if (compare === void 0) {
-    compare = options.client.paginateWrapped(`/repos/${run.repository}/compare/${run.headRef}...${context2.currentHead}?per_page=100`, "files", READ_LIMIT).catch(() => null);
-    context2.compares.set(key2, compare);
-  }
-  const files2 = await compare;
-  if (files2 === null) return null;
-  const file2 = files2.find((entry) => entry.filename === finding.path || entry.previous_filename === finding.path);
-  if (file2 === void 0) return false;
-  if (typeof file2.patch !== "string") return null;
-  const start = comment.start_line ?? comment.original_start_line ?? finding.line;
-  return patchTouches(file2.patch, Math.min(start, finding.line), finding.line);
-}
-async function decide2(options, context2, run, finding, comment) {
-  const dismissedByOwner = options.db.prepare(`SELECT 1 FROM feedback WHERE review_run_id = ? AND finding_id = ? AND action = 'dismiss'`).get(run.runId, finding.findingId);
-  if (dismissedByOwner !== void 0) {
-    return { outcome: "dismissed", strength: "strong", evidence: "the owner recorded dismiss for this finding" };
-  }
-  const poster = comment.user?.login?.toLowerCase();
-  const answers = context2.replies.filter((reply) => reply.in_reply_to_id === comment.id && !isBot2(reply.user) && reply.user?.login?.toLowerCase() !== poster).map((reply) => ({ stance: classifyReply(reply.body ?? ""), at: reply.created_at ?? "", author: reply.user?.login ?? "unknown" })).filter((answer2) => answer2.stance !== "other").sort((a, b) => a.at.localeCompare(b.at));
-  const latest = answers[answers.length - 1];
-  if (latest?.stance === "reject") {
-    return { outcome: "dismissed", strength: "strong", evidence: `${latest.author} replied turning it down` };
-  }
-  const state = context2.states?.get(comment.id) ?? null;
-  const changed = await linesChanged(options, context2, run, comment, finding) ?? (state?.outdated === true ? true : null);
-  const resolved = state === null ? null : state.resolved;
-  const agreed = latest?.stance === "acknowledge";
-  if (changed === true && (resolved === true || agreed)) {
-    return {
-      outcome: "fixed",
-      strength: "strong",
-      evidence: `the anchored lines changed after the comment and ${resolved === true ? "the thread was resolved" : `${latest.author} agreed`}`
-    };
-  }
-  if (resolved === true) {
-    return {
-      outcome: "resolved",
-      strength: "weak",
-      evidence: changed === false ? "the thread was resolved and the anchored lines are unchanged" : "the thread was resolved; whether the lines changed could not be read"
-    };
-  }
-  if (resolved === false && changed === true) {
-    return { outcome: "outdated", strength: "weak", evidence: "the anchored lines changed and the thread is still open" };
-  }
-  if (resolved === false && changed === false) {
-    return {
-      outcome: "open",
-      strength: "weak",
-      evidence: agreed ? "agreed in reply, but the lines are unchanged and the thread is open" : "nothing has changed and the thread is open"
-    };
-  }
-  return { outcome: "unknown", strength: "weak", evidence: "the thread state or the later commits could not be read" };
-}
-function saveOutcome(db, outcome) {
-  db.prepare(
-    `INSERT INTO finding_outcomes
-       (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (review_run_id, finding_id) DO UPDATE SET
-       repository = excluded.repository, pull_number = excluded.pull_number, comment_id = excluded.comment_id,
-       outcome = excluded.outcome, strength = excluded.strength, evidence = excluded.evidence, checked_at = excluded.checked_at`
-  ).run(
-    outcome.reviewRunId,
-    outcome.findingId,
-    outcome.repository,
-    outcome.pullNumber,
-    outcome.commentId,
-    outcome.outcome,
-    outcome.strength,
-    outcome.evidence,
-    outcome.checkedAt
-  );
-}
-function statsOf(rows) {
-  const strong = rows.filter((row) => row.strength === "strong");
-  const fixed = strong.filter((row) => row.outcome === "fixed").length;
-  const dismissed = strong.filter((row) => row.outcome === "dismissed").length;
-  const decided = fixed + dismissed;
-  return {
-    tracked: rows.length,
-    fixed,
-    dismissed,
-    fixedRate: decided === 0 ? null : fixed / decided,
-    dismissedRate: decided === 0 ? null : dismissed / decided
-  };
-}
-function postedStats(db) {
-  return statsOf(db.prepare("SELECT outcome, strength FROM finding_outcomes").all());
-}
-function postedBreakdown(db) {
-  const rows = db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all();
-  const findings = /* @__PURE__ */ new Map();
-  const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map() };
-  for (const row of rows) {
-    let known = findings.get(row.review_run_id);
-    if (known === void 0) {
-      known = /* @__PURE__ */ new Map();
-      findings.set(row.review_run_id, known);
-      const stored = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(row.review_run_id);
-      try {
-        const parsed2 = JSON.parse(stored?.output_json ?? "{}");
-        for (const finding of parsed2.findings ?? []) {
-          known.set(String(finding["findingId"]), {
-            severity: typeof finding["severity"] === "string" ? finding["severity"] : "unknown",
-            lane: typeof finding["lane"] === "string" ? finding["lane"] : "diff"
-          });
-        }
-      } catch {
-      }
-    }
-    const info = known.get(row.finding_id) ?? { severity: "unknown", lane: "diff" };
-    groups.severity.set(info.severity, [...groups.severity.get(info.severity) ?? [], row]);
-    groups.lane.set(info.lane, [...groups.lane.get(info.lane) ?? [], row]);
-  }
-  const collect = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list2]) => [key2, statsOf(list2)]));
-  return { bySeverity: collect(groups.severity), byLane: collect(groups.lane) };
 }
 
 // plugins/review-voice/src/evaluate/metrics.ts
@@ -18081,7 +18186,7 @@ async function acquireLock(dataDir, port = lockPort(dataDir)) {
 // plugins/review-voice/src/watch/workspace.ts
 import { execFileSync as execFileSync11 } from "node:child_process";
 import { existsSync as existsSync6, mkdirSync as mkdirSync3, readdirSync as readdirSync2, statSync as statSync2, unlinkSync as unlinkSync2 } from "node:fs";
-import { dirname as dirname7, join as join11 } from "node:path";
+import { dirname as dirname8, join as join11 } from "node:path";
 var NAME = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
 function cloneDir(workspace, repository) {
   const repo = repository.split("/")[1];
@@ -18123,7 +18228,7 @@ function removeStaleGitLocks(dir, now = Date.now()) {
 function gitPrepareClone(run = runQuietly) {
   return (repository, pull, dir) => {
     if (!existsSync6(join11(dir, ".git"))) {
-      mkdirSync3(dirname7(dir), { recursive: true });
+      mkdirSync3(dirname8(dir), { recursive: true });
       try {
         run("gh", ["repo", "clone", repository, dir, "--", "--filter=blob:none"]);
       } catch (error) {
@@ -18698,7 +18803,9 @@ function retrievePrecedents(db, query) {
   try {
     rows = db.prepare(
       `SELECT e.event_id, e.repository, e.reviewer_login, e.reviewer_role,
-                e.outcome_status, e.created_at, e.file_path, e.line_start,
+                -- A weak outcome cannot move a weight on its own (adr/0004).
+                CASE WHEN e.outcome_certainty = 'strong' THEN e.outcome_status ELSE 'unknown' END AS outcome_status,
+                e.created_at, e.file_path, e.line_start,
                 e.body_redacted, e.diff_hunk_redacted, e.language,
                 bm25(review_events_fts) AS rank
          FROM review_events_fts
@@ -18790,13 +18897,13 @@ function resolveSyncWindow(input, now = /* @__PURE__ */ new Date()) {
 
 // plugins/review-voice/src/retrieval/baseline.ts
 import { existsSync as existsSync7, readFileSync as readFileSync11 } from "node:fs";
-import { dirname as dirname8, join as join13 } from "node:path";
-import { fileURLToPath as fileURLToPath4 } from "node:url";
+import { dirname as dirname9, join as join13 } from "node:path";
+import { fileURLToPath as fileURLToPath5 } from "node:url";
 function isCorpusEmpty(db) {
   return db.prepare("SELECT COUNT(*) AS n FROM review_events").get().n === 0;
 }
 function baselineVoice() {
-  const here = dirname8(fileURLToPath4(import.meta.url));
+  const here = dirname9(fileURLToPath5(import.meta.url));
   for (const relative2 of ["..", "../.."]) {
     const candidate = join13(here, relative2, "templates", "voice.baseline.md");
     if (existsSync7(candidate)) return readFileSync11(candidate, "utf8").trim();
@@ -18844,7 +18951,7 @@ function label(row) {
 }
 function compileProposals(db) {
   const rows = db.prepare(
-    `SELECT f.action, f.finding_id, f.review_run_id, f.reason, f.created_at, r.output_json
+    `SELECT f.action, f.actor, f.finding_id, f.review_run_id, f.reason, f.created_at, r.output_json
        FROM feedback f
        JOIN review_runs r ON r.review_run_id = f.review_run_id
        ORDER BY f.created_at DESC`
@@ -18870,8 +18977,9 @@ function compileProposals(db) {
       keeps,
       dismissals,
       rewrites,
-      // Every recorded feedback action is the owner's; that is who gives it.
-      ownerSignals: group.length,
+      // Only the owner's own feedback is an activation signal; a pooled
+      // reviewer's comment informs voice and precedent, never a rule (docs/adr/0030).
+      ownerSignals: group.filter((g) => g.row.actor === "owner").length,
       contradictingSignals,
       mostRecentAt: group[0]?.row.created_at ?? null,
       eventIds: group.map((g) => `${g.row.review_run_id}:${g.row.finding_id}`)
@@ -19811,7 +19919,8 @@ var COMMAND_HELP = {
       "",
       "Flags:",
       "  --scores <path>        The JSON `score` printed (required)",
-      "  --candidates <path>    The checked candidates the scores came from (required)",
+      "  --candidates <path>    The checked candidates the scores came from (required): a list,",
+      '                         {"candidates": [...]}, or check-candidates output {"kept": [...]}',
       "  --emit-prompts         Print the prompts instead of applying verdicts",
       "  --intent <path>        intent.json from check-intent, for the statement a finding cites",
       "  --diff-file <path>     The reviewed diff; a corrected line must be changed in it (required",
@@ -20032,7 +20141,7 @@ function topLevelHelp() {
 // plugins/review-voice/src/review/driver.ts
 import { execFileSync as execFileSync12 } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync12, rmSync, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname9, join as join15, resolve as resolve2, sep as sep2 } from "node:path";
+import { dirname as dirname10, join as join15, resolve as resolve2, sep as sep2 } from "node:path";
 
 // plugins/review-voice/src/review/prompts.ts
 import { join as join14 } from "node:path";
@@ -20464,7 +20573,7 @@ function prepareWorkspace(run) {
       continue;
     }
     try {
-      mkdirSync5(dirname9(target), { recursive: true });
+      mkdirSync5(dirname10(target), { recursive: true });
       writeFileSync3(target, content, { flag: "wx" });
     } catch (error) {
       run.notes.push(`No base copy for ${path}: it conflicts with another path (${error.code ?? "error"}).`);
@@ -21463,7 +21572,7 @@ function resolveOutPath(out, defaultName) {
     }
   }
   try {
-    mkdirSync6(dirname10(target), { recursive: true });
+    mkdirSync6(dirname11(target), { recursive: true });
   } catch (error) {
     throw new Error(
       `${out}: expected a file path or a directory (${error instanceof Error ? error.message : String(error)})`
@@ -21689,7 +21798,7 @@ async function syncCommand(argv) {
             repositories: selection.perRepository
           },
           stored,
-          coverage: corpusCoverage(db),
+          coverage: corpusCoverage(db, { ownerReviewer: config2.ownerReviewer }),
           lastSync: lastSync(db)
         },
         null,
@@ -22124,12 +22233,15 @@ function scoreCommand(argv) {
     return 2;
   }
   const unverifiableNote = allowUnverifiable ? ownerNote.trim() : null;
+  const configured = repositoryConfig()?.thresholds ?? {};
   const thresholds = {
-    technicalConfidence: Number(flag(argv, "--min-confidence") ?? DEFAULT_THRESHOLDS.technicalConfidence),
+    technicalConfidence: Number(
+      flag(argv, "--min-confidence") ?? configured.technicalConfidence ?? DEFAULT_THRESHOLDS.technicalConfidence
+    ),
     analystOnlyConfidence: Number(
       flag(argv, "--min-analyst-confidence") ?? DEFAULT_THRESHOLDS.analystOnlyConfidence
     ),
-    finalScore: Number(flag(argv, "--min-score") ?? DEFAULT_THRESHOLDS.finalScore)
+    finalScore: Number(flag(argv, "--min-score") ?? configured.finalScore ?? DEFAULT_THRESHOLDS.finalScore)
   };
   const verifications = /* @__PURE__ */ new Map();
   const verificationFlag = flag(argv, "--verification");
@@ -23439,7 +23551,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
 function partialDiffReason(diffFile) {
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync13(join16(dirname10(diffFile), "files.json"), "utf8"));
+    manifest = JSON.parse(readFileSync13(join16(dirname11(diffFile), "files.json"), "utf8"));
   } catch {
     return null;
   }
@@ -24429,13 +24541,15 @@ function statusCommand() {
   try {
     let allowlist = [];
     let maxRepositoryShare;
+    let ownerReviewer = null;
     try {
       const config2 = loadConfig(repositoryRoot(process.cwd()));
+      ownerReviewer = config2.ownerReviewer;
       allowlist = namedRepositories(config2.allowlist, "status");
       maxRepositoryShare = scaledRepositoryShare(allowlist.length);
     } catch {
     }
-    const coverage = corpusCoverage(db, { allowlist, ...maxRepositoryShare === void 0 ? {} : { maxRepositoryShare } });
+    const coverage = corpusCoverage(db, { allowlist, ownerReviewer, ...maxRepositoryShare === void 0 ? {} : { maxRepositoryShare } });
     const runs = db.prepare("SELECT COUNT(*) AS n FROM review_runs").get().n;
     const audits = db.prepare("SELECT COUNT(*) AS n FROM audit_events").get().n;
     const totals = feedbackTotals(db);
@@ -24520,7 +24634,7 @@ async function agentCommand(argv) {
     console.error(`The schema ${schemaPath} must be a JSON object.`);
     return 2;
   }
-  const schemaDir = dirname10(resolve3(schemaPath));
+  const schemaDir = dirname11(resolve3(schemaPath));
   try {
     schemaForRunner(schema4, schemaDir);
   } catch (error) {
@@ -24652,10 +24766,10 @@ ${topLevelHelp()}`);
       } catch {
       }
       const dataDir = dataDirectory();
-      const review2 = spawnReview(fileURLToPath5(import.meta.url), { configPath: join16(dataDir, CONFIG_COPY) });
+      const review2 = spawnReview(fileURLToPath6(import.meta.url), { configPath: join16(dataDir, CONFIG_COPY) });
       return await watchCommand(argv.slice(1), {
         configSource: root === null ? null : configFile(root),
-        loadSettings: (path) => loadConfig(root ?? process.cwd(), path),
+        loadSettings: (path) => loadConfig(root ?? process.cwd(), void 0, path),
         client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true }),
         // Built from the recorded run's repository by post, as for the post command.
         writerFor: (allowlist) => new ReviewWriter({ allowlist }),

@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cost. In `fast` mode a challenger's corrected line cannot land on an
   unchallenged nit. Fixes #207. (ADR 0022)
 
+- A composite GitHub Action (`action.yml`) runs `review` for the pull request
+  that triggered the workflow, posts only when `post: true` and the repository
+  config allow it, skips cleanly for forks and a missing key, and refuses
+  `pull_request_target` on the head (ADR 0031). `docs/ACTION.md` explains it.
+
 - `watch [--once] [--interval <dur>] [--post] [--mode M] [--max N] [--json]`
   builds the queue and handles each entry in turn: a new head is reviewed by
   `review` in a partial clone under `watch.workspace` (default
@@ -191,7 +196,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stderr instead of expanding it, and `sync` exits 2 when every entry is a
   pattern. (ADR 0026)
 
+- `sync` infers an outcome for each collected inline comment from what it
+  already fetched, with no extra request: a reply turning the comment down is
+  `dismissed` and strong, and anchored lines a later commit changed are
+  `accepted`, strong when someone agreed in reply and weak otherwise. Silence
+  stays `unknown`, never negative. A re-read pull request updates an outcome it
+  can now see and keeps one it no longer can. Retrieval weighs strong outcomes
+  and treats a weak one as `unknown`. Thread resolution is not read during
+  `sync`. (ADR 0004) (#200)
+
 ### Fixed
+
+- `config.example.yaml` no longer lists keys that `loadConfig` never read
+  (`version`, `repositories.mode` and `exclude`, `bootstrap`, `privacy`,
+  `sync`, `review.no_findings_response`, `review.suppress_hedge_phrases` and
+  `writes.require_preview_and_confirmation`). `review.confidence_threshold` and
+  `review.final_score_threshold` are now read as the defaults for `score
+  --min-confidence` and `--min-score`, and the example shows 0.68 for the
+  latter. An unknown top-level key in `config.yaml` warns. (#197)
+
+- `policies/baseline-global.yaml` is now the broadest policy layer, so a new
+  install starts from it; a narrower layer can still only tighten it, and a
+  missing file falls back to the built-in limits. (#198)
+
+- Only the owner's own feedback counts as the owner signal that lets `calibrate`
+  mark a rule activatable; other actors still inform voice and precedent.
+  (#203)
 
 - The GitHub client sends the credential only to the API origin: a request or
   pagination link to another host is refused, and a link contributes only its
@@ -226,6 +256,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   earlier text: blockquote lines are dropped before matching, and a comment
   whose remaining text is contained in a review or comment the token's user
   posted no longer holds the post with exit 8. (#204)
+
+- `challenge --candidates` reads the `{"kept": [...]}` file `check-candidates`
+  writes, as well as `{"candidates": [...]}` and a bare list. Given the
+  `checked.json` that `commands/review.md` passes, each challenger prompt had
+  lost the candidate's category and the intent statement it cites. (ADR 0024)
+  (#206)
+
+- A SIGKILL to the CLI no longer leaves agent processes running. Each `claude`
+  runs under a small node wrapper that leads its process group and kills the
+  group within two seconds of the CLI's pid going away. (ADR 0021) (#205)
+
+### Removed
+
+- The `precedent-ranker` and `static-evidence-interpreter` agents. No command,
+  skill or pipeline stage launched either: precedent ranking and static
+  evidence parsing run in the CLI. They are recoverable from git history.
+  (#199)
 
 ## [1.18.0] - 2026-10-24
 

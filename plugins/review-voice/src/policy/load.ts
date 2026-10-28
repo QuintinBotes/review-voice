@@ -1,7 +1,8 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import type { PolicyLayer, ScopeType } from './schema.ts';
 import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publish/ci.ts';
@@ -65,6 +66,8 @@ export interface LoadedConfig {
   verdictPolicy: VerdictPolicy;
   /** `review.lanes` after the built-in diff lane, which is always first (docs/adr/0023). */
   lanes: Lane[];
+  /** `review.confidence_threshold` and `review.final_score_threshold`: defaults for `score` when its flags are absent. */
+  thresholds: { technicalConfidence?: number; finalScore?: number };
   layers: PolicyLayer[];
   /** Repository-supplied layers awaiting owner approval. */
   unapproved: { source: string; contentHash: string }[];
@@ -555,6 +558,61 @@ function layerFromPolicyFile(text: string, source: string, fallbackKey: string):
   };
 }
 
+/** The plugin root holds `.claude-plugin/plugin.json`; src/ and dist/ sit at different depths below it. */
+function pluginRoot(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  while (!existsSync(join(dir, '.claude-plugin', 'plugin.json')) && dirname(dir) !== dir) dir = dirname(dir);
+  return dir;
+}
+
+/**
+ * The shipped baseline is the broadest layer, so a new install starts from it
+ * (docs/adr/0030). It is trusted content, so it needs no approval; a narrower
+ * layer can still only tighten it. A missing or unreadable file means the
+ * built-in limits apply.
+ */
+export function loadBaselineLayer(owner: string | null, path = join(pluginRoot(), 'policies', 'baseline-global.yaml')): PolicyLayer | null {
+  if (!existsSync(path)) return null;
+  try {
+    const doc = asRecord(parseYaml(readFileSync(path, 'utf8')));
+    if (doc === null) return null;
+    const voice = asRecord(doc['voice']);
+    const maxFindings = positiveInt(voice?.['max_findings']);
+    const maxWords = positiveInt(voice?.['max_words_per_finding']);
+    const maxTotal = positiveInt(voice?.['max_total_words']);
+    return {
+      scope: { type: 'global', key: owner ?? 'owner' },
+      source: 'policies/baseline-global.yaml',
+      requiresApproval: false,
+      ...(maxFindings === undefined ? {} : { maxFindings }),
+      ...(maxWords === undefined ? {} : { maxWordsPerFinding: maxWords }),
+      ...(maxTotal === undefined ? {} : { maxTotalWords: maxTotal }),
+      forbiddenPhrases: asStringArray(doc['forbidden_phrases']),
+      suppressedPatterns: asStringArray(doc['suppressed_patterns']),
+      priorities: asStringArray(doc['priorities']).map((category) => ({ category, weight: 'normal' })),
+    };
+  } catch {
+    return null;
+  }
+}
+
+const KNOWN_TOP_LEVEL = ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'verification', 'queue', 'watch', 'writes'];
+
+/** A score gate must be a fraction in (0, 1]. */
+function readThresholds(review: Record<string, unknown>, result: LoadedConfig): void {
+  const read = (key: string): number | undefined => {
+    const value = review[key];
+    if (value === undefined) return undefined;
+    if (typeof value === 'number' && value > 0 && value <= 1) return value;
+    result.warnings.push(`review.${key} must be a number above 0 and at most 1; using the default.`);
+    return undefined;
+  };
+  const confidence = read('confidence_threshold');
+  const score = read('final_score_threshold');
+  if (confidence !== undefined) result.thresholds.technicalConfidence = confidence;
+  if (score !== undefined) result.thresholds.finalScore = score;
+}
+
 /**
  * `identity.reviewers` pools several people's history. The owner stays the
  * policy authority: it defaults to the first reviewer, and is always part of
@@ -601,7 +659,7 @@ export function configFile(repositoryRoot: string, warnings: string[] = []): str
 }
 
 /** `path` reads that config file instead of the one `configFile` names; `watch` passes its own copy. */
-export function loadConfig(repositoryRoot: string, path?: string): LoadedConfig {
+export function loadConfig(repositoryRoot: string, baselinePath?: string, path?: string): LoadedConfig {
   const result: LoadedConfig = {
     ownerReviewer: null,
     reviewers: [],
@@ -625,6 +683,7 @@ export function loadConfig(repositoryRoot: string, path?: string): LoadedConfig 
     costMode: { mode: 'auto', models: {} },
     verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
     lanes: [DIFF_LANE],
+    thresholds: {},
     layers: [],
     unapproved: [],
     warnings: [],
@@ -635,6 +694,9 @@ export function loadConfig(repositoryRoot: string, path?: string): LoadedConfig 
     try {
       const doc = asRecord(parseYaml(readFileSync(configPath, 'utf8')));
       if (doc !== null) {
+        for (const key of Object.keys(doc)) {
+          if (!KNOWN_TOP_LEVEL.includes(key)) result.warnings.push(`${key} is not a setting Review Voice reads; ignoring it.`);
+        }
         const identity = asRecord(doc['identity']);
         if (typeof identity?.['owner_reviewer'] === 'string') {
           result.ownerReviewer = identity['owner_reviewer'];
@@ -721,6 +783,7 @@ export function loadConfig(repositoryRoot: string, path?: string): LoadedConfig 
           readHumanReview(asRecord(review['human_review']), result);
           readStructure(asRecord(review['structure']), result);
           readCostMode(review, result);
+          readThresholds(review, result);
           readLanes(review['lanes'], result);
           result.layers.push({
             scope: { type: 'repository', key: repositoryRoot },
@@ -742,6 +805,9 @@ export function loadConfig(repositoryRoot: string, path?: string): LoadedConfig 
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }
   }
+
+  const baseline = loadBaselineLayer(result.ownerReviewer, baselinePath);
+  if (baseline !== null) result.layers.unshift(baseline);
 
   const policyPath = join(repositoryRoot, '.review-voice', 'policy.yaml');
   if (existsSync(policyPath)) {

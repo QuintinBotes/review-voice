@@ -1146,7 +1146,7 @@ async function syncCommand(argv: string[]): Promise<number> {
             repositories: selection.perRepository,
           },
           stored,
-          coverage: corpusCoverage(db),
+          coverage: corpusCoverage(db, { ownerReviewer: config.ownerReviewer }),
           lastSync: lastSync(db),
         },
         null,
@@ -1714,12 +1714,15 @@ function scoreCommand(argv: string[]): number {
   }
   const unverifiableNote = allowUnverifiable ? ownerNote!.trim() : null;
 
+  const configured = repositoryConfig()?.thresholds ?? {};
   const thresholds = {
-    technicalConfidence: Number(flag(argv, '--min-confidence') ?? DEFAULT_THRESHOLDS.technicalConfidence),
+    technicalConfidence: Number(
+      flag(argv, '--min-confidence') ?? configured.technicalConfidence ?? DEFAULT_THRESHOLDS.technicalConfidence,
+    ),
     analystOnlyConfidence: Number(
       flag(argv, '--min-analyst-confidence') ?? DEFAULT_THRESHOLDS.analystOnlyConfidence,
     ),
-    finalScore: Number(flag(argv, '--min-score') ?? DEFAULT_THRESHOLDS.finalScore),
+    finalScore: Number(flag(argv, '--min-score') ?? configured.finalScore ?? DEFAULT_THRESHOLDS.finalScore),
   };
 
   // The evidence-verifier's conclusions, keyed by candidate. Without them the
@@ -4768,14 +4771,16 @@ function statusCommand(): number {
     // knows. Outside a repository the counts still work.
     let allowlist: string[] = [];
     let maxRepositoryShare: number | undefined;
+    let ownerReviewer: string | null = null;
     try {
       const config = loadConfig(repositoryRoot(process.cwd()));
+      ownerReviewer = config.ownerReviewer;
       allowlist = namedRepositories(config.allowlist, 'status');
       maxRepositoryShare = scaledRepositoryShare(allowlist.length);
     } catch {
       // Not in a repository; report counts without allowlist warnings.
     }
-    const coverage = corpusCoverage(db, { allowlist, ...(maxRepositoryShare === undefined ? {} : { maxRepositoryShare }) });
+    const coverage = corpusCoverage(db, { allowlist, ownerReviewer, ...(maxRepositoryShare === undefined ? {} : { maxRepositoryShare }) });
     const runs = (db.prepare('SELECT COUNT(*) AS n FROM review_runs').get() as { n: number }).n;
     const audits = (db.prepare('SELECT COUNT(*) AS n FROM audit_events').get() as { n: number }).n;
     const totals = feedbackTotals(db);
@@ -5053,7 +5058,7 @@ async function dispatch(argv: string[]): Promise<number> {
       const review = spawnReview(fileURLToPath(import.meta.url), { configPath: join(dataDir, CONFIG_COPY) });
       return await watchCommand(argv.slice(1), {
         configSource: root === null ? null : configFile(root),
-        loadSettings: (path) => loadConfig(root ?? process.cwd(), path),
+        loadSettings: (path) => loadConfig(root ?? process.cwd(), undefined, path),
         client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true }),
         // Built from the recorded run's repository by post, as for the post command.
         writerFor: (allowlist) => new ReviewWriter({ allowlist }),

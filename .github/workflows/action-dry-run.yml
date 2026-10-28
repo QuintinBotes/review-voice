@@ -1,0 +1,24 @@
+name: Action dry run
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: action-dry-run-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: ./
+        with:
+          post: false
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -80,3 +80,5 @@ Node 22 or newer. `git`. `gh` only if you enable GitHub history ingestion.
 
 No `npm install` - the plugin ships a single pre-built bundle with zero runtime
 dependencies.
+
+To review every pull request in CI, see [the GitHub Action guide](../../docs/ACTION.md).

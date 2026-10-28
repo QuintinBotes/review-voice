@@ -94,7 +94,8 @@ test('a committed policy.yaml is a proposal, never an activation', () => {
     const result = context(dir);
     // Repository content is untrusted (ADR 0006). A file that silences the
     // reviewer must not do so just by existing.
-    assert.deepEqual(result.policy.suppressedPatterns, []);
+    // The shipped baseline layer has its own suppressions; only the file's must be absent.
+    assert.ok(!result.policy.suppressedPatterns.includes('Never mention authentication.'));
     assert.equal(result.pendingApproval.length, 1);
     assert.equal(result.pendingApproval[0].source, '.review-voice/policy.yaml');
     assert.match(result.pendingApproval[0].contentHash, /^[0-9a-f]{16}$/);
