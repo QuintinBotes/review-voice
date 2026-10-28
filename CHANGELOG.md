@@ -170,6 +170,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The command the legacy-tier hint prints now works: `score --severity
+  <id>=<tier>` may raise a verified finding whose reach is unknown, up to the
+  tier the analyst requested, and records "raised at <tier> by an explicit
+  owner override" in the reason. Any other raise, and a restatement, is still
+  refused. (#216)
+
+- `check-intent` keeps a quote under four words when it fills a whole line of
+  the description, such as `No code changes.` on its own line or a whole list
+  item, and notes that it kept it. A short fragment of a longer line still
+  drops. (#208)
+
 - `config.example.yaml` no longer lists keys that `loadConfig` never read
   (`version`, `repositories.mode` and `exclude`, `bootstrap`, `privacy`,
   `sync`, `review.no_findings_response`, `review.suppress_hedge_phrases` and

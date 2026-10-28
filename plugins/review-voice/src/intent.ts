@@ -52,6 +52,8 @@ interface Sentences {
   ends: Set<number>;
   /** Each heading and the offsets of the body under it, up to the next heading. */
   sections: { heading: string; from: number; to: number }[];
+  /** The offsets of each line that is not a heading. */
+  lines: { from: number; to: number }[];
 }
 
 /**
@@ -67,6 +69,7 @@ function sentencesOf(description: string): Sentences {
   let blank = false;
   let previousHeading = false;
   const sections: Sentences['sections'] = [];
+  const lines: Sentences['lines'] = [];
   let open: Sentences['sections'][number] | null = null;
   let contentEnd = 0;
   for (const line of description.split(/\r?\n/u)) {
@@ -95,6 +98,7 @@ function sentencesOf(description: string): Sentences {
     } else if (open !== null && open.from === -1) {
       open.from = text.length;
     }
+    if (!heading) lines.push({ from: text.length, to: text.length + content.length });
     text += content;
     contentEnd = text.length;
     blank = false;
@@ -107,13 +111,25 @@ function sentencesOf(description: string): Sentences {
     ends.add(match.index + 1);
     starts.add(match.index + 2);
   }
-  return { text, starts, ends, sections };
+  return { text, starts, ends, sections, lines };
 }
+
+/**
+ * Whether `wanted` fills one line of the description and that line is whole
+ * sentences or a whole list item, so a short quote stands on its own (#208).
+ */
+function isWholeLine(wanted: string, sentences: Sentences): boolean {
+  return sentences.lines.some(
+    ({ from, to }) => sentences.starts.has(from) && sentences.ends.has(to) && sentences.text.slice(from, to) === wanted,
+  );
+}
+
+const isShort = (quote: string): boolean => collapse(quote.replace(LIST_OR_HEADING, '')).split(' ').length < MIN_QUOTE_WORDS;
 
 /** Problem with `quote` as a whole-sentence excerpt of the description, or null. */
 function excerptProblem(quote: string, sentences: Sentences, name: string): string | null {
   const wanted = collapse(quote.replace(LIST_OR_HEADING, ''));
-  if (wanted.split(' ').length < MIN_QUOTE_WORDS) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
+  if (isShort(wanted) && !isWholeLine(wanted, sentences)) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
   let at = sentences.text.indexOf(wanted);
   if (at === -1) return `${name} does not occur in the pull request description`;
   for (; at !== -1; at = sentences.text.indexOf(wanted, at + 1)) {
@@ -162,7 +178,10 @@ function answeredHeading(quote: string, sentences: Sentences): string | null {
 /** A valid excerpt for `value`: as given, or widened to its sentence, with a note when widened. */
 function excerptOf(value: string, sentences: Sentences, name: string, id: string, notes: string[]): Parsed<string> {
   const problem = excerptProblem(value, sentences, name);
-  if (problem === null) return { value, problem: null };
+  if (problem === null) {
+    if (isShort(value)) notes.push(`Kept ${name.split('.').pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole line of the description`);
+    return { value, problem: null };
+  }
   if (!problem.endsWith('not part of one')) return { value: null, problem };
   const widened = widenToSentence(value, sentences);
   if (widened === null || excerptProblem(widened, sentences, name) !== null) return { value: null, problem };

@@ -1646,20 +1646,28 @@ function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null
   return null;
 }
 
-/** Applies one explicit owner downgrade after deterministic derivation. */
-function applyOwnerSeverityOverride(breakdown: ScoreBreakdown, override: OwnerOverrideSeverity): string | null {
-  const current = breakdown.severity.severity;
+/**
+ * Applies one explicit owner override after deterministic derivation. It
+ * lowers a tier, or raises one only where the legacy-tier hint offers it: a
+ * verified finding with unknown reach, up to the tier the analyst requested (#216).
+ */
+function applyOwnerSeverityOverride(breakdown: ScoreBreakdown, override: OwnerOverrideSeverity, verified: boolean): string | null {
+  const { severity: current, requested, reach } = breakdown.severity;
   if (current === 'question') return `--severity cannot override question for ${breakdown.candidateId}.`;
-  if (SEVERITY_ORDER[override] <= SEVERITY_ORDER[current as Severity]) {
+  const raises = SEVERITY_ORDER[override] < SEVERITY_ORDER[current as Severity];
+  const raiseAllowed =
+    raises && verified && reach === null && requested in SEVERITY_ORDER && SEVERITY_ORDER[override] >= SEVERITY_ORDER[requested as Severity];
+  if (SEVERITY_ORDER[override] === SEVERITY_ORDER[current as Severity] || (raises && !raiseAllowed)) {
     return (
       `--severity ${breakdown.candidateId}=${override} must lower the scored ${current} tier; ` +
-      'owner overrides cannot raise or restate a severity.'
+      'owner overrides cannot restate a severity, and raise one only for a verified finding with unknown reach, ' +
+      `up to the tier the analyst requested (${requested}).`
     );
   }
   breakdown.severity = {
     ...breakdown.severity,
     severity: override,
-    reason: `${breakdown.severity.reason}, held at ${override} by an explicit owner override`,
+    reason: `${breakdown.severity.reason}, ${raises ? 'raised' : 'held'} at ${override} by an explicit owner override`,
   };
   // At nit the documentation exception applies, so the rejection that pointed
   // the owner here lifts, but only when it was the sole reason (#166).
@@ -1933,7 +1941,7 @@ function scoreCommand(argv: string[]): number {
       );
       const override = severityOverrides.get(candidate.candidateId);
       if (override !== undefined) {
-        const problem = applyOwnerSeverityOverride(breakdown, override);
+        const problem = applyOwnerSeverityOverride(breakdown, override, verifications.get(candidate.candidateId)?.verified === true);
         if (problem !== null) {
           console.error(problem);
           return 2;

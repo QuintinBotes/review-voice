@@ -3910,6 +3910,7 @@ function sentencesOf(description) {
   let blank = false;
   let previousHeading = false;
   const sections2 = [];
+  const lines2 = [];
   let open = null;
   let contentEnd = 0;
   for (const line3 of description.split(/\r?\n/u)) {
@@ -3938,6 +3939,7 @@ function sentencesOf(description) {
     } else if (open !== null && open.from === -1) {
       open.from = text4.length;
     }
+    if (!heading) lines2.push({ from: text4.length, to: text4.length + content.length });
     text4 += content;
     contentEnd = text4.length;
     blank = false;
@@ -3950,11 +3952,17 @@ function sentencesOf(description) {
     ends.add(match.index + 1);
     starts.add(match.index + 2);
   }
-  return { text: text4, starts, ends, sections: sections2 };
+  return { text: text4, starts, ends, sections: sections2, lines: lines2 };
 }
+function isWholeLine(wanted, sentences) {
+  return sentences.lines.some(
+    ({ from, to }) => sentences.starts.has(from) && sentences.ends.has(to) && sentences.text.slice(from, to) === wanted
+  );
+}
+var isShort = (quote2) => collapse(quote2.replace(LIST_OR_HEADING, "")).split(" ").length < MIN_QUOTE_WORDS;
 function excerptProblem(quote2, sentences, name) {
   const wanted = collapse(quote2.replace(LIST_OR_HEADING, ""));
-  if (wanted.split(" ").length < MIN_QUOTE_WORDS) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
+  if (isShort(wanted) && !isWholeLine(wanted, sentences)) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
   let at2 = sentences.text.indexOf(wanted);
   if (at2 === -1) return `${name} does not occur in the pull request description`;
   for (; at2 !== -1; at2 = sentences.text.indexOf(wanted, at2 + 1)) {
@@ -3986,7 +3994,10 @@ function answeredHeading(quote2, sentences) {
 }
 function excerptOf(value, sentences, name, id, notes) {
   const problem = excerptProblem(value, sentences, name);
-  if (problem === null) return { value, problem: null };
+  if (problem === null) {
+    if (isShort(value)) notes.push(`Kept ${name.split(".").pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole line of the description`);
+    return { value, problem: null };
+  }
   if (!problem.endsWith("not part of one")) return { value: null, problem };
   const widened = widenToSentence(value, sentences);
   if (widened === null || excerptProblem(widened, sentences, name) !== null) return { value: null, problem };
@@ -18830,7 +18841,7 @@ var COMMAND_HELP = {
       "  --thread <path>           Existing pull-request comments",
       "  --diff-file <path>        Diff for reach and anchor checks",
       "  --min-score <n>           Final score gate (default 0.68)",
-      "  --severity <id>=<tier>    Explicit owner downgrade (blocking, important, minor or nit; repeatable)",
+      "  --severity <id>=<tier>    Owner downgrade, or a raise up to the requested tier when reach is unknown (repeatable)",
       "  --promote <id>            Owner posts a belowGate finding past its gate (repeatable)",
       "  --allow-unverifiable      With --promote: also lift the unverifiable cap; needs --owner-note",
       "  --owner-note <text>       Why the owner posts an unverifiable finding; recorded with it",
@@ -21402,16 +21413,18 @@ function applyOwnerPromotion(breakdown, ownerNote) {
   breakdown.rejectedBecause = null;
   return null;
 }
-function applyOwnerSeverityOverride(breakdown, override) {
-  const current = breakdown.severity.severity;
+function applyOwnerSeverityOverride(breakdown, override, verified) {
+  const { severity: current, requested, reach } = breakdown.severity;
   if (current === "question") return `--severity cannot override question for ${breakdown.candidateId}.`;
-  if (SEVERITY_ORDER[override] <= SEVERITY_ORDER[current]) {
-    return `--severity ${breakdown.candidateId}=${override} must lower the scored ${current} tier; owner overrides cannot raise or restate a severity.`;
+  const raises = SEVERITY_ORDER[override] < SEVERITY_ORDER[current];
+  const raiseAllowed = raises && verified && reach === null && requested in SEVERITY_ORDER && SEVERITY_ORDER[override] >= SEVERITY_ORDER[requested];
+  if (SEVERITY_ORDER[override] === SEVERITY_ORDER[current] || raises && !raiseAllowed) {
+    return `--severity ${breakdown.candidateId}=${override} must lower the scored ${current} tier; owner overrides cannot restate a severity, and raise one only for a verified finding with unknown reach, up to the tier the analyst requested (${requested}).`;
   }
   breakdown.severity = {
     ...breakdown.severity,
     severity: override,
-    reason: `${breakdown.severity.reason}, held at ${override} by an explicit owner override`
+    reason: `${breakdown.severity.reason}, ${raises ? "raised" : "held"} at ${override} by an explicit owner override`
   };
   const hint = DOCUMENT_NIT_HINT.replace("<id>", breakdown.candidateId);
   if (override === "nit" && breakdown.rejectedBecause?.endsWith(hint) && !breakdown.rejectedBecause.includes(" Also: ")) {
@@ -21628,7 +21641,7 @@ function scoreCommand(argv) {
       );
       const override = severityOverrides.get(candidate.candidateId);
       if (override !== void 0) {
-        const problem = applyOwnerSeverityOverride(breakdown, override);
+        const problem = applyOwnerSeverityOverride(breakdown, override, verifications.get(candidate.candidateId)?.verified === true);
         if (problem !== null) {
           console.error(problem);
           return 2;
