@@ -21461,8 +21461,11 @@ function emitDiff(acquired, outDir) {
   const config2 = repositoryConfig();
   for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
   const generated = markedGenerated(acquired);
-  const assessed = assessComplexity(acquired.diff, acquired.files ?? [], config2?.humanReview, generated);
-  const production = productionPaths(acquired.files ?? [], config2?.humanReview, generated);
+  const scope = acquired.scope;
+  const narrowed = scope !== void 0 && (scope.kind === "interdiff" || scope.kind === "incremental") ? scope.files : null;
+  const scopedFiles = (acquired.files ?? []).filter((file2) => narrowed === null || narrowed.includes(file2.path));
+  const assessed = assessComplexity(acquired.diff, scopedFiles, config2?.humanReview, generated);
+  const production = productionPaths(scopedFiles, config2?.humanReview, generated);
   const structure = collectStructure(process.cwd(), acquired, production, config2?.structure);
   const complexity = applyStructureHumanReviewCap(assessed, structure, config2?.humanReview);
   const result = {
@@ -24962,6 +24965,7 @@ try {
 }
 export {
   diffSummary,
+  emitDiff,
   resolveOutPath,
   runInProcess,
   verificationProblem
