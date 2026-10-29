@@ -19,7 +19,7 @@ export interface IntentStatement {
   reason?: string;
   /** Only on a goal that asserts something about a whole set. */
   scope?: 'complete';
-  /** The heading a short `quote` answers, when the quote is that section's whole body (#164). Set by the CLI. */
+  /** The heading of the section a short `quote` sits in or answers (#164, #222). Set by the CLI. */
   heading?: string;
 }
 
@@ -52,8 +52,8 @@ interface Sentences {
   ends: Set<number>;
   /** Each heading and the offsets of the body under it, up to the next heading. */
   sections: { heading: string; from: number; to: number }[];
-  /** The offsets of each line that is not a heading. */
-  lines: { from: number; to: number }[];
+  /** Every heading's text, which is not a statement of the change. */
+  headings: Set<string>;
 }
 
 /**
@@ -69,7 +69,7 @@ function sentencesOf(description: string): Sentences {
   let blank = false;
   let previousHeading = false;
   const sections: Sentences['sections'] = [];
-  const lines: Sentences['lines'] = [];
+  const headings = new Set<string>();
   let open: Sentences['sections'][number] | null = null;
   let contentEnd = 0;
   for (const line of description.split(/\r?\n/u)) {
@@ -98,7 +98,7 @@ function sentencesOf(description: string): Sentences {
     } else if (open !== null && open.from === -1) {
       open.from = text.length;
     }
-    if (!heading) lines.push({ from: text.length, to: text.length + content.length });
+    if (heading) headings.add(content);
     text += content;
     contentEnd = text.length;
     blank = false;
@@ -111,19 +111,24 @@ function sentencesOf(description: string): Sentences {
     ends.add(match.index + 1);
     starts.add(match.index + 2);
   }
-  return { text, starts, ends, sections, lines };
+  return { text, starts, ends, sections, headings };
 }
 
 /**
- * Whether `wanted` fills one line of the description and that line is whole
- * sentences or a whole list item, so a short quote stands on its own (#208).
+ * Whether a short quote can state something: any whole sentence or list item
+ * can ("No flag."), but a heading or a bare label (`**Testing:**`) cannot
+ * (#208, #222). The whole-sentence check itself follows in `excerptProblem`.
  */
-function isWholeLine(wanted: string, sentences: Sentences): boolean {
-  // A line that is only a label (`**Testing:**`) states nothing.
-  if (LEAD_LABEL.exec(wanted)?.[0] === wanted) return false;
-  return sentences.lines.some(
-    ({ from, to }) => sentences.starts.has(from) && sentences.ends.has(to) && sentences.text.slice(from, to) === wanted,
-  );
+function statesSomething(wanted: string, sentences: Sentences): boolean {
+  return LEAD_LABEL.exec(wanted)?.[0] !== wanted && !sentences.headings.has(wanted);
+}
+
+/** The heading of the section where a quote occurs as a whole sentence, or null outside any section. */
+function sectionHeading(quote: string, sentences: Sentences): string | null {
+  const wanted = collapse(quote.replace(LIST_OR_HEADING, ''));
+  let at = sentences.text.indexOf(wanted);
+  while (at !== -1 && !(sentences.starts.has(at) && sentences.ends.has(at + wanted.length))) at = sentences.text.indexOf(wanted, at + 1);
+  return sentences.sections.find(({ from, to }) => at >= from && at < to)?.heading ?? null;
 }
 
 const isShort = (quote: string): boolean => collapse(quote.replace(LIST_OR_HEADING, '')).split(' ').length < MIN_QUOTE_WORDS;
@@ -131,7 +136,7 @@ const isShort = (quote: string): boolean => collapse(quote.replace(LIST_OR_HEADI
 /** Problem with `quote` as a whole-sentence excerpt of the description, or null. */
 function excerptProblem(quote: string, sentences: Sentences, name: string): string | null {
   const wanted = collapse(quote.replace(LIST_OR_HEADING, ''));
-  if (isShort(wanted) && !isWholeLine(wanted, sentences)) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
+  if (isShort(wanted) && !statesSomething(wanted, sentences)) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
   let at = sentences.text.indexOf(wanted);
   if (at === -1) return `${name} does not occur in the pull request description`;
   for (; at !== -1; at = sentences.text.indexOf(wanted, at + 1)) {
@@ -181,7 +186,7 @@ function answeredHeading(quote: string, sentences: Sentences): string | null {
 function excerptOf(value: string, sentences: Sentences, name: string, id: string, notes: string[]): Parsed<string> {
   const problem = excerptProblem(value, sentences, name);
   if (problem === null) {
-    if (isShort(value)) notes.push(`Kept ${name.split('.').pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole line of the description`);
+    if (isShort(value)) notes.push(`Kept ${name.split('.').pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole sentence of the description`);
     return { value, problem: null };
   }
   if (!problem.endsWith('not part of one')) return { value: null, problem };
@@ -236,11 +241,14 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences, remove
   const rawQuote = text(entry['quote'], `${at}.quote`, MAX_QUOTE);
   if (rawQuote.problem !== null) return { value: null, problem: rawQuote.problem };
   // A supplied heading is recomputed, so re-checking this command's output passes and a made-up one never does.
-  const heading = answeredHeading(rawQuote.value, sentences);
-  const quote: Parsed<string> = heading === null ? excerptOf(rawQuote.value, sentences, `${at}.quote`, id, removed) : rawQuote;
+  const answered = answeredHeading(rawQuote.value, sentences);
+  const quote: Parsed<string> = answered === null ? excerptOf(rawQuote.value, sentences, `${at}.quote`, id, removed) : rawQuote;
   if (quote.problem !== null) return { value: null, problem: quote.problem };
+  // A short quote keeps the heading it sits under as context (#222).
+  const heading = answered ?? (isShort(quote.value) ? sectionHeading(quote.value, sentences) : null);
   if (kind !== 'non-goal') {
-    const quoted = significantWords(heading === null ? quote.value : `${heading} ${quote.value}`);
+    // Only a quote that is a section's whole body answers its heading; elsewhere the heading is context, not support.
+    const quoted = significantWords(answered === null ? quote.value : `${answered} ${quote.value}`);
     if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
       return { value: null, problem: `${at}.quote shares no significant word with its statement` };
     }

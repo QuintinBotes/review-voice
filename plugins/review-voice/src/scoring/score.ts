@@ -582,6 +582,9 @@ export interface Thresholds {
  * which the confidence gate does not measure. It should not be re-litigating
  * whether the finding is real, which the verifier decided on better evidence.
  */
+/** Below this, a question the verifier rejected is more likely moot than not (#219). */
+export const QUESTION_GAP_FLOOR = 0.5;
+
 export const DEFAULT_THRESHOLDS: Thresholds = {
   technicalConfidence: 0.8,
   analystOnlyConfidence: 0.7,
@@ -1606,6 +1609,14 @@ export function scoreCandidate(
         : 'the verifier did not verify this question or confirm the premises it rests on (premises_verified is not true)',
       verification?.reason,
     );
+  } else if (isQuestion && verification?.verified === false && confidenceSource === 'verifier' && confidence < QUESTION_GAP_FLOOR) {
+    // On a question the verifier's confidence is that its gap is real and
+    // material. Rejected and below even odds, it says the question is more
+    // likely moot than not, so it meets a confidence gate: listed in
+    // belowGate, and the owner can still --promote it (#219).
+    rejectedBecause =
+      `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${QUESTION_GAP_FLOOR}, ` +
+      'and the verifier rejected this question (verified: false)';
   } else if (isQuestion) {
     // A question skips the confidence gates below, which measure belief in an
     // assertion it does not make. It does not skip precedent.

@@ -74,16 +74,15 @@ test('#164: a short answer that is the whole of a section is kept with its headi
   assert.deepEqual([schema.quote, schema.heading], ['None.', 'Database changes']);
 });
 
-test('#164: a short quote that is a heading, or only part of its section, is still dropped', () => {
+test('#164: a short quote that is a heading is still dropped; a short sentence in a section keeps its heading (#222)', () => {
   const result = checkIntent([
     { id: 'int_001', kind: 'claim', statement: 'Retries are added to capture.', quote: 'Adds retries to the payment capture call.' },
     { id: 'int_002', kind: 'claim', statement: 'Feature flags are covered.', quote: 'Feature flags' },
     { id: 'int_003', kind: 'qa', statement: 'All tests are green.', quote: 'All green.' },
   ]);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout).statements.map((s) => s.id), ['int_001']);
+  assert.deepEqual(JSON.parse(result.stdout).statements.map((s) => [s.id, s.heading]), [['int_001', undefined], ['int_003', 'Testing']]);
   assert.match(result.stderr, /Dropped statement int_002 \(statements\[1\]\.quote must be at least 4 words/);
-  assert.match(result.stderr, /Dropped statement int_003 \(statements\[2\]\.quote must be at least 4 words/);
 });
 
 test('#164: check-intent accepts its own output again, heading included', () => {

@@ -397,7 +397,8 @@ verified. Resolve the gap or record it.
 For a `question`, `technical_confidence` means confidence that the unresolved
 gap is real and material - that the diff and repository do not settle an
 answer whose answer would change something. It is not confidence in an answer
-you do not have.
+you do not have. A question you return `verified: false` with confidence below
+0.5 is held as more likely moot than not.
 
 A question can reach the author without its answer being verified - that is
 what makes it a question - so check what it rests on instead. Set
