@@ -430,7 +430,11 @@ what kind of consequence a claim carries; reach says how far the affected code
 spreads. The requested severity is recorded beside the derived one so a
 divergence can be audited. An owner may explicitly lower a reported tier with
 `score --severity <candidate_id>=<tier>` when that reach overstates the case;
-the command refuses an increase and records the override in the score reason.
+the command records the override in the score reason. It refuses an
+increase, except for a verified finding whose reach is unknown, which may rise
+to the tier the analyst requested, within its lane's cap and never for a
+question-framed claim or an untraced stale consumer: only the owner can say
+that a broken shared build reaches everyone (#216).
 
 One tier per category was the first version, and it was wrong whenever a
 category's members vary in reach: `ci` covers both a change that breaks every

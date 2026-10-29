@@ -3776,14 +3776,21 @@ function renderFix(candidate, verification2, thresholds) {
     reason: verifierReason ?? reason2
   };
 }
-function withLegacyTierHint(severity, candidate, verification2) {
-  const tiers = SEVERITIES;
-  const asked = tiers.indexOf(severity.requested);
-  if (severity.reach !== null || verification2?.verified !== true || severity.requested === "question") return severity;
-  if (asked === -1 || asked >= tiers.indexOf(severity.severity)) return severity;
+function ownerRaiseCeiling(severity, candidate, verification2, lane) {
+  const rank2 = (tier) => TIER_ORDER.indexOf(tier);
+  if (severity.reach !== null || verification2?.verified !== true || rank2(severity.requested) === -1) return null;
+  if (isInterrogativeClaim(candidate.claim)) return null;
+  if (candidate.anchor === STALE_CONSUMER && verification2.impactTraced !== true) return null;
+  const cap = lane?.severity?.cap;
+  const ceiling = cap !== void 0 && rank2(cap) < rank2(severity.requested) ? cap : severity.requested;
+  return rank2(ceiling) > rank2(severity.severity) ? ceiling : null;
+}
+function withLegacyTierHint(severity, candidate, verification2, lane) {
+  const ceiling = ownerRaiseCeiling(severity, candidate, verification2, lane);
+  if (ceiling === null) return severity;
   return {
     ...severity,
-    reason: `${severity.reason}; reach is unknown, so the requested ${severity.requested} was not applied. If it breaks things for the whole repository, raise it with \`--severity ${candidate.candidateId}=${severity.requested}\``
+    reason: `${severity.reason}; reach is unknown, so the requested ${severity.requested} was not applied. If it breaks things for the whole repository, raise it with \`--severity ${candidate.candidateId}=${ceiling}\``
   };
 }
 function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2, lane) {
@@ -3844,11 +3851,11 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
-  const severity = applyLaneSeverity(
-    withLegacyTierHint(boundSeverityByEvidence(derivedSeverity, candidate, verification2), candidate, verification2),
+  const severity = withLegacyTierHint(
+    applyLaneSeverity(boundSeverityByEvidence(derivedSeverity, candidate, verification2), candidate, lane, verification2),
     candidate,
-    lane,
-    verification2
+    verification2,
+    lane
   );
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
   const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit" && confidenceSource === "verifier";
@@ -3911,6 +3918,7 @@ function sentencesOf(description) {
   let blank = false;
   let previousHeading = false;
   const sections2 = [];
+  const lines2 = [];
   let open = null;
   let contentEnd = 0;
   for (const line3 of description.split(/\r?\n/u)) {
@@ -3939,6 +3947,7 @@ function sentencesOf(description) {
     } else if (open !== null && open.from === -1) {
       open.from = text4.length;
     }
+    if (!heading) lines2.push({ from: text4.length, to: text4.length + content.length });
     text4 += content;
     contentEnd = text4.length;
     blank = false;
@@ -3951,11 +3960,18 @@ function sentencesOf(description) {
     ends.add(match.index + 1);
     starts.add(match.index + 2);
   }
-  return { text: text4, starts, ends, sections: sections2 };
+  return { text: text4, starts, ends, sections: sections2, lines: lines2 };
 }
+function isWholeLine(wanted, sentences) {
+  if (LEAD_LABEL.exec(wanted)?.[0] === wanted) return false;
+  return sentences.lines.some(
+    ({ from, to }) => sentences.starts.has(from) && sentences.ends.has(to) && sentences.text.slice(from, to) === wanted
+  );
+}
+var isShort = (quote2) => collapse(quote2.replace(LIST_OR_HEADING, "")).split(" ").length < MIN_QUOTE_WORDS;
 function excerptProblem(quote2, sentences, name) {
   const wanted = collapse(quote2.replace(LIST_OR_HEADING, ""));
-  if (wanted.split(" ").length < MIN_QUOTE_WORDS) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
+  if (isShort(wanted) && !isWholeLine(wanted, sentences)) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
   let at2 = sentences.text.indexOf(wanted);
   if (at2 === -1) return `${name} does not occur in the pull request description`;
   for (; at2 !== -1; at2 = sentences.text.indexOf(wanted, at2 + 1)) {
@@ -3987,7 +4003,10 @@ function answeredHeading(quote2, sentences) {
 }
 function excerptOf(value, sentences, name, id, notes) {
   const problem = excerptProblem(value, sentences, name);
-  if (problem === null) return { value, problem: null };
+  if (problem === null) {
+    if (isShort(value)) notes.push(`Kept ${name.split(".").pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole line of the description`);
+    return { value, problem: null };
+  }
   if (!problem.endsWith("not part of one")) return { value: null, problem };
   const widened = widenToSentence(value, sentences);
   if (widened === null || excerptProblem(widened, sentences, name) !== null) return { value: null, problem };
@@ -19566,7 +19585,7 @@ var COMMAND_HELP = {
       "  --thread <path>           Existing pull-request comments",
       "  --diff-file <path>        Diff for reach and anchor checks",
       "  --min-score <n>           Final score gate (default 0.68)",
-      "  --severity <id>=<tier>    Explicit owner downgrade (blocking, important, minor or nit; repeatable)",
+      "  --severity <id>=<tier>    Owner downgrade, or a raise up to the requested tier when reach is unknown (repeatable)",
       "  --promote <id>            Owner posts a belowGate finding past its gate (repeatable)",
       "  --allow-unverifiable      With --promote: also lift the unverifiable cap; needs --owner-note",
       "  --owner-note <text>       Why the owner posts an unverifiable finding; recorded with it",
@@ -22182,16 +22201,18 @@ function applyOwnerPromotion(breakdown, ownerNote) {
   breakdown.rejectedBecause = null;
   return null;
 }
-function applyOwnerSeverityOverride(breakdown, override) {
+function applyOwnerSeverityOverride(breakdown, override, ceiling) {
   const current = breakdown.severity.severity;
   if (current === "question") return `--severity cannot override question for ${breakdown.candidateId}.`;
-  if (SEVERITY_ORDER[override] <= SEVERITY_ORDER[current]) {
-    return `--severity ${breakdown.candidateId}=${override} must lower the scored ${current} tier; owner overrides cannot raise or restate a severity.`;
+  const raises = SEVERITY_ORDER[override] < SEVERITY_ORDER[current];
+  const raiseAllowed = raises && ceiling !== null && SEVERITY_ORDER[override] >= SEVERITY_ORDER[ceiling];
+  if (SEVERITY_ORDER[override] === SEVERITY_ORDER[current] || raises && !raiseAllowed) {
+    return `--severity ${breakdown.candidateId}=${override} must lower the scored ${current} tier; owner overrides cannot restate a severity, and raise one only as far as its legacy-tier hint names` + (ceiling === null ? " (it names none)." : ` (${ceiling}).`);
   }
   breakdown.severity = {
     ...breakdown.severity,
     severity: override,
-    reason: `${breakdown.severity.reason}, held at ${override} by an explicit owner override`
+    reason: `${breakdown.severity.reason}, ${raises ? "raised" : "held"} at ${override} by an explicit owner override`
   };
   const hint = DOCUMENT_NIT_HINT.replace("<id>", breakdown.candidateId);
   if (override === "nit" && breakdown.rejectedBecause?.endsWith(hint) && !breakdown.rejectedBecause.includes(" Also: ")) {
@@ -22398,17 +22419,12 @@ function scoreCommand(argv) {
         maxPositive: 3,
         maxNegative: 2
       });
-      const breakdown = scoreCandidate(
-        candidate,
-        precedents,
-        kept,
-        thresholds,
-        verifications.get(candidate.candidateId),
-        laneNamed(lanes2, candidate.lane)
-      );
+      const verification2 = verifications.get(candidate.candidateId);
+      const lane = laneNamed(lanes2, candidate.lane);
+      const breakdown = scoreCandidate(candidate, precedents, kept, thresholds, verification2, lane);
       const override = severityOverrides.get(candidate.candidateId);
       if (override !== void 0) {
-        const problem = applyOwnerSeverityOverride(breakdown, override);
+        const problem = applyOwnerSeverityOverride(breakdown, override, ownerRaiseCeiling(breakdown.severity, candidate, verification2, lane));
         if (problem !== null) {
           console.error(problem);
           return 2;

@@ -149,6 +149,7 @@ import {
   type ScoreBreakdown,
   type MissingContext,
   type Verification,
+  ownerRaiseCeiling,
 } from './scoring/score.ts';
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
@@ -1651,20 +1652,27 @@ function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null
   return null;
 }
 
-/** Applies one explicit owner downgrade after deterministic derivation. */
-function applyOwnerSeverityOverride(breakdown: ScoreBreakdown, override: OwnerOverrideSeverity): string | null {
+/**
+ * Applies one explicit owner override after deterministic derivation. It
+ * lowers a tier, or raises one only up to `ceiling`, the tier the legacy-tier
+ * hint names (#216).
+ */
+function applyOwnerSeverityOverride(breakdown: ScoreBreakdown, override: OwnerOverrideSeverity, ceiling: Severity | null): string | null {
   const current = breakdown.severity.severity;
   if (current === 'question') return `--severity cannot override question for ${breakdown.candidateId}.`;
-  if (SEVERITY_ORDER[override] <= SEVERITY_ORDER[current as Severity]) {
+  const raises = SEVERITY_ORDER[override] < SEVERITY_ORDER[current as Severity];
+  const raiseAllowed = raises && ceiling !== null && SEVERITY_ORDER[override] >= SEVERITY_ORDER[ceiling];
+  if (SEVERITY_ORDER[override] === SEVERITY_ORDER[current as Severity] || (raises && !raiseAllowed)) {
     return (
       `--severity ${breakdown.candidateId}=${override} must lower the scored ${current} tier; ` +
-      'owner overrides cannot raise or restate a severity.'
+      'owner overrides cannot restate a severity, and raise one only as far as its legacy-tier hint names' +
+      (ceiling === null ? ' (it names none).' : ` (${ceiling}).`)
     );
   }
   breakdown.severity = {
     ...breakdown.severity,
     severity: override,
-    reason: `${breakdown.severity.reason}, held at ${override} by an explicit owner override`,
+    reason: `${breakdown.severity.reason}, ${raises ? 'raised' : 'held'} at ${override} by an explicit owner override`,
   };
   // At nit the documentation exception applies, so the rejection that pointed
   // the owner here lifts, but only when it was the sole reason (#166).
@@ -1928,17 +1936,12 @@ function scoreCommand(argv: string[]): number {
         maxPositive: 3,
         maxNegative: 2,
       });
-      const breakdown = scoreCandidate(
-        candidate,
-        precedents,
-        kept,
-        thresholds,
-        verifications.get(candidate.candidateId),
-        laneNamed(lanes, candidate.lane),
-      );
+      const verification = verifications.get(candidate.candidateId);
+      const lane = laneNamed(lanes, candidate.lane);
+      const breakdown = scoreCandidate(candidate, precedents, kept, thresholds, verification, lane);
       const override = severityOverrides.get(candidate.candidateId);
       if (override !== undefined) {
-        const problem = applyOwnerSeverityOverride(breakdown, override);
+        const problem = applyOwnerSeverityOverride(breakdown, override, ownerRaiseCeiling(breakdown.severity, candidate, verification, lane));
         if (problem !== null) {
           console.error(problem);
           return 2;

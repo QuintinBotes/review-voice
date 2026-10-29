@@ -1,6 +1,6 @@
 import type { Precedent } from '../retrieval/retrieve.ts';
 import type { ReachCheck } from './reach.ts';
-import { deriveSeverity, type DerivedSeverity } from './severity.ts';
+import { deriveSeverity, type DerivedSeverity, type Severity } from './severity.ts';
 import { ESCALATION_CONFIDENCE, verifierConfidence } from './confidence.ts';
 import { SEVERITIES } from '../contract/limits.ts';
 import { DIFF_LANE, type Lane } from '../review/lanes.ts';
@@ -1445,21 +1445,42 @@ function renderFix(
  * a threshold is that it can be checked.
  */
 /**
- * With reach unknown the category's legacy tier applies, whatever the request.
- * When a verified finding asked for more, say so and name the owner override,
- * since only the owner can tell that a pipeline or shared build is broken for
- * everyone (#179). The tier itself is not raised: no evidence measured reach.
+ * The highest tier the owner may raise a finding to with `--severity`, or null.
+ * With reach unknown the category's legacy tier applies, whatever the request,
+ * and only the owner can tell that a pipeline or shared build is broken for
+ * everyone (#179, #216). So a verified finding may rise to the requested tier,
+ * but never past its lane's cap, a question-framed claim, or a stale consumer
+ * the verifier did not trace.
  */
-function withLegacyTierHint(severity: DerivedSeverity, candidate: Candidate, verification: Verification | undefined): DerivedSeverity {
-  const tiers: readonly string[] = SEVERITIES;
-  const asked = tiers.indexOf(severity.requested);
-  if (severity.reach !== null || verification?.verified !== true || severity.requested === 'question') return severity;
-  if (asked === -1 || asked >= tiers.indexOf(severity.severity)) return severity;
+export function ownerRaiseCeiling(
+  severity: DerivedSeverity,
+  candidate: Candidate,
+  verification: Verification | undefined,
+  lane: Lane | undefined,
+): Severity | null {
+  const rank = (tier: string): number => TIER_ORDER.indexOf(tier as (typeof TIER_ORDER)[number]);
+  if (severity.reach !== null || verification?.verified !== true || rank(severity.requested) === -1) return null;
+  if (isInterrogativeClaim(candidate.claim)) return null;
+  if (candidate.anchor === STALE_CONSUMER && verification.impactTraced !== true) return null;
+  const cap = lane?.severity?.cap;
+  const ceiling = cap !== undefined && rank(cap) < rank(severity.requested) ? cap : severity.requested;
+  return rank(ceiling) > rank(severity.severity) ? (ceiling as Severity) : null;
+}
+
+/** Says when the requested tier was not applied and names the override that raises it (#179). */
+function withLegacyTierHint(
+  severity: DerivedSeverity,
+  candidate: Candidate,
+  verification: Verification | undefined,
+  lane: Lane | undefined,
+): DerivedSeverity {
+  const ceiling = ownerRaiseCeiling(severity, candidate, verification, lane);
+  if (ceiling === null) return severity;
   return {
     ...severity,
     reason:
       `${severity.reason}; reach is unknown, so the requested ${severity.requested} was not applied. ` +
-      `If it breaks things for the whole repository, raise it with \`--severity ${candidate.candidateId}=${severity.requested}\``,
+      `If it breaks things for the whole repository, raise it with \`--severity ${candidate.candidateId}=${ceiling}\``,
   };
 }
 
@@ -1627,11 +1648,11 @@ export function scoreCandidate(
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
 
-  const severity = applyLaneSeverity(
-    withLegacyTierHint(boundSeverityByEvidence(derivedSeverity, candidate, verification), candidate, verification),
+  const severity = withLegacyTierHint(
+    applyLaneSeverity(boundSeverityByEvidence(derivedSeverity, candidate, verification), candidate, lane, verification),
     candidate,
-    lane,
     verification,
+    lane,
   );
 
   // A stale consumer sits on code the diff did not touch, so nothing in the

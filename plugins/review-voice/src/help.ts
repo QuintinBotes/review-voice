@@ -345,7 +345,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  --thread <path>           Existing pull-request comments',
       '  --diff-file <path>        Diff for reach and anchor checks',
       '  --min-score <n>           Final score gate (default 0.68)',
-      '  --severity <id>=<tier>    Explicit owner downgrade (blocking, important, minor or nit; repeatable)',
+      '  --severity <id>=<tier>    Owner downgrade, or a raise up to the requested tier when reach is unknown (repeatable)',
       '  --promote <id>            Owner posts a belowGate finding past its gate (repeatable)',
       '  --allow-unverifiable      With --promote: also lift the unverifiable cap; needs --owner-note',
       '  --owner-note <text>       Why the owner posts an unverifiable finding; recorded with it',

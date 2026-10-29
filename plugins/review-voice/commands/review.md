@@ -625,9 +625,11 @@ Whenever a tier ends above the request, the severity reason ends with
 "raised above the requested <tier> because ..." and names that rule.
 
 When the owner has a narrower judgement than the computed reach supports, rerun
-`score` with `--severity <candidate_id>=<tier>`. It accepts only a lower
-ordinary tier, writes the explicit owner override into the severity reason, and
-the resulting scores must still drive `validate-output` and `record --scores`.
+`score` with `--severity <candidate_id>=<tier>`. It accepts a lower ordinary
+tier, or, for a verified finding whose reach is unknown, a higher one up to the
+tier the analyst requested (the command the legacy-tier hint names). It writes
+the explicit owner override into the severity reason, and the resulting scores
+must still drive `validate-output` and `record --scores`.
 When the owner asks to post a finding listed in `belowGate`, rerun `score` with
 `--promote <candidate_id>`. It accepts only a `belowGate` entry, which is a
 verified finding held by the score or confidence gate alone, and records
