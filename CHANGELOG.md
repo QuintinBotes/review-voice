@@ -5,6 +5,21 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `check-candidates --apply-patch-lines` moves a candidate whose line is
+  really a `diff.patch` line number to the new-file line it names, when that
+  is an added line of the same file, prints one note per candidate moved, and
+  lists `kept` on stdout. (#227)
+
+### Fixed
+
+- When `check-candidates` rejects a line that is a `diff.patch` line number of
+  the same file, the reason now says which new-file line it is and to use it.
+  (#227)
+
 ## [1.20.0] - 2026-10-29
 
 ### Fixed

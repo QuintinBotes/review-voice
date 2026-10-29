@@ -106,6 +106,8 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '',
       'Flags:',
       '  --diff-file <path>     Require anchors on changed lines',
+      '  --apply-patch-lines    Move a line that is a diff.patch line number to the new-file line it names',
+      '                         (same file, added line); notes on stderr, and kept is listed on stdout',
       '  --thread <path>        Drop thread repeats; flag near ones for the verifier',
       '  --owner <login>        Owner for --thread; default from config',
       '  --held-from <run-ids>  Drop or flag repeats of those runs\' held findings; several',
