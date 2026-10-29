@@ -36,6 +36,8 @@ export interface QueueDeps {
   /** The authenticated user's login. */
   me: string;
   now: Date;
+  /** `watch.max_attempts_per_head`: a head the watcher failed this often is left out (docs/adr/0027). */
+  maxAttemptsPerHead?: number;
 }
 
 interface RawPull {
@@ -174,7 +176,7 @@ async function classify(deps: QueueDeps, candidate: Candidate): Promise<QueueEnt
   }
 
   const sources = SOURCE_ORDER.filter((source) => candidate.sources.has(source));
-  const sent = lastSentAtHead(db, candidate.repository, candidate.pull, head);
+  const sent = lastSentAtHead(db, candidate.repository, candidate.pull, head, deps.maxAttemptsPerHead);
   if (sent !== null && !sent.cappedByCi) return null;
 
   const author = pull.user?.login ?? '';

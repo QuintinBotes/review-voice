@@ -56,12 +56,23 @@ true. It re-reads the thread first and holds any point someone else raised
 during the run; `--no-recheck-thread` turns that off. `--expect-head <sha>`
 stops with exit 3 unless the pull request is at that commit, and
 `REVIEW_VOICE_NO_COMMANDS=1` skips the configured static evidence and
-second-pass commands. It re-reads the thread first and holds any point someone else raised
-during the run; `--no-recheck-thread` turns that off. `--expect-head <sha>`
-stops with exit 3 unless the pull request is at that commit, and
-`REVIEW_VOICE_NO_COMMANDS=1` skips the configured static evidence and
 second-pass commands. Exit codes: 0 done, 2 refused, 3 head moved, 4 waiting on CI, 6 CI needs
 a rerun, 7 an agent failed twice, 8 thread changed before posting.
+
+## Keep watching
+
+`review-voice watch` reviews every pull request the queue finds, once per
+head, and remembers what it did. Run it in the repository that holds your
+`.review-voice/config.yaml`:
+
+```
+review-voice watch --interval 2h --post   # loop in a terminal
+review-voice watch --once --post          # one pass, from cron or launchd
+```
+
+Without `--post` it reviews and records but posts nothing. Clones live under
+`watch.workspace`, never in your own working trees, and a second watcher on the
+same data directory exits at once.
 
 ## Requirements
 
