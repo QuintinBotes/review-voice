@@ -936,7 +936,7 @@ stray directory and another project's notes took the reviewed count from 11 to
   Pass every candidate that was held back rather than reported with
   `--held <file>` (an array of `{path, line, verdict, source, reason, text}`, verdict
   one of `partly`, `refuted`, `unverified`, `repeat`, `below-gate`,
-  `challenge-partly`, `challenge-refuted`): the
+  `challenge-partly`, `challenge-refuted`; a path in neither `--files` nor `--candidates` is warned about on stderr and still recorded): the
   `droppedAsRepeat` from step 2 as `repeat`, any cross-check result of PARTLY or
   REFUTED, each `belowGate` entry from step 4 as `below-gate`, each
   `unverified` entry from step 4 as `unverified`, and every `challengeHeld[]`
