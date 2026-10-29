@@ -150,6 +150,7 @@ import {
   type MissingContext,
   type Verification,
   ownerRaiseCeiling,
+  QUESTION_GAP_FLOOR,
 } from './scoring/score.ts';
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
@@ -2104,10 +2105,14 @@ function scoreCommand(argv: string[]): number {
           line: r.line,
           severity: r.severity.severity,
           claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? '',
+          confidenceSource: r.confidenceSource,
           gate,
           ...(gate === 'score'
             ? { finalScore: r.finalScore, threshold: thresholds.finalScore }
-            : { technicalConfidence: r.technicalConfidence, threshold: thresholds.technicalConfidence }),
+            : {
+                technicalConfidence: r.technicalConfidence,
+                threshold: r.severity.severity === 'question' ? QUESTION_GAP_FLOOR : thresholds.technicalConfidence,
+              }),
         });
       });
 
@@ -2210,6 +2215,8 @@ function scoreCommand(argv: string[]): number {
               severity: derived?.severity ?? c.severity,
               requestedSeverity: c.severity,
               severityReason: derived?.reason ?? null,
+              // Whether the verifier or a fallback set the confidence, without a join to `scores` (#220).
+              confidenceSource: scored?.confidenceSource ?? null,
               category: c.category,
               // What the editor writes from. It has no tools, so everything it
               // may state has to be here, and nothing it may not.

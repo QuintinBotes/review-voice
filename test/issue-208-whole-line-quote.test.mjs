@@ -1,7 +1,7 @@
 /**
- * #208: a quote under four words is kept when it is a whole line of the
- * description (whole sentences or a whole list item), not only when it is the
- * whole body of a section (#164). A short fragment of a line still drops.
+ * #208, #222: a quote under four words is kept when it is a whole sentence or
+ * list item of the description, not only when it is the whole body of a
+ * section (#164). A heading or a bare label still drops.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -44,17 +44,26 @@ test('#208: a short sentence on its own line and a short whole list item are kep
       ['int_002', '- [ ] Tests: not applicable'],
     ],
   );
-  assert.match(result.stderr, /Kept quote of int_001 under 4 words: it is a whole line of the description/);
+  assert.match(result.stderr, /Kept quote of int_001 under 4 words: it is a whole sentence of the description/);
 });
 
-test('#208: a short sentence that shares its line with another still drops', () => {
+test('#222: a short whole sentence that shares its line is kept too, but a fragment of one is not', () => {
   const result = checkIntent([
     { id: 'int_001', kind: 'goal', statement: 'Notes routes are renamed in every menu.', quote: 'Renames the notes routes in every menu.' },
     { id: 'int_002', kind: 'deliberate', statement: 'The archive moves later.', quote: 'The archive keeps its old layout.', reason: 'Archive moves later.' },
+    { id: 'int_003', kind: 'claim', statement: 'The menu is renamed.', quote: 'every menu' },
   ]);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout).statements.map(({ id }) => id), ['int_001']);
-  assert.match(result.stderr, /Dropped statement int_002 \(statements\[1\]\.reason must be at least 4 words/);
+  assert.deepEqual(
+    JSON.parse(result.stdout).statements.map(({ id, quote }) => [id, quote]),
+    [
+      ['int_001', 'Renames the notes routes in every menu.'],
+      ['int_002', 'The archive keeps its old layout.'],
+      ['int_003', 'Renames the notes routes in every menu.'],
+    ],
+  );
+  assert.match(result.stderr, /Kept reason of int_002 under 4 words: it is a whole sentence of the description/);
+  assert.match(result.stderr, /Widened quote of int_003 to its whole sentence/);
 });
 
 test('#208: a line that is only a label is not kept as a quote', () => {
@@ -65,4 +74,14 @@ test('#208: a line that is only a label is not kept as a quote', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout).statements.map(({ id }) => id), ['int_001']);
   assert.match(result.stderr, /Dropped statement int_002 \(statements\[1\]\.quote must be at least 4 words/);
+});
+
+test('#222: a section heading is context, not support, for a short quote', () => {
+  const result = checkIntent([
+    { id: 'int_001', kind: 'goal', statement: 'Notes routes are renamed in every menu.', quote: 'Renames the notes routes in every menu.' },
+    { id: 'int_002', kind: 'claim', statement: 'The summary covers pagination.', quote: 'No code changes.' },
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).statements.map(({ id }) => id), ['int_001']);
+  assert.match(result.stderr, /Dropped statement int_002 \(statements\[1\]\.quote shares no significant word with its statement\)/);
 });

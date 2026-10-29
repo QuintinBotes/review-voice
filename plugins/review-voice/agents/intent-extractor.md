@@ -57,8 +57,9 @@ description, so do not paraphrase, fix typos, or join sentences that are
 apart. A statement whose sentence is longer than 600 characters is left out.
 A short answer under a heading (`None.` under "Database changes") may be
 quoted as it stands when it is all the section says; the CLI records the
-heading with it. A shorter quote is also kept when it fills a whole line of the
-description (`No code changes.` on its own line, or a whole list item). Keep `statement` itself under 300 characters.
+heading with it. Any other short quote is kept when it is a whole sentence or
+list item (`No flag.`, `Behind a flag (off).`); the CLI records the heading of
+its section, if any. A heading or a bare label is never a quote. Keep `statement` itself under 300 characters.
 A leading link or bold label (`[label](url): `, `**Label.** `) is not part of
 the sentence after it; quote the sentence without it. Leave out keys that do
 not apply; never write null. Ids run `int_001`, `int_002`, and so on. At most

@@ -67,7 +67,10 @@ posted.**
   confidence gates - but was written down nowhere, and it is the one place an
   unverified candidate reaches the editor. The verifier may now report
   `premises_verified` for a question: `false`, a premise wrong or unchecked,
-  rejects it; `true` or absent leaves it as before.
+  rejects it; `true` or absent leaves it as before. Amended 2026-10-29 (#219):
+  a question the verifier rejects (`verified: false`) with its own confidence
+  below 0.5 that the gap is real is held in `belowGate` as more likely moot
+  than not; the owner can still promote it.
 
 ## Consequences
 

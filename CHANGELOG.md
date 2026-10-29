@@ -5,6 +5,27 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A question the verifier rejected (`verified: false`) with confidence below
+  0.5 that its gap is real is no longer eligible: it is held in `belowGate`
+  with `gate: confidence` and a threshold of 0.5, and `--promote` still posts
+  it. A question with verified premises at 0.5 or above is asked as before
+  (ADR 0016). (#219)
+
+- `score`'s `eligible[]` and `belowGate[]` entries carry `confidenceSource`, so
+  a caller need not join them back to `scores[]`. (#220)
+
+- A test keeps the evidence-verifier brief's `fix_verdict` values, the
+  verification schema's and the CLI's identical. They already agreed. (#221)
+
+- `check-intent` keeps a quote under four words whenever it is a whole sentence
+  or list item of the description, not only a whole line, and records the
+  heading of the section it sits in as context. A heading or a bare label is
+  still dropped. (#222)
+
 ## [1.19.0] - 2026-10-29
 
 ### Added

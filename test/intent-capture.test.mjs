@@ -106,7 +106,7 @@ test('check-intent drops each invalid statement with a warning and keeps the res
   const result = checkIntent([goal, { ...deliberate, reason: 'Because.' }, short]);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout).statements.map((statement) => statement.id), ['int_001']);
-  assert.match(result.stderr, /Dropped statement int_002 \(statements\[1\]\.reason must be at least 4 words/);
+  assert.match(result.stderr, /Dropped statement int_002 \(statements\[1\]\.reason does not occur in the pull request description/);
   assert.match(result.stderr, /Dropped statement int_004 \(statements\[2\]\.quote must be at least 4 words\)/);
 });
 

@@ -3372,6 +3372,7 @@ var ADMITS_UNVERIFIABLE = [
 function admitsUnverifiable(candidate) {
   return candidate.evidence.some((item) => ADMITS_UNVERIFIABLE.some((pattern) => pattern.test(item)));
 }
+var QUESTION_GAP_FLOOR = 0.5;
 var DEFAULT_THRESHOLDS = {
   technicalConfidence: 0.8,
   analystOnlyConfidence: 0.7,
@@ -3838,6 +3839,8 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
       verification2 === void 0 ? "a question needs the verifier to confirm the premises it rests on (premises_verified: true), and there is no verifier verdict for this one" : "the verifier did not verify this question or confirm the premises it rests on (premises_verified is not true)",
       verification2?.reason
     );
+  } else if (isQuestion && verification2?.verified === false && confidenceSource === "verifier" && confidence < QUESTION_GAP_FLOOR) {
+    rejectedBecause = `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${QUESTION_GAP_FLOOR}, and the verifier rejected this question (verified: false)`;
   } else if (isQuestion) {
     if (ownerAlignment < NEUTRAL_ALIGNMENT) {
       rejectedBecause = `owner precedent is against asking this (${ownerAlignment.toFixed(2)} alignment), and a question the owner has dismissed the like of before is noise the second time`;
@@ -3918,7 +3921,7 @@ function sentencesOf(description) {
   let blank = false;
   let previousHeading = false;
   const sections2 = [];
-  const lines2 = [];
+  const headings = /* @__PURE__ */ new Set();
   let open = null;
   let contentEnd = 0;
   for (const line3 of description.split(/\r?\n/u)) {
@@ -3947,7 +3950,7 @@ function sentencesOf(description) {
     } else if (open !== null && open.from === -1) {
       open.from = text4.length;
     }
-    if (!heading) lines2.push({ from: text4.length, to: text4.length + content.length });
+    if (heading) headings.add(content);
     text4 += content;
     contentEnd = text4.length;
     blank = false;
@@ -3960,18 +3963,21 @@ function sentencesOf(description) {
     ends.add(match.index + 1);
     starts.add(match.index + 2);
   }
-  return { text: text4, starts, ends, sections: sections2, lines: lines2 };
+  return { text: text4, starts, ends, sections: sections2, headings };
 }
-function isWholeLine(wanted, sentences) {
-  if (LEAD_LABEL.exec(wanted)?.[0] === wanted) return false;
-  return sentences.lines.some(
-    ({ from, to }) => sentences.starts.has(from) && sentences.ends.has(to) && sentences.text.slice(from, to) === wanted
-  );
+function statesSomething(wanted, sentences) {
+  return LEAD_LABEL.exec(wanted)?.[0] !== wanted && !sentences.headings.has(wanted);
+}
+function sectionHeading(quote2, sentences) {
+  const wanted = collapse(quote2.replace(LIST_OR_HEADING, ""));
+  let at2 = sentences.text.indexOf(wanted);
+  while (at2 !== -1 && !(sentences.starts.has(at2) && sentences.ends.has(at2 + wanted.length))) at2 = sentences.text.indexOf(wanted, at2 + 1);
+  return sentences.sections.find(({ from, to }) => at2 >= from && at2 < to)?.heading ?? null;
 }
 var isShort = (quote2) => collapse(quote2.replace(LIST_OR_HEADING, "")).split(" ").length < MIN_QUOTE_WORDS;
 function excerptProblem(quote2, sentences, name) {
   const wanted = collapse(quote2.replace(LIST_OR_HEADING, ""));
-  if (isShort(wanted) && !isWholeLine(wanted, sentences)) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
+  if (isShort(wanted) && !statesSomething(wanted, sentences)) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
   let at2 = sentences.text.indexOf(wanted);
   if (at2 === -1) return `${name} does not occur in the pull request description`;
   for (; at2 !== -1; at2 = sentences.text.indexOf(wanted, at2 + 1)) {
@@ -4004,7 +4010,7 @@ function answeredHeading(quote2, sentences) {
 function excerptOf(value, sentences, name, id, notes) {
   const problem = excerptProblem(value, sentences, name);
   if (problem === null) {
-    if (isShort(value)) notes.push(`Kept ${name.split(".").pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole line of the description`);
+    if (isShort(value)) notes.push(`Kept ${name.split(".").pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole sentence of the description`);
     return { value, problem: null };
   }
   if (!problem.endsWith("not part of one")) return { value: null, problem };
@@ -4043,11 +4049,12 @@ function statementOf(rawEntry, at2, sentences, removed) {
   if (statement.problem !== null) return { value: null, problem: statement.problem };
   const rawQuote = text2(entry["quote"], `${at2}.quote`, MAX_QUOTE);
   if (rawQuote.problem !== null) return { value: null, problem: rawQuote.problem };
-  const heading = answeredHeading(rawQuote.value, sentences);
-  const quote2 = heading === null ? excerptOf(rawQuote.value, sentences, `${at2}.quote`, id, removed) : rawQuote;
+  const answered = answeredHeading(rawQuote.value, sentences);
+  const quote2 = answered === null ? excerptOf(rawQuote.value, sentences, `${at2}.quote`, id, removed) : rawQuote;
   if (quote2.problem !== null) return { value: null, problem: quote2.problem };
+  const heading = answered ?? (isShort(quote2.value) ? sectionHeading(quote2.value, sentences) : null);
   if (kind !== "non-goal") {
-    const quoted = significantWords(heading === null ? quote2.value : `${heading} ${quote2.value}`);
+    const quoted = significantWords(answered === null ? quote2.value : `${answered} ${quote2.value}`);
     if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
       return { value: null, problem: `${at2}.quote shares no significant word with its statement` };
     }
@@ -22519,8 +22526,12 @@ function scoreCommand(argv) {
         line: r.line,
         severity: r.severity.severity,
         claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? "",
+        confidenceSource: r.confidenceSource,
         gate,
-        ...gate === "score" ? { finalScore: r.finalScore, threshold: thresholds.finalScore } : { technicalConfidence: r.technicalConfidence, threshold: thresholds.technicalConfidence }
+        ...gate === "score" ? { finalScore: r.finalScore, threshold: thresholds.finalScore } : {
+          technicalConfidence: r.technicalConfidence,
+          threshold: r.severity.severity === "question" ? QUESTION_GAP_FLOOR : thresholds.technicalConfidence
+        }
       });
     });
     const unverified = results.filter((r) => r.confidenceSource === "unverifiable-cap" && r.rejectedBecause === UNVERIFIABLE_REJECTION).flatMap((r) => {
@@ -22601,6 +22612,8 @@ function scoreCommand(argv) {
               severity: derived?.severity ?? c.severity,
               requestedSeverity: c.severity,
               severityReason: derived?.reason ?? null,
+              // Whether the verifier or a fallback set the confidence, without a join to `scores` (#220).
+              confidenceSource: scored?.confidenceSource ?? null,
               category: c.category,
               // What the editor writes from. It has no tools, so everything it
               // may state has to be here, and nothing it may not.
