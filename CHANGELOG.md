@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.19.0] - 2026-10-29
 
 ### Added
 
@@ -205,6 +205,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and treats a weak one as `unknown`. Thread resolution is not read during
   `sync`. (ADR 0004) (#200)
 
+- `agent --name <agent> --model <model> --schema <file.json> [--cwd <dir>]
+  [--timeout <seconds>]` runs one agent as its own `claude -p --restricted`
+  process in the clone and prints its schema-valid output with the cost and
+  seconds. Agents get read-only file tools only (`Read`, `Grep`, `Glob`): a
+  declared `Bash(git:*)` is dropped, because git options can run arbitrary
+  commands, and any other tool is refused before anything starts. A call past
+  its timeout (default 10 minutes, at most 3600 seconds) is killed with
+  everything it started, as is every live agent when the CLI is interrupted.
+  `REVIEW_VOICE_FAKE_AGENTS=<dir>` serves canned output instead, for tests.
+  `doctor` reports whether `claude` is installed, without failing when it is
+  not. (ADR 0021)
+
 ### Fixed
 
 - The command the legacy-tier hint prints now works: `score --severity
@@ -243,18 +255,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slash or backslash is refused, the allowlist is checked on the resolved path,
   and GitHub's `/repositories/{id}/...` form, which names no repository, is
   refused. (ADR 0026)
-
-- `agent --name <agent> --model <model> --schema <file.json> [--cwd <dir>]
-  [--timeout <seconds>]` runs one agent as its own `claude -p --restricted`
-  process in the clone and prints its schema-valid output with the cost and
-  seconds. Agents get read-only file tools only (`Read`, `Grep`, `Glob`): a
-  declared `Bash(git:*)` is dropped, because git options can run arbitrary
-  commands, and any other tool is refused before anything starts. A call past
-  its timeout (default 10 minutes, at most 3600 seconds) is killed with
-  everything it started, as is every live agent when the CLI is interrupted.
-  `REVIEW_VOICE_FAKE_AGENTS=<dir>` serves canned output instead, for tests.
-  `doctor` reports whether `claude` is installed, without failing when it is
-  not. (ADR 0021)
 
 - `record` keeps each candidate's `lane` (default `diff`) and `blocker_class` in
   the stored candidates, and each stored finding carries the lane of the
@@ -2184,7 +2184,8 @@ no data because nothing has been labelled, and `docs/EVALUATION.md` says so.
   vulnerability reporting, and the repository security posture documented in
   `docs/REPO-SECURITY.md`.
 
-[1.18.0]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.19.0]: https://github.com/QuintinBotes/review-voice/commits/main
+[1.18.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.18.0
 [1.17.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.17.0
 [1.16.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.16.0
 [1.15.0]: https://github.com/QuintinBotes/review-voice/releases/tag/review-voice--v1.15.0
