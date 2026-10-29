@@ -1123,7 +1123,10 @@ test('once a stopped review exits, the rest of its group is killed at once, not 
     writeFileSync(
       script,
       `import { spawn } from 'node:child_process';
-       spawn(process.execPath, ['-e', ${JSON.stringify(`process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`)}], { stdio: 'ignore' });
+       import { fileURLToPath } from 'node:url';
+       const pidFile = fileURLToPath(new URL('stubborn.pid', import.meta.url));
+       const agent = "process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);";
+       spawn(process.execPath, ['-e', agent, pidFile], { stdio: 'ignore' });
        setInterval(() => {}, 1000);`,
     );
     const review = spawnReview(script, { configPath: null, graceMs: 10_000 });
