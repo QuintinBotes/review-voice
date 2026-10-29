@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `record --held` warns on stderr, and still records the entry, when a held
+  entry's path is in neither `--files` nor `--candidates`, or its line is past
+  the end of the file in the working tree: a later `--held-from` run could not
+  match it. (#226)
+
 ## [1.20.0] - 2026-10-29
 
 ### Fixed

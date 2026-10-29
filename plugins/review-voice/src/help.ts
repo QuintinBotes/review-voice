@@ -586,6 +586,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  --tie-breaks <path>    reconcile\'s output, with the rulings it applied',
       '  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]',
       `                         or {"held": [...]}; verdict one of ${HELD_VERDICTS.join(', ')}`,
+      '                         Warns on stderr, and still records, when a path is in neither --files nor --candidates',
       '  --body-findings <path> One verified simplification from check-simplification; requires --diff-file',
       '  --carried-from <run>   Validate findings carried by `carry` (needs --head; run in its clone)',
       '  --carry <path>         carry.json of carry-candidates (needs --head)',
