@@ -1,4 +1,5 @@
 import type { Database } from '../store/db.ts';
+import { watchHead, type WatchHead } from '../store/watch.ts';
 
 /**
  * The queue's reads of the local store, kept apart so a caller with its own
@@ -37,12 +38,42 @@ export function runRecordedAtHead(db: Database, repository: string, pull: number
 }
 
 /**
+ * The watcher's row for this head when it is done with it (docs/adr/0027): it
+ * posted, carried, skipped or held it, or it failed as often as it may.
+ * `waiting-ci`, `reviewed` and a failure under the cap are worth another look.
+ */
+export function settledByWatcher(db: Database, repository: string, pull: number, head: string, maxAttemptsPerHead = 2): WatchHead | null {
+  const row = watchHead(db, repository, pull, head);
+  if (row === null) return null;
+  if (row.status === 'failed') return row.attempts >= maxAttemptsPerHead ? row : null;
+  return ['posted', 'carried', 'skipped', 'held'].includes(row.status) ? row : null;
+}
+
+/**
  * The last review `post` sent to this pull request at this head, or null.
  *
  * `cappedByCi` is read from the sent row when it is there: a COMMENT sent only
- * because CI was red is worth posting again once CI recovers.
+ * because CI was red is worth posting again once CI recovers, even after the
+ * watcher recorded it as posted, unless the watcher has since settled the head
+ * some other way. With no sent row, a head the watcher settled counts as sent,
+ * so the queue leaves it out.
  */
 export function lastSentAtHead(
+  db: Database,
+  repository: string,
+  pull: number,
+  head: string,
+  maxAttemptsPerHead = 2,
+): { event: string | null; cappedByCi: boolean } | null {
+  const sent = lastSentRow(db, repository, pull, head);
+  if (sent !== null && !sent.cappedByCi) return sent;
+  const settled = settledByWatcher(db, repository, pull, head, maxAttemptsPerHead);
+  if (settled === null) return sent;
+  if (sent !== null) return settled.status === 'posted' ? sent : { ...sent, cappedByCi: false };
+  return { event: settled.event, cappedByCi: false };
+}
+
+function lastSentRow(
   db: Database,
   repository: string,
   pull: number,

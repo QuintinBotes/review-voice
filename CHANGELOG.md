@@ -32,6 +32,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   config allow it, skips cleanly for forks and a missing key, and refuses
   `pull_request_target` on the head (ADR 0031). `docs/ACTION.md` explains it.
 
+- `watch [--once] [--interval <dur>] [--post] [--mode M] [--max N] [--json]`
+  builds the queue and handles each entry in turn: a new head is reviewed by
+  `review` in a partial clone under `watch.workspace` (default
+  `<data directory>/clones`), a recorded run gets its verdict and, with
+  `--post`, is posted through `post` with the thread re-read first, a CI-capped
+  COMMENT is re-checked and approved once CI is green, and a skip is recorded.
+  A new `watch_heads` table keeps one row per head, written after the action
+  returns, so a head that was posted, carried, skipped or held is never handled
+  again and a failed head is retried up to `watch.max_attempts_per_head`
+  (default 2). Each pass then follows outcomes for at most 20 pull requests
+  with a review sent in the last 7 days, and prints one line per entry and the
+  totals. Only one watcher runs per data directory: a second exits 2 naming the
+  watcher's pid. The lock is a listening socket on a 127.0.0.1 port derived
+  from the data directory (`watch.lock_port` overrides), so the system frees
+  it when the watcher dies and there is no stale lock; another program on that
+  port also exits 2, naming the setting. `watch.interval` (default `2h`) and
+  `watch.post` set the defaults.
+  `queue` leaves out heads the watcher settled and prints exactly what it did
+  before while the table is empty. Each review runs as its own process group
+  with `--recheck-thread` when posting, and is killed, and recorded as failed,
+  after `watch.review_timeout` (default `45m`, at most `6h`) or when the
+  watcher is interrupted: SIGTERM to its process group, then SIGKILL 10 seconds
+  later, or at once when the review itself exits. Git lock files older than ten minutes in a clone are removed before a
+  review. The config is copied atomically to `<data directory>/watch-config.yaml` and read
+  again every pass, so turning posting off or removing a repository from the
+  allowlist applies from the next pass. Each review gets `--expect-head` and,
+  unless `watch.run_repository_commands: true`, `REVIEW_VOICE_NO_COMMANDS=1`.
+  `status` shows the watcher's heads by status and the five newest, and
+  `queue --settled` lists the heads it left for a person; `queue` uses
+  `watch.max_attempts_per_head` too. (ADR 0027)
+
+- `REVIEW_VOICE_CONFIG=<absolute path>` makes every command read that config
+  file instead of `.review-voice/config.yaml`; a relative path warns and is
+  ignored. `watch` sets it to its own config for each review it starts, so a
+  workspace clone's config, which is repository content, never decides
+  posting or the allowlist. (ADR 0027)
+
 - `plan --files <files.json> --diff-file <diff.patch> [--mode]` prints the
   stage plan a cost mode resolves to: which review stages run and on which
   model. `fast`, `standard` and `thorough` follow the table in the spec, and

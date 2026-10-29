@@ -235,6 +235,26 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (review_run_id, finding_id)
   );
   `,
+
+  // v11 - what the watcher did with each head (docs/adr/0027).
+  //
+  // Skips, waits on CI and failures leave no run or review behind, so without
+  // this row every pass would redo them.
+  `
+  CREATE TABLE IF NOT EXISTS watch_heads (
+    repository TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    head_sha TEXT NOT NULL,
+    run_id TEXT,
+    event TEXT,
+    review_url TEXT,
+    status TEXT NOT NULL,
+    detail TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (repository, pull_number, head_sha)
+  );
+  `,
 ];
 
 function migrate(db: Database): void {

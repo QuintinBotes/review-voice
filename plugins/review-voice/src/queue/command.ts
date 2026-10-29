@@ -2,10 +2,11 @@ import type { GitHubClient } from '../github/client.ts';
 import type { Database } from '../store/db.ts';
 import { QUEUE_SOURCES, type QueueConfig, type QueueSource } from './config.ts';
 import { buildQueue, type QueueEntry, type QueueResult } from './queue.ts';
+import { settledHeads, type WatchHead } from '../store/watch.ts';
 
 export interface QueueCommandDeps {
   /** The loaded repository config, or null outside a repository. */
-  config: { allowlist: string[]; queue: QueueConfig; warnings: string[] } | null;
+  config: { allowlist: string[]; queue: QueueConfig; warnings: string[]; watch?: { maxAttemptsPerHead: number } } | null;
   client: (allowlist: string[]) => GitHubClient;
   openDb: () => Database;
   now: Date;
@@ -34,8 +35,21 @@ export function renderQueue(result: QueueResult): string {
   ].join('\n');
 }
 
+/** One line per head the watcher left for a person, then the count. */
+export function renderSettled(heads: WatchHead[]): string {
+  return [
+    ...heads.map(
+      (head) =>
+        `${head.status.toUpperCase()} ${head.repository}#${head.pull} ${head.head.slice(0, 7)}` +
+        (head.status === 'failed' ? ` (${head.attempts} attempts)` : '') +
+        (head.detail === null ? '' : ` ${head.detail}`),
+    ),
+    `${heads.length} left for a person`,
+  ].join('\n');
+}
+
 /**
- * `review-voice queue [--json] [--source <s>]... [--max <n>]`. Read-only.
+ * `review-voice queue [--json] [--source <s>]... [--max <n>] [--settled]`. Read-only.
  * Exit 0, or 2 on a bad invocation or an empty allowlist.
  */
 export async function queueCommand(argv: string[], deps: QueueCommandDeps): Promise<number> {
@@ -62,6 +76,19 @@ export async function queueCommand(argv: string[], deps: QueueCommandDeps): Prom
 
   const config = deps.config;
   for (const warning of config?.warnings ?? []) deps.err(`Warning: ${warning}`);
+  // The watcher's cap, so the queue and the watcher agree on which failed heads are done.
+  const maxAttemptsPerHead = config?.watch?.maxAttemptsPerHead ?? 2;
+
+  if (argv.includes('--settled')) {
+    const db = deps.openDb();
+    try {
+      const heads = settledHeads(db, maxAttemptsPerHead);
+      deps.out(argv.includes('--json') ? JSON.stringify(heads, null, 2) : renderSettled(heads));
+      return 0;
+    } finally {
+      db.close();
+    }
+  }
   if (config === null || config.allowlist.length === 0) {
     deps.err('No repositories are allowlisted. Run /review-voice:init first.');
     return 2;
@@ -91,7 +118,7 @@ export async function queueCommand(argv: string[], deps: QueueCommandDeps): Prom
 
   const db = deps.openDb();
   try {
-    const result = await buildQueue({ client, db, config: queue, me: viewer.login, now: deps.now });
+    const result = await buildQueue({ client, db, config: queue, me: viewer.login, now: deps.now, maxAttemptsPerHead });
     deps.out(argv.includes('--json') ? JSON.stringify(result, null, 2) : renderQueue(result));
     return 0;
   } finally {
