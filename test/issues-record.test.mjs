@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
@@ -194,8 +194,16 @@ test('#204 a colleague raising the same point in their own words still blocks', 
   });
 });
 
-test('#204 a short colleague comment is not mistaken for a quote of the tool', () => {
-  const source = readFileSync(new URL('../plugins/review-voice/src/publish/post.ts', import.meta.url), 'utf8');
-  assert.match(source, /PASTED_TEXT_MIN = 40/);
-  assert.match(source, /text\.length >= PASTED_TEXT_MIN && ownTexts\.some/);
+test('#204 a short colleague comment inside the tool text still blocks', async () => {
+  await withDb(async (db) => {
+    record(db, MINOR, [verified('src/cart.ts', 12, 'minor')]);
+    const impl = fakeGitHub({
+      inline: [
+        raised(OWNER, { id: 800, created_at: AFTER_RUN }),
+        raised('a-colleague', { id: 801, body: 'The total skips the discount.', created_at: AFTER_RUN }),
+      ],
+    });
+    const { exitCode } = await recheck(db, impl);
+    assert.equal(exitCode, 8);
+  });
 });
