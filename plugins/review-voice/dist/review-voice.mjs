@@ -19838,6 +19838,7 @@ var COMMAND_HELP = {
       "  --tie-breaks <path>    reconcile's output, with the rulings it applied",
       '  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]',
       `                         or {"held": [...]}; verdict one of ${HELD_VERDICTS.join(", ")}`,
+      "                         Warns on stderr, and still records, when a path is in neither --files nor --candidates",
       "  --body-findings <path> One verified simplification from check-simplification; requires --diff-file",
       "  --carried-from <run>   Validate findings carried by `carry` (needs --head; run in its clone)",
       "  --carry <path>         carry.json of carry-candidates (needs --head)",
@@ -23006,9 +23007,13 @@ function recordCommand(argv) {
   let manifestRepository = null;
   let scope;
   let complexity = null;
+  const knownPaths = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
       const manifest = JSON.parse(readFileSync13(filesFile, "utf8"));
+      if (Array.isArray(manifest.files)) {
+        for (const file2 of manifest.files) if (typeof file2?.path === "string") knownPaths.add(file2.path);
+      }
       if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
         pullNumber = manifest.pullNumber;
       }
@@ -23079,6 +23084,21 @@ function recordCommand(argv) {
         if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
       });
       held = list2;
+      for (const candidate of candidates) knownPaths.add(candidate.path);
+      if (knownPaths.size > 0) {
+        for (const entry of held) {
+          if (!knownPaths.has(entry.path)) {
+            console.error(`Held entry ${entry.path}:${entry.line} matches no changed file or candidate; later --held-from runs will not match it.`);
+            continue;
+          }
+          try {
+            const content = readFileSync13(entry.path, "utf8");
+            const lines2 = content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
+            if (entry.line > lines2) console.error(`Held entry ${entry.path}:${entry.line} is past the end of the file (${lines2} lines).`);
+          } catch {
+          }
+        }
+      }
     } catch (error) {
       console.error(`Cannot read held findings from ${heldFile}: ${error.message}`);
       return 2;

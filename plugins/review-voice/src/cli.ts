@@ -2681,9 +2681,13 @@ function recordCommand(argv: string[]): number {
   let manifestRepository: string | null = null;
   let scope: ReviewScope | undefined;
   let complexity: ComplexityAssessment | null = null;
+  const knownPaths = new Set<string>();
   if (filesFile !== null) {
     try {
       const manifest = JSON.parse(readFileSync(filesFile, 'utf8')) as Record<string, unknown>;
+      if (Array.isArray(manifest.files)) {
+        for (const file of manifest.files) if (typeof file?.path === 'string') knownPaths.add(file.path);
+      }
       if (Number.isInteger(manifest.pullNumber) && (manifest.pullNumber as number) > 0) {
         pullNumber = manifest.pullNumber as number;
       }
@@ -2771,6 +2775,25 @@ function recordCommand(argv: string[]): number {
         if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
       });
       held = list as HeldFinding[];
+      // A path no candidate or diff file carries can never match the real anchor
+      // on a later --held-from run. Warn, but record it: the reason still counts.
+      for (const candidate of candidates) knownPaths.add(candidate.path);
+      if (knownPaths.size > 0) {
+        for (const entry of held) {
+          if (!knownPaths.has(entry.path)) {
+            console.error(`Held entry ${entry.path}:${entry.line} matches no changed file or candidate; later --held-from runs will not match it.`);
+            continue;
+          }
+          // shortcut: the line count is read only when the file is in the working tree.
+          try {
+            const content = readFileSync(entry.path, 'utf8');
+            const lines = content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
+            if (entry.line > lines) console.error(`Held entry ${entry.path}:${entry.line} is past the end of the file (${lines} lines).`);
+          } catch {
+            // Not in the working tree: the line cannot be checked, so say nothing.
+          }
+        }
+      }
     } catch (error) {
       console.error(`Cannot read held findings from ${heldFile}: ${(error as Error).message}`);
       return 2;

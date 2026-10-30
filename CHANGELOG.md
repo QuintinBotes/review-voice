@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same file, the reason now says which new-file line it is and to use it.
   (#227)
 
+- `record --held` warns on stderr, and still records the entry, when a held
+  entry's path is in neither `--files` nor `--candidates`, or its line is past
+  the end of the file in the working tree: a later `--held-from` run could not
+  match it. (#226)
+
 ## [1.20.0] - 2026-10-29
 
 ### Fixed
