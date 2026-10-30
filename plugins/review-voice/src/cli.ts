@@ -4587,7 +4587,21 @@ function checkCandidatesCommand(argv: string[]): number {
       return 2;
     }
 
-    const anchors = candidates.map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) }));
+    // --apply-patch-lines: a line that is really a diff.patch line number moves
+    // to the new-file line it names, when that is an added line of the same file.
+    const applyPatchLines = argv.includes('--apply-patch-lines');
+    const anchors = candidates.map((candidate, index) => {
+      let anchor = anchorFor(hunks, candidate);
+      if (applyPatchLines && !anchor.ok && anchor.kind !== 'stale-consumer' && anchor.patchLine?.path === anchor.path) {
+        const from = candidate.line;
+        const to = anchor.patchLine.line;
+        (candidate as { line: number }).line = to;
+        (raw[index] as Record<string, unknown>)['line'] = to;
+        console.error(`Re-anchored ${candidate.candidateId} from ${anchor.path}:${from} (a diff.patch line) to ${anchor.path}:${to}`);
+        anchor = anchorFor(hunks, candidate);
+      }
+      return { candidate, anchor };
+    });
     // A stale consumer that passes but sits on a line this diff changed. Not a
     // failure: the finding is sound, it is only posted in the body when it
     // could be inline.
@@ -4637,7 +4651,7 @@ function checkCandidatesCommand(argv: string[]): number {
       return 2;
     }
 
-    if (!argv.includes('--thread') && heldFrom === null) {
+    if (!argv.includes('--thread') && heldFrom === null && !applyPatchLines) {
       console.log(
         JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length }, ...extra }, null, 2),
       );

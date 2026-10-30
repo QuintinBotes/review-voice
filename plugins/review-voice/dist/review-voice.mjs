@@ -967,6 +967,9 @@ function reason(anchor) {
   if (!anchor.ok && anchor.nearest.length > 0) {
     rendered += anchor.nearest.length === 1 ? `; the nearest changed line is ${anchor.nearest[0]}` : `; the nearest changed lines are ${anchor.nearest.join(", ")}`;
   }
+  if (!anchor.ok && anchor.patchLine !== null && anchor.patchLine.path === path) {
+    return `${rendered}; line ${line3} of diff.patch is line ${anchor.patchLine.line} of ${path}; use line ${anchor.patchLine.line} (or pass --apply-patch-lines).`;
+  }
   if (!anchor.ok && anchor.patchLine !== null) {
     return `${rendered}; line ${line3} of diff.patch is ${anchor.patchLine.path}:${anchor.patchLine.line} - was that the line meant?`;
   }
@@ -19353,6 +19356,8 @@ var COMMAND_HELP = {
       "",
       "Flags:",
       "  --diff-file <path>     Require anchors on changed lines",
+      "  --apply-patch-lines    Move a line that is a diff.patch line number to the new-file line it names",
+      "                         (same file, added line); notes on stderr, and kept is listed on stdout",
       "  --thread <path>        Drop thread repeats; flag near ones for the verifier",
       "  --owner <login>        Owner for --thread; default from config",
       "  --held-from <run-ids>  Drop or flag repeats of those runs' held findings; several",
@@ -24429,7 +24434,19 @@ function checkCandidatesCommand(argv) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
     }
-    const anchors = candidates.map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) }));
+    const applyPatchLines = argv.includes("--apply-patch-lines");
+    const anchors = candidates.map((candidate, index) => {
+      let anchor = anchorFor(hunks, candidate);
+      if (applyPatchLines && !anchor.ok && anchor.kind !== "stale-consumer" && anchor.patchLine?.path === anchor.path) {
+        const from = candidate.line;
+        const to = anchor.patchLine.line;
+        candidate.line = to;
+        raw[index]["line"] = to;
+        console.error(`Re-anchored ${candidate.candidateId} from ${anchor.path}:${from} (a diff.patch line) to ${anchor.path}:${to}`);
+        anchor = anchorFor(hunks, candidate);
+      }
+      return { candidate, anchor };
+    });
     const suggestions = anchors.filter(({ anchor }) => anchor.ok && ordinaryFindingHint(anchor) !== null).map(({ candidate, anchor }) => ({
       candidateId: candidate.candidateId,
       path: candidate.path,
@@ -24469,7 +24486,7 @@ function checkCandidatesCommand(argv) {
       console.error("--held-from needs --head <sha>, the head being reviewed.");
       return 2;
     }
-    if (!argv.includes("--thread") && heldFrom === null) {
+    if (!argv.includes("--thread") && heldFrom === null && !applyPatchLines) {
       console.log(
         JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length }, ...extra }, null, 2)
       );

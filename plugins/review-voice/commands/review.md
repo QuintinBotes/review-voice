@@ -357,6 +357,9 @@ A candidate whose `intent_ref` names no statement in it is listed under
 If it exits 1, send **only the failing candidates** back to the analyst once,
 including each reported `reason`, and ask it to re-anchor, fix the
 `intent_ref`, or withdraw each one.
+When a reason says a line of `diff.patch` is a line of the same file, the
+analyst confused patch and file line numbers; `--apply-patch-lines` moves such
+candidates to the suggested line and lists them under `kept`.
 Run the same check again. Drop candidates that still fail and say the dropped
 count once after the findings. Never correct an anchor by hand.
 

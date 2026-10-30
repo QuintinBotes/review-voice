@@ -418,6 +418,9 @@ export function reason(anchor: AnchorCheck): string {
       ? `; the nearest changed line is ${anchor.nearest[0]}`
       : `; the nearest changed lines are ${anchor.nearest.join(', ')}`;
   }
+  if (!anchor.ok && anchor.patchLine !== null && anchor.patchLine.path === path) {
+    return `${rendered}; line ${line} of diff.patch is line ${anchor.patchLine.line} of ${path}; use line ${anchor.patchLine.line} (or pass --apply-patch-lines).`;
+  }
   if (!anchor.ok && anchor.patchLine !== null) {
     return `${rendered}; line ${line} of diff.patch is ${anchor.patchLine.path}:${anchor.patchLine.line} - was that the line meant?`;
   }
