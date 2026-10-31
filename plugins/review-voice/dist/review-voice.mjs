@@ -967,6 +967,9 @@ function reason(anchor) {
   if (!anchor.ok && anchor.nearest.length > 0) {
     rendered += anchor.nearest.length === 1 ? `; the nearest changed line is ${anchor.nearest[0]}` : `; the nearest changed lines are ${anchor.nearest.join(", ")}`;
   }
+  if (!anchor.ok && anchor.patchLine !== null && anchor.patchLine.path === path) {
+    return `${rendered}; line ${line3} of diff.patch is line ${anchor.patchLine.line} of ${path}; use line ${anchor.patchLine.line} (or pass --apply-patch-lines).`;
+  }
   if (!anchor.ok && anchor.patchLine !== null) {
     return `${rendered}; line ${line3} of diff.patch is ${anchor.patchLine.path}:${anchor.patchLine.line} - was that the line meant?`;
   }
@@ -19353,6 +19356,8 @@ var COMMAND_HELP = {
       "",
       "Flags:",
       "  --diff-file <path>     Require anchors on changed lines",
+      "  --apply-patch-lines    Move a line that is a diff.patch line number to the new-file line it names",
+      "                         (same file, added line); notes on stderr, and kept is listed on stdout",
       "  --thread <path>        Drop thread repeats; flag near ones for the verifier",
       "  --owner <login>        Owner for --thread; default from config",
       "  --held-from <run-ids>  Drop or flag repeats of those runs' held findings; several",
@@ -19833,6 +19838,7 @@ var COMMAND_HELP = {
       "  --tie-breaks <path>    reconcile's output, with the rulings it applied",
       '  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]',
       `                         or {"held": [...]}; verdict one of ${HELD_VERDICTS.join(", ")}`,
+      "                         Warns on stderr, and still records, when a path is in neither --files nor --candidates",
       "  --body-findings <path> One verified simplification from check-simplification; requires --diff-file",
       "  --carried-from <run>   Validate findings carried by `carry` (needs --head; run in its clone)",
       "  --carry <path>         carry.json of carry-candidates (needs --head)",
@@ -23004,9 +23010,13 @@ function recordCommand(argv) {
   let manifestRepository = null;
   let scope;
   let complexity = null;
+  const knownPaths = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
       const manifest = JSON.parse(readFileSync13(filesFile, "utf8"));
+      if (Array.isArray(manifest.files)) {
+        for (const file2 of manifest.files) if (typeof file2?.path === "string") knownPaths.add(file2.path);
+      }
       if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
         pullNumber = manifest.pullNumber;
       }
@@ -23077,6 +23087,21 @@ function recordCommand(argv) {
         if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
       });
       held = list2;
+      for (const candidate of candidates) knownPaths.add(candidate.path);
+      if (knownPaths.size > 0) {
+        for (const entry of held) {
+          if (!knownPaths.has(entry.path)) {
+            console.error(`Held entry ${entry.path}:${entry.line} matches no changed file or candidate; later --held-from runs will not match it.`);
+            continue;
+          }
+          try {
+            const content = readFileSync13(entry.path, "utf8");
+            const lines2 = content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
+            if (entry.line > lines2) console.error(`Held entry ${entry.path}:${entry.line} is past the end of the file (${lines2} lines).`);
+          } catch {
+          }
+        }
+      }
     } catch (error) {
       console.error(`Cannot read held findings from ${heldFile}: ${error.message}`);
       return 2;
@@ -24412,7 +24437,19 @@ function checkCandidatesCommand(argv) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
     }
-    const anchors = candidates.map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) }));
+    const applyPatchLines = argv.includes("--apply-patch-lines");
+    const anchors = candidates.map((candidate, index) => {
+      let anchor = anchorFor(hunks, candidate);
+      if (applyPatchLines && !anchor.ok && anchor.kind !== "stale-consumer" && anchor.patchLine?.path === anchor.path) {
+        const from = candidate.line;
+        const to = anchor.patchLine.line;
+        candidate.line = to;
+        raw[index]["line"] = to;
+        console.error(`Re-anchored ${candidate.candidateId} from ${anchor.path}:${from} (a diff.patch line) to ${anchor.path}:${to}`);
+        anchor = anchorFor(hunks, candidate);
+      }
+      return { candidate, anchor };
+    });
     const suggestions = anchors.filter(({ anchor }) => anchor.ok && ordinaryFindingHint(anchor) !== null).map(({ candidate, anchor }) => ({
       candidateId: candidate.candidateId,
       path: candidate.path,
@@ -24452,7 +24489,7 @@ function checkCandidatesCommand(argv) {
       console.error("--held-from needs --head <sha>, the head being reviewed.");
       return 2;
     }
-    if (!argv.includes("--thread") && heldFrom === null) {
+    if (!argv.includes("--thread") && heldFrom === null && !applyPatchLines) {
       console.log(
         JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length }, ...extra }, null, 2)
       );

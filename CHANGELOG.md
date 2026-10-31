@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `check-candidates --apply-patch-lines` moves a candidate whose line is
+  really a `diff.patch` line number to the new-file line it names, when that
+  is an added line of the same file, prints one note per candidate moved, and
+  lists `kept` on stdout. (#227)
+
 ### Fixed
+
+- When `check-candidates` rejects a line that is a `diff.patch` line number of
+  the same file, the reason now says which new-file line it is and to use it.
+  (#227)
+
+- `record --held` warns on stderr, and still records the entry, when a held
+  entry's path is in neither `--files` nor `--candidates`, or its line is past
+  the end of the file in the working tree: a later `--held-from` run could not
+  match it. (#226)
 
 - On an interdiff or incremental scope, `diff` assesses complexity and the
   human-review note over the files that scope reads, so a follow-up that edits

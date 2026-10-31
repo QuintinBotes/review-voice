@@ -357,6 +357,9 @@ A candidate whose `intent_ref` names no statement in it is listed under
 If it exits 1, send **only the failing candidates** back to the analyst once,
 including each reported `reason`, and ask it to re-anchor, fix the
 `intent_ref`, or withdraw each one.
+When a reason says a line of `diff.patch` is a line of the same file, the
+analyst confused patch and file line numbers; `--apply-patch-lines` moves such
+candidates to the suggested line and lists them under `kept`.
 Run the same check again. Drop candidates that still fail and say the dropped
 count once after the findings. Never correct an anchor by hand.
 
@@ -936,7 +939,7 @@ stray directory and another project's notes took the reviewed count from 11 to
   Pass every candidate that was held back rather than reported with
   `--held <file>` (an array of `{path, line, verdict, source, reason, text}`, verdict
   one of `partly`, `refuted`, `unverified`, `repeat`, `below-gate`,
-  `challenge-partly`, `challenge-refuted`): the
+  `challenge-partly`, `challenge-refuted`; a path in neither `--files` nor `--candidates` is warned about on stderr and still recorded): the
   `droppedAsRepeat` from step 2 as `repeat`, any cross-check result of PARTLY or
   REFUTED, each `belowGate` entry from step 4 as `below-gate`, each
   `unverified` entry from step 4 as `unverified`, and every `challengeHeld[]`

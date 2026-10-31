@@ -2687,9 +2687,13 @@ function recordCommand(argv: string[]): number {
   let manifestRepository: string | null = null;
   let scope: ReviewScope | undefined;
   let complexity: ComplexityAssessment | null = null;
+  const knownPaths = new Set<string>();
   if (filesFile !== null) {
     try {
       const manifest = JSON.parse(readFileSync(filesFile, 'utf8')) as Record<string, unknown>;
+      if (Array.isArray(manifest.files)) {
+        for (const file of manifest.files) if (typeof file?.path === 'string') knownPaths.add(file.path);
+      }
       if (Number.isInteger(manifest.pullNumber) && (manifest.pullNumber as number) > 0) {
         pullNumber = manifest.pullNumber as number;
       }
@@ -2777,6 +2781,25 @@ function recordCommand(argv: string[]): number {
         if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
       });
       held = list as HeldFinding[];
+      // A path no candidate or diff file carries can never match the real anchor
+      // on a later --held-from run. Warn, but record it: the reason still counts.
+      for (const candidate of candidates) knownPaths.add(candidate.path);
+      if (knownPaths.size > 0) {
+        for (const entry of held) {
+          if (!knownPaths.has(entry.path)) {
+            console.error(`Held entry ${entry.path}:${entry.line} matches no changed file or candidate; later --held-from runs will not match it.`);
+            continue;
+          }
+          // shortcut: the line count is read only when the file is in the working tree.
+          try {
+            const content = readFileSync(entry.path, 'utf8');
+            const lines = content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
+            if (entry.line > lines) console.error(`Held entry ${entry.path}:${entry.line} is past the end of the file (${lines} lines).`);
+          } catch {
+            // Not in the working tree: the line cannot be checked, so say nothing.
+          }
+        }
+      }
     } catch (error) {
       console.error(`Cannot read held findings from ${heldFile}: ${(error as Error).message}`);
       return 2;
@@ -4570,7 +4593,21 @@ function checkCandidatesCommand(argv: string[]): number {
       return 2;
     }
 
-    const anchors = candidates.map((candidate) => ({ candidate, anchor: anchorFor(hunks, candidate) }));
+    // --apply-patch-lines: a line that is really a diff.patch line number moves
+    // to the new-file line it names, when that is an added line of the same file.
+    const applyPatchLines = argv.includes('--apply-patch-lines');
+    const anchors = candidates.map((candidate, index) => {
+      let anchor = anchorFor(hunks, candidate);
+      if (applyPatchLines && !anchor.ok && anchor.kind !== 'stale-consumer' && anchor.patchLine?.path === anchor.path) {
+        const from = candidate.line;
+        const to = anchor.patchLine.line;
+        (candidate as { line: number }).line = to;
+        (raw[index] as Record<string, unknown>)['line'] = to;
+        console.error(`Re-anchored ${candidate.candidateId} from ${anchor.path}:${from} (a diff.patch line) to ${anchor.path}:${to}`);
+        anchor = anchorFor(hunks, candidate);
+      }
+      return { candidate, anchor };
+    });
     // A stale consumer that passes but sits on a line this diff changed. Not a
     // failure: the finding is sound, it is only posted in the body when it
     // could be inline.
@@ -4620,7 +4657,7 @@ function checkCandidatesCommand(argv: string[]): number {
       return 2;
     }
 
-    if (!argv.includes('--thread') && heldFrom === null) {
+    if (!argv.includes('--thread') && heldFrom === null && !applyPatchLines) {
       console.log(
         JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length }, ...extra }, null, 2),
       );
