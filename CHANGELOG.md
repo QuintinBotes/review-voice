@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the end of the file in the working tree: a later `--held-from` run could not
   match it. (#226)
 
+- On an interdiff or incremental scope, `diff` assesses complexity and the
+  human-review note over the files that scope reads, so a follow-up that edits
+  one documentation file is no longer flagged for a sensitive path an earlier
+  commit changed. The verdict still caps the pull request through its prior
+  runs (ADR 0012, sticky). (#225)
+
 ## [1.20.0] - 2026-10-29
 
 ### Fixed

@@ -695,14 +695,20 @@ function markedGenerated(acquired: EmittedDiff): Set<string> {
   }
 }
 
-function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
+export function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
   // Assessed here, from the diff the analyst will read, so the manifest and
   // the summary say the same thing and `record --files` carries it forward.
   const config = repositoryConfig();
   for (const warning of config?.warnings ?? []) console.error(`Warning: ${warning}`);
   const generated = markedGenerated(acquired);
-  const assessed = assessComplexity(acquired.diff, acquired.files ?? [], config?.humanReview, generated);
-  const production = productionPaths(acquired.files ?? [], config?.humanReview, generated);
+  // A narrowed review is flagged for what it reads: files earlier commits
+  // changed are not this run's. The pull request stays flagged through the
+  // prior runs (ADR 0012, sticky).
+  const scope = acquired.scope;
+  const narrowed = scope !== undefined && (scope.kind === 'interdiff' || scope.kind === 'incremental') ? scope.files : null;
+  const scopedFiles = (acquired.files ?? []).filter((file) => narrowed === null || narrowed.includes(file.path));
+  const assessed = assessComplexity(acquired.diff, scopedFiles, config?.humanReview, generated);
+  const production = productionPaths(scopedFiles, config?.humanReview, generated);
   const structure = collectStructure(process.cwd(), acquired, production, config?.structure);
   const complexity = applyStructureHumanReviewCap(assessed, structure, config?.humanReview);
   const result: EmittedDiff = {

@@ -40,6 +40,9 @@ review says so, and why, so a human picks it up.**
   `**/auth/**` and `**/security/**` (amended 2026-10-06: and
   `.review-voice/**`); a configured list replaces them, and an empty list
   turns the signal off.
+- **Scoped like the review.** On an interdiff or incremental scope the
+  assessment covers the files that scope reads, not the whole pull request;
+  the sticky rule below carries an earlier run's high flag forward.
 - **Recorded with the run**, beside its scope, from the manifest. `verdict`
   and `post` read it from the recorded run, never from stdin or a flag, for the
   same reason the scope is stored: the run must keep saying what it read.
