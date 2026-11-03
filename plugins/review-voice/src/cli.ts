@@ -1805,8 +1805,10 @@ function scoreCommand(argv: string[]): number {
     // A file that parses to nothing is the failure mode this flag exists to
     // prevent. Reading zero verifications and scoring anyway is exactly the
     // silent fallback to the analyst's self-report that the gate was changed
-    // to stop, and it produced a clean exit 0 while doing it.
-    if (verifications.size === 0) {
+    // to stop, and it produced a clean exit 0 while doing it. With no
+    // candidates there is nothing to verify, so an empty file is the honest
+    // answer and a clean review runs the same pipeline (#232).
+    if (verifications.size === 0 && candidates.length > 0) {
       console.error(
         `${verificationFlag} contained no verifications. Expected an array, or an object with ` +
           `one of: ${VERDICT_KEYS.join(', ')}, each entry carrying candidate_id. ` +
