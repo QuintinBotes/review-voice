@@ -22331,7 +22331,7 @@ function scoreCommand(argv) {
       console.error(`Cannot read ${verificationFlag}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
     }
-    if (verifications.size === 0) {
+    if (verifications.size === 0 && candidates.length > 0) {
       console.error(
         `${verificationFlag} contained no verifications. Expected an array, or an object with one of: ${VERDICT_KEYS.join(", ")}, each entry carrying candidate_id. Refusing to score on the analyst self-report while a verification file was supplied.`
       );
