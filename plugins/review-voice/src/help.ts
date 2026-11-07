@@ -465,6 +465,8 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '                                          "Heads up: <checks> need a rerun."',
       '  review.human_review.cap_approval: true  false lets a clean complex change approve;',
       '                                          the local note stays',
+      '  verdict.never_approve: false            true turns every APPROVE into COMMENT;',
+      '                                          approval is left to a person',
       '  verdict.carry_approval_on_unchanged: false',
       '                                          true returns action "carry" and posts nothing',
       '                                          when a clean approval\'s scope is unchanged and',

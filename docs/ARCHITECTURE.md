@@ -1023,7 +1023,8 @@ head refuses (exit 3); a standing owner approval on an unchanged scope is
 carried when `carry_approval_on_unchanged` is on (nothing is posted); CI that
 needs a rerun holds every event (exit 6, ADR 0013) unless `ci_needs_rerun` is
 `annotate`; carried candidates not reviewed since cap an approval at COMMENT
-(ADR 0017); a high-complexity change caps an approval at COMMENT (ADR 0012)
+(ADR 0017); `verdict.never_approve`, when on, caps an approval at COMMENT; a
+high-complexity change caps an approval at COMMENT (ADR 0012)
 unless `review.human_review.cap_approval` is false; then red CI caps an
 approval at COMMENT, and pending CI makes an approval wait (exit 4). COMMENT and
 REQUEST_CHANGES never wait on CI. `verdict --recheck` asks only whether the
@@ -1036,7 +1037,7 @@ event changed, 4 CI running, 5 CI red, 6 CI needs a rerun, 8 the thread changed
 **Verdict policies** (ADR 0028) turn the pending, red, needs-rerun, complexity
 and unchanged-scope rules into `verdict:` settings, whose defaults are the
 rules above: `ci_pending` (`wait` or `proceed`), `ci_red` (`cap` or
-`annotate`), `ci_needs_rerun` (`hold` or `annotate`),
+`annotate`), `ci_needs_rerun` (`hold` or `annotate`), `never_approve`,
 `carry_approval_on_unchanged` and `recheck_thread_before_post`. `annotate`
 keeps the event and appends one line naming at most five checks to the body.
 Check names are flattened to inline code so no markdown or mention renders.

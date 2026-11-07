@@ -1313,7 +1313,8 @@ var DEFAULT_VERDICT_POLICY = Object.freeze({
   ciNeedsRerun: "hold",
   capApproval: true,
   carryApprovalOnUnchanged: false,
-  recheckThreadBeforePost: false
+  recheckThreadBeforePost: false,
+  neverApprove: false
 });
 function verdictPolicy(policy) {
   return { ...DEFAULT_VERDICT_POLICY, ...policy };
@@ -1390,6 +1391,27 @@ function decide(input) {
       return done({ event: "COMMENT", action: "refuse", reasons: [...reasons, why], exitCode: 2, cappedByCi: false });
     }
     return done({ event: "COMMENT", action: "post", reasons: [...reasons, why], exitCode: 0, cappedByCi: false }, annotations);
+  }
+  if (policy.neverApprove && input.mapped === "APPROVE") {
+    if (input.recheck) {
+      return done({
+        event: "COMMENT",
+        action: "refuse",
+        reasons: [...reasons, "there is no approval to re-check under never_approve"],
+        exitCode: 2,
+        cappedByCi: false
+      });
+    }
+    return done(
+      {
+        event: "COMMENT",
+        action: "post",
+        reasons: [...reasons, "approval is left to a person by policy"],
+        exitCode: 0,
+        cappedByCi: false
+      },
+      annotations
+    );
   }
   if (input.needsHuman === true && input.mapped === "APPROVE") {
     if (!policy.capApproval) {
@@ -1492,7 +1514,7 @@ function summaryLine(event, posted, cappedBy) {
   if (cappedBy === "held") {
     return count3 === 0 ? "Not approving yet." : `${plural(count3, "nit")}; not approving yet.`;
   }
-  if (cappedBy === "complexity") {
+  if (cappedBy === "complexity" || cappedBy === "policy") {
     return count3 === 0 ? "No problems found." : `${plural(count3, "nit")}.`;
   }
   if (event === "APPROVE") {
@@ -14506,6 +14528,7 @@ function readVerdictPolicy(block, result) {
   policy.ciNeedsRerun = choice("ci_needs_rerun", ["hold", "annotate"], DEFAULT_VERDICT_POLICY.ciNeedsRerun);
   policy.carryApprovalOnUnchanged = enabled("carry_approval_on_unchanged", DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
   policy.recheckThreadBeforePost = enabled("recheck_thread_before_post", DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
+  policy.neverApprove = enabled("never_approve", DEFAULT_VERDICT_POLICY.neverApprove);
 }
 var TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 function readQueue(block, result) {
@@ -17928,7 +17951,7 @@ async function computeVerdict(options) {
       // One plain summary line whichever cap applies: CI first, then a held
       // finding or an uncovered carry, then complexity. None of them names
       // human review or the carry in the posted body.
-      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || run.carry?.covered === false && planned.mapped === "APPROVE" ? "held" : needsHuman && policy.capApproval && planned.mapped === "APPROVE" ? "complexity" : null
+      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || run.carry?.covered === false && planned.mapped === "APPROVE" ? "held" : policy.neverApprove && planned.mapped === "APPROVE" ? "policy" : needsHuman && policy.capApproval && planned.mapped === "APPROVE" ? "complexity" : null
     });
     key2 = idempotencyKey(options.repository, options.pullNumber, full2);
     const sent = sentInline(options.db, options.repository, options.pullNumber, head);
@@ -19821,6 +19844,8 @@ var COMMAND_HELP = {
       '                                          "Heads up: <checks> need a rerun."',
       "  review.human_review.cap_approval: true  false lets a clean complex change approve;",
       "                                          the local note stays",
+      "  verdict.never_approve: false            true turns every APPROVE into COMMENT;",
+      "                                          approval is left to a person",
       "  verdict.carry_approval_on_unchanged: false",
       '                                          true returns action "carry" and posts nothing',
       "                                          when a clean approval's scope is unchanged and",

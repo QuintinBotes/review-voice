@@ -747,6 +747,7 @@ test('config: each setting is read', () => {
       '  ci_needs_rerun: annotate',
       '  carry_approval_on_unchanged: true',
       '  recheck_thread_before_post: true',
+      '  never_approve: false',
       'review:',
       '  human_review:',
       '    cap_approval: false',
@@ -760,6 +761,7 @@ test('config: each setting is read', () => {
     capApproval: false,
     carryApprovalOnUnchanged: true,
     recheckThreadBeforePost: true,
+    neverApprove: false,
   });
   assert.deepEqual(config.warnings, []);
 });
@@ -789,7 +791,7 @@ test('config: an invalid value warns and keeps that setting\'s default', () => {
 test('help for verdict and post names the settings and exit 8', () => {
   const help = (command) => execFileSync(process.execPath, [bundle, command, '--help'], { encoding: 'utf8' });
   const verdictHelp = help('verdict');
-  for (const key of ['ci_pending', 'ci_red', 'ci_needs_rerun', 'cap_approval', 'carry_approval_on_unchanged']) {
+  for (const key of ['ci_pending', 'ci_red', 'ci_needs_rerun', 'cap_approval', 'carry_approval_on_unchanged', 'never_approve']) {
     assert.ok(verdictHelp.includes(key), `verdict --help: ${key}`);
   }
   const postHelp = help('post');

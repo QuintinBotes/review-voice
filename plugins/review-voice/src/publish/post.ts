@@ -414,9 +414,11 @@ export async function computeVerdict(
         ? 'ci'
         : planned.heldBackApproval || (run.carry?.covered === false && planned.mapped === 'APPROVE')
           ? 'held'
-          : needsHuman && policy.capApproval && planned.mapped === 'APPROVE'
-            ? 'complexity'
-            : null,
+          : policy.neverApprove && planned.mapped === 'APPROVE'
+            ? 'policy'
+            : needsHuman && policy.capApproval && planned.mapped === 'APPROVE'
+              ? 'complexity'
+              : null,
     });
     // Keyed on the whole review, so the same review is refused a second time
     // even once its comments are all on the pull request. Annotations are left

@@ -280,6 +280,8 @@ export interface VerdictPolicy {
   capApproval: boolean;
   carryApprovalOnUnchanged: boolean;
   recheckThreadBeforePost: boolean;
+  /** `verdict.never_approve`: every review is advisory, so approval is left to a person. */
+  neverApprove: boolean;
 }
 
 export const DEFAULT_VERDICT_POLICY: Readonly<VerdictPolicy> = Object.freeze({
@@ -289,6 +291,7 @@ export const DEFAULT_VERDICT_POLICY: Readonly<VerdictPolicy> = Object.freeze({
   capApproval: true,
   carryApprovalOnUnchanged: false,
   recheckThreadBeforePost: false,
+  neverApprove: false,
 });
 
 export function verdictPolicy(policy: Partial<VerdictPolicy> | undefined): VerdictPolicy {
@@ -472,6 +475,33 @@ export function decide(input: {
     return done({ event: 'COMMENT', action: 'post', reasons: [...reasons, why], exitCode: 0, cappedByCi: false }, annotations);
   }
 
+  // An advisory posture leaves every approval to a person. It sits after the
+  // carry, needs-rerun and uncovered-carry guards, so those still win, and
+  // before the complexity cap, so this reason is the one recorded when both
+  // apply. Before the CI guard too, so pending CI cannot make the head wait
+  // for an approval that will never be sent.
+  if (policy.neverApprove && input.mapped === 'APPROVE') {
+    if (input.recheck) {
+      return done({
+        event: 'COMMENT',
+        action: 'refuse',
+        reasons: [...reasons, 'there is no approval to re-check under never_approve'],
+        exitCode: 2,
+        cappedByCi: false,
+      });
+    }
+    return done(
+      {
+        event: 'COMMENT',
+        action: 'post',
+        reasons: [...reasons, 'approval is left to a person by policy'],
+        exitCode: 0,
+        cappedByCi: false,
+      },
+      annotations,
+    );
+  }
+
   // Before the CI guard, so pending CI cannot turn a capped approval into a
   // wait for an approval that will never be sent (docs/adr/0012).
   if (input.needsHuman === true && input.mapped === 'APPROVE') {
@@ -575,7 +605,7 @@ function plural(count: number, word: string): string {
 export function summaryLine(
   event: ReviewEvent,
   posted: readonly ReviewFinding[],
-  cappedBy: 'ci' | 'held' | 'complexity' | null,
+  cappedBy: 'ci' | 'held' | 'complexity' | 'policy' | null,
 ): string {
   const count = posted.length;
   const highest = [...posted]
@@ -590,7 +620,7 @@ export function summaryLine(
   if (cappedBy === 'held') {
     return count === 0 ? 'Not approving yet.' : `${plural(count, 'nit')}; not approving yet.`;
   }
-  if (cappedBy === 'complexity') {
+  if (cappedBy === 'complexity' || cappedBy === 'policy') {
     return count === 0 ? 'No problems found.' : `${plural(count, 'nit')}.`;
   }
   if (event === 'APPROVE') {
@@ -645,7 +675,7 @@ export function buildPayload(input: {
   head: string;
   event: ReviewEvent;
   planned: PlannedFindings;
-  cappedBy: 'ci' | 'held' | 'complexity' | null;
+  cappedBy: 'ci' | 'held' | 'complexity' | 'policy' | null;
   /** Optional advice that was separately verified but never enters the verdict. */
   bodyFindings?: readonly VerifiedSimplification[];
 }): ReviewPayload {
