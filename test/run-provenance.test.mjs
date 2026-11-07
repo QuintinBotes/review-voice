@@ -355,6 +355,61 @@ test('status appends the origin to the end of the last-review line, and leaves a
   assert.match(cli(data, ['status']).stdout, /^last review {6}0 finding\(s\): none; origin interactive \(not-independent\)$/m);
 });
 
+// ---- carried runs ----------------------------------------------------------
+
+/** A repository with two commits, so a run at the first head can be carried to the second. */
+function twoCommits(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-provenance-repo-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args) => spawnSync('git', args, { cwd: dir, encoding: 'utf8' }).stdout.trim();
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Test');
+  git('config', 'commit.gpgsign', 'false');
+  writeFileSync(join(dir, 'a.txt'), 'one\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'one');
+  const first = git('rev-parse', 'HEAD');
+  writeFileSync(join(dir, 'a.txt'), 'two\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'two');
+  return { dir, first, second: git('rev-parse', 'HEAD') };
+}
+
+test('a carried run keeps the provenance of the run that produced its findings, not the caller\'s', (t) => {
+  const data = dataDir(t);
+  const repo = twoCommits(t);
+  const env = { ...process.env, REVIEW_VOICE_DATA_DIR: data };
+  delete env.REVIEW_VOICE_FAKE_AGENTS;
+  const record = (args) => spawnSync(process.execPath, [bundle, 'record', '--repository', 'acme/api', ...args], { encoding: 'utf8', env, input: CLEAN, cwd: repo.dir });
+  const stored = (result) => {
+    assert.equal(result.status, 0, result.stderr);
+    return inStore(data, (db) => runDetail(db, JSON.parse(result.stdout).reviewRunId));
+  };
+
+  // The slash command reviewed the first head inside the host session.
+  const source = record(['--head', repo.first]);
+  const sourceId = JSON.parse(source.stdout).reviewRunId;
+  assert.equal(stored(source).provenance.origin, 'interactive');
+
+  // The driver carries that review to the second head. No agent ran, so the caller's flags would describe a review that never happened.
+  const carried = stored(record(['--head', repo.second, '--carried-from', sourceId, '--origin', 'driver', '--mode', 'thorough', '--claude-version', '9.9.9']));
+  assert.deepEqual(carried.provenance, {
+    origin: 'interactive',
+    independence: 'not-independent',
+    pluginVersion: PLUGIN,
+    claudeVersion: null,
+    mode: null,
+    policyVersions: [],
+  });
+
+  // A source from before provenance existed has nothing to keep, so the caller's flags stand.
+  inStore(data, (db) => db.prepare('UPDATE review_runs SET provenance_json = NULL WHERE review_run_id = ?').run(sourceId));
+  const fallback = stored(record(['--head', repo.second, '--carried-from', sourceId, '--origin', 'watch', '--mode', 'fast']));
+  assert.equal(fallback.provenance.origin, 'watch');
+  assert.equal(fallback.provenance.mode, 'fast');
+});
+
 test('the review_run_recorded audit row carries the origin', (t) => {
   const data = dataDir(t);
   recordedBy(data, ['--origin', 'action']);

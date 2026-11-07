@@ -20084,7 +20084,8 @@ var COMMAND_HELP = {
       "  --origin <driver|interactive|watch|action>",
       "                         Where the run came from (default interactive, the slash command).",
       "                         Stored with an independence label derived from it alone: interactive",
-      "                         is not-independent, every other origin independent. Anything else exits 2",
+      "                         is not-independent, every other origin independent. Anything else exits 2.",
+      "                         With --carried-from, the source run's provenance is kept instead",
       "  --claude-version <text> The Claude Code version that ran the agents; kept only when it is 1 to 100",
       "                         letters, digits, spaces and . - ( ), else stored as unknown",
       "  --mode <fast|standard|thorough>",
@@ -23518,6 +23519,7 @@ function recordCommand(argv) {
   try {
     let carried;
     let carry2;
+    let carriedProvenance = null;
     const carriedFrom = flag(argv, "--carried-from");
     if (carriedFrom !== null) {
       const head = flag(argv, "--head");
@@ -23535,8 +23537,10 @@ function recordCommand(argv) {
           return 2;
         }
         carried = { runId: carriedFrom, findings: result.carried };
-        const prior = runDetail(db, carriedFrom)?.carry ?? null;
+        const source = runDetail(db, carriedFrom);
+        const prior = source?.carry ?? null;
         if (prior !== null && !prior.covered) carry2 = { ...prior, inheritedFrom: prior.inheritedFrom ?? carriedFrom };
+        carriedProvenance = source?.provenance ?? null;
       } catch (error) {
         console.error(error.message);
         return 2;
@@ -23616,7 +23620,7 @@ function recordCommand(argv) {
       ...carry2 === void 0 ? {} : { carry: carry2 },
       followUps,
       stages,
-      provenance: { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode }
+      provenance: carriedProvenance === null ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode } : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode }
     });
     const warning = shallowPassWarning(stages, findings.length);
     console.log(

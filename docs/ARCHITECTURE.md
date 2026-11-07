@@ -415,7 +415,10 @@ command) and the active approved policy rows at record time, the same rows
 `active_policy_versions_json` holds. The label is derived from `origin` alone
 and recomputed on every read: `interactive` is `not-independent`, because that
 review ran inside the host session that may have written the change; every
-other origin starts fresh agents on a committed head and is `independent`.
+other origin starts fresh agents on a committed head and is `independent`. A
+run recorded with `--carried-from` keeps the provenance of the run it carries
+from, because nothing re-reviewed those findings; only a source from before
+the column leaves the caller's flags in force.
 `explain` prints it as a `Provenance` line, `status` appends the origin to its
 last-review line, and the review driver report prints the same line. A row
 recorded before the column, or with unreadable JSON, reads as not recorded.

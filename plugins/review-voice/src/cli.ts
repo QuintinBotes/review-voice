@@ -76,6 +76,7 @@ import {
   type CandidateHint,
   type HeldFinding,
   type StageTiming,
+  type RunProvenance,
   ORIGINS,
   PROVENANCE_MODES,
   describeOrigin,
@@ -2904,6 +2905,7 @@ function recordCommand(argv: string[]): number {
   try {
     let carried: { runId: string; findings: CarriedFinding[] } | undefined;
     let carry: CarryMarker | undefined;
+    let carriedProvenance: RunProvenance | null = null;
     const carriedFrom = flag(argv, '--carried-from');
     if (carriedFrom !== null) {
       const head = flag(argv, '--head');
@@ -2927,8 +2929,14 @@ function recordCommand(argv: string[]): number {
           return 2;
         }
         carried = { runId: carriedFrom, findings: result.carried };
-        const prior = runDetail(db, carriedFrom)?.carry ?? null;
+        const source = runDetail(db, carriedFrom);
+        const prior = source?.carry ?? null;
         if (prior !== null && !prior.covered) carry = { ...prior, inheritedFrom: prior.inheritedFrom ?? carriedFrom };
+        // Nothing re-reviewed the carried findings, so the record keeps the
+        // provenance of the run that produced them: a carry by the driver must
+        // not turn an interactive review into an independent one. A source from
+        // before the column has none to keep, and the flags stand.
+        carriedProvenance = source?.provenance ?? null;
       } catch (error) {
         console.error((error as Error).message);
         return 2;
@@ -3029,7 +3037,10 @@ function recordCommand(argv: string[]): number {
       ...(carry === undefined ? {} : { carry }),
       followUps,
       stages,
-      provenance: { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode },
+      provenance:
+        carriedProvenance === null
+          ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode }
+          : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode },
     });
     // Local only: printed here and by `explain`, never part of what is posted.
     const warning = shallowPassWarning(stages, findings.length);
