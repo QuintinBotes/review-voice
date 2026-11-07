@@ -679,7 +679,7 @@ test('spawnReview runs review --json from the bundle in the clone, adding --post
     const result = await spawnReview(script, { configPath: '/abs/watch-config.yaml' })({ ...CALL, clone, post: true, mode: 'fast' });
     assert.deepEqual(result, { exitCode: 0, runId: 'r9', event: 'APPROVE', reviewUrl: null, detail: null, carried: false });
     const first = JSON.parse(readFileSync(seen, 'utf8'));
-    assert.deepEqual(first.argv, ['review', '--pr', '7', '--repository', REPO, '--json', '--expect-head', sha('a'), '--post', '--recheck-thread', '--mode', 'fast']);
+    assert.deepEqual(first.argv, ['review', '--pr', '7', '--repository', REPO, '--json', '--expect-head', sha('a'), '--origin', 'watch', '--post', '--recheck-thread', '--mode', 'fast']);
     assert.equal(first.cwd, realpath(clone));
     assert.equal(first.noCommands, '1', 'repository commands are off by default');
     assert.equal(first.config, '/abs/watch-config.yaml');
@@ -688,7 +688,7 @@ test('spawnReview runs review --json from the bundle in the clone, adding --post
     assert.equal(waiting.exitCode, 4);
     assert.match(waiting.detail, /^waiting on CI/);
     const second = JSON.parse(readFileSync(seen, 'utf8'));
-    assert.deepEqual(second.argv, ['review', '--pr', '7', '--repository', REPO, '--json', '--expect-head', sha('a')]);
+    assert.deepEqual(second.argv, ['review', '--pr', '7', '--repository', REPO, '--json', '--expect-head', sha('a'), '--origin', 'watch']);
     assert.equal(second.noCommands, null, 'watch.run_repository_commands: true leaves them on');
   } finally {
     rmSync(dir, { recursive: true, force: true });

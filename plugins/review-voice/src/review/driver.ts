@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { claudeBin } from '../agents/claude-cli.ts';
 import { ownSignals, readAgentTools, runAgent, stopAll, type AgentResult } from '../agents/runner.ts';
 import { DEFAULT_AGENT_PARALLELISM } from '../agents/types.ts';
 import { seriousNotCarried, type NotCarriedFinding } from '../diff/carry.ts';
@@ -10,7 +11,7 @@ import type { GitHubClient } from '../github/client.ts';
 import { descriptionOf } from '../intent.ts';
 import { blockingContext, type MissingContext } from '../scoring/score.ts';
 import { dataDirectory } from '../store/paths.ts';
-import { heldProblem, type HeldFinding, type StageTiming } from '../store/runs.ts';
+import { describeProvenance, heldProblem, type HeldFinding, type RunProvenance, type StageTiming } from '../store/runs.ts';
 import { parseChallengeVerdicts } from '../verify/challenge.ts';
 import { parseTieBreaks } from '../verify/reconcile.ts';
 import type { Lane, LaneEligibility } from './lanes.ts';
@@ -47,6 +48,8 @@ export interface ReviewOptions {
   expectHead?: string | null | undefined;
   /** `--config`: the config file for the whole run, beating REVIEW_VOICE_CONFIG and the base commit. */
   config?: string | null | undefined;
+  /** Who started the review; `driver` (the default) when a person ran it. See `RunProvenance`. */
+  origin?: 'driver' | 'watch' | 'action' | undefined;
 }
 
 /**
@@ -95,6 +98,8 @@ export interface ReviewReport {
   notes: string[];
   /** Which configuration the run used; null when it stopped before choosing one. */
   configSource: ConfigSource | null;
+  /** What `record` stored about the run; null when nothing was recorded. */
+  provenance: RunProvenance | null;
   error?: string;
 }
 
@@ -120,6 +125,9 @@ interface Run {
   /** The pull request's base commit and branch, as the same response that names the head gave them. */
   pullBase: { sha: string | null; ref: string | null };
   configSource: ConfigSource | null;
+  /** `claude --version`, read on first use; undefined until then, null when it could not be read. */
+  claudeVersion: string | null | undefined;
+  provenance: RunProvenance | null;
   /** The ref the diff was taken against: the merge base, else a readable base. */
   base: string | null;
   summary: Json;
@@ -290,6 +298,8 @@ function account(run: Run, name: string, model: string, result: AgentResult): vo
   stage.models = [...(stage.models ?? []), model];
   stage.seconds = Math.round((stage.seconds + result.seconds) * 100) / 100;
   if (result.costUsd !== null) stage.costUsd = (stage.costUsd ?? 0) + result.costUsd;
+  // Only a count the call reported is added, so an unknown one never becomes zero.
+  if (result.tokens !== undefined) stage.tokens = (stage.tokens ?? 0) + result.tokens;
   const output = isRecord(result.output) ? result.output : {};
   for (const key of ['toolCalls', 'filesRead'] as const) {
     const value = output[key];
@@ -860,6 +870,23 @@ async function recordStage(run: Run): Promise<void> {
   ]);
 }
 
+/**
+ * The first line of `claude --version`, read once per run through the same
+ * binary the agents use, or null when it cannot be run: a missing binary must
+ * not stop a review that only wanted to say which version made it.
+ */
+function claudeVersionOf(run: Run): string | null {
+  if (run.claudeVersion !== undefined) return run.claudeVersion;
+  const env = run.deps.env ?? process.env;
+  try {
+    const out = execFileSync(claudeBin(env), ['--version'], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 });
+    run.claudeVersion = out.split('\n')[0]!.trim() || null;
+  } catch {
+    run.claudeVersion = null;
+  }
+  return run.claudeVersion;
+}
+
 /** Records the run once the head is confirmed, then computes the verdict and posts when asked. */
 async function record(run: Run, extra: string[]): Promise<void> {
   const { sha: now } = await headOf(run);
@@ -888,6 +915,10 @@ async function record(run: Run, extra: string[]): Promise<void> {
       at(run, 'held.json'),
       '--stages',
       at(run, 'stages.json'),
+      '--origin',
+      run.options.origin ?? 'driver',
+      ...(run.plan?.mode === undefined ? [] : ['--mode', run.plan.mode]),
+      ...(claudeVersionOf(run) === null ? [] : ['--claude-version', claudeVersionOf(run)!]),
       ...extra,
     ],
     run.text ?? '',
@@ -896,6 +927,7 @@ async function record(run: Run, extra: string[]): Promise<void> {
   const result = parsed(recorded.stdout);
   run.runId = typeof result['reviewRunId'] === 'string' ? result['reviewRunId'] : null;
   run.findings = list(result['findings']) as unknown as ReviewReport['findings'];
+  run.provenance = isRecord(result['provenance']) ? (result['provenance'] as unknown as RunProvenance) : null;
   for (const warning of Array.isArray(result['warnings']) ? result['warnings'] : []) run.notes.push(String(warning));
 
   const target = ['--repository', run.options.repository, '--pr', String(run.options.pullNumber), '--head', run.head, '--run', run.runId ?? ''];
@@ -951,6 +983,8 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     head: '',
     pullBase: { sha: null, ref: null },
     configSource: null,
+    claudeVersion: undefined,
+    provenance: null,
     base: null,
     summary: {},
     plan: null,
@@ -1039,6 +1073,7 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     stages: run.stages,
     notes: run.notes,
     configSource: run.configSource,
+    provenance: run.provenance,
     ...(error === undefined ? {} : { error }),
   };
 }
@@ -1055,6 +1090,7 @@ export function reportText(report: ReviewReport): string {
     lines.push(`Verdict: ${String(verdict['event'] ?? 'none')} (${String(verdict['action'] ?? '')})`);
   }
   if (report.reviewUrl !== null) lines.push(`${report.posted ? 'Posted' : 'Review'}: ${report.reviewUrl}`);
+  if (report.provenance !== null) lines.push(describeProvenance(report.provenance));
   const source = report.configSource;
   if (source !== null) {
     const where = { flag: `--config ${source.path}`, env: `REVIEW_VOICE_CONFIG ${source.path}`, base: `base commit ${shortRef(source.ref ?? '')}`, default: 'built-in defaults' }[source.kind];

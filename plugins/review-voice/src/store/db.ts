@@ -255,6 +255,14 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (repository, pull_number, head_sha)
   );
   `,
+
+  // v12 - where a run came from and what produced it.
+  //
+  // Null on older rows, which means not recorded rather than independent or
+  // not: the label is derived from the origin, so a row without one has none.
+  `
+  ALTER TABLE review_runs ADD COLUMN provenance_json TEXT;
+  `,
 ];
 
 function migrate(db: Database): void {

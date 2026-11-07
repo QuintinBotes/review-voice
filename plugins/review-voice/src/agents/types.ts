@@ -16,6 +16,11 @@ export interface AgentResult {
   output: unknown;
   costUsd: number | null;
   seconds: number;
+  /**
+   * Input plus output tokens of the call, when the model reported both. Absent
+   * rather than zero when unknown, so a stage never shows a count nobody made.
+   */
+  tokens?: number;
   error?: string;
 }
 

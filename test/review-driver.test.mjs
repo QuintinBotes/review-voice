@@ -18,6 +18,8 @@ import { SCHEMAS } from '../plugins/review-voice/src/review/prompts.ts';
 import { RUNNER_PREAMBLE, schemaForRunner, schemasDir } from '../plugins/review-voice/src/agents/runner.ts';
 import { GitHubClient } from '../plugins/review-voice/src/github/client.ts';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
+import { runDetail } from '../plugins/review-voice/src/store/runs.ts';
+import { pluginVersion } from '../plugins/review-voice/src/version.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const plugin = join(root, 'plugins/review-voice');
@@ -126,13 +128,30 @@ const VERIFIED = { candidate_id: 'cand_001', verified: true, evidence_quality: '
 const confirmed = { candidate_id: 'cand_001', verdict: 'confirmed', line_ok: true, decisive_evidence: ['src/app.ts:3'], reason: '' };
 const refuted = { candidate_id: 'cand_001', verdict: 'refuted', line_ok: true, decisive_evidence: ['src/app.ts:3'], reason: 'Every item gets a qty when it is created.' };
 
-/** Writes the fake agents' canned outputs: `{ 'diff-analyst': [out1, out2], ... }`, an Error for a failed call. */
+/** An answer that also reports a token count, as the fake agent backend's `tokens` field does. */
+class Counted {
+  constructor(tokens, output) {
+    this.tokens = tokens;
+    this.output = output;
+  }
+}
+const withTokens = (tokens, output) => new Counted(tokens, output);
+
+/**
+ * Writes the fake agents' canned outputs: `{ 'diff-analyst': [out1, out2], ... }`, an Error for a failed call,
+ * `withTokens(n, out)` for an answer that reports a token count.
+ */
 function fakes(t, outputs) {
   const dir = mkdtempSync(join(tmpdir(), 'rv-driver-fakes-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const [agent, answers] of Object.entries(outputs)) {
     answers.forEach((answer, index) => {
-      const body = answer instanceof Error ? { error: answer.message } : { output: answer };
+      const body =
+        answer instanceof Error
+          ? { error: answer.message }
+          : answer instanceof Counted
+            ? { output: answer.output, tokens: answer.tokens }
+            : { output: answer };
       writeFileSync(join(dir, `${agent}.${index + 1}.json`), JSON.stringify(body));
     });
   }
@@ -885,4 +904,146 @@ test('S01: when origin is the repository under review, origin/<base> stands in f
   assert.deepEqual(report.configSource, { kind: 'base', ref: 'refs/remotes/origin/main', path: join(report.runDir, 'config.yaml') });
   assert.equal(readFileSync(report.configSource.path, 'utf8'), BASE_CONFIG);
   assert.equal(report.verdict.event, 'COMMENT');
+});
+
+// ---- S02: run provenance and tokens ----------------------------------------
+
+const PLUGIN_VERSION = pluginVersion();
+
+/** The run `record` stored, read back from the review's data directory. */
+function storedRun(data, reviewRunId) {
+  const db = openDatabase(join(data, 'review-voice.db'));
+  try {
+    return runDetail(db, reviewRunId);
+  } finally {
+    db.close();
+  }
+}
+
+/** A stand-in for `claude` that prints `output` for --version and logs each time it is asked. */
+function versionStub(t, output) {
+  const work = mkdtempSync(join(tmpdir(), 'rv-driver-version-'));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const asked = join(work, 'asked');
+  const stub = join(work, 'claude');
+  writeFileSync(
+    stub,
+    `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(asked)}, process.argv.slice(2).join(' ') + '\\n');\nprocess.stdout.write(${JSON.stringify(output)});\n`,
+    { mode: 0o755 },
+  );
+  return { stub, questions: () => (existsSync(asked) ? readFileSync(asked, 'utf8').trim().split('\n') : []) };
+}
+
+const provenanceLine = (report) => reportText(report).split('\n').find((line) => line.startsWith('Provenance'));
+
+test('S02: a claude binary that cannot be run records the driver origin, the plan mode and no Claude version', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const missing = join(tmpdir(), 'rv-no-such-claude-binary', 'claude');
+  const { report, data } = await withEnv({ REVIEW_VOICE_CLAUDE_BIN: missing }, () => review(t, repo, fakes(t, fullRun()), fakeGitHub(repo)));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.plan.mode, 'standard');
+  const expected = { origin: 'driver', independence: 'independent', pluginVersion: PLUGIN_VERSION, claudeVersion: null, mode: 'standard', policyVersions: [] };
+  assert.deepEqual(storedRun(data, report.runId).provenance, expected);
+  assert.deepEqual(report.provenance, expected, 'the JSON report carries what was stored');
+  assert.equal(provenanceLine(report), `Provenance origin driver (independent), plugin ${PLUGIN_VERSION}, claude unknown, mode standard, policy none`);
+});
+
+test('S02: the Claude version is the first line of claude --version, read once per run through REVIEW_VOICE_CLAUDE_BIN', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const { stub, questions } = versionStub(t, '9.9.9 (Stub Code)\nbuilt elsewhere\n');
+  const { report, data } = await withEnv({ REVIEW_VOICE_CLAUDE_BIN: stub }, () => review(t, repo, fakes(t, fullRun()), fakeGitHub(repo)));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(questions(), ['--version'], 'asked once, and only for its version');
+  assert.equal(storedRun(data, report.runId).provenance.claudeVersion, '9.9.9 (Stub Code)');
+  assert.equal(report.provenance.claudeVersion, '9.9.9 (Stub Code)');
+  assert.equal(provenanceLine(report), `Provenance origin driver (independent), plugin ${PLUGIN_VERSION}, claude 9.9.9 (Stub Code), mode standard, policy none`);
+});
+
+test('S02: a version that is empty or outside the allowed pattern records null and does not stop the review', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  for (const printed of ['', '  \n', 'v1; touch /tmp/x\n', 'x'.repeat(101)]) {
+    const { stub } = versionStub(t, printed);
+    const { report, data } = await withEnv({ REVIEW_VOICE_CLAUDE_BIN: stub }, () => review(t, repo, fakes(t, fullRun()), fakeGitHub(repo)));
+    assert.equal(report.exitCode, 0, `${JSON.stringify(printed)}: ${report.error}`);
+    assert.equal(storedRun(data, report.runId).provenance.claudeVersion, null, JSON.stringify(printed));
+  }
+});
+
+test('S02: --origin watch and action reach the record, and a fast plan records fast', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const missing = join(tmpdir(), 'rv-no-such-claude-binary', 'claude');
+  for (const origin of ['watch', 'action']) {
+    const run = await withEnv({ REVIEW_VOICE_CLAUDE_BIN: missing }, () =>
+      review(t, repo, fakes(t, { 'diff-analyst': [{ candidates: [] }] }), fakeGitHub(repo), { origin, mode: 'fast' }),
+    );
+    assert.equal(run.report.exitCode, 0, run.report.error);
+    const { provenance } = storedRun(run.data, run.report.runId);
+    assert.equal(provenance.origin, origin);
+    assert.equal(provenance.independence, 'independent');
+    assert.equal(provenance.mode, 'fast');
+    assert.match(provenanceLine(run.report), new RegExp(`^Provenance origin ${origin} \\(independent\\), plugin .*, mode fast, policy none$`));
+  }
+});
+
+test('review --origin takes watch or action, and nothing else', () => {
+  const run = (args) => spawnSync(process.execPath, [bundle, ...args], { encoding: 'utf8', env: { ...process.env, REVIEW_VOICE_DATA_DIR: mkdtempSync(join(tmpdir(), 'rv-driver-cli-')) } });
+  for (const args of [['review', '--pr', '3', '--origin', 'interactive'], ['review', '--pr', '3', '--origin', 'driver'], ['review', '--pr', '3', '--origin', 'x'], ['review', '--pr', '3', '--origin']]) {
+    const result = run(args);
+    assert.equal(result.status, 2, `${args.join(' ')}: ${result.stderr}`);
+    assert.match(result.stderr, /--origin takes one of watch, action/);
+  }
+  assert.match(run(['review', '--help']).stdout, /--origin <watch\|action>/);
+});
+
+/** Two findings on one head, so the challenge stage calls the challenger twice. */
+const TWO_FINDINGS = {
+  head: APP_BASE.replace('let sum = 0;', 'let sum = 0.0;').replace('item.price;', 'item.price * item.qty;'),
+  minor: { ...CANDIDATE, line: 2, claim: 'The sum starts as a float literal, which hides integer cents.', failure_mode: 'Totals drift by fractions.', evidence: ['src/app.ts:2 starts at 0.0.'] },
+  nit: { ...CANDIDATE, candidate_id: 'cand_002', category: 'style', severity: 'nit', claim: 'The loop body is long enough to want a name.', failure_mode: 'Harder to scan.', evidence: ['src/app.ts:3 is a long line.'] },
+  text: [
+    '[minor] `src/app.ts:2` - The sum starts as a float literal, which hides integer cents.',
+    '[nit] `src/app.ts:3` - The loop body is long enough to want a name.',
+  ].join('\n\n'),
+};
+const verdictFor = (id, line) => ({ verdicts: [{ candidate_id: id, verdict: 'confirmed', line_ok: true, decisive_evidence: [`src/app.ts:${line}`], reason: '' }] });
+const twoFindingRun = (challenger, extra = {}) => ({
+  'diff-analyst': [{ candidates: [TWO_FINDINGS.minor, TWO_FINDINGS.nit] }],
+  'evidence-verifier': [{ verifications: [VERIFIED, { ...VERIFIED, candidate_id: 'cand_002' }] }],
+  challenger,
+  'concise-editor': [{ text: TWO_FINDINGS.text }],
+  ...extra,
+});
+const stageNamed = (stages, name) => stages.find((stage) => stage.name === name);
+
+test('S02: the stage sums the tokens its calls report (1200 + 300 gives 1500), and a stage with none has no tokens key', async (t) => {
+  const repo = repository(t, { 'src/app.ts': TWO_FINDINGS.head });
+  const outputs = twoFindingRun([withTokens(1200, verdictFor('cand_001', 2)), withTokens(300, verdictFor('cand_002', 3))], {
+    'concise-editor': [withTokens(77, { text: TWO_FINDINGS.text })],
+  });
+  const { report, data } = await review(t, repo, fakes(t, outputs), fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.findings.length, 2);
+  assert.equal(stageNamed(report.stages, 'challenge').tokens, 1500);
+  assert.equal(stageNamed(report.stages, 'editor').tokens, 77, 'each stage keeps its own sum');
+  for (const name of ['analyst', 'verifier']) {
+    assert.equal(Object.hasOwn(stageNamed(report.stages, name), 'tokens'), false, `${name} reported no tokens`);
+  }
+
+  const written = JSON.parse(readFileSync(join(report.runDir, 'stages.json'), 'utf8'));
+  assert.equal(stageNamed(written, 'challenge').tokens, 1500);
+  const stored = storedRun(data, report.runId).stages;
+  assert.equal(stageNamed(stored, 'challenge').tokens, 1500, 'and the recorded run keeps it');
+  assert.equal(Object.hasOwn(stageNamed(stored, 'analyst'), 'tokens'), false);
+});
+
+test('S02: a call that reports no tokens adds nothing to its stage, so an unknown count is never zero', async (t) => {
+  const repo = repository(t, { 'src/app.ts': TWO_FINDINGS.head });
+  const some = await review(t, repo, fakes(t, twoFindingRun([withTokens(1200, verdictFor('cand_001', 2)), verdictFor('cand_002', 3)])), fakeGitHub(repo));
+  assert.equal(some.report.exitCode, 0, `${some.report.error} ${JSON.stringify(some.report.notes)}`);
+  assert.equal(stageNamed(some.report.stages, 'challenge').tokens, 1200, 'only the reported count is summed');
+
+  const none = await review(t, repo, fakes(t, twoFindingRun([verdictFor('cand_001', 2), verdictFor('cand_002', 3)])), fakeGitHub(repo));
+  assert.equal(none.report.exitCode, 0, `${none.report.error} ${JSON.stringify(none.report.notes)}`);
+  for (const stage of none.report.stages) assert.equal(Object.hasOwn(stage, 'tokens'), false, `${stage.name} has no tokens key`);
+  for (const stage of storedRun(none.data, none.report.runId).stages) assert.equal(Object.hasOwn(stage, 'tokens'), false, `recorded ${stage.name}`);
 });

@@ -375,6 +375,9 @@ test('a database from before the column migrates and its runs read as unassessed
     // Take the store back to the schema before this column existed (migration 9,
     // so version 8), whichever migrations have been added since.
     const raw = new DatabaseSync(path);
+    // A later migration's column goes too: SQLite has no ADD COLUMN IF NOT EXISTS,
+    // so re-running it over a surviving column would fail.
+    raw.exec('ALTER TABLE review_runs DROP COLUMN provenance_json');
     raw.exec('ALTER TABLE review_runs DROP COLUMN complexity_json');
     raw.exec('UPDATE schema_version SET version = 8');
     raw.close();

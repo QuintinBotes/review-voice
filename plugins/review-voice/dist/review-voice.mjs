@@ -217,6 +217,12 @@ child.on('exit', (code, signal) => {
 function claudeBin(env) {
   return env["REVIEW_VOICE_CLAUDE_BIN"] || "claude";
 }
+var isCount = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+function tokensOf(usage) {
+  if (usage === null || typeof usage !== "object") return void 0;
+  const { input_tokens: input, output_tokens: output } = usage;
+  return isCount(input) && isCount(output) ? input + output : void 0;
+}
 function claudeArguments(spec, addDirs, env) {
   const tools = spec.tools.join(",");
   return [
@@ -256,12 +262,14 @@ function interpretEnvelope(stdout, stderr, code) {
     envelope = null;
   }
   const costUsd = typeof envelope?.total_cost_usd === "number" ? envelope.total_cost_usd : null;
+  const tokens = tokensOf(envelope?.usage);
+  const counted = tokens === void 0 ? {} : { tokens };
   if (code === 0 && envelope !== null && envelope.is_error === false && envelope.structured_output !== void 0) {
-    return { ok: true, output: envelope.structured_output, costUsd };
+    return { ok: true, output: envelope.structured_output, costUsd, ...counted };
   }
   const result = typeof envelope?.result === "string" ? envelope.result : "";
   const detail = firstChars(result) || firstChars(stderr) || firstChars(stdout) || (code === 0 ? "claude returned no structured output" : `claude exited with code ${code}`);
-  return { ok: false, output: null, costUsd, error: detail };
+  return { ok: false, output: null, costUsd, ...counted, error: detail };
 }
 function runClaudeCli(spec, prompt, cwd, addDirs, env) {
   const args = claudeArguments(spec, addDirs, env);
@@ -366,7 +374,15 @@ function runFake(spec, prompt, dir, cwd = "", addDirs = []) {
   }
   const record3 = parsed2 !== null && typeof parsed2 === "object" ? parsed2 : {};
   if (typeof record3["error"] === "string") return { ok: false, output: null, costUsd: null, error: record3["error"] };
-  if ("output" in record3) return { ok: true, output: record3["output"], costUsd: null };
+  if ("output" in record3) {
+    const tokens = record3["tokens"];
+    return {
+      ok: true,
+      output: record3["output"],
+      costUsd: null,
+      ...typeof tokens === "number" && Number.isFinite(tokens) && tokens >= 0 ? { tokens } : {}
+    };
+  }
   return { ok: false, output: null, costUsd: null, error: `${path} has neither "output" nor "error"` };
 }
 
@@ -2552,7 +2568,7 @@ function humanReviewNote(assessment) {
   if (assessment === null || assessment.level !== "high") return null;
   return `Needs a human reviewer: ${assessment.reasons.join("; ")}.${exemptedClause(assessment.sensitiveExempted)}${notCounted(assessment.excluded)} Review Voice will not approve this change; this is not posted to the pull request.`;
 }
-var isCount = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0;
+var isCount2 = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0;
 var isStrings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
 function parseExcluded(value) {
   if (value === void 0) return { ...NOTHING_EXCLUDED };
@@ -2561,7 +2577,7 @@ function parseExcluded(value) {
   const read = (key2) => {
     const count3 = e[key2];
     if (count3 === void 0) return 0;
-    return isCount(count3) ? count3 : null;
+    return isCount2(count3) ? count3 : null;
   };
   const parsed2 = { ...NOTHING_EXCLUDED };
   for (const key2 of Object.keys(NOTHING_EXCLUDED)) {
@@ -2587,11 +2603,11 @@ function parseComplexity(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const v = value;
   if (v["level"] !== "normal" && v["level"] !== "high") return null;
-  if (!isStrings(v["reasons"]) || !isCount(v["decisionPoints"]) || !isStrings(v["sensitivePaths"])) return null;
+  if (!isStrings(v["reasons"]) || !isCount2(v["decisionPoints"]) || !isStrings(v["sensitivePaths"])) return null;
   let densestHunk = null;
   if (v["densestHunk"] !== null) {
     const h = v["densestHunk"];
-    if (typeof h !== "object" || h === null || typeof h["path"] !== "string" || !isCount(h["line"]) || !isCount(h["decisionPoints"])) {
+    if (typeof h !== "object" || h === null || typeof h["path"] !== "string" || !isCount2(h["line"]) || !isCount2(h["decisionPoints"])) {
       return null;
     }
     densestHunk = { path: h["path"], line: h["line"], decisionPoints: h["decisionPoints"] };
@@ -2603,7 +2619,7 @@ function parseComplexity(value) {
   const excluded = parseExcluded(v["excluded"]);
   if (excluded === null) return null;
   const l = v["limits"];
-  if (typeof l !== "object" || l === null || !isCount(l["maxDecisionPoints"]) || !isCount(l["maxHunkDecisionPoints"]) || !isStrings(l["sensitivePaths"])) {
+  if (typeof l !== "object" || l === null || !isCount2(l["maxDecisionPoints"]) || !isCount2(l["maxHunkDecisionPoints"]) || !isStrings(l["sensitivePaths"])) {
     return null;
   }
   const optionalGlobs = (key2) => {
@@ -6843,6 +6859,13 @@ var MIGRATIONS = [
     updated_at TEXT NOT NULL,
     PRIMARY KEY (repository, pull_number, head_sha)
   );
+  `,
+  // v12 - where a run came from and what produced it.
+  //
+  // Null on older rows, which means not recorded rather than independent or
+  // not: the label is derived from the origin, so a row without one has none.
+  `
+  ALTER TABLE review_runs ADD COLUMN provenance_json TEXT;
   `
 ];
 function migrate(db) {
@@ -6879,7 +6902,7 @@ function openDatabase(path = databasePath()) {
 }
 
 // plugins/review-voice/src/store/runs.ts
-import { randomUUID as randomUUID2, createHash as createHash3 } from "node:crypto";
+import { randomUUID as randomUUID3, createHash as createHash3 } from "node:crypto";
 
 // plugins/review-voice/src/store/audit.ts
 import { randomUUID } from "node:crypto";
@@ -6890,6 +6913,107 @@ function recordAudit(db, action, subject, metadata = {}) {
      VALUES (?, ?, ?, ?, ?, ?)`
   ).run(id, action, subject?.type ?? null, subject?.id ?? null, JSON.stringify(metadata), (/* @__PURE__ */ new Date()).toISOString());
   return id;
+}
+
+// plugins/review-voice/src/policy/versions.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+function nextVersion(db, scopeType, scopeKey) {
+  const row = db.prepare("SELECT MAX(version) AS v FROM policies WHERE scope_type = ? AND scope_key = ?").get(scopeType, scopeKey);
+  return (row.v ?? 0) + 1;
+}
+function toYaml(rules, version, scopeKey) {
+  const lines2 = [
+    `policy_version: ${version}`,
+    "scope:",
+    "  type: global",
+    `  key: ${scopeKey}`,
+    "",
+    "suppressed_patterns:"
+  ];
+  const suppress = rules.filter((rule) => rule.kind === "suppress");
+  if (suppress.length === 0) lines2.push("  []");
+  for (const rule of suppress) lines2.push(`  - ${JSON.stringify(rule.rule)}`);
+  return `${lines2.join("\n")}
+`;
+}
+function proposePolicy(db, rules, scopeKey = "owner") {
+  const version = nextVersion(db, "global", scopeKey);
+  const policyId = randomUUID2();
+  const contentYaml = toYaml(rules, version, scopeKey);
+  const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
+  db.prepare(
+    `INSERT INTO policies (policy_id, scope_type, scope_key, version, content_yaml,
+                           active, generated_at, approved_at, provenance_json, evaluation_json)
+     VALUES (?, 'global', ?, ?, ?, 0, ?, NULL, ?, ?)`
+  ).run(policyId, scopeKey, version, contentYaml, generatedAt, JSON.stringify(rules), JSON.stringify({}));
+  recordAudit(db, "policy_proposed", { type: "policy", id: policyId }, { version, ruleCount: rules.length });
+  return {
+    policyId,
+    scopeType: "global",
+    scopeKey,
+    version,
+    contentYaml,
+    active: false,
+    generatedAt,
+    approvedAt: null,
+    provenance: rules
+  };
+}
+function approvePolicy(db, policyId) {
+  const row = db.prepare("SELECT policy_id, scope_key, version, provenance_json FROM policies WHERE policy_id = ?").get(policyId);
+  if (row === void 0) return { ok: false, error: `No policy ${policyId}.` };
+  const rules = JSON.parse(row.provenance_json);
+  const blocked = rules.filter((rule) => !rule.activatable);
+  if (blocked.length > 0) {
+    return {
+      ok: false,
+      error: `${blocked.length} rule(s) have not met the evidence bar: ${blocked.map((r) => r.blockedBecause).join("; ")}`
+    };
+  }
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run("global", row.scope_key);
+    db.prepare("UPDATE policies SET active = 1, approved_at = ? WHERE policy_id = ?").run(
+      (/* @__PURE__ */ new Date()).toISOString(),
+      policyId
+    );
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  recordAudit(db, "policy_approved", { type: "policy", id: policyId }, { version: row.version });
+  return { ok: true, policyId, version: row.version };
+}
+function rollbackTo(db, version, scopeKey = "owner") {
+  const row = db.prepare("SELECT policy_id FROM policies WHERE scope_type = ? AND scope_key = ? AND version = ? AND approved_at IS NOT NULL").get("global", scopeKey, version);
+  if (row === void 0) {
+    return { ok: false, error: `No approved policy at version ${version}.` };
+  }
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run("global", scopeKey);
+    db.prepare("UPDATE policies SET active = 1 WHERE policy_id = ?").run(row.policy_id);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  recordAudit(db, "policy_rolled_back", { type: "policy", id: row.policy_id }, { version });
+  return { ok: true, policyId: row.policy_id, version };
+}
+function listPolicies(db, scopeKey = "owner") {
+  return db.prepare("SELECT * FROM policies WHERE scope_type = ? AND scope_key = ? ORDER BY version DESC").all("global", scopeKey).map((row) => ({
+    policyId: row["policy_id"],
+    scopeType: row["scope_type"],
+    scopeKey: row["scope_key"],
+    version: row["version"],
+    contentYaml: row["content_yaml"],
+    active: row["active"] === 1,
+    generatedAt: row["generated_at"],
+    approvedAt: row["approved_at"],
+    provenance: JSON.parse(row["provenance_json"])
+  }));
 }
 
 // plugins/review-voice/src/diff/carry.ts
@@ -7242,6 +7366,64 @@ function parseCarryMarker(value) {
 }
 var CarryMismatch = class extends Error {
 };
+var ORIGINS = ["driver", "interactive", "watch", "action"];
+var PROVENANCE_MODES = ["fast", "standard", "thorough"];
+function independenceOf(origin) {
+  return origin === "interactive" ? "not-independent" : "independent";
+}
+function describeProvenance(provenance) {
+  if (provenance === null) return "Provenance not recorded";
+  const policy = provenance.policyVersions.length === 0 ? "none" : provenance.policyVersions.map((p) => `${p.scopeType}/${p.scopeKey} v${p.version}`).join(", ");
+  return `Provenance ${describeOrigin(provenance)}, plugin ${provenance.pluginVersion}, claude ${provenance.claudeVersion ?? "unknown"}, mode ${provenance.mode ?? "unknown"}, policy ${policy}`;
+}
+function describeOrigin(provenance) {
+  return `origin ${provenance.origin} (${provenance.independence})`;
+}
+function activePolicyVersions(db) {
+  return listPolicies(db).filter((policy) => policy.active).map((policy) => ({ scopeType: policy.scopeType, scopeKey: policy.scopeKey, policyId: policy.policyId, version: policy.version }));
+}
+var reportedProvenance = /* @__PURE__ */ new Set();
+function storedProvenance(raw, reviewRunId) {
+  if (typeof raw !== "string") return null;
+  const malformed = () => {
+    if (!reportedProvenance.has(reviewRunId)) {
+      reportedProvenance.add(reviewRunId);
+      console.error(`The provenance recorded for run ${reviewRunId} is malformed; reading it as not recorded.`);
+    }
+    return null;
+  };
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return malformed();
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return malformed();
+  const v = value;
+  const origin = ORIGINS.find((known) => known === v["origin"]);
+  const mode = v["mode"] === null ? null : PROVENANCE_MODES.find((known) => known === v["mode"]) ?? void 0;
+  const policies = v["policyVersions"];
+  if (origin === void 0 || mode === void 0 || typeof v["pluginVersion"] !== "string" || !(v["claudeVersion"] === null || typeof v["claudeVersion"] === "string") || !Array.isArray(policies)) {
+    return malformed();
+  }
+  const policyVersions = [];
+  for (const entry of policies) {
+    const p = typeof entry === "object" && entry !== null ? entry : {};
+    if (typeof p["scopeType"] !== "string" || typeof p["scopeKey"] !== "string" || typeof p["policyId"] !== "string" || typeof p["version"] !== "number") {
+      return malformed();
+    }
+    policyVersions.push({ scopeType: p["scopeType"], scopeKey: p["scopeKey"], policyId: p["policyId"], version: p["version"] });
+  }
+  return {
+    origin,
+    // Recomputed, never read back, so a hand-edited row cannot claim independence.
+    independence: independenceOf(origin),
+    pluginVersion: v["pluginVersion"],
+    claudeVersion: v["claudeVersion"],
+    mode,
+    policyVersions
+  };
+}
 var basename = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
 function attribute(finding, hints, taken) {
   const free = hints.filter((hint) => !taken.has(hint));
@@ -7293,7 +7475,7 @@ function recordRun(db, input) {
   if ((input.bodyFindings?.length ?? 0) > 1) {
     throw new Error("A review may record at most one body-only simplification finding.");
   }
-  const reviewRunId = randomUUID2();
+  const reviewRunId = randomUUID3();
   const findings = assignIds(input.output, input.candidates ?? []);
   if (input.carried !== void 0) {
     const { matches, mismatches } = matchCarried(findings, input.carried.findings);
@@ -7303,20 +7485,29 @@ function recordRun(db, input) {
       if (from !== void 0) finding.carriedFrom = { runId: input.carried.runId, findingId: from };
     }
   }
+  const policyVersions = activePolicyVersions(db);
+  const provenance = input.provenance === void 0 ? null : {
+    origin: input.provenance.origin,
+    independence: independenceOf(input.provenance.origin),
+    pluginVersion: input.provenance.pluginVersion,
+    claudeVersion: input.provenance.claudeVersion,
+    mode: input.provenance.mode,
+    policyVersions
+  };
   db.prepare(
     `INSERT INTO review_runs (
        review_run_id, repository, base_ref, head_ref, diff_hash,
        active_policy_versions_json, retrieved_precedents_json,
        candidates_json, output_json, created_at, stages_json,
-       pull_number, scope_json, complexity_json
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       pull_number, scope_json, complexity_json, provenance_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     reviewRunId,
     input.repository,
     input.baseRef,
     input.headRef,
     hashDiff(input.diff),
-    JSON.stringify([]),
+    JSON.stringify(policyVersions),
     JSON.stringify(input.precedents ?? []),
     JSON.stringify((input.candidates ?? []).map(storedCandidate)),
     JSON.stringify({
@@ -7334,13 +7525,15 @@ function recordRun(db, input) {
     JSON.stringify(input.stages ?? []),
     input.pullNumber ?? null,
     input.scope === void 0 ? null : JSON.stringify(input.scope),
-    input.complexity === void 0 || input.complexity === null ? null : JSON.stringify(input.complexity)
+    input.complexity === void 0 || input.complexity === null ? null : JSON.stringify(input.complexity),
+    provenance === null ? null : JSON.stringify(provenance)
   );
   recordAudit(db, "review_run_recorded", { type: "review_run", id: reviewRunId }, {
     repository: input.repository,
-    findingCount: findings.length
+    findingCount: findings.length,
+    ...provenance === null ? {} : { origin: provenance.origin }
   });
-  return { reviewRunId, findings };
+  return { reviewRunId, findings, provenance };
 }
 function storedComplexity(raw) {
   if (typeof raw !== "string") return null;
@@ -7390,6 +7583,7 @@ function runDetail(db, reviewRunId) {
     pullNumber: Number.isInteger(row["pull_number"]) ? row["pull_number"] : null,
     scope: storedScope(row["scope_json"]),
     complexity: storedComplexity(row["complexity_json"]),
+    provenance: storedProvenance(row["provenance_json"], row["review_run_id"]),
     headRef: typeof row["head_ref"] === "string" ? row["head_ref"] : null,
     createdAt: row["created_at"],
     output: parsed2.output,
@@ -7646,7 +7840,7 @@ async function resolvePrior(options) {
 }
 
 // plugins/review-voice/src/store/feedback.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 var FEEDBACK_ACTIONS = [
   "keep",
   "dismiss",
@@ -7687,7 +7881,7 @@ function recordFeedback(db, input) {
   if (input.action === "rewrite" && (input.replacementText ?? "").trim().length === 0) {
     return { ok: false, error: "A rewrite needs the replacement text." };
   }
-  const feedbackId = randomUUID3();
+  const feedbackId = randomUUID4();
   db.prepare(
     `INSERT INTO feedback (feedback_id, review_run_id, finding_id, action, replacement_text, reason, actor, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -16835,9 +17029,9 @@ function checkCitation(candidatePath, cwd, ref, diff) {
 }
 
 // plugins/review-voice/src/sync/state.ts
-import { randomUUID as randomUUID4 } from "node:crypto";
+import { randomUUID as randomUUID5 } from "node:crypto";
 function beginSyncRun(db, repositories) {
-  const id = randomUUID4();
+  const id = randomUUID5();
   db.prepare(
     "INSERT INTO sync_runs (sync_run_id, started_at, finished_at, repositories_json, stats_json, imported) VALUES (?, ?, NULL, ?, ?, 0)"
   ).run(id, (/* @__PURE__ */ new Date()).toISOString(), JSON.stringify(repositories), JSON.stringify({}));
@@ -18739,7 +18933,7 @@ function spawnReview(bundle, options) {
   const graceMs = options.graceMs ?? 1e4;
   const live2 = /* @__PURE__ */ new Map();
   const review2 = ({ repository, pull, clone, post, mode, expectHead, timeoutMs, runRepositoryCommands }) => new Promise((resolve4) => {
-    const args = [bundle, "review", "--pr", String(pull), "--repository", repository, "--json", "--expect-head", expectHead];
+    const args = [bundle, "review", "--pr", String(pull), "--repository", repository, "--json", "--expect-head", expectHead, "--origin", "watch"];
     if (post) args.push("--post", "--recheck-thread");
     if (mode !== void 0) args.push("--mode", mode);
     const env = { ...process.env };
@@ -19166,107 +19360,6 @@ function compileProposals(db) {
     });
   }
   return proposals;
-}
-
-// plugins/review-voice/src/policy/versions.ts
-import { randomUUID as randomUUID5 } from "node:crypto";
-function nextVersion(db, scopeType, scopeKey) {
-  const row = db.prepare("SELECT MAX(version) AS v FROM policies WHERE scope_type = ? AND scope_key = ?").get(scopeType, scopeKey);
-  return (row.v ?? 0) + 1;
-}
-function toYaml(rules, version, scopeKey) {
-  const lines2 = [
-    `policy_version: ${version}`,
-    "scope:",
-    "  type: global",
-    `  key: ${scopeKey}`,
-    "",
-    "suppressed_patterns:"
-  ];
-  const suppress = rules.filter((rule) => rule.kind === "suppress");
-  if (suppress.length === 0) lines2.push("  []");
-  for (const rule of suppress) lines2.push(`  - ${JSON.stringify(rule.rule)}`);
-  return `${lines2.join("\n")}
-`;
-}
-function proposePolicy(db, rules, scopeKey = "owner") {
-  const version = nextVersion(db, "global", scopeKey);
-  const policyId = randomUUID5();
-  const contentYaml = toYaml(rules, version, scopeKey);
-  const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
-  db.prepare(
-    `INSERT INTO policies (policy_id, scope_type, scope_key, version, content_yaml,
-                           active, generated_at, approved_at, provenance_json, evaluation_json)
-     VALUES (?, 'global', ?, ?, ?, 0, ?, NULL, ?, ?)`
-  ).run(policyId, scopeKey, version, contentYaml, generatedAt, JSON.stringify(rules), JSON.stringify({}));
-  recordAudit(db, "policy_proposed", { type: "policy", id: policyId }, { version, ruleCount: rules.length });
-  return {
-    policyId,
-    scopeType: "global",
-    scopeKey,
-    version,
-    contentYaml,
-    active: false,
-    generatedAt,
-    approvedAt: null,
-    provenance: rules
-  };
-}
-function approvePolicy(db, policyId) {
-  const row = db.prepare("SELECT policy_id, scope_key, version, provenance_json FROM policies WHERE policy_id = ?").get(policyId);
-  if (row === void 0) return { ok: false, error: `No policy ${policyId}.` };
-  const rules = JSON.parse(row.provenance_json);
-  const blocked = rules.filter((rule) => !rule.activatable);
-  if (blocked.length > 0) {
-    return {
-      ok: false,
-      error: `${blocked.length} rule(s) have not met the evidence bar: ${blocked.map((r) => r.blockedBecause).join("; ")}`
-    };
-  }
-  db.exec("BEGIN");
-  try {
-    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run("global", row.scope_key);
-    db.prepare("UPDATE policies SET active = 1, approved_at = ? WHERE policy_id = ?").run(
-      (/* @__PURE__ */ new Date()).toISOString(),
-      policyId
-    );
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-  recordAudit(db, "policy_approved", { type: "policy", id: policyId }, { version: row.version });
-  return { ok: true, policyId, version: row.version };
-}
-function rollbackTo(db, version, scopeKey = "owner") {
-  const row = db.prepare("SELECT policy_id FROM policies WHERE scope_type = ? AND scope_key = ? AND version = ? AND approved_at IS NOT NULL").get("global", scopeKey, version);
-  if (row === void 0) {
-    return { ok: false, error: `No approved policy at version ${version}.` };
-  }
-  db.exec("BEGIN");
-  try {
-    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run("global", scopeKey);
-    db.prepare("UPDATE policies SET active = 1 WHERE policy_id = ?").run(row.policy_id);
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-  recordAudit(db, "policy_rolled_back", { type: "policy", id: row.policy_id }, { version });
-  return { ok: true, policyId: row.policy_id, version };
-}
-function listPolicies(db, scopeKey = "owner") {
-  return db.prepare("SELECT * FROM policies WHERE scope_type = ? AND scope_key = ? ORDER BY version DESC").all("global", scopeKey).map((row) => ({
-    policyId: row["policy_id"],
-    scopeType: row["scope_type"],
-    scopeKey: row["scope_key"],
-    version: row["version"],
-    contentYaml: row["content_yaml"],
-    active: row["active"] === 1,
-    generatedAt: row["generated_at"],
-    approvedAt: row["approved_at"],
-    provenance: JSON.parse(row["provenance_json"])
-  }));
 }
 
 // plugins/review-voice/src/sync/watermark.ts
@@ -19988,6 +20081,14 @@ var COMMAND_HELP = {
       "  --stages <path>        Per-stage timings as",
       '                         [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean',
       "                         result from a shallow analyst pass is warned about",
+      "  --origin <driver|interactive|watch|action>",
+      "                         Where the run came from (default interactive, the slash command).",
+      "                         Stored with an independence label derived from it alone: interactive",
+      "                         is not-independent, every other origin independent. Anything else exits 2",
+      "  --claude-version <text> The Claude Code version that ran the agents; kept only when it is 1 to 100",
+      "                         letters, digits, spaces and . - ( ), else stored as unknown",
+      "  --mode <fast|standard|thorough>",
+      "                         The cost mode the review ran in; stored as unknown when omitted",
       "Reads: the validated review on stdin (a run with no findings pipes",
       `  ${DEFAULT_LIMITS.noFindingsResponse}).`,
       "Writes: the run and its findings to the local store; the run id on stdout.",
@@ -20218,7 +20319,7 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice review --pr <n> [--repository owner/repo] [--mode fast|standard|thorough|auto]",
       "                    [--post] [--no-recheck-thread] [--expect-head <sha>] [--out <dir>]",
-      "                    [--since <sha>] [--full] [--config <path>] [--json]",
+      "                    [--since <sha>] [--full] [--config <path>] [--origin watch|action] [--json]",
       "  Run every review stage in a clone of the repository (docs/adr/0022): diff, thread,",
       "  context, evidence, conventions, symbols and follow-ups; the intent, analyst lanes,",
       "  evidence-verifier, tie-breaker, challenger and concise-editor agents through the",
@@ -20241,6 +20342,8 @@ var COMMAND_HELP = {
       "  --full                 review the whole pull request, as for `diff --pr --full`",
       "  --config <path>        read this config file for the whole run; beats an absolute",
       "                         REVIEW_VOICE_CONFIG, which beats the pull request's base commit",
+      "  --origin <watch|action>  who started the review (default driver); recorded with the run, and",
+      "                         `watch` passes it itself",
       "  --json                 print one JSON document instead of the text report",
       "Config: the pull request's own .review-voice/config.yaml is never read. The run uses --config,",
       "  else an absolute REVIEW_VOICE_CONFIG, else .review-voice/config.yaml at the base commit",
@@ -20627,6 +20730,7 @@ function account(run, name, model, result) {
   stage.models = [...stage.models ?? [], model];
   stage.seconds = Math.round((stage.seconds + result.seconds) * 100) / 100;
   if (result.costUsd !== null) stage.costUsd = (stage.costUsd ?? 0) + result.costUsd;
+  if (result.tokens !== void 0) stage.tokens = (stage.tokens ?? 0) + result.tokens;
   const output = isRecord3(result.output) ? result.output : {};
   for (const key2 of ["toolCalls", "filesRead"]) {
     const value = output[key2];
@@ -21141,6 +21245,17 @@ async function recordStage(run) {
     ...run.followUps ? ["--follow-ups", at(run, "verification.json")] : []
   ]);
 }
+function claudeVersionOf(run) {
+  if (run.claudeVersion !== void 0) return run.claudeVersion;
+  const env = run.deps.env ?? process.env;
+  try {
+    const out = execFileSync12(claudeBin(env), ["--version"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15e3 });
+    run.claudeVersion = out.split("\n")[0].trim() || null;
+  } catch {
+    run.claudeVersion = null;
+  }
+  return run.claudeVersion;
+}
 async function record2(run, extra) {
   const { sha: now } = await headOf(run);
   if (now !== run.head) throw new Stop(3, `The head moved to ${now} during the review; nothing was recorded.`);
@@ -21168,6 +21283,10 @@ async function record2(run, extra) {
       at(run, "held.json"),
       "--stages",
       at(run, "stages.json"),
+      "--origin",
+      run.options.origin ?? "driver",
+      ...run.plan?.mode === void 0 ? [] : ["--mode", run.plan.mode],
+      ...claudeVersionOf(run) === null ? [] : ["--claude-version", claudeVersionOf(run)],
       ...extra
     ],
     run.text ?? "",
@@ -21176,6 +21295,7 @@ async function record2(run, extra) {
   const result = parsed(recorded.stdout);
   run.runId = typeof result["reviewRunId"] === "string" ? result["reviewRunId"] : null;
   run.findings = list(result["findings"]);
+  run.provenance = isRecord3(result["provenance"]) ? result["provenance"] : null;
   for (const warning of Array.isArray(result["warnings"]) ? result["warnings"] : []) run.notes.push(String(warning));
   const target = ["--repository", run.options.repository, "--pr", String(run.options.pullNumber), "--head", run.head, "--run", run.runId ?? ""];
   const verdict2 = await cli(run, ["verdict", ...target], run.text ?? "");
@@ -21227,6 +21347,8 @@ async function runReview(options, deps) {
     head: "",
     pullBase: { sha: null, ref: null },
     configSource: null,
+    claudeVersion: void 0,
+    provenance: null,
     base: null,
     summary: {},
     plan: null,
@@ -21312,6 +21434,7 @@ async function runReview(options, deps) {
     stages: run.stages,
     notes: run.notes,
     configSource: run.configSource,
+    provenance: run.provenance,
     ...error === void 0 ? {} : { error }
   };
 }
@@ -21326,6 +21449,7 @@ function reportText(report) {
     lines2.push(`Verdict: ${String(verdict2["event"] ?? "none")} (${String(verdict2["action"] ?? "")})`);
   }
   if (report.reviewUrl !== null) lines2.push(`${report.posted ? "Posted" : "Review"}: ${report.reviewUrl}`);
+  if (report.provenance !== null) lines2.push(describeProvenance(report.provenance));
   const source = report.configSource;
   if (source !== null) {
     const where = { flag: `--config ${source.path}`, env: `REVIEW_VOICE_CONFIG ${source.path}`, base: `base commit ${shortRef(source.ref ?? "")}`, default: "built-in defaults" }[source.kind];
@@ -23159,6 +23283,20 @@ function recordCommand(argv) {
       return 2;
     }
   }
+  const originFlag = flag(argv, "--origin");
+  const origin = argv.includes("--origin") ? ORIGINS.find((known) => known === originFlag) : "interactive";
+  if (origin === void 0) {
+    console.error(`--origin takes one of ${ORIGINS.join(", ")}.`);
+    return 2;
+  }
+  const modeFlag = flag(argv, "--mode");
+  const provenanceMode = PROVENANCE_MODES.find((known) => known === modeFlag) ?? null;
+  if (argv.includes("--mode") && provenanceMode === null) {
+    console.error(`--mode takes one of ${PROVENANCE_MODES.join(", ")}.`);
+    return 2;
+  }
+  const claudeFlag = flag(argv, "--claude-version");
+  const claudeVersion = claudeFlag !== null && /^[\w.\- ()]{1,100}$/.test(claudeFlag) ? claudeFlag : null;
   const output = readStdin();
   if (output.trim().length === 0) {
     console.error("Nothing on stdin. Pipe the validated review in.");
@@ -23459,7 +23597,7 @@ function recordCommand(argv) {
     } else if (rulings.length > 0 || followUpThread !== null) {
       console.error("Warning: --thread and --follow-ups need --repository and a pull request in --files; ignored.");
     }
-    const { reviewRunId, findings } = recordRun(db, {
+    const { reviewRunId, findings, provenance } = recordRun(db, {
       repository,
       baseRef: flag(argv, "--base"),
       headRef,
@@ -23477,7 +23615,8 @@ function recordCommand(argv) {
       carried,
       ...carry2 === void 0 ? {} : { carry: carry2 },
       followUps,
-      stages
+      stages,
+      provenance: { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode }
     });
     const warning = shallowPassWarning(stages, findings.length);
     console.log(
@@ -23485,6 +23624,8 @@ function recordCommand(argv) {
         {
           reviewRunId,
           findings,
+          // So the review driver can print the line without a second command.
+          provenance,
           ...followUps.length === 0 ? {} : { followUps },
           ...warning === null ? {} : { warnings: [warning] }
         },
@@ -24092,6 +24233,7 @@ function explainCommand(argv) {
     if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
     const recordedScope = describeReviewScope(detail.scope);
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
+    console.log(describeProvenance(detail.provenance));
     for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
     const shallow = shallowPassWarning(detail.stages, detail.findings.length);
     if (shallow !== null) console.log(`Warning ${shallow}`);
@@ -24861,7 +25003,8 @@ function statusCommand() {
       );
     }
     if (last !== null) {
-      console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(", ") || "none"}`);
+      const origin = lastDetail?.provenance == null ? "" : `; ${describeOrigin(lastDetail.provenance)}`;
+      console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(", ") || "none"}${origin}`);
       const recordedScope = describeReviewScope(lastDetail?.scope ?? null);
       if (recordedScope !== null) console.log(`last scope       ${recordedScope}`);
     }
@@ -25189,6 +25332,12 @@ async function reviewCommand(argv) {
       return 2;
     }
   }
+  const originFlag = flag(argv, "--origin");
+  const reviewOrigin = argv.includes("--origin") ? ["watch", "action"].find((known) => known === originFlag) : "driver";
+  if (reviewOrigin === void 0) {
+    console.error("--origin takes one of watch, action.");
+    return 2;
+  }
   const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
   if (repository === null) {
     console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
@@ -25205,7 +25354,8 @@ async function reviewCommand(argv) {
       full: argv.includes("--full"),
       recheckThread: !argv.includes("--no-recheck-thread"),
       expectHead: flag(argv, "--expect-head"),
-      config: flag(argv, "--config")
+      config: flag(argv, "--config"),
+      origin: reviewOrigin
     },
     { command: (args, stdin) => runInProcess(args, { stdin }), client: githubClient([repository]) }
   );

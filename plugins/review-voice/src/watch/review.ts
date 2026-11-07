@@ -96,7 +96,7 @@ export function spawnReview(bundle: string, options: SpawnOptions): StoppableRev
   const live = new Map<number, { terminate: () => void; done: Promise<void> }>();
   const review: ReviewPullRequest = ({ repository, pull, clone, post, mode, expectHead, timeoutMs, runRepositoryCommands }) =>
     new Promise((resolve) => {
-      const args = [bundle, 'review', '--pr', String(pull), '--repository', repository, '--json', '--expect-head', expectHead];
+      const args = [bundle, 'review', '--pr', String(pull), '--repository', repository, '--json', '--expect-head', expectHead, '--origin', 'watch'];
       if (post) args.push('--post', '--recheck-thread');
       if (mode !== undefined) args.push('--mode', mode);
       const env = { ...process.env };

@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import type { Database } from './db.ts';
 import { recordAudit } from './audit.ts';
+import { listPolicies } from '../policy/versions.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
 import { parseComplexity, type ComplexityAssessment } from '../diff/complexity.ts';
@@ -197,6 +198,125 @@ export interface CandidateHint {
   possibleRepeatOf?: unknown;
 }
 
+export const ORIGINS = ['driver', 'interactive', 'watch', 'action'] as const;
+export type RunOrigin = (typeof ORIGINS)[number];
+export const PROVENANCE_MODES = ['fast', 'standard', 'thorough'] as const;
+export type ProvenanceMode = (typeof PROVENANCE_MODES)[number];
+
+export type Independence = 'independent' | 'not-independent';
+
+/**
+ * The label is derived from the origin and from nothing else, so it cannot be
+ * stored out of step with it. An interactive review ran inside the host session
+ * that may have written the change; every other origin starts fresh agents on a
+ * committed head.
+ */
+export function independenceOf(origin: RunOrigin): Independence {
+  return origin === 'interactive' ? 'not-independent' : 'independent';
+}
+
+export interface PolicyVersionRef {
+  scopeType: string;
+  scopeKey: string;
+  policyId: string;
+  version: number;
+}
+
+/** What produced a run: where it came from, with which versions, under which policy. */
+export interface RunProvenance {
+  origin: RunOrigin;
+  independence: Independence;
+  pluginVersion: string;
+  /** The first line of `claude --version`; null when it could not be read. */
+  claudeVersion: string | null;
+  /** The plan's cost mode; null for the slash command, which has no plan. */
+  mode: ProvenanceMode | null;
+  /** The active approved policy rows at record time. */
+  policyVersions: PolicyVersionRef[];
+}
+
+/** The caller supplies everything but the policy rows, which `recordRun` reads itself. */
+export type RunProvenanceInput = Omit<RunProvenance, 'independence' | 'policyVersions'> &
+  Partial<Pick<RunProvenance, 'independence' | 'policyVersions'>>;
+
+/**
+ * The `Provenance` line `explain` and the driver report print, and `status`
+ * borrows the origin clause of.
+ */
+export function describeProvenance(provenance: RunProvenance | null): string {
+  if (provenance === null) return 'Provenance not recorded';
+  const policy =
+    provenance.policyVersions.length === 0
+      ? 'none'
+      : provenance.policyVersions.map((p) => `${p.scopeType}/${p.scopeKey} v${p.version}`).join(', ');
+  return (
+    `Provenance ${describeOrigin(provenance)}, plugin ${provenance.pluginVersion}, ` +
+    `claude ${provenance.claudeVersion ?? 'unknown'}, mode ${provenance.mode ?? 'unknown'}, policy ${policy}`
+  );
+}
+
+/** `origin <origin> (<label>)`. */
+export function describeOrigin(provenance: Pick<RunProvenance, 'origin' | 'independence'>): string {
+  return `origin ${provenance.origin} (${provenance.independence})`;
+}
+
+function activePolicyVersions(db: Database): PolicyVersionRef[] {
+  return listPolicies(db)
+    .filter((policy) => policy.active)
+    .map((policy) => ({ scopeType: policy.scopeType, scopeKey: policy.scopeKey, policyId: policy.policyId, version: policy.version }));
+}
+
+const reportedProvenance = new Set<string>();
+
+/** The stored provenance, or null when absent or not one; a malformed value is said once on stderr. */
+function storedProvenance(raw: unknown, reviewRunId: string): RunProvenance | null {
+  if (typeof raw !== 'string') return null;
+  const malformed = (): null => {
+    if (!reportedProvenance.has(reviewRunId)) {
+      reportedProvenance.add(reviewRunId);
+      console.error(`The provenance recorded for run ${reviewRunId} is malformed; reading it as not recorded.`);
+    }
+    return null;
+  };
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return malformed();
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return malformed();
+  const v = value as Record<string, unknown>;
+  const origin = ORIGINS.find((known) => known === v['origin']);
+  const mode = v['mode'] === null ? null : (PROVENANCE_MODES.find((known) => known === v['mode']) ?? undefined);
+  const policies = v['policyVersions'];
+  if (
+    origin === undefined ||
+    mode === undefined ||
+    typeof v['pluginVersion'] !== 'string' ||
+    !(v['claudeVersion'] === null || typeof v['claudeVersion'] === 'string') ||
+    !Array.isArray(policies)
+  ) {
+    return malformed();
+  }
+  const policyVersions: PolicyVersionRef[] = [];
+  for (const entry of policies) {
+    const p = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+    if (typeof p['scopeType'] !== 'string' || typeof p['scopeKey'] !== 'string' || typeof p['policyId'] !== 'string' || typeof p['version'] !== 'number') {
+      return malformed();
+    }
+    policyVersions.push({ scopeType: p['scopeType'], scopeKey: p['scopeKey'], policyId: p['policyId'], version: p['version'] });
+  }
+  return {
+    origin,
+    // Recomputed, never read back, so a hand-edited row cannot claim independence.
+    independence: independenceOf(origin),
+    pluginVersion: v['pluginVersion'],
+    claudeVersion: v['claudeVersion'] as string | null,
+    mode,
+    policyVersions,
+  };
+}
+
 export interface RecordRunInput {
   repository: string | null;
   baseRef: string | null;
@@ -246,6 +366,12 @@ export interface RecordRunInput {
    * by the one run somebody happened to time.
    */
   stages?: StageTiming[] | undefined;
+  /**
+   * Where the run came from and what produced it. Optional so direct callers
+   * keep working (the column is then NULL); the `record` command always sets it.
+   * The independence label and the policy rows are filled in here, not trusted.
+   */
+  provenance?: RunProvenanceInput | undefined;
 }
 
 export interface StageTiming {
@@ -355,7 +481,10 @@ export function hashDiff(diff: string): string {
   return createHash('sha256').update(diff).digest('hex').slice(0, 32);
 }
 
-export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: string; findings: StoredFinding[] } {
+export function recordRun(
+  db: Database,
+  input: RecordRunInput,
+): { reviewRunId: string; findings: StoredFinding[]; provenance: RunProvenance | null } {
   if ((input.bodyFindings?.length ?? 0) > 1) {
     throw new Error('A review may record at most one body-only simplification finding.');
   }
@@ -372,20 +501,34 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
     }
   }
 
+  // Read once so the two columns that name the policy cannot disagree.
+  const policyVersions = activePolicyVersions(db);
+  const provenance: RunProvenance | null =
+    input.provenance === undefined
+      ? null
+      : {
+          origin: input.provenance.origin,
+          independence: independenceOf(input.provenance.origin),
+          pluginVersion: input.provenance.pluginVersion,
+          claudeVersion: input.provenance.claudeVersion,
+          mode: input.provenance.mode,
+          policyVersions,
+        };
+
   db.prepare(
     `INSERT INTO review_runs (
        review_run_id, repository, base_ref, head_ref, diff_hash,
        active_policy_versions_json, retrieved_precedents_json,
        candidates_json, output_json, created_at, stages_json,
-       pull_number, scope_json, complexity_json
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       pull_number, scope_json, complexity_json, provenance_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     reviewRunId,
     input.repository,
     input.baseRef,
     input.headRef,
     hashDiff(input.diff),
-    JSON.stringify([]),
+    JSON.stringify(policyVersions),
     JSON.stringify(input.precedents ?? []),
     JSON.stringify((input.candidates ?? []).map(storedCandidate)),
     JSON.stringify({
@@ -404,14 +547,16 @@ export function recordRun(db: Database, input: RecordRunInput): { reviewRunId: s
     input.pullNumber ?? null,
     input.scope === undefined ? null : JSON.stringify(input.scope),
     input.complexity === undefined || input.complexity === null ? null : JSON.stringify(input.complexity),
+    provenance === null ? null : JSON.stringify(provenance),
   );
 
   recordAudit(db, 'review_run_recorded', { type: 'review_run', id: reviewRunId }, {
     repository: input.repository,
     findingCount: findings.length,
+    ...(provenance === null ? {} : { origin: provenance.origin }),
   });
 
-  return { reviewRunId, findings };
+  return { reviewRunId, findings, provenance };
 }
 
 export interface RunDetail {
@@ -424,6 +569,8 @@ export interface RunDetail {
   scope: ReviewScope | null;
   /** Null for rows recorded before the assessment existed, or without a manifest. */
   complexity: ComplexityAssessment | null;
+  /** Null for rows recorded before provenance existed, and for a malformed value. */
+  provenance: RunProvenance | null;
   /** The commit reviewed. Null for runs recorded without `--head`. */
   headRef: string | null;
   createdAt: string;
@@ -529,6 +676,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     pullNumber: Number.isInteger(row['pull_number']) ? (row['pull_number'] as number) : null,
     scope: storedScope(row['scope_json']),
     complexity: storedComplexity(row['complexity_json']),
+    provenance: storedProvenance(row['provenance_json'], row['review_run_id'] as string),
     headRef: typeof row['head_ref'] === 'string' ? row['head_ref'] : null,
     createdAt: row['created_at'] as string,
     output: parsed.output,

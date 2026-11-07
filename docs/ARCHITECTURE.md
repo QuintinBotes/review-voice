@@ -120,7 +120,13 @@ in `commands.log`, so a stopped run can be continued by hand. The head is read
 at the start and again before `record`; a move is exit 3. In `fast` mode a nit
 or question skips the challenge, so the driver challenges the rest and puts
 those findings back in render order; they stay eligible in the score list the
-challenge reads, so a corrected line cannot land on one. `src/review/prompts.ts` holds each agent's
+challenge reads, so a corrected line cannot land on one. The driver reads the
+Claude Code version once per run (`claudeBin` with `--version`; any failure is
+unknown) and passes it, its `--origin` (`driver` unless `watch` or the Action
+said otherwise) and the plan's mode to `record` for the run's provenance. Each
+agent call's token count (input plus output, from the envelope's `usage`) is
+summed into its stage; a stage whose calls reported none has no `tokens`, never
+zero. `src/review/prompts.ts` holds each agent's
 prompt and output envelope; a test holds `commands/review.md` to the agents in
 the stage table.
 
@@ -400,6 +406,19 @@ policies/            versioned artifacts, plus archived/
 audit/events.jsonl   append-only local audit log
 exports/             explicit exports only
 ```
+
+Each `review_runs` row has a nullable `provenance_json` column (migration 12):
+`origin` (`driver`, `interactive`, `watch` or `action`), an `independence`
+label, the plugin version, the Claude Code version (first line of
+`claude --version`, null when unknown), the cost mode (null for the slash
+command) and the active approved policy rows at record time, the same rows
+`active_policy_versions_json` holds. The label is derived from `origin` alone
+and recomputed on every read: `interactive` is `not-independent`, because that
+review ran inside the host session that may have written the change; every
+other origin starts fresh agents on a committed head and is `independent`.
+`explain` prints it as a `Provenance` line, `status` appends the origin to its
+last-review line, and the review driver report prints the same line. A row
+recorded before the column, or with unreadable JSON, reads as not recorded.
 
 ### Finding identifiers
 
