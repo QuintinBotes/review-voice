@@ -70,4 +70,6 @@ sits in `decide()` after the standing-approval carry, the needs-rerun hold of
 [0013](0013-ci-needs-rerun.md) and the uncovered-carry guard, and before the
 complexity cap, so the carry and the needs-rerun hold still win and pending
 CI never makes such a head wait. `verdict --recheck` under it refuses with
-exit 2, because there is no approval to re-check.
+exit 2, because there is no approval to re-check. A head queued for a CI
+recheck before the policy was turned on is settled by the watcher under the
+new policy, not retried as a failure.

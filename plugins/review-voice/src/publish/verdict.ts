@@ -367,6 +367,11 @@ export interface Decision {
    */
   exitCode: number;
   cappedByCi: boolean;
+  /**
+   * True when `never_approve` capped an approval at COMMENT, so a caller can
+   * tell a policy refusal apart from any other refusal without reading the reasons.
+   */
+  cappedByPolicy: boolean;
   /** Lines appended to the posted body; only ever set on a `post`. */
   annotations: string[];
   /** The owner's standing approval, on a `carry`. */
@@ -409,8 +414,12 @@ export function decide(input: {
 }): Decision {
   const policy = verdictPolicy(input.policy);
   const reasons: string[] = [];
-  const done = (decision: Omit<Decision, 'annotations' | 'carriedReviewUrl'>, annotations: string[] = []): Decision => ({
+  const done = (
+    decision: Omit<Decision, 'annotations' | 'carriedReviewUrl' | 'cappedByPolicy'> & { cappedByPolicy?: boolean },
+    annotations: string[] = [],
+  ): Decision => ({
     ...decision,
+    cappedByPolicy: decision.cappedByPolicy ?? false,
     annotations: decision.action === 'post' ? annotations : [],
     carriedReviewUrl: null,
   });
@@ -442,6 +451,7 @@ export function decide(input: {
       reasons: [...reasons, 'the scope is unchanged and the owner\'s approval still stands, so nothing is posted'],
       exitCode: 0,
       cappedByCi: false,
+      cappedByPolicy: false,
       annotations: [],
       carriedReviewUrl: input.carriedReviewUrl,
     };
@@ -488,6 +498,7 @@ export function decide(input: {
         reasons: [...reasons, 'there is no approval to re-check under never_approve'],
         exitCode: 2,
         cappedByCi: false,
+        cappedByPolicy: true,
       });
     }
     return done(
@@ -497,6 +508,7 @@ export function decide(input: {
         reasons: [...reasons, 'approval is left to a person by policy'],
         exitCode: 0,
         cappedByCi: false,
+        cappedByPolicy: true,
       },
       annotations,
     );

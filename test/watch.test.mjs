@@ -453,6 +453,36 @@ test('never_approve: pending CI posts COMMENT, and the head is not listed again'
   });
 });
 
+test('never_approve turned on after a CI capped COMMENT settles the queued recheck instead of retrying it', async () => {
+  await withWatcher(async (h) => {
+    const db = h.openDb();
+    recordRun(db, { repository: REPO, baseRef: null, headRef: sha('a'), pullNumber: 7, diff: 'diff', output: 'No actionable findings.', scores: [] });
+    db.close();
+    const state = { ci: 'red' };
+    const impl = fakeGitHub({ requested: [item(REPO, 7)], pulls: { [`${REPO}#7`]: openPull() }, state });
+
+    // Red CI caps the approval at COMMENT, which queues a CI recheck for this head.
+    assert.equal(await h.run(['--once', '--post'], { impl }), 0);
+    assert.match(h.out[0], /^acme\/web#7: verdict-only COMMENT \(posted https:/);
+    assert.deepEqual(impl.posts().map((c) => c.body.event), ['COMMENT']);
+
+    // The policy is turned on and CI turns green, so the queued recheck runs under it.
+    const config = { ...settings(), verdictPolicy: { ...DEFAULT_VERDICT_POLICY, neverApprove: true } };
+    state.ci = 'green';
+    assert.equal(await h.run(['--once', '--post'], { impl, config }), 0);
+    assert.match(h.out[0], /recheck-ci COMMENT \(posted approval is left to a person by policy\)/);
+    const [row] = rows(h);
+    assert.equal(row.status, 'posted');
+    assert.equal(row.detail, 'approval is left to a person by policy');
+    assert.equal(row.attempts, 0);
+    assert.deepEqual(impl.posts().map((c) => c.body.event), ['COMMENT'], 'nothing is posted again');
+
+    assert.equal(await h.run(['--once', '--post'], { impl, config }), 0);
+    assert.match(h.out[0], /^0 entries;/);
+    assert.equal(impl.posts().length, 1);
+  });
+});
+
 test('without --post a recorded run is reviewed, not posted, and the outcomes step reads sent reviews', async () => {
   await withWatcher(async (h) => {
     const db = h.openDb();

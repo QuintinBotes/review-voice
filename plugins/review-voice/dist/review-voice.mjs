@@ -1350,6 +1350,7 @@ function decide(input) {
   const reasons = [];
   const done = (decision, annotations2 = []) => ({
     ...decision,
+    cappedByPolicy: decision.cappedByPolicy ?? false,
     annotations: decision.action === "post" ? annotations2 : [],
     carriedReviewUrl: null
   });
@@ -1372,6 +1373,7 @@ function decide(input) {
       reasons: [...reasons, "the scope is unchanged and the owner's approval still stands, so nothing is posted"],
       exitCode: 0,
       cappedByCi: false,
+      cappedByPolicy: false,
       annotations: [],
       carriedReviewUrl: input.carriedReviewUrl
     };
@@ -1399,7 +1401,8 @@ function decide(input) {
         action: "refuse",
         reasons: [...reasons, "there is no approval to re-check under never_approve"],
         exitCode: 2,
-        cappedByCi: false
+        cappedByCi: false,
+        cappedByPolicy: true
       });
     }
     return done(
@@ -1408,7 +1411,8 @@ function decide(input) {
         action: "post",
         reasons: [...reasons, "approval is left to a person by policy"],
         exitCode: 0,
-        cappedByCi: false
+        cappedByCi: false,
+        cappedByPolicy: true
       },
       annotations
     );
@@ -17128,7 +17132,7 @@ function lastSentAtHead(db, repository, pull, head, maxAttemptsPerHead = 2) {
   if (sent !== null && !sent.cappedByCi) return sent;
   const settled = settledByWatcher(db, repository, pull, head, maxAttemptsPerHead);
   if (settled === null) return sent;
-  if (sent !== null) return settled.status === "posted" ? sent : { ...sent, cappedByCi: false };
+  if (sent !== null) return settled.status === "posted" && settled.detail === null ? sent : { ...sent, cappedByCi: false };
   return { event: settled.event, cappedByCi: false };
 }
 function lastSentRow(db, repository, pull, head) {
@@ -17783,6 +17787,7 @@ function refusal(head, reason2) {
       staleRequestChanges: null,
       annotations: [],
       carriedReviewUrl: null,
+      cappedByPolicy: false,
       payload: null,
       alreadyInline: 0,
       key: null,
@@ -17986,6 +17991,7 @@ async function computeVerdict(options) {
       staleRequestChanges,
       annotations: decision.annotations,
       carriedReviewUrl: decision.carriedReviewUrl,
+      cappedByPolicy: decision.cappedByPolicy,
       payload,
       alreadyInline,
       key: key2,
@@ -18649,6 +18655,9 @@ async function verdict(options, client, db, entry, recheck) {
   if (exitCode === 3) return { row: null, detail: "head moved" };
   const paused = waiting(exitCode);
   if (paused !== null) return { row: { ...base, event: output.event, status: paused, detail: output.reasons.join("; ") || null } };
+  if (recheck && exitCode === 2 && output.cappedByPolicy) {
+    return { row: { ...base, event: output.event, status: "posted", detail: "approval is left to a person by policy" } };
+  }
   if (exitCode !== 0) return { row: { ...base, event: output.event, status: "failed", detail: output.reasons.join("; ") || `verdict exited ${exitCode}` } };
   if (!options.post) return { row: { ...base, event: output.event, status: "reviewed", detail: null } };
   if (run.repository === null || !client.allows(run.repository)) return { row: { ...base, event: output.event, status: "skipped", detail: NOT_ALLOWED } };

@@ -346,6 +346,10 @@ async function verdict(options: PassOptions, client: GitHubClient, db: Database,
   if (exitCode === 3) return { row: null, detail: 'head moved' };
   const paused = waiting(exitCode);
   if (paused !== null) return { row: { ...base, event: output.event, status: paused, detail: output.reasons.join('; ') || null } };
+  // A recheck queued before never_approve was turned on asks for an approval the policy will never send, so the head is settled on its posted COMMENT instead of failing and being retried until the attempt cap.
+  if (recheck && exitCode === 2 && output.cappedByPolicy) {
+    return { row: { ...base, event: output.event, status: 'posted', detail: 'approval is left to a person by policy' } };
+  }
   if (exitCode !== 0) return { row: { ...base, event: output.event, status: 'failed', detail: output.reasons.join('; ') || `verdict exited ${exitCode}` } };
   if (!options.post) return { row: { ...base, event: output.event, status: 'reviewed', detail: null } };
   // postReview's writer is built from the run's repository; the allowlist as it is now must still cover it.

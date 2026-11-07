@@ -92,6 +92,11 @@ export interface VerdictOutput {
   annotations: string[];
   /** The owner's approval that still stands, when the action is `carry`; nothing is posted then. */
   carriedReviewUrl: string | null;
+  /**
+   * True when `never_approve` capped an approval at COMMENT, so a caller can
+   * tell a policy refusal apart from any other refusal without reading the reasons.
+   */
+  cappedByPolicy: boolean;
   /** What would be sent: inline comments already posted on this head are left out. */
   payload: ReviewPayload | null;
   /** Inline comments an earlier post of this head already sent. */
@@ -136,6 +141,7 @@ function refusal(head: string, reason: string): { exitCode: number; output: Verd
       staleRequestChanges: null,
       annotations: [],
       carriedReviewUrl: null,
+      cappedByPolicy: false,
       payload: null,
       alreadyInline: 0,
       key: null,
@@ -460,6 +466,7 @@ export async function computeVerdict(
       staleRequestChanges,
       annotations: decision.annotations,
       carriedReviewUrl: decision.carriedReviewUrl,
+      cappedByPolicy: decision.cappedByPolicy,
       payload,
       alreadyInline,
       key,
