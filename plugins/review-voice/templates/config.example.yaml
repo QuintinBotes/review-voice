@@ -243,7 +243,8 @@ watch:
   run_repository_commands: false
   # The 127.0.0.1 port that keeps a second watcher on this data directory
   # from starting. Derived from the data directory by default (49152 to
-  # 65151); set it only if another program uses that port.
+  # 65151); set it only if another program uses that port. A port busy for a
+  # moment is tried again for a few seconds before the watcher gives up.
   # lock_port: 50123                 # example
 
 writes:

@@ -18176,20 +18176,26 @@ function probe(port) {
     socket.on("end", () => done(null));
   });
 }
-async function acquireLock(dataDir, port = lockPort(dataDir)) {
-  const server = createServer((socket) => {
-    socket.on("error", () => {
+var DEFAULT_LOCK_PATIENCE = { tries: 6, waitMs: 400 };
+async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT_LOCK_PATIENCE) {
+  let server;
+  for (let attempt = 1; ; attempt += 1) {
+    server = createServer((socket) => {
+      socket.on("error", () => {
+      });
+      socket.once("data", () => socket.end(answer(dataDir)));
     });
-    socket.once("data", () => socket.end(answer(dataDir)));
-  });
-  const failure = await new Promise((resolve4) => {
-    server.once("error", (error) => resolve4(error));
-    server.listen({ host: "127.0.0.1", port, exclusive: true }, () => resolve4(null));
-  });
-  if (failure !== null) {
+    const listening = server;
+    const failure = await new Promise((resolve4) => {
+      listening.once("error", (error) => resolve4(error));
+      listening.listen({ host: "127.0.0.1", port, exclusive: true }, () => resolve4(null));
+    });
+    if (failure === null) break;
     if (failure.code !== "EADDRINUSE") throw failure;
     const holder = await probe(port);
-    return holder === null ? { foreign: port } : { holder };
+    if (holder !== null) return { holder };
+    if (attempt >= patience.tries) return { foreign: port };
+    await new Promise((resolve4) => setTimeout(resolve4, patience.waitMs));
   }
   server.unref();
   const display = join10(dataDir, "watch.lock");
