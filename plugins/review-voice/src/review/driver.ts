@@ -14,7 +14,7 @@ import { blockingContext, type MissingContext } from '../scoring/score.ts';
 import { recordAudit } from '../store/audit.ts';
 import { openDatabase } from '../store/db.ts';
 import { dataDirectory } from '../store/paths.ts';
-import { describeProvenance, heldProblem, type HeldFinding, type RunProvenance, type StageTiming } from '../store/runs.ts';
+import { describeProvenance, heldProblem, runDetail, type HeldFinding, type RunProvenance, type StageTiming } from '../store/runs.ts';
 import { parseChallengeVerdicts } from '../verify/challenge.ts';
 import { parseTieBreaks } from '../verify/reconcile.ts';
 import type { Lane, LaneEligibility } from './lanes.ts';
@@ -218,7 +218,14 @@ async function cli(run: Run, argv: string[], stdin?: string): Promise<CommandRes
   const next = run.lock.then(() => run.deps.command(argv, stdin));
   run.lock = next.catch(() => undefined);
   const result = await next;
-  appendFileSync(at(run, 'commands.log'), `$ review-voice ${argv.join(' ')}\nexit ${result.code}\n${result.stderr}\n`);
+  // The log is for a person resuming by hand; a disk that refuses it must not
+  // turn a command that succeeded into a failed run.
+  try {
+    appendFileSync(at(run, 'commands.log'), `$ review-voice ${argv.join(' ')}\nexit ${result.code}\n${result.stderr}\n`);
+  } catch (error) {
+    const note = `commands.log could not be written: ${firstLines(error instanceof Error ? error.message : String(error))}`;
+    if (!run.notes.includes(note)) run.notes.push(note);
+  }
   return result;
 }
 
@@ -1031,10 +1038,79 @@ function staticChecksOf(run: Run): ReviewFailure['facts']['staticChecks'] {
  * `prep` computed; when `prep` never got that far it is unknown, and unknown
  * fails closed.
  */
+type Risk = ReviewFailure['risk'];
+
+/**
+ * The risk of the pull request's earlier runs, followed through narrowed
+ * scopes the way the verdict's `pullRequestComplexity` does: a documentation
+ * follow-up to a reviewed workflow change is a normal scope on a high pull
+ * request, and a failure on it must not open the gate. `high` when any earlier
+ * run assessed it so, `normal` when the chain was read to its end without one,
+ * `unknown` when a narrowed scope has no recorded earlier run (a `--since` the
+ * store did not know) or the chain cannot be read, since unknown fails closed.
+ * A full scope stands alone and reads as `normal` here.
+ */
+function priorRisk(run: Run): Risk {
+  // The summary's scope is a projection without the prior run's id; `prior.runId` beside it is the one carry reads too.
+  const scope = isRecord(run.summary['scope']) ? run.summary['scope'] : {};
+  if (scope['kind'] === undefined || scope['kind'] === 'full') return 'normal';
+  const first = isRecord(run.summary['prior']) ? run.summary['prior']['runId'] : null;
+  if (typeof first !== 'string') {
+    run.notes.push("The scope was narrowed without a recorded earlier run, so the pull request's risk is unknown.");
+    return 'unknown';
+  }
+  try {
+    const db = openDatabase();
+    try {
+      const seen = new Set<string>();
+      let id = first;
+      // Normal only once a full-scope run assessed the whole pull request; a
+      // chain that ends anywhere else, or runs out, never saw all of it.
+      for (;;) {
+        if (seen.has(id) || seen.size >= 20) {
+          run.notes.push(`The earlier runs of this pull request ${seen.has(id) ? 'refer to each other in a cycle' : 'run deeper than the twenty that were read'}, so its risk is unknown.`);
+          return 'unknown';
+        }
+        seen.add(id);
+        const earlier = runDetail(db, id);
+        if (earlier === null || earlier.complexity === null) {
+          run.notes.push(`Earlier run ${id} of this pull request ${earlier === null ? 'is not in the store' : 'recorded no risk assessment'}, so the pull request's risk is unknown.`);
+          return 'unknown';
+        }
+        if (earlier.complexity.level === 'high') return 'high';
+        if (earlier.scope === null || earlier.scope.kind === 'full') return 'normal';
+        if (earlier.scope.priorRunId === null) {
+          run.notes.push(`Earlier run ${id} of this pull request was itself narrowed with no recorded earlier run, so the pull request's risk is unknown.`);
+          return 'unknown';
+        }
+        id = earlier.scope.priorRunId;
+      }
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    run.notes.push(`Earlier runs of this pull request could not be read: ${firstLines(error instanceof Error ? error.message : String(error))}`);
+    return 'unknown';
+  }
+}
+
 function failureOf(run: Run, code: number): ReviewFailure {
   const assessed = run.summary['complexity'];
   const complexity = isRecord(assessed) && (assessed['level'] === 'high' || assessed['level'] === 'normal') ? (assessed as unknown as ComplexityAssessment) : null;
-  const risk = complexity === null ? 'unknown' : complexity.level;
+  const own: Risk = complexity === null ? 'unknown' : complexity.level;
+  // The scope's own risk settles a high or unknown case; a normal scope defers to the pull request's history.
+  const history = own === 'normal' ? priorRisk(run) : 'normal';
+  const risk: Risk = own !== 'normal' ? own : history;
+  const reasons =
+    own === 'unknown'
+      ? ['risk not assessed']
+      : own === 'high'
+        ? complexity!.reasons
+        : history === 'high'
+          ? ['an earlier run of this pull request assessed it as high risk']
+          : history === 'unknown'
+            ? ["the earlier runs of this pull request could not be read, so its risk is unknown"]
+            : [];
   const size = (key: string): number | null => {
     const value = isRecord(run.summary['structure']) ? run.summary['structure'][key] : undefined;
     return Array.isArray(value) ? value.length : null;
@@ -1046,7 +1122,7 @@ function failureOf(run: Run, code: number): ReviewFailure {
     stage: run.stage,
     mode: risk === 'normal' ? 'failed_open' : 'failed_closed',
     risk,
-    reasons: complexity === null ? ['risk not assessed'] : complexity.level === 'high' ? complexity.reasons : [],
+    reasons,
     humanReviewNote: typeof note === 'string' ? note : null,
     facts: {
       complexity,
@@ -1156,7 +1232,9 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     run.exitCode = caught instanceof Stop ? caught.code : 1;
     error = caught instanceof Error ? caught.message : String(caught);
     // A head that moved is not a failure: the next pass reviews the new head.
-    if (run.exitCode !== 3) {
+    // Nor is an error after the run was recorded: the review exists, and what
+    // broke is the bookkeeping after it, which the error text still reports.
+    if (run.exitCode !== 3 && run.runId === null) {
       failure = failureOf(run, run.exitCode);
       auditFailure(run, failure);
     }

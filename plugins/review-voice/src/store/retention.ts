@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Database } from './db.ts';
 
 /**
@@ -32,27 +32,73 @@ const DAY_MS = 86_400_000;
 /** A period that switches its sweep on: a whole number of days above zero. */
 const enabled = (days: number | null): days is number => typeof days === 'number' && Number.isFinite(days) && days > 0;
 
+/** The runs directory as verified: a real directory, with the identity later removals are held to. */
+interface RunsParent {
+  path: string;
+  dev: number;
+  ino: number;
+}
+
+/** `<data dir>/runs` checked to be a real directory, or null when there is none. */
+function runsParent(dataDir: string): RunsParent | null {
+  const path = join(dataDir, 'runs');
+  if (!existsSync(path)) return null;
+  // A runs directory that is itself a link could point anywhere, and readdir
+  // would follow it into directories that are not runs. Nothing is swept through it.
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) throw new Error(`${path} is a symbolic link; retention does not follow it, so nothing was removed.`);
+  return { path, dev: stat.dev, ino: stat.ino };
+}
+
 /** The run directories directly under `<data dir>/runs`, with their mtime. Symlinks are never followed or removed. */
 function runEntries(dataDir: string): { path: string; mtimeMs: number }[] {
-  const runs = join(dataDir, 'runs');
-  if (!existsSync(runs)) return [];
+  const parent = runsParent(dataDir);
+  if (parent === null) return [];
   const entries: { path: string; mtimeMs: number }[] = [];
-  for (const name of readdirSync(runs).sort()) {
-    const path = join(runs, name);
+  for (const name of readdirSync(parent.path).sort()) {
+    const path = join(parent.path, name);
     const stat = lstatSync(path);
     if (stat.isDirectory()) entries.push({ path, mtimeMs: stat.mtimeMs });
   }
   return entries;
 }
 
-function remove(paths: string[]): RunDirectories {
+/**
+ * Removes the listed directories, reading each again immediately before: one
+ * that changed since it was listed (a review writing to it), or that is no
+ * longer a plain directory, is left alone and counted as `refreshed`. One
+ * already gone is skipped quietly. The parent is read again before every
+ * removal too: a runs directory swapped for a link since the listing would
+ * otherwise redirect a recursive delete outside the data directory.
+ */
+function remove(paths: string[], expired: (path: string, mtimeMs: number) => boolean, parent: RunsParent): RunDirectories & { refreshed: number } {
   const removed: string[] = [];
+  let refreshed = 0;
   for (const path of paths) {
+    const now = lstatSync(parent.path);
+    if (now.isSymbolicLink() || now.dev !== parent.dev || now.ino !== parent.ino) {
+      throw new Error(`${parent.path} changed while it was being swept; nothing more was removed.`);
+    }
+    let stat: ReturnType<typeof lstatSync>;
+    try {
+      stat = lstatSync(path);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory() || !expired(path, stat.mtimeMs)) {
+      refreshed += 1;
+      continue;
+    }
     rmSync(path, { recursive: true, force: true });
     removed.push(path);
   }
-  return { count: removed.length, paths: removed };
+  return { count: removed.length, paths: removed, refreshed };
 }
+
+const olderThan =
+  (before: Date | null) =>
+  (_path: string, mtimeMs: number): boolean =>
+    before === null || mtimeMs < before.getTime();
 
 /** The run directories `purge --runs` would remove: all of them, or those last changed before `before`. */
 export function previewRunDirectories(dataDir: string, before: Date | null): RunDirectories {
@@ -62,9 +108,23 @@ export function previewRunDirectories(dataDir: string, before: Date | null): Run
   return { count: paths.length, paths };
 }
 
-/** The only place run directories are deleted; confined to the entries of `<data dir>/runs`. */
-export function removeRunDirectories(dataDir: string, before: Date | null): RunDirectories {
-  return remove(previewRunDirectories(dataDir, before).paths);
+/**
+ * The only place run directories are deleted. `listed` is the preview being
+ * acted on (a fresh one by default); whatever it holds, only direct entries of
+ * `<data dir>/runs` that still satisfy `before` at the moment of removal go.
+ */
+export function removeRunDirectories(
+  dataDir: string,
+  before: Date | null,
+  listed: string[] = previewRunDirectories(dataDir, before).paths,
+): RunDirectories & { refreshed: number } {
+  const parent = runsParent(dataDir);
+  if (parent === null) return { count: 0, paths: [], refreshed: 0 };
+  return remove(
+    listed.filter((path) => dirname(path) === parent.path),
+    olderThan(before),
+    parent,
+  );
 }
 
 /**
@@ -102,10 +162,18 @@ export function previewRetention(dataDir: string, db: Database, config: Retentio
   return { runDirectories: { count: paths.length, paths }, auditEvents };
 }
 
-/** Removes exactly what `previewRetention` lists. */
+/** Removes what `previewRetention` lists, except a directory that changed in between, which the next pass sees again. */
 export function applyRetention(dataDir: string, db: Database, config: RetentionConfig, now: Date = new Date()): RetentionResult {
   const planned = previewRetention(dataDir, db, config, now);
-  const runDirectories = remove(planned.runDirectories.paths);
+  const stillExpired = (path: string, mtimeMs: number): boolean => {
+    const days = config.runsDays;
+    if (!enabled(days)) return false;
+    const limit = existsSync(join(path, 'verdict.json')) ? days : days * 2;
+    return mtimeMs < now.getTime() - limit * DAY_MS;
+  };
+  const parent = runsParent(dataDir);
+  const { refreshed: _refreshed, ...runDirectories } =
+    parent === null ? { count: 0, paths: [], refreshed: 0 } : remove(planned.runDirectories.paths, stillExpired, parent);
   const cutoff = auditCutoff(config.auditDays, now);
   const auditEvents = cutoff === null ? 0 : Number(db.prepare(`DELETE FROM audit_events WHERE ${AUDIT_WHERE}`).run(cutoff).changes);
   return { runDirectories, auditEvents };

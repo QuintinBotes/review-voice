@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +17,7 @@ import { DEFAULT_VERDICT_POLICY } from '../plugins/review-voice/src/publish/verd
 import { defaultQueueConfig } from '../plugins/review-voice/src/queue/config.ts';
 import { previewPurge, executePurge } from '../plugins/review-voice/src/consent/purge.ts';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
-import { applyRetention, previewRetention, DEFAULT_RETENTION } from '../plugins/review-voice/src/store/retention.ts';
+import { applyRetention, previewRetention, previewRunDirectories, removeRunDirectories, DEFAULT_RETENTION } from '../plugins/review-voice/src/store/retention.ts';
 import { defaultWatchConfig } from '../plugins/review-voice/src/watch/config.ts';
 import { watchCommand } from '../plugins/review-voice/src/watch/command.ts';
 
@@ -271,6 +271,137 @@ test('purge --all includes run directories', () =>
     const done = JSON.parse(cli(dir, ['purge', '--all', '--confirm']).stdout);
     assert.equal(done.removed.runDirectories.count, 1);
     assert.ok(!existsSync(path));
+  }));
+
+test('a runs directory that is a symbolic link is refused, and nothing behind it is removed', () =>
+  withBundleData((dir) => {
+    const elsewhere = mkdtempSync(join(tmpdir(), 'rv-elsewhere-'));
+    try {
+      // An old finished run's shape, somewhere a link could point.
+      const victim = join(elsewhere, 'victim');
+      mkdirSync(victim);
+      writeFileSync(join(victim, 'verdict.json'), '{}');
+      const when = new Date(Date.now() - 400 * DAY);
+      utimesSync(victim, when, when);
+      symlinkSync(elsewhere, join(dir, 'runs'));
+
+      const purge = cli(dir, ['purge', '--runs', '--confirm']);
+      assert.equal(purge.status, 2, purge.stderr);
+      assert.match(purge.stderr, /symbolic link; retention does not follow it/);
+      assert.ok(existsSync(victim));
+
+      const db = openDatabase(join(dir, 'review-voice.db'));
+      try {
+        assert.throws(() => previewRetention(dir, db, DEFAULT_RETENTION), /symbolic link/);
+        assert.throws(() => applyRetention(dir, db, DEFAULT_RETENTION), /symbolic link/);
+      } finally {
+        db.close();
+      }
+      assert.ok(existsSync(victim));
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  }));
+
+test('purge --before refuses a missing value and a date that does not read back as itself', () =>
+  withBundleData((dir) => {
+    const path = runDir(dir, 'run', 400, { now: new Date() });
+    for (const args of [
+      ['purge', '--runs', '--before', '--confirm'],
+      ['purge', '--runs', '--before', '', '--confirm'],
+      ['purge', '--runs', '--before', '2026-02-31', '--confirm'],
+      ['purge', '--before', '--confirm'],
+      // The equals form is not how this CLI reads values; on a deleting command it must not pass as "no filter".
+      ['purge', '--runs', '--before=2026-01-01', '--confirm'],
+      ['purge', '--runs', '--before=', '--confirm'],
+      ['purge', '--runs', '--confrim'],
+      ['purge', '--runs', '-before', '2026-01-01', '--confirm'],
+      ['purge', '--runs', '2026-01-01', '--confirm'],
+      ['purge', '--repo', '--runs', '--confirm'],
+    ]) {
+      const result = cli(dir, args);
+      assert.equal(result.status, 2, args.join(' '));
+      assert.match(result.stderr, /--(before|repo) (needs|takes)|purge does not take/);
+    }
+    assert.ok(existsSync(path), 'nothing was deleted');
+  }));
+
+test('an unqualified purge keeps a run directory changed in the last ten minutes, and says how many it kept', () =>
+  withBundleData((dir) => {
+    const old = runDir(dir, 'old', 400, { now: new Date() });
+    // A review that may still be writing: its directory changed moments ago.
+    const live = runDir(dir, 'live', 0, { now: new Date() });
+
+    const preview = JSON.parse(cli(dir, ['purge', '--runs']).stdout);
+    assert.deepEqual(preview.wouldRemove.runDirectories, { count: 1, paths: [old], kept: 1 });
+
+    const done = JSON.parse(cli(dir, ['purge', '--runs', '--confirm']).stdout);
+    assert.deepEqual(done.removed.runDirectories, { count: 1, paths: [old], kept: 1 });
+    assert.ok(!existsSync(old));
+    assert.ok(existsSync(live), 'the recent directory survives an unqualified purge');
+
+    const everything = JSON.parse(cli(dir, ['purge', '--all', '--confirm']).stdout);
+    assert.equal(everything.removed.runDirectories.kept, 1);
+    assert.ok(existsSync(live), '--all keeps it too');
+
+    // An explicit date is the person's own cutoff and applies as given.
+    const tomorrow = new Date(Date.now() + DAY).toISOString().slice(0, 10);
+    const dated = JSON.parse(cli(dir, ['purge', '--runs', '--before', tomorrow, '--confirm']).stdout);
+    assert.deepEqual(dated.removed.runDirectories, { count: 1, paths: [live], kept: 0 });
+    assert.ok(!existsSync(live));
+  }));
+
+test('purge --all --before applies the date to run directories as well as to events', () =>
+  withBundleData((dir) => {
+    const old = runDir(dir, 'old', 400, { now: new Date() });
+    const recent = runDir(dir, 'recent', 1, { now: new Date() });
+    const cutoff = new Date(Date.now() - 30 * DAY).toISOString().slice(0, 10);
+    const preview = JSON.parse(cli(dir, ['purge', '--all', '--before', cutoff]).stdout);
+    assert.deepEqual(preview.wouldRemove.runDirectories, { count: 1, paths: [old], kept: 0 });
+    const done = JSON.parse(cli(dir, ['purge', '--all', '--before', cutoff, '--confirm']).stdout);
+    assert.deepEqual(done.removed.runDirectories, { count: 1, paths: [old], kept: 0 });
+    assert.ok(!existsSync(old) && existsSync(recent), 'the recent directory is newer than the date');
+    assert.equal(cli(dir, ['purge', '--all', '--before', '2026-02-31', '--confirm']).status, 2);
+  }));
+
+test('a directory that changed after it was listed is left alone, and a listing never reaches outside runs', () =>
+  withData((dir) => {
+    const stale = runDir(dir, 'stale', 400);
+    const busy = runDir(dir, 'busy', 400);
+    const listed = previewRunDirectories(dir, null).paths;
+    assert.deepEqual([...listed].sort(), [busy, stale].sort());
+    // A review writes to `busy` between the listing and the removal.
+    const now = new Date();
+    utimesSync(busy, now, now);
+    const removed = removeRunDirectories(dir, new Date(Date.now() - 10 * 60_000), listed);
+    assert.deepEqual(removed, { count: 1, paths: [stale], refreshed: 1 });
+    assert.ok(existsSync(busy));
+    const outside = mkdtempSync(join(tmpdir(), 'rv-outside-'));
+    try {
+      assert.deepEqual(removeRunDirectories(dir, null, [outside]), { count: 0, paths: [], refreshed: 0 });
+      assert.ok(existsSync(outside), 'a path outside runs in a caller\'s listing is never removed');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  }));
+
+test('a runs directory swapped for a link after the listing stops the removal before anything outside goes', () =>
+  withData((dir) => {
+    runDir(dir, 'stale', 400);
+    const listed = previewRunDirectories(dir, null).paths;
+    const outside = mkdtempSync(join(tmpdir(), 'rv-outside-'));
+    try {
+      // The same name, somewhere a link could point, as a stale run would look.
+      mkdirSync(join(outside, 'stale'));
+      writeFileSync(join(outside, 'stale', 'keep.txt'), 'not a run');
+      renameSync(join(dir, 'runs'), join(dir, 'runs-moved'));
+      symlinkSync(outside, join(dir, 'runs'));
+      assert.throws(() => removeRunDirectories(dir, null, listed), /symbolic link|changed while it was being swept/);
+      assert.ok(existsSync(join(outside, 'stale', 'keep.txt')), 'nothing outside was removed');
+      assert.ok(existsSync(join(dir, 'runs-moved', 'stale')), 'the moved runs are untouched too');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   }));
 
 // --- the watch pass ---

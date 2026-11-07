@@ -2,7 +2,7 @@
 
 // plugins/review-voice/src/cli.ts
 import { readFileSync as readFileSync13, readSync, writeFileSync as writeFileSync4, mkdirSync as mkdirSync6, statSync as statSync3, renameSync as renameSync2, rmSync as rmSync3, existsSync as existsSync10 } from "node:fs";
-import { dirname as dirname11, join as join17, resolve as resolve3 } from "node:path";
+import { dirname as dirname12, join as join17, resolve as resolve3 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 import { execFileSync as execFileSync13 } from "node:child_process";
 import { format } from "node:util";
@@ -7494,45 +7494,53 @@ function recordRun(db, input) {
     mode: input.provenance.mode,
     policyVersions
   };
-  db.prepare(
-    `INSERT INTO review_runs (
-       review_run_id, repository, base_ref, head_ref, diff_hash,
-       active_policy_versions_json, retrieved_precedents_json,
-       candidates_json, output_json, created_at, stages_json,
-       pull_number, scope_json, complexity_json, provenance_json
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    reviewRunId,
-    input.repository,
-    input.baseRef,
-    input.headRef,
-    hashDiff(input.diff),
-    JSON.stringify(policyVersions),
-    JSON.stringify(input.precedents ?? []),
-    JSON.stringify((input.candidates ?? []).map(storedCandidate)),
-    JSON.stringify({
-      output: input.output,
-      findings,
-      scores: input.scores ?? [],
-      verdicts: input.verdicts ?? [],
-      tieBreaks: input.tieBreaks ?? [],
-      held: input.held ?? [],
-      ...input.bodyFindings === void 0 || input.bodyFindings.length === 0 ? {} : { bodyFindings: input.bodyFindings },
-      ...input.carry === void 0 ? {} : { carry: input.carry },
-      ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps }
-    }),
-    (/* @__PURE__ */ new Date()).toISOString(),
-    JSON.stringify(input.stages ?? []),
-    input.pullNumber ?? null,
-    input.scope === void 0 ? null : JSON.stringify(input.scope),
-    input.complexity === void 0 || input.complexity === null ? null : JSON.stringify(input.complexity),
-    provenance === null ? null : JSON.stringify(provenance)
-  );
-  recordAudit(db, "review_run_recorded", { type: "review_run", id: reviewRunId }, {
-    repository: input.repository,
-    findingCount: findings.length,
-    ...provenance === null ? {} : { origin: provenance.origin }
-  });
+  db.exec("SAVEPOINT record_run");
+  try {
+    db.prepare(
+      `INSERT INTO review_runs (
+         review_run_id, repository, base_ref, head_ref, diff_hash,
+         active_policy_versions_json, retrieved_precedents_json,
+         candidates_json, output_json, created_at, stages_json,
+         pull_number, scope_json, complexity_json, provenance_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      reviewRunId,
+      input.repository,
+      input.baseRef,
+      input.headRef,
+      hashDiff(input.diff),
+      JSON.stringify(policyVersions),
+      JSON.stringify(input.precedents ?? []),
+      JSON.stringify((input.candidates ?? []).map(storedCandidate)),
+      JSON.stringify({
+        output: input.output,
+        findings,
+        scores: input.scores ?? [],
+        verdicts: input.verdicts ?? [],
+        tieBreaks: input.tieBreaks ?? [],
+        held: input.held ?? [],
+        ...input.bodyFindings === void 0 || input.bodyFindings.length === 0 ? {} : { bodyFindings: input.bodyFindings },
+        ...input.carry === void 0 ? {} : { carry: input.carry },
+        ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps }
+      }),
+      (/* @__PURE__ */ new Date()).toISOString(),
+      JSON.stringify(input.stages ?? []),
+      input.pullNumber ?? null,
+      input.scope === void 0 ? null : JSON.stringify(input.scope),
+      input.complexity === void 0 || input.complexity === null ? null : JSON.stringify(input.complexity),
+      provenance === null ? null : JSON.stringify(provenance)
+    );
+    recordAudit(db, "review_run_recorded", { type: "review_run", id: reviewRunId }, {
+      repository: input.repository,
+      findingCount: findings.length,
+      ...provenance === null ? {} : { origin: provenance.origin }
+    });
+    db.exec("RELEASE record_run");
+  } catch (error) {
+    db.exec("ROLLBACK TO record_run");
+    db.exec("RELEASE record_run");
+    throw error;
+  }
   return { reviewRunId, findings, provenance };
 }
 function storedComplexity(raw) {
@@ -7945,7 +7953,7 @@ function feedbackTotals(db) {
 // plugins/review-voice/src/policy/load.ts
 import { readFileSync as readFileSync7, existsSync as existsSync5 } from "node:fs";
 import { createHash as createHash4 } from "node:crypto";
-import { dirname as dirname6, isAbsolute as isAbsolute2, join as join9 } from "node:path";
+import { dirname as dirname7, isAbsolute as isAbsolute2, join as join9 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
@@ -14455,35 +14463,64 @@ function formatDuration(ms) {
 
 // plugins/review-voice/src/store/retention.ts
 import { existsSync as existsSync4, lstatSync, readdirSync, rmSync } from "node:fs";
-import { join as join8 } from "node:path";
+import { dirname as dirname6, join as join8 } from "node:path";
 var DEFAULT_RETENTION = { runsDays: 30, auditDays: 180 };
 var DAY_MS = 864e5;
 var enabled = (days) => typeof days === "number" && Number.isFinite(days) && days > 0;
+function runsParent(dataDir) {
+  const path = join8(dataDir, "runs");
+  if (!existsSync4(path)) return null;
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) throw new Error(`${path} is a symbolic link; retention does not follow it, so nothing was removed.`);
+  return { path, dev: stat.dev, ino: stat.ino };
+}
 function runEntries(dataDir) {
-  const runs = join8(dataDir, "runs");
-  if (!existsSync4(runs)) return [];
+  const parent = runsParent(dataDir);
+  if (parent === null) return [];
   const entries = [];
-  for (const name of readdirSync(runs).sort()) {
-    const path = join8(runs, name);
+  for (const name of readdirSync(parent.path).sort()) {
+    const path = join8(parent.path, name);
     const stat = lstatSync(path);
     if (stat.isDirectory()) entries.push({ path, mtimeMs: stat.mtimeMs });
   }
   return entries;
 }
-function remove(paths) {
+function remove(paths, expired, parent) {
   const removed = [];
+  let refreshed = 0;
   for (const path of paths) {
+    const now = lstatSync(parent.path);
+    if (now.isSymbolicLink() || now.dev !== parent.dev || now.ino !== parent.ino) {
+      throw new Error(`${parent.path} changed while it was being swept; nothing more was removed.`);
+    }
+    let stat;
+    try {
+      stat = lstatSync(path);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory() || !expired(path, stat.mtimeMs)) {
+      refreshed += 1;
+      continue;
+    }
     rmSync(path, { recursive: true, force: true });
     removed.push(path);
   }
-  return { count: removed.length, paths: removed };
+  return { count: removed.length, paths: removed, refreshed };
 }
+var olderThan = (before) => (_path, mtimeMs) => before === null || mtimeMs < before.getTime();
 function previewRunDirectories(dataDir, before) {
   const paths = runEntries(dataDir).filter((entry) => before === null || entry.mtimeMs < before.getTime()).map((entry) => entry.path);
   return { count: paths.length, paths };
 }
-function removeRunDirectories(dataDir, before) {
-  return remove(previewRunDirectories(dataDir, before).paths);
+function removeRunDirectories(dataDir, before, listed = previewRunDirectories(dataDir, before).paths) {
+  const parent = runsParent(dataDir);
+  if (parent === null) return { count: 0, paths: [], refreshed: 0 };
+  return remove(
+    listed.filter((path) => dirname6(path) === parent.path),
+    olderThan(before),
+    parent
+  );
 }
 function expiredRunDirectories(dataDir, days, now) {
   if (!enabled(days)) return [];
@@ -14504,7 +14541,14 @@ function previewRetention(dataDir, db, config2, now = /* @__PURE__ */ new Date()
 }
 function applyRetention(dataDir, db, config2, now = /* @__PURE__ */ new Date()) {
   const planned = previewRetention(dataDir, db, config2, now);
-  const runDirectories = remove(planned.runDirectories.paths);
+  const stillExpired = (path, mtimeMs) => {
+    const days = config2.runsDays;
+    if (!enabled(days)) return false;
+    const limit = existsSync4(join8(path, "verdict.json")) ? days : days * 2;
+    return mtimeMs < now.getTime() - limit * DAY_MS;
+  };
+  const parent = runsParent(dataDir);
+  const { refreshed: _refreshed, ...runDirectories } = parent === null ? { count: 0, paths: [], refreshed: 0 } : remove(planned.runDirectories.paths, stillExpired, parent);
   const cutoff = auditCutoff(config2.auditDays, now);
   const auditEvents = cutoff === null ? 0 : Number(db.prepare(`DELETE FROM audit_events WHERE ${AUDIT_WHERE}`).run(cutoff).changes);
   return { runDirectories, auditEvents };
@@ -14964,8 +15008,8 @@ function layerFromPolicyFile(text4, source, fallbackKey) {
   };
 }
 function pluginRoot2() {
-  let dir = dirname6(fileURLToPath4(import.meta.url));
-  while (!existsSync5(join9(dir, ".claude-plugin", "plugin.json")) && dirname6(dir) !== dir) dir = dirname6(dir);
+  let dir = dirname7(fileURLToPath4(import.meta.url));
+  while (!existsSync5(join9(dir, ".claude-plugin", "plugin.json")) && dirname7(dir) !== dir) dir = dirname7(dir);
   return dir;
 }
 function loadBaselineLayer(owner, path = join9(pluginRoot2(), "policies", "baseline-global.yaml")) {
@@ -16657,7 +16701,7 @@ function scaledRepositoryShare(repositoryCount) {
 
 // plugins/review-voice/src/conventions/discover.ts
 import { existsSync as existsSync6, readFileSync as readFileSync8, readdirSync as readdirSync2, statSync } from "node:fs";
-import { dirname as dirname7, join as join10, sep } from "node:path";
+import { dirname as dirname8, join as join10, sep } from "node:path";
 var REPOSITORY_FILES = [
   { path: "CLAUDE.md", kind: "claude" },
   { path: ".claude/CLAUDE.md", kind: "claude" },
@@ -16812,11 +16856,11 @@ function ancestors(changedPath) {
   return out;
 }
 function resolvePointer(root, pointerPath, target) {
-  const own = dirname7(pointerPath);
+  const own = dirname8(pointerPath);
   const candidates = own === "." || own === "" ? [] : [join10(own, target)];
-  let directory = dirname7(pointerPath);
+  let directory = dirname8(pointerPath);
   while (directory !== "." && directory !== "" && directory !== sep) {
-    const base = dirname7(directory);
+    const base = dirname8(directory);
     const name = directory.split(sep).pop();
     if (name === ".claude" || name === ".agents") candidates.push(join10(base === "." ? "" : base, target));
     directory = base;
@@ -18623,7 +18667,7 @@ async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT
 // plugins/review-voice/src/watch/workspace.ts
 import { execFileSync as execFileSync11 } from "node:child_process";
 import { existsSync as existsSync7, mkdirSync as mkdirSync3, readdirSync as readdirSync3, statSync as statSync2, unlinkSync as unlinkSync2 } from "node:fs";
-import { dirname as dirname8, join as join12 } from "node:path";
+import { dirname as dirname9, join as join12 } from "node:path";
 var NAME = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
 function cloneDir(workspace, repository) {
   const repo = repository.split("/")[1];
@@ -18665,7 +18709,7 @@ function removeStaleGitLocks(dir, now = Date.now()) {
 function gitPrepareClone(run = runQuietly) {
   return (repository, pull, dir) => {
     if (!existsSync7(join12(dir, ".git"))) {
-      mkdirSync3(dirname8(dir), { recursive: true });
+      mkdirSync3(dirname9(dir), { recursive: true });
       try {
         run("gh", ["repo", "clone", repository, dir, "--", "--filter=blob:none"]);
       } catch (error) {
@@ -19359,13 +19403,13 @@ function resolveSyncWindow(input, now = /* @__PURE__ */ new Date()) {
 
 // plugins/review-voice/src/retrieval/baseline.ts
 import { existsSync as existsSync8, readFileSync as readFileSync11 } from "node:fs";
-import { dirname as dirname9, join as join14 } from "node:path";
+import { dirname as dirname10, join as join14 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 function isCorpusEmpty(db) {
   return db.prepare("SELECT COUNT(*) AS n FROM review_events").get().n === 0;
 }
 function baselineVoice() {
-  const here = dirname9(fileURLToPath5(import.meta.url));
+  const here = dirname10(fileURLToPath5(import.meta.url));
   for (const relative2 of ["..", "../.."]) {
     const candidate = join14(here, relative2, "templates", "voice.baseline.md");
     if (existsSync8(candidate)) return readFileSync11(candidate, "utf8").trim();
@@ -19889,7 +19933,8 @@ var COMMAND_HELP = {
       "  --before <ISO date>   Remove events older than a date",
       "  --runs                Remove the run directories under <data directory>/runs; with --before",
       "                        <YYYY-MM-DD>, only those last changed before that date (and --before",
-      "                        then no longer removes events)",
+      "                        then no longer removes events). Without a date, one changed in the",
+      "                        last ten minutes is kept, as a review may still be writing to it",
       "  --all                 Remove everything, including runs, feedback and run directories",
       "  --confirm             Delete; without it, only a preview",
       "Reads: nothing on stdin.",
@@ -20535,7 +20580,7 @@ function topLevelHelp() {
 // plugins/review-voice/src/review/driver.ts
 import { execFileSync as execFileSync12 } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync as existsSync9, mkdirSync as mkdirSync5, readFileSync as readFileSync12, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname10, isAbsolute as isAbsolute3, join as join16, resolve as resolve2, sep as sep2 } from "node:path";
+import { dirname as dirname11, isAbsolute as isAbsolute3, join as join16, resolve as resolve2, sep as sep2 } from "node:path";
 
 // plugins/review-voice/src/review/prompts.ts
 import { join as join15 } from "node:path";
@@ -20757,10 +20802,15 @@ async function cli(run, argv, stdin) {
   const next = run.lock.then(() => run.deps.command(argv, stdin));
   run.lock = next.catch(() => void 0);
   const result = await next;
-  appendFileSync(at(run, "commands.log"), `$ review-voice ${argv.join(" ")}
+  try {
+    appendFileSync(at(run, "commands.log"), `$ review-voice ${argv.join(" ")}
 exit ${result.code}
 ${result.stderr}
 `);
+  } catch (error) {
+    const note = `commands.log could not be written: ${firstLines(error instanceof Error ? error.message : String(error))}`;
+    if (!run.notes.includes(note)) run.notes.push(note);
+  }
   return result;
 }
 async function must(run, argv, stdin, code = 2) {
@@ -21026,7 +21076,7 @@ function prepareWorkspace(run) {
       continue;
     }
     try {
-      mkdirSync5(dirname10(target), { recursive: true });
+      mkdirSync5(dirname11(target), { recursive: true });
       writeFileSync3(target, content, { flag: "wx" });
     } catch (error) {
       run.notes.push(`No base copy for ${path}: it conflicts with another path (${error.code ?? "error"}).`);
@@ -21469,10 +21519,53 @@ function staticChecksOf(run) {
     didNotRun: Array.isArray(document["didNotRun"]) ? document["didNotRun"].map(String) : []
   };
 }
+function priorRisk(run) {
+  const scope = isRecord3(run.summary["scope"]) ? run.summary["scope"] : {};
+  if (scope["kind"] === void 0 || scope["kind"] === "full") return "normal";
+  const first = isRecord3(run.summary["prior"]) ? run.summary["prior"]["runId"] : null;
+  if (typeof first !== "string") {
+    run.notes.push("The scope was narrowed without a recorded earlier run, so the pull request's risk is unknown.");
+    return "unknown";
+  }
+  try {
+    const db = openDatabase();
+    try {
+      const seen = /* @__PURE__ */ new Set();
+      let id = first;
+      for (; ; ) {
+        if (seen.has(id) || seen.size >= 20) {
+          run.notes.push(`The earlier runs of this pull request ${seen.has(id) ? "refer to each other in a cycle" : "run deeper than the twenty that were read"}, so its risk is unknown.`);
+          return "unknown";
+        }
+        seen.add(id);
+        const earlier = runDetail(db, id);
+        if (earlier === null || earlier.complexity === null) {
+          run.notes.push(`Earlier run ${id} of this pull request ${earlier === null ? "is not in the store" : "recorded no risk assessment"}, so the pull request's risk is unknown.`);
+          return "unknown";
+        }
+        if (earlier.complexity.level === "high") return "high";
+        if (earlier.scope === null || earlier.scope.kind === "full") return "normal";
+        if (earlier.scope.priorRunId === null) {
+          run.notes.push(`Earlier run ${id} of this pull request was itself narrowed with no recorded earlier run, so the pull request's risk is unknown.`);
+          return "unknown";
+        }
+        id = earlier.scope.priorRunId;
+      }
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    run.notes.push(`Earlier runs of this pull request could not be read: ${firstLines(error instanceof Error ? error.message : String(error))}`);
+    return "unknown";
+  }
+}
 function failureOf(run, code) {
   const assessed = run.summary["complexity"];
   const complexity = isRecord3(assessed) && (assessed["level"] === "high" || assessed["level"] === "normal") ? assessed : null;
-  const risk = complexity === null ? "unknown" : complexity.level;
+  const own = complexity === null ? "unknown" : complexity.level;
+  const history = own === "normal" ? priorRisk(run) : "normal";
+  const risk = own !== "normal" ? own : history;
+  const reasons = own === "unknown" ? ["risk not assessed"] : own === "high" ? complexity.reasons : history === "high" ? ["an earlier run of this pull request assessed it as high risk"] : history === "unknown" ? ["the earlier runs of this pull request could not be read, so its risk is unknown"] : [];
   const size = (key2) => {
     const value = isRecord3(run.summary["structure"]) ? run.summary["structure"][key2] : void 0;
     return Array.isArray(value) ? value.length : null;
@@ -21484,7 +21577,7 @@ function failureOf(run, code) {
     stage: run.stage,
     mode: risk === "normal" ? "failed_open" : "failed_closed",
     risk,
-    reasons: complexity === null ? ["risk not assessed"] : complexity.level === "high" ? complexity.reasons : [],
+    reasons,
     humanReviewNote: typeof note === "string" ? note : null,
     facts: {
       complexity,
@@ -21587,7 +21680,7 @@ async function runReview(options, deps) {
   } catch (caught) {
     run.exitCode = caught instanceof Stop ? caught.code : 1;
     error = caught instanceof Error ? caught.message : String(caught);
-    if (run.exitCode !== 3) {
+    if (run.exitCode !== 3 && run.runId === null) {
       failure = failureOf(run, run.exitCode);
       auditFailure(run, failure);
     }
@@ -22145,7 +22238,7 @@ function resolveOutPath(out, defaultName) {
     }
   }
   try {
-    mkdirSync6(dirname11(target), { recursive: true });
+    mkdirSync6(dirname12(target), { recursive: true });
   } catch (error) {
     throw new Error(
       `${out}: expected a file path or a directory (${error instanceof Error ? error.message : String(error)})`
@@ -22251,40 +22344,76 @@ function consentPlanCommand(argv) {
   );
   return 0;
 }
+var RECENT_RUN_MS = 10 * 6e4;
 function purgeCommand(argv) {
-  const runs = argv.includes("--runs");
-  const before = flag(argv, "--before") ?? void 0;
-  const scope = {
-    repository: flag(argv, "--repo") ?? void 0,
-    // With --runs the date is for the run directories (their mtime); the corpus is not purged by it.
-    before: runs ? void 0 : before,
-    all: argv.includes("--all") || void 0
-  };
-  if (scope.repository === void 0 && before === void 0 && scope.all !== true && !runs) {
-    console.error("Purge needs a scope: --repo <owner/repo>, --before <date>, --runs, or --all.");
-    return 2;
-  }
-  let runsBefore = null;
-  if (runs && before !== void 0) {
-    runsBefore = /^\d{4}-\d{2}-\d{2}$/.test(before) ? /* @__PURE__ */ new Date(`${before}T00:00:00.000Z`) : null;
-    if (runsBefore === null || Number.isNaN(runsBefore.getTime())) {
-      console.error("--before takes a date such as 2026-01-31 when it goes with --runs.");
+  let repo;
+  let before;
+  let runs = false;
+  let all = false;
+  let confirm = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--runs") runs = true;
+    else if (arg === "--all") all = true;
+    else if (arg === "--confirm") confirm = true;
+    else if (arg === "--repo" || arg === "--before") {
+      const value = argv[index + 1];
+      if (value === void 0 || value === "" || value.startsWith("-")) {
+        console.error(arg === "--repo" ? "--repo needs a repository such as owner/repo." : "--before needs a date such as 2026-01-31.");
+        return 2;
+      }
+      if (arg === "--repo") repo = value;
+      else before = value;
+      index += 1;
+    } else {
+      console.error(`purge does not take ${arg}; its options are --repo <owner/repo>, --before <date>, --runs, --all and --confirm.`);
       return 2;
     }
   }
-  const directories = runs || scope.all === true;
+  const scope = {
+    repository: repo,
+    // With --runs the date is for the run directories (their mtime); the corpus is not purged by it.
+    before: runs ? void 0 : before,
+    all: all || void 0
+  };
+  if (repo === void 0 && before === void 0 && !all && !runs) {
+    console.error("Purge needs a scope: --repo <owner/repo>, --before <date>, --runs, or --all.");
+    return 2;
+  }
+  const directories = runs || all;
+  let runsBefore = null;
+  if (directories && before !== void 0) {
+    runsBefore = /* @__PURE__ */ new Date(`${before}T00:00:00.000Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(before) || Number.isNaN(runsBefore.getTime()) || runsBefore.toISOString().slice(0, 10) !== before) {
+      console.error("--before takes a real date such as 2026-01-31 when it goes with --runs or --all.");
+      return 2;
+    }
+  }
+  const cutoff = runsBefore ?? new Date(Date.now() - RECENT_RUN_MS);
   const db = openDatabase();
   try {
     const preview = previewPurge(db, scope);
-    const found = directories ? previewRunDirectories(dataDirectory(), runsBefore) : null;
-    if (!argv.includes("--confirm")) {
-      console.log(JSON.stringify({ wouldRemove: found === null ? preview : { ...preview, runDirectories: found }, confirmed: false }, null, 2));
+    let found = null;
+    try {
+      found = directories ? previewRunDirectories(dataDirectory(), cutoff) : null;
+      const kept = found !== null && runsBefore === null ? previewRunDirectories(dataDirectory(), null).count - found.count : 0;
+      const report = (listed, refreshed = 0) => ({
+        count: listed.count,
+        paths: listed.paths,
+        kept: kept + refreshed
+      });
+      if (!confirm) {
+        console.log(JSON.stringify({ wouldRemove: found === null ? preview : { ...preview, runDirectories: report(found) }, confirmed: false }, null, 2));
+        return 0;
+      }
+      const gone = found === null ? null : removeRunDirectories(dataDirectory(), cutoff, found.paths);
+      const removed = executePurge(db, scope, gone?.count);
+      console.log(JSON.stringify({ removed: gone === null ? removed : { ...removed, runDirectories: report(gone, gone.refreshed) }, confirmed: true }, null, 2));
       return 0;
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      return 2;
     }
-    const gone = directories ? removeRunDirectories(dataDirectory(), runsBefore) : null;
-    const removed = executePurge(db, scope, gone?.count);
-    console.log(JSON.stringify({ removed: gone === null ? removed : { ...removed, runDirectories: gone }, confirmed: true }, null, 2));
-    return 0;
   } finally {
     db.close();
   }
@@ -24186,7 +24315,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
 function partialDiffReason(diffFile) {
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync13(join17(dirname11(diffFile), "files.json"), "utf8"));
+    manifest = JSON.parse(readFileSync13(join17(dirname12(diffFile), "files.json"), "utf8"));
   } catch {
     return null;
   }
@@ -25283,7 +25412,7 @@ async function agentCommand(argv) {
     console.error(`The schema ${schemaPath} must be a JSON object.`);
     return 2;
   }
-  const schemaDir = dirname11(resolve3(schemaPath));
+  const schemaDir = dirname12(resolve3(schemaPath));
   try {
     schemaForRunner(schema4, schemaDir);
   } catch (error) {

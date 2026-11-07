@@ -95,7 +95,8 @@ and pending or rerun-needed CI (4, 6) exit 0 with a line in the summary.
 Exit 7 means an agent failed twice, so no review exists. The report's
 `failure.mode` says whether that matters: `failed_open` for a change assessed
 as normal risk (such as documentation only), `failed_closed` for a high-risk
-change or one whose risk was never assessed. The action still exits 7 for both,
+change, one whose risk was never assessed, or a follow-up to a pull request an
+earlier run assessed as high. The action still exits 7 for both,
 so a required check stays red. To let a low-risk change through, a person can
 set `continue-on-error: true` on the review step; that also lets a
 `failed_closed` change through, so prefer a fail-open input that reads
