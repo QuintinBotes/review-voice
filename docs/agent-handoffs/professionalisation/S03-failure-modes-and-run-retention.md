@@ -78,8 +78,10 @@ reviewer that could not even read the change has no grounds to wave it
 through. Exit 3 (head moved) is not a failure and gets no `failure` object.
 
 `staticChecks` is read from `evidence.json` when it exists: `ran` is the names
-of `commands` entries with `exitCode !== null`, `failed` those with a non-zero
-`exitCode`, `didNotRun` the file's `didNotRun`; a file with no `commands` key
+of `commands` entries with `exitCode !== null` and no `unavailable`, `failed`
+those among them with a non-zero `exitCode`, `didNotRun` the file's
+`didNotRun` (so a command S08 marks unavailable appears once, as not run); a
+file with no `commands` key
 (the `REVIEW_VOICE_NO_COMMANDS` stub) yields `{ ran: [], failed: [], didNotRun: [] }`
 (S08 makes that stub name the skipped commands; until then the list is empty).
 
@@ -152,19 +154,32 @@ does, so a user who runs neither sees nothing deleted.
 `applyRetention(dataDir, db, config)`. A run directory's age is its directory
 mtime; a directory with no `verdict.json` is a failed run and is kept for
 twice `runs_days` so it can be resumed. The audit sweep is
-`DELETE FROM audit_events WHERE created_at < ?`; there is no audit file.
+`DELETE FROM audit_events WHERE created_at < ? AND action NOT LIKE 'review_post_%'`:
+the posting rows are the single write path's idempotency memory (`keyBlocked`
+at `publish/post.ts:614-635`, `sentInline` at `:327-338`, `diff/held.ts:55-69`,
+`store/outcomes.ts:147-157` all read them with no time bound), so they stay
+until `purge`; there is no audit file.
 
 Callers:
 
-- `purge --runs [--before <YYYY-MM-DD>]` is a scope on its own (bare `purge`
-  still exits 2 with "needs a scope"); the preview gains
-  `runDirectories: { count, paths }`; `--before` with `--runs` compares
-  directory mtime; the `purge` audit event records the removed count. `purge --all`
-  includes run directories. The existing confirmation pattern in `consent/purge.ts`
-  applies.
-- `watch` applies retention once per pass, after outcomes, and prints one
-  line when it removed anything. `WatchSettings` gains `retention`; a pass
-  whose settings lack the block applies the defaults.
+- Run directories are removed only by `store/retention.ts`, which exports
+  `removeRunDirectories(dataDir, before: Date | null)` beside
+  `applyRetention`. `purge --runs [--before <YYYY-MM-DD>]` is a scope on its
+  own (bare `purge` still exits 2 with "needs a scope"); `purgeCommand` in
+  `cli.ts` calls `removeRunDirectories` with `dataDirectory()` and merges
+  `runDirectories: { count, paths }` into the printed `wouldRemove` and
+  `removed` objects; `--before` with `--runs` compares directory mtime; the
+  `purge` audit event records the removed count; `purge --all` includes run
+  directories. `previewPurge` and `executePurge` keep their `(db, scope)`
+  signatures and never touch the filesystem, so `test/consent.test.mjs:91-99`,
+  which calls `executePurge(db, { all: true })` with no data directory set,
+  cannot reach a real `runs/` folder. The existing confirmation pattern in
+  `consent/purge.ts` applies.
+- `watch` applies retention once per pass, after outcomes. In text mode it
+  appends one line to the pass output (`removed 2 run directories, 15 audit events`);
+  in `--json` mode it writes that line through `deps.err`, so stdout stays one
+  JSON document. `WatchSettings` gains `retention`; a pass whose settings lack
+  the block applies the defaults.
 
 ### PRIVACY.md and ARCHITECTURE.md
 
@@ -175,8 +190,9 @@ text: Never stored" row with two rows: review-history text is redacted on
 download and never stored raw; the reviewed pull request's diff, changed files
 and thread are kept raw under `runs/` because they are the code under review,
 for `retention.runs_days`. State the audit retention as `retention.audit_days`
-(default 180) and that `watch` or `purge` enforces it. Mention that the Action
-caches the data directory between runs. `docs/ARCHITECTURE.md` "Storage
+(default 180) and that `watch` or `purge` enforces it, and that posting
+records are kept until purged because they stop a review being posted twice.
+Mention that the Action caches the data directory between runs. `docs/ARCHITECTURE.md` "Storage
 layout" gets the same corrections.
 
 ### Docs and help
@@ -202,8 +218,13 @@ retention line; `review` help documents `failure` in `--json`.
   reasons, and no `review_runs` row; one `review_failed` audit event exists.
 - AC-2. The same failure on a documentation-only change returns
   `failed_open` with `risk === 'normal'`.
-- AC-3. A failure before `diff` completes returns `risk === 'unknown'`,
-  `stage === 'unknown'` and `failed_closed`.
+- AC-3. A failure before the stage loop (for example GitHub returning no head
+  sha, `driver.ts:171-177`, provable with a fake whose pull-request JSON has
+  `head: {}`) returns `stage === 'unknown'`, `risk === 'unknown'` and
+  `failed_closed`; a `diff` command that exits non-zero inside `prep`
+  (provable with a repository directory that is not a git checkout) returns
+  `stage === 'prep'`, `risk === 'unknown'` and `failed_closed`, because
+  `run.summary` is still empty.
 - AC-4. `reportText` prints the "Review unavailable" block with risk, reasons
   and the static-check facts when `evidence.json` exists; `--json` carries
   `failure`.
@@ -215,15 +236,19 @@ retention line; `review` help documents `failure` in `--json`.
   apart.
 - AC-6. `previewRetention` lists run directories older than `runs_days`
   (failed ones only past twice that) and the audit rows older than
-  `audit_days`; `applyRetention` removes exactly those; `0` or `null` disables
-  the respective sweep. A test uses a temp data directory with back-dated
-  mtimes (`utimesSync`) and back-dated `audit_events.created_at`.
-- AC-7. `purge --runs` previews before deleting and honours `--before`; in
-  `test/watch.test.mjs`, a run directory under `<h.dir>/runs/` with a
-  back-dated mtime is removed by `h.run(['--once'])` when `settings()` carries
+  `audit_days`; `applyRetention` removes exactly those; a `review_post_sent`
+  row older than `audit_days` survives; `0` or `null` disables the respective
+  sweep. A test uses a temp data directory with back-dated mtimes
+  (`utimesSync`) and back-dated `audit_events.created_at`.
+- AC-7. `purge --runs` previews before deleting and honours `--before`, proved
+  by running the bundle with `REVIEW_VOICE_DATA_DIR` set to a temp directory
+  as `test/consent.test.mjs:102-140` does; in `test/watch.test.mjs`, a run
+  directory under `<h.dir>/runs/` with a back-dated mtime is removed by
+  `h.run(['--once'])` when `settings()` carries
   `retention: { runsDays: 1, auditDays: 180 }`, kept when it is younger, and
-  the pass prints one line naming what it removed; a settings literal without
-  `retention` applies the defaults.
+  the pass prints one line naming what it removed (through `h.out` without
+  `--json`, through `h.err` with it); a settings literal without `retention`
+  applies the defaults.
 - AC-8. A new test (for example `test/retention-docs.test.mjs`) asserts that
   `PRIVACY.md` contains `runs/`, `clones/`, `retention.runs_days` and
   `retention.audit_days` and contains neither `Original, unredacted text` nor

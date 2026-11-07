@@ -61,11 +61,17 @@ beside `added` (`complexity.ts:195`, pushed at `:262` with the enclosing
 declaration `scope` already in hand at `:226`), where `line` is the new-side
 line of the deletion site, as `Branch` already records it (`:181-184`).
 
-`src/diff/removed-controls.ts` imports `splitLine`, `Language` and `Rule` from
-`type-escapes.ts` (export them, so the two scanners cannot drift) and extends
-`Rule` with `in: 'code' | 'comment' | 'raw'`, where `raw` is the line with the
-comment removed but string contents intact. Kinds, all lexical, each with a
-comment saying what it is and is not:
+`type-escapes.ts` makes `Rule` and `Language` generic over their kind
+(`Rule<Kind extends string = TypeEscapeKind>`,
+`Language<Kind extends string = TypeEscapeKind>`), adds `'raw'` to `Rule.in`,
+and has `splitLine` return `{ code, comment, raw }` where `raw` is the text
+before the line comment with string contents intact (`kindsIn` reads `raw`
+for a rule whose `in` is `'raw'`; no existing type-escape rule uses it, so the
+type-escape output is unchanged). It exports `splitLine`, `Language` and
+`Rule`. `src/diff/removed-controls.ts` imports them and declares its rules as
+`Rule<RemovedControlKind>[]` inside its own `Language<RemovedControlKind>`
+table, so the two scanners share one tokenizer and one rule shape. Kinds, all
+lexical, each with a comment saying what it is and is not:
 
 | kind | matched on | removed line matches |
 |---|---|---|
@@ -82,13 +88,20 @@ hunk's added lines across files) is a move, not a removal, and is dropped. At
 most 20 entries per file, earliest first.
 
 Output `structure.removedControls: { path, line, kind, text, deletedFile?: true }[]`,
-`text` capped at 120 characters. For each `change.files` entry with
-`status === 'deleted'`, `collectStructure` reads the base blob with the
-existing `readBlobs(root, [`${sides.base}:${file.previousPath ?? file.path}`])`
-and scans every line of it as a removed line with `deletedFile: true` and
-`line: 1`; when `sides.base` is null the file is skipped and the doc says so;
-the production classification's test and generated exclusions apply. The
-`RemovedControlKind` union stays closed.
+`text` capped at 120 characters. Deleted files never reach the production
+path list (`productionPaths` classifies reviewed files only), so
+`complexity.ts` exports `deletedProductionPaths(files, partial, markedGenerated): string[]`,
+which runs `reviewedKinds` over the `status === 'deleted'` entries as if they
+were reviewed and keeps the production ones; `emitDiff` (`cli.ts`, beside
+`productionPaths`) computes it and passes it to `collectStructure` as a new
+optional fifth argument `deletedProduction: readonly string[] = []`, so the
+existing three-argument calls in `test/issue-108-size-crossings.test.mjs`
+keep working. For each path in `deletedProduction`, `collectStructure` reads
+the base blob with the existing
+`readBlobs(root, [`${sides.base}:${file.previousPath ?? file.path}`])` and
+scans every line of it as a removed line with `deletedFile: true` and
+`line: 1`; when `sides.base` is null the file is skipped and the doc says so.
+The `RemovedControlKind` union stays closed.
 
 The analyst prompt (`agents/diff-analyst.md`, after the `typeEscapes`
 paragraph) gets one paragraph: an entry is a lead; raise an `authorization`,
@@ -138,9 +151,10 @@ deep-equals the whole `StructureSignals` object and is extended with
   first, or when the line search fails, the declaration has
   `callersInconclusive: true` (the time-budget and failed-search shapes at
   `symbols.ts:182-190` and `:338-347` set it too), so the field has one
-  meaning. The two existing `declared[]` deep-equal assertions
-  (`test/issue-111-possible-existing.test.mjs:166-173` and `:236-242`) are
-  updated for the new field; the change is deliberate.
+  meaning. The three existing `declared[]` deep-equal assertions
+  (`test/issue-111-possible-existing.test.mjs:100-110`, `:166-173` and
+  `:236-242`) are updated for the new field (each entry gains
+  `callersInconclusive: true`); the change is deliberate.
 - The driver passes `--head <sha>` only when `summary.refs.head.available`
   is true (the driver always runs `diff --pr`). The interactive flow
   (`commands/review.md:289-294`, step 1e) passes `--head <head sha>` when the
@@ -173,8 +187,10 @@ Part A:
   appears only inside a string, and at most 20 per file.
 - AC-3. `diff --out` writes `structure.removedControls` to `files.json` and
   `summary.structure.removedControls` equals it; a scratch-repository test
-  shows a `deletedFile: true` entry for a deleted file holding a guard, and
-  none when the base side is unavailable.
+  shows a `deletedFile: true` entry for a deleted file holding a guard, none
+  when the base side is unavailable, and none for a deleted file matching a
+  configured `test_paths` glob or marked generated (the test covers one of
+  the two).
 - AC-4. The four fixtures pass `test/fixtures.test.mjs` (S04's rules
   included); `agents/diff-analyst.md` and `agents/evidence-verifier.md` carry
   the paragraphs (a test greps for `removedControls` in both);
@@ -190,7 +206,7 @@ Part B:
 - AC-6. With `--head <ref>`, each new declaration carries `callers` and
   `callerCount` from the head (own path, tests and non-code excluded);
   without it, after budget exhaustion or a failed search,
-  `callersInconclusive` is true; an unknown `--head` exits 2; the two named
+  `callersInconclusive` is true; an unknown `--head` exits 2; the three named
   `declared[]` assertions are updated.
 - AC-7. The driver passes `--head` only when the head is available (a driver
   test asserts both branches); `commands/review.md` step 1e passes it for a
@@ -218,13 +234,16 @@ first, then plugins/review-voice/src/diff/type-escapes.ts (the scanner shape
 to export and reuse), plugins/review-voice/src/diff/structure.ts
 (findBranchGrowth netting, collectStructure, readBlobs and changeSides),
 plugins/review-voice/src/diff/complexity.ts (HunkCount, countHunks, the scope
-variable) and docs/ARCHITECTURE.md "Structural evidence".
+variable, productionPaths and reviewedKinds for the new deletedProductionPaths)
+and docs/ARCHITECTURE.md "Structural evidence".
 
 Outcome: HunkCount keeps removed lines with their new-side anchor, text and
-enclosing scope; type-escapes.ts exports splitLine, Language and Rule and Rule
-gains a raw mode; a new src/diff/removed-controls.ts scans removed lines with
-the kinds, per-kind matching mode and diff-wide netting the spec gives;
-collectStructure also scans wholly deleted files from the base blob with
+enclosing scope; type-escapes.ts exports a generic splitLine, Language and
+Rule, Rule gains a raw mode and splitLine returns raw; a new
+src/diff/removed-controls.ts scans removed lines with the kinds, per-kind
+matching mode and diff-wide netting the spec gives; complexity.ts exports
+deletedProductionPaths and collectStructure takes it as an optional fifth
+argument and scans those deleted files from the base blob with
 deletedFile: true; `diff --out` writes structure.removedControls and the
 summary carries the same array; the analyst and verifier prompts gain the lead
 paragraphs; four synthetic fixtures (three positives whose expect.line is an
@@ -273,9 +292,9 @@ Acceptance criteria AC-5 to AC-9 of the spec must hold.
 
 Scope: only the paths the spec lists under "Allowed paths". Evidence only; no
 verdict, plan or lane change. The only existing tests you may edit are the
-two declared[] assertions in test/issue-111-possible-existing.test.mjs the
-spec names. Do not edit scripts/, .github/, CHANGELOG.md or the manifests. Add
-no dependency.
+three declared[] assertions in test/issue-111-possible-existing.test.mjs the
+spec names (lines 100-110, 166-173 and 236-242). Do not edit scripts/,
+.github/, CHANGELOG.md or the manifests. Add no dependency.
 
 Conventions: follow CONTRIBUTING.md and the surrounding style; comments
 explain why; no em or en dashes anywhere (the identity guard rejects them); no

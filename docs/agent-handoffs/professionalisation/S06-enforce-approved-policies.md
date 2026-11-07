@@ -55,7 +55,11 @@ type RuleId = string;
 `StoredFinding` and derives `ruleId`. `record`, `explain` and `status` print it.
 `postedBreakdown` in `src/store/outcomes.ts` gains a `byRule` map read from
 each finding's `ruleId`, printed by `evaluate --json` as
-`posted_breakdown.by_rule` beside `by_severity` and `by_lane`.
+`posted_breakdown.by_rule` beside `by_severity` and `by_lane`
+(`evaluateCommand` maps the keys explicitly, `cli.ts:1383-1385`).
+`test/outcomes.test.mjs:261` pins the empty breakdown as
+`{ bySeverity: {}, byLane: {} }`; update that assertion to
+`{ bySeverity: {}, byLane: {}, byRule: {} }`.
 
 ### Policy artifact
 
@@ -74,7 +78,12 @@ suppressions:
 
 `compileProposals` buckets by `kind` and `ruleId` (joined with a separator
 other than `:`, or split with a limit, since a rule id contains colons); the
-contradicting bucket is the opposite kind for the same `ruleId`. `ProposedRule`
+contradicting bucket is the opposite kind for the same `ruleId`. `label()`
+(`compile.ts:79-95`) reads `ruleId` from the stored finding and, when it is
+absent, derives `${category}:${lane ?? 'diff'}`, so feedback on findings
+recorded before S06 (and the seeded fixture at
+`test/issues-config.test.mjs:138-148`, which writes `category` only) still
+forms rules; a finding with no `category` is still skipped. `ProposedRule`
 keeps `category` (derived from the rule id) and gains `ruleId`, so the
 existing assertions on `category` (`test/scoring.test.mjs:243-284`) keep
 passing. Grouping by rule id is intended: three dismissals of `maintainability`
@@ -93,8 +102,14 @@ broadest to narrowest (resolution itself is order-independent, `schema.ts:53-78`
 `LoadedConfig` gains `suppressions` (the resolved list) and
 `activePolicyVersions`. `context`, `score` and `record` open the store first
 and pass it; `repositoryConfig()` in `cli.ts` takes the store. Tests that call
-`loadConfig(dir)` without a store are unaffected, and tests that exercise the
-loaded layer set `REVIEW_VOICE_DATA_DIR` as the other CLI tests do.
+`loadConfig(dir)` without a store are unaffected. Because `context` now opens
+the store, the `context` helpers in `test/policy.test.mjs:25-27`,
+`test/issue-129-context-verification-wording.test.mjs:24` and
+`test/issue-130-diff-structure-warnings.test.mjs:49` pass
+`env: { ...process.env, REVIEW_VOICE_DATA_DIR: <fresh temp dir> }` (as
+`test/issue-113-simplification-pass.test.mjs:201` does), so `npm test` never
+opens the developer's store; new tests that exercise the loaded layer do the
+same.
 
 `record` keeps S02's fill of `active_policy_versions_json`; a test asserts it
 equals the versions `loadConfig` loaded for that run.
@@ -106,7 +121,9 @@ a candidate ineligible with `reason: policy-suppressed:<rule_id>` when its
 `ruleId` matches a resolved suppression and, when the suppression has a glob,
 its path matches it (`governsAny` from `src/conventions/globs.ts`, import
 only). Such candidates are listed in a new `suppressed[]` array (id, ruleId,
-path, line, policy version). The driver holds each as `policy-suppressed` (new
+path, line, policy version) and in that array only: the `belowGate` filter
+(`cli.ts:2100-2106`) excludes a candidate whose `gateOf` is `'policy'`, so the
+driver holds it once. The driver holds each as `policy-suppressed` (new
 `HeldVerdict`, added to `HELD_VERDICTS`), `record --held` stores them, and
 `explain` prints them under "Held back" with the rule and version. The slash
 command's `review.md` step that reads `score` output prints them locally like
@@ -165,9 +182,9 @@ keyed by rule id (category, lane, blocker class) and applied in `score`.
   `loadConfig(dir)` without a store loads no policy rows.
 - AC-4. On the next `score`, a verified candidate with that `ruleId` is
   ineligible with `policy-suppressed:maintainability:diff`, appears in
-  `suppressed[]`, is held as `policy-suppressed`, and is absent from the
-  rendered review; `explain` lists it with the policy version;
-  `score --promote <id>` makes it eligible with `gate: 'policy'`.
+  `suppressed[]` and not in `belowGate`, is held once as `policy-suppressed`,
+  and is absent from the rendered review; `explain` lists it with the policy
+  version; `score --promote <id>` makes it eligible with `gate: 'policy'`.
 - AC-5. `approvePolicy` refuses a proposal whose suppression names a rule in
   `SUPPRESSION_EXEMPT_CATEGORIES`, with a reason; a test that inserts an
   active `policies` row directly (bypassing `approvePolicy`) with
@@ -195,7 +212,9 @@ AC-9).
 `plugins/review-voice/src/policy/**`, `plugins/review-voice/src/scoring/score.ts`,
 `plugins/review-voice/src/store/runs.ts`, `plugins/review-voice/src/store/outcomes.ts`,
 `plugins/review-voice/src/cli.ts` (`score`, `record`, `explain`, `status`,
-`context`, `calibrate`, `policy`, `repositoryConfig`),
+`context`, `evaluate` (the `--json` breakdown only), `calibrate`, `policy`,
+`repositoryConfig`, and the `gateOf`, `locallyListable` and
+`applyOwnerPromotion` helpers),
 `plugins/review-voice/src/review/driver.ts`, `plugins/review-voice/src/help.ts`,
 `plugins/review-voice/schemas/policy.schema.json`, `plugins/review-voice/commands/review.md`,
 `plugins/review-voice/skills/review-voice-policy/SKILL.md`,

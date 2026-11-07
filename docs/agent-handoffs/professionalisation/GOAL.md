@@ -46,8 +46,9 @@ Phase 4  S10 part A (after S04 part A), S10 part B, then S11 (after S10 part A)
 Phase 5  S12 slices 0, 1, 2, 3, 4, 5a, 5b, 6a, 6b, in order, with nothing else in flight
 ```
 
-Every spec edits `plugins/review-voice/src/cli.ts`, so run one Orbit run at a
-time and merge it before starting the next; S12 never overlaps with anything.
+Every spec but S13 edits `plugins/review-voice/src/cli.ts`, so run one
+implementer on it at a time and merge before starting the next; S13 may run
+beside another spec; S12 never overlaps with anything.
 
 Three CLIs, three roles. Use all of them, each where it is strongest:
 
@@ -62,17 +63,21 @@ Three CLIs, three roles. Use all of them, each where it is strongest:
   opens, from a model family that did not write it. Run it read-only, return
   its findings verbatim in the pull-request body under a "Codex review"
   heading, and resolve or file each finding (below) before requesting a merge.
-- **Muse Wonder Full** (`muse exec --model muse-wonder-full-1.0`, through the
+- **Muse Wonder Full** (`muse exec --model muse-wonder-full-1.0 --prompt-file
+  <brief> --workspace <worktree> --worktree off --trust-workspace`, through the
   `muse-worker` skill, in its own git worktree on a `muse/<spec>` branch based
-  on `main`) implements the nine S12 slices, which are well-specified
-  mechanical moves with exact verification commands, and acts as the fallback
-  implementer when an Orbit run on a bounded spec ends `EXHAUSTED` or
-  `IMPOSSIBLE` and a narrower second Orbit run is not the answer. Give Muse the
-  spec's Orbit goal text as its brief (it is already a complete contract),
-  tell it not to commit, push or touch protected paths, verify with
-  `npm run verify` yourself, then run the Codex review and open the pull
-  request as for an Orbit branch. Never run Muse and Orbit on the same spec
-  at the same time, and never in the same worktree.
+  on the stack tip) implements S13, the one spec that does not touch
+  `cli.ts`, beside the Orbit run of the day, and acts as the fallback
+  implementer when an Orbit run on a bounded spec (an S12 slice included) ends
+  `EXHAUSTED` or `IMPOSSIBLE` and a narrower second Orbit run is not the
+  answer. Give Muse the spec's Orbit goal text as its brief (it is already a
+  complete contract) behind a short worker preamble, tell it not to commit,
+  push or touch protected paths, verify with `npm run verify` yourself, then
+  run the Codex review and open the pull request as for an Orbit branch; one
+  bounded correction pass per Codex finding, then take over. Never run Muse
+  and Orbit on the same spec at the same time, and never in the same
+  worktree. S12's nine slices stay on Orbit, whose per-slice contract and
+  bundle-size calibration the spec relies on.
 
 Claude Code (this session) orchestrates: it reads every diff, runs every
 verification itself, writes every pull request and every issue, and never
@@ -83,7 +88,12 @@ For each spec, part or slice:
 1. Preflight. Confirm the working tree is clean and `main` is up to date;
    before the very first run, that means this folder and `.orbit/config.yaml`
    are already merged to `main`, because Orbit refuses to start on a dirty
-   tree. Confirm the spec's dependencies are merged. Run `orbit doctor` and resolve
+   tree. A `.orbit/config.yaml` change (S03's `PRIVACY.md` allowed path,
+   S12's `changed_lines`) goes to `main` through its own pull request, like a
+   spec fix, and a person merges it before the run that needs it; file the
+   pending change as an `orbit-feedback` issue, and until it merges start the
+   run only where the spec allows the edit to be a follow-up (S03's
+   `PRIVACY.md`). Confirm the spec's dependencies are merged. Run `orbit doctor` and resolve
    anything it fails. For S03, confirm `PRIVACY.md` is in Orbit's
    `scope.allowed_paths` or note that the PRIVACY.md edit will be a follow-up.
    For S12, re-measure the slice against `scheduler.hard_limits.changed_lines`

@@ -48,14 +48,25 @@ an owner `dismiss` feedback row decided it. `saveOutcome` writes it; older rows
 read null. Two existing tests touch the table shape and are updated as part of
 this change: `test/human-review-complexity.test.mjs:367-393` rewinds
 `schema_version` to 8 and reruns every later migration, so its rewind step
-also drops `finding_outcomes.decided_by` before rewinding (SQLite has no
+also drops `finding_outcomes.decided_by` before rewinding, beside the
+`review_runs.provenance_json` drop S02 added (SQLite has no
 `ADD COLUMN IF NOT EXISTS`); `test/issues-record.test.mjs:147` inserts into
 `finding_outcomes` positionally with nine values and gains a column list.
 
+`decide()` ignores replies from the account that posted the review
+(`outcomes.ts:423-425`). When the review was posted with the owner's own
+credential (ADR 0002) that account is the owner, so the owner's reply would
+never become an outcome. Exempt from that filter a reply whose author equals
+`ownerReviewer` (case-insensitive) and whose stance is `reject`; an
+`acknowledge` from the poster stays ignored, because the posting account
+agreeing with itself is not evidence. The ADR 0029 amendment names this.
+
 `CheckOptions` gains optional `ownerReviewer?: string | null`; `outcomes`
 passes `loadConfig(...).ownerReviewer` (loading config even with
-`--repository`) and `watch` passes `settings.ownerReviewer`
-(`src/watch/command.ts:387`, a one-line change). When absent, a
+`--repository`) and `watch` passes `config.ownerReviewer`: `followOutcomes`
+(`src/watch/command.ts:380`) gains an `ownerReviewer: string | null`
+parameter that `runPass` supplies from `config` at its call (`command.ts:244`),
+and the `checkOutcomes` call (`command.ts:387`) forwards it. When absent, a
 feedback-decided outcome stores null and every thread dismissal is a team
 signal.
 
@@ -77,18 +88,25 @@ running `feedback dismiss`.
 
 ### Scope
 
-A proposal's scope is the longest common directory of every dismissal in its
-bucket: `{ type: 'path', key: '<common directory>/**' }` with that glob on its
-`suppressions[].glob`, or global when the common directory is the repository
-root. `calibrate` groups the proposals by scope and calls `proposePolicy` once
-per scope (one `policies` row per scope, each with its own version sequence
-under the existing `UNIQUE (scope_type, scope_key, version)`), printing one
-`{ policyId, version, scope }` per row. `proposePolicy`, `approvePolicy`,
-`rollbackTo` and `listPolicies` take the scope instead of the `'global'`
-literals; `policy show` lists every scope by default and `policy show` and
-`policy rollback <version>` accept `--scope path:<glob>` (default global);
-`approve <id>` needs no scope because the id is unique. `help.ts:375-389` is
-updated.
+Only suppress proposals take a path scope; a prioritise proposal has no
+dismissals and a `priorities` entry carries no glob, so it stays global. A
+suppress proposal's scope is the longest common directory of every dismissal
+in its bucket: `{ type: 'path', key: '<common directory>/**' }` with that glob
+on its `suppressions[].glob`, or global when the common directory is the
+repository root. `calibrate` groups the proposals by scope and calls
+`proposePolicy` once per scope (one `policies` row per scope, each with its
+own version sequence under the existing `UNIQUE (scope_type, scope_key, version)`),
+printing one `{ policyId, version, scope }` per row.
+`proposePolicy(db, rules, scope?)`, `rollbackTo(db, version, scope?)` and
+`listPolicies(db, scope?)` take an optional `{ type, key }` scope; the default
+is `{ type: 'global', key: 'owner' }` for `proposePolicy` and `rollbackTo`, and
+`listPolicies` with no scope returns every scope, so the scope-less calls in
+`test/scoring.test.mjs:174-231` stay valid. `approvePolicy(db, policyId)`
+keeps its signature and deactivates siblings by the row's own `scope_type`
+and `scope_key` (`versions.ts:95`). `policy show` lists every scope by default
+and `policy show` and `policy rollback <version>` accept `--scope path:<glob>`
+(default global); `approve <id>` needs no scope because the id is unique.
+`help.ts:375-389` is updated.
 
 ### Loading and enforcement
 
@@ -117,8 +135,11 @@ an approved rule's path scope only narrows where it applies.
 
 - AC-1. `saveOutcome` records `decided_by` for a strong dismissal from a
   reply and for an owner feedback dismissal; a weak outcome records null; old
-  rows migrate to null; the rewind test in `test/human-review-complexity.test.mjs`
-  and `test/issues-record.test.mjs` pass with their stated updates.
+  rows migrate to null; a reply by the owner login on a comment posted under
+  that same login yields dismissed/strong with `decided_by` equal to the owner
+  login, and the same reply with stance acknowledge changes nothing; the
+  rewind test in `test/human-review-complexity.test.mjs` and
+  `test/issues-record.test.mjs` pass with their stated updates.
 - AC-2. Three strong thread dismissals of `maintainability:diff` findings
   under `src/billing/` by the owner produce a proposal scoped
   `path:src/billing/**` with one `suppressions` entry carrying that glob and
@@ -136,16 +157,19 @@ an approved rule's path scope only narrows where it applies.
   `policy rollback <version> --scope path:src/billing/**` rolls back that
   scope only.
 - AC-8. A test asserts `docs/adr/0029-*.md` and `docs/adr/0004-*.md` each
-  contain a `## Amendment - 2026` heading and that `docs/adr/README.md` marks
-  both rows amended. `docs/POLICY-FORMAT.md` and `docs/ARCHITECTURE.md` are
-  updated as specified (reviewer-checked).
+  contain a `## Amendment - 2026` heading and that the `docs/adr/README.md`
+  rows for 0004 and 0029 each contain `amended 2026-11` (the 0004 row already
+  says `amended by 0029`, so a bare `amended` check would pass unchanged).
+  `docs/POLICY-FORMAT.md` and `docs/ARCHITECTURE.md` are updated as specified
+  (reviewer-checked).
 - AC-9. `npm run verify` passes with the rebuilt bundle committed.
 
 ## Allowed paths
 
 `plugins/review-voice/src/policy/**`, `plugins/review-voice/src/store/outcomes.ts`,
 `plugins/review-voice/src/store/db.ts`, `plugins/review-voice/src/scoring/score.ts`,
-`plugins/review-voice/src/watch/command.ts` (the `checkOutcomes` call only),
+`plugins/review-voice/src/watch/command.ts` (`followOutcomes` and its call in
+`runPass` only),
 `plugins/review-voice/src/cli.ts` (`calibrate`, `policy`, `outcomes`),
 `plugins/review-voice/src/help.ts`, `plugins/review-voice/skills/review-voice-policy/SKILL.md`,
 `docs/POLICY-FORMAT.md`, `docs/ARCHITECTURE.md`, `docs/adr/0029-*.md`,
@@ -164,17 +188,20 @@ plugins/review-voice/src/policy/compile.ts, plugins/review-voice/src/policy/vers
 and the calibrate and policy handlers in plugins/review-voice/src/cli.ts.
 
 Outcome: finding_outcomes records who decided a strong dismissal (one appended
-migration, with the two existing tests the spec names updated); checkOutcomes
-and compileProposals take an optional ownerReviewer that outcomes, watch and
-calibrate supply from config; compileProposals reads strong thread dismissals
-as signals, owner when the decider is the owner reviewer and team otherwise,
-dropping rows a dismiss or never_flag feedback row already covers; a bucket's
-scope is the longest common directory of its dismissals, global at the root;
-calibrate writes one policies row per scope; proposePolicy, approvePolicy,
-rollbackTo and listPolicies take a scope and policy show and rollback accept
+migration, with the two existing tests the spec names updated); decide()
+exempts a reject reply by the owner login from its poster filter; checkOutcomes
+and compileProposals take an optional ownerReviewer that outcomes, watch
+(through followOutcomes) and calibrate supply from config; compileProposals
+reads strong thread dismissals as signals, owner when the decider is the owner
+reviewer and team otherwise, dropping rows a dismiss or never_flag feedback
+row already covers; a suppress bucket's scope is the longest common directory
+of its dismissals, global at the root, and prioritise proposals stay global;
+calibrate writes one policies row per scope; proposePolicy, rollbackTo and
+listPolicies take an optional scope defaulting to global, approvePolicy
+deactivates by the row's own scope, and policy show and rollback accept
 --scope; loading and scoring apply path-scoped suppressions by glob; ADR 0029
-and ADR 0004 are amended and the index marks them. All nine acceptance criteria
-in the spec must hold.
+and ADR 0004 are amended and the index marks them with the date. All nine
+acceptance criteria in the spec must hold.
 
 Scope: only the paths the spec lists under "Allowed paths". Do not change the
 activation thresholds, classifyReply, or any GitHub write. Do not edit

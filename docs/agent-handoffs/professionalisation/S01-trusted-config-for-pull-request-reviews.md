@@ -62,7 +62,10 @@ ADR 0022 is unchanged; it must not live in `prep`, which `reviewInFull`
    current directory and resolved to absolute. The operator's explicit choice.
 2. `REVIEW_VOICE_CONFIG`, when it is already set to an absolute path. This is
    how `watch` works and nothing about `watch` changes.
-3. The pull request's base commit. The driver runs
+3. The pull request's base commit. Before resolving, the driver removes any
+   existing `<run dir>/config.yaml`, as `prepareWorkspace` does for `base/`
+   and `history/` (`driver.ts:380-382`), so a re-run with `--out` into the
+   same directory never reads an earlier run's base config. It then runs
    `git show <base.sha>:.review-voice/config.yaml`; when the base commit is not
    in the clone it tries `origin/<base.ref>`. The content, when found, is
    written to `<run dir>/config.yaml` (mode 0600).
@@ -128,21 +131,32 @@ reads the base config from the working tree by accident. Each test below
 therefore (a) gives the harness a way to commit files at the base commit, and
 (b) checks out the head commit in the working tree before `runReview`, which
 is what `actions/checkout` gives a `pull_request` job. Each behavioural test
-must fail on the baseline when the driver's config step is removed.
+must fail on the baseline when the driver's config step is removed. Five
+existing driver tests write `.review-voice/config.yaml` into the working tree
+after `repository()` returns and depend on the checkout being read: (h) fast
+mode with the structure lane (`test/review-driver.test.mjs:329-333`),
+"--post sends the verdict" (`:399-400`), "exit 8 from post" (`:677-678`), and
+the two tests that call `commandsConfig()` (`:565-580`, used at `:584` and
+`:597`). Move each of those configs into the base commit through the
+harness's new base-files parameter (or pass it as `--config`); their
+assertions stay as they are.
 
 - AC-1. `review --pr` with neither `--config` nor `REVIEW_VOICE_CONFIG` reads
   `.review-voice/config.yaml` from the pull request's base commit. The base
   commits a default config; the head sets
   `review.human_review.sensitive_paths: []` and `cap_approval: false` and
-  touches `.github/workflows/ci.yml`; the head is checked out. The recorded
-  complexity is `high`, the verdict is `COMMENT`, and
+  touches `.github/workflows/ci.yml`; the head is checked out; the fake
+  analyst returns no candidates, so without the cap the verdict would be
+  APPROVE. The complexity read from `<run dir>/files.json` is `high`, the
+  verdict is `COMMENT` (which proves the base config was applied), and
   `configSource.kind` is `base`.
 - AC-2. `--config <path>` beats `REVIEW_VOICE_CONFIG`, which beats the base
   commit; the report names the winner. One test per case.
 - AC-3. A base commit with no `.review-voice/config.yaml` and a head that adds
   one with `cap_approval: false` and touches `.github/workflows/ci.yml`, head
-  checked out: `configSource.kind` is `default`, the verdict is `COMMENT`, and
-  the default-case note is present.
+  checked out, fake analyst returning no candidates: `configSource.kind` is
+  `default`, the verdict is `COMMENT` (the head's `cap_approval: false` was
+  not applied), and the default-case note is present.
 - AC-4. A head that changes `.review-voice/config.yaml` produces the "not
   applied" note; a head that does not change it produces no such note.
 - AC-5. `assessComplexity` with `sensitivePaths: []` still marks
@@ -209,7 +223,9 @@ two fixed notes are added when they apply; .review-voice/** and
 .github/workflows/** stay sensitive whatever sensitive_paths says, each listed
 once. All eight acceptance criteria in the spec must hold, with the driver
 tests arranged as the spec's preamble to the criteria describes (base files
-committed, head checked out).
+committed, head checked out). The five existing driver tests that write a
+working-tree config are moved to commit it at the base commit, with their
+assertions unchanged.
 
 Scope: only the files the spec lists under "Allowed paths". Do not edit
 action.yml, scripts/, CHANGELOG.md or the plugin manifests. Do not change the

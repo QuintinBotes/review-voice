@@ -67,7 +67,12 @@ committed head.
 
 One migration appended to the list in `src/store/db.ts`:
 `ALTER TABLE review_runs ADD COLUMN provenance_json TEXT;` in the style of the
-existing ones. `RecordRunInput.provenance?: RunProvenance` is optional: when
+existing ones. One existing test needs a matching edit:
+`test/human-review-complexity.test.mjs:367-393` rewinds a fully migrated store
+to `schema_version = 8` (dropping only `complexity_json`) and reopens it, so
+every later migration re-runs, and SQLite has no `ADD COLUMN IF NOT EXISTS`.
+Its rewind step also drops `review_runs.provenance_json` before rewinding, as
+it already drops `complexity_json`. `RecordRunInput.provenance?: RunProvenance` is optional: when
 absent, `recordRun` writes NULL, so the 53 direct `recordRun` calls across 23
 test files keep working unchanged; the `record` command always supplies it.
 `runDetail` returns `provenance: RunProvenance | null` (null for rows recorded
@@ -97,6 +102,13 @@ prints every version, so it is not the same list). It stops being a constant.
 - `watch` passes `--origin watch` to the child review, appended after
   `--expect-head <sha>` and before the optional `--post --recheck-thread` and
   `--mode` (`src/watch/review.ts:99-101`).
+- `help.ts` lists `--origin <driver|interactive|watch|action>`,
+  `--claude-version <text>` and `--mode <fast|standard|thorough>` in the
+  `record` body and `--origin <watch|action>` in the `review` body.
+  `test/seams.test.mjs:193` asserts that every flag an `RV <command>`
+  invocation in `commands/review.md` names appears in `--help` (`help.ts:909`
+  concatenates every command body), so the `commands/review.md` note needs
+  those entries.
 - `explain` prints one line after the scope line, exactly:
   `Provenance origin <origin> (<label>), plugin <v>, claude <v or unknown>, mode <mode or unknown>, policy <scopeType>/<scopeKey> v<n>[, ...]` with
   `policy none` when the list is empty, and `Provenance not recorded` for a
@@ -119,7 +131,11 @@ numbers (cache creation and cache read counts are not added), and leaves the
 key absent otherwise, so existing deep-equal assertions on results keep
 passing. `runner.ts` spreads the result and needs no change. The driver's
 `account()` adds `result.tokens` to the stage's `tokens` the way it adds
-`costUsd`. Never write zero for an unknown count.
+`costUsd`. Never write zero for an unknown count. `runFake`
+(`src/agents/fake.ts`) passes a fixture's `tokens` through when it is a finite
+non-negative number (`{ "output": ..., "tokens": 1200 }`) and leaves the key
+absent otherwise; the `fakes()` helper in `test/review-driver.test.mjs` gains
+a way to write that field, so a driver test can prove the sum.
 
 ### Follow-up for a person (protected path)
 
@@ -137,7 +153,8 @@ less specific.
 
 - AC-1. An old database migrates; a run recorded before the change reads
   `provenance: null`; `explain` prints `Provenance not recorded`; a direct
-  `recordRun` call without `provenance` writes NULL.
+  `recordRun` call without `provenance` writes NULL; the rewind test in
+  `test/human-review-complexity.test.mjs` passes with its stated extra drop.
 - AC-2. `record --origin driver --mode standard --claude-version "2.1.319 (Claude Code)"`
   stores provenance with `independence: 'independent'` and the current plugin
   version; `record` with no `--origin` stores `interactive` and
@@ -156,8 +173,10 @@ less specific.
   an inactive version is not listed.
 - AC-6. A unit test on `interpretEnvelope` with a canned envelope: a `usage`
   object with both counts populates `tokens` with their sum; an envelope
-  without `usage` leaves the key absent; a driver test asserts the stage's
-  `tokens` is the sum over the stage's calls.
+  without `usage` leaves the key absent; a driver test whose fixtures give two
+  calls of one stage `tokens` 1200 and 300 (the challenge stage calls the
+  challenger once per finding) records that stage with `tokens: 1500`, and a
+  stage whose fixtures carry none has no `tokens` key.
 - AC-7. `explain`, `status` and the driver report print the `Provenance` line
   exactly as specified, including the `policy none` and `unknown` forms; the
   `review_run_recorded` audit row carries `origin`.
@@ -169,7 +188,8 @@ less specific.
 `plugins/review-voice/src/store/effort.ts`, `plugins/review-voice/src/cli.ts`
 (`record`, `explain`, `status`, `review` flags), `plugins/review-voice/src/review/driver.ts`,
 `plugins/review-voice/src/agents/claude-cli.ts`, `plugins/review-voice/src/agents/types.ts`,
-`plugins/review-voice/src/watch/review.ts`, `plugins/review-voice/src/help.ts`,
+`plugins/review-voice/src/agents/fake.ts`, `plugins/review-voice/src/watch/review.ts`,
+`plugins/review-voice/src/help.ts`,
 `plugins/review-voice/src/version.ts`, `plugins/review-voice/commands/review.md`,
 `docs/ARCHITECTURE.md`, `test/**`, `plugins/review-voice/dist/review-voice.mjs`.
 
@@ -199,7 +219,10 @@ the spec must hold.
 Scope: only the files the spec lists under "Allowed paths". Do not edit
 action.yml, scripts/, CHANGELOG.md or the plugin manifests. Add no dependency.
 Append one migration; never edit an existing one. The only existing tests you
-may edit are the two argv assertions in test/watch.test.mjs the spec names.
+may edit are the two argv assertions in test/watch.test.mjs, the rewind step
+in test/human-review-complexity.test.mjs and the fakes() helper in
+test/review-driver.test.mjs, as the spec names them; help.ts gains the new
+flags so test/seams.test.mjs keeps passing.
 
 Conventions: follow CONTRIBUTING.md and the style of the surrounding code
 (comments explain why, in full sentences; no hardcoded identities; no em or en
