@@ -3913,7 +3913,7 @@ var MAX_QUOTE = 600;
 var MIN_QUOTE_WORDS = 4;
 var HEADING = /^\s*#{1,6}\s+/u;
 var ID = /^int_[0-9]{3,}$/;
-var LIST_OR_HEADING = /^\s*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?|#{1,6}\s+|>\s*)/u;
+var LIST_OR_HEADING = /^\s*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?|\[[ xX]\]\s+|#{1,6}\s+|>\s*)/u;
 var LEAD_LABEL = /^(?:(?:\[[^\]]*\]\([^)\s]+\)|https?:\/\/\S+):|\*\*[^*]+?[.:]\*\*)(?= |$)/u;
 var QUALIFYING_LABEL = /\b(?:not|no|out of scope|non-goals?|won't|without|except|unless|only if|later|follow-ups?)\b|n't\b/iu;
 var collapse = (text4) => text4.replace(/\s+/gu, " ").trim();

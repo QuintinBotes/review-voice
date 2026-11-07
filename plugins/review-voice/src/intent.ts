@@ -38,7 +38,9 @@ const MAX_QUOTE = 600;
 const MIN_QUOTE_WORDS = 4;
 const HEADING = /^\s*#{1,6}\s+/u;
 const ID = /^int_[0-9]{3,}$/;
-const LIST_OR_HEADING = /^\s*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?|#{1,6}\s+|>\s*)/u;
+// A task-list marker may also stand alone: a quote of a QA item often keeps its
+// `[ ]` and drops the bullet, and the description side has already lost both (#237).
+const LIST_OR_HEADING = /^\s*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?|\[[ xX]\]\s+|#{1,6}\s+|>\s*)/u;
 // A leading `[label](url): `, bare URL and `: `, `**Label.**` or `**Label:**` reads as a label, not part of the sentence after it.
 const LEAD_LABEL = /^(?:(?:\[[^\]]*\]\([^)\s]+\)|https?:\/\/\S+):|\*\*[^*]+?[.:]\*\*)(?= |$)/u;
 // ...unless the label negates or scopes that sentence ("**Not in this change:**"), which a quote must keep.
