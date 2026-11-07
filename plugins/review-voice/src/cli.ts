@@ -5296,7 +5296,7 @@ async function reviewCommand(argv: string[]): Promise<number> {
     console.error(`--mode takes one of ${MODES.join(', ')}.`);
     return 2;
   }
-  for (const name of ['--out', '--since', '--repository', '--expect-head']) {
+  for (const name of ['--out', '--since', '--repository', '--expect-head', '--config']) {
     if (argv.includes(name) && flag(argv, name) === null) {
       console.error(`${name} needs a value.`);
       return 2;
@@ -5318,6 +5318,7 @@ async function reviewCommand(argv: string[]): Promise<number> {
       full: argv.includes('--full'),
       recheckThread: !argv.includes('--no-recheck-thread'),
       expectHead: flag(argv, '--expect-head'),
+      config: flag(argv, '--config'),
     },
     { command: (args, stdin) => runInProcess(args, { stdin }), client: githubClient([repository]) },
   );

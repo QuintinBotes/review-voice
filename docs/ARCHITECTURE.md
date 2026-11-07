@@ -878,7 +878,9 @@ narrower layer can add something not to say, never license something a broader
 layer banned.
 
 `.review-voice/config.yaml` is the user's own file in their own checkout and is
-trusted. `.review-voice/policy.yaml` is repository content and is not: it is
+trusted. A PR review (`review --pr`) is the exception: it reads the base
+commit's config (or `--config`, or an absolute `REVIEW_VOICE_CONFIG`), never
+the head's, so a pull request cannot loosen its own review. `.review-voice/policy.yaml` is repository content and is not: it is
 parsed, hashed and reported as pending approval, never applied. Editing an
 approved file changes its hash and re-proposes it, so a quiet edit cannot
 inherit an old approval.

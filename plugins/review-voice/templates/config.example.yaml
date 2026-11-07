@@ -84,7 +84,9 @@ review:
     structure:
       file_line_crossing: false     # a production file crosses max_file_lines
       branch_growth: false          # an existing function gains branches
-    # A list here replaces the defaults; an empty list turns the signal off.
+    # A list here replaces the defaults; an empty list turns off every sensitive
+    # path except .review-voice/** and .github/workflows/**, which stay sensitive
+    # whatever this says.
     sensitive_paths:
       - ".github/workflows/**"
       - "**/migrations/**"
