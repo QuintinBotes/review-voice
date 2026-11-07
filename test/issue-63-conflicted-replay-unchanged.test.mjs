@@ -152,7 +152,7 @@ test('a conflicted file unchanged since the review drops out while another file 
   });
 });
 
-test("taking the base's side in a conflict still reads the file whole", () => {
+test("taking the base's side in a conflict reads the withdrawal since review", () => {
   withPullRequest((repository) => {
     conflictingMerge(repository);
     repository.write('src/a.ts', lines(400, 'a').replace('a 5\n', 'a 5 rewritten on main\n').replace('a 300\n', 'a 300 by the author\n'));
@@ -160,7 +160,8 @@ test("taking the base's side in a conflict still reads the file whole", () => {
 
     const { scope, interdiffPatch } = plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
-    assert.match(interdiffPatch, /^\+a 300 by the author$/m);
-    assert.match(scope.detail, /read whole after a conflicting replay/);
+    assert.equal(interdiffPatch, repository.git('diff', repository.reviewed, 'HEAD', '--', 'src/a.ts'));
+    assert.doesNotMatch(interdiffPatch, /a 300/);
+    assert.match(scope.detail, /read as the two-head diff minus base changes after a conflicting replay/);
   });
 });

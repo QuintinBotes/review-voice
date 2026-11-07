@@ -176,13 +176,21 @@ branched there, and the head is read against that, over the pull request's
 files. Base changes are
 on both sides and cancel out; what remains is the author's new commits and any
 rewrite of their own code while resolving the merge. A file whose replay
-conflicts has only conflict markers to compare with, so it is read as the pull
-request's own diff of it on the new base, cut to the hunks that meet a place
-where the head differs from the marked-up replay: the author's resolution, with
-the base's changes still left out. When some part of the resolution meets no
-own-diff hunk, as when the author took the base's side, the whole own diff of
-that file is read instead, and the scope note says so. A file the reviewed head
-changed that the base now changes the same way drops out of the pull request;
+conflicts has only conflict markers to compare with, so it is read between the
+reviewed head and the current head, with matching base edits removed. Matching
+uses edit content and positions in the shared comparison tree, never overlap
+through context lines. An edit is subtracted only when the base's own history
+also makes it, so withdrawing reviewed code remains visible. When some part of
+the resolution meets no own-diff hunk, the scope note names this two-head
+fallback. An inherited base edit that shares a hunk with the author's is taken
+out of that hunk, its added lines left as the context they now are. Only an
+edit the two sides made to the same or adjacent lines, which the diff records
+as one run, is kept whole, and the scope note names the file, because the
+author wrote those lines while resolving; a diff that cannot be read hunk by
+hunk, such as a mode change or a rename, falls back to a full read with the
+file named. An unchanged own-diff
+hunk is never substituted for an actual change between the heads. A file the
+reviewed head changed that the base now changes the same way drops out of the pull request;
 it is listed as `absorbedByBase` and printed after the findings. Without the
 base commit, a merge or a rewritten history still falls back.
 
