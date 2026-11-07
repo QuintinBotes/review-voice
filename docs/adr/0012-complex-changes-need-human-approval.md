@@ -196,3 +196,12 @@ The reason now names the glob each shown path matched, and the assessment
 carries `sensitiveMatches` and `sensitiveExempted`; when the change is high for
 another reason, the local note lists the exempted paths. An assessment recorded
 before this amendment has none of these fields and reads as having none.
+
+## Amendment - 2026-11-07
+
+The limits above no longer come from the head's checkout when a pull request
+is reviewed. `review --pr` reads `.review-voice/config.yaml` from the pull
+request's base commit (or `--config`, or an absolute `REVIEW_VOICE_CONFIG`),
+so a change cannot set `cap_approval: false` or empty `sensitive_paths` for its
+own review. `.review-voice/**` and `.github/workflows/**` are also sensitive
+whatever `sensitive_paths` says, listed once. The decision itself is unchanged.

@@ -49,6 +49,17 @@ Add one secret, `ANTHROPIC_API_KEY`, under the repository's Actions secrets.
 | `claude-code-version` | pinned | Version of Claude Code to install |
 | `config` | `.review-voice/config.yaml` | A different path is copied over the default before the run |
 
+## Which configuration a review reads
+
+A review never reads the `.review-voice/config.yaml` of the pull request it is
+reviewing, because the author could loosen the review bar in the same change.
+The run uses `--config`, else an absolute `REVIEW_VOICE_CONFIG`, else the
+file at the pull request's **base commit**. The base commit must be in the
+clone, which is why the examples check out with `fetch-depth: 0`; when it is
+missing, or has no config file, the review runs with the built-in defaults and
+says so in its notes. The `config` input above is ignored by `review --pr`
+until the action passes it as `--config`.
+
 ## Posting
 
 Posting needs both `post: true` in the workflow and

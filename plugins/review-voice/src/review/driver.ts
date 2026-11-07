@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { ownSignals, readAgentTools, runAgent, stopAll, type AgentResult } from '../agents/runner.ts';
 import { DEFAULT_AGENT_PARALLELISM } from '../agents/types.ts';
 import { seriousNotCarried, type NotCarriedFinding } from '../diff/carry.ts';
@@ -44,6 +44,20 @@ export interface ReviewOptions {
   recheckThread?: boolean | undefined;
   /** The head the caller expects; any other head is exit 3, at the start and before record. */
   expectHead?: string | null | undefined;
+  /** `--config`: the config file for the whole run, beating REVIEW_VOICE_CONFIG and the base commit. */
+  config?: string | null | undefined;
+}
+
+/**
+ * Where a run's configuration came from. Local only, never posted: the pull
+ * request's own checkout is never a source, so its author cannot set the bar.
+ */
+export interface ConfigSource {
+  kind: 'flag' | 'env' | 'base' | 'default';
+  /** The base commit (or `origin/<branch>`) read, for `base` and `default`. */
+  ref?: string;
+  /** The file the run's stages read. */
+  path?: string;
 }
 
 export interface ReviewDeps {
@@ -78,6 +92,8 @@ export interface ReviewReport {
   stages: StageReport[];
   /** Local only, never posted: notes from the diff, drops and refusals. */
   notes: string[];
+  /** Which configuration the run used; null when it stopped before choosing one. */
+  configSource: ConfigSource | null;
   error?: string;
 }
 
@@ -100,6 +116,9 @@ interface Run {
   started: number;
   dir: string;
   head: string;
+  /** The pull request's base commit and branch, as the same response that names the head gave them. */
+  pullBase: { sha: string | null; ref: string | null };
+  configSource: ConfigSource | null;
   /** The ref the diff was taken against: the merge base, else a readable base. */
   base: string | null;
   summary: Json;
@@ -168,12 +187,89 @@ async function must(run: Run, argv: string[], stdin?: string, code = 2): Promise
   return result;
 }
 
-async function headOf(run: Run): Promise<string> {
+async function headOf(run: Run): Promise<{ sha: string; base: { sha: string | null; ref: string | null } }> {
   const { repository, pullNumber } = run.options;
-  const { data } = await run.deps.client.get<{ head?: { sha?: unknown } }>(`/repos/${repository}/pulls/${pullNumber}`);
+  const { data } = await run.deps.client.get<{ head?: { sha?: unknown }; base?: { sha?: unknown; ref?: unknown } }>(
+    `/repos/${repository}/pulls/${pullNumber}`,
+  );
   const sha = data.head?.sha;
   if (typeof sha !== 'string') throw new Stop(2, `GitHub returned no head for ${repository}#${pullNumber}.`);
-  return sha;
+  const base = { sha: typeof data.base?.sha === 'string' ? data.base.sha : null, ref: typeof data.base?.ref === 'string' ? data.base.ref : null };
+  return { sha, base };
+}
+
+const CONFIG_PATH = '.review-voice/config.yaml';
+
+const shortRef = (ref: string): string => (/^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 7) : ref);
+
+/** `git show` of one path at one ref, or null when git cannot read it (no such ref, no such file). */
+function showAt(ref: string, path: string): Buffer | null {
+  try {
+    return execFileSync('git', [...SAFE_GIT, 'show', `${ref}:${path}`], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 16 * 1024 * 1024 });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Chooses the one configuration the whole run reads, then points
+ * REVIEW_VOICE_CONFIG at it, so the checked-out head's own
+ * .review-voice/config.yaml is never read: its author could otherwise lower
+ * the bar the review applies to that very pull request. This is run setup, not
+ * a stage, and it runs once, so `prep` calling twice does not repeat it.
+ * Order: --config, an absolute REVIEW_VOICE_CONFIG (how `watch` works), then
+ * the base commit. The previous value of the variable comes back on every exit.
+ */
+function resolveConfig(run: Run): void {
+  const previous = process.env['REVIEW_VOICE_CONFIG'];
+  run.cleanup.push(() => {
+    if (previous === undefined) delete process.env['REVIEW_VOICE_CONFIG'];
+    else process.env['REVIEW_VOICE_CONFIG'] = previous;
+  });
+
+  const chosen = (source: ConfigSource): void => {
+    run.configSource = source;
+    process.env['REVIEW_VOICE_CONFIG'] = source.path!;
+  };
+  const flagged = run.options.config;
+  if (flagged != null && flagged !== '') {
+    const path = resolve(flagged);
+    if (!existsSync(path)) throw new Stop(2, `--config ${flagged} does not exist.`);
+    return chosen({ kind: 'flag', path });
+  }
+  if (previous !== undefined && previous !== '') {
+    if (isAbsolute(previous)) return chosen({ kind: 'env', path: previous });
+    run.notes.push('REVIEW_VOICE_CONFIG must be an absolute path, so it was ignored and the base commit supplied the configuration.');
+  }
+
+  const { sha, ref } = run.pullBase;
+  if (sha === null) throw new Stop(2, `GitHub returned no base commit for ${run.options.repository}#${run.options.pullNumber}, so there is no trusted configuration to read.`);
+  const path = at(run, 'config.yaml');
+  // A re-run into the same directory must not read a copy taken from another base.
+  rmSync(path, { force: true });
+  let from = sha;
+  let content = showAt(sha, CONFIG_PATH);
+  // A shallow clone may lack the base commit; the base branch's remote ref is the next best trusted copy.
+  if (content === null && ref !== null && showAt(sha, '') === null) {
+    from = `origin/${ref}`;
+    content = showAt(from, CONFIG_PATH);
+  }
+  if (content === null) {
+    run.notes.push(`No ${CONFIG_PATH} at the base commit ${shortRef(sha)}; the review ran with the built-in defaults.`);
+    return chosen({ kind: 'default', ref: sha, path });
+  }
+  writeFileSync(path, content, { mode: 0o600 });
+  chosen({ kind: 'base', ref: from, path });
+}
+
+/** The pull request's changes to its own config were not applied; say so once it is known the change exists. */
+function noteConfigChange(run: Run): void {
+  if (run.configSource === null || (run.configSource.kind !== 'base' && run.configSource.kind !== 'default')) return;
+  const manifest = readJson(at(run, 'files.json'));
+  const changed = list(isRecord(manifest) ? manifest['files'] : []).some((file) => file['path'] === CONFIG_PATH || file['previousPath'] === CONFIG_PATH);
+  if (!changed) return;
+  const note = `Configuration was read from the base commit ${shortRef(run.pullBase.sha ?? '')}; the pull request's changes to ${CONFIG_PATH} were not applied to this review.`;
+  if (!run.notes.includes(note)) run.notes.push(note);
 }
 
 function skip(run: Run, name: string, reason: string): void {
@@ -281,6 +377,7 @@ async function prep(run: Run): Promise<void> {
   for (const key of ['truncationNote', 'scopeNote', 'humanReviewNote'] as const) {
     if (typeof run.summary[key] === 'string') run.notes.push(run.summary[key] as string);
   }
+  noteConfigChange(run);
   for (const key of ['suspectedWrongBase', 'squashedParentSuspected'] as const) {
     const note = isRecord(run.summary[key]) ? run.summary[key]['note'] : null;
     if (typeof note === 'string') run.notes.push(note);
@@ -761,7 +858,7 @@ async function recordStage(run: Run): Promise<void> {
 
 /** Records the run once the head is confirmed, then computes the verdict and posts when asked. */
 async function record(run: Run, extra: string[]): Promise<void> {
-  const now = await headOf(run);
+  const { sha: now } = await headOf(run);
   if (now !== run.head) throw new Stop(3, `The head moved to ${now} during the review; nothing was recorded.`);
   const held = heldForRecord(run.held, readFileSync(at(run, 'diff.patch'), 'utf8'));
   run.held = held.held;
@@ -848,6 +945,8 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     started: performance.now(),
     dir: '',
     head: '',
+    pullBase: { sha: null, ref: null },
+    configSource: null,
     base: null,
     summary: {},
     plan: null,
@@ -891,12 +990,15 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
   process.on('SIGTERM', onSignal);
   ownSignals(true);
   try {
-    run.head = await headOf(run);
+    const pull = await headOf(run);
+    run.head = pull.sha;
+    run.pullBase = pull.base;
     if (options.expectHead != null && options.expectHead !== run.head) {
       throw new Stop(3, `The head is ${run.head}, not the expected ${options.expectHead}.`);
     }
     run.dir = options.out === null ? runDirectory(options, run.head) : resolve(options.out);
     mkdirSync(run.dir, { recursive: true });
+    resolveConfig(run);
     for (const stage of STAGES) {
       if (run.done) break;
       if (stage.kind === 'agent' && run.headDir === null) prepareWorkspace(run);
@@ -930,6 +1032,7 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     seconds: elapsed(run.started),
     stages: run.stages,
     notes: run.notes,
+    configSource: run.configSource,
     ...(error === undefined ? {} : { error }),
   };
 }
@@ -946,6 +1049,11 @@ export function reportText(report: ReviewReport): string {
     lines.push(`Verdict: ${String(verdict['event'] ?? 'none')} (${String(verdict['action'] ?? '')})`);
   }
   if (report.reviewUrl !== null) lines.push(`${report.posted ? 'Posted' : 'Review'}: ${report.reviewUrl}`);
+  const source = report.configSource;
+  if (source !== null) {
+    const where = { flag: `--config ${source.path}`, env: `REVIEW_VOICE_CONFIG ${source.path}`, base: `base commit ${shortRef(source.ref ?? '')}`, default: 'built-in defaults' }[source.kind];
+    lines.push(`Config: ${where}`);
+  }
   for (const note of report.notes) lines.push(`Note: ${note}`);
   if (report.error !== undefined) lines.push(`Stopped (exit ${report.exitCode}): ${report.error}`);
   lines.push(`Cost: ${report.costUsd === null ? 'unknown' : `$${report.costUsd.toFixed(4)}`}, ${report.seconds}s. Run directory: ${report.runDir ?? 'none'}`);

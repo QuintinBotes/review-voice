@@ -44,17 +44,18 @@ export type HumanReviewConfigInput = Omit<Partial<HumanReviewConfig>, 'structure
 
 /**
  * `.review-voice/**` is here because the review's own configuration, exclusion
- * globs included, is read from the checked-out tree: a change to it is a
- * change to what this assessment measures.
+ * globs included, decides what this assessment measures: a change to it is a
+ * change to the review bar. `SENSITIVE_NEVER_EXEMPT` keeps it and the
+ * workflows sensitive even when a configured list leaves them out.
  */
 export const DEFAULT_SENSITIVE_PATHS = [
   '.github/workflows/**', '**/migrations/**', '**/auth/**', '**/security/**', '.review-voice/**',
 ];
 
 /**
- * Paths no exemption reaches. The review's own configuration is read from the
- * checked-out tree, so a pull request could otherwise exempt itself, and a
- * workflow changes what CI proves.
+ * Paths no exemption and no `sensitive_paths` list reaches. The reviewer
+ * protects its own configuration and CI whatever the list says: a change to
+ * the configuration moves the review bar, and a workflow changes what CI proves.
  */
 const SENSITIVE_NEVER_EXEMPT = ['.review-voice/**', '.github/workflows/**'];
 
@@ -431,7 +432,10 @@ export function assessComplexity(
 
   // Every changed path, reviewed or not: a path left out of the review is no
   // less sensitive for it, and a rename touches both of its names.
-  const sensitiveMatchers = limits.sensitivePaths.map((glob) => globToRegExp(glob));
+  // The protected globs follow the configured ones, each once, so a configured
+  // match is reported under its own glob and an empty list still flags them.
+  const sensitiveGlobs = [...limits.sensitivePaths, ...SENSITIVE_NEVER_EXEMPT.filter((glob) => !limits.sensitivePaths.includes(glob))];
+  const sensitiveMatchers = sensitiveGlobs.map((glob) => globToRegExp(glob));
   const neverExempt = SENSITIVE_NEVER_EXEMPT.map((glob) => globToRegExp(glob));
   const changed = new Set<string>();
   for (const file of files) {
@@ -445,7 +449,7 @@ export function assessComplexity(
   const exempted = exemptible.filter((path) => matchesAny(exemptions, path));
   const sensitive = matched.filter((path) => !exempted.includes(path));
   const listed = sensitive.slice(0, MAX_SENSITIVE_LISTED);
-  const globOf = (path: string): string => limits.sensitivePaths[sensitiveMatchers.findIndex((matcher) => matcher.test(path))]!;
+  const globOf = (path: string): string => sensitiveGlobs[sensitiveMatchers.findIndex((matcher) => matcher.test(path))]!;
   const matches = listed.map((path) => ({ path, glob: globOf(path) }));
   for (const path of matched.filter((path) => matchesAny(neverExempt, path) && matchesAny(exemptions, path))) {
     reasons.push(`sensitive_exempt_paths does not apply to ${path}, which is review configuration or a workflow`);
@@ -487,7 +491,7 @@ export function assessComplexity(
     limits: {
       maxDecisionPoints: limits.maxDecisionPoints,
       maxHunkDecisionPoints: limits.maxHunkDecisionPoints,
-      sensitivePaths: limits.sensitivePaths,
+      sensitivePaths: sensitiveGlobs,
       sensitiveExemptPaths: limits.sensitiveExemptPaths,
       testPaths: limits.testPaths,
       generatedPaths: limits.generatedPaths,

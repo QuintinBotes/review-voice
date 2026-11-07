@@ -7,12 +7,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInProcess } from '../plugins/review-voice/src/cli.ts';
-import { heldForRecord, historyName, runReview, NO_FINDINGS } from '../plugins/review-voice/src/review/driver.ts';
+import { heldForRecord, historyName, reportText, runReview, NO_FINDINGS } from '../plugins/review-voice/src/review/driver.ts';
 import { STAGES } from '../plugins/review-voice/src/review/stages.ts';
 import { SCHEMAS } from '../plugins/review-voice/src/review/prompts.ts';
 import { RUNNER_PREAMBLE, schemaForRunner, schemasDir } from '../plugins/review-voice/src/agents/runner.ts';
@@ -30,8 +30,12 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), { status
 const APP_BASE = ['export function total(items) {', '  let sum = 0;', '  for (const item of items) sum += item.price;', '  return sum;', '}', ''].join('\n');
 const APP_HEAD = ['export function total(items) {', '  let sum = 0;', '  for (const item of items) sum += item.price * item.qty;', '  return sum;', '}', ''].join('\n');
 
-/** A clone with a base commit and a head commit, and the patch GitHub would serve for each file. */
-function repository(t, change) {
+/**
+ * A clone with a base commit and a head commit, and the patch GitHub would serve for each file.
+ * `baseFiles` are committed at the base, which is where `review --pr` reads its configuration
+ * from; `change` is committed at the head only. Ends on main; `checkoutHead` moves to the head.
+ */
+function repository(t, change, baseFiles = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'rv-driver-repo-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
@@ -42,6 +46,10 @@ function repository(t, change) {
   mkdirSync(join(dir, 'src'));
   writeFileSync(join(dir, 'src/app.ts'), APP_BASE);
   writeFileSync(join(dir, 'README.md'), '# Api\n\nSums prices.\n');
+  for (const [path, content] of Object.entries(baseFiles)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), content);
+  }
   git('add', '-A');
   git('commit', '-q', '-m', 'base');
   const base = git('rev-parse', 'HEAD').trim();
@@ -325,11 +333,13 @@ test('(g) a head that moves before record stops with exit 3 and records nothing'
 });
 
 test('(h) fast mode on a docs-only change runs no other lane and no challenger for a nit', async (t) => {
-  const repo = repository(t, { 'README.md': '# Api\n\nSums prices and quantities.\n' });
-  mkdirSync(join(repo.dir, '.review-voice'));
-  writeFileSync(
-    join(repo.dir, '.review-voice', 'config.yaml'),
-    'review:\n  lanes:\n    - name: structure\n      agent: structure-analyst\n      prefix: st_\n      when: { min_changed_source_lines: 0, exclude_kinds: [] }\n',
+  const repo = repository(
+    t,
+    { 'README.md': '# Api\n\nSums prices and quantities.\n' },
+    {
+      '.review-voice/config.yaml':
+        'review:\n  lanes:\n    - name: structure\n      agent: structure-analyst\n      prefix: st_\n      when: { min_changed_source_lines: 0, exclude_kinds: [] }\n',
+    },
   );
   const nit = {
     ...CANDIDATE,
@@ -395,9 +405,7 @@ test('(i, j) agents run in the head worktree, which is removed; base and history
 });
 
 test('--post sends the verdict once posting is enabled, and the JSON report keeps its shape', async (t) => {
-  const repo = repository(t, { 'src/app.ts': APP_HEAD });
-  mkdirSync(join(repo.dir, '.review-voice'));
-  writeFileSync(join(repo.dir, '.review-voice', 'config.yaml'), 'writes:\n  github_posting_enabled: true\n');
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, { '.review-voice/config.yaml': 'writes:\n  github_posting_enabled: true\n' });
   const fakeDir = fakes(t, {
     'diff-analyst': [{ candidates: [CANDIDATE] }],
     'evidence-verifier': [{ verifications: [VERIFIED] }],
@@ -445,7 +453,8 @@ test('review --help and bad invocations', () => {
   assert.ok(help.stdout.startsWith('review-voice review --pr <n>'));
   assert.match(help.stdout, /7 an agent failed twice/);
   assert.match(run(['--help']).stdout, /^ {2}review {15}Review one pull request end to end/m);
-  for (const args of [['review'], ['review', '--pr', 'x'], ['review', '--pr', '3', '--mode', 'cheap'], ['review', '--pr', '3', '--out']]) {
+  assert.match(help.stdout, /--config <path>/);
+  for (const args of [['review'], ['review', '--pr', 'x'], ['review', '--pr', '3', '--mode', 'cheap'], ['review', '--pr', '3', '--out'], ['review', '--pr', '3', '--config']]) {
     const result = run(args);
     assert.equal(result.status, 2, `${args.join(' ')}: ${result.stderr}`);
   }
@@ -562,26 +571,22 @@ test('--expect-head stops at once with exit 3 when the pull request is elsewhere
   assert.equal(same.report.exitCode, 0, same.report.error);
 });
 
-function commandsConfig(repo) {
-  mkdirSync(join(repo.dir, '.review-voice'));
-  writeFileSync(
-    join(repo.dir, '.review-voice', 'config.yaml'),
-    [
-      'static_evidence:',
-      '  enabled: true',
-      '  commands:',
-      "    - { name: mark, run: 'touch evidence-ran' }",
-      'verification:',
-      '  enabled: true',
-      `  command: "touch verify-ran; echo '{\\"verdict\\":\\"confirmed\\",\\"confidence\\":0.9,\\"reason\\":\\"holds\\"}'"`,
-      '',
-    ].join('\n'),
-  );
-}
+/** The base-commit files for a repository whose config runs the evidence and verification commands. */
+const COMMANDS_CONFIG = {
+  '.review-voice/config.yaml': [
+    'static_evidence:',
+    '  enabled: true',
+    '  commands:',
+    "    - { name: mark, run: 'touch evidence-ran' }",
+    'verification:',
+    '  enabled: true',
+    `  command: "touch verify-ran; echo '{\\"verdict\\":\\"confirmed\\",\\"confidence\\":0.9,\\"reason\\":\\"holds\\"}'"`,
+    '',
+  ].join('\n'),
+};
 
 test('REVIEW_VOICE_NO_COMMANDS=1 skips the static evidence and second-pass commands, and says so', async (t) => {
-  const repo = repository(t, { 'src/app.ts': APP_HEAD });
-  commandsConfig(repo);
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, COMMANDS_CONFIG);
   const { report } = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => review(t, repo, fakes(t, fullRun()), fakeGitHub(repo)));
   assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
   assert.equal(report.plan.stages['second-pass'].run, true, 'the plan would have run it');
@@ -593,8 +598,7 @@ test('REVIEW_VOICE_NO_COMMANDS=1 skips the static evidence and second-pass comma
 });
 
 test('the second pass writes its first reconcile to disk, and the challenge stage records every model', async (t) => {
-  const repo = repository(t, { 'src/app.ts': APP_HEAD });
-  commandsConfig(repo);
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, COMMANDS_CONFIG);
   const { report } = await review(t, repo, fakes(t, fullRun()), fakeGitHub(repo));
   assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
   assert.ok(existsSync(join(repo.dir, 'verify-ran')), 'the second pass ran');
@@ -673,9 +677,7 @@ test('an editor that fails validation twice stops with exit 7 and records nothin
 });
 
 test('exit 8 from post, a point raised on the thread during the run, surfaces as exit 8', async (t) => {
-  const repo = repository(t, { 'src/app.ts': APP_HEAD });
-  mkdirSync(join(repo.dir, '.review-voice'));
-  writeFileSync(join(repo.dir, '.review-voice', 'config.yaml'), 'writes:\n  github_posting_enabled: true\n');
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, { '.review-voice/config.yaml': 'writes:\n  github_posting_enabled: true\n' });
   const fakeDir = fakes(t, fullRun());
   const raised = {
     id: 501,
@@ -691,4 +693,149 @@ test('exit 8 from post, a point raised on the thread during the run, surfaces as
   assert.equal(report.exitCode, 8, `${report.error} ${JSON.stringify(report.notes)}`);
   assert.equal(report.posted, false);
   assert.equal(github.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/reviews')).length, 0);
+});
+
+// ---------------------------------------------------------------- trusted configuration
+
+/** What `actions/checkout` gives a `pull_request` job: the head, not the base, in the working tree. */
+const checkoutHead = (repo) => execFileSync('git', ['checkout', '-q', 'feature'], { cwd: repo.dir });
+
+const CONFIG_FILE = '.review-voice/config.yaml';
+const HUMAN_REVIEW = (lines) => `review:\n  human_review:\n${lines.map((line) => `    ${line}\n`).join('')}`;
+const BASE_CONFIG = HUMAN_REVIEW(['cap_approval: true']);
+const WEAKENED_CONFIG = HUMAN_REVIEW(['sensitive_paths: []', 'cap_approval: false']);
+const LOOSE_CONFIG = HUMAN_REVIEW(['cap_approval: false']);
+const NO_FINDING_RUN = { 'diff-analyst': [{ candidates: [] }] };
+
+/** A pull request that weakens its own review bar and touches CI, with the head checked out. */
+function weakening(t, baseFiles = { [CONFIG_FILE]: BASE_CONFIG }) {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD, '.github/workflows/ci.yml': 'name: ci\n', [CONFIG_FILE]: WEAKENED_CONFIG }, baseFiles);
+  checkoutHead(repo);
+  return repo;
+}
+
+function scratch(t, name, content) {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-driver-config-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, name);
+  writeFileSync(file, content);
+  return file;
+}
+
+const complexityOf = (report) => JSON.parse(readFileSync(join(report.runDir, 'files.json'), 'utf8')).complexity;
+const sha7 = (sha) => sha.slice(0, 7);
+const changedNote = (sha) =>
+  `Configuration was read from the base commit ${sha7(sha)}; the pull request's changes to ${CONFIG_FILE} were not applied to this review.`;
+
+test('S01 AC-1: the base commit supplies the config, not the head that is checked out', async (t) => {
+  const repo = weakening(t);
+  const { report } = await review(t, repo, fakes(t, NO_FINDING_RUN), fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.configSource.kind, 'base');
+  assert.equal(report.configSource.ref, repo.base);
+  assert.equal(report.configSource.path, join(report.runDir, 'config.yaml'));
+  assert.equal(readFileSync(report.configSource.path, 'utf8'), BASE_CONFIG);
+  assert.equal(statSync(report.configSource.path).mode & 0o777, 0o600, 'the copy is private to the owner');
+  assert.equal(complexityOf(report).level, 'high');
+  assert.equal(report.verdict.event, 'COMMENT', 'the head turned the approval cap off, and the base kept it');
+  assert.match(reportText(report), new RegExp(`^Config: base commit ${sha7(repo.base)}$`, 'm'));
+});
+
+test('S01 AC-2: --config beats REVIEW_VOICE_CONFIG, which beats the base commit', async (t) => {
+  // Each source says something different: the base caps the approval, the others do not.
+  const loose = scratch(t, 'loose.yaml', LOOSE_CONFIG);
+  const strict = scratch(t, 'strict.yaml', BASE_CONFIG);
+
+  const flagged = weakening(t);
+  // Relative to the clone, so the test also shows the path is made absolute.
+  const { report: byFlag } = await withEnv({ REVIEW_VOICE_CONFIG: strict }, () =>
+    review(t, flagged, fakes(t, NO_FINDING_RUN), fakeGitHub(flagged), { config: relative(flagged.dir, loose) }),
+  );
+  assert.equal(byFlag.exitCode, 0, byFlag.error);
+  assert.deepEqual(byFlag.configSource, { kind: 'flag', path: realpathSync(loose) });
+  assert.equal(byFlag.verdict.event, 'APPROVE', 'the flag file, not the environment file or the base');
+
+  const environed = weakening(t);
+  const { report: byEnv } = await withEnv({ REVIEW_VOICE_CONFIG: loose }, () =>
+    review(t, environed, fakes(t, NO_FINDING_RUN), fakeGitHub(environed)),
+  );
+  assert.equal(byEnv.exitCode, 0, byEnv.error);
+  assert.deepEqual(byEnv.configSource, { kind: 'env', path: loose });
+  assert.equal(byEnv.verdict.event, 'APPROVE', 'the environment file, not the base');
+  assert.equal(existsSync(join(byEnv.runDir, 'config.yaml')), false, 'nothing is copied from the base');
+});
+
+test('S01 AC-3: a base without a config means the defaults, whatever the head adds', async (t) => {
+  const repo = weakening(t, {});
+  const { report } = await review(t, repo, fakes(t, NO_FINDING_RUN), fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.configSource.kind, 'default');
+  assert.equal(report.configSource.ref, repo.base);
+  assert.equal(report.verdict.event, 'COMMENT', 'the head turned the approval cap off, and the defaults keep it');
+  assert.ok(report.notes.includes(`No ${CONFIG_FILE} at the base commit ${sha7(repo.base)}; the review ran with the built-in defaults.`), JSON.stringify(report.notes));
+  assert.equal(existsSync(join(report.runDir, 'config.yaml')), false);
+});
+
+test('S01 AC-4: the not-applied note appears only when the head changes the config', async (t) => {
+  const changing = weakening(t);
+  const { report: changed } = await review(t, changing, fakes(t, NO_FINDING_RUN), fakeGitHub(changing));
+  assert.equal(changed.exitCode, 0, changed.error);
+  assert.equal(changed.notes.filter((note) => note === changedNote(changing.base)).length, 1, JSON.stringify(changed.notes));
+
+  const leaving = repository(t, { 'src/app.ts': APP_HEAD, '.github/workflows/ci.yml': 'name: ci\n' }, { [CONFIG_FILE]: BASE_CONFIG });
+  checkoutHead(leaving);
+  const { report: untouched } = await review(t, leaving, fakes(t, NO_FINDING_RUN), fakeGitHub(leaving));
+  assert.equal(untouched.exitCode, 0, untouched.error);
+  assert.equal(untouched.configSource.kind, 'base');
+  assert.ok(!untouched.notes.some((note) => note.includes('were not applied')), JSON.stringify(untouched.notes));
+});
+
+test('S01 AC-6: REVIEW_VOICE_CONFIG is restored when the run ends, on a Stop exit too', async (t) => {
+  const saved = process.env.REVIEW_VOICE_CONFIG;
+  t.after(() => {
+    if (saved === undefined) delete process.env.REVIEW_VOICE_CONFIG;
+    else process.env.REVIEW_VOICE_CONFIG = saved;
+  });
+
+  // Unset before, so unset after: a normal run, then an analyst that fails twice (exit 7).
+  delete process.env.REVIEW_VOICE_CONFIG;
+  const normal = weakening(t);
+  const { report: done } = await review(t, normal, fakes(t, NO_FINDING_RUN), fakeGitHub(normal));
+  assert.equal(done.exitCode, 0, done.error);
+  assert.equal(process.env.REVIEW_VOICE_CONFIG, undefined);
+
+  const failing = weakening(t);
+  const { report: stopped } = await review(t, failing, fakes(t, { 'diff-analyst': [new Error('refused'), new Error('refused again')] }), fakeGitHub(failing));
+  assert.equal(stopped.exitCode, 7);
+  assert.equal(stopped.configSource.kind, 'base', 'the config was chosen before the run stopped');
+  assert.equal(process.env.REVIEW_VOICE_CONFIG, undefined);
+
+  // Set before, so the same value after: a relative value is not a source, so the base supplies the config.
+  process.env.REVIEW_VOICE_CONFIG = 'relative/config.yaml';
+  const relativeValue = weakening(t);
+  const { report: ignored } = await review(t, relativeValue, fakes(t, NO_FINDING_RUN), fakeGitHub(relativeValue));
+  assert.equal(ignored.exitCode, 0, ignored.error);
+  assert.equal(ignored.configSource.kind, 'base');
+  assert.ok(ignored.notes.some((note) => note.startsWith('REVIEW_VOICE_CONFIG must be an absolute path')), JSON.stringify(ignored.notes));
+  assert.equal(process.env.REVIEW_VOICE_CONFIG, 'relative/config.yaml');
+
+  // A head that moves before record is a Stop too (exit 3), with an absolute value in place.
+  const absolute = scratch(t, 'env.yaml', LOOSE_CONFIG);
+  process.env.REVIEW_VOICE_CONFIG = absolute;
+  const moving = weakening(t);
+  const fakeDir = fakes(t, NO_FINDING_RUN);
+  const github = fakeGitHub(moving, { moved: () => existsSync(join(fakeDir, '.calls', 'diff-analyst.count')) });
+  const { report: moved } = await review(t, moving, fakeDir, github);
+  assert.equal(moved.exitCode, 3, moved.error);
+  assert.equal(process.env.REVIEW_VOICE_CONFIG, absolute);
+});
+
+test('S01: --config naming a file that is not there stops with exit 2 and leaves the environment alone', async (t) => {
+  const repo = weakening(t);
+  const saved = process.env.REVIEW_VOICE_CONFIG;
+  const { report } = await review(t, repo, fakes(t, {}), fakeGitHub(repo), { config: join(repo.dir, 'missing.yaml') });
+  assert.equal(report.exitCode, 2);
+  assert.match(report.error, /--config .*missing\.yaml does not exist/);
+  assert.equal(report.configSource, null);
+  assert.equal(process.env.REVIEW_VOICE_CONFIG, saved);
 });
