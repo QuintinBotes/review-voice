@@ -39,7 +39,8 @@ test('a configured list matches its own paths and the two protected globs and no
 });
 
 test('limits.sensitivePaths holds each glob once', () => {
-  const listed = assess(['src/a.ts'], { sensitivePaths: ['**/billing/**', '.review-voice/**'] }).limits.sensitivePaths;
+  // A configured duplicate and a configured protected glob each appear once.
+  const listed = assess(['src/a.ts'], { sensitivePaths: ['**/billing/**', '.review-voice/**', '**/billing/**'] }).limits.sensitivePaths;
   assert.deepEqual(listed, ['**/billing/**', '.review-voice/**', '.github/workflows/**']);
   assert.deepEqual(assess(['src/a.ts'], { sensitivePaths: [] }).limits.sensitivePaths, ['.review-voice/**', '.github/workflows/**']);
 });

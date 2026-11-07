@@ -432,9 +432,10 @@ export function assessComplexity(
 
   // Every changed path, reviewed or not: a path left out of the review is no
   // less sensitive for it, and a rename touches both of its names.
-  // The protected globs follow the configured ones, each once, so a configured
-  // match is reported under its own glob and an empty list still flags them.
-  const sensitiveGlobs = [...limits.sensitivePaths, ...SENSITIVE_NEVER_EXEMPT.filter((glob) => !limits.sensitivePaths.includes(glob))];
+  // The protected globs follow the configured ones, and the set drops any
+  // repeat (a configured duplicate too), so a configured match is reported
+  // under its own glob and an empty list still flags them.
+  const sensitiveGlobs = [...new Set([...limits.sensitivePaths, ...SENSITIVE_NEVER_EXEMPT])];
   const sensitiveMatchers = sensitiveGlobs.map((glob) => globToRegExp(glob));
   const neverExempt = SENSITIVE_NEVER_EXEMPT.map((glob) => globToRegExp(glob));
   const changed = new Set<string>();

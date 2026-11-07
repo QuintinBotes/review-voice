@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInProcess } from '../plugins/review-voice/src/cli.ts';
 import { heldForRecord, historyName, reportText, runReview, NO_FINDINGS } from '../plugins/review-voice/src/review/driver.ts';
@@ -838,4 +838,51 @@ test('S01: --config naming a file that is not there stops with exit 2 and leaves
   assert.match(report.error, /--config .*missing\.yaml does not exist/);
   assert.equal(report.configSource, null);
   assert.equal(process.env.REVIEW_VOICE_CONFIG, saved);
+});
+
+test('S01: a relative REVIEW_VOICE_DATA_DIR still gives the run an absolute config path, so the head config is never read', async (t) => {
+  // The loader ignores a relative REVIEW_VOICE_CONFIG and reads the checkout instead, which is the head here.
+  const repo = weakening(t);
+  const report = await reviewIn(repo, fakes(t, NO_FINDING_RUN), fakeGitHub(repo), 'relative-data');
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.configSource.kind, 'base');
+  assert.ok(isAbsolute(report.configSource.path), report.configSource.path);
+  assert.equal(readFileSync(report.configSource.path, 'utf8'), BASE_CONFIG);
+  assert.equal(report.verdict.event, 'COMMENT', 'the base cap applied; the head\'s cap_approval: false did not');
+});
+
+/** A clone whose `origin` is `url` and whose `origin/main` is `sha`. A fetch from it fails at once: nothing listens on the proxy port. */
+function withOrigin(repo, url, sha) {
+  const git = (...args) => execFileSync('git', args, { cwd: repo.dir, encoding: 'utf8' });
+  git('remote', 'add', 'origin', url);
+  git('update-ref', 'refs/remotes/origin/main', sha);
+  git('config', 'http.proxy', 'http://127.0.0.1:9');
+}
+
+/** A base commit GitHub reports that the clone does not have, as after the base branch moved on. */
+const ABSENT_BASE = 'b'.repeat(40);
+
+test('S01: in a fork clone, origin/<base> is no source of configuration, because origin is not the repository under review', async (t) => {
+  const repo = weakening(t);
+  // The fork's main carries the author's weakened config, and the upstream base commit is not in the clone.
+  withOrigin(repo, 'https://github.com/someone-else/api.git', repo.head);
+  const { report } = await review(t, repo, fakes(t, NO_FINDING_RUN), fakeGitHub({ ...repo, base: ABSENT_BASE }));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.configSource.kind, 'default');
+  assert.equal(report.configSource.ref, ABSENT_BASE);
+  assert.equal(existsSync(join(report.runDir, 'config.yaml')), false);
+  assert.equal(report.verdict.event, 'COMMENT', 'the defaults keep the cap; the fork branch did not lower it');
+});
+
+test('S01: when origin is the repository under review, origin/<base> stands in for a base commit the clone lacks', async (t) => {
+  const repo = weakening(t);
+  withOrigin(repo, `https://github.com/${REPO}.git`, repo.base);
+  // A local branch named origin/main, as `gh pr checkout` creates for a head branch of that name, holds the
+  // weakened config; git resolves that name before the remote-tracking ref, so the lookup must be qualified.
+  execFileSync('git', ['branch', 'origin/main', repo.head], { cwd: repo.dir });
+  const { report } = await review(t, repo, fakes(t, NO_FINDING_RUN), fakeGitHub({ ...repo, base: ABSENT_BASE }));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(report.configSource, { kind: 'base', ref: 'refs/remotes/origin/main', path: join(report.runDir, 'config.yaml') });
+  assert.equal(readFileSync(report.configSource.path, 'utf8'), BASE_CONFIG);
+  assert.equal(report.verdict.event, 'COMMENT');
 });

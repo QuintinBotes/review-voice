@@ -2414,7 +2414,7 @@ function assessComplexity(diff, files2, partial, markedGenerated2 = /* @__PURE__
     (best, hunk) => hunk.decisionPoints > 0 && (best === null || hunk.decisionPoints > best.decisionPoints) ? hunk : best,
     null
   );
-  const sensitiveGlobs = [...limits.sensitivePaths, ...SENSITIVE_NEVER_EXEMPT.filter((glob) => !limits.sensitivePaths.includes(glob))];
+  const sensitiveGlobs = [.../* @__PURE__ */ new Set([...limits.sensitivePaths, ...SENSITIVE_NEVER_EXEMPT])];
   const sensitiveMatchers = sensitiveGlobs.map((glob) => globToRegExp(glob));
   const neverExempt = SENSITIVE_NEVER_EXEMPT.map((glob) => globToRegExp(glob));
   const changed = /* @__PURE__ */ new Set();
@@ -20562,8 +20562,8 @@ function resolveConfig(run) {
   rmSync(path, { force: true });
   let from = sha;
   let content = showAt(sha, CONFIG_PATH);
-  if (content === null && ref !== null && showAt(sha, "") === null) {
-    from = `origin/${ref}`;
+  if (content === null && ref !== null && showAt(sha, "") === null && originRepository(process.cwd())?.toLowerCase() === run.options.repository.toLowerCase()) {
+    from = `refs/remotes/origin/${ref}`;
     content = showAt(from, CONFIG_PATH);
   }
   if (content === null) {
@@ -21241,7 +21241,7 @@ async function runReview(options, deps) {
     if (options.expectHead != null && options.expectHead !== run.head) {
       throw new Stop(3, `The head is ${run.head}, not the expected ${options.expectHead}.`);
     }
-    run.dir = options.out === null ? runDirectory(options, run.head) : resolve2(options.out);
+    run.dir = resolve2(options.out === null ? runDirectory(options, run.head) : options.out);
     mkdirSync5(run.dir, { recursive: true });
     resolveConfig(run);
     for (const stage of STAGES) {
