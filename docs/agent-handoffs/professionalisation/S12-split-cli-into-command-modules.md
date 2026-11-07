@@ -38,14 +38,19 @@ codes are unchanged, proven by the existing suite and the rebuilt bundle.
   and creates a cycle. Shared helpers move out first.
 - `let inProcess` (`cli.ts:200`) is the only mutable module state, written by
   `runInProcess` (`:5255`, `:5273`) and read by `githubClient`, `readStdin`,
-  `postCommand` (`:1362`) and `runInProcess` itself (`:5251`). An ESM importer
-  cannot assign an imported `let`, so `cli/shared.ts` holds
-  `let current: InProcess | null = null`, `export function inProcess(): InProcess | null`
-  and `export function setInProcess(value: InProcess | null): void`. Exactly
-  four textual edits follow, the only ones slice 0 may make to existing code:
-  `inProcess?.fetchImpl` at `:1362` becomes `inProcess()?.fetchImpl`,
-  `inProcess !== null` at `:5251` becomes `inProcess() !== null`, and the two
-  writes become `setInProcess({...})` and `setInProcess(null)`.
+  `postCommand` (`:1362`, two references) and `runInProcess` itself (`:5251`).
+  An ESM importer cannot assign an imported `let`, so `cli/shared.ts` keeps
+  the variable under its current name, `let inProcess: InProcess | null = null`,
+  unexported, and exports `function inProcessState(): InProcess | null`
+  and `function setInProcess(value: InProcess | null): void`. `githubClient`
+  (`:203-205`) and `readStdin` (`:207-241`) move into `shared.ts` verbatim
+  and keep reading `inProcess` directly. Exactly four lines of `cli.ts` change
+  text, the only edits slice 0 may make to existing code: at `:1362`
+  `inProcess?.fetchImpl` becomes `inProcessState()?.fetchImpl` and
+  `inProcess.fetchImpl` becomes `inProcessState()!.fetchImpl`; at `:5251`
+  `inProcess !== null` becomes `inProcessState() !== null`; at `:5255` the
+  assignment becomes `setInProcess({ stdin: options.stdin ?? '', fetchImpl: options.fetchImpl })`;
+  at `:5273` it becomes `setInProcess(null)`.
 - `test/issue-52-command-help.test.mjs:27-33` extracts dispatched commands
   from `cli.ts` text with `^ {4}case '([a-z][a-z-]*)':`. The switch stays in
   `cli.ts` with that shape. Slice 0 hardens the test to fail when it finds zero
@@ -141,9 +146,10 @@ case body, the bootstrap and the re-exports. `docs/ARCHITECTURE.md`
 
 Slice 0 only:
 
-- AC-5. `inProcess` is owned by `cli/shared.ts` behind the getter and setter;
-  the four textual edits are the only changes to existing handler code;
-  `test/review-driver.test.mjs` passes.
+- AC-5. `inProcess` is owned by `cli/shared.ts` behind `inProcessState()` and
+  `setInProcess()`; the four lines named in the constraints are the only
+  textual changes to existing code (nine references in all, the rest moved
+  verbatim); `test/review-driver.test.mjs` passes.
 
 Slice 6b only:
 
@@ -186,7 +192,8 @@ Scope: only plugins/review-voice/src/cli.ts, plugins/review-voice/src/cli/**,
 the test files the spec names for this slice, docs/ARCHITECTURE.md (slice 6b
 only) and the rebuilt bundle. Change no behaviour, output, flag or exit code;
 rename nothing beyond the slice-0 accessor edits; reformat nothing beyond what
-the move needs; change no other test. Add no dependency.
+the move needs; change no other test. Do not edit scripts/, .github/,
+CHANGELOG.md or the manifests. Add no dependency.
 
 Conventions: moved comments move with their code unchanged; new import lines
 use .ts extensions and `import type` for type-only names; no em or en dashes

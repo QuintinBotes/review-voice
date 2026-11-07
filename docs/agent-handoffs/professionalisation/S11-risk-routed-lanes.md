@@ -53,7 +53,11 @@ structural regressions.
 | `unsafe` | code | `unsafe`, `eval(`, `exec(`, `dangerouslySetInnerHTML`, `Marshal`, `pickle.loads`, `yaml.load(` without `SafeLoader` |
 
 Emitted as `structure.riskMarkers: { path, line, kind }[]`, at most 20 per
-file. Lexical, documented as a lead. A `new-route`, `lock-or-async` or
+file; `StructureSignals` gains `riskMarkers: RiskMarker[]`, always present.
+`test/issue-108-size-crossings.test.mjs:260` deep-equals the whole
+`StructureSignals` object (S10 part A extended it with `removedControls: []`)
+and is extended with `riskMarkers: []`; this belongs to run one. Lexical,
+documented as a lead. A `new-route`, `lock-or-async` or
 `unsafe` pattern inside a string or comment is not a marker; a SQL keyword in
 a plain string literal with no concatenation or interpolation is not one
 either.
@@ -67,8 +71,12 @@ with a warning). `eligibleLanes` receives the manifest's `structure` block from
 key, counts as no signal (existing CLI tests write a `files.json` without one,
 `test/lanes.test.mjs:209`). Signal entries are filtered by the lane's `paths`
 when set, so a marker outside the lane's globs does not wake it. A lane with
-`signals` is eligible when the line minimum is met **or** any listed signal is
-non-empty, and the reason string says which. Without `signals` nothing changes.
+`signals` is eligible when any listed signal is non-empty, or when
+`min_changed_source_lines` is set explicitly and met; with `signals` an absent
+minimum is not a minimum of zero, so such a lane is eligible on a signal alone
+(the example security lane). The reason string says which clause held.
+Without `signals` nothing changes: an absent minimum still means always
+eligible (`lanes.ts:77`).
 
 `PlanInput` gains `removedControls: number`, read by `planCommand` from
 `manifest.structure`; the `auto` rule gains one clause: a non-empty
@@ -133,9 +141,10 @@ ADR 0023 is amended for `when.signals` and the two shipped agents.
 `applyStructureHumanReviewCap` (`complexity.ts:515`, its `signals` parameter
 widened), exactly as `file_line_crossing` and `branch_growth` do. Nothing is
 posted about it. ADR 0020 names exactly two opt-in signals and gains a dated
-amendment naming the third. The three existing deep-equal assertions on
-`humanReview.structure` (`test/issue-114-structural-human-review-cap.test.mjs:49-63`,
-`test/human-review-complexity.test.mjs:188`) are extended with
+amendment naming the third. The four existing deep-equal assertions that pin
+`humanReview.structure` (`test/issue-114-structural-human-review-cap.test.mjs:49`,
+`:57` and `:63`, and the whole-`humanReview` assertion at
+`test/human-review-complexity.test.mjs:181-189`) are extended with
 `removedControls: false` or `true`.
 
 ## Non-goals
@@ -151,13 +160,16 @@ amendment naming the third. The three existing deep-equal assertions on
   each kind; nothing for a `new-route`, `lock-or-async` or `unsafe` pattern
   inside a string or comment; nothing for a SQL keyword in a plain string
   literal with no concatenation or interpolation; `diff --out` writes
-  `structure.riskMarkers` and the summary carries the same array.
+  `structure.riskMarkers` and the summary carries the same array;
+  `test/issue-108-size-crossings.test.mjs:260` is extended with
+  `riskMarkers: []`.
 - AC-2. A lane with `when.signals: [removed-controls]` and no line minimum is
   eligible on a change with one removed control and ineligible on one with
-  none or with no `structure` block; a lane with both a minimum and signals is
-  eligible when either holds; a marker outside the lane's `paths` does not
-  wake it; the reason names the cause; a lane naming an unknown signal is
-  dropped with a warning.
+  none or with no `structure` block, including a change with 500 changed
+  source lines and no signal; a lane with both an explicit minimum and signals
+  is eligible when either holds; a marker outside the lane's `paths` does not
+  wake it; the reason names the clause that held; a lane naming an unknown
+  signal is dropped with a warning.
 - AC-3. `plan` picks `thorough` in `auto` mode for a change with a removed
   control and its reason says why.
 - AC-4. Both agent files exist and a test shaped like `test/lanes.test.mjs:106-121`
@@ -171,7 +183,7 @@ amendment naming the third. The three existing deep-equal assertions on
   `removed-control` follows the existing ADR 0011 bar.
 - AC-6. With `human_review.structure.removed_controls: true`, a clean change
   with a removed control gets COMMENT not APPROVE, locally noted and never
-  posted; with the default false, nothing changes; the three named deep-equal
+  posted; with the default false, nothing changes; the four named deep-equal
   assertions are extended.
 - AC-7. `config.example.yaml` carries the commented lane entries and still
   loads with no lanes and no warnings (`test/issues-config.test.mjs`); a test
@@ -210,29 +222,33 @@ docs/adr/0020-structural-signals-may-opt-into-human-review.md,
 docs/adr/0025-cost-modes-choose-stages-and-models.md,
 plugins/review-voice/src/review/lanes.ts, plugins/review-voice/src/review/plan.ts,
 plugins/review-voice/src/policy/load.ts (parseLane),
-plugins/review-voice/src/diff/type-escapes.ts and src/diff/removed-controls.ts
-(the exported scanner shape), plugins/review-voice/src/diff/complexity.ts
-(applyStructureHumanReviewCap) and plugins/review-voice/agents/structure-analyst.md
-(the shape of a lane agent).
+plugins/review-voice/src/diff/type-escapes.ts and
+plugins/review-voice/src/diff/removed-controls.ts (the exported scanner
+shape), plugins/review-voice/src/diff/complexity.ts (applyStructureHumanReviewCap)
+and plugins/review-voice/agents/structure-analyst.md (the shape of a lane
+agent).
 
-Outcome: a lexical risk-marker scanner feeds structure.riskMarkers with the
-per-kind matching the spec gives; lanes may declare when.signals and become
-eligible when a listed signal fires within their paths or the line minimum
-holds, with a missing structure block counting as no signal; PlanInput gains
-removedControls and auto mode picks thorough when a control was removed; two
-new lane agents, security-analyst (sec_) and concurrency-analyst (cc_), ship
-with the checklists and blocker_class values the spec gives, documented as
-commented-out example entries and not enabled; the verifier prompt defines the
-new blocker classes; an opt-in human_review.structure.removed_controls cap
-exists with the three named test literals extended; ADR 0020, 0023 and 0025
+Outcome: a lexical risk-marker scanner feeds structure.riskMarkers (always
+present on StructureSignals) with the per-kind matching the spec gives; lanes
+may declare when.signals and become eligible when a listed signal fires within
+their paths or an explicit line minimum holds, with a missing structure block
+counting as no signal and an absent minimum not counting as met; PlanInput
+gains removedControls and auto mode picks thorough when a control was removed;
+two new lane agents, security-analyst (sec_) and concurrency-analyst (cc_),
+ship with the checklists and blocker_class values the spec gives, documented
+as commented-out example entries and not enabled; the verifier prompt defines
+the new blocker classes; an opt-in human_review.structure.removed_controls cap
+exists with the four named test literals extended; ADR 0020, 0023 and 0025
 are amended and the index marks them. All eight acceptance criteria in the
 spec must hold. If one run cannot hold everything, stop at the spec's stop
 point with every check green and say which half is next.
 
 Scope: only the paths the spec lists under "Allowed paths". No lane may be on
 by default; nothing new is posted to GitHub. The only existing tests you may
-edit are the three deep-equal assertions the spec names. Do not edit scripts/,
-.github/, CHANGELOG.md or the manifests. Add no dependency.
+edit are the four humanReview.structure deep-equal assertions the spec names
+and the StructureSignals deep-equal at test/issue-108-size-crossings.test.mjs:260.
+Do not edit scripts/, .github/, CHANGELOG.md or the manifests. Add no
+dependency.
 
 Conventions: follow CONTRIBUTING.md and the surrounding style; agent files
 follow the untrusted-input block and sections of agents/structure-analyst.md;

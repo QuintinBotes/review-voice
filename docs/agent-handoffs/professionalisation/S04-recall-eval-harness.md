@@ -24,8 +24,13 @@ caught" with no checker named. In fact:
   `corrupt patch` for 27 of 39 because hunk headers do not match their bodies;
   `--recount` rescues 26, and `positive/structural-serialized-awaits/diff.patch:10`
   has a context line with no leading space that even `--recount` rejects. The
-  repository's own parser (`src/diff/hunks.ts:252-269`) tolerates both, which
-  is why they pass today's tests.
+  repository's own parser tolerates mismatched counts and a blank context
+  line whose leading space was stripped (`src/diff/hunks.ts:252-266`); a
+  non-blank unmarked line ends its hunk (`hunks.ts:268`), which is why these
+  patches pass today's shape-only tests. Four fixtures also disagree with
+  `git apply --recount` under `parseHunks` (three under-counted new sides,
+  and `positive/structural-mode-parameter` with an over-counted hunk followed
+  by a bare `--- ` file header and no `diff --git` lines).
 - Six positives (`structural-*`) need the structure lane, which runs only
   when `review.lanes` configures it (`src/policy/load.ts:685`, default
   `[DIFF_LANE]`).
@@ -63,10 +68,11 @@ fixture names the line its defect lives on.
    one-line reason (its pass is not driven by `runReview`). `fixtures/README.md`
    documents both keys. `test/fixtures.test.mjs` asserts that `line` is present
    exactly when `path` is, that it is an added line of `expect.path` according
-   to `parseHunks` from `src/diff/hunks.ts` (the same notion of an added line
-   `check-candidates` enforces), that `negative/` and `no-findings/` fixtures
-   have no `line`, and that a positive without `path` carries `harness: skip`.
-   The fixture `diff.patch` files are not changed.
+   to `parseHunks` from `src/diff/hunks.ts` run over
+   `normalisePatch(diff.patch)` (the diff `check-candidates` sees when the
+   fixture is materialised), that `negative/` and `no-findings/` fixtures have
+   no `line`, and that a positive without `path` carries `harness: skip`. The
+   fixture `diff.patch` files are not changed.
 2. `plugins/review-voice/src/evaluate/fixtures.ts` exports
    `materializeFixture(fixtureDir, targetDir, options): { base: string; head: string; files: string[] }`.
    It creates a git repository with two commits. Base: for every file in
@@ -80,18 +86,26 @@ fixture names the line its defect lives on.
    `{ name: structure, agent: structure-analyst, prefix: st_, when: { min_changed_source_lines: 0, exclude_kinds: [] } }`)
    so every shipped analyst can reach every fixture. Head: base with a
    **normalised copy** of `diff.patch`, written to the temp directory, applied
-   by `git apply`: hunk headers recounted from the body, and a body line inside
-   a hunk with no leading marker read as a context line, the tolerance
-   `hunks.ts` already has. The fixture file is never changed. A patch whose
-   context does not match the reconstructed pre-image is a materialisation
-   error that names the fixture. Commits are authored as
-   `review-voice-fixtures <fixtures@example.com>`.
+   by `git apply`. `fixtures.ts` exports `normalisePatch(text: string): string`,
+   the copy git applies: hunk headers are recounted from the body; a hunk's
+   body ends at the next `@@` line, a `diff --git` line, or a `--- ` line
+   immediately followed by a `+++ ` line (the fixtures' bare file headers,
+   which `positive/structural-mode-parameter` has after an over-counted hunk);
+   every file header is kept; and any body line inside a hunk with no leading
+   marker is read as a context line, wider than `hunks.ts`, which reads only a
+   blank unmarked line as context (`hunks.ts:256`) and ends the hunk at any
+   other, as it does at `structural-serialized-awaits/diff.patch:10`. The
+   fixture file is never changed. A patch whose context does not match the
+   reconstructed pre-image is a materialisation error that names the fixture.
+   Commits are authored as `review-voice-fixtures <fixtures@example.com>`.
 3. A deterministic test materialises every fixture under `fixtures/`
    (`prompt-injection/` and `confinement/` included; for those it asserts only
    that the patch applies) and asserts the head tree contains `expect.path`
    with the expected line where one is set, and that the materialised diff's
-   added and removed lines equal the fixture's hunks' (ignoring filler), which
-   catches a mis-normalised patch.
+   added and removed lines equal `parseHunks` over `normalisePatch(diff.patch)`
+   (not over the raw file, which `parseHunks` reads differently from git for
+   the four fixtures named above), ignoring filler, which catches a
+   mis-normalised patch.
 
 ### Part B. The `recall` command and metrics
 
@@ -163,14 +177,20 @@ fixture names the line its defect lives on.
    pass unchanged.
 6. A deterministic test runs `recall --runner fake` over canned fixtures under
    `test/fixtures-recall/<class>/<name>/` (each with `case.yaml`, `diff.patch`
-   and `agents/<agent>.<n>.json`): one hit at delta 0 (canned diff-analyst,
-   evidence-verifier, challenger and concise-editor outputs), one miss whose
-   canned candidate anchors on another added line of `expect.path` at least
-   four lines away (a candidate off the diff is sent back to the analyst, so
-   the wrong line must still be an added line), and one clean fixture. It
-   asserts the three per-fixture results, the summary figures, that the
-   operator's data directory is untouched and that the temporary store holds
-   one run per completed fixture.
+   and `agents/<agent>.<n>.json`). Every canned fixture carries
+   `agents/diff-analyst.1.json` and `agents/structure-analyst.1.json`, because
+   the default config from part A enables the structure lane and a lane whose
+   agent has no canned output stops the run with exit 7 (`driver.ts:482`); the
+   clean fixture's two return `{"candidates": []}`. The hit and the miss
+   fixtures add `evidence-verifier.1.json`, `challenger.1.json` and
+   `concise-editor.1.json` so the candidate becomes a validated finding; the
+   miss fixture's candidate anchors on another added line of `expect.path` at
+   least four lines away (a candidate off the diff is sent back to the
+   analyst), so it counts in the `causalLineHit` denominator and not as a hit.
+   The test asserts the three per-fixture results, that every run completed
+   with exit 0 and `failedRuns` is 0, the summary figures, that the operator's
+   data directory is untouched and that the temporary store holds one run per
+   completed fixture.
 
 ### Follow-up for a person (protected path)
 
@@ -192,14 +212,16 @@ Part A:
 - AC-1. Every `fixtures/positive/*/case.yaml` with `expect.path` has
   `expect.line`; `simplification-dispatcher` has `harness: skip`;
   `test/fixtures.test.mjs` fails if a `line` is missing where `path` is
-  present, is not an added line of `expect.path` per `parseHunks`, appears on
-  a clean fixture, or a positive has neither `path` nor `harness: skip`;
-  `fixtures/README.md` documents `expect.line` and `harness`.
+  present, is not an added line of `expect.path` per `parseHunks` over
+  `normalisePatch(diff.patch)`, appears on a clean fixture, or a positive has
+  neither `path` nor `harness: skip`; `fixtures/README.md` documents
+  `expect.line` and `harness`.
 - AC-2. `materializeFixture` builds a two-commit repository for every fixture
   under `fixtures/` without changing any fixture file; the head contains
   `expect.path`; the base contains `.review-voice/config.yaml` with the
   structure lane when the fixture ships no config; a test asserts the
-  materialised diff reproduces the fixture's added and removed lines.
+  materialised diff's added and removed lines equal `parseHunks` over
+  `normalisePatch(diff.patch)` for every fixture.
 - AC-3. A patch whose context does not match the reconstructed pre-image
   raises an error naming the fixture.
 
@@ -207,7 +229,8 @@ Part B:
 
 - AC-4. `recall --runner fake` over the canned test fixtures produces the
   specified `results.json` with one hit at delta 0, one miss, one silent, and
-  summary figures that match.
+  summary figures that match, with every run completing (exit 0, `failedRuns`
+  0).
 - AC-5. `recall` never runs configured repository commands, never posts, and
   writes nothing under the operator's data directory; the deterministic test
   asserts the last two.
@@ -242,11 +265,13 @@ harness: skip; test/fixtures.test.mjs enforces both using parseHunks; a new
 plugins/review-voice/src/evaluate/fixtures.ts materialises any fixture into a
 two-commit git repository (reconstructed pre-image plus context/ plus a
 .review-voice/config.yaml that enables the structure lane when the fixture
-ships none, then a normalised copy of the patch applied with recounted hunk
-headers and unmarked lines read as context) with a test over every fixture
-that also checks the materialised diff reproduces the fixture's added and
-removed lines. No fixture diff.patch changes. Acceptance criteria AC-1 to
-AC-3 and AC-8 of the spec must hold.
+ships none, then a normalised copy of the patch applied, produced by an
+exported normalisePatch with the hunk-end and recount rules the spec gives)
+with a test over every fixture that also checks the materialised diff's added
+and removed lines equal parseHunks over the normalised patch; the fixtures
+test and the materialiser test both parse the normalised patch. No fixture
+diff.patch changes. Acceptance criteria AC-1 to AC-3 and AC-8 of the spec
+must hold.
 
 Scope: only fixtures/**/case.yaml, fixtures/README.md, test/**,
 plugins/review-voice/src/evaluate/** and the rebuilt bundle. Do not change any

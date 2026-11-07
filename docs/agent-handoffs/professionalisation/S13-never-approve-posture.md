@@ -36,8 +36,10 @@ ADR 0013 still applies to every event.
   (`src/policy/load.ts:348-370`) into `VerdictPolicy` (`verdict.ts:275-296`).
   `test/verdict-policies.test.mjs` "config: each setting is read" (lines
   741-765) deep-equals the whole policy against a six-key literal; it gains
-  `neverApprove: false` (and `never_approve` in its yaml), the one permitted
-  edit to an existing test besides the help-key list below.
+  `never_approve: true` in its yaml and `neverApprove: true` in the literal
+  (every value in that test is the non-default, so a key the loader ignores
+  fails it), the one permitted edit to an existing test besides the help-key
+  list below.
 - In `decide()`, the `never_approve` branch sits immediately before the
   complexity cap (`:475-477`), after the carry, needs-rerun and uncovered-carry
   guards, so a standing owner approval still carries and a needs-rerun hold
@@ -85,20 +87,28 @@ ADR 0013 still applies to every event.
   review is exactly "No problems found." (or "N nits."); with `ci_red: annotate`
   the annotation line still follows it, as it does for the complexity cap; the
   reason is only in local `reasons`.
-- AC-4. In `test/watch.test.mjs`, with
+- AC-4. In `test/watch.test.mjs`, after `recordRun` of a clean review at the
+  head (as the test at lines 258-286 does, so the pass takes the
+  `verdict-only` path through `computeVerdict`; a fake review result does not
+  exercise `decide()`), with
   `config: { ...settings(), verdictPolicy: { ...DEFAULT_VERDICT_POLICY, neverApprove: true } }`
   and the fake's `state.ci` extended with `'pending'` (an in-progress check
-  run), the head's row status is `posted` and the next pass lists no entry for
-  it.
+  run), a `--once --post` pass posts exactly one review with event COMMENT,
+  the head's row status is `posted`, and the next pass lists no entry for it.
 - AC-5. With the default false, every existing verdict test passes; the only
-  edits to existing tests are the policy-literal and help-key additions in
-  `test/verdict-policies.test.mjs` the design names.
-- AC-6. `verdict --help` names `never_approve`; `config.example.yaml` contains
-  `never_approve: false` and still loads with no warnings; a test asserts
-  `docs/adr/0028-*.md` contains a `## Amendment - 2026` heading mentioning
-  `never_approve`, `commands/draft-review.md` and `docs/WATCHER.md` mention
-  it, and `docs/adr/README.md` marks the row; `docs/ARCHITECTURE.md` is
-  updated (reviewer-checked).
+  edits to existing test files are the policy-literal and help-key additions
+  in `test/verdict-policies.test.mjs` the design names and the `fakeGitHub`
+  CI-state extension in `test/watch.test.mjs` that AC-4 names; no existing
+  test case changes its assertions.
+- AC-6. `verdict --help` names `never_approve`; a test beside
+  `test/issues-config.test.mjs:38-47` reads
+  `plugins/review-voice/templates/config.example.yaml` and asserts it contains
+  `never_approve: false` (the existing test there proves it still loads with
+  no warnings); a test asserts `docs/adr/0028-*.md` contains a
+  `## Amendment - 2026` heading mentioning `never_approve`,
+  `commands/draft-review.md` and `docs/WATCHER.md` mention it, and
+  `docs/adr/README.md` marks the row; `docs/ARCHITECTURE.md` is updated
+  (reviewer-checked).
 - AC-7. `npm run verify` passes with the rebuilt bundle committed.
 
 ## Allowed paths
@@ -116,8 +126,9 @@ Implement docs/agent-handoffs/professionalisation/S13-never-approve-posture.md
 in this repository. Read the spec first, then
 docs/adr/0010-review-verdict-posting.md, docs/adr/0013-ci-needs-rerun.md,
 docs/adr/0028-verdict-policies-are-configurable.md, and decide(), summaryLine(),
-buildPayload() and the VerdictPolicy type in plugins/review-voice/src/publish/verdict.ts
-plus the cappedBy chain in plugins/review-voice/src/publish/post.ts.
+buildPayload() and the VerdictPolicy type in plugins/review-voice/src/publish/verdict.ts,
+readVerdictPolicy() in plugins/review-voice/src/policy/load.ts, and the
+cappedBy chain in plugins/review-voice/src/publish/post.ts.
 
 Outcome: a verdict.never_approve setting (default false) turns APPROVE into
 COMMENT in decide() at the position the spec fixes (after the carry,

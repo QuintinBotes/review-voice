@@ -14,9 +14,10 @@ observed, not asserted". `computeMetrics`
 figure, `median_review_seconds` (the run-seconds loop at `:59-79`, the metric
 at `:156-165`), and its `percentile` helper (`:29-38`) is used only for words
 and findings (`:176`, `:191`). It computes no challenge-hold rate although the
-data is stored (held entries with `source: 'challenge'`, `src/verify/challenge.ts:260`;
-every judged score entry carries a `challenge` key, `challenge.ts:270-279`,
-kept by `record --scores` in `output_json.scores`), no cost figure although
+data is stored (every score entry the challenger judged carries a `challenge`
+key, and a held one also `eligible: false` with a `rejectedBecause` starting
+`challenge-`, `src/verify/challenge.ts:270-279` and `:310-314`, kept by
+`record --scores` in `output_json.scores`), no cost figure although
 agent stages record `costUsd` (`src/review/driver.ts:184-198`), and its
 `posted_dismissed_rate` is all-time because `postedStats` has no time window
 (`src/store/outcomes.ts:519-521`).
@@ -45,8 +46,8 @@ figure with no data reports `no data`, never zero.
 |---|---|
 | `median_review_seconds`, `p95_review_seconds` | per-run sum of stage seconds; p95 added beside the existing median |
 | `median_review_cost_usd`, `p95_review_cost_usd` | per-run sum of stage `costUsd`. A run is costed when it recorded at least one stage and every recorded stage carries a numeric `costUsd` (the key is absent, never null, when an agent reported no cost; the slash command's stages carry no cost at all). A run with no stages, or any stage lacking the key, is excluded; the basis prints `N costed run(s), M excluded (no cost recorded)` |
-| `challenge_hold_rate` | numerator: `output_json.held` entries with `source === 'challenge'`; denominator: `output_json.scores[]` entries that carry a `challenge` key (exactly the findings the challenger judged); a run counts when it has any such entry or a `challenge` stage in `stages_json`; other runs are excluded and the basis says how many counted |
-| `posted_fixed_rate_30d`, `posted_dismissed_rate_30d` | the existing strong-outcome rates restricted to runs whose `review_runs.created_at` is within the window (the run's time is when the finding was posted); default 30 days, `--since <Nd>` changes it, the same spelling `outcomes --since` uses |
+| `challenge_hold_rate` | both counts come from `output_json.scores[]`: denominator, entries that carry a `challenge` key (the findings the challenger judged, `challenge.ts:270-279`); numerator, those of them whose `rejectedBecause` is a string starting with `challenge-` (`challenge.ts:278` for partly and refuted, `:311` for a refused corrected line). A run with no `challenge`-keyed entry is excluded and the basis prints `H held / J judged over R run(s)`. The `held` array and the stage list are not consulted, so the figure is always in [0, 1] |
+| `posted_fixed_rate_recent`, `posted_dismissed_rate_recent` | the existing strong-outcome rates restricted to runs whose `review_runs.created_at` is within the window (the run's time is when the finding was posted); default 30 days, `--since <Nd>` changes it, the same spelling `outcomes --since` uses; the basis reads `N fixed / M fixed or dismissed from runs created in the last D days; weak outcomes excluded`, so the name never lies about the window |
 
 `stage_seconds` is not a `Metric` (`Metric.value` is `number | null` and two
 tests iterate every metric asserting that shape, `test/evaluate.test.mjs:25-44`).
@@ -54,17 +55,19 @@ tests iterate every metric asserting that shape, `test/evaluate.test.mjs:25-44`)
 and `evaluate --json` emits it as a top-level key beside `posted_breakdown`
 (`cli.ts:1383-1385`); the text output does not print it.
 
-`postedStats(db, { since })`: without `since` the query is unchanged, so the
-all-time rates and their tests keep their values (an outcome can exist with no
-run row, `test/outcomes.test.mjs:327-330`); with `since` it joins `review_runs`
-on `review_run_id` and filters `created_at >= since`.
+`postedStats(db, { since }: { since?: string } = {})`: `since` is an ISO
+timestamp the caller computes from the day count as `outcomes` does
+(`cli.ts:1428`); without it the query is unchanged, so the all-time rates and
+their tests keep their values (an outcome can exist with no run row,
+`test/outcomes.test.mjs:327-330`); with it the query joins `review_runs` on
+`review_run_id` and filters `created_at >= since`.
 
 ### Status warning
 
 The threshold logic is a pure function in `metrics.ts`,
 `dismissedRateWarning({ dismissed, strong, windowDays })`, returning the line or
-null; `status` prints it when `posted_dismissed_rate_30d` is above `0.20` and
-the window holds at least 10 strong outcomes:
+null; `status` prints it when `posted_dismissed_rate_recent` (at the default
+window) is above `0.20` and the window holds at least 10 strong outcomes:
 
 ```
 Warning: 4 of 15 posted findings in the last 30 days were dismissed (27%); run `review-voice explain` on the dismissed ones and consider /review-voice:feedback.
@@ -81,14 +84,15 @@ says the last two gates are unmeasured so it names only the false-positive
 rate, and add rows for p95 latency, cost, hold rate and the windowed rates
 under "Reported, not scored" with a short subsection on the window. `help.ts`
 documents `--since <Nd>` on `evaluate` (a value that is not a whole number of
-days exits 2 with `--since takes a whole number of days, such as 30d.`).
+days exits 2 with `--since takes a whole number of days, such as 30d.`) and
+its `Exit codes` line becomes `0 ok, 2 bad invocation.`.
 
 ### Tests
 
 Tests age a run by updating `review_runs.created_at` directly, as
-`test/outcomes.test.mjs:285-288` does for `output_json`, or pass `now` to
-`postedStats(db, { since, now })`. The `status` warning is asserted both on the
-pure function and by running the bundle with `REVIEW_VOICE_DATA_DIR`, as
+`test/outcomes.test.mjs:285-288` does for `output_json`, or pass an explicit
+`since` timestamp. The `status` warning is asserted both on the pure function
+and by running the bundle with `REVIEW_VOICE_DATA_DIR`, as
 `test/outcomes.test.mjs:295-319` does.
 
 ## Non-goals
@@ -106,14 +110,16 @@ pure function and by running the bundle with `REVIEW_VOICE_DATA_DIR`, as
   have seconds but no `costUsd` (the slash-command shape) leaves the cost
   metrics at `no data` when it is the only run, and is counted as excluded in
   the basis otherwise.
-- AC-3. `challenge_hold_rate` is computed as specified; with no run that
-  carries a `challenge` key or stage it reports `no data`.
-- AC-4. The windowed rates include only runs created in the window; a run
-  aged to 31 days is excluded; `--since 7d` changes the window; a bad value
-  exits 2; the all-time rates and their existing tests are unchanged.
+- AC-3. `challenge_hold_rate` is computed from `scores[]` as specified and
+  never exceeds 1; with no run whose `scores[]` carries a `challenge` key it
+  reports `no data`.
+- AC-4. The `_recent` rates include only runs created in the window and their
+  basis names the window in days; a run aged to 31 days is excluded at the
+  default; `--since 7d` changes the window and the basis; a bad value exits
+  2; the all-time rates and their existing tests are unchanged.
 - AC-5. `dismissedRateWarning` returns the line only above the threshold with
-  at least 10 strong outcomes; `status` prints it in that case and nothing
-  otherwise.
+  at least 10 strong outcomes in the default window; `status` prints it in
+  that case and nothing otherwise.
 - AC-6. `help.ts` documents `--since`; `test/evaluate.test.mjs` covers each
   new metric with its basis. `docs/EVALUATION.md` is updated as specified
   (reviewer-checked).
@@ -137,9 +143,11 @@ held entry are marked) and test/evaluate.test.mjs before changing code.
 
 Outcome: `evaluate` reports p95 review seconds beside the median, a top-level
 stage_seconds map in --json (not a Metric), median and p95 cost per review over
-costed runs as the spec defines them, a challenge hold rate over the findings
-the challenger judged, and windowed posted fixed and dismissed rates
-(`--since <Nd>`, default 30d) that leave the all-time rates untouched; a pure
+costed runs as the spec defines them, a challenge hold rate computed from the
+scores[] entries the challenger judged (never above 1), and
+posted_fixed_rate_recent and posted_dismissed_rate_recent over a window named
+in their basis (`--since <Nd>`, default 30d) that leave the all-time rates
+untouched; a pure
 dismissedRateWarning function drives a `status` warning above 20% on at least
 10 strong outcomes; docs/EVALUATION.md and help.ts describe each figure and
 its basis. All seven acceptance criteria in the spec must hold.

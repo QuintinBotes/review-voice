@@ -58,14 +58,21 @@ interface RecordedChecks {
 }
 ```
 
-`reason` is the command's `unavailable` text when the name also appears in
-`commands`, else the report's top-level `skipped` string when present, else
-`not run`; `version` is copied from `commands[].version` when S08 recorded one.
-The driver passes both files; `commands/review.md` step 6 adds
+`staticRan` is every `commands[]` entry whose `name` is not in `didNotRun`,
+in `commands` order; `staticDidNotRun` is every `didNotRun` name, in that
+order, so a command that could not start (exit 126 or 127, in both lists
+after S08) is reported once, as not run. `reason` is the command's
+`unavailable` text when the name also appears in `commands`, else the
+report's top-level `skipped` string when present, else `not run`; `version`
+is copied from `commands[].version` when S08 recorded one. The driver passes
+both files; `commands/review.md` step 6 adds
 `--evidence <tmpdir>/evidence.json --symbols <tmpdir>/symbols.json` to its
-`RV record` line so interactive runs record them too. `runDetail` returns
-`checks: RecordedChecks | null` (null for older rows). `explain` prints one
-"Checks" line.
+`RV record` line so interactive runs record them too, and `help.ts`'s
+`record` entry lists `--evidence <path>` and `--symbols <path>` beside
+`--stages`, because `test/issue-52-command-help.test.mjs` ("every flag
+review.md passes a command is in that command's own --help") fails otherwise.
+`runDetail` returns `checks: RecordedChecks | null` (null for older rows).
+`explain` prints one "Checks" line.
 
 ### Rendering
 
@@ -127,7 +134,8 @@ strips only the trailing annotation lines. `post()` is otherwise unchanged.
 is read" (lines 741-765) deep-equals the whole policy against a literal: extend
 that literal with `scopeBlock: true, scopeBlockModels: true` and add both keys
 to its yaml; in "an invalid value warns" (767-787) add `scope_block: sometimes`
-and `scope_block_models: 3` and raise the expected warning count from 5 to 7.
+and `scope_block_models: 3` and raise the expected warning count by two from
+its current value (S13 and S14 add one each, in either order).
 ADR 0028 gains an amendment naming both keys and stating that ADR 0016's
 lists stay local and only their counts post. `help.ts` and
 `config.example.yaml` document them; `commands/draft-review.md` mentions the
@@ -147,9 +155,11 @@ keep those local, and a test asserts their absence.
 
 ## Acceptance criteria
 
-- AC-1. `record --evidence --symbols` stores `checks` with `reason` derived as
-  specified; `runDetail` returns it; an old row returns null; `explain` prints
-  it.
+- AC-1. `record --evidence --symbols` stores `checks` with the membership and
+  `reason` rules specified (a command present in both `commands` and
+  `didNotRun` appears only in `staticDidNotRun`, with its `unavailable` text
+  as `reason`); `runDetail` returns it; an old row returns null; `explain`
+  prints it; `record --help` names both flags.
 - AC-2. With `scope_block` off, every existing body-equality test passes
   unchanged and `post` sends the same bytes as before; the policy-shape test
   in `test/verdict-policies.test.mjs` is extended as specified and passes.

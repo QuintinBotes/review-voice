@@ -4,8 +4,9 @@
 1.21.1), 1,718 tests green. **Implementation partners:** Orbit (driving the Claude CLI
 as implementer and the Codex CLI as independent reviewer), one run per spec,
 part or slice, configured in `.orbit/config.yaml`; Codex again as a
-pre-pull-request reviewer of every branch; Muse Wonder Full for the S12
-slices and as the fallback implementer. **Driver:** `GOAL.md` in this folder
+pre-pull-request reviewer of every branch; Muse Wonder Full as a parallel
+implementer for the one spec that does not touch `cli.ts` (S13) and as the
+fallback implementer when an Orbit run exhausts. **Driver:** `GOAL.md` in this folder
 is the goal a Claude Code session runs to implement the whole program with
 those three tools and to file their feedback as GitHub issues.
 
@@ -132,9 +133,9 @@ Phase 5  S12 cli split, slices 0, 1, 2, 3, 4, 5a, 5b, 6a, 6b, when nothing else 
 ```
 
 Within a phase the specs are independent and may run as separate Orbit runs
-on separate branches, except that every spec edits `cli.ts`, so merge one
-before starting the next, or expect a rebase. S12 moves `cli.ts` wholesale and
-must not overlap with anything.
+on separate branches, except that every spec but S13 edits `cli.ts`, so merge
+one before starting the next, or expect a rebase; S13 can run beside another
+spec. S12 moves `cli.ts` wholesale and must not overlap with anything.
 
 Twenty-four Orbit runs in all: S01, S02, S03, S04A, S04B, S05, S06, S07, S08,
 S09, S10A, S10B, S11, S13, S14 and the nine S12 slices. S03, S06 and S11 each
