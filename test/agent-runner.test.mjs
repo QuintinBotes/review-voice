@@ -55,7 +55,7 @@ function writeStub(dir) {
   writeFileSync(
     path,
     `#!/usr/bin/env node
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 const argv = process.argv.slice(2);
 const mode = process.env.STUB_MODE ?? 'ok';
@@ -86,7 +86,9 @@ const finish = () => {
 };
 if (mode === 'sleep') {
   const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
-  writeFileSync(process.env.STUB_CHILD_PID, JSON.stringify({ stub: process.pid, child: child.pid }));
+  // Written atomically so a poller never sees a created but still empty file.
+  writeFileSync(process.env.STUB_CHILD_PID + '.tmp', JSON.stringify({ stub: process.pid, child: child.pid }));
+  renameSync(process.env.STUB_CHILD_PID + '.tmp', process.env.STUB_CHILD_PID);
   setTimeout(() => {}, 60000);
 } else if (mode === 'flood') {
   const chunk = Buffer.alloc(1 << 20, 120);
@@ -607,7 +609,11 @@ for (const [signal, exitCode] of [['SIGTERM', 143], ['SIGINT', 130]]) {
     delete env.REVIEW_VOICE_AGENT_RUNNER;
     const cli = spawn(process.execPath, [bundle, ...agentArgs(schema), '--cwd', dir], { env, stdio: ['pipe', 'pipe', 'pipe'] });
     t.after(() => {
-      for (const pid of existsSync(pids) ? Object.values(readJson(pids)) : []) {
+      let recorded = {};
+      try {
+        recorded = readJson(pids);
+      } catch {}
+      for (const pid of Object.values(recorded)) {
         try {
           process.kill(pid, 'SIGKILL');
         } catch {}
