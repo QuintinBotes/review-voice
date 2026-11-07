@@ -89,3 +89,15 @@ The action exits 1 in that case. Use `pull_request`.
 
 The action exits with the review command's code, except that a moved head (3)
 and pending or rerun-needed CI (4, 6) exit 0 with a line in the summary.
+
+## When the review is unavailable
+
+Exit 7 means an agent failed twice, so no review exists. The report's
+`failure.mode` says whether that matters: `failed_open` for a change assessed
+as normal risk (such as documentation only), `failed_closed` for a high-risk
+change or one whose risk was never assessed. The action still exits 7 for both,
+so a required check stays red. To let a low-risk change through, a person can
+set `continue-on-error: true` on the review step; that also lets a
+`failed_closed` change through, so prefer a fail-open input that reads
+`failure.mode` once the action offers one. Nothing about a failure is ever
+posted to the pull request.

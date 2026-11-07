@@ -1,7 +1,23 @@
 import type { Database } from './db.ts';
 
 /** What the watcher did with one head (docs/adr/0027). */
-export type HeadStatus = 'reviewed' | 'posted' | 'carried' | 'waiting-ci' | 'held' | 'failed' | 'skipped';
+export type HeadStatus =
+  | 'reviewed'
+  | 'posted'
+  | 'carried'
+  | 'waiting-ci'
+  | 'held'
+  | 'failed'
+  | 'failed-open'
+  | 'failed-closed'
+  | 'skipped';
+
+/**
+ * A review that did not complete: `failed` for a child with no report,
+ * `failed-open` and `failed-closed` for one that reported its failure mode.
+ * Every retry cap and listing goes through this, so the three count alike.
+ */
+export const isFailure = (status: HeadStatus | string): boolean => status === 'failed' || status === 'failed-open' || status === 'failed-closed';
 
 export interface WatchHead {
   repository: string;
@@ -61,7 +77,7 @@ export function saveWatchHead(
   now: Date,
 ): WatchHead {
   const [name, sha] = key(row.repository, row.head);
-  const attempts = (watchHead(db, name, row.pull, sha)?.attempts ?? 0) + (row.status === 'failed' ? 1 : 0);
+  const attempts = (watchHead(db, name, row.pull, sha)?.attempts ?? 0) + (isFailure(row.status) ? 1 : 0);
   const saved: WatchHead = { ...row, repository: name, head: sha, attempts, updatedAt: now.toISOString() };
   db.prepare(
     `INSERT INTO watch_heads (repository, pull_number, head_sha, run_id, event, review_url, status, detail, attempts, updated_at)
@@ -112,12 +128,12 @@ export function watchSummary(db: Database): string[] {
   ];
 }
 
-/** Heads the watcher left for a person: held, skipped, or failed `maxAttemptsPerHead` times. Newest first. */
+/** Heads the watcher left for a person: held, skipped, or failed (in any of the three ways) `maxAttemptsPerHead` times. Newest first. */
 export function settledHeads(db: Database, maxAttemptsPerHead: number): WatchHead[] {
   const rows = db
     .prepare(
       `SELECT * FROM watch_heads
-       WHERE status IN ('held', 'skipped') OR (status = 'failed' AND attempts >= ?)
+       WHERE status IN ('held', 'skipped') OR (status IN ('failed', 'failed-open', 'failed-closed') AND attempts >= ?)
        ORDER BY updated_at DESC, rowid DESC`,
     )
     .all(maxAttemptsPerHead) as unknown as Row[];

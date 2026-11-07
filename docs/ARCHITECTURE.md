@@ -403,9 +403,17 @@ Outside the repository, in the platform data directory:
 review-voice.db      normalised redacted events, feedback, policies, runs, audit
 embeddings/          retrieval index
 policies/            versioned artifacts, plus archived/
-audit/events.jsonl   append-only local audit log
+runs/                one directory per review run: the raw diff, changed files and thread
+clones/              the watcher's partial clones, one per repository
 exports/             explicit exports only
 ```
+
+The audit log is the `audit_events` table in `review-voice.db`; no file holds
+it. `watch` (each pass) and `purge --runs` enforce the `retention` block:
+`runs/` entries older than `retention.runs_days` (default 30) and audit events
+older than `retention.audit_days` (default 180) are removed, with 0 or null
+turning a sweep off. Posting records (`review_post_*`) stay until `purge`,
+because they stop a review being posted twice. `review` never deletes.
 
 Each `review_runs` row has a nullable `provenance_json` column (migration 12):
 `origin` (`driver`, `interactive`, `watch` or `action`), an `independence`

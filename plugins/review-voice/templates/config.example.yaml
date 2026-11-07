@@ -252,6 +252,12 @@ watch:
   # moment is tried again for a few seconds before the watcher gives up.
   # lock_port: 50123                 # example
 
+# How long local data is kept (docs/adr/0005). `watch` applies it each pass and
+# `purge --runs` on request; `review` never deletes. 0 or null keeps forever.
+retention:
+  runs_days: 30                      # run directories hold the raw diff and thread
+  audit_days: 180                    # posting records are kept until `purge`
+
 writes:
   # Review Voice is read-only through v1. This exists so the setting is visible,
   # not because flipping it does anything yet.

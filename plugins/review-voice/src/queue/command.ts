@@ -2,7 +2,7 @@ import type { GitHubClient } from '../github/client.ts';
 import type { Database } from '../store/db.ts';
 import { QUEUE_SOURCES, type QueueConfig, type QueueSource } from './config.ts';
 import { buildQueue, type QueueEntry, type QueueResult } from './queue.ts';
-import { settledHeads, type WatchHead } from '../store/watch.ts';
+import { isFailure, settledHeads, type WatchHead } from '../store/watch.ts';
 
 export interface QueueCommandDeps {
   /** The loaded repository config, or null outside a repository. */
@@ -41,7 +41,7 @@ export function renderSettled(heads: WatchHead[]): string {
     ...heads.map(
       (head) =>
         `${head.status.toUpperCase()} ${head.repository}#${head.pull} ${head.head.slice(0, 7)}` +
-        (head.status === 'failed' ? ` (${head.attempts} attempts)` : '') +
+        (isFailure(head.status) ? ` (${head.attempts} attempts)` : '') +
         (head.detail === null ? '' : ` ${head.detail}`),
     ),
     `${heads.length} left for a person`,

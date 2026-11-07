@@ -14,6 +14,7 @@ import { agentExists, DIFF_LANE, LANE_TIERS, type Lane } from '../review/lanes.t
 import { allowlistEntryProblem } from '../github/client.ts';
 import { defaultQueueConfig, QUEUE_SOURCES, type QueueConfig, type QueueSource } from '../queue/config.ts';
 import { defaultWatchConfig, MAX_REVIEW_TIMEOUT_MS, parseDuration, type WatchConfig } from '../watch/config.ts';
+import { DEFAULT_RETENTION, type RetentionConfig } from '../store/retention.ts';
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
@@ -38,6 +39,8 @@ export interface LoadedConfig {
   queue: QueueConfig;
   /** Where and how often `watch` runs (docs/adr/0027). */
   watch: WatchConfig;
+  /** How long run directories and audit events are kept; `watch` and `purge --runs` enforce it. */
+  retention: RetentionConfig;
   staticEvidence: { enabled: boolean; commands: { name: string; run: string; timeoutSeconds?: number }[] };
   /** A second, ideally different-model, verification pass. Off by default. */
   verification: {
@@ -517,6 +520,22 @@ function readWatch(block: Record<string, unknown> | null, result: LoadedConfig):
   }
 }
 
+/** `retention:` periods in days. 0 or null switches a sweep off; a bad value warns and keeps the default. */
+function readRetention(block: Record<string, unknown> | null, result: LoadedConfig): void {
+  if (block === null) {
+    result.warnings.push('retention must be a mapping; using the defaults.');
+    return;
+  }
+  const read = (key: 'runs_days' | 'audit_days', field: keyof RetentionConfig): void => {
+    const value = block[key];
+    if (value === undefined) return;
+    if (value === null || (typeof value === 'number' && Number.isInteger(value) && value >= 0)) result.retention[field] = value;
+    else result.warnings.push(`retention.${key} must be a whole number of days, or 0 or null to keep it forever; using ${DEFAULT_RETENTION[field]}.`);
+  };
+  read('runs_days', 'runsDays');
+  read('audit_days', 'auditDays');
+}
+
 function contentHash(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
@@ -597,7 +616,7 @@ export function loadBaselineLayer(owner: string | null, path = join(pluginRoot()
   }
 }
 
-const KNOWN_TOP_LEVEL = ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'verification', 'queue', 'watch', 'writes'];
+const KNOWN_TOP_LEVEL = ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'verification', 'queue', 'watch', 'retention', 'writes'];
 
 /** A score gate must be a fraction in (0, 1]. */
 function readThresholds(review: Record<string, unknown>, result: LoadedConfig): void {
@@ -670,6 +689,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     allowlist: [],
     queue: defaultQueueConfig(),
     watch: defaultWatchConfig(),
+    retention: { ...DEFAULT_RETENTION },
     staticEvidence: { enabled: false, commands: [] },
     verification: { enabled: false, command: '', blockPresent: false },
     humanReview: {
@@ -714,6 +734,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
         }
         readQueue(asRecord(doc['queue']), result);
         if (doc['watch'] !== undefined) readWatch(asRecord(doc['watch']), result);
+        if (doc['retention'] !== undefined) readRetention(asRecord(doc['retention']), result);
 
         const staticEvidence = asRecord(doc['static_evidence']);
         if (staticEvidence !== null) {

@@ -10,6 +10,8 @@ export interface ReviewResult {
   detail: string | null;
   /** The review JSON said the owner's approval was carried and nothing was posted. */
   carried?: boolean;
+  /** The review JSON named a failure mode; absent for a timeout, unparseable output or a review that reported none. */
+  failureMode?: 'failed_open' | 'failed_closed';
 }
 
 export type ReviewPullRequest = (args: {
@@ -54,7 +56,18 @@ export function reviewResult(exitCode: number, stdout: string, stderr: string): 
       ? null
       : [EXIT_DETAIL[exitCode] ?? `review exited ${exitCode}`, lastLine].filter((part) => part.length > 0).join(': ').slice(0, 300);
   const carried = doc['carried'] === true || verdict['action'] === 'carry';
-  return { exitCode, runId: text(doc['runId']), event, reviewUrl: text(doc['reviewUrl']), detail, carried };
+  const failure = typeof doc['failure'] === 'object' && doc['failure'] !== null ? (doc['failure'] as Record<string, unknown>) : {};
+  const failureMode = failure['mode'] === 'failed_open' || failure['mode'] === 'failed_closed' ? failure['mode'] : null;
+  // The key is omitted, not undefined, when the child named no mode, so results without a failure keep their shape.
+  return {
+    exitCode,
+    runId: text(doc['runId']),
+    event,
+    reviewUrl: text(doc['reviewUrl']),
+    detail,
+    carried,
+    ...(failureMode === null ? {} : { failureMode }),
+  };
 }
 
 export interface SpawnOptions {

@@ -1,5 +1,5 @@
 import type { Database } from '../store/db.ts';
-import { watchHead, type WatchHead } from '../store/watch.ts';
+import { isFailure, watchHead, type WatchHead } from '../store/watch.ts';
 
 /**
  * The queue's reads of the local store, kept apart so a caller with its own
@@ -45,7 +45,7 @@ export function runRecordedAtHead(db: Database, repository: string, pull: number
 export function settledByWatcher(db: Database, repository: string, pull: number, head: string, maxAttemptsPerHead = 2): WatchHead | null {
   const row = watchHead(db, repository, pull, head);
   if (row === null) return null;
-  if (row.status === 'failed') return row.attempts >= maxAttemptsPerHead ? row : null;
+  if (isFailure(row.status)) return row.attempts >= maxAttemptsPerHead ? row : null;
   return ['posted', 'carried', 'skipped', 'held'].includes(row.status) ? row : null;
 }
 

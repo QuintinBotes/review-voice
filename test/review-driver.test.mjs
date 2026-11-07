@@ -1047,3 +1047,111 @@ test('S02: a call that reports no tokens adds nothing to its stage, so an unknow
   for (const stage of none.report.stages) assert.equal(Object.hasOwn(stage, 'tokens'), false, `${stage.name} has no tokens key`);
   for (const stage of storedRun(none.data, none.report.runId).stages) assert.equal(Object.hasOwn(stage, 'tokens'), false, `recorded ${stage.name}`);
 });
+
+// S03: a review that cannot complete reports why, decided by the assessed risk.
+
+const WORKFLOW = 'name: ci\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n';
+const DOCS_CANDIDATE = { ...CANDIDATE, path: 'README.md', line: 3, category: 'documentation', evidence: ['README.md:3 says the total sums prices.'] };
+
+function auditEvents(data, action) {
+  const db = openDatabase(join(data, 'review-voice.db'));
+  try {
+    return db.prepare('SELECT * FROM audit_events WHERE action = ?').all(action).map((row) => ({ ...row, metadata: JSON.parse(row.metadata_json) }));
+  } finally {
+    db.close();
+  }
+}
+
+test('S03 AC-1: a verifier that fails twice on a workflow change fails closed, with the reasons and one audit event', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD, '.github/workflows/ci.yml': WORKFLOW });
+  const fakeDir = fakes(t, fullRun({ 'evidence-verifier': [new Error('no'), new Error('no again')] }));
+  const { report, data } = await review(t, repo, fakeDir, fakeGitHub(repo));
+  assert.equal(report.exitCode, 7);
+  assert.equal(report.failure.mode, 'failed_closed');
+  assert.equal(report.failure.risk, 'high');
+  assert.equal(report.failure.code, 7);
+  assert.ok(report.failure.reasons.length > 0);
+  assert.equal(runCount(data), 0);
+  const events = auditEvents(data, 'review_failed');
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0].metadata, { repository: REPO, pull: PR, head: repo.head, code: 7, stage: report.failure.stage, mode: 'failed_closed' });
+});
+
+test('S03 AC-2: the same failure on a documentation-only change fails open at normal risk', async (t) => {
+  const repo = repository(t, { 'README.md': '# Api\n\nSums prices and quantities.\n' });
+  const fakeDir = fakes(t, fullRun({ 'diff-analyst': [{ candidates: [DOCS_CANDIDATE] }], 'evidence-verifier': [new Error('no'), new Error('no again')] }));
+  const { report, data } = await review(t, repo, fakeDir, fakeGitHub(repo));
+  assert.equal(report.exitCode, 7, report.error);
+  assert.equal(report.failure.mode, 'failed_open');
+  assert.equal(report.failure.risk, 'normal');
+  assert.equal(runCount(data), 0);
+  assert.equal(auditEvents(data, 'review_failed')[0].metadata.mode, 'failed_open');
+});
+
+test('S03 AC-3: a failure before the stage loop has unknown risk and fails closed', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const inner = fakeGitHub(repo);
+  const github = async (url, init) => {
+    const response = await inner(url, init);
+    if (new URL(String(url)).pathname !== `/repos/${REPO}/pulls/${PR}`) return response;
+    return json({ ...(await response.json()), head: {} });
+  };
+  const { report, data } = await review(t, repo, fakes(t, fullRun()), github);
+  assert.notEqual(report.exitCode, 0);
+  assert.equal(report.failure.stage, 'unknown');
+  assert.equal(report.failure.risk, 'unknown');
+  assert.equal(report.failure.mode, 'failed_closed');
+  assert.deepEqual(report.failure.reasons, ['risk not assessed']);
+  assert.equal(auditEvents(data, 'review_failed').length, 1);
+});
+
+test('S03 AC-3: a diff command that fails inside prep has stage prep, unknown risk and fails closed', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const inner = fakeGitHub(repo);
+  // The changed-files listing is the first thing the diff command needs, so refusing it fails the diff inside prep.
+  const github = async (url, init) => {
+    if (new URL(String(url)).pathname === `/repos/${REPO}/pulls/${PR}/files`) return json({ message: 'boom' }, 500);
+    return inner(url, init);
+  };
+  const { report } = await review(t, repo, fakes(t, fullRun()), github);
+  assert.notEqual(report.exitCode, 0, report.error);
+  assert.equal(report.failure.stage, 'prep');
+  assert.equal(report.failure.risk, 'unknown');
+  assert.equal(report.failure.mode, 'failed_closed');
+});
+
+test('S03 AC-3: a moved head (exit 3) is not a failure and gets no failure object or audit event', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const fakeDir = fakes(t, { 'diff-analyst': [{ candidates: [] }] });
+  const github = fakeGitHub(repo, { moved: () => existsSync(join(fakeDir, '.calls', 'diff-analyst.count')) });
+  const { report, data } = await review(t, repo, fakeDir, github);
+  assert.equal(report.exitCode, 3, report.error);
+  assert.equal(report.failure, null);
+  assert.equal(auditEvents(data, 'review_failed').length, 0);
+});
+
+test('S03 AC-4: a real failed run prints the unavailable block, reads the evidence stub, and carries failure in JSON', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD, '.github/workflows/ci.yml': WORKFLOW });
+  const fakeDir = fakes(t, fullRun({ 'evidence-verifier': [new Error('no'), new Error('no again')] }));
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo));
+  const lines = reportText(report).split('\n');
+  assert.match(lines[0], /^Review unavailable \(failed_closed, exit 7\): /);
+  assert.match(lines[1], /^Risk: high\. Reasons: /);
+  assert.equal(JSON.parse(JSON.stringify(report)).failure.mode, 'failed_closed');
+  if (report.failure.facts.staticChecks !== null) assert.deepEqual(report.failure.facts.staticChecks, { ran: [], failed: [], didNotRun: [] });
+});
+
+test('S03 AC-4: reportText lists ran, failed and did-not-run checks, and omits Checks when evidence.json is absent', () => {
+  const failure = (staticChecks) => ({
+    code: 7, stage: 'verify', mode: 'failed_closed', risk: 'high', reasons: ['touches CI'], humanReviewNote: 'A person should review this.',
+    facts: { complexity: null, structure: null, staticChecks },
+  });
+  const base = { exitCode: 7, head: null, runDir: null, scope: null, plan: null, stages: [], carried: false, costUsd: null, seconds: 0, findings: [], held: [], notes: [], runId: null, reviewUrl: null, posted: false, verdict: null, provenance: null, configSource: null, error: 'verify failed twice' };
+  const withChecks = reportText({ ...base, failure: failure({ ran: ['lint', 'tests'], failed: [{ name: 'lint', exitCode: 1 }], didNotRun: ['build'] }) });
+  assert.match(withChecks, /^Review unavailable \(failed_closed, exit 7\): verify failed twice$/m);
+  assert.match(withChecks, /^Risk: high\. Reasons: touches CI$/m);
+  assert.match(withChecks, /^Checks: lint ran \(exit 1\), tests ran \(exit 0\), build did not run$/m);
+  assert.match(withChecks, /^Needs a human reviewer: A person should review this\.$/m);
+  assert.doesNotMatch(reportText({ ...base, failure: failure(null) }), /^Checks:/m);
+  assert.match(reportText({ ...base, failure: failure({ ran: [], failed: [], didNotRun: [] }) }), /^Checks: none recorded$/m);
+});

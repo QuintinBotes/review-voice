@@ -118,6 +118,7 @@ import { CONFIG_COPY, watchCommand } from './watch/command.ts';
 import { spawnReview } from './watch/review.ts';
 import { gitPrepareClone } from './watch/workspace.ts';
 import { watchSummary } from './store/watch.ts';
+import { previewRunDirectories, removeRunDirectories } from './store/retention.ts';
 import { previewPurge, executePurge, type PurgeScope } from './consent/purge.ts';
 import { retrievePrecedents, type Precedent } from './retrieval/retrieve.ts';
 import { resolveSyncWindow } from './sync/window.ts';
@@ -1010,28 +1011,43 @@ function consentPlanCommand(argv: string[]): number {
 }
 
 function purgeCommand(argv: string[]): number {
+  const runs = argv.includes('--runs');
+  const before = flag(argv, '--before') ?? undefined;
   const scope: PurgeScope = {
     repository: flag(argv, '--repo') ?? undefined,
-    before: flag(argv, '--before') ?? undefined,
+    // With --runs the date is for the run directories (their mtime); the corpus is not purged by it.
+    before: runs ? undefined : before,
     all: argv.includes('--all') || undefined,
   };
 
-  if (scope.repository === undefined && scope.before === undefined && scope.all !== true) {
-    console.error('Purge needs a scope: --repo <owner/repo>, --before <date>, or --all.');
+  if (scope.repository === undefined && before === undefined && scope.all !== true && !runs) {
+    console.error('Purge needs a scope: --repo <owner/repo>, --before <date>, --runs, or --all.');
     return 2;
   }
+  let runsBefore: Date | null = null;
+  if (runs && before !== undefined) {
+    runsBefore = /^\d{4}-\d{2}-\d{2}$/.test(before) ? new Date(`${before}T00:00:00.000Z`) : null;
+    if (runsBefore === null || Number.isNaN(runsBefore.getTime())) {
+      console.error('--before takes a date such as 2026-01-31 when it goes with --runs.');
+      return 2;
+    }
+  }
+  // Run directories are files, so they are handled beside the database scope, never inside it.
+  const directories = runs || scope.all === true;
 
   const db = openDatabase();
   try {
     // Deletion is irreversible, so the damage is shown before it is agreed to,
     // not after.
     const preview = previewPurge(db, scope);
+    const found = directories ? previewRunDirectories(dataDirectory(), runsBefore) : null;
     if (!argv.includes('--confirm')) {
-      console.log(JSON.stringify({ wouldRemove: preview, confirmed: false }, null, 2));
+      console.log(JSON.stringify({ wouldRemove: found === null ? preview : { ...preview, runDirectories: found }, confirmed: false }, null, 2));
       return 0;
     }
-    const removed = executePurge(db, scope);
-    console.log(JSON.stringify({ removed, confirmed: true }, null, 2));
+    const gone = directories ? removeRunDirectories(dataDirectory(), runsBefore) : null;
+    const removed = executePurge(db, scope, gone?.count);
+    console.log(JSON.stringify({ removed: gone === null ? removed : { ...removed, runDirectories: gone }, confirmed: true }, null, 2));
     return 0;
   } finally {
     db.close();

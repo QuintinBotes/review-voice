@@ -26,6 +26,8 @@ export type AuditAction =
   | 'review_post_failed'
   // An unchanged scope whose owner approval stands: nothing was posted (docs/adr/0028).
   | 'review_carried'
+  // A review that could not complete: ids, the exit code, the stage and the failure mode (docs/adr/0022).
+  | 'review_failed'
   // Verified candidates carried to a head pushed mid-review.
   | 'candidates_carried';
 
