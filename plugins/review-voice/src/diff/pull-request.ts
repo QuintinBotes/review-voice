@@ -329,7 +329,7 @@ export function applyReviewScope(
   cwd: string,
   readIncrementalDiff: (since: string, head: string, files: string[], cwd: string) => string =
     (since, head, files, root) => {
-      const args = ['diff', '--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', since, head, '--', ...topPathspecs(files)];
+      const args = ['diff', '--no-ext-diff', '--no-color', '--unified=3', '--src-prefix=a/', '--dst-prefix=b/', since, head, '--', ...topPathspecs(files)];
       try {
         return execFileSync('git', args, {
           cwd: root,

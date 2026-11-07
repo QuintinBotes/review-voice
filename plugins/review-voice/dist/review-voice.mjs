@@ -1986,7 +1986,7 @@ var STATUS = {
   C: "copied",
   T: "changed"
 };
-var PATCH_OPTIONS = ["--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"];
+var PATCH_OPTIONS = ["--no-ext-diff", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/"];
 function parseNameStatus(raw) {
   const fields = raw.split("\0").filter((field) => field.length > 0);
   const out = [];
@@ -4576,7 +4576,7 @@ var systemGit = {
   },
   diffText(from, to, paths, cwd) {
     return runGit(
-      ["diff", "--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", from, to, "--", ...topPathspecs(paths)],
+      ["diff", "--no-ext-diff", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", from, to, "--", ...topPathspecs(paths)],
       cwd
     );
   },
@@ -5122,7 +5122,7 @@ function fullScopeResult(result, pullNumber, scope) {
   return { ...result, pullNumber, scope, scopeNote: null };
 }
 function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = (since, head, files2, root) => {
-  const args = ["diff", "--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", since, head, "--", ...topPathspecs(files2)];
+  const args = ["diff", "--no-ext-diff", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", since, head, "--", ...topPathspecs(files2)];
   try {
     return execFileSync6("git", args, {
       cwd: root,
