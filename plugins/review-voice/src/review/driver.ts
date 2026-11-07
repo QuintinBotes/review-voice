@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { ownSignals, readAgentTools, runAgent, stopAll, type AgentResult } from '../agents/runner.ts';
 import { DEFAULT_AGENT_PARALLELISM } from '../agents/types.ts';
 import { seriousNotCarried, type NotCarriedFinding } from '../diff/carry.ts';
+import { originRepository } from '../diff/pull-request.ts';
 import { parseHunks } from '../diff/hunks.ts';
 import type { GitHubClient } from '../github/client.ts';
 import { descriptionOf } from '../intent.ts';
@@ -54,7 +55,7 @@ export interface ReviewOptions {
  */
 export interface ConfigSource {
   kind: 'flag' | 'env' | 'base' | 'default';
-  /** The base commit (or `origin/<branch>`) read, for `base` and `default`. */
+  /** The base commit (or `refs/remotes/origin/<branch>`) read, for `base` and `default`. */
   ref?: string;
   /** The file the run's stages read. */
   path?: string;
@@ -249,9 +250,12 @@ function resolveConfig(run: Run): void {
   rmSync(path, { force: true });
   let from = sha;
   let content = showAt(sha, CONFIG_PATH);
-  // A shallow clone may lack the base commit; the base branch's remote ref is the next best trusted copy.
-  if (content === null && ref !== null && showAt(sha, '') === null) {
-    from = `origin/${ref}`;
+  // A shallow clone may lack the base commit. The base branch's remote ref is
+  // the next best trusted copy only when origin is the repository under review:
+  // in a fork clone, origin/<ref> is the pull request author's own branch.
+  if (content === null && ref !== null && showAt(sha, '') === null && originRepository(process.cwd())?.toLowerCase() === run.options.repository.toLowerCase()) {
+    // Fully qualified: a local branch named origin/<ref> would otherwise win the lookup.
+    from = `refs/remotes/origin/${ref}`;
     content = showAt(from, CONFIG_PATH);
   }
   if (content === null) {
@@ -996,7 +1000,9 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     if (options.expectHead != null && options.expectHead !== run.head) {
       throw new Stop(3, `The head is ${run.head}, not the expected ${options.expectHead}.`);
     }
-    run.dir = options.out === null ? runDirectory(options, run.head) : resolve(options.out);
+    // Absolute, so the config path chosen below is absolute too: the loader ignores
+    // a relative REVIEW_VOICE_CONFIG and would read the checkout, which is the head.
+    run.dir = resolve(options.out === null ? runDirectory(options, run.head) : options.out);
     mkdirSync(run.dir, { recursive: true });
     resolveConfig(run);
     for (const stage of STAGES) {

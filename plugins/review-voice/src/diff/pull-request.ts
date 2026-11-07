@@ -117,7 +117,7 @@ function mergeBaseOf(base: string, head: string, cwd: string): string | null {
 }
 
 /** The owner/repo the `origin` remote points at, or null. */
-function originRepository(cwd: string): string | null {
+export function originRepository(cwd: string): string | null {
   try {
     const url = git(['remote', 'get-url', 'origin'], cwd, 10_000).trim();
     return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
