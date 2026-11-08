@@ -45,8 +45,17 @@ function repository() {
 test('diff reports all loaded structural warnings and retains the defaults', () => {
   const directory = repository();
   const output = join(directory, 'out');
+  // `context` opens the store to load approved policies, so it gets a fresh
+  // data directory and never the developer's own store.
+  const data = mkdtempSync(join(tmpdir(), 'rv-130-data-'));
   try {
-    const context = JSON.parse(execFileSync(process.execPath, [bundle, 'context'], { cwd: directory, encoding: 'utf8' }));
+    const context = JSON.parse(
+      execFileSync(process.execPath, [bundle, 'context'], {
+        cwd: directory,
+        encoding: 'utf8',
+        env: { ...process.env, REVIEW_VOICE_DATA_DIR: data },
+      }),
+    );
     const result = spawnSync(process.execPath, [bundle, 'diff', '--out', output], { cwd: directory, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
 
@@ -59,5 +68,6 @@ test('diff reports all loaded structural warnings and retains the defaults', () 
     assert.deepEqual(summary.complexity.reasons, []);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+    rmSync(data, { recursive: true, force: true });
   }
 });

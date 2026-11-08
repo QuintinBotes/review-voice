@@ -867,10 +867,14 @@ deterministic `fix` instruction, is passed inline rather than as a path the
 editor cannot open. It may state only the fix or direction that instruction
 permits.
 
-Rules are compiled by finding **category**, not by file path. "Suppress
-maintainability findings unless they name a concrete failure mode" is a rule;
-"suppress things like the ones in src/a.ts" is an observation about wherever
-you happened to be working that week.
+Rules are keyed by **rule id** (category, lane and, when a candidate claimed
+one, blocker class), not by file path, and an approved rule's suppressions are
+applied in `score`. "Suppress maintainability findings from the diff lane
+unless they name a concrete failure mode" is a rule; "suppress things like the
+ones in src/a.ts" is an observation about wherever you happened to be working
+that week. A dismissal in one lane says nothing about the same category in
+another lane, so signals from two lanes form two rules. See
+[ADR 0032](adr/0032-approved-policies-are-enforced-at-scoring.md).
 
 Category cannot be recovered from the rendered output - the contract permits no
 text beyond the finding - so it arrives alongside, via `record --candidates`.

@@ -43,3 +43,4 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0029](0029-posted-findings-are-followed-to-an-outcome.md) | Posted findings are followed to an outcome | Accepted |
 | [0030](0030-team-profiles-and-cold-start.md) | Team profiles pool reviewers, and a new install starts from a baseline | Accepted |
 | [0031](0031-a-github-action-runs-one-review-per-pull-request-event.md) | A GitHub Action runs one review per pull request event | Accepted, amended 2026-11-07 (config read from the base commit) |
+| [0032](0032-approved-policies-are-enforced-at-scoring.md) | Approved policies are enforced at scoring | Accepted |

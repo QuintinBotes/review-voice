@@ -3028,6 +3028,10 @@ var ALIASES = {
   bug: "correctness",
   logic: "correctness"
 };
+function canonicalCategory(category) {
+  const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return LEGACY_BY_CATEGORY[normalised] !== void 0 ? normalised : ALIASES[normalised] ?? normalised;
+}
 var MAX_TIER_MOVEMENT = 1;
 function boundToRequest(derived, requested, reach, reason2) {
   const asked = SEVERITIES.indexOf(requested);
@@ -3075,8 +3079,7 @@ function deriveSeverity(category, requested, reach = null) {
     };
   }
   const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
-  const alias = ALIASES[normalised];
-  const resolved = LEGACY_BY_CATEGORY[normalised] !== void 0 ? normalised : alias ?? normalised;
+  const resolved = canonicalCategory(category);
   const legacy = LEGACY_BY_CATEGORY[resolved];
   if (legacy === void 0) {
     return {
@@ -3372,7 +3375,16 @@ var SUPPRESSION_EXEMPT_CATEGORIES = /* @__PURE__ */ new Set([
   "trust_boundary"
 ]);
 function isSuppressionExempt(category) {
-  return SUPPRESSION_EXEMPT_CATEGORIES.has(category.trim().toLowerCase());
+  return SUPPRESSION_EXEMPT_CATEGORIES.has(canonicalCategory(category));
+}
+var POLICY_SUPPRESSED_PREFIX = "policy-suppressed:";
+function matchingSuppression(suppressions, candidate) {
+  if (suppressions.length === 0 || isSuppressionExempt(candidate.category)) return null;
+  const ruleId = ruleIdFor(candidate.category, candidate.lane, candidate.blockerClass);
+  if (ruleId === null) return null;
+  return suppressions.find(
+    (suppression) => suppression.ruleId === ruleId && !isSuppressionExempt(categoryOfRuleId(suppression.ruleId)) && (suppression.glob === null || governsAny([suppression.glob], [candidate.path]))
+  ) ?? null;
 }
 var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
 function isInterrogativeClaim(claim) {
@@ -13765,6 +13777,23 @@ function describeProvenance(provenance) {
 function describeOrigin(provenance) {
   return `origin ${provenance.origin} (${provenance.independence})`;
 }
+function storedPolicyVersions(db, runId) {
+  const row = db.prepare("SELECT active_policy_versions_json FROM review_runs WHERE review_run_id = ?").get(runId);
+  if (row === void 0 || row.active_policy_versions_json === null) return null;
+  try {
+    const parsed2 = JSON.parse(row.active_policy_versions_json);
+    if (!Array.isArray(parsed2)) return null;
+    const versions = [];
+    for (const entry of parsed2) {
+      const p = typeof entry === "object" && entry !== null ? entry : {};
+      if (typeof p["scopeType"] !== "string" || typeof p["scopeKey"] !== "string" || typeof p["policyId"] !== "string" || typeof p["version"] !== "number") return null;
+      versions.push({ scopeType: p["scopeType"], scopeKey: p["scopeKey"], policyId: p["policyId"], version: p["version"] });
+    }
+    return versions;
+  } catch {
+    return null;
+  }
+}
 var reportedProvenance = /* @__PURE__ */ new Set();
 function storedProvenance(raw, reviewRunId) {
   if (typeof raw !== "string") return null;
@@ -13877,7 +13906,7 @@ function recordRun(db, input) {
       if (from !== void 0) finding.carriedFrom = { runId: input.carried.runId, findingId: from };
     }
   }
-  const policyVersions = activePolicyVersions(db);
+  const policyVersions = input.provenance?.policyVersions ?? activePolicyVersions(db);
   const provenance = input.provenance === void 0 ? null : {
     origin: input.provenance.origin,
     independence: independenceOf(input.provenance.origin),
@@ -20725,6 +20754,15 @@ async function score(run) {
     });
   };
   for (const entry of list(scores["belowGate"])) hold(entry, "below-gate", "score", `below the ${String(entry["gate"])} gate`);
+  for (const entry of list(scores["suppressed"])) {
+    const version = entry["policyVersion"];
+    hold(
+      entry,
+      "policy-suppressed",
+      "policy",
+      `held by approved policy${typeof version === "number" ? ` version ${version}` : ""} (rule ${String(entry["ruleId"] ?? "")})`
+    );
+  }
   for (const entry of list(scores["unverified"])) {
     const missing = Array.isArray(entry["requiredContextMissing"]) ? entry["requiredContextMissing"].join("; ") : "context";
     hold(entry, "unverified", "verifier", `could not check: ${missing}`);
@@ -22237,14 +22275,16 @@ var COMMAND_HELP = {
       "  --diff-file <path>        Diff for reach and anchor checks",
       "  --min-score <n>           Final score gate (default 0.68)",
       "  --severity <id>=<tier>    Owner downgrade, or a raise up to the requested tier when reach is unknown (repeatable)",
-      "  --promote <id>            Owner posts a belowGate finding past its gate (repeatable)",
+      "  --promote <id>            Owner posts a belowGate or suppressed[] finding past its gate (repeatable)",
       "  --allow-unverifiable      With --promote: also lift the unverifiable cap; needs --owner-note",
       "  --owner-note <text>       Why the owner posts an unverifiable finding; recorded with it",
       "  --repository <name>       Prefer precedents from this repository",
       "  --owner <login>           Owner whose precedents count; default from config",
       "Reads: candidates JSON on stdin; review.lanes from .review-voice/config.yaml, whose",
       "  severity rule (cap, escalate on blocker_confirmed) applies after the tier is derived.",
-      "Writes: JSON scores on stdout, each entry with its lane. Every entry names its candidate as candidate_id,",
+      "Writes: JSON scores on stdout, each entry with its lane. A verified candidate an approved",
+      "  suppression held is listed in suppressed[] with its ruleId and policyVersion, and",
+      "  --promote posts it past that policy. Every entry names its candidate as candidate_id,",
       "  like candidates and verification; candidateId is still written beside it",
       "  but is deprecated.",
       "Exit codes: 0 ok, 2 malformed candidates or bad invocation."
@@ -22727,7 +22767,9 @@ var COMMAND_HELP = {
       "  --run <run-id>         The run to explain; default the latest",
       "  --json                 Emit the detail as JSON",
       "Reads: nothing on stdin; the local store.",
-      "Writes: text (or JSON) on stdout.",
+      "Writes: text (or JSON) on stdout. Each finding shows its rule id, and a finding from",
+      "  score suppressed[] appears under Held back as policy-suppressed, with the rule id",
+      "  and policy version that held it; score --promote posts such a finding.",
       "Exit codes: 0 ok."
     )
   },
@@ -24034,6 +24076,12 @@ function applyOwnerPromotion(breakdown, ownerNote) {
     breakdown.rejectedBecause = null;
     return null;
   }
+  if (gate === "policy") {
+    breakdown.ownerPromotion = { gate, heldBecause: breakdown.rejectedBecause, ruleId: breakdown.rejectedBecause.slice(POLICY_SUPPRESSED_PREFIX.length) };
+    breakdown.eligible = true;
+    breakdown.rejectedBecause = null;
+    return null;
+  }
   if (breakdown.confidenceSource !== "verifier" || !Number.isFinite(breakdown.finalScore) || gate === null) {
     return `--promote ${breakdown.candidateId}: only a verified finding held by the score or confidence gate alone can be promoted, and this one was rejected because ${breakdown.rejectedBecause}.`;
   }
@@ -24244,6 +24292,10 @@ function scoreCommand(argv) {
   const lanes2 = repositoryConfig()?.lanes ?? [DIFF_LANE];
   const db = openDatabase();
   try {
+    const loadedConfig = repositoryConfig(db);
+    const suppressions = loadedConfig?.suppressions ?? [];
+    const policyVersions = loadedConfig?.activePolicyVersions ?? [];
+    const suppressionByCandidate = /* @__PURE__ */ new Map();
     const kept = [];
     const results = [];
     const followUps = /* @__PURE__ */ new Map();
@@ -24269,6 +24321,14 @@ function scoreCommand(argv) {
         if (problem !== null) {
           console.error(problem);
           return 2;
+        }
+      }
+      if (breakdown.eligible) {
+        const suppression = matchingSuppression(suppressions, candidate);
+        if (suppression !== null) {
+          breakdown.eligible = false;
+          breakdown.rejectedBecause = `${POLICY_SUPPRESSED_PREFIX}${suppression.ruleId}`;
+          suppressionByCandidate.set(candidate.candidateId, suppression);
         }
       }
       let absence = null;
@@ -24351,7 +24411,7 @@ function scoreCommand(argv) {
     }
     applyQuestionCap(results);
     const belowGate = results.filter(
-      (r) => r.confidenceSource === "verifier" && !r.eligible && Number.isFinite(r.finalScore) && gateOf(r.rejectedBecause) !== null
+      (r) => r.confidenceSource === "verifier" && !r.eligible && Number.isFinite(r.finalScore) && gateOf(r.rejectedBecause) !== null && gateOf(r.rejectedBecause) !== "policy"
     ).map((r) => {
       const gate = gateOf(r.rejectedBecause);
       return boundLists({
@@ -24366,6 +24426,18 @@ function scoreCommand(argv) {
           technicalConfidence: r.technicalConfidence,
           threshold: r.severity.severity === "question" ? QUESTION_GAP_FLOOR : thresholds.technicalConfidence
         }
+      });
+    });
+    const suppressed = results.filter((r) => !r.eligible && gateOf(r.rejectedBecause) === "policy").map((r) => {
+      const suppression = suppressionByCandidate.get(r.candidateId);
+      return boundLists({
+        candidateId: r.candidateId,
+        ruleId: suppression?.ruleId ?? r.rejectedBecause.slice(POLICY_SUPPRESSED_PREFIX.length),
+        path: r.path,
+        line: r.line,
+        severity: r.severity.severity,
+        claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? "",
+        policyVersion: suppression?.policyVersion ?? null
       });
     });
     const unverified = results.filter((r) => r.confidenceSource === "unverifiable-cap" && r.rejectedBecause === UNVERIFIABLE_REJECTION).flatMap((r) => {
@@ -24449,6 +24521,11 @@ function scoreCommand(argv) {
               // Whether the verifier or a fallback set the confidence, without a join to `scores` (#220).
               confidenceSource: scored?.confidenceSource ?? null,
               category: c.category,
+              // The driver records these entries as the run's candidates, and
+              // a finding's rule id is derived from them: without the lane and
+              // the blocker class every recorded rule would read `:diff`.
+              lane: c.lane,
+              blockerClass: c.blockerClass,
               // What the editor writes from. It has no tools, so everything it
               // may state has to be here, and nothing it may not.
               claim: c.claim,
@@ -24474,8 +24551,10 @@ function scoreCommand(argv) {
             };
           }),
           belowGate: belowGate.map(withSnakeCaseId),
+          suppressed: suppressed.map(withSnakeCaseId),
           unverified: unverified.map(withSnakeCaseId),
-          absenceContradicted: absenceContradicted.map(withSnakeCaseId)
+          absenceContradicted: absenceContradicted.map(withSnakeCaseId),
+          policyVersions
         },
         null,
         2
@@ -24492,6 +24571,7 @@ function locallyListable(rejectedBecause) {
 }
 function gateOf(rejectedBecause) {
   if (rejectedBecause === null || rejectedBecause.includes(" Also: ")) return null;
+  if (rejectedBecause.startsWith(POLICY_SUPPRESSED_PREFIX)) return "policy";
   if (rejectedBecause.startsWith("score ")) return "score";
   if (rejectedBecause.startsWith("technical confidence ")) return "confidence";
   return null;
@@ -24763,6 +24843,17 @@ function reviewScopeFromManifest(value) {
 function describeReviewScope(scope) {
   return describeScope(scope);
 }
+function policyVersionRefs(value) {
+  if (!Array.isArray(value)) return null;
+  const refs = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) return null;
+    const { scopeType, scopeKey, policyId, version } = entry;
+    if (typeof scopeType !== "string" || typeof scopeKey !== "string" || typeof policyId !== "string" || typeof version !== "number") return null;
+    refs.push({ scopeType, scopeKey, policyId, version });
+  }
+  return refs;
+}
 function recordCommand(argv) {
   for (const name of ["--base", "--head"]) {
     if (argv.includes(name) && (flag(argv, name) ?? "") === "") {
@@ -24890,10 +24981,12 @@ function recordCommand(argv) {
   }
   const scoresFile = flag(argv, "--scores");
   let scores = [];
+  let scoredPolicyVersions = null;
   if (scoresFile !== null) {
     try {
       const parsed2 = JSON.parse(readFileSync16(scoresFile, "utf8"));
       scores = boundLists(Array.isArray(parsed2) ? parsed2 : parsed2.scores ?? []);
+      scoredPolicyVersions = Array.isArray(parsed2) ? null : policyVersionRefs(parsed2.policyVersions);
     } catch {
       console.error(`Cannot read scores from ${scoresFile}.`);
       return 2;
@@ -25006,6 +25099,7 @@ function recordCommand(argv) {
     let carried;
     let carry2;
     let carriedProvenance = null;
+    let carriedVersions = null;
     const carriedFrom = flag(argv, "--carried-from");
     if (carriedFrom !== null) {
       const head = flag(argv, "--head");
@@ -25027,6 +25121,7 @@ function recordCommand(argv) {
         const prior = source?.carry ?? null;
         if (prior !== null && !prior.covered) carry2 = { ...prior, inheritedFrom: prior.inheritedFrom ?? carriedFrom };
         carriedProvenance = source?.provenance ?? null;
+        carriedVersions = storedPolicyVersions(db, carriedFrom);
       } catch (error) {
         console.error(error.message);
         return 2;
@@ -25106,7 +25201,14 @@ function recordCommand(argv) {
       ...carry2 === void 0 ? {} : { carry: carry2 },
       followUps,
       stages,
-      provenance: carriedProvenance === null ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode } : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode }
+      provenance: {
+        ...carriedProvenance === null ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode } : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode },
+        // The versions this run was held to: the ones `score` loaded when there
+        // is a scores file; else the carried run's, since an unchanged scope is
+        // not rescored and a policy change since must not be attributed to it;
+        // else the rows active now.
+        ...scoredPolicyVersions !== null ? { policyVersions: scoredPolicyVersions } : carriedVersions === null ? {} : { policyVersions: carriedVersions }
+      }
     });
     const warning = shallowPassWarning(stages, findings.length);
     console.log(
@@ -25763,6 +25865,7 @@ function explainCommand(argv) {
         }
       }
       console.log(`  category          ${finding.category ?? "not recorded"}`);
+      console.log(`  rule id           ${finding.ruleId ?? "not recorded"}`);
       if (score2?.technicalConfidence !== void 0) {
         console.log(`  technical         ${score2.technicalConfidence.toFixed(2)}`);
       }
@@ -26501,7 +26604,9 @@ function statusCommand() {
     if (dismissalWarning !== null) console.log(dismissalWarning);
     if (last !== null) {
       const origin = lastDetail?.provenance == null ? "" : `; ${describeOrigin(lastDetail.provenance)}`;
-      console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(", ") || "none"}${origin}`);
+      console.log(
+        `last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.ruleId === void 0 ? f.findingId : `${f.findingId} (${f.ruleId})`).join(", ") || "none"}${origin}`
+      );
       const recordedScope = describeReviewScope(lastDetail?.scope ?? null);
       if (recordedScope !== null) console.log(`last scope       ${recordedScope}`);
     }

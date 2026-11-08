@@ -1,6 +1,6 @@
 import type { Precedent } from '../retrieval/retrieve.ts';
 import type { ReachCheck } from './reach.ts';
-import { deriveSeverity, type DerivedSeverity, type Severity } from './severity.ts';
+import { canonicalCategory, deriveSeverity, type DerivedSeverity, type Severity } from './severity.ts';
 import { ESCALATION_CONFIDENCE, verifierConfidence } from './confidence.ts';
 import { SEVERITIES } from '../contract/limits.ts';
 import { DIFF_LANE, type Lane } from '../review/lanes.ts';
@@ -278,11 +278,12 @@ export const SUPPRESSION_EXEMPT_CATEGORIES: ReadonlySet<string> = new Set([
 
 /**
  * Whether a finding of this category can never be held by a suppression.
- * Compared without regard to case or padding: a carve-out that `Security`
- * slipped past would be a carve-out in name only.
+ * Compared as the severity table knows the category, so an alias such as
+ * `authz` or a spelling such as `data-integrity` cannot get round it: a
+ * carve-out that `Security` or `authz` slipped past would be one in name only.
  */
 export function isSuppressionExempt(category: string): boolean {
-  return SUPPRESSION_EXEMPT_CATEGORIES.has(category.trim().toLowerCase());
+  return SUPPRESSION_EXEMPT_CATEGORIES.has(canonicalCategory(category));
 }
 
 /**

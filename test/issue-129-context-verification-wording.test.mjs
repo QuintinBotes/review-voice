@@ -21,7 +21,20 @@ function repository(config) {
 }
 
 function context(directory) {
-  return JSON.parse(execFileSync(process.execPath, [bundle, 'context'], { cwd: directory, encoding: 'utf8' }));
+  // `context` opens the store to load approved policies, so each call gets a
+  // fresh data directory and never the developer's own store.
+  const data = mkdtempSync(join(tmpdir(), 'rv-129-data-'));
+  try {
+    return JSON.parse(
+      execFileSync(process.execPath, [bundle, 'context'], {
+        cwd: directory,
+        encoding: 'utf8',
+        env: { ...process.env, REVIEW_VOICE_DATA_DIR: data },
+      }),
+    );
+  } finally {
+    rmSync(data, { recursive: true, force: true });
+  }
 }
 
 test('context distinguishes no config file from a config without verification', () => {

@@ -276,6 +276,33 @@ export function describeOrigin(provenance: Pick<RunProvenance, 'origin' | 'indep
   return `origin ${provenance.origin} (${provenance.independence})`;
 }
 
+/**
+ * The approved policy versions a stored run was held to, from its own column,
+ * or null when the run is missing or the column is empty or will not parse.
+ * Read on its own rather than through the provenance, because a run recorded
+ * before provenance existed still has the column, and a carry of that run
+ * must keep those versions rather than take whatever is active now.
+ */
+export function storedPolicyVersions(db: Database, runId: string): PolicyVersionRef[] | null {
+  const row = db.prepare('SELECT active_policy_versions_json FROM review_runs WHERE review_run_id = ?').get(runId) as
+    | { active_policy_versions_json: string | null }
+    | undefined;
+  if (row === undefined || row.active_policy_versions_json === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(row.active_policy_versions_json);
+    if (!Array.isArray(parsed)) return null;
+    const versions: PolicyVersionRef[] = [];
+    for (const entry of parsed) {
+      const p = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+      if (typeof p['scopeType'] !== 'string' || typeof p['scopeKey'] !== 'string' || typeof p['policyId'] !== 'string' || typeof p['version'] !== 'number') return null;
+      versions.push({ scopeType: p['scopeType'], scopeKey: p['scopeKey'], policyId: p['policyId'], version: p['version'] });
+    }
+    return versions;
+  } catch {
+    return null;
+  }
+}
+
 const reportedProvenance = new Set<string>();
 
 /** The stored provenance, or null when absent or not one; a malformed value is said once on stderr. */
@@ -522,10 +549,12 @@ export function recordRun(
     }
   }
 
-  // Read once so the two columns that name the policy cannot disagree. It is
-  // the same read `loadConfig` reports, so what a run says it was held to is
-  // what `score` loaded (docs/adr/0032).
-  const policyVersions = activePolicyVersions(db);
+  // Read once so the two columns that name the policy cannot disagree. The
+  // caller's snapshot, the versions `score` loaded, wins when it has one, so a
+  // policy approved or rolled back between scoring and recording cannot make
+  // the run say it was held to versions it was not; otherwise it is the same
+  // read `loadConfig` reports (docs/adr/0032).
+  const policyVersions = input.provenance?.policyVersions ?? activePolicyVersions(db);
   const provenance: RunProvenance | null =
     input.provenance === undefined
       ? null
