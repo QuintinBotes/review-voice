@@ -1,0 +1,7 @@
+name: skipped
+asserts: >
+  Canned fixture for the harness test: marked so the harness leaves it out of every figure.
+expect:
+  min_findings: 1
+harness: skip
+harness_reason: "Not a stage the driver runs."

@@ -1,0 +1,10 @@
+name: miss
+asserts: >
+  Canned fixture for the harness test: the canned finding is on the right file but
+  six lines from the causal line.
+expect:
+  min_findings: 1
+  severity: minor
+  path: src/app.ts
+  line: 2
+  category: correctness

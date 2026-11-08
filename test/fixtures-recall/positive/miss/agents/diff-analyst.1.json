@@ -1,0 +1,1 @@
+{"output":{"candidates":[{"candidate_id":"cand_001","path":"src/app.ts","line":8,"category":"correctness","severity":"minor","claim":"The returned total now includes an extra unit that no caller asked for.","failure_mode":"Every total is one too high.","evidence":["src/app.ts:8 returns rounded + 1."],"technical_confidence":0.9}]}}

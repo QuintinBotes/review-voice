@@ -406,6 +406,45 @@ Fixtures are checked by a unit test for real addresses, hosts and credentials.
 They are public and permanent, so that backstop sits behind the rule in
 `CONTRIBUTING.md` rather than replacing it.
 
+## Fixture recall
+
+`review-voice recall --fixtures fixtures` measures whether the reviewer finds
+the bug a fixture was written around. Each fixture of the chosen classes
+(`positive`, `negative`, `no-findings`; the injection and confinement classes
+are never scored) is built into a two-commit git repository, then run through
+the whole review pipeline against a local stand-in for GitHub, with the
+configured agent runner (`--runner claude`, the default, or `--runner fake`,
+which serves the canned outputs under a fixture's `agents/`).
+
+Three figures come out, written to `results.json` and shown by
+`review-voice evaluate --recall results.json`:
+
+- **Key-bug recall**: the share of positive fixtures with a validated finding
+  within 3 lines of `expect.line` on `expect.path`.
+- **Causal-line hit**: the same hit count over the positives that had any
+  finding on the expected file, so it separates "found the right place" from
+  "found the file at all".
+- **Clean silence**: the share of `negative` and `no-findings` fixtures whose
+  review is exactly `No actionable findings.`
+
+A fixture marked `harness: skip` is listed with its reason and left out of
+every denominator, as is a run that failed; `failedRuns` counts the latter and
+the command exits 1 when there are any. A figure with no denominator is
+`no data`, not zero.
+
+The command never posts, never runs the repository's configured commands
+(`REVIEW_VOICE_NO_COMMANDS=1`) and never writes to the operator's data
+directory: it records into one temporary directory, removed unless `--keep`.
+
+One pass per fixture is a noisy sample. Candidate-set agreement between two
+runs over the same diff has measured 0.25 to 0.60, so a single figure moves
+between runs with no change to the plugin, and a difference of one fixture is
+not a trend. The figures are goals, reported and not gated.
+
+The frozen fixture set must not be tuned against. Editing a prompt until these
+fixtures pass measures the prompt's fit to the fixtures, not the reviewer; a
+fixture that is wrong is fixed in its own change, with the reason.
+
 ## Reading the numbers
 
 `review-voice evaluate` computes these from recorded runs and feedback, and

@@ -1,0 +1,1 @@
+{"output":{"text":"[minor] `src/app.ts:3` - The total multiplies by qty, which is undefined for items created before qty existed."}}
