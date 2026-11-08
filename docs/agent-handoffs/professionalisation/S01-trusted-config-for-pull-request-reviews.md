@@ -67,8 +67,15 @@ ADR 0022 is unchanged; it must not live in `prep`, which `reviewInFull`
    and `history/` (`driver.ts:380-382`), so a re-run with `--out` into the
    same directory never reads an earlier run's base config. It then runs
    `git show <base.sha>:.review-voice/config.yaml`; when the base commit is not
-   in the clone it tries `origin/<base.ref>`. The content, when found, is
-   written to `<run dir>/config.yaml` (mode 0600).
+   in the clone it tries `refs/remotes/origin/<base.ref>` (fully qualified,
+   because git resolves a local branch named `origin/<ref>` first), but only
+   when `origin` resolves to the repository under review (`originRepository`
+   in `src/diff/pull-request.ts`, the check `ensureRefs` already makes),
+   because in a fork clone that ref is the pull request author's own branch.
+   The content, when found, is written to `<run dir>/config.yaml`
+   (mode 0600). The run directory is made absolute first (a relative
+   `REVIEW_VOICE_DATA_DIR` or `--out` would otherwise give a relative config
+   path, which `configFile` ignores in favour of the checkout).
 
 In every case the driver sets `REVIEW_VOICE_CONFIG` to the resolved absolute
 path for the rest of the run, and in case 3 that path is `<run dir>/config.yaml`

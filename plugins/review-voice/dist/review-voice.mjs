@@ -2414,7 +2414,8 @@ function assessComplexity(diff, files2, partial, markedGenerated2 = /* @__PURE__
     (best, hunk) => hunk.decisionPoints > 0 && (best === null || hunk.decisionPoints > best.decisionPoints) ? hunk : best,
     null
   );
-  const sensitiveMatchers = limits.sensitivePaths.map((glob) => globToRegExp(glob));
+  const sensitiveGlobs = [.../* @__PURE__ */ new Set([...limits.sensitivePaths, ...SENSITIVE_NEVER_EXEMPT])];
+  const sensitiveMatchers = sensitiveGlobs.map((glob) => globToRegExp(glob));
   const neverExempt = SENSITIVE_NEVER_EXEMPT.map((glob) => globToRegExp(glob));
   const changed = /* @__PURE__ */ new Set();
   for (const file2 of files2) {
@@ -2427,7 +2428,7 @@ function assessComplexity(diff, files2, partial, markedGenerated2 = /* @__PURE__
   const exempted = exemptible.filter((path) => matchesAny(exemptions, path));
   const sensitive = matched.filter((path) => !exempted.includes(path));
   const listed = sensitive.slice(0, MAX_SENSITIVE_LISTED);
-  const globOf = (path) => limits.sensitivePaths[sensitiveMatchers.findIndex((matcher) => matcher.test(path))];
+  const globOf = (path) => sensitiveGlobs[sensitiveMatchers.findIndex((matcher) => matcher.test(path))];
   const matches = listed.map((path) => ({ path, glob: globOf(path) }));
   for (const path of matched.filter((path2) => matchesAny(neverExempt, path2) && matchesAny(exemptions, path2))) {
     reasons.push(`sensitive_exempt_paths does not apply to ${path}, which is review configuration or a workflow`);
@@ -2467,7 +2468,7 @@ function assessComplexity(diff, files2, partial, markedGenerated2 = /* @__PURE__
     limits: {
       maxDecisionPoints: limits.maxDecisionPoints,
       maxHunkDecisionPoints: limits.maxHunkDecisionPoints,
-      sensitivePaths: limits.sensitivePaths,
+      sensitivePaths: sensitiveGlobs,
       sensitiveExemptPaths: limits.sensitiveExemptPaths,
       testPaths: limits.testPaths,
       generatedPaths: limits.generatedPaths
@@ -20183,7 +20184,7 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice review --pr <n> [--repository owner/repo] [--mode fast|standard|thorough|auto]",
       "                    [--post] [--no-recheck-thread] [--expect-head <sha>] [--out <dir>]",
-      "                    [--since <sha>] [--full] [--json]",
+      "                    [--since <sha>] [--full] [--config <path>] [--json]",
       "  Run every review stage in a clone of the repository (docs/adr/0022): diff, thread,",
       "  context, evidence, conventions, symbols and follow-ups; the intent, analyst lanes,",
       "  evidence-verifier, tie-breaker, challenger and concise-editor agents through the",
@@ -20204,8 +20205,13 @@ var COMMAND_HELP = {
       "  --out <dir>            the run directory; default <dataDir>/runs/<owner>-<repo>-<n>-<sha8>/",
       "  --since <sha>          the previous head, as for `diff --pr --since`",
       "  --full                 review the whole pull request, as for `diff --pr --full`",
+      "  --config <path>        read this config file for the whole run; beats an absolute",
+      "                         REVIEW_VOICE_CONFIG, which beats the pull request's base commit",
       "  --json                 print one JSON document instead of the text report",
-      "Reads: GitHub (read-only), the clone, the local store and .review-voice/config.yaml;",
+      "Config: the pull request's own .review-voice/config.yaml is never read. The run uses --config,",
+      "  else an absolute REVIEW_VOICE_CONFIG, else .review-voice/config.yaml at the base commit",
+      "  (the built-in defaults when the base has none, or is not in the clone).",
+      "Reads: GitHub (read-only), the clone, the local store and the config named above;",
       "  REVIEW_VOICE_FAKE_AGENTS selects the fake agent backend; REVIEW_VOICE_NO_COMMANDS=1 skips",
       "  the static evidence commands and the second-pass verification command.",
       "Writes: every stage's input and output under the run directory, and the recorded run;",
@@ -20278,7 +20284,7 @@ function topLevelHelp() {
 // plugins/review-voice/src/review/driver.ts
 import { execFileSync as execFileSync12 } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync12, rmSync, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname10, join as join15, resolve as resolve2, sep as sep2 } from "node:path";
+import { dirname as dirname10, isAbsolute as isAbsolute3, join as join15, resolve as resolve2, sep as sep2 } from "node:path";
 
 // plugins/review-voice/src/review/prompts.ts
 import { join as join14 } from "node:path";
@@ -20513,10 +20519,67 @@ async function must(run, argv, stdin, code = 2) {
 }
 async function headOf(run) {
   const { repository, pullNumber } = run.options;
-  const { data } = await run.deps.client.get(`/repos/${repository}/pulls/${pullNumber}`);
+  const { data } = await run.deps.client.get(
+    `/repos/${repository}/pulls/${pullNumber}`
+  );
   const sha = data.head?.sha;
   if (typeof sha !== "string") throw new Stop(2, `GitHub returned no head for ${repository}#${pullNumber}.`);
-  return sha;
+  const base = { sha: typeof data.base?.sha === "string" ? data.base.sha : null, ref: typeof data.base?.ref === "string" ? data.base.ref : null };
+  return { sha, base };
+}
+var CONFIG_PATH = ".review-voice/config.yaml";
+var shortRef = (ref) => /^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 7) : ref;
+function showAt(ref, path) {
+  try {
+    return execFileSync12("git", [...SAFE_GIT, "show", `${ref}:${path}`], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024 });
+  } catch {
+    return null;
+  }
+}
+function resolveConfig(run) {
+  const previous = process.env["REVIEW_VOICE_CONFIG"];
+  run.cleanup.push(() => {
+    if (previous === void 0) delete process.env["REVIEW_VOICE_CONFIG"];
+    else process.env["REVIEW_VOICE_CONFIG"] = previous;
+  });
+  const chosen = (source) => {
+    run.configSource = source;
+    process.env["REVIEW_VOICE_CONFIG"] = source.path;
+  };
+  const flagged = run.options.config;
+  if (flagged != null && flagged !== "") {
+    const path2 = resolve2(flagged);
+    if (!existsSync8(path2)) throw new Stop(2, `--config ${flagged} does not exist.`);
+    return chosen({ kind: "flag", path: path2 });
+  }
+  if (previous !== void 0 && previous !== "") {
+    if (isAbsolute3(previous)) return chosen({ kind: "env", path: previous });
+    run.notes.push("REVIEW_VOICE_CONFIG must be an absolute path, so it was ignored and the base commit supplied the configuration.");
+  }
+  const { sha, ref } = run.pullBase;
+  if (sha === null) throw new Stop(2, `GitHub returned no base commit for ${run.options.repository}#${run.options.pullNumber}, so there is no trusted configuration to read.`);
+  const path = at(run, "config.yaml");
+  rmSync(path, { force: true });
+  let from = sha;
+  let content = showAt(sha, CONFIG_PATH);
+  if (content === null && ref !== null && showAt(sha, "") === null && originRepository(process.cwd())?.toLowerCase() === run.options.repository.toLowerCase()) {
+    from = `refs/remotes/origin/${ref}`;
+    content = showAt(from, CONFIG_PATH);
+  }
+  if (content === null) {
+    run.notes.push(`No ${CONFIG_PATH} at the base commit ${shortRef(sha)}; the review ran with the built-in defaults.`);
+    return chosen({ kind: "default", ref: sha, path });
+  }
+  writeFileSync3(path, content, { mode: 384 });
+  chosen({ kind: "base", ref: from, path });
+}
+function noteConfigChange(run) {
+  if (run.configSource === null || run.configSource.kind !== "base" && run.configSource.kind !== "default") return;
+  const manifest = readJson(at(run, "files.json"));
+  const changed = list(isRecord3(manifest) ? manifest["files"] : []).some((file2) => file2["path"] === CONFIG_PATH || file2["previousPath"] === CONFIG_PATH);
+  if (!changed) return;
+  const note = `Configuration was read from the base commit ${shortRef(run.pullBase.sha ?? "")}; the pull request's changes to ${CONFIG_PATH} were not applied to this review.`;
+  if (!run.notes.includes(note)) run.notes.push(note);
 }
 function skip(run, name, reason2) {
   run.stages.push({ name, seconds: 0, skipped: reason2 });
@@ -20599,6 +20662,7 @@ async function prep(run) {
   for (const key2 of ["truncationNote", "scopeNote", "humanReviewNote"]) {
     if (typeof run.summary[key2] === "string") run.notes.push(run.summary[key2]);
   }
+  noteConfigChange(run);
   for (const key2 of ["suspectedWrongBase", "squashedParentSuspected"]) {
     const note = isRecord3(run.summary[key2]) ? run.summary[key2]["note"] : null;
     if (typeof note === "string") run.notes.push(note);
@@ -21044,7 +21108,7 @@ async function recordStage(run) {
   ]);
 }
 async function record2(run, extra) {
-  const now = await headOf(run);
+  const { sha: now } = await headOf(run);
   if (now !== run.head) throw new Stop(3, `The head moved to ${now} during the review; nothing was recorded.`);
   const held = heldForRecord(run.held, readFileSync12(at(run, "diff.patch"), "utf8"));
   run.held = held.held;
@@ -21127,6 +21191,8 @@ async function runReview(options, deps) {
     started: performance.now(),
     dir: "",
     head: "",
+    pullBase: { sha: null, ref: null },
+    configSource: null,
     base: null,
     summary: {},
     plan: null,
@@ -21169,12 +21235,15 @@ async function runReview(options, deps) {
   process.on("SIGTERM", onSignal2);
   ownSignals(true);
   try {
-    run.head = await headOf(run);
+    const pull = await headOf(run);
+    run.head = pull.sha;
+    run.pullBase = pull.base;
     if (options.expectHead != null && options.expectHead !== run.head) {
       throw new Stop(3, `The head is ${run.head}, not the expected ${options.expectHead}.`);
     }
-    run.dir = options.out === null ? runDirectory(options, run.head) : resolve2(options.out);
+    run.dir = resolve2(options.out === null ? runDirectory(options, run.head) : options.out);
     mkdirSync5(run.dir, { recursive: true });
+    resolveConfig(run);
     for (const stage of STAGES) {
       if (run.done) break;
       if (stage.kind === "agent" && run.headDir === null) prepareWorkspace(run);
@@ -21208,6 +21277,7 @@ async function runReview(options, deps) {
     seconds: elapsed2(run.started),
     stages: run.stages,
     notes: run.notes,
+    configSource: run.configSource,
     ...error === void 0 ? {} : { error }
   };
 }
@@ -21222,6 +21292,11 @@ function reportText(report) {
     lines2.push(`Verdict: ${String(verdict2["event"] ?? "none")} (${String(verdict2["action"] ?? "")})`);
   }
   if (report.reviewUrl !== null) lines2.push(`${report.posted ? "Posted" : "Review"}: ${report.reviewUrl}`);
+  const source = report.configSource;
+  if (source !== null) {
+    const where = { flag: `--config ${source.path}`, env: `REVIEW_VOICE_CONFIG ${source.path}`, base: `base commit ${shortRef(source.ref ?? "")}`, default: "built-in defaults" }[source.kind];
+    lines2.push(`Config: ${where}`);
+  }
   for (const note of report.notes) lines2.push(`Note: ${note}`);
   if (report.error !== void 0) lines2.push(`Stopped (exit ${report.exitCode}): ${report.error}`);
   lines2.push(`Cost: ${report.costUsd === null ? "unknown" : `$${report.costUsd.toFixed(4)}`}, ${report.seconds}s. Run directory: ${report.runDir ?? "none"}`);
@@ -25074,7 +25149,7 @@ async function reviewCommand(argv) {
     console.error(`--mode takes one of ${MODES.join(", ")}.`);
     return 2;
   }
-  for (const name of ["--out", "--since", "--repository", "--expect-head"]) {
+  for (const name of ["--out", "--since", "--repository", "--expect-head", "--config"]) {
     if (argv.includes(name) && flag(argv, name) === null) {
       console.error(`${name} needs a value.`);
       return 2;
@@ -25095,7 +25170,8 @@ async function reviewCommand(argv) {
       since: flag(argv, "--since"),
       full: argv.includes("--full"),
       recheckThread: !argv.includes("--no-recheck-thread"),
-      expectHead: flag(argv, "--expect-head")
+      expectHead: flag(argv, "--expect-head"),
+      config: flag(argv, "--config")
     },
     { command: (args, stdin) => runInProcess(args, { stdin }), client: githubClient([repository]) }
   );

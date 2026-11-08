@@ -54,3 +54,11 @@ pull request that triggered it, and posts only when the workflow allows it.**
 
 **A Docker action.** Rejected. A composite action reuses the committed bundle
 and starts faster.
+
+## Amendment - 2026-11-07
+
+The action's review reads its configuration from the pull request's base
+commit, not from the head it checks out, so a pull request cannot loosen its
+own review. The checkout needs `fetch-depth: 0` so the base commit is present;
+without it the review runs with the built-in defaults and says so. The
+`config` input is ignored until the action passes it as `--config`.
