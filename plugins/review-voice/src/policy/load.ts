@@ -45,7 +45,7 @@ export interface LoadedConfig {
   watch: WatchConfig;
   /** How long run directories and audit events are kept; `watch` and `purge --runs` enforce it. */
   retention: RetentionConfig;
-  staticEvidence: { enabled: boolean; commands: { name: string; run: string; timeoutSeconds?: number }[] };
+  staticEvidence: { enabled: boolean; commands: { name: string; run: string; timeoutSeconds?: number; version?: string }[] };
   /** A second, ideally different-model, verification pass. Off by default. */
   verification: {
     enabled: boolean;
@@ -820,10 +820,13 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
             const run = command['run'];
             if (typeof name !== 'string' || typeof run !== 'string') continue;
             const timeout = positiveInt(command['timeout_seconds']);
+            // How to ask the tool for its version; only a non-blank string counts.
+            const version = command['version'];
             result.staticEvidence.commands.push({
               name,
               run,
               ...(timeout === undefined ? {} : { timeoutSeconds: timeout }),
+              ...(typeof version === 'string' && version.trim() !== '' ? { version } : {}),
             });
           }
         }

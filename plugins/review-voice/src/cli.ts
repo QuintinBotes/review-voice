@@ -98,7 +98,8 @@ import {
 import { configFile, loadConfig } from './policy/load.ts';
 import { resolvePolicy } from './policy/schema.ts';
 import { repositoryRoot } from './diff/acquire.ts';
-import { collectEvidence } from './evidence/run.ts';
+import { collectEvidence, notRunReport } from './evidence/run.ts';
+import type { EvidenceSignal } from './evidence/types.ts';
 import { verifyFindings, type VerifiableFinding } from './verify/external.ts';
 import { parseSecondPass, parseTieBreaks, reconcile, ReconcileInputError, type TieBreak } from './verify/reconcile.ts';
 import { applyChallenge, candidatesById, challengePrompts, intentStatements } from './verify/challenge.ts';
@@ -2803,10 +2804,19 @@ function evidenceCommand(): number {
   try {
     const root = repositoryRoot(process.cwd());
     const config = loadConfig(root);
-    const report = collectEvidence(config.staticEvidence.commands, {
-      cwd: root,
-      enabled: config.staticEvidence.enabled,
-    });
+    // The driver already refuses to call this under the switch; refusing here
+    // too means a caller outside the driver cannot run repository commands by
+    // accident. The report still names what was skipped.
+    const report =
+      process.env['REVIEW_VOICE_NO_COMMANDS'] === '1'
+        ? notRunReport(
+            config.staticEvidence.commands.map((command) => command.name),
+            'REVIEW_VOICE_NO_COMMANDS',
+          )
+        : collectEvidence(config.staticEvidence.commands, {
+            cwd: root,
+            enabled: config.staticEvidence.enabled,
+          });
     console.log(JSON.stringify(report, null, 2));
     // A failing check is evidence, not an error in collecting it.
     return 0;
@@ -4771,6 +4781,49 @@ function matchHeld(candidate: Candidate, held: CarriedHeld[]): { entry: CarriedH
   return best === null ? null : { entry: best.entry, drop: false };
 }
 
+/**
+ * The signals in an `evidence.json`. Individual entries that cannot be matched
+ * on (no path, no line, no wording) are left out rather than guessed at; a file
+ * that cannot be read as an object at all throws, so the caller can say so.
+ */
+function readSignals(file: string): EvidenceSignal[] {
+  const document = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+  if (typeof document !== 'object' || document === null || Array.isArray(document)) throw new Error('not a JSON object');
+  const signals = (document as { signals?: unknown }).signals;
+  if (signals === undefined) return [];
+  if (!Array.isArray(signals)) throw new Error('signals is not a list');
+  return signals.flatMap((entry): EvidenceSignal[] => {
+    const s = entry as Partial<EvidenceSignal> | null;
+    if (typeof s !== 'object' || s === null || typeof s.path !== 'string' || typeof s.line !== 'number' || typeof s.claim !== 'string') return [];
+    return [
+      {
+        kind: typeof s.kind === 'string' ? s.kind : '',
+        path: s.path,
+        line: s.line,
+        claim: s.claim,
+        evidence: Array.isArray(s.evidence) ? s.evidence.filter((line): line is string => typeof line === 'string') : [],
+        confidence: typeof s.confidence === 'number' ? s.confidence : 0,
+        tool: typeof s.tool === 'string' ? s.tool : '',
+      },
+    ];
+  });
+}
+
+/**
+ * The static signal a candidate restates, if any: the rule `matchHeld` applies
+ * to a prior finding. The tool already reports the defect with its own
+ * evidence, so a model comment repeating it adds noise. A signal with no path
+ * says nothing about where, so it matches nothing.
+ */
+function matchSignal(candidate: Candidate, signals: EvidenceSignal[]): EvidenceSignal | null {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  for (const signal of signals) {
+    if (signal.path !== candidate.path || signal.line === null || Math.abs(signal.line - candidate.line) > 2) continue;
+    if (overlap(mine, significantWords(`${signal.claim} ${signal.evidence.join(' ')}`)) >= DUPLICATE_OVERLAP) return signal;
+  }
+  return null;
+}
+
 /** The configured owner reviewer, or null outside a configured repository. */
 function configuredOwner(): string | null {
   try {
@@ -4976,7 +5029,7 @@ function checkCandidatesCommand(argv: string[]): number {
       return 2;
     }
 
-    if (!argv.includes('--thread') && heldFrom === null && !applyPatchLines) {
+    if (!argv.includes('--thread') && !argv.includes('--evidence') && heldFrom === null && !applyPatchLines) {
       console.log(
         JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length }, ...extra }, null, 2),
       );
@@ -5004,6 +5057,23 @@ function checkCandidatesCommand(argv: string[]): number {
       }
     }
 
+    // Static signals a candidate may restate. An unreadable file fails like an
+    // unreadable thread: silently reviewing without it would hide the miss.
+    let signals: EvidenceSignal[] = [];
+    if (argv.includes('--evidence')) {
+      const evidenceFile = flag(argv, '--evidence');
+      if (evidenceFile === null) {
+        console.error('--evidence needs the evidence.json the evidence command wrote.');
+        return 2;
+      }
+      try {
+        signals = readSignals(evidenceFile);
+      } catch (error) {
+        console.error(`Cannot read ${evidenceFile}: ${error instanceof Error ? error.message : String(error)}`);
+        return 2;
+      }
+    }
+
     // Several runs when related pull requests (a stack) carry the same code, so
     // an owner's decision on one holds on the others (#173).
     const heldRuns = heldFrom === null ? [] : [...new Set(heldFrom.split(',').map((id) => id.trim()).filter((id) => id !== ''))];
@@ -5027,6 +5097,7 @@ function checkCandidatesCommand(argv: string[]): number {
     const kept: unknown[] = [];
     const droppedAsRepeat: unknown[] = [];
     const droppedAsHeld: unknown[] = [];
+    const droppedAsTool: unknown[] = [];
     candidates.forEach((candidate, index) => {
       const repeat = alreadySaidOnThread(candidate, droppable);
       if (repeat !== null) {
@@ -5038,6 +5109,20 @@ function checkCandidatesCommand(argv: string[]): number {
           commentPath: repeat.path,
           commentLine: repeat.line,
           reason: `Already stated by ${repeat.author} on this pull request.`,
+        });
+        return;
+      }
+      // A tool already reported this, with its own evidence; the model's
+      // restatement is held, visibly, rather than posted twice.
+      const restated = matchSignal(candidate, signals);
+      if (restated !== null) {
+        droppedAsTool.push({
+          candidateId: candidate.candidateId,
+          path: candidate.path,
+          line: candidate.line,
+          tool: restated.tool,
+          signalLine: restated.line,
+          message: restated.claim,
         });
         return;
       }
@@ -5119,7 +5204,7 @@ function checkCandidatesCommand(argv: string[]): number {
     markSiblings(kept as Record<string, unknown>[]);
 
     console.log(
-      JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld, ...extra }, null, 2),
+      JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld, droppedAsTool, ...extra }, null, 2),
     );
     return 0;
   } catch (error) {

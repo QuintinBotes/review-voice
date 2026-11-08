@@ -441,7 +441,18 @@ async function prep(run: Run): Promise<void> {
   writeFileSync(at(run, 'context.json'), (await must(run, ['context'])).stdout);
   if (noCommands(run)) {
     run.notes.push('REVIEW_VOICE_NO_COMMANDS=1, so the static evidence commands were not run.');
-    writeJson(at(run, 'evidence.json'), { enabled: false, signals: [], didNotRun: [], skipped: 'REVIEW_VOICE_NO_COMMANDS' });
+    // The `evidence` command is never called here, so the configured names come
+    // from the context just written; a watcher-run review can then say which
+    // checks it skipped instead of implying there were none.
+    const context = readJson(at(run, 'context.json'));
+    const configured = isRecord(context) && isRecord(context['staticEvidence']) ? list(context['staticEvidence']['commands']) : [];
+    writeJson(at(run, 'evidence.json'), {
+      enabled: false,
+      signals: [],
+      commands: [],
+      didNotRun: configured.map((command) => command['name']).filter((name): name is string => typeof name === 'string'),
+      skipped: 'REVIEW_VOICE_NO_COMMANDS',
+    });
   } else {
     writeFileSync(at(run, 'evidence.json'), (await must(run, ['evidence'])).stdout);
   }
@@ -641,6 +652,8 @@ async function lanes(run: Run): Promise<void> {
     at(run, 'diff.patch'),
     '--thread',
     at(run, 'thread.json'),
+    '--evidence',
+    at(run, 'evidence.json'),
     ...(typeof prior === 'string' ? ['--held-from', prior, '--head', run.head] : []),
     ...(run.intent ? ['--intent', at(run, 'intent.json')] : []),
   ];
@@ -692,6 +705,20 @@ async function lanes(run: Run): Promise<void> {
       verdict: 'repeat',
       source: 'thread',
       reason: String(drop['reason']),
+      candidateId: idOf(drop),
+      ...(typeof claim === 'string' ? { text: claim } : {}),
+    });
+  }
+  // The held entry keeps the candidate's own anchor; the signal's line lives in
+  // the reason so the entry still carries to where the candidate was.
+  for (const drop of list(result['droppedAsTool'])) {
+    const claim = claims.get(idOf(drop));
+    run.held.push({
+      path: String(drop['path']),
+      line: Number(drop['line']),
+      verdict: 'restates-tool',
+      source: String(drop['tool']),
+      reason: `line ${String(drop['signalLine'])}: ${String(drop['message'])}`,
       candidateId: idOf(drop),
       ...(typeof claim === 'string' ? { text: claim } : {}),
     });
