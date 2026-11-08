@@ -36,9 +36,9 @@ const finding = (over = {}) => ({
   ...over,
 });
 
-function verifyWith(raw, over = {}) {
+async function verifyWith(raw, over = {}) {
   const runner = () => ({ stdout: typeof raw === 'string' ? raw : JSON.stringify(raw), stderr: '', failed: false });
-  return verifyFindings([finding(over)], { enabled: true, command: 'irrelevant', name: 'second-model' }, { cwd: root, runner })
+  return (await verifyFindings([finding(over)], { enabled: true, command: 'irrelevant', name: 'second-model' }, { cwd: root, runner }))
     .verdicts[0];
 }
 
@@ -87,21 +87,21 @@ const run = (verdicts, tieBreaks = null) =>
 const refused = (verdict, pattern) =>
   assert.throws(() => parseSecondPass({ verdicts: [verdict] }), (error) => error instanceof ReconcileInputError && pattern.test(error.message));
 
-test('verify keeps a traced worse impact as a proposal, never as the tier', () => {
-  const v = verifyWith({ verdict: 'confirmed', confidence: 0.9, reason: 'reaches the unbounded branch', suggested_severity: 'blocking', decisive_evidence: DECISIVE });
+test('verify keeps a traced worse impact as a proposal, never as the tier', async () => {
+  const v = await verifyWith({ verdict: 'confirmed', confidence: 0.9, reason: 'reaches the unbounded branch', suggested_severity: 'blocking', decisive_evidence: DECISIVE });
   assert.equal(v.outcome, 'kept');
   assert.equal(v.finalSeverity, 'minor');
   assert.equal(v.proposedSeverity, 'blocking');
   assert.deepEqual(v.decisiveEvidence, DECISIVE);
 
   // With nothing to trace it is ignored, as before.
-  const bare = verifyWith({ verdict: 'confirmed', confidence: 0.9, reason: 'worse', suggested_severity: 'blocking' });
+  const bare = await verifyWith({ verdict: 'confirmed', confidence: 0.9, reason: 'worse', suggested_severity: 'blocking' });
   assert.equal(bare.proposedSeverity, undefined);
   assert.equal(bare.finalSeverity, 'minor');
 });
 
-test('verify keeps only well-formed decisive lines, on any verdict', () => {
-  const v = verifyWith({
+test('verify keeps only well-formed decisive lines, on any verdict', async () => {
+  const v = await verifyWith({
     verdict: 'rejected',
     confidence: 0.6,
     reason: 'the guard at src/guard.ts:4 stops it',
@@ -111,20 +111,20 @@ test('verify keeps only well-formed decisive lines, on any verdict', () => {
   assert.deepEqual(v.decisiveEvidence, [{ path: 'src/guard.ts', line: 4, why: 'returns early' }]);
 });
 
-test('verify reads a label outside the three as no verdict, not as a confirmation', () => {
-  const refuted = verifyWith({ verdict: 'REFUTED', confidence: 0.9, reason: 'the claim holds' });
+test('verify reads a label outside the three as no verdict, not as a confirmation', async () => {
+  const refuted = await verifyWith({ verdict: 'REFUTED', confidence: 0.9, reason: 'the claim holds' });
   assert.equal(refuted.outcome, 'unverified');
   assert.equal(refuted.finalSeverity, 'minor');
-  assert.equal(verifyWith({ verdict: 'Rejected', confidence: 0.95, reason: 'guarded' }).outcome, 'dropped');
+  assert.equal((await verifyWith({ verdict: 'Rejected', confidence: 0.95, reason: 'guarded' })).outcome, 'dropped');
 });
 
-test('verify never turns a question into an assertion when it doubts it', () => {
-  const v = verifyWith({ verdict: 'uncertain', confidence: 0.5, reason: 'cannot tell' }, { severity: 'question' });
+test('verify never turns a question into an assertion when it doubts it', async () => {
+  const v = await verifyWith({ verdict: 'uncertain', confidence: 0.5, reason: 'cannot tell' }, { severity: 'question' });
   assert.equal(v.outcome, 'downgraded');
   assert.equal(v.finalSeverity, 'question');
 });
 
-test('every verdict verify writes passes the consistency check', () => {
+test('every verdict verify writes passes the consistency check', async () => {
   const raws = [
     [{ verdict: 'confirmed', confidence: 0.9 }, 'important'],
     [{ verdict: 'confirmed', confidence: 0.9, suggested_severity: 'nit' }, 'important'],
@@ -135,7 +135,7 @@ test('every verdict verify writes passes the consistency check', () => {
     [{ verdict: 'confirmed', confidence: 0.9, reason: 'worse', suggested_severity: 'important', decisive_evidence: DECISIVE }, 'minor'],
     ['no json at all', 'blocking'],
   ];
-  const verdicts = raws.map(([raw, severity], index) => verifyWith(raw, { candidateId: `c${index}`, severity }));
+  const verdicts = await Promise.all(raws.map(([raw, severity], index) => verifyWith(raw, { candidateId: `c${index}`, severity })));
   assert.equal(parseSecondPass({ verdicts }).length, raws.length);
 });
 

@@ -1,5 +1,4 @@
-import { spawnSync } from 'node:child_process';
-import { commandEnvironment, maskPassthroughDeep } from '../evidence/run.ts';
+import { commandEnvironment, maskPassthroughDeep, spawnCommand } from '../evidence/run.ts';
 import type { DecisiveEvidence, FindingVerdict, RawVerdict, VerificationReport, Verdict } from './types.ts';
 
 export interface VerifiableFinding {
@@ -179,34 +178,37 @@ export interface RunResult {
   failed: boolean;
 }
 
-export type Runner = (command: string, input: string, timeoutMs: number, cwd: string, env: NodeJS.ProcessEnv) => RunResult;
+export type Runner = (command: string, input: string, timeoutMs: number, cwd: string, env: NodeJS.ProcessEnv) => RunResult | Promise<RunResult>;
 
-const spawnRunner: Runner = (command, input, timeoutMs, cwd, env) => {
-  const result = spawnSync(command, {
+// The spawner the static checks use, so a stop signal reaches this command and
+// what it started too (issue 277).
+const spawnRunner: Runner = async (command, input, timeoutMs, cwd, env) => {
+  const result = await spawnCommand(command, {
     cwd,
     env,
     shell: true,
     encoding: 'utf8',
     input,
     timeout: timeoutMs,
+    killSignal: 'SIGKILL',
     maxBuffer: 8 * 1024 * 1024,
+    detached: true,
   });
   return {
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-    // A command that answers without reading its input can exit before the
-    // finding is written to it, and the write then fails with EPIPE. It still
-    // ran and its verdict is on stdout, so only a command that never ran, or
-    // was killed (no exit status), is a failure.
-    failed: (result.error !== undefined && (result.error as NodeJS.ErrnoException).code !== 'EPIPE') || result.status === null,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    // An EPIPE on the input write (a command that answered without reading it,
+    // #297) never reaches here: spawnCommand ignores errors on stdin. Only a
+    // command that never ran, or was killed (no exit status), is a failure.
+    failed: result.error !== undefined || result.status === null,
   };
 };
 
-export function verifyFindings(
+export async function verifyFindings(
   findings: VerifiableFinding[],
   config: VerifierConfig,
   options: { cwd: string; runner?: Runner; context?: VerificationContext },
-): VerificationReport {
+): Promise<VerificationReport> {
   const name = config.name ?? 'external';
 
   if (!config.enabled || config.command.trim().length === 0) {
@@ -232,7 +234,7 @@ export function verifyFindings(
   const env = commandEnvironment(process.env, config.envPassthrough ?? []);
 
   for (const finding of findings) {
-    const result = runner(
+    const result = await runner(
       config.command,
       JSON.stringify({ ...finding, context: options.context ?? null }),
       (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,

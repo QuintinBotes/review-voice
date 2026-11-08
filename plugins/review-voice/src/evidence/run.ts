@@ -1,4 +1,4 @@
-import { spawnSync, type SpawnSyncOptions } from 'node:child_process';
+import { spawn as spawnChild } from 'node:child_process';
 import { parseOutput } from './parsers.ts';
 import type { CommandOutcome, EvidenceReport } from './types.ts';
 
@@ -117,16 +117,16 @@ function sanitisedVersion(stdout: string): string | undefined {
  * be arbitrary code execution on hostile input. Detection suggests;
  * configuration enables.
  */
-export function collectEvidence(
+export async function collectEvidence(
   commands: ConfiguredCommand[],
-  options: { cwd: string; enabled: boolean; envPassthrough?: readonly string[]; spawn?: typeof spawnSync },
-): EvidenceReport {
+  options: { cwd: string; enabled: boolean; envPassthrough?: readonly string[]; spawn?: CommandSpawner },
+): Promise<EvidenceReport> {
   if (!options.enabled || commands.length === 0) {
     return notRunReport(commands.map((command) => command.name));
   }
 
   // The seam tests use so no real process is needed to pin the call count.
-  const spawn = options.spawn ?? spawnSync;
+  const spawn = options.spawn ?? spawnCommand;
   const env = commandEnvironment(process.env, options.envPassthrough ?? []);
   const outcomes: CommandOutcome[] = [];
   const didNotRun: string[] = [];
@@ -137,7 +137,7 @@ export function collectEvidence(
     // Run through a shell because users write shell commands, but with the
     // command string coming only from their own config file - never from the
     // diff, and never interpolated with repository content.
-    const result = spawnInGroup(spawn, command.run, options.cwd, timeoutMs, env);
+    const result = await spawnInGroup(spawn, command.run, options.cwd, timeoutMs, env);
 
     const durationMs = Date.now() - startedAt;
 
@@ -175,7 +175,7 @@ export function collectEvidence(
 
     const mask = (text: string): string => maskPassthrough(text, process.env, options.envPassthrough ?? []);
     const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-    const version = command.version === undefined ? undefined : readVersion(spawn, command.version, options.cwd, timeoutMs, env, mask);
+    const version = command.version === undefined ? undefined : await readVersion(spawn, command.version, options.cwd, timeoutMs, env, mask);
     // Parsed from the true output, so a passed-through directory in a path does
     // not break the location; then the text a reader sees is masked. The path
     // and line stay as printed, because matching a finding to a signal reads them.
@@ -207,54 +207,171 @@ export function collectEvidence(
  * way records nothing: it is a nicety for the audit record and must never turn
  * a check that ran into one that did not.
  */
-function readVersion(
-  spawn: typeof spawnSync,
+async function readVersion(
+  spawn: CommandSpawner,
   run: string,
   cwd: string,
   timeout: number,
   env: NodeJS.ProcessEnv,
   mask: (text: string) => string,
-): string | undefined {
-  const result = spawnInGroup(spawn, run, cwd, timeout, env);
+): Promise<string | undefined> {
+  const result = await spawnInGroup(spawn, run, cwd, timeout, env);
   if (result.error !== undefined || result.status !== 0) return undefined;
   // Masked whole, before the first line is taken and capped: a cut value no
   // longer matches, and a multiline one would leave its first line behind.
   return sanitisedVersion(mask(String(result.stdout ?? '')));
 }
 
-/**
- * Runs a configured command in a process group of its own and, once it has
- * returned, kills whatever is left of the group. The shell itself has exited
- * by then (or was killed at the timeout or the output cap), so what the kill
- * reaches is anything the command started in the background, which would
- * otherwise outlive the review whether the check passed, failed or timed out.
- * The kill signal is one the command cannot trap, so a check that ignored a
- * polite one cannot hold the review either.
- */
+/** The options a configured check runs with; see spawnCommand. */
 function spawnInGroup(
-  spawn: typeof spawnSync,
+  spawn: CommandSpawner,
   run: string,
   cwd: string,
   timeout: number,
   env: NodeJS.ProcessEnv,
-): ReturnType<typeof spawnSync> {
-  const options: SpawnSyncOptions & { detached: boolean } = {
-    cwd,
-    env,
-    shell: true,
-    encoding: 'utf8',
-    timeout,
-    killSignal: 'SIGKILL',
-    maxBuffer: 16 * 1024 * 1024,
-    detached: true,
-  };
-  const result = spawn(run, options);
-  if (typeof result.pid === 'number' && result.pid > 0) {
-    try {
-      process.kill(-result.pid, 'SIGKILL');
-    } catch {
-      // Nothing was left in the group, which is the usual case.
-    }
+): CommandResult | Promise<CommandResult> {
+  return spawn(run, { cwd, env, shell: true, encoding: 'utf8', timeout, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024, detached: true });
+}
+
+/** What a configured command produced, in the shape spawnSync gave it before (issue 277). */
+export interface CommandResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  /** Set when the command could not start, timed out (code ETIMEDOUT) or overflowed (code ENOBUFS). */
+  error?: Error;
+}
+
+/** How a configured command runs. The fixed fields are spelled out so a test can pin all of them. */
+export interface CommandOptions {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  shell: true;
+  encoding: 'utf8';
+  timeout: number;
+  killSignal: 'SIGKILL';
+  /** Bytes allowed on stdout or on stderr, each. */
+  maxBuffer: number;
+  detached: true;
+  /** Written to stdin. Without it stdin is empty, never left open, so a command that reads it cannot hang. */
+  input?: string;
+}
+
+/** The seam tests use so no real process is needed; a result may come back at once. */
+export type CommandSpawner = (command: string, options: CommandOptions) => CommandResult | Promise<CommandResult>;
+
+/** The longest delay setTimeout honours, about 24 days. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/** The process groups of the configured commands running now, by leader pid. */
+const runningGroups = new Set<number>();
+
+function killGroup(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // Nothing was left in the group, which is the usual case.
   }
-  return result;
+}
+
+/**
+ * Kills every configured command still running, with all it started (issue
+ * 277). Each runs in a process group of its own, which a signal to the review
+ * never reaches, so the review driver calls this from its signal handler
+ * before it removes the worktree the commands run in.
+ */
+export function stopCommands(): void {
+  for (const pid of runningGroups) killGroup(pid, 'SIGKILL');
+}
+
+/**
+ * For `evidence` or `verify` run on their own: a stop signal to the CLI kills
+ * its configured commands too, then exits as the review driver does. The
+ * commands run in groups of their own, which a Ctrl-C to the terminal's
+ * group no longer reaches. Returns the function that removes the handlers.
+ */
+export function stopCommandsOnSignal(): () => void {
+  const onSignal = (signal: NodeJS.Signals): void => {
+    stopCommands();
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
+  return () => {
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
+  };
+}
+
+/**
+ * Runs a configured command in a process group of its own, without blocking
+ * the event loop (issue 277). While spawnSync ran one, a stop signal waited
+ * for it, up to its whole timeout, and a watcher's SIGKILL after its grace
+ * period left the worktree behind. A timeout or output past the cap kills the
+ * whole group and is reported with spawnSync's error codes, so callers read
+ * it as before. Once the command has returned, whatever is left of the group
+ * is killed too. The shell has exited by then, so what the kill reaches is
+ * anything the command started in the background, which would otherwise
+ * outlive the review whether the check passed, failed or timed out. The kill
+ * signal is one the command cannot trap, so a check that ignored a polite one
+ * cannot hold the review either.
+ */
+export function spawnCommand(command: string, options: CommandOptions): Promise<CommandResult> {
+  return new Promise((resolve) => {
+    const child = spawnChild(command, { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, stdio: 'pipe' });
+    const pid = child.pid;
+    if (pid !== undefined) runningGroups.add(pid);
+    const chunks = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
+    const sizes = { stdout: 0, stderr: 0 };
+    let failure: 'ETIMEDOUT' | 'ENOBUFS' | undefined;
+    let settled = false;
+    const stop = (code: 'ETIMEDOUT' | 'ENOBUFS'): void => {
+      failure ??= code;
+      if (pid !== undefined) killGroup(pid, options.killSignal);
+      // A descendant that left the group (setsid, or a detached spawn) still
+      // holds the pipes, and close waits for them, so a timeout or overflow
+      // would wait for it. spawnSync stopped reading here; so does this, and
+      // close then follows the shell's exit.
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
+    // As under spawnSync, a timeout of zero is none. setTimeout fires at once past
+    // MAX_TIMER_MS, where spawnSync waited, so a longer one is capped instead.
+    const timer = options.timeout > 0 ? setTimeout(() => stop('ETIMEDOUT'), Math.min(options.timeout, MAX_TIMER_MS)) : undefined;
+    for (const stream of ['stdout', 'stderr'] as const) {
+      child[stream].on('data', (chunk: Buffer) => {
+        const room = options.maxBuffer - sizes[stream];
+        if (room > 0) chunks[stream].push(chunk.subarray(0, room));
+        sizes[stream] += chunk.length;
+        if (sizes[stream] > options.maxBuffer) stop('ENOBUFS');
+      });
+    }
+    const finish = (status: number | null, error: Error | undefined): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (pid !== undefined) {
+        killGroup(pid, 'SIGKILL');
+        runningGroups.delete(pid);
+      }
+      resolve({
+        status,
+        stdout: Buffer.concat(chunks.stdout).toString(options.encoding),
+        stderr: Buffer.concat(chunks.stderr).toString(options.encoding),
+        ...(error === undefined ? {} : { error }),
+      });
+    };
+    // A shell that could not start (a missing directory, say) is an error, as it was under spawnSync.
+    child.on('error', (error) => finish(null, error));
+    // On close, not exit, as spawnSync waited, so output still in the pipe is read whole.
+    child.on('close', (status) =>
+      finish(status, failure === undefined ? undefined : Object.assign(new Error(`spawn ${child.spawnfile} ${failure}`), { code: failure })),
+    );
+    // A command that answers without reading its input can exit before the
+    // write, which then fails with EPIPE. That is no failure, and an error left
+    // unhandled here would crash the review. Failure is judged only by a spawn
+    // error on the child or an exit with no status.
+    child.stdin.on('error', () => undefined);
+    child.stdin.end(options.input);
+  });
 }

@@ -523,13 +523,12 @@ test('the head checkout runs no repository code: a clone-level post-checkout hoo
   assert.equal(existsSync(marker), false, 'the hook did not run');
 });
 
-test('a SIGTERM to a running review stops the agent, removes the worktree and exits 143', async (t) => {
-  const repo = repository(t, { 'src/app.ts': APP_HEAD });
-  const work = mkdtempSync(join(tmpdir(), 'rv-driver-signal-'));
-  t.after(() => rmSync(work, { recursive: true, force: true }));
-  const started = join(work, 'agent-started');
-  const sleeper = join(work, 'claude');
-  writeFileSync(sleeper, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(started)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`, { mode: 0o755 });
+/**
+ * A review of `repo` run in a child process, as a watcher runs it, with the extra environment
+ * `env`. Resolves once `started` holds a pid, with that pid, the run's data directory, and `stop`,
+ * which sends a signal and waits at most ten seconds for the exit code.
+ */
+async function childReview(t, repo, work, env, started) {
   const src = (path) => JSON.stringify(new URL(`../plugins/review-voice/src/${path}`, import.meta.url).href);
   const script = join(work, 'run.mjs');
   writeFileSync(
@@ -555,26 +554,95 @@ await runReview(
 `,
   );
   const data = join(work, 'data');
-  const env = { ...process.env, REVIEW_VOICE_DATA_DIR: data, REVIEW_VOICE_CLAUDE_BIN: sleeper, GITHUB_TOKEN: 't' };
-  delete env.REVIEW_VOICE_FAKE_AGENTS;
+  const childEnv = { ...process.env, REVIEW_VOICE_DATA_DIR: data, GITHUB_TOKEN: 't', ...env };
+  for (const name of ['REVIEW_VOICE_CONFIG', 'REVIEW_VOICE_NO_COMMANDS']) delete childEnv[name];
+  if (env.REVIEW_VOICE_FAKE_AGENTS === undefined) delete childEnv.REVIEW_VOICE_FAKE_AGENTS;
   const { spawn } = await import('node:child_process');
-  const child = spawn(process.execPath, [script], { cwd: repo.dir, env, stdio: 'ignore' });
+  const child = spawn(process.execPath, [script], { cwd: repo.dir, env: childEnv, stdio: 'ignore' });
   const exited = new Promise((resolveExit) => child.on('exit', (code, signal) => resolveExit({ code, signal })));
-  for (let waited = 0; !existsSync(started); waited += 50) {
-    assert.ok(waited < 30000, 'the agent never started');
+  t.after(() => child.kill('SIGKILL'));
+  // Until the file holds a pid, not only until it exists, since a shell creates it before writing to it.
+  for (let waited = 0; !existsSync(started) || readFileSync(started, 'utf8').trim() === ''; waited += 50) {
+    assert.ok(waited < 30000, `${started} never held a pid`);
     await new Promise((r) => setTimeout(r, 50));
   }
-  const agentPid = Number(readFileSync(started, 'utf8'));
-  child.kill('SIGTERM');
-  const { code } = await exited;
-  assert.equal(code, 143);
+  const stop = async (signal) => {
+    child.kill(signal);
+    let timer;
+    const late = new Promise((r) => {
+      timer = setTimeout(() => r({ code: 'still running ten seconds after the signal' }), 10000);
+    });
+    const outcome = await Promise.race([exited, late]);
+    clearTimeout(timer);
+    return outcome;
+  };
+  return { pid: Number(readFileSync(started, 'utf8')), data, stop };
+}
+
+/** The one run's head worktree is gone from disk and from git's list. */
+function assertRunWorktreeGone(repo, data) {
   const runs = readdirSync(join(data, 'runs'));
   assert.equal(runs.length, 1);
   const head = join(data, 'runs', runs[0], 'head');
   assert.equal(existsSync(head), false, 'the worktree is removed');
   assert.ok(!execFileSync('git', ['worktree', 'list'], { cwd: repo.dir, encoding: 'utf8' }).includes(head));
+}
+
+/** After a moment for the kill to land, the process is gone. */
+async function assertGone(pid, what) {
   await new Promise((r) => setTimeout(r, 200));
-  assert.throws(() => process.kill(agentPid, 0), 'the agent process is gone');
+  let alive = true;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    alive = false;
+  }
+  if (alive) process.kill(pid, 'SIGKILL');
+  assert.equal(alive, false, what);
+}
+
+test('a SIGTERM to a running review stops the agent, removes the worktree and exits 143', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const work = mkdtempSync(join(tmpdir(), 'rv-driver-signal-'));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const started = join(work, 'agent-started');
+  const sleeper = join(work, 'claude');
+  writeFileSync(sleeper, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(started)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`, { mode: 0o755 });
+  const review = await childReview(t, repo, work, { REVIEW_VOICE_CLAUDE_BIN: sleeper }, started);
+  const { code } = await review.stop('SIGTERM');
+  assert.equal(code, 143);
+  assertRunWorktreeGone(repo, review.data);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.throws(() => process.kill(review.pid, 0), 'the agent process is gone');
+});
+
+// A configured command used to run with spawnSync, so a stop signal waited for
+// it, up to its whole timeout, and a watcher's SIGKILL after its grace period
+// left the head worktree behind (issue 277).
+test('issue 277: a SIGTERM while a static check sleeps kills the check, removes the worktree and exits 143 at once', async (t) => {
+  const work = mkdtempSync(join(tmpdir(), 'rv-driver-277-evidence-'));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const pidFile = join(work, 'check.pid');
+  const config = ['static_evidence:', '  enabled: true', '  commands:', `    - { name: sleeper, run: 'sleep 60 & echo $! > "${pidFile}"; wait' }`, ''].join('\n');
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, { '.review-voice/config.yaml': config });
+  const review = await childReview(t, repo, work, { REVIEW_VOICE_FAKE_AGENTS: fakes(t, {}) }, pidFile);
+  const { code } = await review.stop('SIGTERM');
+  assert.equal(code, 143);
+  assertRunWorktreeGone(repo, review.data);
+  await assertGone(review.pid, 'the sleeping check is gone');
+});
+
+test('issue 277: a SIGTERM while the second-pass command sleeps kills it, removes the worktree and exits 143 at once', async (t) => {
+  const work = mkdtempSync(join(tmpdir(), 'rv-driver-277-verify-'));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const pidFile = join(work, 'verify.pid');
+  const config = ['verification:', '  enabled: true', `  command: 'sleep 60 & echo $! > "${pidFile}"; wait'`, ''].join('\n');
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, { '.review-voice/config.yaml': config });
+  const review = await childReview(t, repo, work, { REVIEW_VOICE_FAKE_AGENTS: fakes(t, fullRun()) }, pidFile);
+  const { code } = await review.stop('SIGTERM');
+  assert.equal(code, 143);
+  assertRunWorktreeGone(repo, review.data);
+  await assertGone(review.pid, 'the sleeping second-pass command is gone');
 });
 
 test('--expect-head stops at once with exit 3 when the pull request is elsewhere', async (t) => {

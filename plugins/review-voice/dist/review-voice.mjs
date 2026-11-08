@@ -4,6 +4,7 @@
 import { readFileSync as readFileSync16, readSync, writeFileSync as writeFileSync5, mkdirSync as mkdirSync8, statSync as statSync4, lstatSync as lstatSync4, renameSync as renameSync2, rmSync as rmSync6, existsSync as existsSync12, realpathSync as realpathSync2 } from "node:fs";
 import { basename as basename5, dirname as dirname13, isAbsolute as isAbsolute4, join as join20, posix as posix3, relative as relative3, resolve as resolve5, sep as sep5 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFileSync as execFileSync17 } from "node:child_process";
 import { format } from "node:util";
 
@@ -16447,7 +16448,7 @@ function removeHeadWorktree(headDir, cwd = process.cwd()) {
 }
 
 // plugins/review-voice/src/evidence/run.ts
-import { spawnSync } from "node:child_process";
+import { spawn as spawnChild } from "node:child_process";
 
 // plugins/review-voice/src/evidence/parsers.ts
 function signal(tool, kind, path, line3, claim, raw) {
@@ -16557,18 +16558,18 @@ function sanitisedVersion(stdout) {
   const capped = [...clean2].slice(0, MAX_VERSION_POINTS).join("").trim();
   return capped === "" ? void 0 : capped;
 }
-function collectEvidence(commands, options) {
+async function collectEvidence(commands, options) {
   if (!options.enabled || commands.length === 0) {
     return notRunReport(commands.map((command) => command.name));
   }
-  const spawn3 = options.spawn ?? spawnSync;
+  const spawn3 = options.spawn ?? spawnCommand;
   const env = commandEnvironment(process.env, options.envPassthrough ?? []);
   const outcomes = [];
   const didNotRun = [];
   for (const command of commands) {
     const startedAt = Date.now();
     const timeoutMs = (command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1e3;
-    const result = spawnInGroup(spawn3, command.run, options.cwd, timeoutMs, env);
+    const result = await spawnInGroup(spawn3, command.run, options.cwd, timeoutMs, env);
     const durationMs = Date.now() - startedAt;
     if (result.error !== void 0) {
       const reason2 = result.error.code === "ETIMEDOUT" ? `timed out after ${command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS}s` : result.error.message;
@@ -16598,7 +16599,7 @@ function collectEvidence(commands, options) {
     const mask = (text4) => maskPassthrough(text4, process.env, options.envPassthrough ?? []);
     const output = `${result.stdout ?? ""}
 ${result.stderr ?? ""}`;
-    const version = command.version === void 0 ? void 0 : readVersion(spawn3, command.version, options.cwd, timeoutMs, env, mask);
+    const version = command.version === void 0 ? void 0 : await readVersion(spawn3, command.version, options.cwd, timeoutMs, env, mask);
     const signals = parseOutput(command.name, command.run, output).map((signal2) => ({
       ...signal2,
       claim: mask(signal2.claim),
@@ -16620,34 +16621,87 @@ ${result.stderr ?? ""}`;
     didNotRun
   };
 }
-function readVersion(spawn3, run, cwd, timeout, env, mask) {
-  const result = spawnInGroup(spawn3, run, cwd, timeout, env);
+async function readVersion(spawn3, run, cwd, timeout, env, mask) {
+  const result = await spawnInGroup(spawn3, run, cwd, timeout, env);
   if (result.error !== void 0 || result.status !== 0) return void 0;
   return sanitisedVersion(mask(String(result.stdout ?? "")));
 }
 function spawnInGroup(spawn3, run, cwd, timeout, env) {
-  const options = {
-    cwd,
-    env,
-    shell: true,
-    encoding: "utf8",
-    timeout,
-    killSignal: "SIGKILL",
-    maxBuffer: 16 * 1024 * 1024,
-    detached: true
-  };
-  const result = spawn3(run, options);
-  if (typeof result.pid === "number" && result.pid > 0) {
-    try {
-      process.kill(-result.pid, "SIGKILL");
-    } catch {
-    }
+  return spawn3(run, { cwd, env, shell: true, encoding: "utf8", timeout, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024, detached: true });
+}
+var MAX_TIMER_MS = 2 ** 31 - 1;
+var runningGroups = /* @__PURE__ */ new Set();
+function killGroup(pid, signal2) {
+  try {
+    process.kill(-pid, signal2);
+  } catch {
   }
-  return result;
+}
+function stopCommands() {
+  for (const pid of runningGroups) killGroup(pid, "SIGKILL");
+}
+function stopCommandsOnSignal() {
+  const onSignal2 = (signal2) => {
+    stopCommands();
+    process.exit(signal2 === "SIGINT" ? 130 : 143);
+  };
+  process.once("SIGINT", onSignal2);
+  process.once("SIGTERM", onSignal2);
+  return () => {
+    process.off("SIGINT", onSignal2);
+    process.off("SIGTERM", onSignal2);
+  };
+}
+function spawnCommand(command, options) {
+  return new Promise((resolve6) => {
+    const child = spawnChild(command, { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, stdio: "pipe" });
+    const pid = child.pid;
+    if (pid !== void 0) runningGroups.add(pid);
+    const chunks = { stdout: [], stderr: [] };
+    const sizes = { stdout: 0, stderr: 0 };
+    let failure;
+    let settled = false;
+    const stop = (code) => {
+      failure ??= code;
+      if (pid !== void 0) killGroup(pid, options.killSignal);
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
+    const timer = options.timeout > 0 ? setTimeout(() => stop("ETIMEDOUT"), Math.min(options.timeout, MAX_TIMER_MS)) : void 0;
+    for (const stream of ["stdout", "stderr"]) {
+      child[stream].on("data", (chunk) => {
+        const room = options.maxBuffer - sizes[stream];
+        if (room > 0) chunks[stream].push(chunk.subarray(0, room));
+        sizes[stream] += chunk.length;
+        if (sizes[stream] > options.maxBuffer) stop("ENOBUFS");
+      });
+    }
+    const finish = (status, error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (pid !== void 0) {
+        killGroup(pid, "SIGKILL");
+        runningGroups.delete(pid);
+      }
+      resolve6({
+        status,
+        stdout: Buffer.concat(chunks.stdout).toString(options.encoding),
+        stderr: Buffer.concat(chunks.stderr).toString(options.encoding),
+        ...error === void 0 ? {} : { error }
+      });
+    };
+    child.on("error", (error) => finish(null, error));
+    child.on(
+      "close",
+      (status) => finish(status, failure === void 0 ? void 0 : Object.assign(new Error(`spawn ${child.spawnfile} ${failure}`), { code: failure }))
+    );
+    child.stdin.on("error", () => void 0);
+    child.stdin.end(options.input);
+  });
 }
 
 // plugins/review-voice/src/verify/external.ts
-import { spawnSync as spawnSync2 } from "node:child_process";
 var DEFAULT_TIMEOUT_SECONDS2 = 90;
 var DEFAULT_DROP_THRESHOLD = 0.8;
 var HOW_TO_ENABLE = "Add a `verification:` block to .review-voice/config.yaml with `enabled: true` and a `command` that runs a different model on the candidates JSON from stdin (optional: name, timeout_seconds, drop_threshold). See templates/config.example.yaml.";
@@ -16711,27 +16765,28 @@ function parseVerdict(stdout) {
   }
   return null;
 }
-var spawnRunner = (command, input, timeoutMs, cwd, env) => {
-  const result = spawnSync2(command, {
+var spawnRunner = async (command, input, timeoutMs, cwd, env) => {
+  const result = await spawnCommand(command, {
     cwd,
     env,
     shell: true,
     encoding: "utf8",
     input,
     timeout: timeoutMs,
-    maxBuffer: 8 * 1024 * 1024
+    killSignal: "SIGKILL",
+    maxBuffer: 8 * 1024 * 1024,
+    detached: true
   });
   return {
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-    // A command that answers without reading its input can exit before the
-    // finding is written to it, and the write then fails with EPIPE. It still
-    // ran and its verdict is on stdout, so only a command that never ran, or
-    // was killed (no exit status), is a failure.
-    failed: result.error !== void 0 && result.error.code !== "EPIPE" || result.status === null
+    stdout: result.stdout,
+    stderr: result.stderr,
+    // An EPIPE on the input write (a command that answered without reading it,
+    // #297) never reaches here: spawnCommand ignores errors on stdin. Only a
+    // command that never ran, or was killed (no exit status), is a failure.
+    failed: result.error !== void 0 || result.status === null
   };
 };
-function verifyFindings(findings, config2, options) {
+async function verifyFindings(findings, config2, options) {
   const name = config2.name ?? "external";
   if (!config2.enabled || config2.command.trim().length === 0) {
     return {
@@ -16751,7 +16806,7 @@ function verifyFindings(findings, config2, options) {
   const runner = options.runner ?? spawnRunner;
   const env = commandEnvironment(process.env, config2.envPassthrough ?? []);
   for (const finding of findings) {
-    const result = runner(
+    const result = await runner(
       config2.command,
       JSON.stringify({ ...finding, context: options.context ?? null }),
       (config2.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS2) * 1e3,
@@ -20578,7 +20633,7 @@ function reviewResult(exitCode, stdout, stderr) {
   };
 }
 var DRAIN_MS = 1e3;
-function killGroup(pid, signal2) {
+function killGroup2(pid, signal2) {
   if (pid === void 0) return;
   if (process.platform === "win32") {
     execFile("taskkill", ["/pid", String(pid), "/T", "/F"], () => {
@@ -20636,9 +20691,9 @@ function spawnReview(bundle, options) {
     const terminate = () => {
       if (terminating || settled) return;
       terminating = true;
-      killGroup(pid, "SIGTERM");
+      killGroup2(pid, "SIGTERM");
       grace = setTimeout(() => {
-        killGroup(pid, "SIGKILL");
+        killGroup2(pid, "SIGKILL");
         finish();
       }, graceMs);
     };
@@ -20652,7 +20707,7 @@ function spawnReview(bundle, options) {
       exitCode = code;
       exitSignal = signal2;
       if (terminating) {
-        killGroup(pid, "SIGKILL");
+        killGroup2(pid, "SIGKILL");
         clearTimeout(grace);
       }
       later2(DRAIN_MS, finish);
@@ -22221,6 +22276,7 @@ async function runReview(options, deps) {
   };
   const onSignal2 = (signal2) => {
     stopAll();
+    stopCommands();
     cleanUp();
     process.exit(signal2 === "SIGINT" ? 130 : 143);
   };
@@ -25983,7 +26039,7 @@ function redactCommand(argv) {
   }
   return 0;
 }
-function verifyCommand(argv) {
+async function verifyCommand(argv) {
   const cwdFlag = flag(argv, "--cwd");
   if (argv.includes("--cwd") && cwdFlag === null) {
     console.error("--cwd needs a directory.");
@@ -26033,7 +26089,7 @@ function verifyCommand(argv) {
     };
     const base = commitOf(flag(argv, "--base"));
     const head = commitOf(flag(argv, "--head"));
-    const report = verifyFindings(findings, config2.verification, {
+    const report = await verifyFindings(findings, config2.verification, {
       cwd: cwdFlag === null ? root : resolve5(cwdFlag),
       context: {
         repository: flag(argv, "--repository") ?? inferRepository(root),
@@ -26126,7 +26182,7 @@ function reconcileCommand(argv) {
     throw error;
   }
 }
-function evidenceCommand(argv) {
+async function evidenceCommand(argv) {
   const cwdFlag = flag(argv, "--cwd");
   if (argv.includes("--cwd") && cwdFlag === null) {
     console.error("--cwd needs a directory.");
@@ -26143,7 +26199,7 @@ function evidenceCommand(argv) {
     const collected = process.env["REVIEW_VOICE_NO_COMMANDS"] === "1" ? notRunReport(
       config2.staticEvidence.commands.map((command) => command.name),
       "REVIEW_VOICE_NO_COMMANDS"
-    ) : collectEvidence(config2.staticEvidence.commands, {
+    ) : await collectEvidence(config2.staticEvidence.commands, {
       cwd,
       enabled: config2.staticEvidence.enabled,
       envPassthrough: config2.staticEvidence.envPassthrough
@@ -28197,6 +28253,15 @@ async function agentCommand(argv) {
   console.log(JSON.stringify(result, null, 2));
   return result.ok ? 0 : 1;
 }
+async function whileStoppable(run) {
+  if (inProcess !== null) return run();
+  const release = stopCommandsOnSignal();
+  try {
+    return await run();
+  } finally {
+    release();
+  }
+}
 async function dispatch(argv) {
   const command = argv[0];
   if (command !== void 0 && (argv.includes("--help") || argv.includes("-h"))) {
@@ -28329,13 +28394,13 @@ ${topLevelHelp()}`);
     case "conventions":
       return conventionsCommand(argv.slice(1));
     case "evidence":
-      return evidenceCommand(argv.slice(1));
+      return await whileStoppable(() => evidenceCommand(argv.slice(1)));
     case "worktree":
       return worktreeCommand(argv.slice(1));
     case "reconcile":
       return reconcileCommand(argv.slice(1));
     case "verify":
-      return verifyCommand(argv);
+      return await whileStoppable(() => verifyCommand(argv));
     case "record":
       return recordCommand(argv.slice(1));
     case "carry":
@@ -28384,23 +28449,26 @@ function failureOf2(error) {
   const expected = error instanceof AuthError || error instanceof NotAllowlisted || error instanceof ReadOnlyViolation || error instanceof WriteViolation || error instanceof GitError;
   return { code: expected ? 2 : 1, message };
 }
+var inCommand = new AsyncLocalStorage();
 async function runInProcess(argv, options = {}) {
   if (inProcess !== null) throw new Error("A command is already running in this process.");
   const out = [];
   const err = [];
   const saved = { log: console.log, error: console.error, write: process.stdout.write };
   inProcess = { stdin: options.stdin ?? "", fetchImpl: options.fetchImpl };
-  console.log = (...args) => void out.push(`${format(...args)}
-`);
-  console.error = (...args) => void err.push(`${format(...args)}
-`);
-  process.stdout.write = ((chunk) => {
+  const mine = () => inCommand.getStore() === true;
+  console.log = (...args) => mine() ? void out.push(`${format(...args)}
+`) : saved.log(...args);
+  console.error = (...args) => mine() ? void err.push(`${format(...args)}
+`) : saved.error(...args);
+  process.stdout.write = ((chunk, ...rest) => {
+    if (!mine()) return saved.write.call(process.stdout, chunk, ...rest);
     out.push(String(chunk));
     return true;
   });
   let code;
   try {
-    code = await dispatch(argv);
+    code = await inCommand.run(true, () => dispatch(argv));
   } catch (error) {
     const failure = failureOf2(error);
     err.push(`${failure.message}
