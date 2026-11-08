@@ -284,7 +284,9 @@ mention the gap only when the missing check is itself material to the change.
 
 ## Step 1d - Collect the repository's conventions
 
-Run `RV conventions --files <tmpdir>/files.json --ref <ref>`.
+Run `RV conventions --files <tmpdir>/files.json --ref <ref> > <tmpdir>/conventions.json`,
+and keep the file for step 6, which stores only the convention quotes the
+documents actually hold.
 
 Omit `--ref` for working-tree and staged runs, which read the checkout.
 
@@ -292,7 +294,8 @@ On a pull-request review whose base is not readable (`refs.base.available` is
 false in step 1), do not run this step. There is no trusted tree to read the
 conventions from, and the checkout may be the pull request's own head, so its
 `CLAUDE.md` must not become the rules the review weighs. Tell the agents the
-conventions were not read, and say so once in the review notes.
+conventions were not read, and say so once in the review notes. Without the
+file, leave `--conventions` out of step 6.
 Otherwise use the same ref step 4 passes to `score`, so the documents come from
 the base commit, as the configuration does, rather than from whatever is
 checked out. A pull request that rewrites its own `CLAUDE.md` must not choose
@@ -954,7 +957,7 @@ stray directory and another project's notes took the reviewed count from 11 to
   temporary file and pass it:
   `RV record --repository <owner/repo> --base <ref> --head <sha> --candidates <file>
   --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --stages <file>
-  --evidence <tmpdir>/evidence.json --symbols <tmpdir>/symbols.json --origin interactive` with the validated output on
+  --evidence <tmpdir>/evidence.json --symbols <tmpdir>/symbols.json --conventions <tmpdir>/conventions.json --origin interactive` with the validated output on
   stdin. `--origin interactive` is the default and is spelled out so the record says what it means:
   this review ran inside your own Claude Code session, which may be the session that wrote the
   change, so it is stored as not independent. `explain` and `status` show it. Only when step 3d produced a non-empty `bodyFindings` array, add

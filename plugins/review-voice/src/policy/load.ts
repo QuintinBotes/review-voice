@@ -426,6 +426,8 @@ function readVerdictPolicy(block: Record<string, unknown> | null, result: Loaded
   policy.neverApprove = enabled('never_approve', DEFAULT_VERDICT_POLICY.neverApprove);
   policy.scopeBlock = enabled('scope_block', DEFAULT_VERDICT_POLICY.scopeBlock);
   policy.scopeBlockModels = enabled('scope_block_models', DEFAULT_VERDICT_POLICY.scopeBlockModels);
+  policy.evidenceBlock = enabled('evidence_block', DEFAULT_VERDICT_POLICY.evidenceBlock);
+  policy.evidenceBlockPrecedents = enabled('evidence_block_precedents', DEFAULT_VERDICT_POLICY.evidenceBlockPrecedents);
 }
 
 const TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;

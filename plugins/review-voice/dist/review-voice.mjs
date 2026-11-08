@@ -504,12 +504,12 @@ function parseNameStatus(raw) {
   const fields = raw.split("\0").filter((field) => field.length > 0);
   const out = [];
   for (let i = 0; i < fields.length; ) {
-    const code = fields[i];
-    if (code.startsWith("R") || code.startsWith("C")) {
-      out.push({ status: code[0], previousPath: fields[i + 1], path: fields[i + 2] });
+    const code2 = fields[i];
+    if (code2.startsWith("R") || code2.startsWith("C")) {
+      out.push({ status: code2[0], previousPath: fields[i + 1], path: fields[i + 2] });
       i += 3;
     } else {
-      out.push({ status: code[0], path: fields[i + 1] });
+      out.push({ status: code2[0], path: fields[i + 1] });
       i += 2;
     }
   }
@@ -2885,8 +2885,8 @@ function doubleQuotedString(value, ctx) {
         case "u":
           {
             str += json2.slice(start, i);
-            const code = json2.substr(i + 2, 4);
-            switch (code) {
+            const code2 = json2.substr(i + 2, 4);
+            switch (code2) {
               case "0000":
                 str += "\\0";
                 break;
@@ -2912,8 +2912,8 @@ function doubleQuotedString(value, ctx) {
                 str += "\\P";
                 break;
               default:
-                if (code.substr(0, 2) === "00")
-                  str += "\\x" + code.substr(2);
+                if (code2.substr(0, 2) === "00")
+                  str += "\\x" + code2.substr(2);
                 else
                   str += json2.substr(i, 6);
             }
@@ -5057,22 +5057,22 @@ function assertCollection(contents) {
 
 // node_modules/yaml/browser/dist/errors.js
 var YAMLError = class extends Error {
-  constructor(name, pos, code, message) {
+  constructor(name, pos, code2, message) {
     super();
     this.name = name;
-    this.code = code;
+    this.code = code2;
     this.message = message;
     this.pos = pos;
   }
 };
 var YAMLParseError = class extends YAMLError {
-  constructor(pos, code, message) {
-    super("YAMLParseError", pos, code, message);
+  constructor(pos, code2, message) {
+    super("YAMLParseError", pos, code2, message);
   }
 };
 var YAMLWarning = class extends YAMLError {
-  constructor(pos, code, message) {
-    super("YAMLWarning", pos, code, message);
+  constructor(pos, code2, message) {
+    super("YAMLWarning", pos, code2, message);
   }
 };
 var prettifyError = (src, lc) => (error) => {
@@ -5883,7 +5883,7 @@ function resolveFlowScalar(scalar2, strict, onError) {
   const { offset, type, source, end } = scalar2;
   let _type;
   let value;
-  const _onError = (rel, code, msg) => onError(offset + rel, code, msg);
+  const _onError = (rel, code2, msg) => onError(offset + rel, code2, msg);
   switch (type) {
     case "scalar":
       _type = Scalar.PLAIN;
@@ -6081,9 +6081,9 @@ var escapeCodes = {
 function parseCharCode(source, offset, length, onError) {
   const cc = source.substr(offset, length);
   const ok = cc.length === length && /^[0-9a-fA-F]+$/.test(cc);
-  const code = ok ? parseInt(cc, 16) : NaN;
+  const code2 = ok ? parseInt(cc, 16) : NaN;
   try {
-    return String.fromCodePoint(code);
+    return String.fromCodePoint(code2);
   } catch {
     const raw = source.substr(offset - 2, length + 2);
     onError(offset - 2, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw}`);
@@ -6353,12 +6353,12 @@ var Composer = class {
     this.prelude = [];
     this.errors = [];
     this.warnings = [];
-    this.onError = (source, code, message, warning) => {
+    this.onError = (source, code2, message, warning) => {
       const pos = getErrorPos(source);
       if (warning)
-        this.warnings.push(new YAMLWarning(pos, code, message));
+        this.warnings.push(new YAMLWarning(pos, code2, message));
       else
-        this.errors.push(new YAMLParseError(pos, code, message));
+        this.errors.push(new YAMLParseError(pos, code2, message));
     };
     this.directives = new Directives({ version: options.version || "1.2" });
     this.options = options;
@@ -10143,7 +10143,7 @@ var LANGUAGES2 = {
 };
 function splitLine(text4, language3) {
   if (language3.blockComments && text4.trimStart().startsWith("*")) return { code: "", comment: text4, raw: "" };
-  let code = "";
+  let code2 = "";
   let raw = "";
   let comment = "";
   let quote2 = null;
@@ -10151,21 +10151,21 @@ function splitLine(text4, language3) {
     const char = text4[index];
     if (quote2 !== null) {
       if (char === "\\") {
-        code += "  ";
+        code2 += "  ";
         raw += text4.slice(index, index + 2);
         index += 1;
       } else if (text4.startsWith(quote2, index)) {
-        code += quote2;
+        code2 += quote2;
         raw += quote2;
         index += quote2.length - 1;
         quote2 = null;
       } else {
-        code += " ";
+        code2 += " ";
         raw += char;
       }
     } else if (language3.quotes.includes(char)) {
       quote2 = language3.tripleQuotes === true && text4.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
-      code += quote2;
+      code2 += quote2;
       raw += quote2;
       index += quote2.length - 1;
     } else if (text4.startsWith(language3.lineComment, index)) {
@@ -10179,22 +10179,22 @@ function splitLine(text4, language3) {
       comment += `${text4.slice(index, end === -1 ? void 0 : end + 2)} `;
       if (end === -1) break;
       index = end + 1;
-    } else if (language3.regexLiterals === true && char === "/" && opensRegex(code)) {
+    } else if (language3.regexLiterals === true && char === "/" && opensRegex(code2)) {
       const end = regexEnd(text4, index);
       if (end === -1) {
-        code += char;
+        code2 += char;
         raw += char;
       } else {
-        code += `/${" ".repeat(end - index - 1)}/`;
+        code2 += `/${" ".repeat(end - index - 1)}/`;
         raw += text4.slice(index, end + 1);
         index = end;
       }
     } else {
-      code += char;
+      code2 += char;
       raw += char;
     }
   }
-  return { code, comment, raw };
+  return { code: code2, comment, raw };
 }
 function opensRegex(before) {
   const trimmed = before.trimEnd();
@@ -10280,24 +10280,24 @@ var GUARD_WORD = new RegExp(
   `(?<![A-Za-z])(?:${GUARD_WORDS.join("|")}|${GUARD_WORDS.map(capitalised).join("|")}|${GUARD_WORDS.map((w) => w.toUpperCase()).join("|")})|(?<=[a-z0-9])(?:${GUARD_WORDS.map(capitalised).join("|")})`
 );
 function conditionAfter(line3, from) {
-  const code = line3.code.slice(from);
-  const open = /^\s*\(/.exec(code);
-  if (open === null) return line3.raw.slice(from, toBody(code, from, 0));
+  const code2 = line3.code.slice(from);
+  const open = /^\s*\(/.exec(code2);
+  if (open === null) return line3.raw.slice(from, toBody(code2, from, 0));
   let depth = 0;
-  for (let index = open[0].length - 1; index < code.length; index += 1) {
-    if (code[index] === "(") depth += 1;
-    else if (code[index] === ")") {
+  for (let index = open[0].length - 1; index < code2.length; index += 1) {
+    if (code2[index] === "(") depth += 1;
+    else if (code2[index] === ")") {
       depth -= 1;
       if (depth === 0) {
-        const continues = /^\s*(?:and|or|&&|\|\|)(?![\w$])/.test(code.slice(index + 1));
-        return line3.raw.slice(from, continues ? toBody(code, from, index + 1) : from + index + 1);
+        const continues = /^\s*(?:and|or|&&|\|\|)(?![\w$])/.test(code2.slice(index + 1));
+        return line3.raw.slice(from, continues ? toBody(code2, from, index + 1) : from + index + 1);
       }
     }
   }
   return line3.raw.slice(from);
 }
-function toBody(code, from, start) {
-  const body = /:(?=\s|$)|\{|\bthen\b|\bdo\b/.exec(code.slice(start));
+function toBody(code2, from, start) {
+  const body = /:(?=\s|$)|\{|\bthen\b|\bdo\b/.exec(code2.slice(start));
   return body === null ? void 0 : from + start + body.index;
 }
 var MIDDLEWARE_NAME = "(?:[Aa]uth|[Vv]erify|[Rr]equire[A-Z_]|[Cc]srf|CSRF|[Rr]ate_?[Ll]imit|RATE_?LIMIT)";
@@ -10523,28 +10523,28 @@ var CODE_RULES = [
   }
 ];
 var URL_RULE = { kind: "new-route", in: "code", pattern: /(?<![\w.])path\s*\(/g };
-function buildsQuery(code, raw, quotes, triple, at2) {
+function buildsQuery(code2, raw, quotes, triple, at2) {
   let index = 0;
-  while (index < code.length) {
-    const char = code[index];
+  while (index < code2.length) {
+    const char = code2[index];
     if (!quotes.includes(char)) {
       index += 1;
       continue;
     }
-    const delimiter = triple && code.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
+    const delimiter = triple && code2.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
     const open = index;
-    const close = code.indexOf(delimiter, open + delimiter.length);
-    const end = close === -1 ? code.length : close;
+    const close = code2.indexOf(delimiter, open + delimiter.length);
+    const end = close === -1 ? code2.length : close;
     if (at2 > open && at2 < end) {
       const inside = raw.slice(open + delimiter.length, end);
-      const prefix = code.slice(0, open);
+      const prefix = code2.slice(0, open);
       const interpolated = /\$\{|%s/.test(inside) || /(?<![\w$])(?:rf|fr|f)$/i.test(prefix) && inside.includes("{");
       const before = prefix.trimEnd();
-      const after = close === -1 ? "" : code.slice(end + delimiter.length).trimStart();
+      const after = close === -1 ? "" : code2.slice(end + delimiter.length).trimStart();
       const joined = before.endsWith("+") || /^(?:\+|%(?!=)|\.format\s*\()/.test(after);
       return interpolated || joined;
     }
-    index = close === -1 ? code.length : close + delimiter.length;
+    index = close === -1 ? code2.length : close + delimiter.length;
   }
   return false;
 }
@@ -10882,8 +10882,8 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
     }
     return { valid: violations.length === 0, findingCount: 0, totalWords: 0, violations };
   }
-  for (const { pattern, code, message } of STRUCTURAL_NOISE) {
-    if (pattern.test(output)) violations.push({ code, message });
+  for (const { pattern, code: code2, message } of STRUCTURAL_NOISE) {
+    if (pattern.test(output)) violations.push({ code: code2, message });
   }
   const findings = splitFindings(output).map((block) => parseFinding(block.raw, block.startLine));
   for (const line3 of strayLines(output)) {
@@ -11107,6 +11107,88 @@ function renderSimplification(finding) {
   return `**maintainability** - ${finding.candidate.claim} Remove ${removed}; use \`${abstraction2.path}:${abstraction2.line}\` (${abstraction2.name}).`;
 }
 
+// plugins/review-voice/src/publish/evidence-block.ts
+var EVIDENCE_MARKER = "<!-- review-voice evidence -->";
+function stripEvidenceBlock(body) {
+  const at2 = body.lastIndexOf(`
+
+${EVIDENCE_MARKER}`);
+  return at2 < 0 || !body.trimEnd().endsWith("</details>") ? body : body.slice(0, at2);
+}
+var DECISIVE = /^\S(?:.*\S)?:\d+(?:-\d+)?$/u;
+var MAX_DECISIVE = 6;
+var DECISIVE_CAP = 120;
+var PATH_CAP = 120;
+var TEXT_CAP = 160;
+var MAX_QUOTES = 2;
+var MACHINE_PATH = /(?<![\w.~-])[\\/][^\s\\/'"]+[\\/]|(?<![\w.-])(?:~|\.\.)[\\/]|(?<!\w)[A-Za-z]:[\\/]/u;
+var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+function flatten(text4, max) {
+  return safeCheckName(text4.replace(new RegExp("\\p{Cf}", "gu"), ""), max);
+}
+var code = (text4) => `\`${text4}\``;
+function repositoryRelative(reference) {
+  const path = reference.replace(/:\d+(?:-\d+)?$/, "");
+  return !path.startsWith("~") && !/[\s:]/.test(path) && path.split(/[\\/]/).every((part) => part !== "" && part !== "..");
+}
+function challengeFacts(score2) {
+  const challenge2 = score2?.challenge;
+  if (!isRecord(challenge2)) return null;
+  const verdict2 = challenge2["verdict"];
+  if (verdict2 !== "confirmed" && verdict2 !== "partly" && verdict2 !== "refuted") return null;
+  const from = score2?.reanchoredFrom?.line;
+  const line3 = challenge2["line_ok"] === true ? "line confirmed" : typeof from === "number" && Number.isInteger(from) && from > 0 ? `anchor moved from line ${from}` : null;
+  const evidence = Array.isArray(challenge2["decisive_evidence"]) ? challenge2["decisive_evidence"] : [];
+  const decisive = evidence.filter((entry) => typeof entry === "string").map((entry) => flatten(entry, Number.POSITIVE_INFINITY)).filter((entry) => DECISIVE.test(entry) && repositoryRelative(entry)).map((entry) => flatten(entry, DECISIVE_CAP)).slice(0, MAX_DECISIVE);
+  return { verdict: verdict2, line: line3, decisive };
+}
+function evidenceBlock(finding, backing, policy) {
+  if (backing === null || backing.confidenceSource !== "verifier") return "";
+  const challenge2 = challengeFacts(backing);
+  const verdict2 = challenge2 === null ? "not run" : [challenge2.verdict, challenge2.line].filter((part) => part !== null).join(", ");
+  const lines2 = [`Verified by the evidence verifier. Challenger: ${verdict2}.`];
+  if (challenge2 !== null && challenge2.decisive.length > 0) {
+    lines2.push(`Decisive lines: ${challenge2.decisive.map(code).join(", ")}.`);
+  }
+  const signal2 = finding?.toolSignal;
+  if (isRecord(signal2) && typeof signal2["tool"] === "string" && typeof signal2["text"] === "string") {
+    const tool = flatten(signal2["tool"]);
+    const text4 = flatten(signal2["text"], TEXT_CAP);
+    if (tool !== "" && text4 !== "" && !MACHINE_PATH.test(tool) && !MACHINE_PATH.test(text4)) {
+      lines2.push(`Static check ${code(tool)} also flagged this line: ${code(text4)}`);
+    }
+  }
+  const quotesOwner = finding?.conventionQuotesCandidate;
+  const ownQuotes = typeof quotesOwner === "string" && typeof backing.candidateId === "string" && quotesOwner === backing.candidateId;
+  const quotes = ownQuotes ? finding?.conventionQuotes : void 0;
+  const conventions = (Array.isArray(quotes) ? quotes : []).filter((entry) => isRecord(entry) && typeof entry["path"] === "string" && typeof entry["quote"] === "string").map((entry) => ({ path: flatten(entry.path, PATH_CAP), quote: flatten(entry.quote, TEXT_CAP) })).filter((entry) => entry.path !== "" && entry.quote !== "").slice(0, MAX_QUOTES);
+  for (const entry of conventions) lines2.push(`Convention ${code(entry.path)} says ${code(entry.quote)}.`);
+  if (policy.evidenceBlockPrecedents && Array.isArray(backing.precedents) && backing.precedents.length > 0) {
+    const favour = backing.precedents.filter(
+      (precedent) => isRecord(precedent) && precedent["role"] === "owner" && precedent["polarity"] === "positive"
+    ).length;
+    lines2.push(`Owner precedents in favour: ${favour} of ${backing.precedents.length} retrieved.`);
+  }
+  return [EVIDENCE_MARKER, "<details><summary>Evidence</summary>", "", ...lines2, "", "</details>"].join("\n");
+}
+function backingAt(planned, path, line3) {
+  const finding = planned.inline.find((candidate) => candidate.path === path && candidate.line === line3);
+  return finding === void 0 ? void 0 : planned.backing.get(finding);
+}
+function withEvidenceBlocks(comments, planned, policy) {
+  let blocks = 0;
+  const out = comments.map((comment) => {
+    const backing = backingAt(planned, comment.path, comment.line);
+    const block = backing === void 0 ? "" : evidenceBlock(backing.stored, backing.score, policy);
+    if (block === "") return comment;
+    blocks += 1;
+    return { ...comment, body: `${comment.body}
+
+${block}` };
+  });
+  return { comments: out, blocks };
+}
+
 // plugins/review-voice/src/publish/verdict.ts
 function eventFor(severities) {
   if (severities.some((severity) => severity === "blocking" || severity === "important")) return "REQUEST_CHANGES";
@@ -11156,7 +11238,7 @@ function scoresAtLocation(scores, path, line3) {
 var MAX_CARRY_DEPTH = 8;
 function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
   if (finding.path === null || finding.severity === null) {
-    return { verified: false, reason: "it names no file, so no score can be matched to it", runId: run.reviewRunId };
+    return { verified: false, reason: "it names no file, so no score can be matched to it", runId: run.reviewRunId, score: null };
   }
   let current = run;
   let path = finding.path;
@@ -11168,12 +11250,15 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
     const here = scoresAtLocation(scores, path, line3);
     const same = here.filter((score2) => score2.severity?.severity === severity && !used.has(score2));
     const backing = same.find((score2) => score2.confidenceSource === "verifier" && score2.eligible === true);
+    const stored = line3 === null ? void 0 : current.findings.find((candidate) => candidate.path === path && candidate.line === line3 && candidate.severity === severity);
     if (backing !== void 0) {
       used.add(backing);
       return {
         verified: true,
         reason: "established by the verifier",
         runId: current.reviewRunId,
+        score: backing,
+        ...stored === void 0 ? {} : { stored },
         ...isStaleConsumer(backing) ? { staleConsumer: true } : {},
         ...backing.deletedFile === true ? { deletedFile: true } : {},
         ...backing.fix?.render === "fix" ? { fixVerified: { runId: current.reviewRunId, candidateId: typeof backing.candidateId === "string" ? backing.candidateId : null } } : {}
@@ -11187,9 +11272,6 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
       reason2 = `no unused score at ${line3 === null ? path : `${path}:${line3}`} was derived at ${severity}`;
     }
     if (line3 === null) break;
-    const stored = current.findings.find(
-      (candidate) => candidate.path === path && candidate.line === line3 && candidate.severity === severity
-    );
     if (stored?.carriedFrom === void 0) break;
     const from = stored.carriedFrom;
     const source = loadRun(from.runId);
@@ -11202,7 +11284,7 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
     path = origin.path;
     line3 = origin.line;
   }
-  return { verified: false, reason: reason2, runId: current.reviewRunId };
+  return { verified: false, reason: reason2, runId: current.reviewRunId, score: null };
 }
 function planFindings(output, run, loadRun) {
   const inline = [];
@@ -11210,6 +11292,7 @@ function planFindings(output, run, loadRun) {
   const held = [];
   const heldSeverities = [];
   const fixVerified = /* @__PURE__ */ new Map();
+  const backing = /* @__PURE__ */ new Map();
   const loaded = /* @__PURE__ */ new Map([[run.reviewRunId, run]]);
   const cachedLoad = (id) => {
     if (!loaded.has(id)) loaded.set(id, loadRun(id));
@@ -11236,12 +11319,13 @@ function planFindings(output, run, loadRun) {
     const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true && result.deletedFile !== true;
     (anchorable ? inline : unanchored).push(finding);
     if (anchorable && result.fixVerified !== void 0) fixVerified.set(finding, result.fixVerified);
+    if (anchorable && result.score !== null) backing.set(finding, { score: result.score, stored: result.stored, runId: result.runId });
   }
   const posted = [...inline, ...unanchored].map((finding) => finding.severity);
   let mapped = eventFor(posted);
   const heldBackApproval = mapped === "APPROVE" && eventFor(heldSeverities) !== "APPROVE";
   if (heldBackApproval) mapped = "COMMENT";
-  return { inline, unanchored, held, mapped, heldBackApproval, fixVerified };
+  return { inline, unanchored, held, mapped, heldBackApproval, fixVerified, backing };
 }
 var DEFAULT_VERDICT_POLICY = Object.freeze({
   ciPending: "wait",
@@ -11253,17 +11337,19 @@ var DEFAULT_VERDICT_POLICY = Object.freeze({
   neverApprove: false,
   scopeBlock: false,
   scopeBlockModels: false,
-  suggestions: false
+  suggestions: false,
+  evidenceBlock: false,
+  evidenceBlockPrecedents: false
 });
 function verdictPolicy(policy) {
   return { ...DEFAULT_VERDICT_POLICY, ...policy };
 }
 var MAX_ANNOTATED_CHECKS = 5;
 var MAX_CHECK_NAME = 60;
-function safeCheckName(name) {
+function safeCheckName(name, max = MAX_CHECK_NAME) {
   const flat = name.replace(/[\u202a-\u202e\u2066-\u2069\u200b-\u200d\ufeff`]/g, "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
   const points = [...flat];
-  return points.length > MAX_CHECK_NAME ? `${points.slice(0, MAX_CHECK_NAME - 1).join("")}\u2026` : flat;
+  return points.length > max ? `${points.slice(0, max - 1).join("")}\u2026` : flat;
 }
 function checkNames(entries) {
   const names = [...new Set(entries.map((entry) => safeCheckName(entry.name)).filter((name) => name.length > 0))].sort();
@@ -11557,13 +11643,13 @@ function scopeBlock(run, planned, policy) {
   const scopePart = run.scope === null ? `scope ${NOT_RECORDED}` : `${run.scope.kind} scope`;
   const modePart = provenance?.mode == null ? `mode ${NOT_RECORDED}` : `${provenance.mode} mode`;
   const originPart = provenance === null ? `Origin: ${NOT_RECORDED}.` : `Origin: ${safeCheckName(provenance.origin)} (${safeCheckName(provenance.independence)}).`;
-  const code = (name) => `\`${name}\``;
+  const code2 = (name) => `\`${name}\``;
   const stageNames = run.stages.flatMap((stage) => {
     if (typeof stage.name !== "string" || safeCheckName(stage.name) === "") return [];
-    const name = code(safeCheckName(stage.name));
+    const name = code2(safeCheckName(stage.name));
     if (!policy.scopeBlockModels) return [name];
-    const models = [.../* @__PURE__ */ new Set([...Array.isArray(stage.models) ? stage.models : [], ...typeof stage.model === "string" ? [stage.model] : []])].filter((model) => typeof model === "string").map(safeCheckName).filter((model) => model !== "");
-    return [models.length === 0 ? name : `${name} (${[...new Set(models)].map(code).join(", ")})`];
+    const models = [.../* @__PURE__ */ new Set([...Array.isArray(stage.models) ? stage.models : [], ...typeof stage.model === "string" ? [stage.model] : []])].filter((model) => typeof model === "string").map((model) => safeCheckName(model)).filter((model) => model !== "");
+    return [models.length === 0 ? name : `${name} (${[...new Set(models)].map(code2).join(", ")})`];
   });
   const stagesLine = `Stages: ${stageNames.length === 0 ? NOT_RECORDED : stageNames.join(", ")}.`;
   let staticLine = `Static checks: ${NOT_RECORDED}.`;
@@ -11572,9 +11658,9 @@ function scopeBlock(run, planned, policy) {
   if (checks !== null) {
     const parts = [
       ...checks.staticRan.map(
-        (check) => `${code(safeCheckName(check.name))} ran (exit ${check.exitCode ?? "none"}, ${plural2(check.signals, "signal")})`
+        (check) => `${code2(safeCheckName(check.name))} ran (exit ${check.exitCode ?? "none"}, ${plural2(check.signals, "signal")})`
       ),
-      ...checks.staticDidNotRun.map((check) => `${code(safeCheckName(check.name))} did not run (${code(safeCheckName(check.reason))})`)
+      ...checks.staticDidNotRun.map((check) => `${code2(safeCheckName(check.name))} did not run (${code2(safeCheckName(check.reason))})`)
     ];
     staticLine = `Static checks: ${parts.length === 0 ? "none configured" : parts.join("; ")}.`;
     symbolLine = checks.symbolsInconclusive === 0 ? "Symbol context: every changed file finished." : `Symbol context: ${plural2(checks.symbolsInconclusive, "file")} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}.`;
@@ -11662,8 +11748,9 @@ function renderPreview(input) {
   return lines2.join("\n");
 }
 function commentSignature(comment) {
-  const block = comment.body.lastIndexOf("\n\n```suggestion\n");
-  const prose = block >= 0 && comment.body.endsWith("```") ? comment.body.slice(0, block) : comment.body;
+  const body = stripEvidenceBlock(comment.body);
+  const block = body.lastIndexOf("\n\n```suggestion\n");
+  const prose = block >= 0 && body.endsWith("```") ? body.slice(0, block) : body;
   return `${comment.path}:${comment.line}:${createHash("sha256").update(prose).digest("hex").slice(0, 32)}`;
 }
 function idempotencyKey(repository, pullNumber, payload) {
@@ -12105,6 +12192,8 @@ function readVerdictPolicy(block, result) {
   policy.neverApprove = enabled2("never_approve", DEFAULT_VERDICT_POLICY.neverApprove);
   policy.scopeBlock = enabled2("scope_block", DEFAULT_VERDICT_POLICY.scopeBlock);
   policy.scopeBlockModels = enabled2("scope_block_models", DEFAULT_VERDICT_POLICY.scopeBlockModels);
+  policy.evidenceBlock = enabled2("evidence_block", DEFAULT_VERDICT_POLICY.evidenceBlock);
+  policy.evidenceBlockPrecedents = enabled2("evidence_block_precedents", DEFAULT_VERDICT_POLICY.evidenceBlockPrecedents);
 }
 var TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 function readQueue(block, result) {
@@ -12768,8 +12857,8 @@ function spawnCommand(command, options) {
     const sizes = { stdout: 0, stderr: 0 };
     let failure;
     let settled = false;
-    const stop = (code) => {
-      failure ??= code;
+    const stop = (code2) => {
+      failure ??= code2;
       if (pid !== void 0) killGroup(pid, options.killSignal);
       child.stdout.destroy();
       child.stderr.destroy();
@@ -13155,7 +13244,8 @@ import { closeSync, constants, fsyncSync, mkdirSync as mkdirSync3, openSync, rea
 import { join as join10 } from "node:path";
 
 // plugins/review-voice/src/store/runs.ts
-import { randomUUID as randomUUID3, createHash as createHash3 } from "node:crypto";
+import { randomUUID as randomUUID3, createHash as createHash4 } from "node:crypto";
+import { posix as posix3 } from "node:path";
 
 // plugins/review-voice/src/diff/incremental.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
@@ -13674,13 +13764,13 @@ import { execFileSync as execFileSync6 } from "node:child_process";
 function candidateAnchor(hunks, candidate) {
   return candidate.anchor === "stale-consumer" ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null) : classifyAnchor(hunks, candidate.path, candidate.line);
 }
-var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var idOf = (entry) => entry["candidateId"] ?? entry["candidate_id"];
 function reanchorScores(scores, candidateId, target, hunks) {
-  if (!isRecord(scores) || !Array.isArray(scores["scores"])) {
+  if (!isRecord2(scores) || !Array.isArray(scores["scores"])) {
     return { ok: false, refused: "expected the JSON `RV score` printed, with a `scores` list" };
   }
-  const entries = scores["scores"].filter(isRecord);
+  const entries = scores["scores"].filter(isRecord2);
   const entry = entries.find((e) => idOf(e) === candidateId);
   if (entry === void 0) return { ok: false, refused: `no scored candidate ${candidateId}` };
   if (entry["eligible"] !== true) {
@@ -13690,7 +13780,7 @@ function reanchorScores(scores, candidateId, target, hunks) {
       refused: `${candidateId} is not eligible${why}; re-anchoring keeps a score, it does not make one. Re-run the analyst and score.`
     };
   }
-  const eligible = Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord) : [];
+  const eligible = Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord2) : [];
   const shipped = eligible.find((e) => idOf(e) === candidateId);
   if (shipped?.["anchor"] === "stale-consumer" || entry["anchorCheck"]?.kind === "stale-consumer") {
     return {
@@ -13714,17 +13804,17 @@ function reanchorScores(scores, candidateId, target, hunks) {
   const moved = (e) => idOf(e) === candidateId ? { ...e, path: to.path, line: to.line, reanchoredFrom: from, ..."anchorCheck" in e ? { anchorCheck: check } : {} } : e;
   const updated = {
     ...scores,
-    scores: scores["scores"].map((e) => isRecord(e) ? moved(e) : e),
-    ...Array.isArray(scores["eligible"]) ? { eligible: scores["eligible"].map((e) => isRecord(e) ? moved(e) : e) } : {}
+    scores: scores["scores"].map((e) => isRecord2(e) ? moved(e) : e),
+    ...Array.isArray(scores["eligible"]) ? { eligible: scores["eligible"].map((e) => isRecord2(e) ? moved(e) : e) } : {}
   };
   return { ok: true, updated, from, to, anchorCheck: check };
 }
 function reanchorCandidates(parsed2, candidateId, to) {
-  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord(parsed2) && Array.isArray(parsed2["candidates"]) ? parsed2["candidates"] : null;
+  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord2(parsed2) && Array.isArray(parsed2["candidates"]) ? parsed2["candidates"] : null;
   if (list2 === null) return null;
-  if (!list2.some((c) => isRecord(c) && idOf(c) === candidateId)) return null;
+  if (!list2.some((c) => isRecord2(c) && idOf(c) === candidateId)) return null;
   const rewritten = list2.map((c) => {
-    if (!(isRecord(c) && idOf(c) === candidateId)) return c;
+    if (!(isRecord2(c) && idOf(c) === candidateId)) return c;
     const moved = c["path"] !== to.path || c["line"] !== to.line;
     const { suggested_patch: _patch, ...rest } = c;
     return { ...moved ? rest : c, path: to.path, line: to.line };
@@ -13955,6 +14045,113 @@ function carryCandidates(candidates, previousHead, head, hunks, cwd) {
     });
   }
   return { carried, refused };
+}
+
+// plugins/review-voice/src/redact/redact.ts
+import { createHash as createHash3 } from "node:crypto";
+
+// plugins/review-voice/src/redact/patterns.ts
+var SECRET_PATTERNS = [
+  // Key material is replaced whole: a PEM block's header is not the secret,
+  // but leaving it invites someone to reconstruct what was removed.
+  {
+    label: "PRIVATE_KEY",
+    pattern: /-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----/g
+  },
+  { label: "PEM_BLOCK", pattern: /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g },
+  { label: "GITHUB_TOKEN", pattern: /\b(gh[pousr]_[A-Za-z0-9]{16,255})\b/g, group: 1 },
+  { label: "GITHUB_TOKEN", pattern: /\b(github_pat_[A-Za-z0-9_]{20,})\b/g, group: 1 },
+  { label: "AWS_ACCESS_KEY", pattern: /\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b/g, group: 1 },
+  {
+    label: "AWS_SECRET_KEY",
+    pattern: /\b(?:aws_secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi,
+    group: 1
+  },
+  { label: "GOOGLE_API_KEY", pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g, group: 1 },
+  { label: "SLACK_TOKEN", pattern: /\b(xox[abposr]-[0-9A-Za-z-]{10,})\b/g, group: 1 },
+  { label: "STRIPE_KEY", pattern: /\b((?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,})\b/g, group: 1 },
+  { label: "NPM_TOKEN", pattern: /\b(npm_[A-Za-z0-9]{36})\b/g, group: 1 },
+  { label: "PYPI_TOKEN", pattern: /\b(pypi-[A-Za-z0-9_-]{16,})\b/g, group: 1 },
+  { label: "OPENAI_KEY", pattern: /\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b/g, group: 1 },
+  { label: "ANTHROPIC_KEY", pattern: /\b(sk-ant-[A-Za-z0-9_-]{20,})\b/g, group: 1 },
+  // JWTs: three base64url segments. The payload is often the sensitive part.
+  {
+    label: "JWT",
+    pattern: /\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g,
+    group: 1
+  },
+  // A connection string's credentials, keeping the scheme and host so the
+  // surrounding review comment still makes sense.
+  {
+    label: "DB_CREDENTIALS",
+    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi,
+    group: 3
+  },
+  {
+    label: "AUTHORIZATION_HEADER",
+    pattern: /\b(?:Authorization|Proxy-Authorization)\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12,})/gi,
+    group: 1
+  },
+  // Assignment-shaped secrets. Deliberately last: it is the broadest rule, and
+  // a more specific label above is more useful in an audit than "SECRET".
+  {
+    label: "SECRET_ASSIGNMENT",
+    pattern: /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["']([^"'\s]{8,})["']/gi,
+    group: 1
+  }
+];
+var PLACEHOLDERS = /* @__PURE__ */ new Set([
+  "xxxxxxxx",
+  "changeme",
+  "password",
+  "redacted",
+  "your_token_here",
+  "example",
+  "placeholder",
+  "dummy",
+  "notarealsecret",
+  "test",
+  "password123",
+  "<token>",
+  "secret",
+  "todo",
+  "fixme",
+  "null",
+  "undefined",
+  "none"
+]);
+
+// plugins/review-voice/src/redact/redact.ts
+var REDACTION_VERSION = "1";
+function hash(value) {
+  return createHash3("sha256").update(value).digest("hex").slice(0, 32);
+}
+function isPlaceholder(value) {
+  const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
+  if (PLACEHOLDERS.has(normalised)) return true;
+  return /^(.)\1{3,}$/.test(value);
+}
+function redact(input) {
+  const counts = {};
+  let text4 = input;
+  for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
+    pattern.lastIndex = 0;
+    text4 = text4.replace(pattern, (match, ...groups) => {
+      const captured = group === void 0 || group === 0 ? match : groups[group - 1];
+      if (captured === void 0 || captured.length === 0) return match;
+      if (isPlaceholder(captured)) return match;
+      counts[label2] = (counts[label2] ?? 0) + 1;
+      const replacement = `[REDACTED:${label2}]`;
+      return group === void 0 || group === 0 ? replacement : match.replace(captured, replacement);
+    });
+  }
+  return {
+    text: text4,
+    counts,
+    sourceHash: hash(input),
+    redactedHash: hash(text4),
+    version: REDACTION_VERSION
+  };
 }
 
 // plugins/review-voice/src/store/runs.ts
@@ -14199,7 +14396,52 @@ function patchPath(hint) {
   const inside = hint.suggested_patch?.path;
   return typeof inside === "string" ? inside : hint.path;
 }
-function assignIds(output, hints) {
+var TOOL_TEXT_CAP = 160;
+var MAX_CONVENTION_QUOTES = 2;
+function cut(text4, max) {
+  const points = [...text4];
+  return points.length > max ? `${points.slice(0, max - 1).join("")}\u2026` : text4;
+}
+var plainPath = (path) => posix3.normalize(path.split("\\").join("/")).replace(/^\.\//, "");
+function toolSignalFor(finding, signals) {
+  const path = plainPath(finding.path);
+  const signal2 = signals.find((entry) => entry.path === path && entry.line === finding.line);
+  if (signal2 === void 0) return void 0;
+  if (MACHINE_PATH.test(flatten(signal2.tool, Number.POSITIVE_INFINITY))) return void 0;
+  const shown = [signal2.evidence[0], signal2.claim].find(
+    (text4) => text4 !== void 0 && !MACHINE_PATH.test(flatten(text4, Number.POSITIVE_INFINITY))
+  );
+  if (shown === void 0) return void 0;
+  return { tool: signal2.tool, line: finding.line, text: cut(redactedAsPosted(shown), TOOL_TEXT_CAP) };
+}
+var redactedAsPosted = (text4) => redact(flatten(redact(text4).text, Number.POSITIVE_INFINITY)).text;
+var squashed = (text4) => text4.replace(/\s+/g, " ").trim();
+var QUOTED = /["\u201c]([^"\u201c\u201d]+)["\u201d]/g;
+function namesWhole(text4, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w./\\\\-])(?:\\./)?${escaped}(?![\\w/\\\\-]|\\.\\w)`).test(text4);
+}
+function documentNamed(text4, documents) {
+  const exact = documents.filter((doc) => doc.path !== "" && namesWhole(text4, doc.path)).sort((a, b) => b.path.length - a.path.length)[0];
+  if (exact !== void 0) return exact;
+  const base = (path) => path.split("/").pop() ?? path;
+  return documents.find((doc) => namesWhole(text4, base(doc.path)) && documents.filter((other) => base(other.path) === base(doc.path)).length === 1);
+}
+function conventionQuotesFor(evidence, documents) {
+  if (!Array.isArray(evidence) || documents.length === 0) return void 0;
+  const found = [];
+  for (const entry of evidence) {
+    if (found.length >= MAX_CONVENTION_QUOTES) break;
+    if (typeof entry !== "string") continue;
+    const document = documentNamed(entry, documents);
+    if (document === void 0) continue;
+    const content = squashed(document.content).toLowerCase();
+    const quote2 = [...entry.matchAll(QUOTED)].map((match) => squashed(match[1] ?? "")).find((segment) => segment.split(" ").length >= 4 && content.includes(segment.toLowerCase()));
+    if (quote2 !== void 0) found.push({ path: document.path, quote: redactedAsPosted(quote2) });
+  }
+  return found.length === 0 ? void 0 : found;
+}
+function assignIds(output, hints, facts = {}) {
   const taken = /* @__PURE__ */ new Set();
   return splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null).map((finding, index) => {
     const anchor = { path: finding.path, line: finding.line ?? 0 };
@@ -14209,6 +14451,8 @@ function assignIds(output, hints) {
     const patch = suggestedPatchOf(hint?.suggested_patch);
     const blockerClass = blockerClassOf(hint);
     const ruleId = ruleIdFor(hint?.category, laneOf(hint), blockerClass);
+    const toolSignal = toolSignalFor(anchor, facts.toolSignals ?? []);
+    const conventionQuotes = conventionQuotesFor(hint?.evidence, facts.conventions ?? []);
     return {
       findingId: `rv_${String(index + 1).padStart(2, "0")}`,
       severity: finding.severity,
@@ -14227,19 +14471,23 @@ function assignIds(output, hints) {
       ...how === "exact" || how === "none" ? {} : { attributedBy: how },
       ...how === "none" && hints.length > 0 ? { unattributed: true } : {},
       ...partly === void 0 ? {} : { partlyAddressed: partly },
-      ...patch === null || hint === void 0 ? {} : { suggestedPatch: patch, suggestedPatchSource: { path: patchPath(hint), candidateId: typeof hint.candidate_id === "string" ? hint.candidate_id : null } }
+      ...patch === null || hint === void 0 ? {} : { suggestedPatch: patch, suggestedPatchSource: { path: patchPath(hint), candidateId: typeof hint.candidate_id === "string" ? hint.candidate_id : null } },
+      ...toolSignal === void 0 ? {} : { toolSignal },
+      // Tied to the candidate that cited them, so the block shows them only
+      // beside that candidate's own verified score (as S14 ties a patch).
+      ...conventionQuotes === void 0 ? {} : { conventionQuotes, conventionQuotesCandidate: typeof hint?.candidate_id === "string" ? hint.candidate_id : null }
     };
   });
 }
 function hashDiff(diff) {
-  return createHash3("sha256").update(diff).digest("hex").slice(0, 32);
+  return createHash4("sha256").update(diff).digest("hex").slice(0, 32);
 }
 function recordRun(db, input) {
   if ((input.bodyFindings?.length ?? 0) > 1) {
     throw new Error("A review may record at most one body-only simplification finding.");
   }
   const reviewRunId = randomUUID3();
-  const findings = assignIds(input.output, input.candidates ?? []);
+  const findings = assignIds(input.output, input.candidates ?? [], { toolSignals: input.toolSignals, conventions: input.conventions });
   if (input.carried !== void 0) {
     const { matches, mismatches } = matchCarried(findings, input.carried.findings);
     if (mismatches.length > 0) throw new CarryMismatch(mismatches.join("\n"));
@@ -14516,118 +14764,11 @@ function assertPayload(payload) {
   }
 }
 
-// plugins/review-voice/src/redact/redact.ts
-import { createHash as createHash4 } from "node:crypto";
-
-// plugins/review-voice/src/redact/patterns.ts
-var SECRET_PATTERNS = [
-  // Key material is replaced whole: a PEM block's header is not the secret,
-  // but leaving it invites someone to reconstruct what was removed.
-  {
-    label: "PRIVATE_KEY",
-    pattern: /-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----/g
-  },
-  { label: "PEM_BLOCK", pattern: /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g },
-  { label: "GITHUB_TOKEN", pattern: /\b(gh[pousr]_[A-Za-z0-9]{16,255})\b/g, group: 1 },
-  { label: "GITHUB_TOKEN", pattern: /\b(github_pat_[A-Za-z0-9_]{20,})\b/g, group: 1 },
-  { label: "AWS_ACCESS_KEY", pattern: /\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b/g, group: 1 },
-  {
-    label: "AWS_SECRET_KEY",
-    pattern: /\b(?:aws_secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi,
-    group: 1
-  },
-  { label: "GOOGLE_API_KEY", pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g, group: 1 },
-  { label: "SLACK_TOKEN", pattern: /\b(xox[abposr]-[0-9A-Za-z-]{10,})\b/g, group: 1 },
-  { label: "STRIPE_KEY", pattern: /\b((?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,})\b/g, group: 1 },
-  { label: "NPM_TOKEN", pattern: /\b(npm_[A-Za-z0-9]{36})\b/g, group: 1 },
-  { label: "PYPI_TOKEN", pattern: /\b(pypi-[A-Za-z0-9_-]{16,})\b/g, group: 1 },
-  { label: "OPENAI_KEY", pattern: /\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b/g, group: 1 },
-  { label: "ANTHROPIC_KEY", pattern: /\b(sk-ant-[A-Za-z0-9_-]{20,})\b/g, group: 1 },
-  // JWTs: three base64url segments. The payload is often the sensitive part.
-  {
-    label: "JWT",
-    pattern: /\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g,
-    group: 1
-  },
-  // A connection string's credentials, keeping the scheme and host so the
-  // surrounding review comment still makes sense.
-  {
-    label: "DB_CREDENTIALS",
-    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi,
-    group: 3
-  },
-  {
-    label: "AUTHORIZATION_HEADER",
-    pattern: /\b(?:Authorization|Proxy-Authorization)\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12,})/gi,
-    group: 1
-  },
-  // Assignment-shaped secrets. Deliberately last: it is the broadest rule, and
-  // a more specific label above is more useful in an audit than "SECRET".
-  {
-    label: "SECRET_ASSIGNMENT",
-    pattern: /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["']([^"'\s]{8,})["']/gi,
-    group: 1
-  }
-];
-var PLACEHOLDERS = /* @__PURE__ */ new Set([
-  "xxxxxxxx",
-  "changeme",
-  "password",
-  "redacted",
-  "your_token_here",
-  "example",
-  "placeholder",
-  "dummy",
-  "notarealsecret",
-  "test",
-  "password123",
-  "<token>",
-  "secret",
-  "todo",
-  "fixme",
-  "null",
-  "undefined",
-  "none"
-]);
-
-// plugins/review-voice/src/redact/redact.ts
-var REDACTION_VERSION = "1";
-function hash(value) {
-  return createHash4("sha256").update(value).digest("hex").slice(0, 32);
-}
-function isPlaceholder(value) {
-  const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
-  if (PLACEHOLDERS.has(normalised)) return true;
-  return /^(.)\1{3,}$/.test(value);
-}
-function redact(input) {
-  const counts = {};
-  let text4 = input;
-  for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
-    pattern.lastIndex = 0;
-    text4 = text4.replace(pattern, (match, ...groups) => {
-      const captured = group === void 0 || group === 0 ? match : groups[group - 1];
-      if (captured === void 0 || captured.length === 0) return match;
-      if (isPlaceholder(captured)) return match;
-      counts[label2] = (counts[label2] ?? 0) + 1;
-      const replacement = `[REDACTED:${label2}]`;
-      return group === void 0 || group === 0 ? replacement : match.replace(captured, replacement);
-    });
-  }
-  return {
-    text: text4,
-    counts,
-    sourceHash: hash(input),
-    redactedHash: hash(text4),
-    version: REDACTION_VERSION
-  };
-}
-
 // plugins/review-voice/src/diff/thread.ts
 var MAX_COMMENTS = 300;
 function clean(body, author) {
   if (body === void 0 || body.trim().length === 0) return null;
-  return { body: redact(body).text, author: author ?? "unknown" };
+  return { body: redact(stripEvidenceBlock(body)).text, author: author ?? "unknown" };
 }
 async function readThread(options) {
   const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
@@ -14961,7 +15102,7 @@ function matchComments(findings, comments) {
     let best;
     let bestScore = -1;
     for (const comment of candidates) {
-      const body = comment.body ?? "";
+      const body = stripEvidenceBlock(comment.body ?? "");
       const score2 = overlap(words, significantWords(body)) + (body.startsWith(severityPrefix(finding)) ? 0.01 : 0);
       if (score2 > bestScore) {
         best = comment;
@@ -15148,10 +15289,32 @@ function postedStats(db, { since } = {}) {
     ).all(since)
   );
 }
+function evidenceBlockGroups(db) {
+  const sent = /* @__PURE__ */ new Set();
+  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent'`).all()) {
+    try {
+      const attempt = JSON.parse(row.metadata_json).attempt;
+      if (typeof attempt === "string") sent.add(attempt);
+    } catch {
+    }
+  }
+  const groups = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(
+    `SELECT audit_id, json_extract(metadata_json, '$.run') AS run, json_extract(metadata_json, '$.evidenceBlocks') AS blocks
+       FROM audit_events WHERE action = 'review_post_attempted' AND json_valid(metadata_json)`
+  ).all()) {
+    if (!sent.has(row.audit_id) || typeof row.run !== "string" || typeof row.blocks !== "number") continue;
+    if (row.blocks > 0) groups.set(row.run, "with");
+    else if (!groups.has(row.run)) groups.set(row.run, "without");
+  }
+  return groups;
+}
 function postedBreakdown(db) {
   const rows = db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all();
   const findings = /* @__PURE__ */ new Map();
   const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map(), rule: /* @__PURE__ */ new Map() };
+  const blockGroups = evidenceBlockGroups(db);
+  const byBlock = { with: [], without: [], unknown: [] };
   for (const row of rows) {
     let known = findings.get(row.review_run_id);
     if (known === void 0) {
@@ -15175,9 +15338,15 @@ function postedBreakdown(db) {
     groups.severity.set(info.severity, [...groups.severity.get(info.severity) ?? [], row]);
     groups.lane.set(info.lane, [...groups.lane.get(info.lane) ?? [], row]);
     groups.rule.set(info.rule, [...groups.rule.get(info.rule) ?? [], row]);
+    byBlock[blockGroups.get(row.review_run_id) ?? "unknown"].push(row);
   }
   const collect = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list2]) => [key2, statsOf(list2)]));
-  return { bySeverity: collect(groups.severity), byLane: collect(groups.lane), byRule: collect(groups.rule) };
+  return {
+    bySeverity: collect(groups.severity),
+    byLane: collect(groups.lane),
+    byRule: collect(groups.rule),
+    byEvidenceBlock: { with: statsOf(byBlock.with), without: statsOf(byBlock.without), unknown: statsOf(byBlock.unknown) }
+  };
 }
 
 // plugins/review-voice/src/evaluate/metrics.ts
@@ -15641,7 +15810,8 @@ function refusal(head, reason2) {
       alreadyInline: 0,
       key: null,
       preview: null,
-      withheldSuggestions: []
+      withheldSuggestions: [],
+      evidenceBlocks: 0
     }
   };
 }
@@ -15854,6 +16024,7 @@ async function computeVerdict(options) {
   let key2 = null;
   let alreadyInline = 0;
   let withheldSuggestions = [];
+  let evidenceBlocks = 0;
   if (decision.action === "post" && decision.event !== null) {
     const checked = policy.suggestions ? await checkedSuggestions(options, run, planned, head) : null;
     withheldSuggestions = checked?.withheld ?? [];
@@ -15870,10 +16041,12 @@ async function computeVerdict(options) {
     });
     key2 = idempotencyKey(options.repository, options.pullNumber, full2);
     const sent = sentInline(options.db, options.repository, options.pullNumber, head);
-    const comments = full2.comments.filter((comment) => !sent.has(commentSignature(comment)));
-    alreadyInline = full2.comments.length - comments.length;
+    const unsent = full2.comments.filter((comment) => !sent.has(commentSignature(comment)));
+    alreadyInline = full2.comments.length - unsent.length;
+    const evidence = policy.evidenceBlock ? withEvidenceBlocks(unsent, planned, policy) : { comments: unsent, blocks: 0 };
+    evidenceBlocks = evidence.blocks;
     const body = policy.scopeBlock ? withScopeBlock(full2.body, scopeBlock(run, planned, policy)) : full2.body;
-    payload = { ...full2, body: withAnnotations(body, decision.annotations), comments };
+    payload = { ...full2, body: withAnnotations(body, decision.annotations), comments: evidence.comments };
     preview = renderPreview({
       repository: options.repository,
       pullNumber: options.pullNumber,
@@ -15908,7 +16081,8 @@ async function computeVerdict(options) {
       alreadyInline,
       key: key2,
       preview,
-      withheldSuggestions
+      withheldSuggestions,
+      evidenceBlocks
     }
   };
 }
@@ -16141,7 +16315,9 @@ async function postReview(options) {
     head: payload.commit_id,
     event: payload.event,
     comments: payload.comments.length,
-    run: run.reviewRunId
+    run: run.reviewRunId,
+    // Whether the posted comments carried the evidence block, so outcomes can be split by it.
+    evidenceBlocks: verdict2.evidenceBlocks
   });
   if (typeof claimed !== "string") return refuse(2, [claimed.blocked], verdict2, key2);
   const attempt = claimed;
@@ -16578,7 +16754,7 @@ async function verdict(options, client, db, entry, recheck) {
   };
   const computed = await computeVerdict({ ...target, recheck });
   const { exitCode, output } = computed;
-  const waiting = (code) => code === 4 || code === 5 ? "waiting-ci" : code === 6 ? "held" : null;
+  const waiting = (code2) => code2 === 4 || code2 === 5 ? "waiting-ci" : code2 === 6 ? "held" : null;
   if (exitCode === 3) return { row: null, detail: "head moved" };
   const paused = waiting(exitCode);
   if (paused !== null) return { row: { ...base, event: output.event, status: paused, detail: output.reasons.join("; ") || null } };
@@ -16730,8 +16906,8 @@ function spawnReview(bundle, options) {
       spawnError = error.message;
       finish();
     });
-    child.on("exit", (code, signal2) => {
-      exitCode = code;
+    child.on("exit", (code2, signal2) => {
+      exitCode = code2;
       exitSignal = signal2;
       if (terminating) {
         killGroup2(pid, "SIGKILL");
@@ -17408,6 +17584,16 @@ var COMMAND_HELP = {
       "                                          the verifier verified the fix and the head's lines still",
       "                                          read its original (docs/adr/0033); otherwise the prose",
       '                                          posts alone and "withheldSuggestions" says why',
+      "  verdict.evidence_block: false           true ends each inline comment with a collapsed",
+      '                                          "Evidence" block from the recorded run with the verifier',
+      "                                          and the challenger's verdict, its decisive lines, a",
+      "                                          static check on the same line and a convention quote",
+      "                                          the document holds; never a reason, a confidence, a",
+      '                                          model or a held claim ("evidenceBlocks" counts them)',
+      "  verdict.evidence_block_precedents: false",
+      "                                          true also counts the owner precedents retrieved that",
+      "                                          favoured the finding in that block, which reveals that",
+      "                                          a precedent store exists",
       '  An annotation names at most five checks and appears in "annotations".',
       "Reads: the validated review on stdin; with review.suggestions, each file a suggestion",
       "  replaces lines of, at the head (GET contents).",
@@ -17436,7 +17622,10 @@ var COMMAND_HELP = {
       "  to the CI re-read just before an approval is sent. Annotations are appended to the",
       "  body, each on its own line, and left out of the idempotency key. A carry sends",
       "  nothing and prints {carried: true, reviewUrl}. verdict.recheck_thread_before_post:",
-      "  true always does what --recheck-thread does.",
+      "  true always does what --recheck-thread does. Under verdict.evidence_block, each inline",
+      "  comment ends with the evidence block after any suggestion block. It is appended after",
+      "  the idempotency key is taken and is left out of the comment signature, so turning it on",
+      "  or off never makes the same review, or the same comment, a second post.",
       "Reads: the validated review on stdin.",
       "Writes: JSON on stdout. With --confirm, WRITES the review to GitHub (the plugin's only write).",
       "Exit codes: 0 sent, previewed or carried, 1 the send failed, 2 refused or bad invocation,",
@@ -17544,9 +17733,14 @@ var COMMAND_HELP = {
       '                         [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean',
       "                         result from a shallow analyst pass is warned about",
       "  --evidence <path>      evidence.json from `evidence`; needs --symbols. With it, stores which",
-      "                         static checks ran and which did not, for `explain` and the scope block",
+      "                         static checks ran and which did not, for `explain` and the scope block,",
+      "                         and on each finding the first static signal at its exact path and line",
+      "                         (toolSignal, redacted)",
       "  --symbols <path>       symbols.json from `symbols`; needs --evidence. Stores how many files",
       "                         the symbol search left unfinished",
+      "  --conventions <path>   conventions.json from `conventions`. Stores on a finding each quote its",
+      "                         candidate's evidence cites from a named document, only when that",
+      "                         document holds it (conventionQuotes, at most two)",
       "  --origin <driver|interactive|watch|action>",
       "                         Where the run came from (default interactive, the slash command).",
       "                         Stored with an independence label derived from it alone: interactive",
@@ -18053,7 +18247,7 @@ function claudeArguments(spec, addDirs, env) {
 function firstChars(text4) {
   return text4.trim().slice(0, ERROR_CHARS);
 }
-function interpretEnvelope(stdout, stderr, code) {
+function interpretEnvelope(stdout, stderr, code2) {
   let envelope = null;
   try {
     const parsed2 = JSON.parse(stdout);
@@ -18064,11 +18258,11 @@ function interpretEnvelope(stdout, stderr, code) {
   const costUsd = typeof envelope?.total_cost_usd === "number" ? envelope.total_cost_usd : null;
   const tokens = tokensOf(envelope?.usage);
   const counted = tokens === void 0 ? {} : { tokens };
-  if (code === 0 && envelope !== null && envelope.is_error === false && envelope.structured_output !== void 0) {
+  if (code2 === 0 && envelope !== null && envelope.is_error === false && envelope.structured_output !== void 0) {
     return { ok: true, output: envelope.structured_output, costUsd, ...counted };
   }
   const result = typeof envelope?.result === "string" ? envelope.result : "";
-  const detail = firstChars(result) || firstChars(stderr) || firstChars(stdout) || (code === 0 ? "claude returned no structured output" : `claude exited with code ${code}`);
+  const detail = firstChars(result) || firstChars(stderr) || firstChars(stdout) || (code2 === 0 ? "claude returned no structured output" : `claude exited with code ${code2}`);
   return { ok: false, output: null, costUsd, ...counted, error: detail };
 }
 function runClaudeCli(spec, prompt, cwd, addDirs, env) {
@@ -18113,7 +18307,7 @@ function runClaudeCli(spec, prompt, cwd, addDirs, env) {
     child.on("error", (error) => {
       finish({ ok: false, output: null, costUsd: null, error: `could not start ${bin}: ${error.message}` });
     });
-    child.on("close", (code) => {
+    child.on("close", (code2) => {
       if (stopped !== null) {
         finish({ ok: false, output: null, costUsd: null, error: stopped });
         return;
@@ -18122,7 +18316,7 @@ function runClaudeCli(spec, prompt, cwd, addDirs, env) {
         interpretEnvelope(
           Buffer.concat(stdout).toString("utf8"),
           Buffer.concat(stderr).toString("utf8"),
-          code
+          code2
         )
       );
     });
@@ -18839,29 +19033,29 @@ function parseIntent(value, description) {
 
 // plugins/review-voice/src/verify/challenge.ts
 var CHALLENGE_VERDICTS = ["confirmed", "partly", "refuted"];
-var isRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isRecord3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var idOf2 = (entry) => {
   const id = entry["candidateId"] ?? entry["candidate_id"];
   return typeof id === "string" ? id : null;
 };
 var text3 = (value) => typeof value === "string" && value.trim().length > 0 ? value : null;
 function eligibleFindings(scores) {
-  return isRecord2(scores) && Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord2) : [];
+  return isRecord3(scores) && Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord3) : [];
 }
 function candidatesById(parsed2) {
-  const key2 = isRecord2(parsed2) ? ["candidates", "kept"].find((k) => Array.isArray(parsed2[k])) : void 0;
-  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord2(parsed2) && key2 !== void 0 ? parsed2[key2] : [];
+  const key2 = isRecord3(parsed2) ? ["candidates", "kept"].find((k) => Array.isArray(parsed2[k])) : void 0;
+  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord3(parsed2) && key2 !== void 0 ? parsed2[key2] : [];
   const out = /* @__PURE__ */ new Map();
   for (const entry of list2) {
-    if (!isRecord2(entry)) continue;
+    if (!isRecord3(entry)) continue;
     const id = idOf2(entry);
     if (id !== null) out.set(id, entry);
   }
   return out;
 }
 function intentStatements(parsed2) {
-  const list2 = isRecord2(parsed2) && Array.isArray(parsed2["statements"]) ? parsed2["statements"] : Array.isArray(parsed2) ? parsed2 : [];
-  return list2.filter((s) => isRecord2(s) && typeof s["id"] === "string");
+  const list2 = isRecord3(parsed2) && Array.isArray(parsed2["statements"]) ? parsed2["statements"] : Array.isArray(parsed2) ? parsed2 : [];
+  return list2.filter((s) => isRecord3(s) && typeof s["id"] === "string");
 }
 function challengePrompt(finding, candidate, statements, diffFile) {
   const pick = (snake, camel) => text3(candidate?.[snake]) ?? text3(candidate?.[camel]) ?? text3(finding[snake]) ?? text3(finding[camel]);
@@ -18870,7 +19064,7 @@ function challengePrompt(finding, candidate, statements, diffFile) {
   const line3 = Number.isInteger(finding["line"]) ? finding["line"] : candidate?.["line"];
   const intentRef = pick("intent_ref", "intentRef");
   const cited = intentRef === null ? [] : statements.filter((s) => s.id === intentRef);
-  const causedBy = isRecord2(finding["causedBy"]) ? finding["causedBy"] : isRecord2(candidate?.["caused_by"]) ? candidate["caused_by"] : null;
+  const causedBy = isRecord3(finding["causedBy"]) ? finding["causedBy"] : isRecord3(candidate?.["caused_by"]) ? candidate["caused_by"] : null;
   const rows = [
     `Challenge finding ${id}.`,
     "",
@@ -18903,14 +19097,14 @@ function challengePrompts(scores, candidates, statements, diffFile) {
     return { candidate_id: id, prompt: challengePrompt(finding, candidates.get(id), statements, diffFile) };
   });
 }
-var DECISIVE = /^\S(?:.*\S)?:\d+(?:-\d+)?$/u;
+var DECISIVE2 = /^\S(?:.*\S)?:\d+(?:-\d+)?$/u;
 function parseChallengeVerdicts(raw) {
-  const list2 = Array.isArray(raw) ? raw : isRecord2(raw) && Array.isArray(raw["verdicts"]) ? raw["verdicts"] : null;
+  const list2 = Array.isArray(raw) ? raw : isRecord3(raw) && Array.isArray(raw["verdicts"]) ? raw["verdicts"] : null;
   if (list2 === null) return { ok: false, problems: ['expected {"verdicts": [...]}'] };
   const problems = [];
   const verdicts = [];
   list2.forEach((entry, index) => {
-    if (!isRecord2(entry)) {
+    if (!isRecord3(entry)) {
       problems.push(`verdict ${index} is not an object`);
       return;
     }
@@ -18928,7 +19122,7 @@ function parseChallengeVerdicts(raw) {
       problems.push(`${name}: corrected_line must be a positive integer`);
     }
     const decisive = entry["decisive_evidence"];
-    if (!Array.isArray(decisive) || decisive.some((d) => typeof d !== "string" || !DECISIVE.test(d.trim()))) {
+    if (!Array.isArray(decisive) || decisive.some((d) => typeof d !== "string" || !DECISIVE2.test(d.trim()))) {
       problems.push(`${name}: decisive_evidence must be a list of "path:line" references`);
     }
     if (typeof entry["reason"] !== "string") problems.push(`${name}: reason must be a string`);
@@ -18956,7 +19150,7 @@ function parseChallengeVerdicts(raw) {
   return problems.length > 0 ? { ok: false, problems } : { ok: true, verdicts };
 }
 function applyChallenge(scores, candidates, rawVerdicts, hunks) {
-  if (!isRecord2(scores) || !Array.isArray(scores["scores"]) || !Array.isArray(scores["eligible"])) {
+  if (!isRecord3(scores) || !Array.isArray(scores["scores"]) || !Array.isArray(scores["eligible"])) {
     return { ok: false, problems: ["expected the JSON `RV score` printed, with `scores` and `eligible` lists"] };
   }
   const parsed2 = parseChallengeVerdicts(rawVerdicts);
@@ -19017,7 +19211,7 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks) {
   }
   let document = {
     ...scores,
-    scores: scores["scores"].map((e) => isRecord2(e) ? verdictOf(e) : e),
+    scores: scores["scores"].map((e) => isRecord3(e) ? verdictOf(e) : e),
     eligible: eligible.filter((e) => !holdReasons.has(idOf2(e)))
   };
   for (const finding of eligible) {
@@ -19040,8 +19234,8 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks) {
     const heldAs = { eligible: false, rejectedBecause: `challenge-partly: ${reason2}` };
     document = {
       ...document,
-      scores: document["scores"].map((e) => isRecord2(e) && idOf2(e) === id ? { ...e, ...heldAs } : e),
-      eligible: document["eligible"].filter((e) => !(isRecord2(e) && idOf2(e) === id))
+      scores: document["scores"].map((e) => isRecord3(e) && idOf2(e) === id ? { ...e, ...heldAs } : e),
+      eligible: document["eligible"].filter((e) => !(isRecord3(e) && idOf2(e) === id))
     };
   }
   const order = new Map(eligibleIds.map((id, index) => [id, index]));
@@ -19581,13 +19775,13 @@ function removeHeadWorktree(headDir, cwd = process.cwd()) {
 var NO_FINDINGS = "No actionable findings.";
 var Stop = class extends Error {
   code;
-  constructor(code, message) {
+  constructor(code2, message) {
     super(message);
-    this.code = code;
+    this.code = code2;
   }
 };
-var isRecord3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-var list = (value) => Array.isArray(value) ? value.filter(isRecord3) : [];
+var isRecord4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var list = (value) => Array.isArray(value) ? value.filter(isRecord4) : [];
 var idOf3 = (entry) => String(entry["candidate_id"] ?? entry["candidateId"] ?? "");
 var readJson = (path) => JSON.parse(readFileSync10(path, "utf8"));
 var writeJson = (path, value) => writeFileSync3(path, `${JSON.stringify(value, null, 2)}
@@ -19595,7 +19789,7 @@ var writeJson = (path, value) => writeFileSync3(path, `${JSON.stringify(value, n
 var parsed = (text4) => {
   try {
     const value = JSON.parse(text4);
-    return isRecord3(value) ? value : {};
+    return isRecord4(value) ? value : {};
   } catch {
     return {};
   }
@@ -19621,9 +19815,9 @@ ${result.stderr}
   }
   return result;
 }
-async function must(run, argv, stdin, code = 2) {
+async function must(run, argv, stdin, code2 = 2) {
   const result = await cli(run, argv, stdin);
-  if (result.code !== 0) throw new Stop(code, `${argv[0]} exited ${result.code}: ${firstLines(result.stderr)}`);
+  if (result.code !== 0) throw new Stop(code2, `${argv[0]} exited ${result.code}: ${firstLines(result.stderr)}`);
   return result;
 }
 async function headOf(run) {
@@ -19685,7 +19879,7 @@ function resolveConfig(run) {
 function noteConfigChange(run) {
   if (run.configSource === null || run.configSource.kind !== "base" && run.configSource.kind !== "default") return;
   const manifest = readJson(at(run, "files.json"));
-  const changed = list(isRecord3(manifest) ? manifest["files"] : []).some((file2) => file2["path"] === CONFIG_PATH || file2["previousPath"] === CONFIG_PATH);
+  const changed = list(isRecord4(manifest) ? manifest["files"] : []).some((file2) => file2["path"] === CONFIG_PATH || file2["previousPath"] === CONFIG_PATH);
   if (!changed) return;
   const note = `Configuration was read from the base commit ${shortRef(run.pullBase.sha ?? "")}; the pull request's changes to ${CONFIG_PATH} were not applied to this review.`;
   if (!run.notes.includes(note)) run.notes.push(note);
@@ -19703,7 +19897,7 @@ function account(run, name, model, result) {
   stage.seconds = Math.round((stage.seconds + result.seconds) * 100) / 100;
   if (result.costUsd !== null) stage.costUsd = (stage.costUsd ?? 0) + result.costUsd;
   if (result.tokens !== void 0) stage.tokens = (stage.tokens ?? 0) + result.tokens;
-  const output = isRecord3(result.output) ? result.output : {};
+  const output = isRecord4(result.output) ? result.output : {};
   for (const key2 of ["toolCalls", "filesRead"]) {
     const value = output[key2];
     if (typeof value === "number" && Number.isInteger(value) && value >= 0) stage[key2] = (stage[key2] ?? 0) + value;
@@ -19742,7 +19936,7 @@ async function inParallel(items, work, limit = DEFAULT_AGENT_PARALLELISM) {
 }
 var files = (run) => ({ dir: run.dir, intent: run.intent, followUps: run.followUps });
 var withoutCounts = (output) => {
-  const { toolCalls: _calls, filesRead: _read, ...rest } = isRecord3(output) ? output : {};
+  const { toolCalls: _calls, filesRead: _read, ...rest } = isRecord4(output) ? output : {};
   return rest;
 };
 function runDirectory(options, head) {
@@ -19764,17 +19958,17 @@ async function prep(run) {
     ...run.options.full ? ["--full"] : []
   ]);
   run.summary = parsed(diff.stdout)["summary"];
-  if (!isRecord3(run.summary)) throw new Stop(2, "diff printed no summary.");
+  if (!isRecord4(run.summary)) throw new Stop(2, "diff printed no summary.");
   if (run.summary["head"] !== run.head) throw new Stop(3, `The head moved to ${String(run.summary["head"])} while the diff was read.`);
-  const refs = isRecord3(run.summary["refs"]) ? run.summary["refs"] : {};
-  const baseReadable = isRecord3(refs["base"]) && refs["base"]["available"] === true;
+  const refs = isRecord4(run.summary["refs"]) ? run.summary["refs"] : {};
+  const baseReadable = isRecord4(refs["base"]) && refs["base"]["available"] === true;
   run.base = typeof run.summary["mergeBase"] === "string" ? run.summary["mergeBase"] : baseReadable ? String(run.summary["base"]) : null;
   for (const key2 of ["truncationNote", "scopeNote", "humanReviewNote"]) {
     if (typeof run.summary[key2] === "string") run.notes.push(run.summary[key2]);
   }
   noteConfigChange(run);
   for (const key2 of ["suspectedWrongBase", "squashedParentSuspected"]) {
-    const note = isRecord3(run.summary[key2]) ? run.summary[key2]["note"] : null;
+    const note = isRecord4(run.summary[key2]) ? run.summary[key2]["note"] : null;
     if (typeof note === "string") run.notes.push(note);
   }
   await must(run, ["thread", ...pr, "--out", at(run, "thread.json")]);
@@ -19782,7 +19976,7 @@ async function prep(run) {
   if (noCommands(run)) {
     run.notes.push("REVIEW_VOICE_NO_COMMANDS=1, so the static evidence commands were not run.");
     const context2 = readJson(at(run, "context.json"));
-    const configured = isRecord3(context2) && isRecord3(context2["staticEvidence"]) ? list(context2["staticEvidence"]["commands"]) : [];
+    const configured = isRecord4(context2) && isRecord4(context2["staticEvidence"]) ? list(context2["staticEvidence"]["commands"]) : [];
     writeJson(at(run, "evidence.json"), {
       enabled: false,
       signals: [],
@@ -19792,7 +19986,7 @@ async function prep(run) {
     });
   } else {
     const context2 = readJson(at(run, "context.json"));
-    const staticEvidence = isRecord3(context2) && isRecord3(context2["staticEvidence"]) ? context2["staticEvidence"] : {};
+    const staticEvidence = isRecord4(context2) && isRecord4(context2["staticEvidence"]) ? context2["staticEvidence"] : {};
     const willRun = staticEvidence["enabled"] === true && list(staticEvidence["commands"]).length > 0;
     const where = willRun ? ["--cwd", prepareWorkspace(run)] : [];
     writeFileSync3(at(run, "evidence.json"), (await must(run, ["evidence", ...where])).stdout);
@@ -19804,7 +19998,7 @@ async function prep(run) {
   } else {
     writeFileSync3(at(run, "conventions.json"), (await must(run, ["conventions", "--files", at(run, "files.json"), "--ref", run.base])).stdout);
   }
-  const headReadable = isRecord3(refs["head"]) && refs["head"]["available"] === true;
+  const headReadable = isRecord4(refs["head"]) && refs["head"]["available"] === true;
   await must(run, [
     "symbols",
     "--diff-file",
@@ -19824,9 +20018,9 @@ async function prep(run) {
   writeFileSync3(at(run, "lanes.json"), (await must(run, ["lanes", ...input])).stdout);
 }
 async function carry(run) {
-  const scope = isRecord3(run.summary["scope"]) ? run.summary["scope"] : {};
+  const scope = isRecord4(run.summary["scope"]) ? run.summary["scope"] : {};
   if (scope["kind"] !== "unchanged") return skip(run, "carry", `scope is ${String(scope["kind"] ?? "full")}`);
-  const prior = isRecord3(run.summary["prior"]) ? run.summary["prior"] : {};
+  const prior = isRecord4(run.summary["prior"]) ? run.summary["prior"] : {};
   const from = prior["runId"];
   if (typeof from !== "string") return reviewInFull(run, "The scope is unchanged but no recorded run id was found");
   const result = await cli(run, ["carry", "--from", from, "--head", run.head, "--thread", at(run, "thread.json"), "--files", at(run, "files.json")]);
@@ -19860,8 +20054,8 @@ function historyName(path) {
   return `${encodeURIComponent(path)}.txt`;
 }
 function prepareWorkspace(run) {
-  const refs = isRecord3(run.summary["refs"]) ? run.summary["refs"] : {};
-  if (!(isRecord3(refs["head"]) && refs["head"]["available"] === true)) {
+  const refs = isRecord4(run.summary["refs"]) ? run.summary["refs"] : {};
+  if (!(isRecord4(refs["head"]) && refs["head"]["available"] === true)) {
     throw new Stop(2, `The head ${run.head} is not in this clone. Fetch it and run again.`);
   }
   const git6 = (args) => execFileSync10("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
@@ -19872,7 +20066,7 @@ function prepareWorkspace(run) {
     run.cleanup.push(() => removeWorktree(run, headDir));
   }
   const manifest = readJson(at(run, "files.json"));
-  const changed = list(isRecord3(manifest) ? manifest["files"] : []).filter((f) => (f["reviewed"] === true || f["status"] === "deleted") && typeof f["path"] === "string");
+  const changed = list(isRecord4(manifest) ? manifest["files"] : []).filter((f) => (f["reviewed"] === true || f["status"] === "deleted") && typeof f["path"] === "string");
   const baseRoot = at(run, "base");
   rmSync3(baseRoot, { recursive: true, force: true });
   rmSync3(at(run, "history"), { recursive: true, force: true });
@@ -19931,7 +20125,7 @@ async function intent(run) {
   const description = descriptionOf(readJson(at(run, "thread.json")));
   if (description === null || description.trim() === "") return skip(run, "intent", "the pull request has no description");
   const manifest = readJson(at(run, "files.json"));
-  const title = isRecord3(manifest) && typeof manifest["title"] === "string" ? manifest["title"] : "";
+  const title = isRecord4(manifest) && typeof manifest["title"] === "string" ? manifest["title"] : "";
   const result = await agent(run, "intent", "intent-extractor", run.plan.stages.intent.model ?? "sonnet", SCHEMAS.intent, intentPrompt(files(run), title), async (output) => {
     const checked = await cli(run, ["check-intent", "--thread", at(run, "thread.json")], JSON.stringify(output));
     if (checked.code !== 0) return checked.stderr.trim() || `check-intent exited ${checked.code}`;
@@ -19961,7 +20155,7 @@ async function lanes(run) {
     if (!result2.ok) throw new Stop(7, `The ${lane.name} lane failed twice: ${firstLines(result2.error)}`);
     output.set(lane.name, list(withoutCounts(result2.output)["candidates"]));
   });
-  const prior = isRecord3(run.summary["prior"]) ? run.summary["prior"]["runId"] : null;
+  const prior = isRecord4(run.summary["prior"]) ? run.summary["prior"]["runId"] : null;
   const args = [
     "check-candidates",
     "--diff-file",
@@ -20218,7 +20412,7 @@ async function edit(run) {
   const scoresFile = at(run, "scores.challenged.json");
   const eligible = existsSync7(scoresFile) ? list(parsed(readFileSync10(scoresFile, "utf8"))["eligible"]) : [];
   const policy = parsed(readFileSync10(at(run, "context.json"), "utf8"))["policy"];
-  const limits = isRecord3(policy) ? policy : {};
+  const limits = isRecord4(policy) ? policy : {};
   const validate = [
     "validate-output",
     "--scale-to-files",
@@ -20235,7 +20429,7 @@ async function edit(run) {
     const retrieved = parsed((await cli(run, ["retrieve", "--text", String(eligible[0]["claim"] ?? "")])).stdout);
     const voice = retrieved["baseline"] === true ? retrieved["voice"] ?? null : null;
     const result = await agent(run, "editor", "concise-editor", run.plan.stages.edit.model ?? "sonnet", SCHEMAS.editor, editorPrompt(eligible, voice), async (output) => {
-      const text4 = isRecord3(output) && typeof output["text"] === "string" ? output["text"] : "";
+      const text4 = isRecord4(output) && typeof output["text"] === "string" ? output["text"] : "";
       const checked = await cli(run, validate, text4);
       if (checked.code === 0) return null;
       return `Previous output:
@@ -20304,6 +20498,8 @@ async function record2(run, extra) {
       // off, so the record says what ran and what did not; passed only when both
       // are there, as `record` refuses one without the other.
       ...existsSync7(at(run, "evidence.json")) && existsSync7(at(run, "symbols.json")) ? ["--evidence", at(run, "evidence.json"), "--symbols", at(run, "symbols.json")] : [],
+      // So a convention quote the analyst cited is stored only when the document holds it.
+      ...existsSync7(at(run, "conventions.json")) ? ["--conventions", at(run, "conventions.json")] : [],
       "--origin",
       run.options.origin ?? "driver",
       ...run.plan?.mode === void 0 ? [] : ["--mode", run.plan.mode],
@@ -20316,7 +20512,7 @@ async function record2(run, extra) {
   const result = parsed(recorded.stdout);
   run.runId = typeof result["reviewRunId"] === "string" ? result["reviewRunId"] : null;
   run.findings = list(result["findings"]);
-  run.provenance = isRecord3(result["provenance"]) ? result["provenance"] : null;
+  run.provenance = isRecord4(result["provenance"]) ? result["provenance"] : null;
   for (const warning of Array.isArray(result["warnings"]) ? result["warnings"] : []) run.notes.push(String(warning));
   const target = ["--repository", run.options.repository, "--pr", String(run.options.pullNumber), "--head", run.head, "--run", run.runId ?? ""];
   const verdict2 = await cli(run, ["verdict", ...target], run.text ?? "");
@@ -20340,7 +20536,7 @@ async function record2(run, extra) {
   const output = parsed(posted.stdout);
   run.exitCode = posted.code;
   run.posted = output["status"] === "sent";
-  const review2 = isRecord3(output["review"]) ? output["review"]["url"] : output["reviewUrl"];
+  const review2 = isRecord4(output["review"]) ? output["review"]["url"] : output["reviewUrl"];
   if (typeof review2 === "string") run.reviewUrl = review2;
   if (posted.code !== 0) run.notes.push(`post exited ${posted.code}: ${firstLines(posted.stderr || JSON.stringify(output["reasons"] ?? ""))}`);
 }
@@ -20367,7 +20563,7 @@ function staticChecksOf(run) {
   } catch {
     return null;
   }
-  if (!isRecord3(document)) return null;
+  if (!isRecord4(document)) return null;
   const commands = list(document["commands"]);
   const ran = commands.filter((entry) => typeof entry["exitCode"] === "number" && entry["unavailable"] === void 0);
   return {
@@ -20377,9 +20573,9 @@ function staticChecksOf(run) {
   };
 }
 function priorRisk(run) {
-  const scope = isRecord3(run.summary["scope"]) ? run.summary["scope"] : {};
+  const scope = isRecord4(run.summary["scope"]) ? run.summary["scope"] : {};
   if (scope["kind"] === void 0 || scope["kind"] === "full") return "normal";
-  const first = isRecord3(run.summary["prior"]) ? run.summary["prior"]["runId"] : null;
+  const first = isRecord4(run.summary["prior"]) ? run.summary["prior"]["runId"] : null;
   if (typeof first !== "string") {
     run.notes.push("The scope was narrowed without a recorded earlier run, so the pull request's risk is unknown.");
     return "unknown";
@@ -20416,23 +20612,23 @@ function priorRisk(run) {
     return "unknown";
   }
 }
-function failureOf(run, code) {
+function failureOf(run, code2) {
   const assessed = run.summary["complexity"];
-  const complexity = isRecord3(assessed) && (assessed["level"] === "high" || assessed["level"] === "normal") ? assessed : null;
+  const complexity = isRecord4(assessed) && (assessed["level"] === "high" || assessed["level"] === "normal") ? assessed : null;
   const assessedRisk = complexity === null ? "unknown" : complexity.level;
-  const removedControls = isRecord3(run.summary["structure"]) && Array.isArray(run.summary["structure"]["removedControls"]) ? run.summary["structure"]["removedControls"].length : 0;
+  const removedControls = isRecord4(run.summary["structure"]) && Array.isArray(run.summary["structure"]["removedControls"]) ? run.summary["structure"]["removedControls"].length : 0;
   const own = assessedRisk === "normal" && removedControls > 0 ? "high" : assessedRisk;
   const history = own === "normal" ? priorRisk(run) : "normal";
   const risk = own !== "normal" ? own : history;
   const reasons = own === "unknown" ? ["risk not assessed"] : own === "high" ? assessedRisk === "high" ? complexity.reasons : [`the change removed ${removedControls === 1 ? "a control" : `${removedControls} controls`}`] : history === "high" ? ["an earlier run of this pull request assessed it as high risk"] : history === "unknown" ? ["the earlier runs of this pull request could not be read, so its risk is unknown"] : [];
   const size = (key2) => {
-    const value = isRecord3(run.summary["structure"]) ? run.summary["structure"][key2] : void 0;
+    const value = isRecord4(run.summary["structure"]) ? run.summary["structure"][key2] : void 0;
     return Array.isArray(value) ? value.length : null;
   };
   const [sizeCrossings, branchGrowth, typeEscapes] = [size("sizeCrossings"), size("branchGrowth"), size("typeEscapes")];
   const note = run.summary["humanReviewNote"];
   return {
-    code,
+    code: code2,
     stage: run.stage,
     mode: risk === "normal" ? "failed_open" : "failed_closed",
     risk,
@@ -20597,7 +20793,7 @@ function reportText(report) {
   const held = /* @__PURE__ */ new Map();
   for (const entry of report.held) held.set(entry.verdict, (held.get(entry.verdict) ?? 0) + 1);
   if (held.size > 0) lines2.push(`Held: ${[...held].map(([verdict3, n]) => `${n} ${verdict3}`).join(", ")}`);
-  const verdict2 = isRecord3(report.verdict) ? report.verdict : {};
+  const verdict2 = isRecord4(report.verdict) ? report.verdict : {};
   if (typeof verdict2["event"] === "string" || typeof verdict2["action"] === "string") {
     lines2.push(`Verdict: ${String(verdict2["event"] ?? "none")} (${String(verdict2["action"] ?? "")})`);
   }
@@ -20665,12 +20861,12 @@ function readStdin() {
     try {
       read = readSync(0, buffer, 0, buffer.length, null);
     } catch (error) {
-      const code = error.code;
-      if (code === "EAGAIN") {
+      const code2 = error.code;
+      if (code2 === "EAGAIN") {
         Atomics.wait(pause, 0, 0, 5);
         continue;
       }
-      if (code === "EOF") break;
+      if (code2 === "EOF") break;
       return chunks.length === 0 ? "" : Buffer.concat(chunks).toString("utf8");
     }
     if (read === 0) break;
@@ -20752,14 +20948,14 @@ function repositoryConfig(db) {
 }
 var LIST_CAP = 20;
 var EXCERPT_CAP = 300;
-var TEXT_CAP = 600;
+var TEXT_CAP2 = 600;
 var CLAIM_CAP = 1e3;
-function boundLists(value, limit = TEXT_CAP) {
+function boundLists(value, limit = TEXT_CAP2) {
   if (typeof value === "string") return value.length > limit ? `${value.slice(0, limit)}...` : value;
   if (Array.isArray(value)) return value.map((entry) => boundLists(entry, limit));
   if (value === null || typeof value !== "object") return value;
   const out = {};
-  let cut = false;
+  let cut2 = false;
   for (const [key2, item] of Object.entries(value)) {
     if (key2 === "precedentIds") {
       continue;
@@ -20767,17 +20963,17 @@ function boundLists(value, limit = TEXT_CAP) {
     if (Array.isArray(item) && item.length > LIST_CAP && item.every((entry) => typeof entry === "string")) {
       out[key2] = item.slice(0, LIST_CAP);
       out[`${key2}Total`] = item.length;
-      cut = true;
+      cut2 = true;
     } else if (key2 === "excerpt" && typeof item === "string" && item.length > EXCERPT_CAP) {
       out[key2] = `${item.slice(0, EXCERPT_CAP)}...`;
     } else {
-      const childLimit = key2 === "claim" || key2 === "failureMode" ? CLAIM_CAP : TEXT_CAP;
+      const childLimit = key2 === "claim" || key2 === "failureMode" ? CLAIM_CAP : TEXT_CAP2;
       const bounded = boundLists(item, childLimit);
-      if (JSON.stringify(bounded) !== JSON.stringify(item)) cut = cut || containsCut(item, bounded);
+      if (JSON.stringify(bounded) !== JSON.stringify(item)) cut2 = cut2 || containsCut(item, bounded);
       out[key2] = bounded;
     }
   }
-  if (cut) out["truncated"] = true;
+  if (cut2) out["truncated"] = true;
   return out;
 }
 function containsCut(before, after) {
@@ -22087,7 +22283,7 @@ function summariseResults(results) {
     failedRuns: tally.failedRuns
   };
 }
-var isRecord4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isRecord5 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var isFigure = (value) => value === null || typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 function recordProblem(entry) {
   const count3 = (key2) => entry[key2] === void 0 || entry[key2] === null || Number.isInteger(entry[key2]) && entry[key2] >= 0 ? null : `${key2} is not a whole number`;
@@ -22126,14 +22322,14 @@ function readRecallResults(path) {
     throw new Error(`The recall results ${path} are not valid JSON: ${error.message}`);
   }
   const bad = (why) => new Error(`The recall results ${path} are malformed: ${why}`);
-  if (!isRecord4(document)) throw bad("the top level is not an object");
+  if (!isRecord5(document)) throw bad("the top level is not an object");
   for (const key2 of ["pluginVersion", "mode", "runner"]) {
     if (typeof document[key2] !== "string") throw bad(`${key2} is not a string`);
   }
   const fixtures = document["fixtures"];
   if (!Array.isArray(fixtures)) throw bad("fixtures is not a list");
   for (const [index, entry] of fixtures.entries()) {
-    if (!isRecord4(entry) || typeof entry["name"] !== "string") throw bad(`fixtures[${index}] has no name`);
+    if (!isRecord5(entry) || typeof entry["name"] !== "string") throw bad(`fixtures[${index}] has no name`);
     if (!RECALL_CLASSES.some((known) => known === entry["class"])) throw bad(`fixtures[${index}] has no known class`);
     for (const key2 of ["hit", "silent"]) {
       if (entry[key2] !== void 0 && entry[key2] !== null && typeof entry[key2] !== "boolean") throw bad(`fixtures[${index}].${key2} is not true, false or null`);
@@ -22147,7 +22343,7 @@ function readRecallResults(path) {
     if (problem !== null) throw bad(`fixtures[${index}]: ${problem}`);
   }
   const summary = document["summary"];
-  if (!isRecord4(summary)) throw bad("summary is not an object");
+  if (!isRecord5(summary)) throw bad("summary is not an object");
   for (const key2 of ["keyBugRecall", "causalLineHit", "cleanSilence"]) {
     if (!isFigure(summary[key2])) throw bad(`summary.${key2} is not a number from 0 to 1, or null`);
   }
@@ -22211,12 +22407,12 @@ function evaluateCommand(argv) {
   try {
     const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
     if (argv.includes("--json")) {
-      const { bySeverity, byLane, byRule } = postedBreakdown(db);
+      const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
       console.log(
         JSON.stringify(
           {
             metrics,
-            posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule },
+            posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule, by_evidence_block: byEvidenceBlock },
             stage_seconds: stageSeconds(db)
           },
           null,
@@ -22288,8 +22484,8 @@ function gitTreeReader(root, ref) {
     }
   }
   const key2 = (path) => {
-    const posix4 = path.split(sep2).join("/");
-    return posix4 === "." ? "" : posix4;
+    const posix5 = path.split(sep2).join("/");
+    return posix5 === "." ? "" : posix5;
   };
   const file2 = (path) => {
     const entry = files2.get(key2(path));
@@ -24546,12 +24742,12 @@ function computeReach(text4, changedPath, cwd, ref = null, search = gitGrepPaths
     } catch {
       return result(null, true);
     }
-    const code = found.filter(isCode);
-    if (source !== "diff" && !code.some((path) => normalisePath3(path) === normalisedChangedPath)) {
+    const code2 = found.filter(isCode);
+    if (source !== "diff" && !code2.some((path) => normalisePath3(path) === normalisedChangedPath)) {
       ignored.push(symbol);
       continue;
     }
-    if (directoryCount(code) > NON_DISCRIMINATING_DIRECTORIES) {
+    if (directoryCount(code2) > NON_DISCRIMINATING_DIRECTORIES) {
       ignored.push(symbol);
       continue;
     }
@@ -24727,12 +24923,12 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
       incomplete = true;
       break;
     }
-    const code = new Set(found.filter(isCode).map(normalisePath4));
-    if (directoryCount2(code) > NON_DISCRIMINATING_DIRECTORIES) {
+    const code2 = new Set(found.filter(isCode).map(normalisePath4));
+    if (directoryCount2(code2) > NON_DISCRIMINATING_DIRECTORIES) {
       symbols.push({ symbol, common: true });
       continue;
     }
-    const others = [...code].filter((candidate) => candidate !== normalisedPath).sort();
+    const others = [...code2].filter((candidate) => candidate !== normalisedPath).sort();
     const paths = others.filter((candidate) => !isTestPath(candidate));
     const tests = others.filter((candidate) => isTestPath(candidate));
     for (const candidate of paths) references.add(candidate);
@@ -26558,6 +26754,7 @@ function explainCommand(argv) {
       console.log(`No finding ${wanted}. Available: ${detail.findings.map((f) => f.findingId).join(", ") || "none"}.`);
       return 1;
     }
+    const planned = planFindings(detail.output, detail, (id) => runDetail(db, id));
     for (const finding of shown) {
       const score2 = scores.find((s) => s.path === finding.path && s.line === finding.line);
       console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
@@ -26628,6 +26825,16 @@ function explainCommand(argv) {
           );
         }
       }
+      const challenge2 = challengeFacts(backingAt(planned, finding.path, finding.line)?.score ?? null);
+      if (challenge2 !== null) {
+        console.log(
+          `  challenge         ${challenge2.verdict}${challenge2.line === null ? "" : ` (${challenge2.line})`}` + (challenge2.decisive.length === 0 ? "" : `; decisive ${challenge2.decisive.join(", ")}`)
+        );
+      }
+      if (finding.toolSignal !== void 0) {
+        console.log(`  tool signal       ${finding.toolSignal.tool} line ${finding.toolSignal.line}: ${finding.toolSignal.text}`);
+      }
+      for (const entry of finding.conventionQuotes ?? []) console.log(`  convention        ${entry.path} "${entry.quote}"`);
       console.log("");
     }
     if (detail.bodyFindings.length > 0 && wanted === void 0) {
@@ -27229,425 +27436,14 @@ function carryCandidatesCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/record.ts
-import { readFileSync as readFileSync29 } from "node:fs";
-function policyVersionRefs(value) {
-  if (!Array.isArray(value)) return null;
-  const refs = [];
-  for (const entry of value) {
-    if (typeof entry !== "object" || entry === null) return null;
-    const { scopeType, scopeKey, policyId, version } = entry;
-    if (typeof scopeType !== "string" || typeof scopeKey !== "string" || typeof policyId !== "string" || typeof version !== "number") return null;
-    refs.push({ scopeType, scopeKey, policyId, version });
-  }
-  return refs;
-}
-function recordCommand(argv) {
-  for (const name of ["--base", "--head"]) {
-    if (argv.includes(name) && (flag(argv, name) ?? "") === "") {
-      console.error(`${name} needs a git ref or sha; it was empty. Leave the flag out to record none.`);
-      return 2;
-    }
-  }
-  const originFlag = flag(argv, "--origin");
-  const origin = argv.includes("--origin") ? ORIGINS.find((known) => known === originFlag) : "interactive";
-  if (origin === void 0) {
-    console.error(`--origin takes one of ${ORIGINS.join(", ")}.`);
-    return 2;
-  }
-  const modeFlag = flag(argv, "--mode");
-  const provenanceMode = PROVENANCE_MODES.find((known) => known === modeFlag) ?? null;
-  if (argv.includes("--mode") && provenanceMode === null) {
-    console.error(`--mode takes one of ${PROVENANCE_MODES.join(", ")}.`);
-    return 2;
-  }
-  const claudeFlag = flag(argv, "--claude-version");
-  const claudeVersion = claudeFlag !== null && /^[\w.\- ()]{1,100}$/.test(claudeFlag) ? claudeFlag : null;
-  const output = readStdin();
-  if (output.trim().length === 0) {
-    console.error("Nothing on stdin. Pipe the validated review in.");
-    console.error(noFindingsHint());
-    return 2;
-  }
-  const contract = validateOutput(output, {
-    ...DEFAULT_LIMITS,
-    maxFindings: null,
-    maxWordsPerFinding: Number.MAX_SAFE_INTEGER,
-    maxTotalWords: Number.MAX_SAFE_INTEGER
-  });
-  if (!contract.valid) {
-    for (const violation of contract.violations) {
-      const where = violation.line === void 0 ? "" : `line ${violation.line}: `;
-      console.error(`[${violation.code}] ${where}${violation.message}`);
-    }
-    console.error("stdin is not a validated review, so nothing was recorded. Pipe what `validate-output` passed.");
-    if (contract.findingCount === 0) console.error(noFindingsHint());
-    return 2;
-  }
-  const diffFile = flag(argv, "--diff-file");
-  let diff = "";
-  if (diffFile !== null) {
-    try {
-      diff = readFileSync29(diffFile, "utf8");
-    } catch {
-      console.error(`Cannot read ${diffFile}.`);
-      return 2;
-    }
-  } else {
-    console.error(
-      "No --diff-file, so this run cannot be compared with another run of the same diff. Pass the patch that `diff --out` wrote. Recording anyway."
-    );
-  }
-  const bodyFindingsFile = flag(argv, "--body-findings");
-  let bodyFindings = [];
-  if (argv.includes("--body-findings")) {
-    if (bodyFindingsFile === null) {
-      console.error("--body-findings needs a JSON path from check-simplification.");
-      return 2;
-    }
-    if (diffFile === null) {
-      console.error("--body-findings needs --diff-file, so every listed removal can be checked against the diff.");
-      return 2;
-    }
-    try {
-      const parsed2 = JSON.parse(readFileSync29(bodyFindingsFile, "utf8"));
-      const list2 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null && Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : null;
-      if (list2 === null) throw new Error('expected an array or {"bodyFindings": [...]}');
-      if (list2.length > 1) throw new Error("at most one body-only simplification is allowed per review");
-      const hunks = parseHunks(diff);
-      bodyFindings = list2.map((entry, index) => {
-        const checked = parseVerifiedSimplification(entry, hunks);
-        if (checked.problem !== null || checked.value === null) {
-          throw new Error(`entry ${index}: ${checked.problem ?? "not a verified simplification"}`);
-        }
-        return checked.value;
-      });
-    } catch (error) {
-      console.error(
-        `Cannot read body-only simplification from ${bodyFindingsFile}: ${error instanceof Error ? error.message : String(error)}.`
-      );
-      return 2;
-    }
-  }
-  const filesFile = flag(argv, "--files");
-  let pullNumber;
-  let manifestRepository = null;
-  let scope;
-  let complexity = null;
-  const knownPaths = /* @__PURE__ */ new Set();
-  if (filesFile !== null) {
-    try {
-      const manifest = JSON.parse(readFileSync29(filesFile, "utf8"));
-      if (Array.isArray(manifest.files)) {
-        for (const file2 of manifest.files) if (typeof file2?.path === "string") knownPaths.add(file2.path);
-      }
-      if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
-        pullNumber = manifest.pullNumber;
-      }
-      if (typeof manifest.repository === "string" && /^[^/\s]+\/[^/\s]+$/.test(manifest.repository)) {
-        manifestRepository = manifest.repository;
-      }
-      scope = reviewScopeFromManifest(manifest.scope);
-      if (manifest.complexity !== void 0 && manifest.complexity !== null) {
-        complexity = parseComplexity(manifest.complexity);
-        if (complexity === null) console.error(`The complexity assessment in ${filesFile} is malformed; recording without it.`);
-      }
-    } catch {
-      console.error(`Cannot read ${filesFile}; recording without pull-request scope.`);
-    }
-  }
-  const candidatesFile = flag(argv, "--candidates");
-  let candidates = [];
-  if (candidatesFile !== null) {
-    try {
-      const parsed2 = JSON.parse(readFileSync29(candidatesFile, "utf8"));
-      candidates = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
-    } catch {
-      console.error(`Cannot read candidates from ${candidatesFile}.`);
-      return 2;
-    }
-  }
-  const scoresFile = flag(argv, "--scores");
-  let scores = [];
-  let scoredPolicyVersions = null;
-  if (scoresFile !== null) {
-    try {
-      const parsed2 = JSON.parse(readFileSync29(scoresFile, "utf8"));
-      scores = boundLists(Array.isArray(parsed2) ? parsed2 : parsed2.scores ?? []);
-      scoredPolicyVersions = Array.isArray(parsed2) ? null : policyVersionRefs(parsed2.policyVersions);
-    } catch {
-      console.error(`Cannot read scores from ${scoresFile}.`);
-      return 2;
-    }
-  }
-  const verdictsFile = flag(argv, "--verdicts");
-  let verdicts = [];
-  if (verdictsFile !== null) {
-    try {
-      const parsed2 = JSON.parse(readFileSync29(verdictsFile, "utf8"));
-      verdicts = Array.isArray(parsed2) ? parsed2 : parsed2.verdicts ?? [];
-    } catch {
-      console.error(`Cannot read verdicts from ${verdictsFile}.`);
-      return 2;
-    }
-  }
-  const tieBreaksFile = flag(argv, "--tie-breaks");
-  let tieBreaks = [];
-  if (tieBreaksFile !== null) {
-    try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync29(tieBreaksFile, "utf8")));
-    } catch (error) {
-      console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
-      return 2;
-    }
-  }
-  const heldFile = flag(argv, "--held");
-  let held = [];
-  if (heldFile !== null) {
-    try {
-      const parsed2 = JSON.parse(readFileSync29(heldFile, "utf8"));
-      const list2 = Array.isArray(parsed2) ? parsed2 : parsed2?.held;
-      if (!Array.isArray(list2)) throw new Error('expected an array or {"held": [...]}');
-      list2.forEach((entry, index) => {
-        const problem = heldProblem(entry);
-        if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
-      });
-      held = list2;
-      for (const candidate of candidates) knownPaths.add(candidate.path);
-      if (knownPaths.size > 0) {
-        for (const entry of held) {
-          if (!knownPaths.has(entry.path)) {
-            console.error(`Held entry ${entry.path}:${entry.line} matches no changed file or candidate; later --held-from runs will not match it.`);
-            continue;
-          }
-          try {
-            const content = readFileSync29(entry.path, "utf8");
-            const lines2 = content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
-            if (entry.line > lines2) console.error(`Held entry ${entry.path}:${entry.line} is past the end of the file (${lines2} lines).`);
-          } catch {
-          }
-        }
-      }
-    } catch (error) {
-      console.error(`Cannot read held findings from ${heldFile}: ${error.message}`);
-      return 2;
-    }
-  }
-  const stagesFile = flag(argv, "--stages");
-  let stages = [];
-  if (stagesFile !== null) {
-    try {
-      const parsed2 = JSON.parse(readFileSync29(stagesFile, "utf8"));
-      const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.stages ?? [];
-      stages = (Array.isArray(list2) ? list2 : []).filter(
-        (stage) => typeof stage === "object" && stage !== null && typeof stage.name === "string" && Number.isFinite(stage.seconds)
-      );
-      stages = cleanStages(stages, diff === "" ? null : diff);
-    } catch {
-      console.error(`Cannot read stages from ${stagesFile}.`);
-      return 2;
-    }
-  }
-  const evidenceFile = flag(argv, "--evidence");
-  const symbolsFile = flag(argv, "--symbols");
-  let checks;
-  if (argv.includes("--evidence") || argv.includes("--symbols")) {
-    if (evidenceFile === null || symbolsFile === null) {
-      console.error("--evidence and --symbols go together: pass the evidence.json and the symbols.json of this review.");
-      return 2;
-    }
-    try {
-      checks = recordedChecks(
-        JSON.parse(readFileSync29(evidenceFile, "utf8")),
-        JSON.parse(readFileSync29(symbolsFile, "utf8"))
-      );
-    } catch (error) {
-      console.error(
-        `Cannot read the checks from ${evidenceFile} and ${symbolsFile}: ${error instanceof Error ? error.message : String(error)}.`
-      );
-      return 2;
-    }
-  }
-  const followUpThreadFile = flag(argv, "--thread");
-  let followUpThread = null;
-  let followUpThreadFor = null;
-  if (argv.includes("--thread")) {
-    if (followUpThreadFile === null) {
-      console.error("--thread needs a thread JSON path.");
-      return 2;
-    }
-    try {
-      const parsed2 = JSON.parse(readFileSync29(followUpThreadFile, "utf8"));
-      const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.comments;
-      if (!Array.isArray(list2)) throw new Error("comments is not a list");
-      followUpThread = list2;
-      followUpThreadFor = Array.isArray(parsed2) ? { repository: void 0, pullNumber: void 0 } : { repository: parsed2.repository, pullNumber: parsed2.pullNumber };
-    } catch (error) {
-      console.error(`Cannot read ${followUpThreadFile}: ${error instanceof Error ? error.message : String(error)}`);
-      return 2;
-    }
-  }
-  const rulingsFile = flag(argv, "--follow-ups");
-  let rulings = [];
-  if (argv.includes("--follow-ups")) {
-    if (rulingsFile === null) {
-      console.error("--follow-ups needs the verifier output with follow_ups.");
-      return 2;
-    }
-    try {
-      rulings = parseFollowUpRulings(JSON.parse(readFileSync29(rulingsFile, "utf8")));
-    } catch (error) {
-      const why = error instanceof FollowUpRulingError ? error.message : `cannot read it (${error.message})`;
-      console.error(`Cannot read follow-up rulings from ${rulingsFile}: ${why}.`);
-      return 2;
-    }
-  }
-  const db = openDatabase();
-  try {
-    let carried;
-    let carry2;
-    let carriedProvenance = null;
-    let carriedVersions = null;
-    const carriedFrom = flag(argv, "--carried-from");
-    if (carriedFrom !== null) {
-      const head = flag(argv, "--head");
-      if (head === null) {
-        console.error("--carried-from needs --head, the commit the findings were carried to.");
-        return 2;
-      }
-      try {
-        const result = carryForRun(db, carriedFrom, head, flag(argv, "--repository"), followUpThreadFile, filesFile);
-        const serious = seriousNotCarried(result.notCarried);
-        if (serious.length > 0) {
-          console.error(
-            `Not recorded: ${serious.map((f) => `${f.findingId} (${f.severity}, ${f.path}:${f.line})`).join(", ")} did not carry. Review those files again rather than recording the carry.`
-          );
-          return 2;
-        }
-        carried = { runId: carriedFrom, findings: result.carried };
-        const source = runDetail(db, carriedFrom);
-        const prior = source?.carry ?? null;
-        if (prior !== null && !prior.covered) carry2 = { ...prior, inheritedFrom: prior.inheritedFrom ?? carriedFrom };
-        carriedProvenance = source?.provenance ?? null;
-        carriedVersions = storedPolicyVersions(db, carriedFrom);
-      } catch (error) {
-        console.error(error.message);
-        return 2;
-      }
-    }
-    const carryFile = flag(argv, "--carry");
-    if (carryFile !== null) {
-      const head = flag(argv, "--head");
-      let marker = null;
-      try {
-        const parsed2 = JSON.parse(readFileSync29(carryFile, "utf8"));
-        const refused = Array.isArray(parsed2["refused"]) ? parsed2["refused"].map((r) => String(r?.candidateId)) : null;
-        const interdiff = parsed2["interdiff"];
-        if (refused !== null && typeof parsed2["since"] === "string" && typeof parsed2["head"] === "string") {
-          const reviewed = interdiff?.reviewed === true;
-          marker = {
-            since: parsed2["since"],
-            head: parsed2["head"],
-            interdiffReviewed: reviewed,
-            refused,
-            covered: reviewed && refused.length === 0
-          };
-        }
-      } catch {
-        marker = null;
-      }
-      if (marker === null) {
-        console.error(`${carryFile} is not the carry.json that carry-candidates wrote.`);
-        return 2;
-      }
-      if (head === null || !sameCommit(marker.head, head)) {
-        console.error(`--carry is for ${marker.head}; pass --head with that commit.`);
-        return 2;
-      }
-      if (carry2 === void 0 || marker.covered === false) carry2 = marker;
-    }
-    const repository = flag(argv, "--repository") ?? manifestRepository ?? inferRepository(process.cwd());
-    const headFlag = flag(argv, "--head");
-    const headRef = headFlag === null || !/^[0-9a-f]{4,64}$/i.test(headFlag) ? headFlag : resolveCommit(headFlag, process.cwd()) ?? headFlag;
-    if (followUpThreadFor !== null) {
-      const sameRepository = typeof followUpThreadFor.repository === "string" && repository !== null && followUpThreadFor.repository.toLowerCase() === repository.toLowerCase();
-      if (!sameRepository || pullNumber === void 0 || followUpThreadFor.pullNumber !== pullNumber) {
-        console.error(
-          `${followUpThreadFile} is not the thread of this run's pull request (${repository ?? "no --repository"}#${pullNumber ?? "? (no pull request in --files)"}). Pass the thread.json that \`RV thread\` wrote for it.`
-        );
-        return 2;
-      }
-    }
-    let followUps = [];
-    if (repository !== null && pullNumber !== void 0) {
-      const open = openFollowUps(db, repository, pullNumber);
-      const scopeFiles = scope !== void 0 && "files" in scope ? scope.files : null;
-      const settled = settleFollowUps(open, { thread: followUpThread, rulings, scopeFiles });
-      followUps = settled.states;
-      for (const id of settled.unmatched) {
-        console.error(`Warning: the follow-up ruling for ${id} names no open follow-up of this pull request; ignored.`);
-      }
-    } else if (rulings.length > 0 || followUpThread !== null) {
-      console.error("Warning: --thread and --follow-ups need --repository and a pull request in --files; ignored.");
-    }
-    const { reviewRunId, findings, provenance } = recordRun(db, {
-      repository,
-      baseRef: flag(argv, "--base"),
-      headRef,
-      pullNumber,
-      scope,
-      complexity,
-      diff,
-      output,
-      candidates,
-      scores,
-      verdicts,
-      tieBreaks,
-      held,
-      ...bodyFindings.length === 0 ? {} : { bodyFindings },
-      carried,
-      ...carry2 === void 0 ? {} : { carry: carry2 },
-      followUps,
-      stages,
-      ...checks === void 0 ? {} : { checks },
-      provenance: {
-        ...carriedProvenance === null ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode } : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode },
-        // The versions this run was held to: the ones `score` loaded when there
-        // is a scores file; else the carried run's, since an unchanged scope is
-        // not rescored and a policy change since must not be attributed to it;
-        // else the rows active now.
-        ...scoredPolicyVersions !== null ? { policyVersions: scoredPolicyVersions } : carriedVersions === null ? {} : { policyVersions: carriedVersions }
-      }
-    });
-    const warning = shallowPassWarning(stages, findings.length);
-    console.log(
-      JSON.stringify(
-        {
-          reviewRunId,
-          findings,
-          // So the review driver can print the line without a second command.
-          provenance,
-          ...followUps.length === 0 ? {} : { followUps },
-          ...warning === null ? {} : { warnings: [warning] }
-        },
-        null,
-        2
-      )
-    );
-    return 0;
-  } catch (error) {
-    if (error instanceof CarryMismatch) {
-      console.error(`A carried finding was recorded on a different line than carry gave it:
-${error.message}`);
-      return 2;
-    }
-    throw error;
-  } finally {
-    db.close();
-  }
-}
+import { readFileSync as readFileSync31 } from "node:fs";
+
+// plugins/review-voice/src/cli/check-candidates.ts
+import { readFileSync as readFileSync30 } from "node:fs";
+import { isAbsolute as isAbsolute5, posix as posix4, relative as relative4 } from "node:path";
 
 // plugins/review-voice/src/cli/score.ts
-import { readFileSync as readFileSync30 } from "node:fs";
+import { readFileSync as readFileSync29 } from "node:fs";
 import { execFileSync as execFileSync20 } from "node:child_process";
 
 // plugins/review-voice/src/scoring/citation.ts
@@ -27881,7 +27677,7 @@ function scoreCommand(argv) {
   const verificationFlag = flag(argv, "--verification");
   if (verificationFlag !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync30(verificationFlag, "utf8"));
+      const parsed2 = JSON.parse(readFileSync29(verificationFlag, "utf8"));
       const list2 = verdictList(parsed2);
       const problem = verificationProblem(list2);
       if (problem !== null) {
@@ -27968,7 +27764,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      reachDiff = readFileSync30(path, "utf8");
+      reachDiff = readFileSync29(path, "utf8");
       anchorHunks = parseHunks(reachDiff);
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -27984,7 +27780,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      const parsed2 = JSON.parse(readFileSync30(path, "utf8"));
+      const parsed2 = JSON.parse(readFileSync29(path, "utf8"));
       thread = Array.isArray(parsed2) ? parsed2 : parsed2.comments ?? [];
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -28319,8 +28115,6 @@ function configuredOwner() {
 }
 
 // plugins/review-voice/src/cli/check-candidates.ts
-import { readFileSync as readFileSync31 } from "node:fs";
-import { isAbsolute as isAbsolute5, posix as posix3, relative as relative4 } from "node:path";
 function carriedHeldFindings(runId, head) {
   const db = openDatabase();
   try {
@@ -28374,7 +28168,7 @@ function matchHeld(candidate, held) {
   return best === null ? null : { entry: best.entry, drop: false };
 }
 function readSignals(file2, root) {
-  const document = JSON.parse(readFileSync31(file2, "utf8"));
+  const document = JSON.parse(readFileSync30(file2, "utf8"));
   if (typeof document !== "object" || document === null || Array.isArray(document)) throw new Error("not a JSON object");
   const signals = document.signals;
   if (signals === void 0) return [];
@@ -28385,7 +28179,7 @@ function readSignals(file2, root) {
     const s = entry;
     if (typeof s !== "object" || s === null || typeof s.path !== "string" || typeof s.line !== "number" || typeof s.claim !== "string") return [];
     const spelled = s.path.split("\\").join("/");
-    const path = isAbsolute5(spelled) ? relative4(realExistingPath(signalRoot), realExistingPath(spelled)) : posix3.normalize(spelled).replace(/^\.\//, "");
+    const path = isAbsolute5(spelled) ? relative4(realExistingPath(signalRoot), realExistingPath(spelled)) : posix4.normalize(spelled).replace(/^\.\//, "");
     if (path === "" || path === "." || path.startsWith("..") || isAbsolute5(path)) return [];
     return [
       {
@@ -28405,7 +28199,7 @@ function matchSignal(candidate, signals) {
   if (isSuppressionExempt(candidate.category)) return null;
   const text4 = `${candidate.claim} ${candidate.failureMode}`;
   const mine = significantWords(text4);
-  const path = posix3.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
+  const path = posix4.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
   for (const signal2 of signals) {
     if (signal2.path !== path || signal2.line === null || Math.abs(signal2.line - candidate.line) > 2) continue;
     const message = `${signal2.claim} ${signal2.evidence.join(" ")}`;
@@ -28475,7 +28269,7 @@ function checkCandidatesCommand(argv) {
       }
       let ids;
       try {
-        const statements = JSON.parse(readFileSync31(intentFile, "utf8")).statements;
+        const statements = JSON.parse(readFileSync30(intentFile, "utf8")).statements;
         if (!Array.isArray(statements)) throw new Error("statements is not a list");
         ids = new Set(statements.map((statement) => statement?.id).filter((id) => typeof id === "string"));
       } catch (error) {
@@ -28506,7 +28300,7 @@ function checkCandidatesCommand(argv) {
     }
     let hunks;
     try {
-      hunks = parseHunks(readFileSync31(diffFile, "utf8"));
+      hunks = parseHunks(readFileSync30(diffFile, "utf8"));
     } catch (error) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -28581,7 +28375,7 @@ function checkCandidatesCommand(argv) {
         return 2;
       }
       try {
-        const parsed2 = JSON.parse(readFileSync31(threadFile, "utf8"));
+        const parsed2 = JSON.parse(readFileSync30(threadFile, "utf8"));
         thread = Array.isArray(parsed2) ? parsed2 : parsed2.comments ?? [];
         if (!Array.isArray(thread)) throw new Error("comments is not a list");
       } catch (error) {
@@ -28710,6 +28504,452 @@ function checkCandidatesCommand(argv) {
       return 2;
     }
     throw error;
+  }
+}
+
+// plugins/review-voice/src/cli/record.ts
+function policyVersionRefs(value) {
+  if (!Array.isArray(value)) return null;
+  const refs = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) return null;
+    const { scopeType, scopeKey, policyId, version } = entry;
+    if (typeof scopeType !== "string" || typeof scopeKey !== "string" || typeof policyId !== "string" || typeof version !== "number") return null;
+    refs.push({ scopeType, scopeKey, policyId, version });
+  }
+  return refs;
+}
+function recordCommand(argv) {
+  for (const name of ["--base", "--head"]) {
+    if (argv.includes(name) && (flag(argv, name) ?? "") === "") {
+      console.error(`${name} needs a git ref or sha; it was empty. Leave the flag out to record none.`);
+      return 2;
+    }
+  }
+  const originFlag = flag(argv, "--origin");
+  const origin = argv.includes("--origin") ? ORIGINS.find((known) => known === originFlag) : "interactive";
+  if (origin === void 0) {
+    console.error(`--origin takes one of ${ORIGINS.join(", ")}.`);
+    return 2;
+  }
+  const modeFlag = flag(argv, "--mode");
+  const provenanceMode = PROVENANCE_MODES.find((known) => known === modeFlag) ?? null;
+  if (argv.includes("--mode") && provenanceMode === null) {
+    console.error(`--mode takes one of ${PROVENANCE_MODES.join(", ")}.`);
+    return 2;
+  }
+  const claudeFlag = flag(argv, "--claude-version");
+  const claudeVersion = claudeFlag !== null && /^[\w.\- ()]{1,100}$/.test(claudeFlag) ? claudeFlag : null;
+  const output = readStdin();
+  if (output.trim().length === 0) {
+    console.error("Nothing on stdin. Pipe the validated review in.");
+    console.error(noFindingsHint());
+    return 2;
+  }
+  const contract = validateOutput(output, {
+    ...DEFAULT_LIMITS,
+    maxFindings: null,
+    maxWordsPerFinding: Number.MAX_SAFE_INTEGER,
+    maxTotalWords: Number.MAX_SAFE_INTEGER
+  });
+  if (!contract.valid) {
+    for (const violation of contract.violations) {
+      const where = violation.line === void 0 ? "" : `line ${violation.line}: `;
+      console.error(`[${violation.code}] ${where}${violation.message}`);
+    }
+    console.error("stdin is not a validated review, so nothing was recorded. Pipe what `validate-output` passed.");
+    if (contract.findingCount === 0) console.error(noFindingsHint());
+    return 2;
+  }
+  const diffFile = flag(argv, "--diff-file");
+  let diff = "";
+  if (diffFile !== null) {
+    try {
+      diff = readFileSync31(diffFile, "utf8");
+    } catch {
+      console.error(`Cannot read ${diffFile}.`);
+      return 2;
+    }
+  } else {
+    console.error(
+      "No --diff-file, so this run cannot be compared with another run of the same diff. Pass the patch that `diff --out` wrote. Recording anyway."
+    );
+  }
+  const bodyFindingsFile = flag(argv, "--body-findings");
+  let bodyFindings = [];
+  if (argv.includes("--body-findings")) {
+    if (bodyFindingsFile === null) {
+      console.error("--body-findings needs a JSON path from check-simplification.");
+      return 2;
+    }
+    if (diffFile === null) {
+      console.error("--body-findings needs --diff-file, so every listed removal can be checked against the diff.");
+      return 2;
+    }
+    try {
+      const parsed2 = JSON.parse(readFileSync31(bodyFindingsFile, "utf8"));
+      const list2 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null && Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : null;
+      if (list2 === null) throw new Error('expected an array or {"bodyFindings": [...]}');
+      if (list2.length > 1) throw new Error("at most one body-only simplification is allowed per review");
+      const hunks = parseHunks(diff);
+      bodyFindings = list2.map((entry, index) => {
+        const checked = parseVerifiedSimplification(entry, hunks);
+        if (checked.problem !== null || checked.value === null) {
+          throw new Error(`entry ${index}: ${checked.problem ?? "not a verified simplification"}`);
+        }
+        return checked.value;
+      });
+    } catch (error) {
+      console.error(
+        `Cannot read body-only simplification from ${bodyFindingsFile}: ${error instanceof Error ? error.message : String(error)}.`
+      );
+      return 2;
+    }
+  }
+  const filesFile = flag(argv, "--files");
+  let pullNumber;
+  let manifestRepository = null;
+  let scope;
+  let complexity = null;
+  const knownPaths = /* @__PURE__ */ new Set();
+  if (filesFile !== null) {
+    try {
+      const manifest = JSON.parse(readFileSync31(filesFile, "utf8"));
+      if (Array.isArray(manifest.files)) {
+        for (const file2 of manifest.files) if (typeof file2?.path === "string") knownPaths.add(file2.path);
+      }
+      if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
+        pullNumber = manifest.pullNumber;
+      }
+      if (typeof manifest.repository === "string" && /^[^/\s]+\/[^/\s]+$/.test(manifest.repository)) {
+        manifestRepository = manifest.repository;
+      }
+      scope = reviewScopeFromManifest(manifest.scope);
+      if (manifest.complexity !== void 0 && manifest.complexity !== null) {
+        complexity = parseComplexity(manifest.complexity);
+        if (complexity === null) console.error(`The complexity assessment in ${filesFile} is malformed; recording without it.`);
+      }
+    } catch {
+      console.error(`Cannot read ${filesFile}; recording without pull-request scope.`);
+    }
+  }
+  const candidatesFile = flag(argv, "--candidates");
+  let candidates = [];
+  if (candidatesFile !== null) {
+    try {
+      const parsed2 = JSON.parse(readFileSync31(candidatesFile, "utf8"));
+      candidates = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
+    } catch {
+      console.error(`Cannot read candidates from ${candidatesFile}.`);
+      return 2;
+    }
+  }
+  const scoresFile = flag(argv, "--scores");
+  let scores = [];
+  let scoredPolicyVersions = null;
+  if (scoresFile !== null) {
+    try {
+      const parsed2 = JSON.parse(readFileSync31(scoresFile, "utf8"));
+      scores = boundLists(Array.isArray(parsed2) ? parsed2 : parsed2.scores ?? []);
+      scoredPolicyVersions = Array.isArray(parsed2) ? null : policyVersionRefs(parsed2.policyVersions);
+    } catch {
+      console.error(`Cannot read scores from ${scoresFile}.`);
+      return 2;
+    }
+  }
+  const verdictsFile = flag(argv, "--verdicts");
+  let verdicts = [];
+  if (verdictsFile !== null) {
+    try {
+      const parsed2 = JSON.parse(readFileSync31(verdictsFile, "utf8"));
+      verdicts = Array.isArray(parsed2) ? parsed2 : parsed2.verdicts ?? [];
+    } catch {
+      console.error(`Cannot read verdicts from ${verdictsFile}.`);
+      return 2;
+    }
+  }
+  const tieBreaksFile = flag(argv, "--tie-breaks");
+  let tieBreaks = [];
+  if (tieBreaksFile !== null) {
+    try {
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync31(tieBreaksFile, "utf8")));
+    } catch (error) {
+      console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
+      return 2;
+    }
+  }
+  const heldFile = flag(argv, "--held");
+  let held = [];
+  if (heldFile !== null) {
+    try {
+      const parsed2 = JSON.parse(readFileSync31(heldFile, "utf8"));
+      const list2 = Array.isArray(parsed2) ? parsed2 : parsed2?.held;
+      if (!Array.isArray(list2)) throw new Error('expected an array or {"held": [...]}');
+      list2.forEach((entry, index) => {
+        const problem = heldProblem(entry);
+        if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
+      });
+      held = list2;
+      for (const candidate of candidates) knownPaths.add(candidate.path);
+      if (knownPaths.size > 0) {
+        for (const entry of held) {
+          if (!knownPaths.has(entry.path)) {
+            console.error(`Held entry ${entry.path}:${entry.line} matches no changed file or candidate; later --held-from runs will not match it.`);
+            continue;
+          }
+          try {
+            const content = readFileSync31(entry.path, "utf8");
+            const lines2 = content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
+            if (entry.line > lines2) console.error(`Held entry ${entry.path}:${entry.line} is past the end of the file (${lines2} lines).`);
+          } catch {
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Cannot read held findings from ${heldFile}: ${error.message}`);
+      return 2;
+    }
+  }
+  const stagesFile = flag(argv, "--stages");
+  let stages = [];
+  if (stagesFile !== null) {
+    try {
+      const parsed2 = JSON.parse(readFileSync31(stagesFile, "utf8"));
+      const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.stages ?? [];
+      stages = (Array.isArray(list2) ? list2 : []).filter(
+        (stage) => typeof stage === "object" && stage !== null && typeof stage.name === "string" && Number.isFinite(stage.seconds)
+      );
+      stages = cleanStages(stages, diff === "" ? null : diff);
+    } catch {
+      console.error(`Cannot read stages from ${stagesFile}.`);
+      return 2;
+    }
+  }
+  const evidenceFile = flag(argv, "--evidence");
+  const symbolsFile = flag(argv, "--symbols");
+  let checks;
+  let toolSignals = [];
+  if (argv.includes("--evidence") || argv.includes("--symbols")) {
+    if (evidenceFile === null || symbolsFile === null) {
+      console.error("--evidence and --symbols go together: pass the evidence.json and the symbols.json of this review.");
+      return 2;
+    }
+    try {
+      checks = recordedChecks(
+        JSON.parse(readFileSync31(evidenceFile, "utf8")),
+        JSON.parse(readFileSync31(symbolsFile, "utf8"))
+      );
+      let root = process.cwd();
+      try {
+        root = repositoryRoot(root);
+      } catch {
+      }
+      toolSignals = readSignals(evidenceFile, root);
+    } catch (error) {
+      console.error(
+        `Cannot read the checks from ${evidenceFile} and ${symbolsFile}: ${error instanceof Error ? error.message : String(error)}.`
+      );
+      return 2;
+    }
+  }
+  const conventionsFile = flag(argv, "--conventions");
+  let conventions = [];
+  if (argv.includes("--conventions")) {
+    if (conventionsFile === null) {
+      console.error("--conventions needs the conventions.json that `conventions` wrote.");
+      return 2;
+    }
+    try {
+      const report = JSON.parse(readFileSync31(conventionsFile, "utf8"));
+      const documents = report?.documents;
+      if (!Array.isArray(documents)) throw new Error("it has no documents list");
+      conventions = documents.flatMap((doc) => {
+        const d = doc;
+        return typeof d?.path === "string" && typeof d.content === "string" ? [{ path: d.path, content: d.content }] : [];
+      });
+    } catch (error) {
+      console.error(`Cannot read conventions from ${conventionsFile}: ${error instanceof Error ? error.message : String(error)}.`);
+      return 2;
+    }
+  }
+  const followUpThreadFile = flag(argv, "--thread");
+  let followUpThread = null;
+  let followUpThreadFor = null;
+  if (argv.includes("--thread")) {
+    if (followUpThreadFile === null) {
+      console.error("--thread needs a thread JSON path.");
+      return 2;
+    }
+    try {
+      const parsed2 = JSON.parse(readFileSync31(followUpThreadFile, "utf8"));
+      const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.comments;
+      if (!Array.isArray(list2)) throw new Error("comments is not a list");
+      followUpThread = list2;
+      followUpThreadFor = Array.isArray(parsed2) ? { repository: void 0, pullNumber: void 0 } : { repository: parsed2.repository, pullNumber: parsed2.pullNumber };
+    } catch (error) {
+      console.error(`Cannot read ${followUpThreadFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
+  const rulingsFile = flag(argv, "--follow-ups");
+  let rulings = [];
+  if (argv.includes("--follow-ups")) {
+    if (rulingsFile === null) {
+      console.error("--follow-ups needs the verifier output with follow_ups.");
+      return 2;
+    }
+    try {
+      rulings = parseFollowUpRulings(JSON.parse(readFileSync31(rulingsFile, "utf8")));
+    } catch (error) {
+      const why = error instanceof FollowUpRulingError ? error.message : `cannot read it (${error.message})`;
+      console.error(`Cannot read follow-up rulings from ${rulingsFile}: ${why}.`);
+      return 2;
+    }
+  }
+  const db = openDatabase();
+  try {
+    let carried;
+    let carry2;
+    let carriedProvenance = null;
+    let carriedVersions = null;
+    const carriedFrom = flag(argv, "--carried-from");
+    if (carriedFrom !== null) {
+      const head = flag(argv, "--head");
+      if (head === null) {
+        console.error("--carried-from needs --head, the commit the findings were carried to.");
+        return 2;
+      }
+      try {
+        const result = carryForRun(db, carriedFrom, head, flag(argv, "--repository"), followUpThreadFile, filesFile);
+        const serious = seriousNotCarried(result.notCarried);
+        if (serious.length > 0) {
+          console.error(
+            `Not recorded: ${serious.map((f) => `${f.findingId} (${f.severity}, ${f.path}:${f.line})`).join(", ")} did not carry. Review those files again rather than recording the carry.`
+          );
+          return 2;
+        }
+        carried = { runId: carriedFrom, findings: result.carried };
+        const source = runDetail(db, carriedFrom);
+        const prior = source?.carry ?? null;
+        if (prior !== null && !prior.covered) carry2 = { ...prior, inheritedFrom: prior.inheritedFrom ?? carriedFrom };
+        carriedProvenance = source?.provenance ?? null;
+        carriedVersions = storedPolicyVersions(db, carriedFrom);
+      } catch (error) {
+        console.error(error.message);
+        return 2;
+      }
+    }
+    const carryFile = flag(argv, "--carry");
+    if (carryFile !== null) {
+      const head = flag(argv, "--head");
+      let marker = null;
+      try {
+        const parsed2 = JSON.parse(readFileSync31(carryFile, "utf8"));
+        const refused = Array.isArray(parsed2["refused"]) ? parsed2["refused"].map((r) => String(r?.candidateId)) : null;
+        const interdiff = parsed2["interdiff"];
+        if (refused !== null && typeof parsed2["since"] === "string" && typeof parsed2["head"] === "string") {
+          const reviewed = interdiff?.reviewed === true;
+          marker = {
+            since: parsed2["since"],
+            head: parsed2["head"],
+            interdiffReviewed: reviewed,
+            refused,
+            covered: reviewed && refused.length === 0
+          };
+        }
+      } catch {
+        marker = null;
+      }
+      if (marker === null) {
+        console.error(`${carryFile} is not the carry.json that carry-candidates wrote.`);
+        return 2;
+      }
+      if (head === null || !sameCommit(marker.head, head)) {
+        console.error(`--carry is for ${marker.head}; pass --head with that commit.`);
+        return 2;
+      }
+      if (carry2 === void 0 || marker.covered === false) carry2 = marker;
+    }
+    const repository = flag(argv, "--repository") ?? manifestRepository ?? inferRepository(process.cwd());
+    const headFlag = flag(argv, "--head");
+    const headRef = headFlag === null || !/^[0-9a-f]{4,64}$/i.test(headFlag) ? headFlag : resolveCommit(headFlag, process.cwd()) ?? headFlag;
+    if (followUpThreadFor !== null) {
+      const sameRepository = typeof followUpThreadFor.repository === "string" && repository !== null && followUpThreadFor.repository.toLowerCase() === repository.toLowerCase();
+      if (!sameRepository || pullNumber === void 0 || followUpThreadFor.pullNumber !== pullNumber) {
+        console.error(
+          `${followUpThreadFile} is not the thread of this run's pull request (${repository ?? "no --repository"}#${pullNumber ?? "? (no pull request in --files)"}). Pass the thread.json that \`RV thread\` wrote for it.`
+        );
+        return 2;
+      }
+    }
+    let followUps = [];
+    if (repository !== null && pullNumber !== void 0) {
+      const open = openFollowUps(db, repository, pullNumber);
+      const scopeFiles = scope !== void 0 && "files" in scope ? scope.files : null;
+      const settled = settleFollowUps(open, { thread: followUpThread, rulings, scopeFiles });
+      followUps = settled.states;
+      for (const id of settled.unmatched) {
+        console.error(`Warning: the follow-up ruling for ${id} names no open follow-up of this pull request; ignored.`);
+      }
+    } else if (rulings.length > 0 || followUpThread !== null) {
+      console.error("Warning: --thread and --follow-ups need --repository and a pull request in --files; ignored.");
+    }
+    const { reviewRunId, findings, provenance } = recordRun(db, {
+      repository,
+      baseRef: flag(argv, "--base"),
+      headRef,
+      pullNumber,
+      scope,
+      complexity,
+      diff,
+      output,
+      candidates,
+      scores,
+      verdicts,
+      tieBreaks,
+      held,
+      ...bodyFindings.length === 0 ? {} : { bodyFindings },
+      carried,
+      ...carry2 === void 0 ? {} : { carry: carry2 },
+      followUps,
+      stages,
+      ...checks === void 0 ? {} : { checks },
+      toolSignals,
+      conventions,
+      provenance: {
+        ...carriedProvenance === null ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode } : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode },
+        // The versions this run was held to: the ones `score` loaded when there
+        // is a scores file; else the carried run's, since an unchanged scope is
+        // not rescored and a policy change since must not be attributed to it;
+        // else the rows active now.
+        ...scoredPolicyVersions !== null ? { policyVersions: scoredPolicyVersions } : carriedVersions === null ? {} : { policyVersions: carriedVersions }
+      }
+    });
+    const warning = shallowPassWarning(stages, findings.length);
+    console.log(
+      JSON.stringify(
+        {
+          reviewRunId,
+          findings,
+          // So the review driver can print the line without a second command.
+          provenance,
+          ...followUps.length === 0 ? {} : { followUps },
+          ...warning === null ? {} : { warnings: [warning] }
+        },
+        null,
+        2
+      )
+    );
+    return 0;
+  } catch (error) {
+    if (error instanceof CarryMismatch) {
+      console.error(`A carried finding was recorded on a different line than carry gave it:
+${error.message}`);
+      return 2;
+    }
+    throw error;
+  } finally {
+    db.close();
   }
 }
 
@@ -28935,21 +29175,21 @@ async function runInProcess(argv, options = {}) {
     out.push(String(chunk));
     return true;
   });
-  let code;
+  let code2;
   try {
-    code = await inCommand.run(true, () => dispatch(argv));
+    code2 = await inCommand.run(true, () => dispatch(argv));
   } catch (error) {
     const failure = failureOf2(error);
     err.push(`${failure.message}
 `);
-    code = failure.code;
+    code2 = failure.code;
   } finally {
     console.log = saved.log;
     console.error = saved.error;
     process.stdout.write = saved.write;
     setInProcess(null);
   }
-  return { code, stdout: out.join(""), stderr: err.join("") };
+  return { code: code2, stdout: out.join(""), stderr: err.join("") };
 }
 async function reviewCommand(argv) {
   const pullNumber = Number(flag(argv, "--pr"));

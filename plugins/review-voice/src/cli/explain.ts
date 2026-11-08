@@ -3,6 +3,8 @@ import { followUpHistory } from '../store/follow-ups.ts';
 import { openDatabase } from '../store/db.ts';
 import { runDetail, describeChecks, describeProvenance } from '../store/runs.ts';
 import { describeStage, shallowPassWarning } from '../store/effort.ts';
+import { backingAt, challengeFacts } from '../publish/evidence-block.ts';
+import { planFindings } from '../publish/verdict.ts';
 import { flag } from './shared.ts';
 
 export function reviewScopeFromManifest(value: unknown): ReviewScope | undefined {
@@ -54,6 +56,8 @@ export function explainCommand(argv: string[]): number {
         render?: 'fix' | 'direction' | 'none';
         reason?: string;
       };
+      challenge?: { verdict?: unknown; line_ok?: unknown; corrected_line?: unknown; decisive_evidence?: unknown } | null;
+      reanchoredFrom?: { line?: unknown } | null;
     }[];
 
     if (argv.includes('--json')) {
@@ -95,6 +99,8 @@ export function explainCommand(argv: string[]): number {
       return 1;
     }
 
+    // The scores the posted blocks were read from, chosen as `post` chooses them.
+    const planned = planFindings(detail.output, detail, (id) => runDetail(db, id));
     for (const finding of shown) {
       // Matched by location. An earlier version matched on a predicate that
       // never discriminated, so every finding showed the first finding's
@@ -182,6 +188,18 @@ export function explainCommand(argv: string[]): number {
           );
         }
       }
+      // The facts the evidence block posts, from the score it posts them from, so the two agree.
+      const challenge = challengeFacts(backingAt(planned, finding.path, finding.line)?.score ?? null);
+      if (challenge !== null) {
+        console.log(
+          `  challenge         ${challenge.verdict}${challenge.line === null ? '' : ` (${challenge.line})`}` +
+            (challenge.decisive.length === 0 ? '' : `; decisive ${challenge.decisive.join(', ')}`),
+        );
+      }
+      if (finding.toolSignal !== undefined) {
+        console.log(`  tool signal       ${finding.toolSignal.tool} line ${finding.toolSignal.line}: ${finding.toolSignal.text}`);
+      }
+      for (const entry of finding.conventionQuotes ?? []) console.log(`  convention        ${entry.path} "${entry.quote}"`);
       console.log('');
     }
 

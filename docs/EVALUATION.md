@@ -133,6 +133,14 @@ finding was right, not that the author acted on it, so it leaves the outcome
 as the pull request shows it. `RV evaluate --json` adds `posted_breakdown`
 by severity and by lane (a finding with no lane counts as `diff`).
 
+`posted_breakdown.by_evidence_block` splits the same outcomes by whether the
+posted comments carried the evidence block (`verdict.evidence_block`, ADR
+0028). A run is `with` when any post of it that was sent carried a block, and
+`without` when its sent posts carried none. It is `unknown` when no sent post
+of it recorded the count, which is every post made before the block existed.
+An attempt that was never sent is not counted. The split is reported, not
+scored, and a group with no strong outcome reports `null` rates, never zero.
+
 #### Candidate set agreement
 
 Two reviews of the same diff do not produce the same findings. `RV evaluate`

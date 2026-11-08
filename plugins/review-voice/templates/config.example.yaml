@@ -182,6 +182,10 @@ verdict:
   scope_block: false
   # Model ids stay private unless this is true and the scope block is enabled.
   scope_block_models: false
+  # Off because the evidence block posts recorded facts the validator never saw beside each finding.
+  evidence_block: false
+  # The owner precedent count reveals that a precedent store exists, so it needs its own switch.
+  evidence_block_precedents: false
   # true posts nothing when a clean approval's scope is unchanged since the
   # commit the owner approved and that approval still stands (it needs
   # identity.owner_reviewer).

@@ -57,3 +57,15 @@ challenger on the same framing, which is what the gate exists to break.
 
 **Let a refuted challenge drop the finding entirely.** Rejected. A held finding
 stays in the record, so the owner can still promote it on review.
+
+## Amendment - 2026-11-08
+
+Under `verdict.evidence_block`
+([0028](0028-verdict-policies-are-configurable.md)), the challenger's verdict
+and its decisive `path:line` references may be posted beside the finding, in
+the collapsed Evidence block after the inline comment. They are read from the
+score the challenge stored, and each reference is checked against the same
+`path:line` rule again when the block is rendered; one that names an absolute
+path or climbs out with `..` is dropped. The challenger's `reason` is never
+posted. The challenger's inputs, the rule that only `confirmed` with the line
+confirmed or moved passes, and the hold rules are unchanged.

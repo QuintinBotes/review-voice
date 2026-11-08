@@ -142,7 +142,7 @@ function matchHeld(candidate: Candidate, held: CarriedHeld[]): { entry: CarriedH
  * on (no path, no line, no wording) are left out rather than guessed at; a file
  * that cannot be read as an object at all throws, so the caller can say so.
  */
-function readSignals(file: string, root: string): EvidenceSignal[] {
+export function readSignals(file: string, root: string): EvidenceSignal[] {
   const document = JSON.parse(readFileSync(file, 'utf8')) as unknown;
   if (typeof document !== 'object' || document === null || Array.isArray(document)) throw new Error('not a JSON object');
   const signals = (document as { signals?: unknown }).signals;

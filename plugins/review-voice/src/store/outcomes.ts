@@ -4,6 +4,7 @@ import { overlap, significantWords, suggestedPatchOf } from '../scoring/score.ts
 import { fileAtRef, suggestionApplied } from '../publish/suggestion.ts';
 import { ruleIdFor } from '../policy/rules.ts';
 import { runDetail, type StoredFinding } from './runs.ts';
+import { stripEvidenceBlock } from '../publish/evidence-block.ts';
 
 /**
  * What became of each inline comment Review Voice posted (docs/adr/0029).
@@ -333,7 +334,8 @@ function matchComments(findings: StoredFinding[], comments: RawComment[]): Map<s
     let best: RawComment | undefined;
     let bestScore = -1;
     for (const comment of candidates) {
-      const body = comment.body ?? '';
+      // Paired by the finding's words alone, never by the derived evidence block.
+      const body = stripEvidenceBlock(comment.body ?? '');
       const score = overlap(words, significantWords(body)) + (body.startsWith(severityPrefix(finding)) ? 0.01 : 0);
       if (score > bestScore) {
         best = comment;
@@ -615,6 +617,40 @@ export interface PostedBreakdown {
   byLane: Record<string, PostedStats>;
   /** By rule id (docs/adr/0032), the key an approved suppression names. */
   byRule: Record<string, PostedStats>;
+  /** By whether the run's posted comments carried the evidence block (S15); `unknown` for posts recorded before the count. */
+  byEvidenceBlock: { with: PostedStats; without: PostedStats; unknown: PostedStats };
+}
+
+/**
+ * Each run's evidence block group, from the `evidenceBlocks` count of the
+ * attempts a `review_post_sent` row names, the join `sentRuns` makes, so an
+ * attempt that never sent counts for nothing. Any count above 0 is `with`;
+ * otherwise a count of 0 is `without`, since an attempt from before the count
+ * could not carry a block. A run with no count is not in the map, so its
+ * outcomes are `unknown`.
+ */
+function evidenceBlockGroups(db: Database): Map<string, 'with' | 'without'> {
+  const sent = new Set<string>();
+  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent'`).all() as { metadata_json: string }[]) {
+    try {
+      const attempt = (JSON.parse(row.metadata_json) as { attempt?: unknown }).attempt;
+      if (typeof attempt === 'string') sent.add(attempt);
+    } catch {
+      // A row that will not parse names no attempt.
+    }
+  }
+  const groups = new Map<string, 'with' | 'without'>();
+  for (const row of db
+    .prepare(
+      `SELECT audit_id, json_extract(metadata_json, '$.run') AS run, json_extract(metadata_json, '$.evidenceBlocks') AS blocks
+       FROM audit_events WHERE action = 'review_post_attempted' AND json_valid(metadata_json)`,
+    )
+    .all() as { audit_id: string; run: unknown; blocks: unknown }[]) {
+    if (!sent.has(row.audit_id) || typeof row.run !== 'string' || typeof row.blocks !== 'number') continue;
+    if (row.blocks > 0) groups.set(row.run, 'with');
+    else if (!groups.has(row.run)) groups.set(row.run, 'without');
+  }
+  return groups;
 }
 
 /**
@@ -627,6 +663,8 @@ export function postedBreakdown(db: Database): PostedBreakdown {
   const rows = db.prepare('SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes').all() as unknown as OutcomeRow[];
   const findings = new Map<string, Map<string, { severity: string; lane: string; rule: string }>>();
   const groups = { severity: new Map<string, OutcomeRow[]>(), lane: new Map<string, OutcomeRow[]>(), rule: new Map<string, OutcomeRow[]>() };
+  const blockGroups = evidenceBlockGroups(db);
+  const byBlock = { with: [] as OutcomeRow[], without: [] as OutcomeRow[], unknown: [] as OutcomeRow[] };
   for (const row of rows) {
     let known = findings.get(row.review_run_id);
     if (known === undefined) {
@@ -656,8 +694,14 @@ export function postedBreakdown(db: Database): PostedBreakdown {
     groups.severity.set(info.severity, [...(groups.severity.get(info.severity) ?? []), row]);
     groups.lane.set(info.lane, [...(groups.lane.get(info.lane) ?? []), row]);
     groups.rule.set(info.rule, [...(groups.rule.get(info.rule) ?? []), row]);
+    byBlock[blockGroups.get(row.review_run_id) ?? 'unknown'].push(row);
   }
   const collect = (map: Map<string, OutcomeRow[]>): Record<string, PostedStats> =>
     Object.fromEntries([...map.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, list]) => [key, statsOf(list)]));
-  return { bySeverity: collect(groups.severity), byLane: collect(groups.lane), byRule: collect(groups.rule) };
+  return {
+    bySeverity: collect(groups.severity),
+    byLane: collect(groups.lane),
+    byRule: collect(groups.rule),
+    byEvidenceBlock: { with: statsOf(byBlock.with), without: statsOf(byBlock.without), unknown: statsOf(byBlock.unknown) },
+  };
 }

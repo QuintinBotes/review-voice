@@ -66,6 +66,17 @@ refuses with exit 2, because there is no approval to re-check.
   posts only counts of held claims. Model ids appear only with
   `verdict.scope_block_models: true`. Both settings default to `false`; the
   block is also outside the idempotency key.
+- **Evidence block.** With `verdict.evidence_block: true`, each inline comment
+  in the payload, and so in the preview, ends with a collapsed Evidence block
+  from the recorded run, after any suggestion block. It says that the verifier
+  established the finding, and gives the challenger's verdict and decisive
+  lines, a static check on the same line, and a convention quote the document
+  holds.
+  `verdict.evidence_block_precedents: true` adds how many retrieved owner
+  precedents favoured the finding. `evidenceBlocks` counts the comments that
+  carry one. The block is outside the idempotency key and the comment
+  signature, so turning it on or off never sends the same review or comment
+  twice. Both settings default to `false`.
 - **A carry.** `action: "carry"` means the scope is unchanged since the
   commit the owner approved, that approval still stands, and this review
   would approve anyway. `event` and `payload` are null, exit 0, and there is

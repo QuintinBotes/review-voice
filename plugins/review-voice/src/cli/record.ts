@@ -40,6 +40,9 @@ import { cleanStages, shallowPassWarning } from '../store/effort.ts';
 import { noFindingsHint, readStdin, inferRepository, flag, boundLists } from './shared.ts';
 import { reviewScopeFromManifest } from './explain.ts';
 import { carryForRun, sameCommit } from './carry.ts';
+import { readSignals } from './check-candidates.ts';
+import { repositoryRoot } from '../diff/acquire.ts';
+import type { EvidenceSignal } from '../evidence/types.ts';
 
 /**
  * The approved policy versions a `score` output says it loaded, or null when
@@ -335,6 +338,7 @@ export function recordCommand(argv: string[]): number {
   const evidenceFile = flag(argv, '--evidence');
   const symbolsFile = flag(argv, '--symbols');
   let checks: RecordedChecks | undefined;
+  let toolSignals: EvidenceSignal[] = [];
   if (argv.includes('--evidence') || argv.includes('--symbols')) {
     if (evidenceFile === null || symbolsFile === null) {
       console.error('--evidence and --symbols go together: pass the evidence.json and the symbols.json of this review.');
@@ -345,10 +349,43 @@ export function recordCommand(argv: string[]): number {
         JSON.parse(readFileSync(evidenceFile, 'utf8')) as unknown,
         JSON.parse(readFileSync(symbolsFile, 'utf8')) as unknown,
       );
+      // Read as `check-candidates` reads them, so a signal's path compares the
+      // same way there and here, and one outside the repository matches nothing.
+      let root = process.cwd();
+      try {
+        root = repositoryRoot(root);
+      } catch {
+        // Not a repository; the working directory stands.
+      }
+      toolSignals = readSignals(evidenceFile, root);
     } catch (error) {
       console.error(
         `Cannot read the checks from ${evidenceFile} and ${symbolsFile}: ${error instanceof Error ? error.message : String(error)}.`,
       );
+      return 2;
+    }
+  }
+
+  // The documents `conventions` returned, so a quote the analyst cited is
+  // stored only when the document holds it. Refused when unreadable, like the
+  // other inputs, since recording without it would look like a run that cited none.
+  const conventionsFile = flag(argv, '--conventions');
+  let conventions: { path: string; content: string }[] = [];
+  if (argv.includes('--conventions')) {
+    if (conventionsFile === null) {
+      console.error('--conventions needs the conventions.json that `conventions` wrote.');
+      return 2;
+    }
+    try {
+      const report = JSON.parse(readFileSync(conventionsFile, 'utf8')) as { documents?: unknown } | null;
+      const documents = report?.documents;
+      if (!Array.isArray(documents)) throw new Error('it has no documents list');
+      conventions = documents.flatMap((doc: unknown) => {
+        const d = doc as { path?: unknown; content?: unknown } | null;
+        return typeof d?.path === 'string' && typeof d.content === 'string' ? [{ path: d.path, content: d.content }] : [];
+      });
+    } catch (error) {
+      console.error(`Cannot read conventions from ${conventionsFile}: ${error instanceof Error ? error.message : String(error)}.`);
       return 2;
     }
   }
@@ -536,6 +573,8 @@ export function recordCommand(argv: string[]): number {
       followUps,
       stages,
       ...(checks === undefined ? {} : { checks }),
+      toolSignals,
+      conventions,
       provenance: {
         ...(carriedProvenance === null
           ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode }
