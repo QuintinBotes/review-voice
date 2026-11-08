@@ -4,8 +4,14 @@ import type { Database } from '../store/db.ts';
 import { recordAudit } from '../store/audit.ts';
 import type { PolicyVersionRef } from '../store/runs.ts';
 import { isSuppressionExempt, SUPPRESSION_EXEMPT_CATEGORIES } from '../scoring/score.ts';
-import type { ProposedRule } from './compile.ts';
+import { GLOBAL_SCOPE, type ProposedRule } from './compile.ts';
 import { categoryOfRuleId, readSuppressions, ruleIdOfRule } from './rules.ts';
+
+/** Which policy a stored version belongs to. The owner's global one, or a directory glob. */
+export interface PolicyScope {
+  type: string;
+  key: string;
+}
 
 export interface PolicyVersion {
   policyId: string;
@@ -37,12 +43,13 @@ function suppressionReason(rule: ProposedRule): string {
   return `owner dismissed ${dismissals} of ${signals}${month}`;
 }
 
-function toYaml(rules: ProposedRule[], version: number, scopeKey: string): string {
+function toYaml(rules: ProposedRule[], version: number, scope: PolicyScope): string {
   const lines = [
     `policy_version: ${version}`,
     'scope:',
-    '  type: global',
-    `  key: ${scopeKey}`,
+    `  type: ${scope.type}`,
+    // A path key holds glob characters, so it is quoted; the global key is a bare word.
+    `  key: ${scope.type === 'global' ? scope.key : JSON.stringify(scope.key)}`,
     '',
     'suppressed_patterns:',
   ];
@@ -59,10 +66,13 @@ function toYaml(rules: ProposedRule[], version: number, scopeKey: string): strin
   lines.push('', 'suppressions:');
   if (keyed.length === 0) lines.push('  []');
   for (const { rule, ruleId } of keyed) {
+    // A rule in a path-scoped policy never falls back to everywhere: with no
+    // glob of its own it takes the scope's.
+    const glob = rule.glob ?? (scope.type === 'path' ? scope.key : null);
     lines.push(
       `  - rule_id: ${JSON.stringify(ruleId)}`,
-      // S07 fills path globs; null means everywhere.
-      '    glob: null',
+      // Null means everywhere.
+      `    glob: ${glob === null ? 'null' : JSON.stringify(glob)}`,
       `    reason: ${JSON.stringify(suppressionReason(rule))}`,
     );
   }
@@ -90,17 +100,18 @@ function suppressedRuleIds(contentYaml: string, rules: ProposedRule[]): string[]
 }
 
 /**
- * The raw active rows of the owner's global scope, the only scope `proposePolicy`
- * writes and so the only one `loadConfig` layers (S07 widens it). Loading and
- * recording both read through here, so what a run says it was held to is what
- * `score` loaded.
+ * The raw active rows of the owner's policies: the global scope, then every
+ * path scope. They are the scopes `proposePolicy` writes and so the ones
+ * `loadConfig` layers, broadest first. Loading and recording both read through
+ * here, so what a run says it was held to is what `score` loaded.
  */
 export function activePolicyRows(db: Database): { policyId: string; scopeType: string; scopeKey: string; version: number; contentYaml: string }[] {
   return (
     db
       .prepare(
         `SELECT policy_id, scope_type, scope_key, version, content_yaml FROM policies
-         WHERE scope_type = 'global' AND scope_key = 'owner' AND active = 1 ORDER BY version DESC`,
+         WHERE ((scope_type = 'global' AND scope_key = 'owner') OR scope_type = 'path') AND active = 1
+         ORDER BY CASE scope_type WHEN 'global' THEN 0 ELSE 1 END, scope_key, version DESC`,
       )
       .all() as Record<string, unknown>[]
   ).map((row) => ({
@@ -122,24 +133,24 @@ export function activePolicyVersions(db: Database): PolicyVersionRef[] {
  * always requires owner approval, so generation and activation are separate
  * operations by construction rather than by discipline.
  */
-export function proposePolicy(db: Database, rules: ProposedRule[], scopeKey = 'owner'): PolicyVersion {
-  const version = nextVersion(db, 'global', scopeKey);
+export function proposePolicy(db: Database, rules: ProposedRule[], scope: PolicyScope = GLOBAL_SCOPE): PolicyVersion {
+  const version = nextVersion(db, scope.type, scope.key);
   const policyId = randomUUID();
-  const contentYaml = toYaml(rules, version, scopeKey);
+  const contentYaml = toYaml(rules, version, scope);
   const generatedAt = new Date().toISOString();
 
   db.prepare(
     `INSERT INTO policies (policy_id, scope_type, scope_key, version, content_yaml,
                            active, generated_at, approved_at, provenance_json, evaluation_json)
-     VALUES (?, 'global', ?, ?, ?, 0, ?, NULL, ?, ?)`,
-  ).run(policyId, scopeKey, version, contentYaml, generatedAt, JSON.stringify(rules), JSON.stringify({}));
+     VALUES (?, ?, ?, ?, ?, 0, ?, NULL, ?, ?)`,
+  ).run(policyId, scope.type, scope.key, version, contentYaml, generatedAt, JSON.stringify(rules), JSON.stringify({}));
 
   recordAudit(db, 'policy_proposed', { type: 'policy', id: policyId }, { version, ruleCount: rules.length });
 
   return {
     policyId,
-    scopeType: 'global',
-    scopeKey,
+    scopeType: scope.type,
+    scopeKey: scope.key,
     version,
     contentYaml,
     active: false,
@@ -155,9 +166,9 @@ export type ApprovalOutcome =
 
 export function approvePolicy(db: Database, policyId: string): ApprovalOutcome {
   const row = db
-    .prepare('SELECT policy_id, scope_key, version, provenance_json, content_yaml FROM policies WHERE policy_id = ?')
+    .prepare('SELECT policy_id, scope_type, scope_key, version, provenance_json, content_yaml FROM policies WHERE policy_id = ?')
     .get(policyId) as
-    | { policy_id: string; scope_key: string; version: number; provenance_json: string; content_yaml: string }
+    | { policy_id: string; scope_type: string; scope_key: string; version: number; provenance_json: string; content_yaml: string }
     | undefined;
   if (row === undefined) return { ok: false, error: `No policy ${policyId}.` };
 
@@ -190,7 +201,9 @@ export function approvePolicy(db: Database, policyId: string): ApprovalOutcome {
 
   db.exec('BEGIN');
   try {
-    db.prepare('UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?').run('global', row.scope_key);
+    // Siblings in the row's own scope only: approving a path policy must leave
+    // the global one, and every other path's, active.
+    db.prepare('UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?').run(row.scope_type, row.scope_key);
     db.prepare('UPDATE policies SET active = 1, approved_at = ? WHERE policy_id = ?').run(
       new Date().toISOString(),
       policyId,
@@ -205,20 +218,20 @@ export function approvePolicy(db: Database, policyId: string): ApprovalOutcome {
   return { ok: true, policyId, version: row.version };
 }
 
-export function rollbackTo(db: Database, version: number, scopeKey = 'owner'): ApprovalOutcome {
+export function rollbackTo(db: Database, version: number, scope: PolicyScope = GLOBAL_SCOPE): ApprovalOutcome {
   const row = db
     .prepare('SELECT policy_id FROM policies WHERE scope_type = ? AND scope_key = ? AND version = ? AND approved_at IS NOT NULL')
-    .get('global', scopeKey, version) as { policy_id: string } | undefined;
+    .get(scope.type, scope.key, version) as { policy_id: string } | undefined;
 
   if (row === undefined) {
     // Rolling back to a version that was never approved would activate
     // something nobody ever agreed to.
-    return { ok: false, error: `No approved policy at version ${version}.` };
+    return { ok: false, error: `No approved policy at version ${version} in scope ${scope.type}:${scope.key}.` };
   }
 
   db.exec('BEGIN');
   try {
-    db.prepare('UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?').run('global', scopeKey);
+    db.prepare('UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?').run(scope.type, scope.key);
     db.prepare('UPDATE policies SET active = 1 WHERE policy_id = ?').run(row.policy_id);
     db.exec('COMMIT');
   } catch (error) {
@@ -230,12 +243,18 @@ export function rollbackTo(db: Database, version: number, scopeKey = 'owner'): A
   return { ok: true, policyId: row.policy_id, version };
 }
 
-export function listPolicies(db: Database, scopeKey = 'owner'): PolicyVersion[] {
-  return (
-    db
-      .prepare('SELECT * FROM policies WHERE scope_type = ? AND scope_key = ? ORDER BY version DESC')
-      .all('global', scopeKey) as Record<string, unknown>[]
-  ).map((row) => ({
+/** Every stored version of one scope, or of every scope when none is named (global first, then path scopes). */
+export function listPolicies(db: Database, scope?: PolicyScope): PolicyVersion[] {
+  const rows =
+    scope === undefined
+      ? db
+          .prepare(
+            `SELECT * FROM policies
+             ORDER BY CASE scope_type WHEN 'global' THEN 0 ELSE 1 END, scope_type, scope_key, version DESC`,
+          )
+          .all()
+      : db.prepare('SELECT * FROM policies WHERE scope_type = ? AND scope_key = ? ORDER BY version DESC').all(scope.type, scope.key);
+  return (rows as Record<string, unknown>[]).map((row) => ({
     policyId: row['policy_id'] as string,
     scopeType: row['scope_type'] as string,
     scopeKey: row['scope_key'] as string,

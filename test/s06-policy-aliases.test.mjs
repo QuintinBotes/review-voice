@@ -40,3 +40,13 @@ test('a suppression keyed on an alias of an exempt category matches nothing', ()
   // would fail if the matcher were simply broken.
   assert.notEqual(matchingSuppression(suppression('docs:diff'), candidate('docs')), null);
 });
+
+test('a scoped suppression matches the path however the candidate spells it', () => {
+  const scoped = [{ ruleId: 'maintainability:diff', glob: 'src/billing/**', reason: null, policyVersion: 1 }];
+  const candidate = (path) => ({ category: 'maintainability', lane: 'diff', blockerClass: undefined, path });
+  for (const spelling of ['src/billing/retry.ts', './src/billing/retry.ts', 'src/./billing/retry.ts', 'src/orders/../billing/retry.ts']) {
+    assert.notEqual(matchingSuppression(scoped, candidate(spelling)), null, spelling);
+  }
+  assert.equal(matchingSuppression(scoped, candidate('src/orders/retry.ts')), null);
+  assert.equal(matchingSuppression(scoped, candidate('./src/orders/retry.ts')), null);
+});

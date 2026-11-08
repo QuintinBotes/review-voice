@@ -3137,6 +3137,9 @@ function verifierConfidence(technicalConfidence, evidenceQuality2) {
   return QUALITY_CONFIDENCE[evidenceQuality2] ?? null;
 }
 
+// plugins/review-voice/src/scoring/score.ts
+import { posix } from "node:path";
+
 // plugins/review-voice/src/review/lanes.ts
 import { existsSync as existsSync3 } from "node:fs";
 import { dirname as dirname4, join as join6 } from "node:path";
@@ -3382,8 +3385,9 @@ function matchingSuppression(suppressions, candidate) {
   if (suppressions.length === 0 || isSuppressionExempt(candidate.category)) return null;
   const ruleId = ruleIdFor(candidate.category, candidate.lane, candidate.blockerClass);
   if (ruleId === null) return null;
+  const path = posix.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
   return suppressions.find(
-    (suppression) => suppression.ruleId === ruleId && !isSuppressionExempt(categoryOfRuleId(suppression.ruleId)) && (suppression.glob === null || governsAny([suppression.glob], [candidate.path]))
+    (suppression) => suppression.ruleId === ruleId && !isSuppressionExempt(categoryOfRuleId(suppression.ruleId)) && (suppression.glob === null || governsAny([suppression.glob], [path]))
   ) ?? null;
 }
 var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
@@ -6935,6 +6939,14 @@ var MIGRATIONS = [
   // not: the label is derived from the origin, so a row without one has none.
   `
   ALTER TABLE review_runs ADD COLUMN provenance_json TEXT;
+  `,
+  // v13 - who decided a strong dismissal (docs/adr/0029).
+  //
+  // The reply author's login, or the owner's when an owner feedback row decided
+  // it. Null on older rows and on every weak outcome, so an old dismissal reads
+  // as a team signal rather than an owner one.
+  `
+  ALTER TABLE finding_outcomes ADD COLUMN decided_by TEXT;
   `
 ];
 function migrate(db) {
@@ -13257,6 +13269,158 @@ function parse(src, reviver, options) {
   return doc.toJS(Object.assign({ reviver: _reviver }, options));
 }
 
+// plugins/review-voice/src/policy/compile.ts
+import { posix as posix2 } from "node:path";
+var MIN_CORROBORATING = 3;
+function canActivate(evidence) {
+  const supporting = evidence.dismissals + evidence.keeps + evidence.rewrites;
+  if (supporting < MIN_CORROBORATING) {
+    return { ok: false, reason: `only ${supporting} corroborating signals; ${MIN_CORROBORATING} are needed` };
+  }
+  if (evidence.ownerSignals < 1) {
+    return { ok: false, reason: "no owner signal" };
+  }
+  if (evidence.contradictingSignals > 0) {
+    return { ok: false, reason: `${evidence.contradictingSignals} contradicting owner signal(s)` };
+  }
+  return { ok: true, reason: null };
+}
+function confidenceFrom(evidence) {
+  const supporting = evidence.dismissals + evidence.keeps + evidence.rewrites;
+  if (supporting === 0) return 0;
+  const corroboration = Math.min(1, supporting / 6);
+  const ownerShare = Math.min(1, evidence.ownerSignals / Math.max(1, supporting));
+  const contradiction2 = evidence.contradictingSignals / (supporting + evidence.contradictingSignals);
+  return Math.max(0, corroboration * 0.5 + ownerShare * 0.5 - contradiction2);
+}
+function label(row) {
+  try {
+    const parsed2 = JSON.parse(row.output_json);
+    const finding = parsed2.findings.find((f) => f.findingId === row.finding_id);
+    if (finding === void 0) return null;
+    const category = typeof finding.category === "string" && finding.category.length > 0 ? finding.category : null;
+    return {
+      row,
+      category,
+      ruleId: category === null ? null : typeof finding.ruleId === "string" && finding.ruleId.length > 0 ? finding.ruleId : ruleIdFor(category, finding.lane),
+      severity: finding.severity ?? null,
+      path: finding.path
+    };
+  } catch {
+    return null;
+  }
+}
+var KEY_SEPARATOR = "	";
+var GLOBAL_SCOPE = { type: "global", key: "owner" };
+function commonDirectory(paths) {
+  let common = null;
+  for (const path of paths) {
+    const normalised = posix2.normalize(path.split("\\").join("/"));
+    const segments = normalised.split("/").filter((part) => part.length > 0 && part !== ".");
+    const directories = segments[0] === ".." ? [] : segments.slice(0, -1);
+    if (common === null) {
+      common = directories;
+    } else {
+      let shared = 0;
+      while (shared < common.length && shared < directories.length && common[shared] === directories[shared]) shared += 1;
+      common = common.slice(0, shared);
+    }
+  }
+  return common ?? [];
+}
+function compileProposals(db, options = {}) {
+  const feedbackRows = db.prepare(
+    `SELECT f.action, f.actor, f.finding_id, f.review_run_id, f.reason, f.created_at, r.output_json
+       FROM feedback f
+       JOIN review_runs r ON r.review_run_id = f.review_run_id
+       ORDER BY f.created_at DESC`
+  ).all();
+  const owner = options.ownerReviewer?.toLowerCase() ?? null;
+  const threadRows = db.prepare(
+    `SELECT o.review_run_id, o.finding_id, o.decided_by, o.checked_at, r.output_json
+         FROM finding_outcomes o
+         JOIN review_runs r ON r.review_run_id = o.review_run_id
+         WHERE o.outcome = 'dismissed' AND o.strength = 'strong'
+           AND NOT EXISTS (
+             SELECT 1 FROM feedback f
+             WHERE f.review_run_id = o.review_run_id AND f.finding_id = o.finding_id
+               AND f.action IN ('dismiss', 'never_flag')
+           )`
+  ).all().map(
+    (row) => ({
+      action: "dismiss",
+      actor: owner !== null && row.decided_by?.toLowerCase() === owner ? "owner" : "team",
+      finding_id: row.finding_id,
+      review_run_id: row.review_run_id,
+      reason: null,
+      created_at: row.checked_at,
+      output_json: row.output_json
+    })
+  );
+  const merged = [...feedbackRows, ...threadRows].sort((a, b) => a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0);
+  const dismissed = /* @__PURE__ */ new Set();
+  const rows = merged.filter((row) => {
+    if (row.action !== "dismiss" && row.action !== "never_flag") return true;
+    const finding = `${row.review_run_id}${KEY_SEPARATOR}${row.finding_id}`;
+    if (dismissed.has(finding)) return false;
+    dismissed.add(finding);
+    return true;
+  });
+  const buckets = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const labelled = label(row);
+    if (labelled === null) continue;
+    if (labelled.category === null || labelled.ruleId === null) continue;
+    const kind = row.action === "never_flag" || row.action === "dismiss" ? "suppress" : "prioritise";
+    const key2 = `${kind}${KEY_SEPARATOR}${labelled.ruleId}`;
+    buckets.set(key2, [...buckets.get(key2) ?? [], labelled]);
+  }
+  const proposals = [];
+  for (const [key2, group] of buckets) {
+    const [kind, ruleId] = key2.split(KEY_SEPARATOR);
+    const category = categoryOfRuleId(ruleId);
+    const keeps = group.filter((g) => g.row.action === "keep").length;
+    const dismissals = group.filter((g) => g.row.action === "dismiss" || g.row.action === "never_flag").length;
+    const rewrites = group.filter((g) => g.row.action === "rewrite").length;
+    const opposite = `${kind === "suppress" ? "prioritise" : "suppress"}${KEY_SEPARATOR}${ruleId}`;
+    const contradictingSignals = (buckets.get(opposite) ?? []).filter((g) => g.row.actor === "owner").length;
+    const evidence = {
+      keeps,
+      dismissals,
+      rewrites,
+      // Only the owner's own feedback is an activation signal; a pooled
+      // reviewer's comment informs voice and precedent, never a rule (docs/adr/0030).
+      ownerSignals: group.filter((g) => g.row.actor === "owner").length,
+      contradictingSignals,
+      mostRecentAt: group[0]?.row.created_at ?? null,
+      eventIds: group.map((g) => `${g.row.review_run_id}:${g.row.finding_id}`)
+    };
+    const reasons = group.map((g) => g.row.reason).filter((r) => r !== null && r.length > 0);
+    const severities = [...new Set(group.map((g) => g.severity).filter((s) => s !== null))];
+    const directory = kind === "suppress" ? commonDirectory(group.map((g) => g.path)) : [];
+    const unwritable = directory.some((segment) => /[*?[\]{}]/.test(segment));
+    const glob = directory.length === 0 || unwritable ? null : `${directory.join("/")}/**`;
+    const exempt = kind === "suppress" && isSuppressionExempt(category);
+    const gate = exempt ? { ok: false, reason: `a suppression may not reach ${category}, which names a breach or a trust boundary (docs/adr/0032)` } : unwritable ? {
+      ok: false,
+      reason: `the dismissals share the directory ${directory.join("/")}, whose name holds a glob character, so the rule cannot be scoped to it; write the scope by hand`
+    } : canActivate(evidence);
+    proposals.push({
+      scope: glob === null ? { ...GLOBAL_SCOPE } : { type: "path", key: glob },
+      glob,
+      kind,
+      category,
+      ruleId,
+      rule: kind === "suppress" ? `Suppress ${category} findings${glob === null ? "" : ` under ${glob}`}${severities.length === 1 ? ` at ${severities[0]} severity` : ""} unless they name a concrete failure mode${reasons.length > 0 ? ` (stated reason: ${reasons[0]})` : ""}.` : `Treat ${category} as high priority; findings in this category are consistently kept.`,
+      evidence,
+      confidence: confidenceFrom(evidence),
+      activatable: gate.ok,
+      blockedBecause: gate.reason
+    });
+  }
+  return proposals;
+}
+
 // plugins/review-voice/src/policy/versions.ts
 function nextVersion(db, scopeType, scopeKey) {
   const row = db.prepare("SELECT MAX(version) AS v FROM policies WHERE scope_type = ? AND scope_key = ?").get(scopeType, scopeKey);
@@ -13269,12 +13433,13 @@ function suppressionReason(rule) {
   const month = Number.isNaN(when) ? "" : ` in ${new Date(when).toLocaleString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" })}`;
   return `owner dismissed ${dismissals} of ${signals}${month}`;
 }
-function toYaml(rules, version, scopeKey) {
+function toYaml(rules, version, scope) {
   const lines2 = [
     `policy_version: ${version}`,
     "scope:",
-    "  type: global",
-    `  key: ${scopeKey}`,
+    `  type: ${scope.type}`,
+    // A path key holds glob characters, so it is quoted; the global key is a bare word.
+    `  key: ${scope.type === "global" ? scope.key : JSON.stringify(scope.key)}`,
     "",
     "suppressed_patterns:"
   ];
@@ -13288,10 +13453,11 @@ function toYaml(rules, version, scopeKey) {
   lines2.push("", "suppressions:");
   if (keyed.length === 0) lines2.push("  []");
   for (const { rule, ruleId } of keyed) {
+    const glob = rule.glob ?? (scope.type === "path" ? scope.key : null);
     lines2.push(
       `  - rule_id: ${JSON.stringify(ruleId)}`,
-      // S07 fills path globs; null means everywhere.
-      "    glob: null",
+      // Null means everywhere.
+      `    glob: ${glob === null ? "null" : JSON.stringify(glob)}`,
       `    reason: ${JSON.stringify(suppressionReason(rule))}`
     );
   }
@@ -13314,7 +13480,8 @@ function suppressedRuleIds(contentYaml, rules) {
 function activePolicyRows(db) {
   return db.prepare(
     `SELECT policy_id, scope_type, scope_key, version, content_yaml FROM policies
-         WHERE scope_type = 'global' AND scope_key = 'owner' AND active = 1 ORDER BY version DESC`
+         WHERE ((scope_type = 'global' AND scope_key = 'owner') OR scope_type = 'path') AND active = 1
+         ORDER BY CASE scope_type WHEN 'global' THEN 0 ELSE 1 END, scope_key, version DESC`
   ).all().map((row) => ({
     policyId: row["policy_id"],
     scopeType: row["scope_type"],
@@ -13326,21 +13493,21 @@ function activePolicyRows(db) {
 function activePolicyVersions(db) {
   return activePolicyRows(db).map(({ scopeType, scopeKey, policyId, version }) => ({ scopeType, scopeKey, policyId, version }));
 }
-function proposePolicy(db, rules, scopeKey = "owner") {
-  const version = nextVersion(db, "global", scopeKey);
+function proposePolicy(db, rules, scope = GLOBAL_SCOPE) {
+  const version = nextVersion(db, scope.type, scope.key);
   const policyId = randomUUID2();
-  const contentYaml = toYaml(rules, version, scopeKey);
+  const contentYaml = toYaml(rules, version, scope);
   const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
   db.prepare(
     `INSERT INTO policies (policy_id, scope_type, scope_key, version, content_yaml,
                            active, generated_at, approved_at, provenance_json, evaluation_json)
-     VALUES (?, 'global', ?, ?, ?, 0, ?, NULL, ?, ?)`
-  ).run(policyId, scopeKey, version, contentYaml, generatedAt, JSON.stringify(rules), JSON.stringify({}));
+     VALUES (?, ?, ?, ?, ?, 0, ?, NULL, ?, ?)`
+  ).run(policyId, scope.type, scope.key, version, contentYaml, generatedAt, JSON.stringify(rules), JSON.stringify({}));
   recordAudit(db, "policy_proposed", { type: "policy", id: policyId }, { version, ruleCount: rules.length });
   return {
     policyId,
-    scopeType: "global",
-    scopeKey,
+    scopeType: scope.type,
+    scopeKey: scope.key,
     version,
     contentYaml,
     active: false,
@@ -13350,7 +13517,7 @@ function proposePolicy(db, rules, scopeKey = "owner") {
   };
 }
 function approvePolicy(db, policyId) {
-  const row = db.prepare("SELECT policy_id, scope_key, version, provenance_json, content_yaml FROM policies WHERE policy_id = ?").get(policyId);
+  const row = db.prepare("SELECT policy_id, scope_type, scope_key, version, provenance_json, content_yaml FROM policies WHERE policy_id = ?").get(policyId);
   if (row === void 0) return { ok: false, error: `No policy ${policyId}.` };
   const rules = JSON.parse(row.provenance_json);
   const exempt = suppressedRuleIds(row.content_yaml, rules).filter((ruleId) => isSuppressionExempt(categoryOfRuleId(ruleId)));
@@ -13369,7 +13536,7 @@ function approvePolicy(db, policyId) {
   }
   db.exec("BEGIN");
   try {
-    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run("global", row.scope_key);
+    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run(row.scope_type, row.scope_key);
     db.prepare("UPDATE policies SET active = 1, approved_at = ? WHERE policy_id = ?").run(
       (/* @__PURE__ */ new Date()).toISOString(),
       policyId
@@ -13382,14 +13549,14 @@ function approvePolicy(db, policyId) {
   recordAudit(db, "policy_approved", { type: "policy", id: policyId }, { version: row.version });
   return { ok: true, policyId, version: row.version };
 }
-function rollbackTo(db, version, scopeKey = "owner") {
-  const row = db.prepare("SELECT policy_id FROM policies WHERE scope_type = ? AND scope_key = ? AND version = ? AND approved_at IS NOT NULL").get("global", scopeKey, version);
+function rollbackTo(db, version, scope = GLOBAL_SCOPE) {
+  const row = db.prepare("SELECT policy_id FROM policies WHERE scope_type = ? AND scope_key = ? AND version = ? AND approved_at IS NOT NULL").get(scope.type, scope.key, version);
   if (row === void 0) {
-    return { ok: false, error: `No approved policy at version ${version}.` };
+    return { ok: false, error: `No approved policy at version ${version} in scope ${scope.type}:${scope.key}.` };
   }
   db.exec("BEGIN");
   try {
-    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run("global", scopeKey);
+    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run(scope.type, scope.key);
     db.prepare("UPDATE policies SET active = 1 WHERE policy_id = ?").run(row.policy_id);
     db.exec("COMMIT");
   } catch (error) {
@@ -13399,8 +13566,12 @@ function rollbackTo(db, version, scopeKey = "owner") {
   recordAudit(db, "policy_rolled_back", { type: "policy", id: row.policy_id }, { version });
   return { ok: true, policyId: row.policy_id, version };
 }
-function listPolicies(db, scopeKey = "owner") {
-  return db.prepare("SELECT * FROM policies WHERE scope_type = ? AND scope_key = ? ORDER BY version DESC").all("global", scopeKey).map((row) => ({
+function listPolicies(db, scope) {
+  const rows = scope === void 0 ? db.prepare(
+    `SELECT * FROM policies
+             ORDER BY CASE scope_type WHEN 'global' THEN 0 ELSE 1 END, scope_type, scope_key, version DESC`
+  ).all() : db.prepare("SELECT * FROM policies WHERE scope_type = ? AND scope_key = ? ORDER BY version DESC").all(scope.type, scope.key);
+  return rows.map((row) => ({
     policyId: row["policy_id"],
     scopeType: row["scope_type"],
     scopeKey: row["scope_key"],
@@ -15172,12 +15343,19 @@ function approvedPolicyLayers(db, warnings) {
       }
       const read = readSuppressions(doc["suppressions"], row.version);
       for (const warning of read.warnings) warnings.push(`${label2}: ${warning}`);
+      const isPath2 = row.scopeType === "path";
+      const suppressions = isPath2 ? read.suppressions.map((suppression) => {
+        if (suppression.glob !== null && suppression.glob !== row.scopeKey) {
+          warnings.push(`${label2}: suppression ${suppression.ruleId} names glob ${suppression.glob}; the policy's scope ${row.scopeKey} applies.`);
+        }
+        return { ...suppression, glob: row.scopeKey };
+      }) : read.suppressions;
       layers.push({
-        scope: { type: "global", key: row.scopeKey },
+        scope: { type: isPath2 ? "path" : "global", key: row.scopeKey },
         source: `${label2} (policies table)`,
         requiresApproval: false,
         suppressedPatterns: asStringArray(doc["suppressed_patterns"]),
-        suppressions: read.suppressions
+        suppressions
       });
     } catch (error) {
       warnings.push(`${label2} could not be parsed: ${String(error)}`);
@@ -16568,13 +16746,29 @@ async function linesChanged(options, context2, run, comment, finding) {
 async function decide2(options, context2, run, finding, comment) {
   const dismissedByOwner = options.db.prepare(`SELECT 1 FROM feedback WHERE review_run_id = ? AND finding_id = ? AND action = 'dismiss'`).get(run.runId, finding.findingId);
   if (dismissedByOwner !== void 0) {
-    return { outcome: "dismissed", strength: "strong", evidence: "the owner recorded dismiss for this finding" };
+    return {
+      outcome: "dismissed",
+      strength: "strong",
+      evidence: "the owner recorded dismiss for this finding",
+      decidedBy: options.ownerReviewer ?? null
+    };
   }
   const poster = comment.user?.login?.toLowerCase();
-  const answers = context2.replies.filter((reply) => reply.in_reply_to_id === comment.id && !isBot2(reply.user) && reply.user?.login?.toLowerCase() !== poster).map((reply) => ({ stance: classifyReply(reply.body ?? ""), at: reply.created_at ?? "", author: reply.user?.login ?? "unknown" })).filter((answer2) => answer2.stance !== "other").sort((a, b) => a.at.localeCompare(b.at));
+  const owner = options.ownerReviewer?.toLowerCase();
+  const classified = context2.replies.filter((reply) => reply.in_reply_to_id === comment.id && !isBot2(reply.user)).map((reply) => ({
+    stance: classifyReply(reply.body ?? ""),
+    at: reply.created_at ?? "",
+    author: reply.user?.login ?? "unknown",
+    login: reply.user?.login ?? null
+  })).filter((answer2) => answer2.stance !== "other").sort((a, b) => a.at.localeCompare(b.at));
+  const ownerLatest = owner === void 0 ? void 0 : [...classified].reverse().find((answer2) => answer2.login?.toLowerCase() === owner);
+  if (ownerLatest?.stance === "reject") {
+    return { outcome: "dismissed", strength: "strong", evidence: `${ownerLatest.author} replied turning it down`, decidedBy: ownerLatest.login };
+  }
+  const answers = classified.filter((answer2) => answer2.login?.toLowerCase() !== poster);
   const latest = answers[answers.length - 1];
   if (latest?.stance === "reject") {
-    return { outcome: "dismissed", strength: "strong", evidence: `${latest.author} replied turning it down` };
+    return { outcome: "dismissed", strength: "strong", evidence: `${latest.author} replied turning it down`, decidedBy: latest.login };
   }
   const state = context2.states?.get(comment.id) ?? null;
   const changed = await linesChanged(options, context2, run, comment, finding) ?? (state?.outdated === true ? true : null);
@@ -16584,36 +16778,40 @@ async function decide2(options, context2, run, finding, comment) {
     return {
       outcome: "fixed",
       strength: "strong",
-      evidence: `the anchored lines changed after the comment and ${resolved === true ? "the thread was resolved" : `${latest.author} agreed`}`
+      evidence: `the anchored lines changed after the comment and ${resolved === true ? "the thread was resolved" : `${latest.author} agreed`}`,
+      decidedBy: null
     };
   }
   if (resolved === true) {
     return {
       outcome: "resolved",
       strength: "weak",
-      evidence: changed === false ? "the thread was resolved and the anchored lines are unchanged" : "the thread was resolved; whether the lines changed could not be read"
+      evidence: changed === false ? "the thread was resolved and the anchored lines are unchanged" : "the thread was resolved; whether the lines changed could not be read",
+      decidedBy: null
     };
   }
   if (resolved === false && changed === true) {
-    return { outcome: "outdated", strength: "weak", evidence: "the anchored lines changed and the thread is still open" };
+    return { outcome: "outdated", strength: "weak", evidence: "the anchored lines changed and the thread is still open", decidedBy: null };
   }
   if (resolved === false && changed === false) {
     return {
       outcome: "open",
       strength: "weak",
-      evidence: agreed ? "agreed in reply, but the lines are unchanged and the thread is open" : "nothing has changed and the thread is open"
+      evidence: agreed ? "agreed in reply, but the lines are unchanged and the thread is open" : "nothing has changed and the thread is open",
+      decidedBy: null
     };
   }
-  return { outcome: "unknown", strength: "weak", evidence: "the thread state or the later commits could not be read" };
+  return { outcome: "unknown", strength: "weak", evidence: "the thread state or the later commits could not be read", decidedBy: null };
 }
 function saveOutcome(db, outcome) {
   db.prepare(
     `INSERT INTO finding_outcomes
-       (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at, decided_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (review_run_id, finding_id) DO UPDATE SET
        repository = excluded.repository, pull_number = excluded.pull_number, comment_id = excluded.comment_id,
-       outcome = excluded.outcome, strength = excluded.strength, evidence = excluded.evidence, checked_at = excluded.checked_at`
+       outcome = excluded.outcome, strength = excluded.strength, evidence = excluded.evidence, checked_at = excluded.checked_at,
+       decided_by = excluded.decided_by`
   ).run(
     outcome.reviewRunId,
     outcome.findingId,
@@ -16623,7 +16821,9 @@ function saveOutcome(db, outcome) {
     outcome.outcome,
     outcome.strength,
     outcome.evidence,
-    outcome.checkedAt
+    outcome.checkedAt,
+    // Only a strong dismissal names its decider; anything else is stored as null.
+    outcome.outcome === "dismissed" && outcome.strength === "strong" ? outcome.decidedBy ?? null : null
   );
 }
 function statsOf(rows) {
@@ -19227,7 +19427,7 @@ async function runPass(options, json2) {
       const event = row.event === null ? "" : ` ${row.event}`;
       lines2.push(`${summary}${event} (${row.status} ${row.reviewUrl ?? row.detail ?? ""})`.replace(/ \)$/, ")"));
     }
-    const followed = await followOutcomes(client, db, deps);
+    const followed = await followOutcomes(client, db, deps, config2.ownerReviewer);
     const swept = sweepRetention(db, config2, deps);
     if (json2) {
       deps.out(JSON.stringify(rows, null, 2));
@@ -19352,14 +19552,14 @@ async function verdict(options, client, db, entry, recheck) {
   const status = waiting(sent.exitCode) ?? "failed";
   return { row: { ...base, event: output.event, status, detail: result.reasons.join("; ") || `post exited ${sent.exitCode}` } };
 }
-async function followOutcomes(client, db, deps) {
+async function followOutcomes(client, db, deps, ownerReviewer) {
   const weekAgo = new Date(deps.now().getTime() - OUTCOME_DAYS * 864e5).toISOString();
   const pulls = recentlySentPulls(db, weekAgo, OUTCOME_PULLS);
   if (pulls.length === 0) return 0;
   const since = pulls.length === OUTCOME_PULLS ? pulls.at(-1).sentAt : weekAgo;
   const allowlist = [...new Set(pulls.map((pull) => pull.repository).filter((repository) => client.allows(repository)))];
   try {
-    const result = await checkOutcomes({ db, client, allowlist, since, now: deps.now });
+    const result = await checkOutcomes({ db, client, allowlist, since, now: deps.now, ownerReviewer });
     for (const warning of result.warnings) deps.err(warning);
   } catch (error) {
     deps.err(`Outcomes were not followed: ${error instanceof Error ? error.message : String(error)}`);
@@ -19757,101 +19957,6 @@ function baselineVoice() {
     if (existsSync8(candidate)) return readFileSync11(candidate, "utf8").trim();
   }
   throw new Error("templates/voice.baseline.md is missing from the plugin.");
-}
-
-// plugins/review-voice/src/policy/compile.ts
-var MIN_CORROBORATING = 3;
-function canActivate(evidence) {
-  const supporting = evidence.dismissals + evidence.keeps + evidence.rewrites;
-  if (supporting < MIN_CORROBORATING) {
-    return { ok: false, reason: `only ${supporting} corroborating signals; ${MIN_CORROBORATING} are needed` };
-  }
-  if (evidence.ownerSignals < 1) {
-    return { ok: false, reason: "no owner signal" };
-  }
-  if (evidence.contradictingSignals > 0) {
-    return { ok: false, reason: `${evidence.contradictingSignals} contradicting owner signal(s)` };
-  }
-  return { ok: true, reason: null };
-}
-function confidenceFrom(evidence) {
-  const supporting = evidence.dismissals + evidence.keeps + evidence.rewrites;
-  if (supporting === 0) return 0;
-  const corroboration = Math.min(1, supporting / 6);
-  const ownerShare = Math.min(1, evidence.ownerSignals / Math.max(1, supporting));
-  const contradiction2 = evidence.contradictingSignals / (supporting + evidence.contradictingSignals);
-  return Math.max(0, corroboration * 0.5 + ownerShare * 0.5 - contradiction2);
-}
-function label(row) {
-  try {
-    const parsed2 = JSON.parse(row.output_json);
-    const finding = parsed2.findings.find((f) => f.findingId === row.finding_id);
-    if (finding === void 0) return null;
-    const category = typeof finding.category === "string" && finding.category.length > 0 ? finding.category : null;
-    return {
-      row,
-      category,
-      ruleId: category === null ? null : typeof finding.ruleId === "string" && finding.ruleId.length > 0 ? finding.ruleId : ruleIdFor(category, finding.lane),
-      severity: finding.severity ?? null,
-      path: finding.path
-    };
-  } catch {
-    return null;
-  }
-}
-var KEY_SEPARATOR = "	";
-function compileProposals(db) {
-  const rows = db.prepare(
-    `SELECT f.action, f.actor, f.finding_id, f.review_run_id, f.reason, f.created_at, r.output_json
-       FROM feedback f
-       JOIN review_runs r ON r.review_run_id = f.review_run_id
-       ORDER BY f.created_at DESC`
-  ).all();
-  const buckets = /* @__PURE__ */ new Map();
-  for (const row of rows) {
-    const labelled = label(row);
-    if (labelled === null) continue;
-    if (labelled.category === null || labelled.ruleId === null) continue;
-    const kind = row.action === "never_flag" || row.action === "dismiss" ? "suppress" : "prioritise";
-    const key2 = `${kind}${KEY_SEPARATOR}${labelled.ruleId}`;
-    buckets.set(key2, [...buckets.get(key2) ?? [], labelled]);
-  }
-  const proposals = [];
-  for (const [key2, group] of buckets) {
-    const [kind, ruleId] = key2.split(KEY_SEPARATOR);
-    const category = categoryOfRuleId(ruleId);
-    const keeps = group.filter((g) => g.row.action === "keep").length;
-    const dismissals = group.filter((g) => g.row.action === "dismiss" || g.row.action === "never_flag").length;
-    const rewrites = group.filter((g) => g.row.action === "rewrite").length;
-    const opposite = `${kind === "suppress" ? "prioritise" : "suppress"}${KEY_SEPARATOR}${ruleId}`;
-    const contradictingSignals = (buckets.get(opposite) ?? []).length;
-    const evidence = {
-      keeps,
-      dismissals,
-      rewrites,
-      // Only the owner's own feedback is an activation signal; a pooled
-      // reviewer's comment informs voice and precedent, never a rule (docs/adr/0030).
-      ownerSignals: group.filter((g) => g.row.actor === "owner").length,
-      contradictingSignals,
-      mostRecentAt: group[0]?.row.created_at ?? null,
-      eventIds: group.map((g) => `${g.row.review_run_id}:${g.row.finding_id}`)
-    };
-    const gate = canActivate(evidence);
-    const reasons = group.map((g) => g.row.reason).filter((r) => r !== null && r.length > 0);
-    const severities = [...new Set(group.map((g) => g.severity).filter((s) => s !== null))];
-    proposals.push({
-      scope: { type: "global", key: "owner" },
-      kind,
-      category,
-      ruleId,
-      rule: kind === "suppress" ? `Suppress ${category} findings${severities.length === 1 ? ` at ${severities[0]} severity` : ""} unless they name a concrete failure mode${reasons.length > 0 ? ` (stated reason: ${reasons[0]})` : ""}.` : `Treat ${category} as high priority; findings in this category are consistently kept.`,
-      evidence,
-      confidence: confidenceFrom(evidence),
-      activatable: gate.ok,
-      blockedBecause: gate.reason
-    });
-  }
-  return proposals;
 }
 
 // plugins/review-voice/src/evaluate/recall-results.ts
@@ -22296,24 +22401,33 @@ var COMMAND_HELP = {
       "review-voice calibrate",
       "  Show proposed policy changes and their evidence. Takes no flags.",
       "",
-      "Reads: nothing on stdin; the local store.",
-      "Writes: JSON on stdout; stores the proposal as a pending policy version.",
+      "Reads: nothing on stdin; the local store, and identity.owner_reviewer from",
+      "  .review-voice/config.yaml, which makes the owner's own thread replies owner signals.",
+      "Writes: JSON on stdout; stores one pending policy version per scope, holding the rules",
+      "  that can be approved, and prints { policyId, version, scope } for each in policies[];",
+      "  a rule that cannot be approved yet is listed in blocked[] with its reason instead.",
+      "  A suppression takes the directory its dismissals share (scope path:<dir>/**), or",
+      "  global when they share none; strong thread dismissals count as evidence, weak",
+      "  outcomes and silence do not.",
       "Exit codes: 0 ok."
     )
   },
   policy: {
-    summary: "show | approve <id> | rollback <version>",
+    summary: "show | approve <id> | rollback <version> [--scope path:<glob>]",
     body: lines(
-      "review-voice policy [show | approve <id> | rollback <version>]",
+      "review-voice policy [show | approve <id> | rollback <version>] [--scope path:<glob>]",
       "  Show, approve, or roll back policies.",
       "",
       "Positional:",
-      "  show                  List policies (the default with no argument)",
-      "  approve <id>          Approve a proposed policy",
+      "  show                  List policies of every scope (the default with no argument)",
+      "  approve <id>          Approve a proposed policy; the id names its scope",
       "  rollback <version>    Roll back to a policy version number",
+      "Flags:",
+      "  --scope <scope>       global or path:<glob>; show lists only that scope, rollback acts on",
+      "                        only that scope (default global)",
       "Reads: nothing on stdin.",
       "Writes: JSON or a one-line result on stdout; approve and rollback change the local store.",
-      "Exit codes: 0 ok, 1 refused (unknown id or version), 2 bad invocation."
+      "Exit codes: 0 ok, 1 refused (unknown id or version), 2 bad invocation (including a bad --scope)."
     )
   },
   evaluate: {
@@ -23915,11 +24029,12 @@ async function outcomesCommand(argv) {
   }
   const since = new Date(Date.now() - Number(days) * 864e5).toISOString();
   let allowlist = repository === null ? [] : [repository];
-  if (repository === null) {
-    try {
-      allowlist = loadConfig(repositoryRoot(process.cwd())).allowlist;
-    } catch {
-    }
+  let ownerReviewer = null;
+  try {
+    const config2 = loadConfig(repositoryRoot(process.cwd()));
+    ownerReviewer = config2.ownerReviewer;
+    if (repository === null) allowlist = config2.allowlist;
+  } catch {
   }
   const db = openDatabase();
   try {
@@ -23928,7 +24043,8 @@ async function outcomesCommand(argv) {
       client: new GitHubClient({ allowlist }),
       allowlist,
       repository: repository ?? void 0,
-      since
+      since,
+      ownerReviewer
     });
     for (const warning of result.warnings) console.error(warning);
     for (const skipped of result.skipped) {
@@ -24576,22 +24692,45 @@ function gateOf(rejectedBecause) {
   if (rejectedBecause.startsWith("technical confidence ")) return "confidence";
   return null;
 }
+function scopeLabel(scope) {
+  return scope.type === "global" ? "global" : `${scope.type}:${scope.key}`;
+}
+function scopeFlag(argv) {
+  if (!argv.includes("--scope")) return null;
+  const value = flag(argv, "--scope");
+  if (value === "global") return { ...GLOBAL_SCOPE };
+  if (value !== null && value.startsWith("path:") && value.slice("path:".length).trim().length > 0) {
+    return { type: "path", key: value.slice("path:".length).trim() };
+  }
+  return "--scope takes global or path:<glob>, for example path:src/billing/**.";
+}
 function calibrateCommand() {
+  let ownerReviewer = null;
+  try {
+    ownerReviewer = loadConfig(repositoryRoot(process.cwd())).ownerReviewer;
+  } catch {
+  }
   const db = openDatabase();
   try {
-    const proposals = compileProposals(db);
+    const proposals = compileProposals(db, { ownerReviewer });
     if (proposals.length === 0) {
       console.log(JSON.stringify({ proposals: [], note: "No feedback recorded yet." }, null, 2));
       return 0;
     }
-    const stored = proposePolicy(db, proposals);
-    console.log(
-      JSON.stringify(
-        { policyId: stored.policyId, version: stored.version, active: stored.active, proposals },
-        null,
-        2
-      )
-    );
+    const byScope = /* @__PURE__ */ new Map();
+    for (const proposal of proposals) {
+      if (!proposal.activatable) continue;
+      const label2 = scopeLabel(proposal.scope);
+      const group = byScope.get(label2) ?? { scope: proposal.scope, rules: [] };
+      group.rules.push(proposal);
+      byScope.set(label2, group);
+    }
+    const policies = [...byScope.values()].sort((a, b) => Number(b.scope.type === "global") - Number(a.scope.type === "global") || a.scope.key.localeCompare(b.scope.key)).map(({ scope, rules }) => {
+      const stored = proposePolicy(db, rules, scope);
+      return { policyId: stored.policyId, version: stored.version, scope: scopeLabel(scope), active: stored.active };
+    });
+    const blocked = proposals.filter((proposal) => !proposal.activatable).map((proposal) => ({ ruleId: proposal.ruleId, scope: scopeLabel(proposal.scope), blockedBecause: proposal.blockedBecause }));
+    console.log(JSON.stringify({ policies, blocked, proposals }, null, 2));
     return 0;
   } finally {
     db.close();
@@ -24599,12 +24738,17 @@ function calibrateCommand() {
 }
 function policyCommand(argv) {
   const [action, argument] = argv;
+  const scope = scopeFlag(argv);
+  if (typeof scope === "string") {
+    console.error(scope);
+    return 2;
+  }
   const db = openDatabase();
   try {
     switch (action) {
       case void 0:
       case "show":
-        console.log(JSON.stringify({ policies: listPolicies(db) }, null, 2));
+        console.log(JSON.stringify({ policies: scope === null ? listPolicies(db) : listPolicies(db, scope) }, null, 2));
         return 0;
       case "approve": {
         if (argument === void 0) {
@@ -24625,7 +24769,7 @@ function policyCommand(argv) {
           console.error("policy rollback needs a version number.");
           return 2;
         }
-        const result = rollbackTo(db, version);
+        const result = scope === null ? rollbackTo(db, version) : rollbackTo(db, version, scope);
         if (!result.ok) {
           console.error(result.error);
           return 1;

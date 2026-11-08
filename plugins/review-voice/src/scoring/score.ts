@@ -3,6 +3,7 @@ import type { ReachCheck } from './reach.ts';
 import { canonicalCategory, deriveSeverity, type DerivedSeverity, type Severity } from './severity.ts';
 import { ESCALATION_CONFIDENCE, verifierConfidence } from './confidence.ts';
 import { SEVERITIES } from '../contract/limits.ts';
+import { posix } from 'node:path';
 import { DIFF_LANE, type Lane } from '../review/lanes.ts';
 import { governsAny } from '../conventions/globs.ts';
 import type { Suppression } from '../policy/schema.ts';
@@ -312,12 +313,15 @@ export function matchingSuppression(
   if (suppressions.length === 0 || isSuppressionExempt(candidate.category)) return null;
   const ruleId = ruleIdFor(candidate.category, candidate.lane, candidate.blockerClass);
   if (ruleId === null) return null;
+  // The citation checks accept a path spelled `./src/a.ts`, so the glob must
+  // see the same path they do, or that spelling would walk past a scope.
+  const path = posix.normalize(candidate.path.split('\\').join('/')).replace(/^\.\//, '');
   return (
     suppressions.find(
       (suppression) =>
         suppression.ruleId === ruleId &&
         !isSuppressionExempt(categoryOfRuleId(suppression.ruleId)) &&
-        (suppression.glob === null || governsAny([suppression.glob], [candidate.path])),
+        (suppression.glob === null || governsAny([suppression.glob], [path])),
     ) ?? null
   );
 }

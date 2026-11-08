@@ -51,3 +51,18 @@ strength rules, and `evaluate` reports precision from strong outcomes.**
 
 **Ask the author to react with an emoji.** Rejected. It adds work for the
 author and depends on a convention nobody follows.
+
+## Amendment - 2026-11-08
+
+Strong dismissals are calibration evidence as well as a metric. `calibrate`
+uses them to propose suppressions keyed by rule id, scoped to the common
+directory of the dismissals or global when that directory is the repository
+root. Silence and weak outcomes remain ineligible as policy evidence.
+
+The owner's own reject reply counts even when the review was posted under
+the owner's credential. An acknowledgement by the posting account still does
+not count, because agreeing with its own finding is not independent evidence.
+The deciding login is recorded so only the owner's dismissals count as owner
+signals. A dismissal already covered by explicit `dismiss` or `never_flag`
+feedback counts once. The evidence bar and owner approval still gate every
+activation; collecting an outcome never activates a suppression.

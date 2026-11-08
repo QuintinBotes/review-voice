@@ -55,11 +55,29 @@ before it takes effect. See `docs/adr/0006-team-governance.md`.
 
 ## Activation rules
 
-An inferred rule may activate only if the owner approves it, or if it has at
-least three corroborating positive signals including at least one owner signal,
-no contradicting owner signal, and it passes the regression suite.
+An inferred rule needs at least three corroborating signals including at least
+one owner signal and no contradicting owner signal before it can be approved.
+Every scope requires explicit owner approval; calibration never activates a rule.
 
-Global policy changes always require owner approval.
+## Calibration and scopes
+
+`calibrate` uses explicit feedback and strong thread dismissals to propose
+rules. Weak outcomes and silence are not evidence. A thread dismissal is an
+owner signal only when the deciding login matches the configured owner.
+
+Suppression proposals use a path scope such as `path:src/billing/**` for the
+longest common directory of their dismissals, or global when it is the
+repository root. Priority proposals stay global. Calibration stores one policy
+per scope, each with its own version sequence. Rules stay keyed by rule id;
+the path scope only narrows where an approved rule applies through its
+`suppressions[].glob`. A suppression without a glob inherits the path policy's
+scope.
+
+`policy show` lists all scopes. `policy show --scope global` and
+`policy show --scope 'path:src/billing/**'` select one. Approve with
+`policy approve <policy-id>`. To restore an approved path version, use
+`policy rollback <version> --scope 'path:src/billing/**'`; without `--scope`,
+rollback selects global. Approval and rollback change only the selected scope.
 
 ## When writing a suppression
 

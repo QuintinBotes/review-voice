@@ -144,7 +144,7 @@ test('#201 record stores each candidate lane and the finding carries it', async 
     const stored = JSON.parse(db.prepare('SELECT candidates_json FROM review_runs').get().candidates_json);
     assert.deepEqual(stored.map((c) => [c.lane, c.blocker_class]), [['structure', 'file-size'], ['diff', undefined]]);
 
-    const outcome = (id) => db.prepare('INSERT INTO finding_outcomes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(reviewRunId, id, REPO, PR, 1, 'fixed', 'strong', 'e', 'now');
+    const outcome = (id) => db.prepare('INSERT INTO finding_outcomes (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(reviewRunId, id, REPO, PR, 1, 'fixed', 'strong', 'e', 'now');
     outcome('rv_01');
     outcome('rv_02');
     const { byLane } = postedBreakdown(db);

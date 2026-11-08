@@ -616,12 +616,25 @@ function approvedPolicyLayers(db: Database, warnings: string[]): { layers: Polic
       }
       const read = readSuppressions(doc['suppressions'], row.version);
       for (const warning of read.warnings) warnings.push(`${label}: ${warning}`);
+      const isPath = row.scopeType === 'path';
+      // A path policy applies inside its scope and nowhere else, so every
+      // suppression in it carries the scope's glob, whatever the row says: a
+      // suppression with no glob would otherwise reach everywhere, and one with
+      // a wider glob would reach past the directory the owner approved it for.
+      const suppressions = isPath
+        ? read.suppressions.map((suppression) => {
+            if (suppression.glob !== null && suppression.glob !== row.scopeKey) {
+              warnings.push(`${label}: suppression ${suppression.ruleId} names glob ${suppression.glob}; the policy's scope ${row.scopeKey} applies.`);
+            }
+            return { ...suppression, glob: row.scopeKey };
+          })
+        : read.suppressions;
       layers.push({
-        scope: { type: 'global', key: row.scopeKey },
+        scope: { type: isPath ? 'path' : 'global', key: row.scopeKey },
         source: `${label} (policies table)`,
         requiresApproval: false,
         suppressedPatterns: asStringArray(doc['suppressed_patterns']),
-        suppressions: read.suppressions,
+        suppressions,
       });
     } catch (error) {
       warnings.push(`${label} could not be parsed: ${String(error)}`);

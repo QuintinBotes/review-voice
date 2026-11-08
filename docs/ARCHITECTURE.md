@@ -835,6 +835,12 @@ volume: three vague observations are not better evidence than one naming a line.
 A negative precedent lowers a candidate's score but cannot refute a verified
 defect. Precedent adjusts preference; it never manufactures or unmakes truth.
 
+Rules stay keyed by rule id. An approved rule's path scope only narrows where
+it applies; it does not change what the rule is about. A suppression holds a
+candidate only when both its rule id and path glob match, subject to the
+security and trust boundary exemptions in
+[ADR 0032](adr/0032-approved-policies-are-enforced-at-scoring.md).
+
 ### The independent challenge
 
 The evidence-verifier and the second pass both start from the analyst's

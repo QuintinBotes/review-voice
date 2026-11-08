@@ -1,4 +1,6 @@
+import { posix } from 'node:path';
 import type { Database } from '../store/db.ts';
+import { isSuppressionExempt } from '../scoring/score.ts';
 import { categoryOfRuleId, ruleIdFor } from './rules.ts';
 
 export interface RuleEvidence {
@@ -12,7 +14,13 @@ export interface RuleEvidence {
 }
 
 export interface ProposedRule {
-  scope: { type: 'global' | 'repository'; key: string };
+  scope: { type: 'global' | 'repository' | 'path'; key: string };
+  /**
+   * The path glob a suppress rule is narrowed to, or null for everywhere. It is
+   * the scope key of a path rule, and absent on a rule stored before S07, which
+   * reads as everywhere.
+   */
+  glob?: string | null;
   kind: 'suppress' | 'prioritise';
   /** The finding category the rule is about, taken from `ruleId`. */
   category: string;
@@ -113,15 +121,52 @@ function label(row: FeedbackRow): Labelled | null {
 /** A rule id contains colons and a kind never does, so a tab keeps the two apart. */
 const KEY_SEPARATOR = '\t';
 
+export const GLOBAL_SCOPE = { type: 'global', key: 'owner' } as const;
+
 /**
- * Compiles explicit feedback into proposed policy rules.
- *
- * Only explicit feedback is used. Inferred outcomes are evidence for
- * retrieval, but a rule that changes what the reviewer says in every future
- * review should rest on something the owner actually said.
+ * The longest directory every path sits under, as segments; empty when they
+ * share only the repository root. Whole segments, so `src/bill` and
+ * `src/billing` meet at `src`, not at a half-named directory. Each path is
+ * normalised first, so `src/billing/../orders/a.ts` sits under `src/orders`,
+ * and one that climbs out of the repository sits under nothing. A segment that
+ * happens to hold a glob character is kept as written: cutting the prefix
+ * short there would widen the scope to the parent, which is the one direction
+ * a scope derived from dismissals must never move.
  */
-export function compileProposals(db: Database): ProposedRule[] {
-  const rows = db
+function commonDirectory(paths: string[]): string[] {
+  let common: string[] | null = null;
+  for (const path of paths) {
+    const normalised = posix.normalize(path.split('\\').join('/'));
+    const segments = normalised.split('/').filter((part) => part.length > 0 && part !== '.');
+    const directories = segments[0] === '..' ? [] : segments.slice(0, -1);
+    if (common === null) {
+      common = directories;
+    } else {
+      let shared = 0;
+      while (shared < common.length && shared < directories.length && common[shared] === directories[shared]) shared += 1;
+      common = common.slice(0, shared);
+    }
+  }
+  return common ?? [];
+}
+
+/**
+ * Compiles feedback into proposed policy rules.
+ *
+ * Two sources count. The owner's explicit feedback, and strong thread
+ * dismissals (docs/adr/0029): an author or the owner turned a posted finding
+ * down on the pull request. Weak outcomes and silence never count, because a
+ * rule that changes what the reviewer says in every future review should rest
+ * on someone having said so. A thread dismissal is an owner signal only when
+ * the owner's own login decided it; a teammate's dismissal is evidence but can
+ * never activate a rule alone (docs/adr/0006).
+ *
+ * Rules stay keyed by rule id. A suppress rule's path scope, the longest
+ * common directory of its dismissals, only narrows where an approved rule
+ * applies; it is never part of what the rule is about.
+ */
+export function compileProposals(db: Database, options: { ownerReviewer?: string | null | undefined } = {}): ProposedRule[] {
+  const feedbackRows = db
     .prepare(
       `SELECT f.action, f.actor, f.finding_id, f.review_run_id, f.reason, f.created_at, r.output_json
        FROM feedback f
@@ -130,11 +175,53 @@ export function compileProposals(db: Database): ProposedRule[] {
     )
     .all() as unknown as FeedbackRow[];
 
+  // An outcome a dismiss or never_flag feedback row covers is dropped, so one
+  // dismissal counts once however it was recorded.
+  const owner = options.ownerReviewer?.toLowerCase() ?? null;
+  const threadRows = (
+    db
+      .prepare(
+        `SELECT o.review_run_id, o.finding_id, o.decided_by, o.checked_at, r.output_json
+         FROM finding_outcomes o
+         JOIN review_runs r ON r.review_run_id = o.review_run_id
+         WHERE o.outcome = 'dismissed' AND o.strength = 'strong'
+           AND NOT EXISTS (
+             SELECT 1 FROM feedback f
+             WHERE f.review_run_id = o.review_run_id AND f.finding_id = o.finding_id
+               AND f.action IN ('dismiss', 'never_flag')
+           )`,
+      )
+      .all() as unknown as { review_run_id: string; finding_id: string; decided_by: string | null; checked_at: string; output_json: string }[]
+  ).map(
+    (row): FeedbackRow => ({
+      action: 'dismiss',
+      actor: owner !== null && row.decided_by?.toLowerCase() === owner ? 'owner' : 'team',
+      finding_id: row.finding_id,
+      review_run_id: row.review_run_id,
+      reason: null,
+      created_at: row.checked_at,
+      output_json: row.output_json,
+    }),
+  );
+  const merged = [...feedbackRows, ...threadRows].sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+  // One finding dismissed is one signal, whether the owner ran dismiss, then
+  // never_flag, and the thread said so too. The newest row of a finding stands.
+  const dismissed = new Set<string>();
+  const rows = merged.filter((row) => {
+    if (row.action !== 'dismiss' && row.action !== 'never_flag') return true;
+    const finding = `${row.review_run_id}${KEY_SEPARATOR}${row.finding_id}`;
+    if (dismissed.has(finding)) return false;
+    dismissed.add(finding);
+    return true;
+  });
+
   // Grouped by rule id (category, lane, blocker class), not by file path.
   // "Suppress naming comments" is a rule; "suppress things like the ones in
   // src/a.ts" is an observation about one directory that happens to be where
   // you were working that week. Two lanes' findings of one category are two
-  // rules, because a dismissal of one says nothing about the other.
+  // rules, because a dismissal of one says nothing about the other. Rules stay
+  // keyed by rule id; an approved rule's path scope only narrows where it
+  // applies (docs/adr/0029), it never makes the directory the thing being ruled on.
   const buckets = new Map<string, Labelled[]>();
 
   for (const row of rows) {
@@ -161,9 +248,11 @@ export function compileProposals(db: Database): ProposedRule[] {
     const rewrites = group.filter((g) => g.row.action === 'rewrite').length;
 
     // A contradicting signal is the owner having gone the other way on the
-    // same rule - the one case where a rule should not form quietly.
+    // same rule - the one case where a rule should not form quietly. Only the
+    // owner's: a teammate's dismissal on the thread is evidence for a rule,
+    // never a veto over one (docs/adr/0006).
     const opposite = `${kind === 'suppress' ? 'prioritise' : 'suppress'}${KEY_SEPARATOR}${ruleId}`;
-    const contradictingSignals = (buckets.get(opposite) ?? []).length;
+    const contradictingSignals = (buckets.get(opposite) ?? []).filter((g) => g.row.actor === 'owner').length;
 
     const evidence: RuleEvidence = {
       keeps,
@@ -177,18 +266,41 @@ export function compileProposals(db: Database): ProposedRule[] {
       eventIds: group.map((g) => `${g.row.review_run_id}:${g.row.finding_id}`),
     };
 
-    const gate = canActivate(evidence);
     const reasons = group.map((g) => g.row.reason).filter((r): r is string => r !== null && r.length > 0);
     const severities = [...new Set(group.map((g) => g.severity).filter((s): s is string => s !== null))];
 
+    // Only a suppression can be narrowed: a prioritise rule has no dismissals
+    // and its `priorities` entry carries no glob, so it stays global. A bucket
+    // whose dismissals share only the root is global too.
+    const directory = kind === 'suppress' ? commonDirectory(group.map((g) => g.path)) : [];
+    // A glob is the only form a scope can take, and a directory whose name
+    // holds a glob character cannot be written as one without widening it
+    // (`bill*` would take in `billing`), so such a rule is proposed unscoped
+    // and blocked until the owner writes its scope by hand.
+    const unwritable = directory.some((segment) => /[*?[\]{}]/.test(segment));
+    const glob = directory.length === 0 || unwritable ? null : `${directory.join('/')}/**`;
+    // A suppression of a category that names a breach or a trust boundary can
+    // never be approved (docs/adr/0032), so it is never activatable either:
+    // left in a row it would only stop the rules beside it from being approved.
+    const exempt = kind === 'suppress' && isSuppressionExempt(category);
+    const gate = exempt
+      ? { ok: false, reason: `a suppression may not reach ${category}, which names a breach or a trust boundary (docs/adr/0032)` }
+      : unwritable
+        ? {
+            ok: false,
+            reason: `the dismissals share the directory ${directory.join('/')}, whose name holds a glob character, so the rule cannot be scoped to it; write the scope by hand`,
+          }
+        : canActivate(evidence);
+
     proposals.push({
-      scope: { type: 'global', key: 'owner' },
+      scope: glob === null ? { ...GLOBAL_SCOPE } : { type: 'path', key: glob },
+      glob,
       kind,
       category,
       ruleId,
       rule:
         kind === 'suppress'
-          ? `Suppress ${category} findings${severities.length === 1 ? ` at ${severities[0]} severity` : ''} unless they name a concrete failure mode${reasons.length > 0 ? ` (stated reason: ${reasons[0]})` : ''}.`
+          ? `Suppress ${category} findings${glob === null ? '' : ` under ${glob}`}${severities.length === 1 ? ` at ${severities[0]} severity` : ''} unless they name a concrete failure mode${reasons.length > 0 ? ` (stated reason: ${reasons[0]})` : ''}.`
           : `Treat ${category} as high priority; findings in this category are consistently kept.`,
       evidence,
       confidence: confidenceFrom(evidence),
