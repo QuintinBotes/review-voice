@@ -6322,8 +6322,21 @@ var gitGrep = (symbol, cwd, ref) => {
     throw error;
   }
 };
-var gitGrepPaths = (symbol, cwd, ref, timeoutMs) => {
-  const args = ref === null ? ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol] : ["grep", "--fixed-strings", "--full-name", "-l", "-z", "-e", symbol, ref];
+var gitGrepPaths = (...search) => grepPaths(false, ...search);
+var gitGrepWordPaths = (...search) => grepPaths(true, ...search);
+var NOT_IDENTIFIER = "[^[:alnum:]_$]";
+function grepPaths(wholeIdentifier, ...[symbol, cwd, ref, timeoutMs]) {
+  const pattern = wholeIdentifier ? `(^|${NOT_IDENTIFIER})${symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(${NOT_IDENTIFIER}|$)` : symbol;
+  const args = [
+    "grep",
+    wholeIdentifier ? "--extended-regexp" : "--fixed-strings",
+    "--full-name",
+    "-l",
+    "-z",
+    "-e",
+    pattern,
+    ...ref === null ? [] : [ref]
+  ];
   try {
     const output = execFileSync7("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
     const prefix = ref === null ? "" : `${ref}:`;
@@ -6332,7 +6345,7 @@ var gitGrepPaths = (symbol, cwd, ref, timeoutMs) => {
     if (error.status === 1) return [];
     throw error;
   }
-};
+}
 var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
   const [first, second] = patterns;
   const args = ref === null ? ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second] : ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second, ref];
@@ -7071,7 +7084,7 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
 function collectSymbolContext(options) {
   const search = options.search ?? gitGrepPaths;
   const lineSearch = options.lineSearch ?? gitGrepLines;
-  const headSearch = options.headSearch ?? gitGrepPaths;
+  const headSearch = options.headSearch ?? gitGrepWordPaths;
   const head = options.head ?? null;
   const isTestPath = testPathMatcher(options.testPaths ?? DEFAULT_TEST_PATHS);
   const now = options.now ?? Date.now;

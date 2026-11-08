@@ -246,11 +246,36 @@ export const gitGrep: Searcher = (symbol, cwd, ref) => {
  * is re-thrown so callers cannot mistake an unanswered search for a narrow
  * result. `-z` keeps filenames with whitespace or newlines unambiguous.
  */
-export const gitGrepPaths: PathSearcher = (symbol, cwd, ref, timeoutMs) => {
-  const args =
-    ref === null
-      ? ['grep', '--fixed-strings', '--full-name', '-l', '-z', '-e', symbol]
-      : ['grep', '--fixed-strings', '--full-name', '-l', '-z', '-e', symbol, ref];
+export const gitGrepPaths: PathSearcher = (...search) => grepPaths(false, ...search);
+
+/**
+ * Like `gitGrepPaths`, but the token must stand as a whole identifier: a
+ * longer one that merely contains it (`pointerTargets` for `pointerTarget`,
+ * `$name` or `name$All` for `name`) is not a hit. For a search whose result
+ * is counted, such as a declaration's callers, a substring hit would create or
+ * hide a lead.
+ */
+export const gitGrepWordPaths: PathSearcher = (...search) => grepPaths(true, ...search);
+
+// Anything but an identifier character (a letter, digit, underscore or
+// dollar). Git's own word boundary (-w) stops at the dollar, so the boundary
+// is spelled out instead.
+const NOT_IDENTIFIER = '[^[:alnum:]_$]';
+
+function grepPaths(wholeIdentifier: boolean, ...[symbol, cwd, ref, timeoutMs]: Parameters<PathSearcher>): ReturnType<PathSearcher> {
+  const pattern = wholeIdentifier
+    ? `(^|${NOT_IDENTIFIER})${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(${NOT_IDENTIFIER}|$)`
+    : symbol;
+  const args = [
+    'grep',
+    wholeIdentifier ? '--extended-regexp' : '--fixed-strings',
+    '--full-name',
+    '-l',
+    '-z',
+    '-e',
+    pattern,
+    ...(ref === null ? [] : [ref]),
+  ];
   try {
     const output = execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: Math.min(10_000, timeoutMs ?? 10_000) });
     // `git grep -l <ref>` prefixes every line with `<ref>:`. Left on, every
@@ -270,7 +295,7 @@ export const gitGrepPaths: PathSearcher = (symbol, cwd, ref, timeoutMs) => {
     if ((error as { status?: number }).status === 1) return [];
     throw error;
   }
-};
+}
 
 /**
  * Lists tracked lines that contain both fixed-string patterns.

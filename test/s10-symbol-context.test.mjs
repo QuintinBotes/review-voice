@@ -280,6 +280,9 @@ test('the bundled symbols command searches the head for callers and rejects an u
     write({
       'src/new.ts': 'export function toSnakeCase(value: string) { return value; }\n',
       'src/use.ts': "import { toSnakeCase } from './new.ts';\nexport const key = toSnakeCase('a');\n",
+      // A longer identifier that contains the name is not a caller, with or without a dollar sign.
+      'src/other.ts': "export const toSnakeCaseAll = (value: string) => value;\nexport const all = toSnakeCaseAll('a');\n",
+      'src/dollar.ts': "declare const $toSnakeCase: number;\ndeclare const toSnakeCase$All: number;\nexport const sum = $toSnakeCase + toSnakeCase$All;\n",
       'test/use.test.ts': "import { toSnakeCase } from '../src/new.ts';\ntoSnakeCase('a');\n",
     });
     git('commit', '-q', '-m', 'head');

@@ -1,6 +1,7 @@
 import {
   gitGrepLines,
   gitGrepPaths,
+  gitGrepWordPaths,
   type LineSearcher,
   type PathSearcher,
 } from '../scoring/existence.ts';
@@ -431,7 +432,9 @@ function reportFile(
 export function collectSymbolContext(options: CollectSymbolContextOptions): SymbolContextReport {
   const search = options.search ?? gitGrepPaths;
   const lineSearch = options.lineSearch ?? gitGrepLines;
-  const headSearch = options.headSearch ?? gitGrepPaths;
+  // Callers are counted, so the name must stand as a whole word: a longer
+  // identifier that contains it would create or hide the single-caller lead.
+  const headSearch = options.headSearch ?? gitGrepWordPaths;
   const head = options.head ?? null;
   const isTestPath = testPathMatcher(options.testPaths ?? DEFAULT_TEST_PATHS);
   const now = options.now ?? Date.now;
