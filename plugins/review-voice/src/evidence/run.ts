@@ -19,6 +19,65 @@ const MAX_VERSION_POINTS = 80;
 const SHELL_UNAVAILABLE_EXIT_CODES: readonly number[] = [126, 127];
 
 /**
+ * What a configured command gets without being listed, which is enough for a
+ * shell to find its tools, a home, a locale, a scratch directory and a terminal.
+ */
+const BASE_ENVIRONMENT: readonly string[] = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'CI', 'TERM'];
+
+/**
+ * The environment every configured command runs with (issue 279). A command
+ * runs in the pull request's head tree, so one that delegates to the tree runs
+ * the author's code; inheriting the review process's environment would hand
+ * that code GITHUB_TOKEN, ANTHROPIC_API_KEY and REVIEW_VOICE_* settings. Only
+ * the base names and the names the repository listed by name are passed, and a
+ * listed name that is not set stays absent rather than becoming empty.
+ */
+/** Below this length a value is too likely to be an ordinary word or number to mask everywhere it appears. */
+const MIN_MASKED_LENGTH = 8;
+
+/**
+ * The text with the value of every passed-through variable replaced by its
+ * name (issue 279). A repository lists a variable because a command needs it,
+ * often a token, and a tool that prints it (a version banner, a debug line, a
+ * verifier quoting its request) would otherwise carry it into the stored
+ * report and the agents' prompts. The base variables are not secrets and are
+ * left alone; a value shorter than MIN_MASKED_LENGTH is too.
+ */
+export function maskPassthrough(text: string, source: NodeJS.ProcessEnv, passthrough: readonly string[]): string {
+  let masked = text;
+  // Longest first, so a value containing another listed value is masked whole.
+  const values = passthrough
+    .map((name) => [name, source[name]] as const)
+    .filter((entry): entry is readonly [string, string] => typeof entry[1] === 'string' && entry[1].length >= MIN_MASKED_LENGTH)
+    .sort((a, b) => b[1].length - a[1].length);
+  for (const [name, value] of values) masked = masked.split(value).join(`[redacted:${name}]`);
+  return masked;
+}
+
+/**
+ * Every string inside a decoded value, masked. Applied after parsing, because
+ * a value that was escaped in the raw text (quotes, backslashes, newlines in
+ * JSON) only matches once decoded.
+ */
+export function maskPassthroughDeep<T>(value: T, source: NodeJS.ProcessEnv, passthrough: readonly string[]): T {
+  if (typeof value === 'string') return maskPassthrough(value, source, passthrough) as T;
+  if (Array.isArray(value)) return value.map((entry) => maskPassthroughDeep(entry, source, passthrough)) as T;
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, maskPassthroughDeep(entry, source, passthrough)])) as T;
+  }
+  return value;
+}
+
+export function commandEnvironment(source: NodeJS.ProcessEnv, passthrough: readonly string[]): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const name of [...BASE_ENVIRONMENT, ...passthrough]) {
+    const value = source[name];
+    if (typeof value === 'string') env[name] = value;
+  }
+  return env;
+}
+
+/**
  * The report for a run in which nothing was spawned: every configured command
  * is named as not having run, with the reason when an environment switch (not
  * the configuration) is what stopped them.
@@ -60,7 +119,7 @@ function sanitisedVersion(stdout: string): string | undefined {
  */
 export function collectEvidence(
   commands: ConfiguredCommand[],
-  options: { cwd: string; enabled: boolean; spawn?: typeof spawnSync },
+  options: { cwd: string; enabled: boolean; envPassthrough?: readonly string[]; spawn?: typeof spawnSync },
 ): EvidenceReport {
   if (!options.enabled || commands.length === 0) {
     return notRunReport(commands.map((command) => command.name));
@@ -68,6 +127,7 @@ export function collectEvidence(
 
   // The seam tests use so no real process is needed to pin the call count.
   const spawn = options.spawn ?? spawnSync;
+  const env = commandEnvironment(process.env, options.envPassthrough ?? []);
   const outcomes: CommandOutcome[] = [];
   const didNotRun: string[] = [];
 
@@ -77,7 +137,7 @@ export function collectEvidence(
     // Run through a shell because users write shell commands, but with the
     // command string coming only from their own config file - never from the
     // diff, and never interpolated with repository content.
-    const result = spawnInGroup(spawn, command.run, options.cwd, timeoutMs);
+    const result = spawnInGroup(spawn, command.run, options.cwd, timeoutMs, env);
 
     const durationMs = Date.now() - startedAt;
 
@@ -113,15 +173,24 @@ export function collectEvidence(
       continue;
     }
 
+    const mask = (text: string): string => maskPassthrough(text, process.env, options.envPassthrough ?? []);
     const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-    const version = command.version === undefined ? undefined : readVersion(spawn, command.version, options.cwd, timeoutMs);
+    const version = command.version === undefined ? undefined : readVersion(spawn, command.version, options.cwd, timeoutMs, env, mask);
+    // Parsed from the true output, so a passed-through directory in a path does
+    // not break the location; then the text a reader sees is masked. The path
+    // and line stay as printed, because matching a finding to a signal reads them.
+    const signals = parseOutput(command.name, command.run, output).map((signal) => ({
+      ...signal,
+      claim: mask(signal.claim),
+      evidence: signal.evidence.map(mask),
+    }));
     outcomes.push({
       name: command.name,
       command: command.run,
       exitCode: result.status,
       durationMs,
       ...(version === undefined ? {} : { version }),
-      signals: parseOutput(command.name, command.run, output),
+      signals,
     });
   }
 
@@ -138,10 +207,19 @@ export function collectEvidence(
  * way records nothing: it is a nicety for the audit record and must never turn
  * a check that ran into one that did not.
  */
-function readVersion(spawn: typeof spawnSync, run: string, cwd: string, timeout: number): string | undefined {
-  const result = spawnInGroup(spawn, run, cwd, timeout);
+function readVersion(
+  spawn: typeof spawnSync,
+  run: string,
+  cwd: string,
+  timeout: number,
+  env: NodeJS.ProcessEnv,
+  mask: (text: string) => string,
+): string | undefined {
+  const result = spawnInGroup(spawn, run, cwd, timeout, env);
   if (result.error !== undefined || result.status !== 0) return undefined;
-  return sanitisedVersion(String(result.stdout ?? ''));
+  // Masked whole, before the first line is taken and capped: a cut value no
+  // longer matches, and a multiline one would leave its first line behind.
+  return sanitisedVersion(mask(String(result.stdout ?? '')));
 }
 
 /**
@@ -153,9 +231,16 @@ function readVersion(spawn: typeof spawnSync, run: string, cwd: string, timeout:
  * The kill signal is one the command cannot trap, so a check that ignored a
  * polite one cannot hold the review either.
  */
-function spawnInGroup(spawn: typeof spawnSync, run: string, cwd: string, timeout: number): ReturnType<typeof spawnSync> {
+function spawnInGroup(
+  spawn: typeof spawnSync,
+  run: string,
+  cwd: string,
+  timeout: number,
+  env: NodeJS.ProcessEnv,
+): ReturnType<typeof spawnSync> {
   const options: SpawnSyncOptions & { detached: boolean } = {
     cwd,
+    env,
     shell: true,
     encoding: 'utf8',
     timeout,

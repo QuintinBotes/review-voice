@@ -198,6 +198,10 @@ static_evidence:
   #     timeout_seconds: 120
   #     # An optional version command records which tool ran without guessing how to ask it.
   #     version: tsc --version
+  # Commands get only PATH, HOME, LANG, LC_ALL, TMPDIR, CI and TERM, never the
+  # reviewer's GITHUB_TOKEN, ANTHROPIC_API_KEY or REVIEW_VOICE_* settings. List
+  # any other variable a command needs by name (issue 279). Example:
+  # env_passthrough: [NPM_TOKEN]
 
 verification:
   # An optional second pass over each surviving finding, run by a command you
@@ -230,6 +234,9 @@ verification:
   # finding is downgraded instead - an unsure verifier should not delete
   # evidence.
   drop_threshold: 0.8
+  # The command gets the same minimal environment as static_evidence commands.
+  # List the variables it needs by name. Example:
+  # env_passthrough: [OPENAI_API_KEY]
 
 # What `review-voice queue` lists (docs/adr/0026). Every key is optional; the
 # values below are the defaults unless marked as an example.

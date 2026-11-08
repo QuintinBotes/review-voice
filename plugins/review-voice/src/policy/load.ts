@@ -45,7 +45,12 @@ export interface LoadedConfig {
   watch: WatchConfig;
   /** How long run directories and audit events are kept; `watch` and `purge --runs` enforce it. */
   retention: RetentionConfig;
-  staticEvidence: { enabled: boolean; commands: { name: string; run: string; timeoutSeconds?: number; version?: string }[] };
+  staticEvidence: {
+    enabled: boolean;
+    commands: { name: string; run: string; timeoutSeconds?: number; version?: string }[];
+    /** The `env_passthrough` names the commands get beyond the minimal environment (issue 279). */
+    envPassthrough: string[];
+  };
   /** A second, ideally different-model, verification pass. Off by default. */
   verification: {
     enabled: boolean;
@@ -53,6 +58,8 @@ export interface LoadedConfig {
     name?: string | undefined;
     timeoutSeconds?: number | undefined;
     dropThreshold?: number | undefined;
+    /** The `env_passthrough` names the command gets beyond the minimal environment (issue 279). */
+    envPassthrough: string[];
     /**
      * Whether the config actually has a `verification:` block.
      *
@@ -270,6 +277,29 @@ function parseLane(entry: unknown, taken: readonly Lane[]): Lane | string {
     }
   }
   return { name, agent, prefix, when, severity };
+}
+
+/** A name a shell can set and a command can read; anything else could only be a mistake. */
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * The variables a configured command is given beyond the minimal environment
+ * (issue 279). It comes from the same configuration as the commands, so a pull
+ * request cannot widen what its own checks receive. A list that is not one,
+ * and an entry that is not a variable name, are named and dropped.
+ */
+function readEnvPassthrough(value: unknown, key: string, result: LoadedConfig): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    result.warnings.push(`${key} must be a list of variable names; ignoring it.`);
+    return [];
+  }
+  const names: string[] = [];
+  for (const entry of value) {
+    if (typeof entry === 'string' && ENV_NAME.test(entry)) names.push(entry);
+    else result.warnings.push(`${key}: ${JSON.stringify(entry)} is not a variable name; skipping it.`);
+  }
+  return names;
 }
 
 /** An invalid lane is reported and dropped; the rest still load. */
@@ -771,8 +801,8 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     queue: defaultQueueConfig(),
     watch: defaultWatchConfig(),
     retention: { ...DEFAULT_RETENTION },
-    staticEvidence: { enabled: false, commands: [] },
-    verification: { enabled: false, command: '', blockPresent: false },
+    staticEvidence: { enabled: false, commands: [], envPassthrough: [] },
+    verification: { enabled: false, command: '', envPassthrough: [], blockPresent: false },
     humanReview: {
       ...DEFAULT_HUMAN_REVIEW,
       sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths],
@@ -822,6 +852,11 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
         const staticEvidence = asRecord(doc['static_evidence']);
         if (staticEvidence !== null) {
           result.staticEvidence.enabled = staticEvidence['enabled'] === true;
+          result.staticEvidence.envPassthrough = readEnvPassthrough(
+            staticEvidence['env_passthrough'],
+            'static_evidence.env_passthrough',
+            result,
+          );
           const commands = Array.isArray(staticEvidence['commands']) ? staticEvidence['commands'] : [];
           for (const entry of commands) {
             const command = asRecord(entry);
@@ -881,6 +916,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
             timeoutSeconds: positiveInt(verification['timeout_seconds']),
             dropThreshold:
               typeof verification['drop_threshold'] === 'number' ? verification['drop_threshold'] : undefined,
+            envPassthrough: readEnvPassthrough(verification['env_passthrough'], 'verification.env_passthrough', result),
             blockPresent: true,
           };
         }

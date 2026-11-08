@@ -116,9 +116,10 @@ caller's checkout, while the configuration that names the commands still comes
 from the base commit as the trusted-configuration section describes. The
 second-pass `verify` command runs there too (`--cwd`), building the worktree
 if no stage before it did, since it judges findings about the head. A
-configured command therefore runs on the pull request's files with the
-reviewer's environment, which is what ADR 0003 accepts when an owner lists a
-command and what `watch.run_repository_commands` keeps opt-in. It writes the base version of each changed file to
+configured command therefore runs on the pull request's files, which is what
+ADR 0003 accepts when an owner lists a command and what
+`watch.run_repository_commands` keeps opt-in, but not with the reviewer's
+environment, as the static evidence section describes. It writes the base version of each changed file to
 `base/` and its recent history to `history/<URI-encoded path>.txt`, since
 agents get no shell; a write that would clash with another path is skipped
 with a note. The worktree is removed on every exit. While a review runs, the
@@ -551,6 +552,23 @@ command's `unavailable` reason or the report's `skipped` reason when commands
 are disabled by the environment. An optional configured `version` command
 records the tool's sanitised first stdout line, capped at 80 code points.
 
+A configured command, its `version` command and the second-pass verification
+command run with a minimal environment, never the review process's own
+(`commandEnvironment` in `src/evidence/run.ts`, issue 279). They get `PATH`,
+`HOME`, `LANG`, `LC_ALL`, `TMPDIR`, `CI` and `TERM` when set, plus the names
+the configuration lists under `static_evidence.env_passthrough` or
+`verification.env_passthrough`. A command that delegates to the pull request's
+tree runs the author's code, and that code has no claim on `GITHUB_TOKEN`,
+`GH_TOKEN`, `ANTHROPIC_API_KEY` or a `REVIEW_VOICE_*` setting, so none of them
+is passed unless a list names it. The lists come from the same configuration as
+the commands, the base commit's for a pull request, so a pull request cannot
+widen what its own checks receive. A passed-through value of eight characters or more that a command prints, in a diagnostic, a version line or a verifier's reason, is replaced by `[redacted:NAME]` before the report is stored or handed to the agents. This is environment scrubbing, not filesystem isolation. The command still
+runs as the reviewer, so one that runs the author's code can still read any
+file the reviewer can, including credential files under `HOME` such as a
+registry's `.npmrc` or the GitHub CLI's hosts file. For that the defences are
+unchanged: list no command for a head you do not trust, keep
+`REVIEW_VOICE_NO_COMMANDS` on a watcher, and the confined runner S16 specifies.
+
 ### Severity is derived, not requested
 
 Ordering is severity-first, so an unstable tier moves a finding up and down the
@@ -911,9 +929,11 @@ verification:
 The command reads one finding as JSON on stdin and writes a verdict to stdout,
 read-only. The driver runs it in the head worktree (`verify --cwd`), the tree
 the findings are about, while the command itself still comes from the base's
-configuration. A verifier that cannot run never confirms a finding, and verification
-may only weaken a severity on its own; a stronger tier it traced is a proposal
-the tie-break settles.
+configuration. It runs with the same minimal environment as the static checks,
+plus the names `verification.env_passthrough` lists, so a verifier that needs
+its own API key gets it only by name. A verifier that cannot run never confirms
+a finding, and verification may only weaken a severity on its own; a stronger
+tier it traced is a proposal the tie-break settles.
 
 It is opt-in, and a config written before it existed has no block for it at all,
 so `RV context` reports whether yours does.

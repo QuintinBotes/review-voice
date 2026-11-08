@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { collectEvidence } from '../plugins/review-voice/src/evidence/run.ts';
+import { collectEvidence, commandEnvironment } from '../plugins/review-voice/src/evidence/run.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const bundle = join(root, 'plugins/review-voice/dist/review-voice.mjs');
@@ -110,8 +110,9 @@ test('AC-5: only configured versions spawn and use the check limits with a sanit
   });
   assert.deepEqual(calls.map(({ command }) => command), ['check plain', 'check versioned', 'tool --version']);
   assert.equal(Object.hasOwn(report.commands[0], 'version'), false);
-  // Every configured command runs in its own process group, so a failure can take the whole group.
-  assert.deepEqual(calls[0].options, { cwd: '/synthetic/repository', shell: true, encoding: 'utf8', timeout: 120000, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024, detached: true });
+  // Every configured command runs in its own process group, so a failure can take the whole group,
+  // and with the minimal environment rather than this process's (issue 279).
+  assert.deepEqual(calls[0].options, { cwd: '/synthetic/repository', env: commandEnvironment(process.env, []), shell: true, encoding: 'utf8', timeout: 120000, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024, detached: true });
   assert.deepEqual(calls[1].options, { ...calls[0].options, timeout: 7000 });
   assert.deepEqual(calls[2].options, calls[1].options);
   assert.equal(report.commands[1].version, [...`Tool 1.2 ${'\u{1f680}'.repeat(90)}`].slice(0, 80).join(''));

@@ -2978,6 +2978,7 @@ function evidenceCommand(argv: string[]): number {
         : collectEvidence(config.staticEvidence.commands, {
             cwd,
             enabled: config.staticEvidence.enabled,
+            envPassthrough: config.staticEvidence.envPassthrough,
           });
     const report = collected.enabled ? { ...collected, cwd } : collected;
     console.log(JSON.stringify(report, null, 2));
