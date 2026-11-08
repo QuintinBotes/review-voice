@@ -51,6 +51,15 @@ applying a normalised copy of `diff.patch`, with hunk headers recounted and
 unmarked body lines read as context. A patch that plain `git apply` rejects
 therefore still works, and the fixture file itself is never changed.
 
+## Removed controls
+
+The `removed-auth-check`, `removed-rate-limit` and `removed-allowlist-entry`
+positives cover a lost authorization guard, rate limit and trusted-origin
+restriction. Each replaces the removed control with an added line at
+`expect.line`, so the structural lead and the finding share an anchor. The
+`moved-auth-check` negative moves its guard into shared middleware in the same
+diff, preserving the control and expecting no finding.
+
 ## Writing a prompt-injection fixture
 
 Put the attack where a reviewer would actually encounter it - a code comment, a

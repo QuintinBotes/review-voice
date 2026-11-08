@@ -185,6 +185,15 @@ export interface Branch {
   removed: boolean;
 }
 
+/** A line a hunk removes, kept so lexical signals can read what the change took out. */
+export interface RemovedLine {
+  /** The new-side line it stood before: the line of the next surviving or added line, so a replacement shares it. */
+  line: number;
+  text: string;
+  /** The enclosing declaration, with the same meaning as `Branch.scope`. */
+  scope: string | null;
+}
+
 export interface HunkCount {
   path: string;
   line: number;
@@ -194,6 +203,8 @@ export interface HunkCount {
   branches: Branch[];
   /** Every added line with its new-side line number, for lexical signals. */
   added: { line: number; text: string }[];
+  /** Every removed line, for lexical signals. */
+  removed: RemovedLine[];
 }
 
 /** The declaration a line names, cut as git cuts it, or null. Indentation is the caller's to keep or strip. */
@@ -220,7 +231,7 @@ function headerPath(raw: string): string | null {
  * would. A declaration the change removes and adds back, such as a changed
  * signature, keeps its base name; one it only adds starts something new.
  */
-export function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount[] {
+export function countHunks(diff: string, wanted: { has(path: string): boolean }): HunkCount[] {
   const hunks: HunkCount[] = [];
   let path: string | null = null;
   let current: HunkCount | null = null;
@@ -236,6 +247,16 @@ export function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount
     if (decisionPoints === 0) return;
     if (!removed) hunk.decisionPoints += decisionPoints;
     hunk.branches.push({ scope, line: newLine, decisionPoints, removed });
+  };
+  // A removal is anchored to the next surviving or added line. One that nothing
+  // follows in its hunk (the file's last lines were removed) would point past
+  // the end of the new file, so it takes the last surviving line instead, as
+  // `parseHunks` places a deletion site; a file emptied entirely takes line 1.
+  const finish = (): void => {
+    if (current === null) return;
+    for (const removed of current.removed) {
+      if (removed.line >= newLine) removed.line = Math.max(1, newLine - 1);
+    }
   };
 
   for (const raw of diff.split('\n')) {
@@ -261,6 +282,9 @@ export function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount
           replacing = true;
         }
         record(current, text, true);
+        // A removed line does not advance newLine, so this is the anchor
+        // the next surviving or added line takes.
+        current.removed.push({ line: newLine, text, scope });
         remainingOld -= 1;
         continue;
       }
@@ -276,6 +300,7 @@ export function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount
     }
 
     if (line.startsWith('diff --git ')) {
+      finish();
       path = null;
       current = null;
       remainingOld = 0;
@@ -288,9 +313,10 @@ export function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount
     }
     const header = HUNK_HEADER.exec(line);
     if (header !== null && path !== null) {
+      finish();
       remainingOld = header[1] === undefined ? 1 : Number(header[1]);
       remainingNew = header[3] === undefined ? 1 : Number(header[3]);
-      current = { path, line: Number(header[2]), decisionPoints: 0, branches: [], added: [] };
+      current = { path, line: Number(header[2]), decisionPoints: 0, branches: [], added: [], removed: [] };
       newLine = Number(header[2]);
       // A language diff driver may name an indented method; keep it, minus the indent.
       scope = declarationIn((header[4] ?? '').trim());
@@ -298,6 +324,7 @@ export function countHunks(diff: string, wanted: ReadonlySet<string>): HunkCount
       if (wanted.has(path)) hunks.push(current);
     }
   }
+  finish();
   return hunks;
 }
 
@@ -399,6 +426,22 @@ export function productionPaths(
 ): string[] {
   const { kinds } = reviewedKinds(files, config(partial), markedGenerated);
   return [...kinds].filter(([, kind]) => kind === 'production').map(([path]) => path);
+}
+
+/**
+ * The deleted production source files. A review does not read a wholly deleted
+ * file, so `productionPaths` never lists it; this classifies each deleted entry
+ * as if it had been reviewed, by the same test, generated and documentation
+ * rules, and keeps the production ones. That lets a signal read what a deleted
+ * file held from the base side.
+ */
+export function deletedProductionPaths(
+  files: readonly ChangedFile[],
+  partial?: HumanReviewConfigInput,
+  markedGenerated: ReadonlySet<string> = new Set(),
+): string[] {
+  const deleted = files.filter((file) => file.status === 'deleted').map((file) => ({ ...file, reviewed: true }));
+  return productionPaths(deleted, partial, markedGenerated);
 }
 
 /**

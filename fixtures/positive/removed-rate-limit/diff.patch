@@ -1,0 +1,18 @@
+--- a/src/routes/messages.ts
++++ b/src/routes/messages.ts
+@@ -1,14 +1,14 @@
+ import { Router, type Request, type Response } from 'express';
+ import rateLimit from 'express-rate-limit';
+ 
+ const router = Router();
+ export const outbox: unknown[] = [];
+ const messageRateLimit = rateLimit({ windowMs: 60_000, limit: 10 });
+ function sendMessage(request: Request, response: Response) {
+   outbox.push(request.body);
+   response.sendStatus(202);
+ }
+ 
+-router.post('/messages', messageRateLimit, sendMessage);
++router.post('/messages', sendMessage);
+ 
+ export default router;

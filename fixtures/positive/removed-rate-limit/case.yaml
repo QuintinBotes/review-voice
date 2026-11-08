@@ -1,0 +1,10 @@
+name: removed-rate-limit
+asserts: >
+  Removing the message route's rate limit lets one client enqueue more than
+  ten messages per minute without any other check on the request rate.
+expect:
+  min_findings: 1
+  severity: blocking
+  path: src/routes/messages.ts
+  category: security
+  line: 12

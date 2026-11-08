@@ -1,0 +1,22 @@
+--- a/src/routes/widgets.ts
++++ b/src/routes/widgets.ts
+@@ -1,7 +1,7 @@
+-import { requireRole, type Request } from '../auth';
++import { type Request } from '../auth';
++import { requireAdmin } from '../middleware/require-admin';
+ import { deleteWidget } from '../widgets';
+ 
+ export function deleteWidgetRoute(request: Request, widgets: Map<string, string>) {
+-  if (!requireRole(request, 'admin')) return false;
+-  return deleteWidget(widgets, request.id);
++  return requireAdmin(request, () => deleteWidget(widgets, request.id));
+ }
+--- /dev/null
++++ b/src/middleware/require-admin.ts
+@@ -0,0 +1,6 @@
++import { requireRole, type Request } from '../auth';
++
++export function requireAdmin(request: Request, next: () => boolean) {
++  if (!requireRole(request, 'admin')) return false;
++  return next();
++}

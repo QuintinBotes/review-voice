@@ -22,19 +22,46 @@ export interface TypeEscape {
   kind: TypeEscapeKind;
 }
 
-interface Rule {
-  kind: TypeEscapeKind;
-  /** Code patterns see string contents blanked; directives are read from comments only. */
-  in: 'code' | 'comment';
-  pattern: RegExp;
-  /** Narrows a match, e.g. to the directives that name a type rule. */
-  accept?: (match: RegExpMatchArray) => boolean;
+/** One line split by `splitLine`; `code` and `raw` are the same length, so an index in one is an index in the other. */
+export interface SplitLine {
+  code: string;
+  comment: string;
+  raw: string;
 }
 
-interface Language {
-  rules: Rule[];
+/**
+ * Generic over its kind so a second scanner can share the tokenizer and the
+ * rule shape; the default keeps every type-escape rule as it was.
+ */
+export interface Rule<Kind extends string = TypeEscapeKind> {
+  kind: Kind;
+  /**
+   * Code patterns see string contents blanked; directives are read from
+   * comments only; raw patterns see the text before the line comment with
+   * string contents intact, for a rule whose signal lives in a string.
+   */
+  in: 'code' | 'comment' | 'raw';
+  pattern: RegExp;
+  /** Narrows a match, e.g. to the directives that name a type rule. The line is there for a rule that reads a second view of it. */
+  accept?: (match: RegExpMatchArray, line: SplitLine) => boolean;
+}
+
+export interface Language<Kind extends string = TypeEscapeKind> {
+  rules: Rule<Kind>[];
   quotes: string;
   lineComment: string;
+  /**
+   * A second line-comment marker, for a language with two (PHP's `#` beside
+   * `//`). A `#` that opens `#[` is an attribute, not a comment, and is kept.
+   */
+  altLineComment?: string;
+  /**
+   * Whether `/.../` is a regular expression literal, whose contents are
+   * blanked like a string's so a keyword inside one is not read as code. What
+   * precedes the slash decides: after an operand (a name, a number, `)` or
+   * `]`) it divides.
+   */
+  regexLiterals?: boolean;
   blockComments: boolean;
   /** Code lines that name a type without using it, e.g. an import. */
   skip?: RegExp;
@@ -107,14 +134,17 @@ const LANGUAGES: Record<string, Language> = {
 };
 
 /**
- * One line as code, with string contents blanked, and comment. Lexical, one
- * line at a time: a string or block comment that spans lines is not tracked,
- * so a continuation line is read as code and a template literal can miss or
- * add a hit. A line starting with `*` is the middle of a block comment.
+ * One line as code, with string contents blanked, and comment; `raw` is the
+ * code with string contents intact, so a word inside a string can be read
+ * without a keyword inside one being mistaken for code. Lexical, one line at
+ * a time: a string or block comment that spans lines is not tracked, so a
+ * continuation line is read as code and a template literal can miss or add a
+ * hit. A line starting with `*` is the middle of a block comment.
  */
-function splitLine(text: string, language: Language): { code: string; comment: string } {
-  if (language.blockComments && text.trimStart().startsWith('*')) return { code: '', comment: text };
+export function splitLine<Kind extends string>(text: string, language: Language<Kind>): SplitLine {
+  if (language.blockComments && text.trimStart().startsWith('*')) return { code: '', comment: text, raw: '' };
   let code = '';
+  let raw = '';
   let comment = '';
   let quote: string | null = null;
   for (let index = 0; index < text.length; index += 1) {
@@ -122,17 +152,24 @@ function splitLine(text: string, language: Language): { code: string; comment: s
     if (quote !== null) {
       if (char === '\\') {
         code += '  ';
+        raw += text.slice(index, index + 2);
         index += 1;
       } else if (char === quote) {
         quote = null;
         code += char;
+        raw += char;
       } else {
         code += ' ';
+        raw += char;
       }
     } else if (language.quotes.includes(char)) {
       quote = char;
       code += char;
+      raw += char;
     } else if (text.startsWith(language.lineComment, index)) {
+      comment += text.slice(index);
+      break;
+    } else if (language.altLineComment !== undefined && text.startsWith(language.altLineComment, index) && !text.startsWith('#[', index)) {
       comment += text.slice(index);
       break;
     } else if (language.blockComments && text.startsWith('/*', index)) {
@@ -140,21 +177,55 @@ function splitLine(text: string, language: Language): { code: string; comment: s
       comment += `${text.slice(index, end === -1 ? undefined : end + 2)} `;
       if (end === -1) break;
       index = end + 1;
+    } else if (language.regexLiterals === true && char === '/' && opensRegex(code)) {
+      const end = regexEnd(text, index);
+      if (end === -1) {
+        code += char;
+        raw += char;
+      } else {
+        code += `/${' '.repeat(end - index - 1)}/`;
+        raw += text.slice(index, end + 1);
+        index = end;
+      }
     } else {
       code += char;
+      raw += char;
     }
   }
-  return { code, comment };
+  return { code, comment, raw };
+}
+
+// A slash after nothing, an operator, an opening bracket, a separator or a
+// keyword opens a regular expression; after an operand it divides.
+function opensRegex(before: string): boolean {
+  const trimmed = before.trimEnd();
+  if (trimmed === '' || /[(,=:[!&|?{};+\-*%<>~^]$/.test(trimmed)) return true;
+  return /(?:^|[^\w$.])(?:return|typeof|case|in|of|delete|void|throw|new|instanceof|do|else)$/.test(trimmed);
+}
+
+// The index of the slash closing the regular expression opened at `start`, or
+// -1 when the line has none. A slash after a backslash or inside a character
+// class does not close it.
+function regexEnd(text: string, start: number): number {
+  let inClass = false;
+  for (let index = start + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '\\') index += 1;
+    else if (inClass) inClass = char !== ']';
+    else if (char === '[') inClass = true;
+    else if (char === '/') return index;
+  }
+  return -1;
 }
 
 function kindsIn(text: string, language: Language): TypeEscapeKind[] {
-  const { code, comment } = splitLine(text, language);
+  const line = splitLine(text, language);
   const kinds: TypeEscapeKind[] = [];
   for (const rule of language.rules) {
-    if (rule.in === 'code' && language.skip?.test(code)) continue;
-    const source = rule.in === 'code' ? code : comment;
+    if (rule.in === 'code' && language.skip?.test(line.code)) continue;
+    const source = line[rule.in];
     for (const match of source.matchAll(rule.pattern)) {
-      if (rule.accept === undefined || rule.accept(match)) kinds.push(rule.kind);
+      if (rule.accept === undefined || rule.accept(match, line)) kinds.push(rule.kind);
     }
   }
   return kinds;

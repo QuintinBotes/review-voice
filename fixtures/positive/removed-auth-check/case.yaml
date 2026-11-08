@@ -1,0 +1,10 @@
+name: removed-auth-check
+asserts: >
+  Replacing a route handler's requireRole guard with the unguarded deletion
+  lets a caller without the admin role delete a widget.
+expect:
+  min_findings: 1
+  severity: blocking
+  path: src/routes/widgets.ts
+  category: authorization
+  line: 12

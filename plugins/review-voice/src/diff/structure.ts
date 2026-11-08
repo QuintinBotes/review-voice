@@ -5,6 +5,7 @@ import { attributeSource, repositoryRoot, type ChangedFile, type DiffResult } fr
 import { parseHunks } from './hunks.ts';
 import { countHunks } from './complexity.ts';
 import type { ReviewScope } from './incremental.ts';
+import { findRemovedControls, type DeletedFile, type RemovedControl } from './removed-controls.ts';
 import { findTypeEscapes, type TypeEscape } from './type-escapes.ts';
 
 /**
@@ -60,6 +61,12 @@ export interface StructureSignals {
   branchGrowth: BranchGrowth[];
   /** Escape hatches from the type system on added lines, at most 20 per file. */
   typeEscapes: TypeEscape[];
+  /**
+   * Control-like lines the change removes (a guard, a refusal, a decorator, a
+   * middleware, an allowlist entry), at most 20 per file, and every such line of
+   * a deleted production file read from the base. Lexical leads, not findings.
+   */
+  removedControls: RemovedControl[];
   /**
    * Production files whose base or head could not be read, so whether they
    * crossed is unknown rather than no. Paths are capped at 20, sorted.
@@ -244,6 +251,7 @@ export function findStructureSignals(
   paths: readonly string[],
   counts: ReadonlyMap<string, LineCounts>,
   limits: StructureConfig = DEFAULT_STRUCTURE,
+  deletedFiles: readonly DeletedFile[] = [],
 ): StructureSignals {
   const hunks = parseHunks(diff);
   const threshold = limits.maxFileLines;
@@ -271,31 +279,74 @@ export function findStructureSignals(
     sizeCrossings,
     branchGrowth: findBranchGrowth(diff, paths, limits.maxAddedBranchesPerFunction),
     typeEscapes: findTypeEscapes(diff, paths),
+    removedControls: findRemovedControls(diff, paths, deletedFiles),
     unmeasured: { count: unmeasured.length, paths: unmeasured.slice(0, MAX_UNMEASURED_LISTED) },
   };
 }
 
 /**
+ * What the deleted production files held at the base. The patch never shows a
+ * wholly deleted file, so the base blob is the only place to read it. With no
+ * base side, a blob that cannot be read, a binary blob, or a path git cannot be
+ * asked about (one containing a newline), the file is skipped: unknown is not
+ * a finding.
+ */
+function readDeletedFiles(
+  root: string,
+  files: readonly ChangedFile[],
+  deletedProduction: readonly string[],
+  sides: ChangeSides,
+  mode: MeasuredChange['mode'],
+): DeletedFile[] {
+  if (sides.base === null) return [];
+  const specs = new Map<string, string>();
+  for (const path of deletedProduction) {
+    const file = files.find((entry) => entry.status === 'deleted' && entry.path === path);
+    const source = file?.previousPath ?? path;
+    // A working-tree diff is taken against the index, so a file deleted there
+    // held what the index holds, which may differ from the head commit when a
+    // change to it was staged first.
+    const side = mode === 'worktree' ? '' : sides.base;
+    if (!source.includes('\n')) specs.set(path, `${side}:${source}`);
+  }
+  const blobs = readBlobs(root, [...new Set(specs.values())]);
+  const read: DeletedFile[] = [];
+  for (const [path, spec] of specs) {
+    const blob = blobs.get(spec) ?? null;
+    if (blob === null || blob.includes(0)) continue;
+    read.push({ path, text: blob.toString('utf8') });
+  }
+  return read;
+}
+
+/**
  * The structural evidence for a change, measured over `production`. Outside a
  * repository nothing can be read, so every file is unmeasured rather than
- * reported as fine.
+ * reported as fine. `deletedProduction` names the deleted production files,
+ * which the patch does not show; they are read from the base for removed
+ * controls, and skipped when the base is not available. Optional, so a caller
+ * with no deleted files passes three arguments.
  */
 export function collectStructure(
   cwd: string,
   change: MeasuredChange,
   production: readonly string[],
   limits: StructureConfig = DEFAULT_STRUCTURE,
+  deletedProduction: readonly string[] = [],
 ): StructureSignals {
   const files = change.files ?? [];
   // A deleted file cannot cross, and a follow-up review marks deletions reviewed.
   const deleted = new Set(files.filter((file) => file.status === 'deleted').map((file) => file.path));
   const paths = production.filter((path) => !deleted.has(path));
   let counts = new Map<string, LineCounts>();
+  let deletedFiles: DeletedFile[] = [];
   try {
     const root = repositoryRoot(cwd);
-    counts = measureLines(root, files, paths, changeSides(root, change));
+    const sides = changeSides(root, change);
+    counts = measureLines(root, files, paths, sides);
+    deletedFiles = readDeletedFiles(root, files, deletedProduction, sides, change.mode);
   } catch {
     // Nothing measured.
   }
-  return findStructureSignals(change.diff, paths, counts, limits);
+  return findStructureSignals(change.diff, paths, counts, limits, deletedFiles);
 }

@@ -76,6 +76,13 @@ hidden invariant. A single justified cast at an interop edge, such as an
 untyped library or a JSON parse boundary that is validated, is not a finding.
 The match is lexical, so confirm the line really is code before citing it.
 
+Each entry in `removedControls` is a lexical lead that a control line was
+removed. Raise an `authorization`, `security` or `trust_boundary` candidate
+only after reading the surrounding code and searching the head for where the
+check is re-established. When the search finds the check elsewhere, there is
+no finding. When it finds nothing and the consequence cannot be traced, file
+a `question`.
+
 Use this structural lens only for a concrete consequence. For the patterns
 below use `maintainability`, except independent serialized awaits, which are
 `performance`; state the consequence with "and so", prefer one structural
