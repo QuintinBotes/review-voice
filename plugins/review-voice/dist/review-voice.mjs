@@ -755,6 +755,7 @@ function normalisePath(path) {
 function blankFileHunks() {
   return {
     added: /* @__PURE__ */ new Set(),
+    addedText: /* @__PURE__ */ new Map(),
     context: /* @__PURE__ */ new Set(),
     deletionSites: /* @__PURE__ */ new Set(),
     ranges: [],
@@ -862,6 +863,7 @@ function parseHunks(diff) {
       if (line3.startsWith("+")) {
         settleDeletion(active, active.nextRightLine);
         active.file.added.add(active.nextRightLine);
+        active.file.addedText.set(active.nextRightLine, line3.slice(1));
         active.file.patchLines.set(patchLine, active.nextRightLine);
         active.lastRightLine = active.nextRightLine;
         active.nextRightLine += 1;
@@ -929,6 +931,23 @@ function classifyAnchor(hunks, path, line3) {
     patchLine,
     beyondHunks: file2.ranges.length > 0 && file2.ranges.every((range) => line3 > range.end)
   };
+}
+function suggestedPatchMismatch(hunks, path, patch) {
+  const literal = path.replace(/^\.\/+/, "");
+  const file2 = hunks.get(literal) ?? hunks.get(normalisePath(path));
+  if (file2 === void 0) return `suggested_patch is on ${path}, which has no added lines in the diff`;
+  const text4 = [];
+  for (let line3 = patch.start_line; line3 <= patch.end_line; line3 += 1) {
+    const added = file2.addedText.get(line3);
+    if (added === void 0) {
+      return `suggested_patch covers ${path}:${line3}, which is not an added line; a suggestion replaces only lines this change added`;
+    }
+    text4.push(added);
+  }
+  if (text4.join("\n") !== patch.original) {
+    return `suggested_patch original is not the text the diff adds at ${path}:${patch.start_line}-${patch.end_line}; copy those lines exactly`;
+  }
+  return null;
 }
 function classifyStaleConsumer(hunks, path, line3, causedBy) {
   const consumer = path.replace(/^\.\/+/, "");
@@ -1260,7 +1279,8 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
         reason: "established by the verifier",
         runId: current.reviewRunId,
         ...isStaleConsumer(backing) ? { staleConsumer: true } : {},
-        ...backing.deletedFile === true ? { deletedFile: true } : {}
+        ...backing.deletedFile === true ? { deletedFile: true } : {},
+        ...backing.fix?.render === "fix" ? { fixVerified: { runId: current.reviewRunId, candidateId: typeof backing.candidateId === "string" ? backing.candidateId : null } } : {}
       };
     }
     if (same.some((score2) => score2.confidenceSource === "verifier")) {
@@ -1293,6 +1313,7 @@ function planFindings(output, run, loadRun) {
   const unanchored = [];
   const held = [];
   const heldSeverities = [];
+  const fixVerified = /* @__PURE__ */ new Map();
   const loaded = /* @__PURE__ */ new Map([[run.reviewRunId, run]]);
   const cachedLoad = (id) => {
     if (!loaded.has(id)) loaded.set(id, loadRun(id));
@@ -1318,12 +1339,13 @@ function planFindings(output, run, loadRun) {
     }
     const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true && result.deletedFile !== true;
     (anchorable ? inline : unanchored).push(finding);
+    if (anchorable && result.fixVerified !== void 0) fixVerified.set(finding, result.fixVerified);
   }
   const posted = [...inline, ...unanchored].map((finding) => finding.severity);
   let mapped = eventFor(posted);
   const heldBackApproval = mapped === "APPROVE" && eventFor(heldSeverities) !== "APPROVE";
   if (heldBackApproval) mapped = "COMMENT";
-  return { inline, unanchored, held, mapped, heldBackApproval };
+  return { inline, unanchored, held, mapped, heldBackApproval, fixVerified };
 }
 var DEFAULT_VERDICT_POLICY = Object.freeze({
   ciPending: "wait",
@@ -1334,7 +1356,8 @@ var DEFAULT_VERDICT_POLICY = Object.freeze({
   recheckThreadBeforePost: false,
   neverApprove: false,
   scopeBlock: false,
-  scopeBlockModels: false
+  scopeBlockModels: false,
+  suggestions: false
 });
 function verdictPolicy(policy) {
   return { ...DEFAULT_VERDICT_POLICY, ...policy };
@@ -1565,14 +1588,22 @@ function wouldHaveSummary(planned) {
   }
   return `Would have commented: ${plural(count3, "comment")}, the highest ${highest}.`;
 }
-function inlineComment(finding) {
+function suggestionBlock(replacement) {
+  return replacement === "" ? "```suggestion\n```" : `\`\`\`suggestion
+${replacement}
+\`\`\``;
+}
+function inlineComment(finding, patch) {
+  const prose = `**${finding.severity}** - ${finding.prose}`;
+  const comment = { path: finding.path, line: finding.line, side: "RIGHT", body: prose };
+  if (patch === void 0) return comment;
   return {
-    path: finding.path,
-    line: finding.line,
-    side: "RIGHT",
-    // The same rendering `draft` uses. The location is the comment's anchor,
-    // so repeating it in the text would only be noise.
-    body: `**${finding.severity}** - ${finding.prose}`
+    ...comment,
+    body: `${prose}
+
+${suggestionBlock(patch.replacement)}`,
+    // A one-line block needs no range: GitHub replaces the commented line.
+    ...patch.start_line < patch.end_line ? { start_line: patch.start_line, start_side: "RIGHT" } : {}
   };
 }
 function buildPayload(input) {
@@ -1586,7 +1617,7 @@ function buildPayload(input) {
     commit_id: input.head,
     event: input.event,
     body,
-    comments: input.planned.inline.map(inlineComment)
+    comments: input.planned.inline.map((finding) => inlineComment(finding, input.suggestions?.get(finding)))
   };
 }
 function withAnnotations(body, annotations) {
@@ -1714,11 +1745,16 @@ function renderPreview(input) {
     `Head: ${payload.commit_id}`,
     `Body: ${payload.body}`,
     `Comments: ${payload.comments.length}`,
-    ...payload.comments.map((comment) => `${comment.path}:${comment.line}
-  ${comment.body}`)
+    ...payload.comments.map(
+      (comment) => `${comment.path}:${comment.start_line === void 0 ? "" : `${comment.start_line}-`}${comment.line}
+  ${comment.body}`
+    )
   ];
   if ((input.alreadyInline ?? 0) > 0) {
     lines2.push(`Already inline from an earlier post of this head, not sent again: ${input.alreadyInline}`);
+  }
+  for (const withheld of input.withheldSuggestions ?? []) {
+    lines2.push(`${withheld.findingId ?? "-"} ${withheld.path}:${withheld.line} suggestion withheld (${withheld.reason})`);
   }
   if (input.held.length > 0) {
     lines2.push(`Held back, not verified: ${input.held.length}`);
@@ -1730,7 +1766,9 @@ function renderPreview(input) {
   return lines2.join("\n");
 }
 function commentSignature(comment) {
-  return `${comment.path}:${comment.line}:${createHash("sha256").update(comment.body).digest("hex").slice(0, 32)}`;
+  const block = comment.body.lastIndexOf("\n\n```suggestion\n");
+  const prose = block >= 0 && comment.body.endsWith("```") ? comment.body.slice(0, block) : comment.body;
+  return `${comment.path}:${comment.line}:${createHash("sha256").update(prose).digest("hex").slice(0, 32)}`;
 }
 function idempotencyKey(repository, pullNumber, payload) {
   const digest = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
@@ -4232,6 +4270,32 @@ function clip(text4) {
 }
 var MalformedCandidate = class extends Error {
 };
+var MAX_PATCH_LINES = 5;
+var MAX_PATCH_TEXT = 600;
+function suggestedPatchProblem(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return "must be an object with start_line, end_line, original and replacement";
+  }
+  const patch = value;
+  const start = patch["start_line"];
+  const end = patch["end_line"];
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || start > end) {
+    return "start_line and end_line must be whole numbers with 1 <= start_line <= end_line";
+  }
+  if (end - start > MAX_PATCH_LINES - 1) return `covers more than ${MAX_PATCH_LINES} lines`;
+  for (const key2 of ["original", "replacement"]) {
+    const text4 = patch[key2];
+    if (typeof text4 !== "string") return `${key2} must be a string`;
+    if (text4.length > MAX_PATCH_TEXT) return `${key2} is longer than ${MAX_PATCH_TEXT} characters`;
+    if (/^[ \t]*```/m.test(text4)) return `${key2} has a line starting with three backticks, which would close the suggestion block`;
+  }
+  return null;
+}
+function suggestedPatchOf(value) {
+  if (suggestedPatchProblem(value) !== null) return null;
+  const { start_line, end_line, original, replacement } = value;
+  return { start_line, end_line, original, replacement };
+}
 var FOREIGN_KEYS = ["title", "location", "suggested_direction", "suggestion", "description", "summary"];
 function normaliseCandidate(raw, index) {
   const candidateId = raw.candidate_id ?? raw.candidateId ?? `cand_${String(index + 1).padStart(3, "0")}`;
@@ -4254,6 +4318,14 @@ function normaliseCandidate(raw, index) {
   }
   if (suggestedFix !== void 0 && typeof suggestedFix !== "string") {
     throw new MalformedCandidate(`${candidateId}: suggested_fix must be a string when supplied`);
+  }
+  const rawPatch = raw.suggested_patch !== void 0 ? raw.suggested_patch : raw.suggestedPatch;
+  if (rawPatch !== void 0) {
+    const problem = suggestedPatchProblem(rawPatch);
+    if (problem !== null) throw new MalformedCandidate(`${candidateId}: suggested_patch ${problem}`);
+    if (rawPatch.end_line !== raw.line) {
+      throw new MalformedCandidate(`${candidateId}: suggested_patch end_line must be the candidate's line, ${raw.line}`);
+    }
   }
   if (fixConfidence !== void 0 && (!Number.isFinite(fixConfidence) || fixConfidence < 0 || fixConfidence > 1)) {
     throw new MalformedCandidate(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
@@ -4298,6 +4370,7 @@ function normaliseCandidate(raw, index) {
     failureMode: raw.failure_mode ?? raw.failureMode ?? "",
     evidence: Array.isArray(raw.evidence) ? raw.evidence : [],
     suggestedFix: suggestedFix ?? null,
+    ...rawPatch === void 0 ? {} : { suggestedPatch: suggestedPatchOf(rawPatch) },
     fixConfidence: fixConfidence ?? null,
     technicalConfidence: confidence,
     // Spread only when declared, so an ordinary candidate keeps its shape.
@@ -14294,7 +14367,12 @@ function reanchorCandidates(parsed2, candidateId, to) {
   const list2 = Array.isArray(parsed2) ? parsed2 : isRecord(parsed2) && Array.isArray(parsed2["candidates"]) ? parsed2["candidates"] : null;
   if (list2 === null) return null;
   if (!list2.some((c) => isRecord(c) && idOf(c) === candidateId)) return null;
-  const rewritten = list2.map((c) => isRecord(c) && idOf(c) === candidateId ? { ...c, path: to.path, line: to.line } : c);
+  const rewritten = list2.map((c) => {
+    if (!(isRecord(c) && idOf(c) === candidateId)) return c;
+    const moved = c["path"] !== to.path || c["line"] !== to.line;
+    const { suggested_patch: _patch, ...rest } = c;
+    return { ...moved ? rest : c, path: to.path, line: to.line };
+  });
   return Array.isArray(parsed2) ? rewritten : { ...parsed2, candidates: rewritten };
 }
 
@@ -14761,6 +14839,10 @@ function storedCandidate(hint) {
   const { blockerClass: _camel, ...rest } = hint;
   return { ...rest, lane: laneOf(hint), ...blocker === void 0 ? {} : { blocker_class: blocker } };
 }
+function patchPath(hint) {
+  const inside = hint.suggested_patch?.path;
+  return typeof inside === "string" ? inside : hint.path;
+}
 function assignIds(output, hints) {
   const taken = /* @__PURE__ */ new Set();
   return splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null).map((finding, index) => {
@@ -14768,6 +14850,7 @@ function assignIds(output, hints) {
     const { hint, how } = attribute(anchor, hints, taken);
     if (hint !== void 0) taken.add(hint);
     const partly = partlyAddressedOf(hint?.possibleRepeatOf);
+    const patch = suggestedPatchOf(hint?.suggested_patch);
     const blockerClass = blockerClassOf(hint);
     const ruleId = ruleIdFor(hint?.category, laneOf(hint), blockerClass);
     return {
@@ -14787,7 +14870,8 @@ function assignIds(output, hints) {
       // shipped is visible rather than showing up as a missing category.
       ...how === "exact" || how === "none" ? {} : { attributedBy: how },
       ...how === "none" && hints.length > 0 ? { unattributed: true } : {},
-      ...partly === void 0 ? {} : { partlyAddressed: partly }
+      ...partly === void 0 ? {} : { partlyAddressed: partly },
+      ...patch === null || hint === void 0 ? {} : { suggestedPatch: patch, suggestedPatchSource: { path: patchPath(hint), candidateId: typeof hint.candidate_id === "string" ? hint.candidate_id : null } }
     };
   });
 }
@@ -16321,6 +16405,9 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
           readCostMode(review2, result);
           readThresholds(review2, result);
           readLanes(review2["lanes"], result);
+          const suggestions = review2["suggestions"];
+          if (typeof suggestions === "boolean") result.verdictPolicy.suggestions = suggestions;
+          else if (suggestions !== void 0) result.warnings.push("review.suggestions must be true or false; using false.");
           result.layers.push({
             scope: { type: "repository", key: repositoryRoot2 },
             source: ".review-voice/config.yaml",
@@ -17473,6 +17560,42 @@ function inferOutcome(signals) {
   return { status: "unknown", certainty: "weak" };
 }
 
+// plugins/review-voice/src/publish/suggestion.ts
+async function fileAtRef(client, repository, path, ref) {
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  try {
+    const { data } = await client.get(
+      `/repos/${repository}/contents/${encoded}?ref=${encodeURIComponent(ref)}`
+    );
+    if (data?.type !== "file" || data.encoding !== "base64" || typeof data.content !== "string") return null;
+    return Buffer.from(data.content, "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+function linesAt(text4, start, count3) {
+  const lines2 = text4.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+  if (start < 1 || start - 1 + count3 > lines2.length) return null;
+  return lines2.slice(start - 1, start - 1 + count3).join("\n");
+}
+function suggestionApplied(reviewed, current, patch) {
+  const before = reviewed.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+  const after = current.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+  const start = patch.start_line - 1;
+  const original = unixLines(patch.original);
+  const replacement = unixLines(patch.replacement);
+  const replaced = replacement.split("\n");
+  if (original === replacement || before.join("\n") === after.join("\n")) return false;
+  if (after.slice(start, patch.end_line).join("\n") === original) return false;
+  if (before.slice(start, patch.end_line).join("\n") !== original) return false;
+  if (after.slice(start, start + replaced.length).join("\n") !== replacement) return false;
+  if (before.slice(0, start).join("\n") !== after.slice(0, start).join("\n")) return false;
+  return after[start + replaced.length] === before[patch.end_line];
+}
+function unixLines(text4) {
+  return text4.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3).join("\n");
+}
+
 // plugins/review-voice/src/store/outcomes.ts
 var NEGATED_ACK = /\bnot (?:yet )?(?:fixed|done|addressed|changed|updated)\b/i;
 var REJECT = /\b(?:won'?t fix|wontfix|not a (?:bug|issue|problem)|false positive|by design|intentional(?:ly)?|working as (?:intended|designed)|disagree|(?:does not|doesn'?t) apply|not applicable|not needed|unnecessary|incorrect|this is wrong|that'?s wrong)\b/i;
@@ -17729,6 +17852,17 @@ async function decide2(options, context2, run, finding, comment) {
   const changed = await linesChanged(options, context2, run, comment, finding) ?? (state?.outdated === true ? true : null);
   const resolved = state === null ? null : state.resolved;
   const agreed = latest?.stance === "acknowledge";
+  const patch = suggestedPatchOf(finding.suggestedPatch);
+  const offered = (comment.body ?? "").includes("\n```suggestion\n");
+  if (offered && patch !== null && patch.replacement !== "" && patch.replacement !== patch.original && context2.currentHead !== null && run.headRef !== null && !sameHead(run.headRef, context2.currentHead)) {
+    const [reviewed, current] = await Promise.all([
+      fileAtRef(options.client, run.repository, finding.path, run.headRef),
+      fileAtRef(options.client, run.repository, finding.path, context2.currentHead)
+    ]);
+    if (reviewed !== null && current !== null && suggestionApplied(reviewed, current, patch)) {
+      return { outcome: "fixed", strength: "strong", evidence: "suggestion applied", decidedBy: null };
+    }
+  }
   if (changed === true && (resolved === true || agreed)) {
     return {
       outcome: "fixed",
@@ -19211,6 +19345,9 @@ function assertPayload(payload) {
     if (typeof comment.path !== "string" || comment.path.length === 0 || !Number.isInteger(comment.line) || comment.line < 1 || comment.side !== "RIGHT" || typeof comment.body !== "string" || comment.body.length === 0) {
       throw new WriteViolation("Refused a review with a comment that is not anchored to a line.");
     }
+    if ((comment.start_line !== void 0 || comment.start_side !== void 0) && (!Number.isInteger(comment.start_line) || comment.start_line < 1 || comment.start_line > comment.line || comment.start_side !== "RIGHT")) {
+      throw new WriteViolation("Refused a review with a comment whose range does not end at its line on the new side.");
+    }
   }
   const keys = Object.keys(payload).sort().join(",");
   if (keys !== "body,comments,commit_id,event") {
@@ -19678,7 +19815,8 @@ function refusal(head, reason2) {
       payload: null,
       alreadyInline: 0,
       key: null,
-      preview: null
+      preview: null,
+      withheldSuggestions: []
     }
   };
 }
@@ -19800,6 +19938,62 @@ function sentInline(db, repository, pullNumber, head) {
   }
   return sent;
 }
+async function checkedSuggestions(options, run, planned, head) {
+  const suggestions = /* @__PURE__ */ new Map();
+  const withheld = [];
+  const files2 = /* @__PURE__ */ new Map();
+  for (const finding of planned.inline) {
+    const stored = run.findings.find((candidate) => candidate.findingId === finding.findingId);
+    if (stored?.suggestedPatch === void 0) continue;
+    const path = finding.path;
+    const withhold = (reason2) => {
+      withheld.push({ findingId: finding.findingId, path, line: finding.line, reason: reason2 });
+    };
+    const patch = suggestedPatchOf(stored.suggestedPatch);
+    if (patch === null) {
+      withhold("the recorded patch is malformed");
+      continue;
+    }
+    if (unixLines(patch.replacement) === unixLines(patch.original)) {
+      withhold("the replacement does not change the lines");
+      continue;
+    }
+    const backing = planned.fixVerified.get(finding);
+    if (backing === void 0) {
+      withhold("the fix was not verified");
+      continue;
+    }
+    const source = stored.suggestedPatchSource;
+    if (source === void 0 || source.path !== path) {
+      withhold(`anchor moved: the patch was written for ${source?.path ?? "another location"}`);
+      continue;
+    }
+    if (backing.runId !== run.reviewRunId || source.candidateId === null || backing.candidateId !== source.candidateId) {
+      withhold("the verified fix belongs to another candidate");
+      continue;
+    }
+    if (patch.end_line !== stored.line) {
+      withhold(`anchor moved: the finding is on line ${stored.line} and the patch ends on line ${patch.end_line}`);
+      continue;
+    }
+    let file2 = files2.get(path);
+    if (file2 === void 0) {
+      file2 = fileAtRef(options.client, options.repository, path, head);
+      files2.set(path, file2);
+    }
+    const text4 = await file2;
+    if (text4 === null) {
+      withhold("the file could not be read at the head");
+      continue;
+    }
+    if (linesAt(text4, patch.start_line, patch.end_line - patch.start_line + 1) !== unixLines(patch.original)) {
+      withhold("the lines at the head are not the patch original");
+      continue;
+    }
+    suggestions.set(finding, patch);
+  }
+  return { suggestions, withheld };
+}
 async function computeVerdict(options) {
   const head = options.head.toLowerCase();
   if (!SHA2.test(head)) return refusal(options.head, "--head must be the full commit sha the review read");
@@ -19834,12 +20028,16 @@ async function computeVerdict(options) {
   let preview = null;
   let key2 = null;
   let alreadyInline = 0;
+  let withheldSuggestions = [];
   if (decision.action === "post" && decision.event !== null) {
+    const checked = policy.suggestions ? await checkedSuggestions(options, run, planned, head) : null;
+    withheldSuggestions = checked?.withheld ?? [];
     const full2 = buildPayload({
       head,
       event: decision.event,
       planned,
       bodyFindings: run.bodyFindings,
+      ...checked === null ? {} : { suggestions: checked.suggestions },
       // One plain summary line whichever cap applies: CI first, then a held
       // finding or an uncovered carry, then complexity. None of them names
       // human review or the carry in the posted body.
@@ -19856,7 +20054,8 @@ async function computeVerdict(options) {
       pullNumber: options.pullNumber,
       payload,
       held: planned.held,
-      alreadyInline
+      alreadyInline,
+      withheldSuggestions
     });
   }
   return {
@@ -19883,7 +20082,8 @@ async function computeVerdict(options) {
       payload,
       alreadyInline,
       key: key2,
-      preview
+      preview,
+      withheldSuggestions
     }
   };
 }
@@ -19898,7 +20098,8 @@ function recordedCandidates(db, runId) {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((entry, index) => {
     try {
-      return [normaliseCandidate(entry, index)];
+      const { suggested_patch: _patch, ...rest } = entry;
+      return [normaliseCandidate(rest, index)];
     } catch {
       return [];
     }
@@ -20105,7 +20306,8 @@ async function postReview(options) {
           pullNumber: options.pullNumber,
           payload,
           held: verdict2.held,
-          alreadyInline: verdict2.alreadyInline
+          alreadyInline: verdict2.alreadyInline,
+          withheldSuggestions: verdict2.withheldSuggestions
         })
       };
     }
@@ -21288,10 +21490,15 @@ function challengerPrompt(run, emitted) {
   ].join("\n");
 }
 function editorPrompt(eligible, voice) {
+  const forEditor = eligible.map((entry) => {
+    if (entry === null || typeof entry !== "object" || !("suggested_patch" in entry)) return entry;
+    const { suggested_patch: _patch, ...rest } = entry;
+    return rest;
+  });
   return [
     "Render the review from these eligible findings, in this order:",
     "",
-    JSON.stringify(eligible, null, 2),
+    JSON.stringify(forEditor, null, 2),
     ...voice === null ? [] : ["", "No review history is synced; write in this baseline voice (baseline: true):", JSON.stringify(voice)],
     "",
     'Return {"text": "<the rendered review>"}.'
@@ -22632,15 +22839,15 @@ function git5(cwd, label2, args) {
 }
 function materializeFixture(fixtureDir, targetDir, options = {}) {
   const label2 = options.name ?? `${basename4(dirname12(resolve3(fixtureDir)))}/${basename4(resolve3(fixtureDir))}`;
-  const patchPath = join18(fixtureDir, "diff.patch");
-  if (!existsSync10(patchPath)) throw new Error(`${label2}: fixture has no diff.patch`);
+  const patchPath2 = join18(fixtureDir, "diff.patch");
+  if (!existsSync10(patchPath2)) throw new Error(`${label2}: fixture has no diff.patch`);
   if (existsSync10(targetDir) && readdirSync4(targetDir).length > 0) {
     throw new Error(`${label2}: target directory ${targetDir} is not empty`);
   }
   let normalised;
   let files2;
   try {
-    normalised = normalisePatch(readFileSync14(patchPath, "utf8"));
+    normalised = normalisePatch(readFileSync14(patchPath2, "utf8"));
     files2 = parsePatchFiles(normalised);
   } catch (error) {
     throw new Error(`${label2}: ${error.message}`);
@@ -23208,7 +23415,8 @@ var COMMAND_HELP = {
       "  Validate analyst output against the candidate schema.",
       "",
       "Flags:",
-      "  --diff-file <path>     Require anchors on changed lines",
+      "  --diff-file <path>     Require anchors on changed lines, and a suggested_patch to replace",
+      "                         added lines ending at the anchor whose text is its original",
       "  --base <ref>           With --head: a candidate on a file present at --base and absent at --head",
       "                         is accepted at a line of its base copy, and posts in the review body",
       "  --apply-patch-lines    Move a line that is a diff.patch line number to the new-file line it names",
@@ -23224,7 +23432,8 @@ var COMMAND_HELP = {
       "  names a lane needs a configured one and a candidate_id with that lane's prefix; one naming",
       "  no lane is the diff lane, and its id must not carry another lane's prefix.",
       "Writes: JSON on stdout.",
-      "Exit codes: 0 valid, 1 anchor, lane or intent_ref failures, 2 invalid candidates or bad invocation."
+      "Exit codes: 0 valid, 1 anchor (a suggested_patch range included), lane or intent_ref failures,",
+      "  2 invalid candidates or bad invocation."
     )
   },
   "check-verification": {
@@ -23585,12 +23794,15 @@ var COMMAND_HELP = {
       "  Follow each inline comment Review Voice posted to an outcome: fixed, dismissed,",
       "  resolved, outdated, open or unknown. Fixed and dismissed are strong; the rest are weak.",
       "  Reads GitHub and writes nothing there. `evaluate` reports precision from the strong ones.",
+      "  A posted suggestion whose replacement now stands at the current head is fixed, strong,",
+      '  with evidence "suggestion applied".',
       "",
       "Flags:",
       "  --repository <name>    Only runs for owner/repo; naming it allows reading it",
       "  --since <Nd>           Only reviews sent in the last N days (default 30d)",
       "  --json                 Emit one row per finding as JSON",
-      "Reads: the local store, the allowlist in the repository config, and GitHub comments, threads and commits.",
+      "Reads: the local store, the allowlist in the repository config, and GitHub comments, threads and commits,",
+      "  and for a finding with a suggestion, its file at the current head.",
       "Writes: one line per finding and totals on stdout (JSON with --json); outcomes in the local store.",
       "Exit codes: 0 ok, 2 bad invocation."
     )
@@ -23656,8 +23868,14 @@ var COMMAND_HELP = {
       "                                          did not, and counts (never the lists) of held claims;",
       "                                          never the human-review note or a carry reason",
       "  verdict.scope_block_models: false       true also names the model of each stage in it",
+      "  review.suggestions: false               true adds a committable suggestion block to an inline",
+      "                                          comment whose candidate carried suggested_patch, when",
+      "                                          the verifier verified the fix and the head's lines still",
+      "                                          read its original (docs/adr/0033); otherwise the prose",
+      '                                          posts alone and "withheldSuggestions" says why',
       '  An annotation names at most five checks and appears in "annotations".',
-      "Reads: the validated review on stdin.",
+      "Reads: the validated review on stdin; with review.suggestions, each file a suggestion",
+      "  replaces lines of, at the head (GET contents).",
       "Writes: JSON on stdout. Nothing is sent to GitHub.",
       "Exit codes: 0 ok or carried, 2 refused or bad invocation, 3 the head moved, 4 CI still",
       "  running on an approval, 5 a re-check found CI red, 6 CI needs a rerun."
@@ -24501,13 +24719,13 @@ function emitDiff(acquired, outDir) {
   }
   try {
     mkdirSync8(outDir, { recursive: true });
-    const patchPath = join20(outDir, "diff.patch");
+    const patchPath2 = join20(outDir, "diff.patch");
     const metaPath = join20(outDir, "files.json");
-    writeFileSync5(patchPath, result.diff);
+    writeFileSync5(patchPath2, result.diff);
     writeFileSync5(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
     console.log(
       JSON.stringify(
-        { patch: patchPath, files: metaPath, diffBytes: result.diff.length, summary: diffSummary(result) },
+        { patch: patchPath2, files: metaPath, diffBytes: result.diff.length, summary: diffSummary(result) },
         null,
         2
       )
@@ -25842,6 +26060,13 @@ function scoreCommand(argv) {
             return {
               ...withSnakeCaseId(bounded),
               fix: scored === void 0 ? { render: "none", text: null } : editorFix(scored.fix),
+              // Outside the bound, as code must arrive whole; `normaliseCandidate`
+              // already capped it at that length. `record` stores it with the
+              // finding, and posting renders it only behind the verified fix.
+              // The path it was checked on travels inside the patch, which nothing
+              // that moves a finding (reanchor, the challenge) rewrites, so a move
+              // shows at post time as a patch written for another place.
+              ...c.suggestedPatch === void 0 ? {} : { suggested_patch: { ...c.suggestedPatch, path: c.path } },
               // The editor names the cause in the prose, since the consumer's
               // line is what the finding's location shows.
               ...c.anchor === "stale-consumer" ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {},
@@ -27930,15 +28155,14 @@ function checkCandidatesCommand(argv) {
     if (deletedFileCandidates.length > 0) {
       console.error(`${deletedFileCandidates.length} candidate${deletedFileCandidates.length === 1 ? "" : "s"} on a deleted file, posted in the review body: ${deletedFileCandidates.join(", ")}`);
     }
-    const anchorFailures = anchors.filter(({ candidate, anchor }) => !anchor.ok && !onDeletedFile(candidate, anchor)).map(({ candidate, anchor }) => ({
-      candidateId: candidate.candidateId,
-      path: candidate.path,
-      line: candidate.line,
-      kind: anchor.kind,
-      reason: reason(anchor),
-      nearest: anchor.nearest,
-      ...anchor.causedBy === void 0 ? {} : { causedBy: anchor.causedBy }
-    }));
+    const anchorFailures = anchors.flatMap(({ candidate, anchor }) => {
+      const at2 = { candidateId: candidate.candidateId, path: candidate.path, line: candidate.line };
+      if (!anchor.ok && !onDeletedFile(candidate, anchor)) {
+        return [{ ...at2, kind: anchor.kind, reason: reason(anchor), nearest: anchor.nearest, ...anchor.causedBy === void 0 ? {} : { causedBy: anchor.causedBy } }];
+      }
+      const problem = candidate.suggestedPatch === void 0 ? null : suggestedPatchMismatch(hunks, candidate.path, candidate.suggestedPatch);
+      return problem === null ? [] : [{ ...at2, kind: "suggested-patch", reason: problem, nearest: [] }];
+    });
     if (anchorFailures.length > 0 || intentFailures.length > 0 || laneFailures.length > 0) {
       console.log(
         JSON.stringify({ valid: false, ...anchorFailures.length > 0 ? { anchorFailures } : {}, ...laneExtra, ...intentExtra }, null, 2)

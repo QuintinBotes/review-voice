@@ -52,6 +52,7 @@ import {
   ordinaryFindingHint,
   parseHunks,
   reason,
+  suggestedPatchMismatch,
   type AnchorCheck,
   type FileHunks,
 } from './diff/hunks.ts';
@@ -2532,6 +2533,13 @@ function scoreCommand(argv: string[]): number {
             return {
               ...(withSnakeCaseId(bounded) as Record<string, unknown>),
               fix: scored === undefined ? { render: 'none' as const, text: null } : editorFix(scored.fix),
+              // Outside the bound, as code must arrive whole; `normaliseCandidate`
+              // already capped it at that length. `record` stores it with the
+              // finding, and posting renders it only behind the verified fix.
+              // The path it was checked on travels inside the patch, which nothing
+              // that moves a finding (reanchor, the challenge) rewrites, so a move
+              // shows at post time as a patch written for another place.
+              ...(c.suggestedPatch === undefined ? {} : { suggested_patch: { ...c.suggestedPatch, path: c.path } }),
               // The editor names the cause in the prose, since the consumer's
               // line is what the finding's location shows.
               ...(c.anchor === 'stale-consumer' ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {}),
@@ -5319,17 +5327,16 @@ function checkCandidatesCommand(argv: string[]): number {
     if (deletedFileCandidates.length > 0) {
       console.error(`${deletedFileCandidates.length} candidate${deletedFileCandidates.length === 1 ? '' : 's'} on a deleted file, posted in the review body: ${deletedFileCandidates.join(', ')}`);
     }
-    const anchorFailures = anchors
-      .filter(({ candidate, anchor }) => !anchor.ok && !onDeletedFile(candidate, anchor))
-      .map(({ candidate, anchor }) => ({
-        candidateId: candidate.candidateId,
-        path: candidate.path,
-        line: candidate.line,
-        kind: anchor.kind,
-        reason: reason(anchor),
-        nearest: anchor.nearest,
-        ...(anchor.causedBy === undefined ? {} : { causedBy: anchor.causedBy }),
-      }));
+    // A suggested patch on a sound anchor fails like an anchor, so the driver
+    // sends it back to the lane that wrote it with the reason.
+    const anchorFailures = anchors.flatMap(({ candidate, anchor }) => {
+      const at = { candidateId: candidate.candidateId, path: candidate.path, line: candidate.line };
+      if (!anchor.ok && !onDeletedFile(candidate, anchor)) {
+        return [{ ...at, kind: anchor.kind, reason: reason(anchor), nearest: anchor.nearest, ...(anchor.causedBy === undefined ? {} : { causedBy: anchor.causedBy }) }];
+      }
+      const problem = candidate.suggestedPatch === undefined ? null : suggestedPatchMismatch(hunks, candidate.path, candidate.suggestedPatch);
+      return problem === null ? [] : [{ ...at, kind: 'suggested-patch', reason: problem, nearest: [] as number[] }];
+    });
 
     if (anchorFailures.length > 0 || intentFailures.length > 0 || laneFailures.length > 0) {
       console.log(

@@ -68,6 +68,10 @@ review:
   # Defaults for `score --min-confidence` and `--min-score`; the flags win.
   confidence_threshold: 0.80
   final_score_threshold: 0.68
+  # true posts a verified repair of at most five added lines as a suggestion
+  # block the author can commit, when the head's lines still match what the
+  # analyst replaced; otherwise the prose posts alone (docs/adr/0033).
+  suggestions: false
   # Structural evidence for the analyst. It never affects the verdict.
   structure:
     # A production file this change grows from at most this many lines to

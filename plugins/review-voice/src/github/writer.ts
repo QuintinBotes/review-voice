@@ -13,6 +13,9 @@ export interface ReviewComment {
   line: number;
   side: 'RIGHT';
   body: string;
+  /** The first line of a multi-line comment, for a suggestion that replaces `start_line..line`. */
+  start_line?: number;
+  start_side?: 'RIGHT';
 }
 
 /** The create-review request body, exactly as it is sent. */
@@ -162,6 +165,16 @@ function assertPayload(payload: ReviewPayload): void {
       comment.body.length === 0
     ) {
       throw new WriteViolation('Refused a review with a comment that is not anchored to a line.');
+    }
+    // A range is both fields or neither, on the new side, ending at the anchor.
+    if (
+      (comment.start_line !== undefined || comment.start_side !== undefined) &&
+      (!Number.isInteger(comment.start_line) ||
+        (comment.start_line as number) < 1 ||
+        (comment.start_line as number) > comment.line ||
+        comment.start_side !== 'RIGHT')
+    ) {
+      throw new WriteViolation('Refused a review with a comment whose range does not end at its line on the new side.');
     }
   }
   const keys = Object.keys(payload).sort().join(',');

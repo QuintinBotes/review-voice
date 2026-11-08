@@ -401,6 +401,31 @@ current code already serves correctly. Otherwise omit `suggested_fix` and
 `fix_confidence` is audit metadata, like `severity`. It does not decide whether
 the defect is reported or whether the fix is rendered.
 
+Beside `suggested_fix`, you may give `suggested_patch`: the exact replacement
+for a short run of the lines this change added, which the author can commit in
+one click. Provide it only when the fix is a direct replacement of those lines
+and nothing else must change. A fix that needs a new import, a new test or an
+edit anywhere else stays prose, in `suggested_fix` alone.
+
+```json
+"suggested_patch": {
+  "start_line": 84, "end_line": 85,
+  "original": "res.json(token);\nawait tx.commit();",
+  "replacement": "await tx.commit();\nres.json(token);"
+}
+```
+
+- `end_line` is the candidate's own `line`, and `start_line` is at most four
+  lines above it, so the block replaces at most five lines ending at the anchor.
+- Every line from `start_line` to `end_line` is an added (`+`) line of the same
+  file, and `original` is their text exactly as the diff adds it, without the
+  `+`, joined by `\n`. `check-candidates` compares it with the diff and sends
+  back any difference.
+- `original` and `replacement` are each at most 600 characters, and no line of
+  either starts with three backticks. An empty `replacement` deletes the lines.
+- The verifier judges the replacement itself, and it is posted only when the
+  verifier verified it and the lines still read `original` at the head.
+
 ## A comment about another repository is not evidence about it
 
 If a claim rests on the state of a sibling repository, read that repository. A
@@ -550,7 +575,7 @@ commentary. Return `{"candidates": []}` when nothing qualifies - that is a
 correct and common answer, not a failure.
 
 Every candidate has these nine required fields. It may also have the optional
-`suggested_fix` and `fix_confidence` fields described above, `intent_ref` when
+`suggested_fix`, `suggested_patch` and `fix_confidence` fields described above, `intent_ref` when
 it rests on a stated-intent statement, and, only for a stale consumer, `anchor`
 and `caused_by`:
 

@@ -101,6 +101,8 @@ comment in the review, never as a reply.
   rejects an absolute word the scored finding does not use
   (`unbacked_absolute`).
 - Never invent or revise a correction. Render only what `fix.render` permits.
+- Never write code. A `suggested_patch` that reaches you anyway is not yours to
+  render: the CLI adds the suggestion block itself.
 - **If a finding cannot be stated precisely within 40 words, split it or drop
   it.** A vague finding costs more than a missing one - but with no count cap,
   splitting is usually the right answer.

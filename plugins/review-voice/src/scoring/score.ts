@@ -27,6 +27,9 @@ export interface RawCandidate {
   evidence?: string[];
   suggested_fix?: string;
   suggestedFix?: string;
+  /** See `Candidate.suggestedPatch`. */
+  suggested_patch?: unknown;
+  suggestedPatch?: unknown;
   fix_confidence?: number;
   fixConfidence?: number;
   technical_confidence?: number;
@@ -77,6 +80,12 @@ export interface Candidate {
   evidence: string[];
   /** Retained for audit. The verifier's fix confidence decides rendering. */
   suggestedFix: string | null;
+  /**
+   * The replacement for the added lines ending at the anchor, for a committable
+   * suggestion block (docs/adr/0033). It renders only when the verifier verified
+   * the fix and the lines still read `original` at the head being posted on.
+   */
+  suggestedPatch?: SuggestedPatch | undefined;
   fixConfidence: number | null;
   technicalConfidence: number;
   /**
@@ -995,6 +1004,58 @@ function clip(text: string): string {
 
 export class MalformedCandidate extends Error {}
 
+/** A concrete replacement for the added lines `start_line` to `end_line`, in the schema's spelling. */
+export interface SuggestedPatch {
+  start_line: number;
+  end_line: number;
+  original: string;
+  replacement: string;
+}
+
+/** The most lines a suggestion block may replace; a longer repair stays prose. */
+const MAX_PATCH_LINES = 5;
+
+/**
+ * The longest `original` or `replacement`: the bound `score` puts on any text
+ * it hands on. A patch travels outside that bound, because code cut short with
+ * `...` would render broken, so the bound is enforced here instead.
+ */
+const MAX_PATCH_TEXT = 600;
+
+/**
+ * Why `value` is not a suggested patch, or null when it is one. The range is
+ * not compared with any anchor here: a recorded finding keeps its patch after
+ * a re-anchor, so posting can say why the block was withheld.
+ */
+export function suggestedPatchProblem(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return 'must be an object with start_line, end_line, original and replacement';
+  }
+  const patch = value as Record<string, unknown>;
+  const start = patch['start_line'];
+  const end = patch['end_line'];
+  if (!Number.isInteger(start) || !Number.isInteger(end) || (start as number) < 1 || (start as number) > (end as number)) {
+    return 'start_line and end_line must be whole numbers with 1 <= start_line <= end_line';
+  }
+  if ((end as number) - (start as number) > MAX_PATCH_LINES - 1) return `covers more than ${MAX_PATCH_LINES} lines`;
+  for (const key of ['original', 'replacement'] as const) {
+    const text = patch[key];
+    if (typeof text !== 'string') return `${key} must be a string`;
+    if (text.length > MAX_PATCH_TEXT) return `${key} is longer than ${MAX_PATCH_TEXT} characters`;
+    // Indented up to three spaces, three backticks still close a fence, so
+    // any leading blanks are refused with them.
+    if (/^[ \t]*```/m.test(text)) return `${key} has a line starting with three backticks, which would close the suggestion block`;
+  }
+  return null;
+}
+
+/** The patch with only its four fields, or null when it is not one. */
+export function suggestedPatchOf(value: unknown): SuggestedPatch | null {
+  if (suggestedPatchProblem(value) !== null) return null;
+  const { start_line, end_line, original, replacement } = value as SuggestedPatch;
+  return { start_line, end_line, original, replacement };
+}
+
 /** Field names from shapes agents have returned instead of the schema. */
 const FOREIGN_KEYS = ['title', 'location', 'suggested_direction', 'suggestion', 'description', 'summary'];
 
@@ -1043,6 +1104,15 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
   }
   if (suggestedFix !== undefined && typeof suggestedFix !== 'string') {
     throw new MalformedCandidate(`${candidateId}: suggested_fix must be a string when supplied`);
+  }
+  const rawPatch = raw.suggested_patch !== undefined ? raw.suggested_patch : raw.suggestedPatch;
+  if (rawPatch !== undefined) {
+    const problem = suggestedPatchProblem(rawPatch);
+    if (problem !== null) throw new MalformedCandidate(`${candidateId}: suggested_patch ${problem}`);
+    // The block replaces start_line..line, so the comment stays on the anchor.
+    if ((rawPatch as SuggestedPatch).end_line !== raw.line) {
+      throw new MalformedCandidate(`${candidateId}: suggested_patch end_line must be the candidate's line, ${raw.line}`);
+    }
   }
   if (
     fixConfidence !== undefined &&
@@ -1099,6 +1169,7 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     failureMode: raw.failure_mode ?? raw.failureMode ?? '',
     evidence: Array.isArray(raw.evidence) ? raw.evidence : [],
     suggestedFix: suggestedFix ?? null,
+    ...(rawPatch === undefined ? {} : { suggestedPatch: suggestedPatchOf(rawPatch)! }),
     fixConfidence: fixConfidence ?? null,
     technicalConfidence: confidence as number,
     // Spread only when declared, so an ordinary candidate keeps its shape.

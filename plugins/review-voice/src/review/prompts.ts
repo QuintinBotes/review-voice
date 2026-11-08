@@ -166,10 +166,17 @@ export function challengerPrompt(run: RunFiles, emitted: string): string {
 
 /** The editor has no tools, so its input is inline. */
 export function editorPrompt(eligible: unknown[], voice: unknown): string {
+  // A suggested patch is code, and the editor never writes code: the CLI
+  // renders the block from the verified field at post time (S14).
+  const forEditor = eligible.map((entry) => {
+    if (entry === null || typeof entry !== 'object' || !('suggested_patch' in entry)) return entry;
+    const { suggested_patch: _patch, ...rest } = entry as Record<string, unknown>;
+    return rest;
+  });
   return [
     'Render the review from these eligible findings, in this order:',
     '',
-    JSON.stringify(eligible, null, 2),
+    JSON.stringify(forEditor, null, 2),
     ...(voice === null ? [] : ['', 'No review history is synced; write in this baseline voice (baseline: true):', JSON.stringify(voice)]),
     '',
     'Return {"text": "<the rendered review>"}.',

@@ -77,6 +77,35 @@
             "type": "string",
             "maxLength": 300
           },
+          "suggested_patch": {
+            "type": "object",
+            "required": [
+              "start_line",
+              "end_line",
+              "original",
+              "replacement"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "start_line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "end_line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "original": {
+                "type": "string",
+                "maxLength": 600
+              },
+              "replacement": {
+                "type": "string",
+                "maxLength": 600
+              }
+            },
+            "description": "Only beside suggested_fix, when the fix is a direct replacement of these lines and nothing else must change. start_line <= end_line, end_line equals line, at most five lines, all of them added lines. original is their text exactly as the diff adds it, joined by newlines; replacement is what they become. No line of either may start with three backticks."
+          },
           "fix_confidence": {
             "type": "number",
             "minimum": 0,

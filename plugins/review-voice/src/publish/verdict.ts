@@ -5,6 +5,7 @@ import type { RunDetail } from '../store/runs.ts';
 import type { ReviewComment, ReviewEvent, ReviewPayload } from '../github/writer.ts';
 import type { CiEntry, CiState } from './ci.ts';
 import { renderSimplification, type VerifiedSimplification } from '../simplification.ts';
+import type { SuggestedPatch } from '../scoring/score.ts';
 
 export type { ReviewEvent, ReviewPayload };
 
@@ -86,6 +87,9 @@ export interface ScoreLike {
   anchorCheck?: { kind?: unknown } | null;
   /** Set by `score --files` for a finding about a file the change deletes (#265). */
   deletedFile?: unknown;
+  /** The repair decision; only `render: 'fix'` lets a suggestion block post (docs/adr/0033). */
+  fix?: { render?: unknown } | null;
+  candidateId?: unknown;
 }
 
 /**
@@ -126,12 +130,18 @@ const MAX_CARRY_DEPTH = 8;
  * `used` is shared across one review's findings, and `loadRun` must return
  * the same object for the same run, or a score could be used twice.
  */
+/** The run and candidate whose score verified a fix. */
+export interface FixBacking {
+  runId: string;
+  candidateId: string | null;
+}
+
 export function verification(
   finding: { path: string | null; line: number | null; severity: Severity | null },
   run: RunDetail,
   loadRun: RunLoader,
   used: Set<object> = new Set(),
-): { verified: boolean; reason: string; runId: string; staleConsumer?: boolean; deletedFile?: boolean } {
+): { verified: boolean; reason: string; runId: string; staleConsumer?: boolean; deletedFile?: boolean; fixVerified?: FixBacking } {
   if (finding.path === null || finding.severity === null) {
     return { verified: false, reason: 'it names no file, so no score can be matched to it', runId: run.reviewRunId };
   }
@@ -155,6 +165,9 @@ export function verification(
         runId: current.reviewRunId,
         ...(isStaleConsumer(backing) ? { staleConsumer: true } : {}),
         ...(backing.deletedFile === true ? { deletedFile: true } : {}),
+        ...(backing.fix?.render === 'fix'
+          ? { fixVerified: { runId: current.reviewRunId, candidateId: typeof backing.candidateId === 'string' ? backing.candidateId : null } }
+          : {}),
       };
     }
     if (same.some((score) => score.confidenceSource === 'verifier')) {
@@ -206,6 +219,9 @@ export interface PlannedFindings {
   mapped: ReviewEvent;
   /** True when an unverified finding above a nit kept an approval at COMMENT. */
   heldBackApproval: boolean;
+  /** Inline findings whose backing score verified the repair, so a suggestion may render on them. */
+  /** The score that verified each finding's fix, so a patch posts only from its own candidate. */
+  fixVerified: ReadonlyMap<ReviewFinding, FixBacking>;
 }
 
 /**
@@ -223,6 +239,7 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
   const unanchored: ReviewFinding[] = [];
   const held: HeldBack[] = [];
   const heldSeverities: Severity[] = [];
+  const fixVerified = new Map<ReviewFinding, FixBacking>();
 
   // One object per run, so a score marked used stays used across findings.
   const loaded = new Map<string, RunDetail | null>([[run.reviewRunId, run]]);
@@ -259,6 +276,7 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
     // does a finding about a file the change deletes, which has no new side.
     const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true && result.deletedFile !== true;
     (anchorable ? inline : unanchored).push(finding);
+    if (anchorable && result.fixVerified !== undefined) fixVerified.set(finding, result.fixVerified);
   }
 
   const posted = [...inline, ...unanchored].map((finding) => finding.severity as Severity);
@@ -266,7 +284,7 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
   const heldBackApproval = mapped === 'APPROVE' && eventFor(heldSeverities) !== 'APPROVE';
   if (heldBackApproval) mapped = 'COMMENT';
 
-  return { inline, unanchored, held, mapped, heldBackApproval };
+  return { inline, unanchored, held, mapped, heldBackApproval, fixVerified };
 }
 
 export type Action = 'post' | 'wait' | 'refuse' | 'carry';
@@ -290,6 +308,8 @@ export interface VerdictPolicy {
   scopeBlock: boolean;
   /** `verdict.scope_block_models`: name the models of the stages in that block; a public repository need not advertise them. */
   scopeBlockModels: boolean;
+  /** `review.suggestions`: render a verified patch as a committable suggestion block (docs/adr/0033). */
+  suggestions: boolean;
 }
 
 export const DEFAULT_VERDICT_POLICY: Readonly<VerdictPolicy> = Object.freeze({
@@ -302,6 +322,7 @@ export const DEFAULT_VERDICT_POLICY: Readonly<VerdictPolicy> = Object.freeze({
   neverApprove: false,
   scopeBlock: false,
   scopeBlockModels: false,
+  suggestions: false,
 });
 
 export function verdictPolicy(policy: Partial<VerdictPolicy> | undefined): VerdictPolicy {
@@ -676,14 +697,26 @@ export function wouldHaveSummary(planned: PlannedFindings): string {
   return `Would have commented: ${plural(count, 'comment')}, the highest ${highest}.`;
 }
 
-function inlineComment(finding: ReviewFinding): ReviewComment {
+/**
+ * A GitHub suggestion block replacing the commented lines with `replacement`.
+ * An empty replacement deletes them, which GitHub reads from an empty block,
+ * not from one holding a blank line.
+ */
+export function suggestionBlock(replacement: string): string {
+  return replacement === '' ? '```suggestion\n```' : `\`\`\`suggestion\n${replacement}\n\`\`\``;
+}
+
+function inlineComment(finding: ReviewFinding, patch: SuggestedPatch | undefined): ReviewComment {
+  // The same rendering `draft` uses. The location is the comment's anchor,
+  // so repeating it in the text would only be noise.
+  const prose = `**${finding.severity}** - ${finding.prose}`;
+  const comment: ReviewComment = { path: finding.path as string, line: finding.line as number, side: 'RIGHT', body: prose };
+  if (patch === undefined) return comment;
   return {
-    path: finding.path as string,
-    line: finding.line as number,
-    side: 'RIGHT',
-    // The same rendering `draft` uses. The location is the comment's anchor,
-    // so repeating it in the text would only be noise.
-    body: `**${finding.severity}** - ${finding.prose}`,
+    ...comment,
+    body: `${prose}\n\n${suggestionBlock(patch.replacement)}`,
+    // A one-line block needs no range: GitHub replaces the commented line.
+    ...(patch.start_line < patch.end_line ? { start_line: patch.start_line, start_side: 'RIGHT' as const } : {}),
   };
 }
 
@@ -700,6 +733,8 @@ export function buildPayload(input: {
   cappedBy: 'ci' | 'held' | 'complexity' | 'policy' | null;
   /** Optional advice that was separately verified but never enters the verdict. */
   bodyFindings?: readonly VerifiedSimplification[];
+  /** The patches checked against the head, by inline finding; each renders as a suggestion block. */
+  suggestions?: ReadonlyMap<ReviewFinding, SuggestedPatch>;
 }): ReviewPayload {
   const posted = [...input.planned.inline, ...input.planned.unanchored];
   const body = [
@@ -711,7 +746,7 @@ export function buildPayload(input: {
     commit_id: input.head,
     event: input.event,
     body,
-    comments: input.planned.inline.map(inlineComment),
+    comments: input.planned.inline.map((finding) => inlineComment(finding, input.suggestions?.get(finding))),
   };
 }
 
@@ -899,6 +934,14 @@ export function replaceAnnotations(body: string, previous: readonly string[], ne
   return withAnnotations(base, next);
 }
 
+/** A suggestion block left out of an inline comment, and why; the comment's prose still posts. */
+export interface WithheldSuggestion {
+  findingId: string | null;
+  path: string;
+  line: number;
+  reason: string;
+}
+
 /**
  * The preview, generated from the payload that will be sent. A preview built
  * separately from the request is a mock-up, not a preview.
@@ -910,6 +953,8 @@ export function renderPreview(input: {
   held: readonly HeldBack[];
   /** Comments already on this head from an earlier post, so not sent again. */
   alreadyInline?: number | undefined;
+  /** Suggestion blocks left out of their comments, whose prose still posts. */
+  withheldSuggestions?: readonly WithheldSuggestion[] | undefined;
 }): string {
   const { payload } = input;
   const lines = [
@@ -919,10 +964,15 @@ export function renderPreview(input: {
     `Head: ${payload.commit_id}`,
     `Body: ${payload.body}`,
     `Comments: ${payload.comments.length}`,
-    ...payload.comments.map((comment) => `${comment.path}:${comment.line}\n  ${comment.body}`),
+    ...payload.comments.map(
+      (comment) => `${comment.path}:${comment.start_line === undefined ? '' : `${comment.start_line}-`}${comment.line}\n  ${comment.body}`,
+    ),
   ];
   if ((input.alreadyInline ?? 0) > 0) {
     lines.push(`Already inline from an earlier post of this head, not sent again: ${input.alreadyInline}`);
+  }
+  for (const withheld of input.withheldSuggestions ?? []) {
+    lines.push(`${withheld.findingId ?? '-'} ${withheld.path}:${withheld.line} suggestion withheld (${withheld.reason})`);
   }
   if (input.held.length > 0) {
     lines.push(`Held back, not verified: ${input.held.length}`);
@@ -936,7 +986,12 @@ export function renderPreview(input: {
 
 /** Identifies one inline comment, so the same comment on the same head is sent once. */
 export function commentSignature(comment: ReviewComment): string {
-  return `${comment.path}:${comment.line}:${createHash('sha256').update(comment.body).digest('hex').slice(0, 32)}`;
+  // The suggestion block is left out, so a finding posted without its block
+  // (a contents read that failed) is not sent again with it once the read
+  // succeeds on a later post of the same head (S14).
+  const block = comment.body.lastIndexOf('\n\n```suggestion\n');
+  const prose = block >= 0 && comment.body.endsWith('```') ? comment.body.slice(0, block) : comment.body;
+  return `${comment.path}:${comment.line}:${createHash('sha256').update(prose).digest('hex').slice(0, 32)}`;
 }
 
 /**

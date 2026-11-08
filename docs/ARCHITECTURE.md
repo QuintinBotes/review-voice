@@ -1023,6 +1023,20 @@ deterministic `fix` instruction, is passed inline rather than as a path the
 editor cannot open. It may state only the fix or direction that instruction
 permits.
 
+A verified fix can also post as a **committable suggestion block**, opt-in with
+`review.suggestions` (default `false`, ADR 0033). The analyst gives
+`suggested_patch` beside `suggested_fix`: the replacement for at most five added
+lines ending at the anchor, with their `original` text. `check-candidates`
+compares that text with the diff, `score`'s eligible list and `record` carry the
+patch to the finding, and the verifier's fix verdict judges the exact
+replacement. At posting, `computeVerdict` reads the file at the head through
+the contents endpoint and adds the block after the prose only when the backing
+score has `fix.render: 'fix'`, the finding still ends where the patch does, and
+the lines still read `original`; otherwise the prose posts alone and the
+preview says "suggestion withheld" with the reason. The editor never writes
+code: the block comes from the candidate's field through the CLI, and `outcomes`
+counts an applied one as a strong `fixed`.
+
 Rules are keyed by **rule id** (category, lane and, when a candidate claimed
 one, blocker class), not by file path, and an approved rule's suppressions are
 applied in `score`. "Suppress maintainability findings from the diff lane

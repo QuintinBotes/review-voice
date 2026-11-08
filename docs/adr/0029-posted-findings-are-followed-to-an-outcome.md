@@ -66,3 +66,16 @@ The deciding login is recorded so only the owner's dismissals count as owner
 signals. A dismissal already covered by explicit `dismiss` or `never_flag`
 feedback counts once. The evidence bar and owner approval still gate every
 activation; collecting an outcome never activates a suppression.
+
+## Amendment - 2026-11-08 (applied suggestions)
+
+[0033](0033-committable-suggestions-are-verified-patches.md) lets a verified
+patch post as a suggestion block. An applied suggestion is a new strong `fixed`
+outcome, decided before the resolved-or-agreed rule: when the anchored lines
+changed and the file at the current head, read through the contents endpoint,
+holds the replacement from the patch's `start_line`, for as many lines as the
+replacement has, the evidence is "suggestion applied". The author committing
+the suggested text is as strong a signal as a reply agreeing with it. An empty
+replacement, a deletion, never matches this way, and a file that cannot be
+read falls through to the rules above. It is one read per such finding, and
+nothing is written.
