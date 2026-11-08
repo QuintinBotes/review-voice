@@ -403,6 +403,8 @@ test('the operator global git configuration does not reach a recall run', async 
   writeFileSync(script, `#!/bin/sh\ntouch "${marker}"\nexit 0\n`, { mode: 0o755 });
   writeFileSync(join(home, '.gitconfig'), `[diff]\n\texternal = ${script}\n`);
   const savedHome = process.env.HOME;
+  // An environment that already quiets git (Orbit's checks do) must be left as it was, not emptied.
+  const savedGlobal = process.env.GIT_CONFIG_GLOBAL;
   t.after(() => {
     process.env.HOME = savedHome;
   });
@@ -412,7 +414,7 @@ test('the operator global git configuration does not reach a recall run', async 
 
   assert.equal(existsSync(marker), false, 'the external diff never ran');
   assert.equal(run.results.summary.failedRuns, 0, JSON.stringify(run.results.fixtures.map((fixture) => fixture.error)));
-  assert.equal(process.env.GIT_CONFIG_GLOBAL, undefined, 'the quieting variables do not outlive the run');
+  assert.equal(process.env.GIT_CONFIG_GLOBAL, savedGlobal, 'the quieting variables do not outlive the run');
 });
 
 test('--out that is a symbolic link is refused, dangling or not', (t) => {
