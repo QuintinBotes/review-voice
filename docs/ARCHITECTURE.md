@@ -47,7 +47,10 @@ Claude Code command  (commands/review.md - orchestration)
 ### The CLI
 
 TypeScript in `plugins/review-voice/src/`, bundled by esbuild into a single
-committed `dist/review-voice.mjs`.
+committed `dist/review-voice.mjs`. The slash commands are `commands/*.md`; the
+CLI handlers are `src/cli/*.ts`, one module per command or paired family, and
+`src/cli.ts` keeps only the dispatch switch, `main`, `runInProcess` and the
+review command.
 
 **Zero runtime dependencies.** Plugins install by git clone with no install
 step, so users must never run `npm install`. Third-party packages are

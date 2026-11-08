@@ -18,3 +18,13 @@ test('no module under src/cli imports cli.ts', () => {
     assert.doesNotMatch(text, /(?:from\s*|import\(\s*)['"]\.\.\/cli\.ts['"]/, `${file} imports cli.ts`);
   }
 });
+
+test('cli.ts keeps only the dispatch and the in-process runner', () => {
+  const lines = readFileSync(join(src, 'cli.ts'), 'utf8').split('\n').length;
+  assert.ok(lines < 600, `src/cli.ts has ${lines} lines`);
+});
+
+test('the architecture note names where the handlers live', () => {
+  const architecture = readFileSync(join(src, '..', '..', '..', 'docs', 'ARCHITECTURE.md'), 'utf8');
+  assert.ok(architecture.includes('src/cli/'));
+});
