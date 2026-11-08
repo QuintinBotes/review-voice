@@ -47,8 +47,8 @@ const checkRun = (conclusion) => ({
 
 /**
  * GitHub for the watcher: `requested` lists the pull requests, `pulls` holds
- * each one keyed `owner/repo#n`, and `state.ci` ('green' | 'red') can change
- * between passes. POSTs to /reviews are answered and kept.
+ * each one keyed `owner/repo#n`, and `state.ci` ('green' | 'red' | 'pending')
+ * can change between passes. POSTs to /reviews are answered and kept.
  */
 function fakeGitHub({ requested = [], pulls = {}, state = { ci: 'green' } } = {}) {
   const calls = [];
@@ -75,7 +75,7 @@ function fakeGitHub({ requested = [], pulls = {}, state = { ci: 'green' } } = {}
     if (parsed.pathname.endsWith('/reviews')) return json([]);
     if (/\/(pulls|issues)\/\d+\/comments$/.test(parsed.pathname)) return json([]);
     if (parsed.pathname.endsWith('/check-runs')) {
-      const runs = [checkRun(state.ci === 'red' ? 'failure' : 'success')];
+      const runs = [checkRun(state.ci === 'red' ? 'failure' : state.ci === 'pending' ? null : 'success')];
       return json({ total_count: 1, check_runs: runs });
     }
     if (parsed.pathname.endsWith('/status')) return json({ state: 'success', total_count: 0, statuses: [] });
@@ -430,6 +430,56 @@ test('waiting on red CI, then green: the recheck path approves exactly once', as
     assert.deepEqual(impl.posts().map((c) => c.body.event), ['COMMENT', 'APPROVE']);
     assert.equal(review.calls.length, 0, 'a recorded run is never reviewed again');
     assert.equal(rows(h)[0].status, 'posted');
+  });
+});
+
+test('never_approve: pending CI posts COMMENT, and the head is not listed again', async () => {
+  await withWatcher(async (h) => {
+    const db = h.openDb();
+    recordRun(db, { repository: REPO, baseRef: null, headRef: sha('a'), pullNumber: 7, diff: 'diff', output: 'No actionable findings.', scores: [] });
+    db.close();
+    const state = { ci: 'pending' };
+    const impl = fakeGitHub({ requested: [item(REPO, 7)], pulls: { [`${REPO}#7`]: openPull() }, state });
+    const config = { ...settings(), verdictPolicy: { ...DEFAULT_VERDICT_POLICY, neverApprove: true } };
+
+    assert.equal(await h.run(['--once', '--post'], { impl, config }), 0);
+    assert.match(h.out[0], /^acme\/web#7: verdict-only COMMENT \(posted https:/);
+    assert.equal(rows(h)[0].status, 'posted');
+    assert.deepEqual(impl.posts().map((c) => c.body.event), ['COMMENT']);
+
+    assert.equal(await h.run(['--once', '--post'], { impl, config }), 0);
+    assert.match(h.out[0], /^0 entries;/);
+    assert.equal(impl.posts().length, 1);
+  });
+});
+
+test('never_approve turned on after a CI capped COMMENT settles the queued recheck instead of retrying it', async () => {
+  await withWatcher(async (h) => {
+    const db = h.openDb();
+    recordRun(db, { repository: REPO, baseRef: null, headRef: sha('a'), pullNumber: 7, diff: 'diff', output: 'No actionable findings.', scores: [] });
+    db.close();
+    const state = { ci: 'red' };
+    const impl = fakeGitHub({ requested: [item(REPO, 7)], pulls: { [`${REPO}#7`]: openPull() }, state });
+
+    // Red CI caps the approval at COMMENT, which queues a CI recheck for this head.
+    assert.equal(await h.run(['--once', '--post'], { impl }), 0);
+    assert.match(h.out[0], /^acme\/web#7: verdict-only COMMENT \(posted https:/);
+    assert.deepEqual(impl.posts().map((c) => c.body.event), ['COMMENT']);
+
+    // The policy is turned on and CI turns green, so the queued recheck runs under it.
+    const config = { ...settings(), verdictPolicy: { ...DEFAULT_VERDICT_POLICY, neverApprove: true } };
+    state.ci = 'green';
+    assert.equal(await h.run(['--once', '--post'], { impl, config }), 0);
+    assert.match(h.out[0], /recheck-ci COMMENT \(posted approval is left to a person by policy\)/);
+    const [row] = rows(h);
+    assert.equal(row.status, 'posted');
+    assert.equal(row.detail, 'approval is left to a person by policy');
+    assert.equal(row.attempts, 0);
+    assert.deepEqual(impl.posts().map((c) => c.body.event), ['COMMENT'], 'nothing is posted again');
+
+    assert.equal(await h.run(['--once', '--post'], { impl, config }), 0);
+    assert.match(h.out[0], /^0 entries;/);
+    assert.equal(impl.posts().length, 1);
   });
 });
 

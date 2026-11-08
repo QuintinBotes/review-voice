@@ -39,7 +39,7 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0025](0025-cost-modes-choose-stages-and-models.md) | Cost modes choose stages and models | Accepted |
 | [0026](0026-the-queue-reads-github-search-inside-the-allowlist.md) | The queue reads GitHub search, inside the allowlist | Accepted |
 | [0027](0027-one-watcher-remembers-every-head.md) | One watcher remembers every head | Accepted |
-| [0028](0028-verdict-policies-are-configurable.md) | Verdict policies for CI and complexity are configurable | Accepted |
+| [0028](0028-verdict-policies-are-configurable.md) | Verdict policies for CI and complexity are configurable | Accepted, amended 2026-11-07 (`never_approve`) |
 | [0029](0029-posted-findings-are-followed-to-an-outcome.md) | Posted findings are followed to an outcome | Accepted |
 | [0030](0030-team-profiles-and-cold-start.md) | Team profiles pool reviewers, and a new install starts from a baseline | Accepted |
 | [0031](0031-a-github-action-runs-one-review-per-pull-request-event.md) | A GitHub Action runs one review per pull request event | Accepted, amended 2026-11-07 (config read from the base commit) |

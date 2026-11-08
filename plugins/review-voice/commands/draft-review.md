@@ -45,12 +45,15 @@ change some of the rules below; the defaults are the rules as written:
 - `ci_needs_rerun: annotate` posts the code verdict instead of holding it.
 - `review.human_review.cap_approval: false` lets a clean high-complexity
   change approve; `humanReviewNote` and the would-have fields still come back.
+- `never_approve: true` turns every APPROVE into COMMENT, so approval is
+  left to a person. REQUEST_CHANGES is unchanged.
 - `carry_approval_on_unchanged: true` carries the owner's standing approval
   (below).
 - `recheck_thread_before_post: true` makes every `post` re-check the thread
   (step 3).
 
-`--recheck` still asks only whether CI is green.
+`--recheck` still asks only whether CI is green. Under `never_approve` it
+refuses with exit 2, because there is no approval to re-check.
 
 - **Annotations.** Under an `annotate` setting, `annotations` holds a line
   such as ``Heads up: `build` failing on this head.``, naming at most five

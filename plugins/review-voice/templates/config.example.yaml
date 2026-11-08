@@ -159,6 +159,9 @@ verdict:
   # been rerun; annotate posts the code verdict and adds "Heads up: <checks>
   # need a rerun." Annotations name at most five checks.
   ci_needs_rerun: hold
+  # true turns every APPROVE into COMMENT, so approval is left to a person.
+  # REQUEST_CHANGES is unchanged, and a needs-rerun hold still applies.
+  never_approve: false
   # true posts nothing when a clean approval's scope is unchanged since the
   # commit the owner approved and that approval still stands (it needs
   # identity.owner_reviewer).

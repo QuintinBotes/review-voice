@@ -180,6 +180,7 @@ verdict:                             # ADR 0028
   ci_pending: wait                   # wait | proceed
   ci_red: cap                        # cap | annotate
   ci_needs_rerun: hold               # hold | annotate
+  never_approve: false               # true turns every APPROVE into COMMENT
   carry_approval_on_unchanged: true
   recheck_thread_before_post: true
 
@@ -294,7 +295,7 @@ touched.
 
 ## Verdict policy
 
-ADR 0028 makes five verdict behaviours configurable. The defaults keep today's
+ADR 0028 makes six verdict behaviours configurable. The defaults keep today's
 behaviour.
 
 | Situation | Default | Opt-in |
@@ -303,6 +304,7 @@ behaviour.
 | APPROVE, CI red | post COMMENT | `ci_red: annotate` approves, body adds `Heads up: <checks> failing on this head.` |
 | CI needs a rerun | hold every event (exit 6) | `ci_needs_rerun: annotate` posts the code verdict, body adds `Heads up: <checks> need a rerun.` |
 | APPROVE, high complexity | post COMMENT (ADR 0012) | `human_review.cap_approval: false` approves; the local note stays |
+| Any APPROVE | approve when the guards pass | `never_approve: true` posts COMMENT instead; approval is left to a person, pending CI does not make the head wait, and a head queued for a CI recheck before it was turned on is settled, not retried |
 | Unchanged scope, owner's approval still stands | post again | `carry_approval_on_unchanged: true` records `carried` and posts nothing |
 
 `recheck_thread_before_post` re-reads the thread immediately before `post` and

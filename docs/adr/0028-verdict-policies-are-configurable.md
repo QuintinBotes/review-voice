@@ -59,3 +59,17 @@ loses guards the rules never meant to give up.
 
 **One "strict / relaxed" switch.** Rejected. Owners chose different
 combinations, and each setting is independent.
+
+## Amendment - 2026-11-07
+
+`verdict.never_approve` (default `false`) adds an advisory posture: when it is
+`true`, every APPROVE becomes COMMENT and approval is left to a person. The
+default stays as [0010](0010-review-verdict-posting.md) decided, so nothing
+changes until an owner turns it on. REQUEST_CHANGES is unchanged. The branch
+sits in `decide()` after the standing-approval carry, the needs-rerun hold of
+[0013](0013-ci-needs-rerun.md) and the uncovered-carry guard, and before the
+complexity cap, so the carry and the needs-rerun hold still win and pending
+CI never makes such a head wait. `verdict --recheck` under it refuses with
+exit 2, because there is no approval to re-check. A head queued for a CI
+recheck before the policy was turned on is settled by the watcher under the
+new policy, not retried as a failure.

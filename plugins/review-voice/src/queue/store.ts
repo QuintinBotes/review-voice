@@ -55,8 +55,10 @@ export function settledByWatcher(db: Database, repository: string, pull: number,
  * `cappedByCi` is read from the sent row when it is there: a COMMENT sent only
  * because CI was red is worth posting again once CI recovers, even after the
  * watcher recorded it as posted, unless the watcher has since settled the head
- * some other way. With no sent row, a head the watcher settled counts as sent,
- * so the queue leaves it out.
+ * some other way. A posted row that carries a detail is such a settlement,
+ * because a plain posted row has none and is the capped COMMENT itself, while
+ * the detail names the later reason the head was left as it stands. With no
+ * sent row, a head the watcher settled counts as sent, so the queue leaves it out.
  */
 export function lastSentAtHead(
   db: Database,
@@ -69,7 +71,7 @@ export function lastSentAtHead(
   if (sent !== null && !sent.cappedByCi) return sent;
   const settled = settledByWatcher(db, repository, pull, head, maxAttemptsPerHead);
   if (settled === null) return sent;
-  if (sent !== null) return settled.status === 'posted' ? sent : { ...sent, cappedByCi: false };
+  if (sent !== null) return settled.status === 'posted' && settled.detail === null ? sent : { ...sent, cappedByCi: false };
   return { event: settled.event, cappedByCi: false };
 }
 
