@@ -157,6 +157,8 @@ import {
   type Verification,
   ownerRaiseCeiling,
   QUESTION_GAP_FLOOR,
+  matchingSuppression,
+  POLICY_SUPPRESSED_PREFIX,
 } from './scoring/score.ts';
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
@@ -893,7 +895,15 @@ export function resolveOutPath(out: string, defaultName: string): string {
 function contextCommand(): number {
   try {
     const root = repositoryRoot(process.cwd());
-    const config = loadConfig(root);
+    // The store is read here, and closed again before anything is printed, so
+    // the policy shown includes the owner's approved suppressions (docs/adr/0032).
+    const db = openDatabase();
+    let config: ReturnType<typeof loadConfig>;
+    try {
+      config = loadConfig(root, undefined, undefined, db);
+    } finally {
+      db.close();
+    }
     const configPath = join(root, '.review-voice', 'config.yaml');
     const policy = resolvePolicy(config.layers);
     console.log(
@@ -1371,9 +1381,10 @@ function asLevel(value: unknown): 'normal' | 'high' {
   return typeof value === 'object' && value !== null && (value as { level?: unknown }).level === 'high' ? 'high' : 'normal';
 }
 
-function repositoryConfig(): ReturnType<typeof loadConfig> | null {
+/** `db` is passed only by a command that applies the owner's approved policies (docs/adr/0032). */
+function repositoryConfig(db?: Database): ReturnType<typeof loadConfig> | null {
   try {
-    return loadConfig(repositoryRoot(process.cwd()));
+    return loadConfig(repositoryRoot(process.cwd()), undefined, undefined, db);
   } catch {
     return null;
   }
@@ -1481,10 +1492,14 @@ function evaluateCommand(argv: string[]): number {
   try {
     const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
     if (argv.includes('--json')) {
-      const { bySeverity, byLane } = postedBreakdown(db);
+      const { bySeverity, byLane, byRule } = postedBreakdown(db);
       console.log(
         JSON.stringify(
-          { metrics, posted_breakdown: { by_severity: bySeverity, by_lane: byLane }, stage_seconds: stageSeconds(db) },
+          {
+            metrics,
+            posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule },
+            stage_seconds: stageSeconds(db),
+          },
           null,
           2,
         ),

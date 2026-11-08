@@ -1,6 +1,7 @@
 import type { Database } from './db.ts';
 import { GitHubClient, REVIEW_THREADS_QUERY } from '../github/client.ts';
 import { overlap, significantWords } from '../scoring/score.ts';
+import { ruleIdFor } from '../policy/rules.ts';
 import { runDetail, type StoredFinding } from './runs.ts';
 
 /**
@@ -536,11 +537,23 @@ export function postedStats(db: Database, { since }: { since?: string } = {}): P
   );
 }
 
-/** The same figures by the finding's severity and lane (a finding with no lane is a `diff` finding). */
-export function postedBreakdown(db: Database): { bySeverity: Record<string, PostedStats>; byLane: Record<string, PostedStats> } {
+export interface PostedBreakdown {
+  bySeverity: Record<string, PostedStats>;
+  byLane: Record<string, PostedStats>;
+  /** By rule id (docs/adr/0032), the key an approved suppression names. */
+  byRule: Record<string, PostedStats>;
+}
+
+/**
+ * The same figures by the finding's severity, lane (a finding with no lane is a
+ * `diff` finding) and rule. A finding recorded before rule ids existed has none
+ * stored, so its rule is derived the way `compileProposals` derives it; one
+ * with no category has no rule and is counted as `unknown`.
+ */
+export function postedBreakdown(db: Database): PostedBreakdown {
   const rows = db.prepare('SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes').all() as unknown as OutcomeRow[];
-  const findings = new Map<string, Map<string, { severity: string; lane: string }>>();
-  const groups = { severity: new Map<string, OutcomeRow[]>(), lane: new Map<string, OutcomeRow[]>() };
+  const findings = new Map<string, Map<string, { severity: string; lane: string; rule: string }>>();
+  const groups = { severity: new Map<string, OutcomeRow[]>(), lane: new Map<string, OutcomeRow[]>(), rule: new Map<string, OutcomeRow[]>() };
   for (const row of rows) {
     let known = findings.get(row.review_run_id);
     if (known === undefined) {
@@ -552,20 +565,26 @@ export function postedBreakdown(db: Database): { bySeverity: Record<string, Post
       try {
         const parsed = JSON.parse(stored?.output_json ?? '{}') as { findings?: Record<string, unknown>[] };
         for (const finding of parsed.findings ?? []) {
+          const lane = typeof finding['lane'] === 'string' ? finding['lane'] : 'diff';
           known.set(String(finding['findingId']), {
             severity: typeof finding['severity'] === 'string' ? finding['severity'] : 'unknown',
-            lane: typeof finding['lane'] === 'string' ? finding['lane'] : 'diff',
+            lane,
+            rule:
+              typeof finding['ruleId'] === 'string' && finding['ruleId'].length > 0
+                ? finding['ruleId']
+                : (ruleIdFor(typeof finding['category'] === 'string' ? finding['category'] : null, lane) ?? 'unknown'),
           });
         }
       } catch {
         // A run that will not parse leaves its findings unplaced, not uncounted.
       }
     }
-    const info = known.get(row.finding_id) ?? { severity: 'unknown', lane: 'diff' };
+    const info = known.get(row.finding_id) ?? { severity: 'unknown', lane: 'diff', rule: 'unknown' };
     groups.severity.set(info.severity, [...(groups.severity.get(info.severity) ?? []), row]);
     groups.lane.set(info.lane, [...(groups.lane.get(info.lane) ?? []), row]);
+    groups.rule.set(info.rule, [...(groups.rule.get(info.rule) ?? []), row]);
   }
   const collect = (map: Map<string, OutcomeRow[]>): Record<string, PostedStats> =>
     Object.fromEntries([...map.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, list]) => [key, statsOf(list)]));
-  return { bySeverity: collect(groups.severity), byLane: collect(groups.lane) };
+  return { bySeverity: collect(groups.severity), byLane: collect(groups.lane), byRule: collect(groups.rule) };
 }

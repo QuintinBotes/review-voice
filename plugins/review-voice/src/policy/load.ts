@@ -4,7 +4,11 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
-import type { PolicyLayer, ScopeType } from './schema.ts';
+import type { PolicyLayer, ScopeType, Suppression } from './schema.ts';
+import type { Database } from '../store/db.ts';
+import type { PolicyVersionRef } from '../store/runs.ts';
+import { activePolicyRows } from './versions.ts';
+import { readSuppressions } from './rules.ts';
 import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publish/ci.ts';
 import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
 import { DEFAULT_STRUCTURE, type StructureConfig } from '../diff/structure.ts';
@@ -72,6 +76,17 @@ export interface LoadedConfig {
   /** `review.confidence_threshold` and `review.final_score_threshold`: defaults for `score` when its flags are absent. */
   thresholds: { technicalConfidence?: number; finalScore?: number };
   layers: PolicyLayer[];
+  /**
+   * The structured suppressions of every layer, as `resolvePolicy` resolves
+   * them. Only approved policies carry any, and only when a store was given
+   * (docs/adr/0032).
+   */
+  suppressions: Suppression[];
+  /**
+   * The approved policy versions that were loaded as layers. Empty without a
+   * store; with one it is what a run records as `active_policy_versions_json`.
+   */
+  activePolicyVersions: PolicyVersionRef[];
   /** Repository-supplied layers awaiting owner approval. */
   unapproved: { source: string; contentHash: string }[];
   warnings: string[];
@@ -578,6 +593,43 @@ function layerFromPolicyFile(text: string, source: string, fallbackKey: string):
   };
 }
 
+/**
+ * The owner's approved policies as layers (docs/adr/0032). Unlike a repository
+ * policy file these were generated from the owner's own feedback and approved
+ * by them, so they need no further approval. Only what a proposal writes is
+ * read: the prose patterns and the structured suppressions. A policy written
+ * before suppressions existed has no list, which is none. A row that will not
+ * parse is skipped with a warning and suppresses nothing, which is the safe
+ * direction: a suppression is preference, so losing one never hides a breach.
+ */
+function approvedPolicyLayers(db: Database, warnings: string[]): { layers: PolicyLayer[]; versions: PolicyVersionRef[] } {
+  const layers: PolicyLayer[] = [];
+  const versions: PolicyVersionRef[] = [];
+  for (const row of activePolicyRows(db)) {
+    versions.push({ scopeType: row.scopeType, scopeKey: row.scopeKey, policyId: row.policyId, version: row.version });
+    const label = `approved policy version ${row.version}`;
+    try {
+      const doc = asRecord(parseYaml(row.contentYaml));
+      if (doc === null) {
+        warnings.push(`${label} is empty; ignoring it.`);
+        continue;
+      }
+      const read = readSuppressions(doc['suppressions'], row.version);
+      for (const warning of read.warnings) warnings.push(`${label}: ${warning}`);
+      layers.push({
+        scope: { type: 'global', key: row.scopeKey },
+        source: `${label} (policies table)`,
+        requiresApproval: false,
+        suppressedPatterns: asStringArray(doc['suppressed_patterns']),
+        suppressions: read.suppressions,
+      });
+    } catch (error) {
+      warnings.push(`${label} could not be parsed: ${String(error)}`);
+    }
+  }
+  return { layers, versions };
+}
+
 /** The plugin root holds `.claude-plugin/plugin.json`; src/ and dist/ sit at different depths below it. */
 function pluginRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -678,8 +730,14 @@ export function configFile(repositoryRoot: string, warnings: string[] = []): str
   return join(repositoryRoot, '.review-voice', 'config.yaml');
 }
 
-/** `path` reads that config file instead of the one `configFile` names; `watch` passes its own copy. */
-export function loadConfig(repositoryRoot: string, baselinePath?: string, path?: string): LoadedConfig {
+/**
+ * `path` reads that config file instead of the one `configFile` names; `watch` passes its own copy.
+ *
+ * `db` is optional and the only thing that loads approved policies: without a
+ * store the layers are the baseline and the repository config, as they always
+ * were, so a caller that has no store is unaffected (docs/adr/0032).
+ */
+export function loadConfig(repositoryRoot: string, baselinePath?: string, path?: string, db?: Database): LoadedConfig {
   const result: LoadedConfig = {
     ownerReviewer: null,
     reviewers: [],
@@ -706,6 +764,8 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     lanes: [DIFF_LANE],
     thresholds: {},
     layers: [],
+    suppressions: [],
+    activePolicyVersions: [],
     unapproved: [],
     warnings: [],
   };
@@ -828,8 +888,17 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     }
   }
 
+  // Broadest to narrowest, so `context` reads in the order the layers narrow:
+  // the baseline, then the owner's approved policies, then the repository's own
+  // config, which was pushed first and is therefore still last.
+  const approved = db === undefined ? null : approvedPolicyLayers(db, result.warnings);
+  if (approved !== null) {
+    result.layers.unshift(...approved.layers);
+    result.activePolicyVersions = approved.versions;
+  }
   const baseline = loadBaselineLayer(result.ownerReviewer, baselinePath);
   if (baseline !== null) result.layers.unshift(baseline);
+  result.suppressions = result.layers.flatMap((layer) => layer.suppressions ?? []);
 
   const policyPath = join(repositoryRoot, '.review-voice', 'policy.yaml');
   if (existsSync(policyPath)) {
