@@ -115,6 +115,7 @@ import { AuthError } from './github/auth.ts';
 import { collectRepository, type CollectionStats } from './corpus/collect.ts';
 import { scaledRepositoryShare, scaledTarget, selectEvents } from './corpus/select.ts';
 import { changedPathsFrom, discoverConventions } from './conventions/discover.ts';
+import { gitTreeReader } from './conventions/tree.ts';
 import { checkAbsenceClaim, type ExistenceCheck } from './scoring/existence.ts';
 import { computeReach } from './scoring/reach.ts';
 import { checkCitation } from './scoring/citation.ts';
@@ -2772,6 +2773,18 @@ function redactCommand(argv: string[]): number {
 }
 
 function verifyCommand(argv: string[]): number {
+  // As with `evidence`, the configuration names the command and comes from
+  // this checkout or REVIEW_VOICE_CONFIG, and --cwd is only where it runs, so
+  // the second pass judges findings about the head against the head (issue 275).
+  const cwdFlag = flag(argv, '--cwd');
+  if (argv.includes('--cwd') && cwdFlag === null) {
+    console.error('--cwd needs a directory.');
+    return 2;
+  }
+  if (cwdFlag !== null && statSync(resolve(cwdFlag), { throwIfNoEntry: false })?.isDirectory() !== true) {
+    console.error(`--cwd ${cwdFlag} is not a directory.`);
+    return 2;
+  }
   let findings: VerifiableFinding[];
   try {
     const parsed = JSON.parse(readStdin()) as { candidates?: VerifiableFinding[] } | VerifiableFinding[];
@@ -2809,13 +2822,27 @@ function verifyCommand(argv: string[]): number {
     }
     // The command is told what change it is judging. Without this it ran
     // against whatever the working tree happened to be.
-    const base = flag(argv, '--base');
-    const head = flag(argv, '--head');
+    // Resolved to commits here, where the caller named them: with --cwd the
+    // command runs in another worktree, where a ref such as HEAD names another
+    // commit. A ref that does not resolve is not readable, so it is not passed.
+    const commitOf = (ref: string | null): string | null => {
+      if (ref === null) return null;
+      try {
+        return execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      } catch {
+        console.error(`${ref} does not resolve to a commit here, so the verification command is not told about it.`);
+        return null;
+      }
+    };
+    const base = commitOf(flag(argv, '--base'));
+    const head = commitOf(flag(argv, '--head'));
     const report = verifyFindings(findings, config.verification, {
-      cwd: root,
+      cwd: cwdFlag === null ? root : resolve(cwdFlag),
       context: {
         repository: flag(argv, '--repository') ?? inferRepository(root),
-        diffPath: flag(argv, '--diff-file'),
+        // Resolved here, where the caller named it: with --cwd the command runs
+        // elsewhere, and a relative path would be read against that directory.
+        diffPath: flag(argv, '--diff-file') === null ? null : resolve(flag(argv, '--diff-file') as string),
         // Only when the caller says they are readable. A ref that is not there
         // is worse than no ref: a command told to read it fails in a way it may
         // mistake for evidence.
@@ -4497,7 +4524,20 @@ function conventionsCommand(argv: string[]): number {
     if (argv[i] === '--path' && argv[i + 1] !== undefined) changed.push(argv[i + 1] as string);
   }
 
-  const report = discoverConventions(root, changed);
+  // A pull request review reads its conventions from the base, as it reads its
+  // configuration (ADR 0031). The checkout may be the head, and a head that
+  // rewrites CLAUDE.md would otherwise choose the rules it is reviewed against.
+  const ref = flag(argv, '--ref');
+  if (argv.includes('--ref') && ref === null) {
+    console.error('--ref needs a git ref, for example: --ref origin/main');
+    return 2;
+  }
+  if (ref !== null && !refExists(ref, root)) {
+    console.error(`--ref ${ref} does not resolve in this repository. Fetch it before collecting conventions.`);
+    return 2;
+  }
+
+  const report = discoverConventions(root, changed, ref === null ? undefined : gitTreeReader(root, ref));
   console.log(
     JSON.stringify(
       {

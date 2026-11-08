@@ -113,7 +113,9 @@ submodule recursion turned off so the checkout runs no code from the pull
 request. The `evidence` command runs the configured checks in that worktree
 (`--cwd`), so the signals describe the tree the analysts read rather than the
 caller's checkout, while the configuration that names the commands still comes
-from the base commit as the trusted-configuration section describes. A
+from the base commit as the trusted-configuration section describes. The
+second-pass `verify` command runs there too (`--cwd`), building the worktree
+if no stage before it did, since it judges findings about the head. A
 configured command therefore runs on the pull request's files with the
 reviewer's environment, which is what ADR 0003 accepts when an owner lists a
 command and what `watch.run_repository_commands` keeps opt-in. It writes the base version of each changed file to
@@ -844,6 +846,16 @@ and only then the rest. Ordering alphabetically instead sent
 `asset-guide` and `blank-forms` to every review and cut the one document the
 change was actually about. Each document reports the `reason` it was selected.
 
+On a pull request the documents come from the base commit (`--ref`), the same
+trusted side the configuration comes from, never from the checkout. In the
+GitHub Action the checkout is the head, so reading the disk handed the review
+the author's own `CLAUDE.md`, and a head that weakened a convention was
+reviewed against the weaker one. The tree is listed once with `git ls-tree`
+and a document is read from its blob only when its content is needed; a
+symbolic link in it is not followed, because its target would be read from
+the checkout or from outside the repository. Working-tree and staged reviews
+still read the checkout, which is the change.
+
 The trust boundary does not move. These documents are supplied as evidence
 about the repository, never as instructions to the reviewer, and both agent
 prompts say so. Text addressed to a reviewer rather than describing the code
@@ -897,7 +909,9 @@ verification:
 ```
 
 The command reads one finding as JSON on stdin and writes a verdict to stdout,
-read-only. A verifier that cannot run never confirms a finding, and verification
+read-only. The driver runs it in the head worktree (`verify --cwd`), the tree
+the findings are about, while the command itself still comes from the base's
+configuration. A verifier that cannot run never confirms a finding, and verification
 may only weaken a severity on its own; a stronger tier it traced is a proposal
 the tie-break settles.
 

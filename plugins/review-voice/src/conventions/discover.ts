@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import { frontmatterPaths, governsAny, governsCount, pointerTargets } from './globs.ts';
+import { filesystemReader, type TreeReader } from './tree.ts';
 
 export type ConventionKind = 'claude' | 'agents' | 'contributing' | 'skill' | 'rule';
 
@@ -237,15 +237,16 @@ function relevantSections(text: string, changedPaths: readonly string[], budget:
  *
  * Enough for frontmatter and a pointer body, which is all the ranking needs.
  */
-function readHead(absolute: string, limit: number): string {
-  const raw = readFileSync(absolute);
+function readHead(tree: TreeReader, path: string, limit: number): string {
+  const raw = tree.read(path);
   if (raw.length <= limit) return raw.toString('utf8');
   const decoder = new TextDecoder('utf8', { fatal: false });
   return decoder.decode(raw.subarray(0, limit));
 }
 
 function readBounded(
-  absolute: string,
+  tree: TreeReader,
+  path: string,
   changedPaths: readonly string[] = [],
 ): {
   content: string;
@@ -254,7 +255,7 @@ function readBounded(
   truncated: boolean;
   scoped: boolean;
 } {
-  const raw = readFileSync(absolute, 'utf8');
+  const raw = tree.read(path).toString('utf8');
   const bytes = Buffer.byteLength(raw, 'utf8');
   if (bytes <= PER_DOCUMENT_BYTES) {
     return { content: raw, bytes, includedBytes: bytes, truncated: false, scoped: false };
@@ -328,7 +329,7 @@ function ancestors(changedPath: string): string[] {
  * holding its `.claude` or `.agents` folder, and failing that the repository
  * root.
  */
-function resolvePointer(root: string, pointerPath: string, target: string): string | null {
+function resolvePointer(tree: TreeReader, pointerPath: string, target: string): string | null {
   const own = dirname(pointerPath);
   // Its own directory first. `@AGENTS.md` beside `packages/app/CLAUDE.md`
   // means the sibling, and resolving only from the repository root silently
@@ -345,23 +346,23 @@ function resolvePointer(root: string, pointerPath: string, target: string): stri
   candidates.push(target);
 
   for (const candidate of candidates) {
-    if (existsSync(join(root, candidate))) return candidate;
+    if (tree.exists(candidate)) return candidate;
   }
   return null;
 }
 
 /** Rule and skill documents under one directory of the tree. */
-function listRuleDocuments(root: string, directory: string): { path: string; kind: ConventionKind }[] {
+function listRuleDocuments(tree: TreeReader, directory: string): { path: string; kind: ConventionKind }[] {
   const out: { path: string; kind: ConventionKind }[] = [];
   for (const { path: relative, kind } of RULE_DIRECTORIES) {
-    const base = join(root, directory, relative);
-    if (!existsSync(base)) continue;
+    const base = join(directory, relative);
+    if (!tree.exists(base)) continue;
     try {
-      for (const entry of readdirSync(base).sort()) {
+      for (const entry of tree.list(base).sort()) {
         // A skill is a directory holding SKILL.md; a rule is a markdown file.
         for (const candidate of [join(directory, relative, entry, 'SKILL.md'), join(directory, relative, entry)]) {
           if (!candidate.endsWith('.md')) continue;
-          if (!existsSync(join(root, candidate))) continue;
+          if (!tree.exists(candidate)) continue;
           out.push({ path: candidate, kind });
           break;
         }
@@ -412,7 +413,11 @@ function matchesChange(path: string, changedPaths: readonly string[]): boolean {
  * Discovery is deterministic and here rather than in an agent for the usual
  * reason: which files exist is a fact, and what they mean is a judgement.
  */
-export function discoverConventions(root: string, changedPaths: readonly string[] = []): ConventionReport {
+export function discoverConventions(
+  root: string,
+  changedPaths: readonly string[] = [],
+  tree: TreeReader = filesystemReader(root),
+): ConventionReport {
   const documents: ConventionDocument[] = [];
   const skipped: { path: string; reason: string }[] = [];
   const warnings: string[] = [];
@@ -448,7 +453,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
   );
 
   const subtreeRules: Entry[] = touched.flatMap((directory) =>
-    listRuleDocuments(root, directory).map((rule) => ({
+    listRuleDocuments(tree, directory).map((rule) => ({
       ...rule,
       scope: 'directory' as const,
       appliesTo: changedPaths.filter((changed) => changed.startsWith(`${directory}${sep}`)),
@@ -458,7 +463,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
     })),
   );
 
-  const rootRules = listRuleDocuments(root, '');
+  const rootRules = listRuleDocuments(tree, '');
   const named = rootRules.filter((rule) => matchesChange(rule.path, changedPaths));
   const rest = rootRules.filter((rule) => !matchesChange(rule.path, changedPaths));
 
@@ -520,7 +525,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
     let followed: string[] = [];
 
     try {
-      bytes = statSync(join(root, entry.path)).size;
+      bytes = tree.size(entry.path);
       // The head of every candidate is read, not only the small ones.
       //
       // A rule declares its globs in the first few lines, so the cost is the
@@ -535,7 +540,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
       // would still cost more than the budget saves, which is what the original
       // gate was protecting.
       {
-        const head = readHead(join(root, entry.path), CHEAP_BYTES);
+        const head = readHead(tree, entry.path, CHEAP_BYTES);
         governs = frontmatterPaths(head);
 
         // A stub may point at several documents. Following only the first was
@@ -546,7 +551,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
         // `documents` or in `skipped`.
         const targets = pointerTargets(head);
         for (const target of targets) {
-          const resolvedPath = resolvePointer(root, entry.path, target);
+          const resolvedPath = resolvePointer(tree, entry.path, target);
           if (resolvedPath === null) {
             // Never silent. A stub pointing at a document that is not there is
             // exactly as invisible as one that was never followed.
@@ -581,7 +586,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
     return followed.map((path) => {
       let targetBytes = Number.POSITIVE_INFINITY;
       try {
-        targetBytes = statSync(join(root, path)).size;
+        targetBytes = tree.size(path);
       } catch {
         targetBytes = Number.POSITIVE_INFINITY;
       }
@@ -612,7 +617,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
   // that merely shares a word with a filename.
   const fitsWhole = (entry: Entry): boolean => {
     try {
-      return statSync(join(root, entry.path)).size <= PER_DOCUMENT_BYTES;
+      return tree.size(entry.path) <= PER_DOCUMENT_BYTES;
     } catch {
       return false;
     }
@@ -658,13 +663,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
 
   for (const { entry } of sized) {
     if (seen.has(entry.path)) continue;
-    const absolute = join(root, entry.path);
-    if (!existsSync(absolute)) continue;
-    try {
-      if (!statSync(absolute).isFile()) continue;
-    } catch {
-      continue;
-    }
+    if (!tree.isFile(entry.path)) continue;
     seen.add(entry.path);
 
     if (totalBytes >= TOTAL_BYTES) {
@@ -677,7 +676,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
     // the total by its own size.
     let projected = Number.POSITIVE_INFINITY;
     try {
-      projected = totalBytes + Math.min(statSync(absolute).size, PER_DOCUMENT_BYTES);
+      projected = totalBytes + Math.min(tree.size(entry.path), PER_DOCUMENT_BYTES);
     } catch {
       projected = totalBytes;
     }
@@ -691,7 +690,7 @@ export function discoverConventions(root: string, changedPaths: readonly string[
 
     let read;
     try {
-      read = readBounded(absolute, changedPaths);
+      read = readBounded(tree, entry.path, changedPaths);
     } catch (error) {
       skipped.push({ path: entry.path, reason: error instanceof Error ? error.message : String(error) });
       continue;
