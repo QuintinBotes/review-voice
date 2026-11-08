@@ -28,6 +28,12 @@ export interface FindingOutcome {
   line: number;
   /** Where the posted review's id came from; not stored. */
   reviewIdSource: 'audit' | 'reviews-list';
+  /**
+   * Who decided a strong dismissal: the replying login, or the owner's when an
+   * owner `dismiss` feedback row did. Null for every other outcome, so a weak
+   * or fixed outcome never reads as anyone's decision.
+   */
+  decidedBy: string | null;
 }
 
 export type ReplyStance = 'acknowledge' | 'reject' | 'other';
@@ -204,6 +210,13 @@ export interface CheckOptions {
   /** ISO time; only sends at or after it are followed. */
   since: string;
   now?: () => Date;
+  /**
+   * The owner's login from config. A reject reply by this login is read even on
+   * a comment posted under the same login (docs/adr/0002 posts with the owner's
+   * credential), and an owner feedback dismissal is attributed to it. Absent,
+   * the poster's replies stay ignored and a feedback dismissal records no one.
+   */
+  ownerReviewer?: string | null | undefined;
 }
 
 export interface CheckResult {
@@ -411,26 +424,42 @@ async function decide(
   run: SentRun,
   finding: StoredFinding,
   comment: RawComment,
-): Promise<Pick<FindingOutcome, 'outcome' | 'strength' | 'evidence'>> {
+): Promise<Pick<FindingOutcome, 'outcome' | 'strength' | 'evidence' | 'decidedBy'>> {
   const dismissedByOwner = options.db
     .prepare(`SELECT 1 FROM feedback WHERE review_run_id = ? AND finding_id = ? AND action = 'dismiss'`)
     .get(run.runId, finding.findingId);
   // Explicit feedback wins. A recorded `keep` or `rewrite` says the finding was
   // right, not that the author acted on it, so it does not make an outcome.
   if (dismissedByOwner !== undefined) {
-    return { outcome: 'dismissed', strength: 'strong', evidence: 'the owner recorded dismiss for this finding' };
+    return {
+      outcome: 'dismissed',
+      strength: 'strong',
+      evidence: 'the owner recorded dismiss for this finding',
+      decidedBy: options.ownerReviewer ?? null,
+    };
   }
 
   const poster = comment.user?.login?.toLowerCase();
+  const owner = options.ownerReviewer?.toLowerCase();
   const answers = context.replies
-    .filter((reply) => reply.in_reply_to_id === comment.id && !isBot(reply.user) && reply.user?.login?.toLowerCase() !== poster)
-    .map((reply) => ({ stance: classifyReply(reply.body ?? ''), at: reply.created_at ?? '', author: reply.user?.login ?? 'unknown' }))
+    .filter((reply) => reply.in_reply_to_id === comment.id && !isBot(reply.user))
+    .map((reply) => ({
+      stance: classifyReply(reply.body ?? ''),
+      at: reply.created_at ?? '',
+      author: reply.user?.login ?? 'unknown',
+      login: reply.user?.login ?? null,
+    }))
     .filter((answer) => answer.stance !== 'other')
+    // The posting account agreeing with itself is not evidence, so its replies
+    // are ignored. The one exception is the owner turning a finding down: when
+    // the review went out under the owner's own credential that account is the
+    // owner, and its rejection is the owner's word (docs/adr/0029).
+    .filter((answer) => answer.login?.toLowerCase() !== poster || (owner !== undefined && poster === owner && answer.stance === 'reject'))
     .sort((a, b) => a.at.localeCompare(b.at));
   const latest = answers[answers.length - 1];
 
   if (latest?.stance === 'reject') {
-    return { outcome: 'dismissed', strength: 'strong', evidence: `${latest.author} replied turning it down` };
+    return { outcome: 'dismissed', strength: 'strong', evidence: `${latest.author} replied turning it down`, decidedBy: latest.login };
   }
 
   const state = context.states?.get(comment.id!) ?? null;
@@ -443,6 +472,7 @@ async function decide(
       outcome: 'fixed',
       strength: 'strong',
       evidence: `the anchored lines changed after the comment and ${resolved === true ? 'the thread was resolved' : `${latest!.author} agreed`}`,
+      decidedBy: null,
     };
   }
   if (resolved === true) {
@@ -450,30 +480,33 @@ async function decide(
       outcome: 'resolved',
       strength: 'weak',
       evidence: changed === false ? 'the thread was resolved and the anchored lines are unchanged' : 'the thread was resolved; whether the lines changed could not be read',
+      decidedBy: null,
     };
   }
   if (resolved === false && changed === true) {
-    return { outcome: 'outdated', strength: 'weak', evidence: 'the anchored lines changed and the thread is still open' };
+    return { outcome: 'outdated', strength: 'weak', evidence: 'the anchored lines changed and the thread is still open', decidedBy: null };
   }
   if (resolved === false && changed === false) {
     return {
       outcome: 'open',
       strength: 'weak',
       evidence: agreed ? 'agreed in reply, but the lines are unchanged and the thread is open' : 'nothing has changed and the thread is open',
+      decidedBy: null,
     };
   }
-  return { outcome: 'unknown', strength: 'weak', evidence: 'the thread state or the later commits could not be read' };
+  return { outcome: 'unknown', strength: 'weak', evidence: 'the thread state or the later commits could not be read', decidedBy: null };
 }
 
 /** Stores an outcome, replacing the one an earlier check left. */
 export function saveOutcome(db: Database, outcome: FindingOutcome): void {
   db.prepare(
     `INSERT INTO finding_outcomes
-       (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at, decided_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (review_run_id, finding_id) DO UPDATE SET
        repository = excluded.repository, pull_number = excluded.pull_number, comment_id = excluded.comment_id,
-       outcome = excluded.outcome, strength = excluded.strength, evidence = excluded.evidence, checked_at = excluded.checked_at`,
+       outcome = excluded.outcome, strength = excluded.strength, evidence = excluded.evidence, checked_at = excluded.checked_at,
+       decided_by = excluded.decided_by`,
   ).run(
     outcome.reviewRunId,
     outcome.findingId,
@@ -484,6 +517,8 @@ export function saveOutcome(db: Database, outcome: FindingOutcome): void {
     outcome.strength,
     outcome.evidence,
     outcome.checkedAt,
+    // Only a strong dismissal names its decider; anything else is stored as null.
+    outcome.outcome === 'dismissed' && outcome.strength === 'strong' ? (outcome.decidedBy ?? null) : null,
   );
 }
 

@@ -616,12 +616,18 @@ function approvedPolicyLayers(db: Database, warnings: string[]): { layers: Polic
       }
       const read = readSuppressions(doc['suppressions'], row.version);
       for (const warning of read.warnings) warnings.push(`${label}: ${warning}`);
+      const isPath = row.scopeType === 'path';
+      // A path policy's suppression with no glob of its own takes the policy's,
+      // so a hand-edited row can never widen to everywhere.
+      const suppressions = isPath
+        ? read.suppressions.map((suppression) => (suppression.glob === null ? { ...suppression, glob: row.scopeKey } : suppression))
+        : read.suppressions;
       layers.push({
-        scope: { type: 'global', key: row.scopeKey },
+        scope: { type: isPath ? 'path' : 'global', key: row.scopeKey },
         source: `${label} (policies table)`,
         requiresApproval: false,
         suppressedPatterns: asStringArray(doc['suppressed_patterns']),
-        suppressions: read.suppressions,
+        suppressions,
       });
     } catch (error) {
       warnings.push(`${label} could not be parsed: ${String(error)}`);

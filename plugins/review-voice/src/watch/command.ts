@@ -244,7 +244,7 @@ async function runPass(options: PassOptions, json: boolean): Promise<boolean> {
       lines.push(`${summary}${event} (${row.status} ${row.reviewUrl ?? row.detail ?? ''})`.replace(/ \)$/, ')'));
     }
 
-    const followed = await followOutcomes(client, db, deps);
+    const followed = await followOutcomes(client, db, deps, config.ownerReviewer);
     const swept = sweepRetention(db, config, deps);
     if (json) {
       deps.out(JSON.stringify(rows, null, 2));
@@ -407,14 +407,19 @@ async function verdict(options: PassOptions, client: GitHubClient, db: Database,
  * pass's included, at most twenty. `since` is the twentieth one's newest send,
  * so no older pull request is read. Returns how many were followed.
  */
-async function followOutcomes(client: GitHubClient, db: Database, deps: WatchCommandDeps): Promise<number> {
+async function followOutcomes(
+  client: GitHubClient,
+  db: Database,
+  deps: WatchCommandDeps,
+  ownerReviewer: string | null,
+): Promise<number> {
   const weekAgo = new Date(deps.now().getTime() - OUTCOME_DAYS * 86_400_000).toISOString();
   const pulls = recentlySentPulls(db, weekAgo, OUTCOME_PULLS);
   if (pulls.length === 0) return 0;
   const since = pulls.length === OUTCOME_PULLS ? pulls.at(-1)!.sentAt : weekAgo;
   const allowlist = [...new Set(pulls.map((pull) => pull.repository).filter((repository) => client.allows(repository)))];
   try {
-    const result = await checkOutcomes({ db, client, allowlist, since, now: deps.now });
+    const result = await checkOutcomes({ db, client, allowlist, since, now: deps.now, ownerReviewer });
     for (const warning of result.warnings) deps.err(warning);
   } catch (error) {
     deps.err(`Outcomes were not followed: ${error instanceof Error ? error.message : String(error)}`);

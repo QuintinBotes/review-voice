@@ -263,6 +263,15 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE review_runs ADD COLUMN provenance_json TEXT;
   `,
+
+  // v13 - who decided a strong dismissal (docs/adr/0029).
+  //
+  // The reply author's login, or the owner's when an owner feedback row decided
+  // it. Null on older rows and on every weak outcome, so an old dismissal reads
+  // as a team signal rather than an owner one.
+  `
+  ALTER TABLE finding_outcomes ADD COLUMN decided_by TEXT;
+  `,
 ];
 
 function migrate(db: Database): void {

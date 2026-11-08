@@ -160,8 +160,8 @@ import {
   matchingSuppression,
   POLICY_SUPPRESSED_PREFIX,
 } from './scoring/score.ts';
-import { compileProposals } from './policy/compile.ts';
-import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
+import { compileProposals, GLOBAL_SCOPE } from './policy/compile.ts';
+import { proposePolicy, approvePolicy, rollbackTo, listPolicies, type PolicyScope } from './policy/versions.ts';
 import { computeMetrics, dismissedRateWarning, DEFAULT_WINDOW_DAYS, stageSeconds, windowStart } from './evaluate/metrics.ts';
 import { RECALL_CLASSES, readRecallResults, recallMetrics, type RecallClass, type RecallResults } from './evaluate/recall-results.ts';
 import { RecallUsageError, runRecall } from './evaluate/recall.ts';
@@ -1552,12 +1552,15 @@ async function outcomesCommand(argv: string[]): Promise<number> {
   // Naming a repository is the consent for reading it, as `thread` treats it.
   // Otherwise only the allowlisted ones are read, and a run for any other is skipped.
   let allowlist: string[] = repository === null ? [] : [repository];
-  if (repository === null) {
-    try {
-      allowlist = loadConfig(repositoryRoot(process.cwd())).allowlist;
-    } catch {
-      // Not in a repository: no allowlist, so nothing is read.
-    }
+  // The config is read even with --repository: the owner's login decides whose
+  // reply is an owner signal, whichever repository is named.
+  let ownerReviewer: string | null = null;
+  try {
+    const config = loadConfig(repositoryRoot(process.cwd()));
+    ownerReviewer = config.ownerReviewer;
+    if (repository === null) allowlist = config.allowlist;
+  } catch {
+    // Not in a repository: no allowlist, so nothing is read, and no owner.
   }
 
   const db = openDatabase();
@@ -1568,6 +1571,7 @@ async function outcomesCommand(argv: string[]): Promise<number> {
       allowlist,
       repository: repository ?? undefined,
       since,
+      ownerReviewer,
     });
     for (const warning of result.warnings) console.error(warning);
     for (const skipped of result.skipped) {
@@ -2468,22 +2472,58 @@ function gateOf(rejectedBecause: string | null): 'score' | 'confidence' | 'polic
   return null;
 }
 
+/** A scope as `--scope` and `calibrate` write it: `global`, or `path:<glob>`. */
+function scopeLabel(scope: { type: string; key: string }): string {
+  return scope.type === 'global' ? 'global' : `${scope.type}:${scope.key}`;
+}
+
+/**
+ * `--scope path:<glob>` or `--scope global`. Null when the flag is absent; the
+ * string is the problem when it is present and wrong, so a typo never quietly
+ * falls back to the global scope.
+ */
+function scopeFlag(argv: string[]): PolicyScope | null | string {
+  if (!argv.includes('--scope')) return null;
+  const value = flag(argv, '--scope');
+  if (value === 'global') return { ...GLOBAL_SCOPE };
+  if (value !== null && value.startsWith('path:') && value.slice('path:'.length).trim().length > 0) {
+    return { type: 'path', key: value.slice('path:'.length).trim() };
+  }
+  return '--scope takes global or path:<glob>, for example path:src/billing/**.';
+}
+
 function calibrateCommand(): number {
+  // The owner's login makes the owner's own thread replies owner signals; with
+  // no config every thread dismissal is a team signal, which can never activate.
+  let ownerReviewer: string | null = null;
+  try {
+    ownerReviewer = loadConfig(repositoryRoot(process.cwd())).ownerReviewer;
+  } catch {
+    // Not in a repository: no owner login.
+  }
   const db = openDatabase();
   try {
-    const proposals = compileProposals(db);
+    const proposals = compileProposals(db, { ownerReviewer });
     if (proposals.length === 0) {
       console.log(JSON.stringify({ proposals: [], note: 'No feedback recorded yet.' }, null, 2));
       return 0;
     }
-    const stored = proposePolicy(db, proposals);
-    console.log(
-      JSON.stringify(
-        { policyId: stored.policyId, version: stored.version, active: stored.active, proposals },
-        null,
-        2,
-      ),
-    );
+    // One policies row per scope, each with its own version sequence, so
+    // approving or rolling back one directory's rules leaves the rest alone.
+    const byScope = new Map<string, { scope: PolicyScope; rules: typeof proposals }>();
+    for (const proposal of proposals) {
+      const label = scopeLabel(proposal.scope);
+      const group = byScope.get(label) ?? { scope: proposal.scope, rules: [] };
+      group.rules.push(proposal);
+      byScope.set(label, group);
+    }
+    const policies = [...byScope.values()]
+      .sort((a, b) => Number(b.scope.type === 'global') - Number(a.scope.type === 'global') || a.scope.key.localeCompare(b.scope.key))
+      .map(({ scope, rules }) => {
+        const stored = proposePolicy(db, rules, scope);
+        return { policyId: stored.policyId, version: stored.version, scope: scopeLabel(scope), active: stored.active };
+      });
+    console.log(JSON.stringify({ policies, proposals }, null, 2));
     return 0;
   } finally {
     db.close();
@@ -2492,12 +2532,17 @@ function calibrateCommand(): number {
 
 function policyCommand(argv: string[]): number {
   const [action, argument] = argv;
+  const scope = scopeFlag(argv);
+  if (typeof scope === 'string') {
+    console.error(scope);
+    return 2;
+  }
   const db = openDatabase();
   try {
     switch (action) {
       case undefined:
       case 'show':
-        console.log(JSON.stringify({ policies: listPolicies(db) }, null, 2));
+        console.log(JSON.stringify({ policies: scope === null ? listPolicies(db) : listPolicies(db, scope) }, null, 2));
         return 0;
 
       case 'approve': {
@@ -2520,7 +2565,7 @@ function policyCommand(argv: string[]): number {
           console.error('policy rollback needs a version number.');
           return 2;
         }
-        const result = rollbackTo(db, version);
+        const result = scope === null ? rollbackTo(db, version) : rollbackTo(db, version, scope);
         if (!result.ok) {
           console.error(result.error);
           return 1;
