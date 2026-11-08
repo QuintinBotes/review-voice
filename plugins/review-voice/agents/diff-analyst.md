@@ -35,6 +35,22 @@ helper and seeing that it does the same job for the same inputs. Anchor it at
 the new declaration's line and cite the existing `path:line` in the evidence.
 A same-named helper with different semantics is not a finding.
 
+`references` and `referenceCount` count production code only. When a symbol
+has `testReferences`, those are the tests that mention it: read them for the
+test-adequacy check (do they exercise the changed behavior, or only name the
+symbol). A symbol with no `testReferences` key had no test hit, which is a
+lexical fact about names, not proof the change is untested.
+
+`declared[].callerCount` is the number of other production code paths at the
+head that mention the new name, with `callers` listing up to eight. A
+declaration with `callerCount === 1` is a lead for one `maintainability` nit,
+"new generality with one caller", and only when the declaration adds a
+parameter, mode or abstraction that nobody else uses; read the declaration and
+its one caller first, and drop the lead when the extra generality is used or is
+a public API. `callerCount === 0` is not that lead. `callersInconclusive`
+means the callers are unknown (no head was searched, the budget ended or the
+search failed), not none, so raise nothing from it.
+
 A completeness finding is a claim about a complete set. When it says every
 call, guard, validation or similar instance must be handled, search the final
 head for every call site of that pattern in the changed scope instead of

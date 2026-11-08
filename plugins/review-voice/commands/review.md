@@ -288,13 +288,18 @@ Report anything in `warnings` the way step 1b reports its own.
 
 ## Step 1e - Collect changed-symbol context
 
-Run `RV symbols --diff-file <tmpdir>/diff.patch --base <ref> --out
-<tmpdir>/symbols.json`.
+Run `RV symbols --diff-file <tmpdir>/diff.patch --base <ref> [--head <head
+sha>] --out <tmpdir>/symbols.json`.
 
 Omit `--base` for working-tree and staged runs. Otherwise use the same ref
 step 4 passes to `score`: the context must describe the tree that answers the
 rest of the review's repository questions, not whichever checkout happens to
 be current.
+
+Pass `--head <head sha>` when the head is a local commit, so new declarations
+are searched for callers at the head. Pass nothing for a working-tree or
+staged review: there is no commit to search, and each declaration's callers
+are then reported as `callersInconclusive`, which means unknown.
 
 Pass `symbols.json` to the `diff-analyst` in step 2 and the
 `evidence-verifier` in step 3. If any file is `inconclusive`, tell both agents

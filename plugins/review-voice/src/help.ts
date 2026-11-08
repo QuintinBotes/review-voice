@@ -48,6 +48,8 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  --diff-file <path>     Unified diff whose changed symbols to inspect (required)',
       '  --base <ref>           Search this committed tree, not the working tree',
       '                         (on --pr: refs.mergeBase)',
+      '  --head <ref>           Search this committed tree for callers of new declarations;',
+      '                         without it their callers are inconclusive (on --pr: the head sha)',
       '  --max-ms <n>           Time budget; unfinished files are inconclusive (default 60000)',
       '  --out <path>           Write <path> or <dir>/symbols.json instead of stdout',
       'Reads: nothing on stdin.',

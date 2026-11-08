@@ -219,6 +219,14 @@ made-up parser; it is a reading hint, never proof of a call site. A failed grep
 marks that file inconclusive rather than empty, because a search that did not
 answer cannot establish that a changed symbol has no consumers.
 
+Hits are split with the repository's configured `review.human_review.test_paths`
+(the default test globs when none is configured). `references`,
+`referenceCount` and `downstreamFiles` count production code only; before this
+split they also counted test consumers, so a repository's numbers can drop.
+`testReferences` and `testReferenceCount` list the tests that mention the
+symbol, with the same cap of eight paths, and are present only when at least
+one test path matched. The analyst reads them for the test-adequacy check.
+
 The collection has a time budget (`--max-ms`, default 60 seconds) that the
 process enforces itself: it is checked before every search, and each search is
 capped to what is left. It sits on the critical path before the analyst, so a
@@ -234,6 +242,18 @@ at Jaccard 0.5 or higher. There are at most eight declarations per file and
 three helpers per declaration. These searches run after reference collection
 under the same budget; a failed query or exhausted budget is inconclusive, not
 evidence that no helper exists.
+
+`symbols --head <ref>` (validated like `--base`; an unknown ref exits 2) adds
+callers. Each `declared[]` entry then carries `callers`, at most eight code
+paths at the head that mention the new name, sorted, with the declaring path
+and test paths left out, and `callerCount`, the full number. A new name has no
+hits at the base by definition, which is why this search runs at the head. The
+hits are lexical, not a call graph. `callersInconclusive: true` marks callers
+that are unknown: no `--head` was given, the budget ended first, or the search
+failed. Zero callers is `callerCount: 0`, a different fact. The driver passes
+`--head` only when `summary.refs.head.available` is true, and the interactive
+flow passes it for a local head commit. The analyst treats `callerCount === 1`
+as a lead for one maintainability nit, never a verdict input.
 
 ### Structural evidence
 

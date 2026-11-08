@@ -457,7 +457,18 @@ async function prep(run: Run): Promise<void> {
     writeFileSync(at(run, 'evidence.json'), (await must(run, ['evidence'])).stdout);
   }
   writeFileSync(at(run, 'conventions.json'), (await must(run, ['conventions', '--files', at(run, 'files.json')])).stdout);
-  await must(run, ['symbols', '--diff-file', at(run, 'diff.patch'), ...(run.base === null ? [] : ['--base', run.base]), '--out', at(run, 'symbols.json')]);
+  // New declarations are searched for callers at the head, which exists only
+  // when the diff could read it; without it they stay inconclusive.
+  const headReadable = isRecord(refs['head']) && refs['head']['available'] === true;
+  await must(run, [
+    'symbols',
+    '--diff-file',
+    at(run, 'diff.patch'),
+    ...(run.base === null ? [] : ['--base', run.base]),
+    ...(headReadable ? ['--head', run.head] : []),
+    '--out',
+    at(run, 'symbols.json'),
+  ]);
   const followUps = (await must(run, ['follow-ups', ...pr])).stdout;
   writeFileSync(at(run, 'follow-ups.json'), followUps);
   run.followUps = list(parsed(followUps)['followUps']).length > 0;
