@@ -276,9 +276,12 @@ AC-8, AC-9).
 `docs/adr/0022-*.md`, `docs/adr/0027-*.md`, `docs/adr/README.md`, `test/**`,
 `plugins/review-voice/dist/review-voice.mjs`.
 
-`PRIVACY.md` sits at the repository root. Add `PRIVACY.md` to Orbit's
-`scope.allowed_paths` before this run, or the goal below tells the implementer
-to hand the text back for a person to apply.
+`PRIVACY.md` sits at the repository root, outside Orbit's
+`scope.allowed_paths`. The integrator commits the `PRIVACY.md` change
+described above on the branch before the run, so the implementer's base
+already holds it and the AC-8 assertions pass against it; the goal below says
+so. Adding `PRIVACY.md` to the allowed paths through a config pull request is
+the alternative.
 
 ## Follow-ups for a person (protected paths)
 
@@ -319,17 +322,16 @@ with an isFailure helper replacing every `=== 'failed'` check so the attempts
 cap and queue --settled cover them; a retention block (runs_days 30 and
 audit_days 180 by default, 0 or null disabling) is enforced by `purge --runs`
 and by each watch pass through a new store/retention.ts (directory mtime for
-runs, DELETE on audit_events for audit); PRIVACY.md, ARCHITECTURE.md,
-WATCHER.md, ACTION.md and help.ts are updated as the spec says; ADR 0022 and
-ADR 0027 gain dated amendments and docs/adr/README.md marks them. All nine
-acceptance criteria in the spec must hold. If one run cannot hold everything,
-stop at the spec's stop point with every check green and say which half is
-next.
+runs, DELETE on audit_events for audit); ARCHITECTURE.md, WATCHER.md,
+ACTION.md and help.ts are updated as the spec says; ADR 0022 and ADR 0027
+gain dated amendments and docs/adr/README.md marks them. All nine acceptance
+criteria in the spec must hold. If one run cannot hold everything, stop at the
+spec's stop point with every check green and say which half is next.
 
-Scope: only the files the spec lists under "Allowed paths". If PRIVACY.md is
-outside this run's allowed paths, do not edit it: put the exact replacement
-text in the run report and report that part of AC-8 as a follow-up for a
-person. Do not edit action.yml, scripts/, CHANGELOG.md or the plugin manifests;
+Scope: only the files the spec lists under "Allowed paths". PRIVACY.md at the
+repository root is outside your allowed paths and is already updated in your
+base commit: do not edit it; the AC-8 assertions on it pass against it as it
+is. Do not edit action.yml, scripts/, CHANGELOG.md or the plugin manifests;
 the action.yml change is a follow-up for a person. Never post failure text to
 GitHub. Add no dependency.
 

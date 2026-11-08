@@ -57,3 +57,19 @@ with tests.
 
 **Let the agents call the CLI themselves.** Rejected. Agents read untrusted
 input, and the commands that record and post must not be reachable from them.
+
+## Amendment - 2026-11-07
+
+A review that cannot complete now says so as data. When `review` exits with a
+code that is not 0, 3, 4 or 6, the report carries a `failure` object: the exit
+code, the stage, a `mode`, the assessed `risk`, the complexity reasons, the
+ADR 0012 human-review note and the static-check facts the run established. The
+mode is `failed_open` when the change was assessed as normal risk and
+`failed_closed` for a high-risk change or one whose risk was never assessed, so
+an unknown risk is never waved through. A narrowed scope follows the pull
+request's earlier runs the way the verdict does: a normal follow-up to a
+change an earlier run assessed as high fails closed, and so does one whose
+earlier runs cannot be read, since its risk is then unknown. The driver also appends one
+`review_failed` audit event with ids and codes only, never diff content. A
+moved head (exit 3) is not a failure and carries none. The failure text goes to
+stdout and the JSON report, never to GitHub.

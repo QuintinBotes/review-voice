@@ -5,13 +5,16 @@ import { claudeBin } from '../agents/claude-cli.ts';
 import { ownSignals, readAgentTools, runAgent, stopAll, type AgentResult } from '../agents/runner.ts';
 import { DEFAULT_AGENT_PARALLELISM } from '../agents/types.ts';
 import { seriousNotCarried, type NotCarriedFinding } from '../diff/carry.ts';
+import type { ComplexityAssessment } from '../diff/complexity.ts';
 import { originRepository } from '../diff/pull-request.ts';
 import { parseHunks } from '../diff/hunks.ts';
 import type { GitHubClient } from '../github/client.ts';
 import { descriptionOf } from '../intent.ts';
 import { blockingContext, type MissingContext } from '../scoring/score.ts';
+import { recordAudit } from '../store/audit.ts';
+import { openDatabase } from '../store/db.ts';
 import { dataDirectory } from '../store/paths.ts';
-import { describeProvenance, heldProblem, type HeldFinding, type RunProvenance, type StageTiming } from '../store/runs.ts';
+import { describeProvenance, heldProblem, runDetail, type HeldFinding, type RunProvenance, type StageTiming } from '../store/runs.ts';
 import { parseChallengeVerdicts } from '../verify/challenge.ts';
 import { parseTieBreaks } from '../verify/reconcile.ts';
 import type { Lane, LaneEligibility } from './lanes.ts';
@@ -76,6 +79,31 @@ export interface StageReport extends StageTiming {
   skipped?: string;
 }
 
+/**
+ * What a review that could not complete still established, and what that
+ * means for the pull request (docs/adr/0022, amended). `mode` follows the
+ * change's risk: a change the reviewer could not even assess fails closed,
+ * because a reviewer that could not read it has no grounds to wave it through.
+ */
+export interface ReviewFailure {
+  /** The exit code. */
+  code: number;
+  /** `unknown` when the failure came before the stage loop (head lookup, expected head, run directory). */
+  stage: StageId | 'unknown';
+  mode: 'failed_open' | 'failed_closed';
+  /** The complexity level when `prep` got that far. */
+  risk: 'high' | 'normal' | 'unknown';
+  /** The complexity reasons when high; `risk not assessed` when unknown. */
+  reasons: string[];
+  /** The note ADR 0012 attaches to a high-risk change; local only, never posted. */
+  humanReviewNote: string | null;
+  facts: {
+    complexity: ComplexityAssessment | null;
+    structure: { sizeCrossings: number; branchGrowth: number; typeEscapes: number } | null;
+    staticChecks: { ran: string[]; failed: { name: string; exitCode: number }[]; didNotRun: string[] } | null;
+  };
+}
+
 export interface ReviewReport {
   exitCode: number;
   runId: string | null;
@@ -100,6 +128,8 @@ export interface ReviewReport {
   configSource: ConfigSource | null;
   /** What `record` stored about the run; null when nothing was recorded. */
   provenance: RunProvenance | null;
+  /** Why the review is unavailable; null when it completed, and for exit 3 (the head moved), which is not a failure. */
+  failure: ReviewFailure | null;
   error?: string;
 }
 
@@ -122,6 +152,8 @@ interface Run {
   started: number;
   dir: string;
   head: string;
+  /** The stage being walked; `unknown` until the loop starts. */
+  stage: StageId | 'unknown';
   /** The pull request's base commit and branch, as the same response that names the head gave them. */
   pullBase: { sha: string | null; ref: string | null };
   configSource: ConfigSource | null;
@@ -186,7 +218,14 @@ async function cli(run: Run, argv: string[], stdin?: string): Promise<CommandRes
   const next = run.lock.then(() => run.deps.command(argv, stdin));
   run.lock = next.catch(() => undefined);
   const result = await next;
-  appendFileSync(at(run, 'commands.log'), `$ review-voice ${argv.join(' ')}\nexit ${result.code}\n${result.stderr}\n`);
+  // The log is for a person resuming by hand; a disk that refuses it must not
+  // turn a command that succeeded into a failed run.
+  try {
+    appendFileSync(at(run, 'commands.log'), `$ review-voice ${argv.join(' ')}\nexit ${result.code}\n${result.stderr}\n`);
+  } catch (error) {
+    const note = `commands.log could not be written: ${firstLines(error instanceof Error ? error.message : String(error))}`;
+    if (!run.notes.includes(note)) run.notes.push(note);
+  }
   return result;
 }
 
@@ -974,6 +1013,147 @@ const HANDLERS: Record<StageId, (run: Run) => Promise<void>> = {
   post: async () => {},
 };
 
+/** The static-check facts `evidence.json` holds, or null when the run has none to read. */
+function staticChecksOf(run: Run): ReviewFailure['facts']['staticChecks'] {
+  if (run.dir === '') return null;
+  let document: unknown;
+  try {
+    document = readJson(at(run, 'evidence.json'));
+  } catch {
+    return null;
+  }
+  if (!isRecord(document)) return null;
+  // The REVIEW_VOICE_NO_COMMANDS stub has no `commands` key: nothing ran and nothing is named as skipped.
+  const commands = list(document['commands']);
+  const ran = commands.filter((entry) => typeof entry['exitCode'] === 'number' && entry['unavailable'] === undefined);
+  return {
+    ran: ran.map((entry) => String(entry['name'])),
+    failed: ran.filter((entry) => entry['exitCode'] !== 0).map((entry) => ({ name: String(entry['name']), exitCode: entry['exitCode'] as number })),
+    didNotRun: Array.isArray(document['didNotRun']) ? document['didNotRun'].map(String) : [],
+  };
+}
+
+/**
+ * What the run established before it stopped. The risk is the complexity level
+ * `prep` computed; when `prep` never got that far it is unknown, and unknown
+ * fails closed.
+ */
+type Risk = ReviewFailure['risk'];
+
+/**
+ * The risk of the pull request's earlier runs, followed through narrowed
+ * scopes the way the verdict's `pullRequestComplexity` does: a documentation
+ * follow-up to a reviewed workflow change is a normal scope on a high pull
+ * request, and a failure on it must not open the gate. `high` when any earlier
+ * run assessed it so, `normal` when the chain was read to its end without one,
+ * `unknown` when a narrowed scope has no recorded earlier run (a `--since` the
+ * store did not know) or the chain cannot be read, since unknown fails closed.
+ * A full scope stands alone and reads as `normal` here.
+ */
+function priorRisk(run: Run): Risk {
+  // The summary's scope is a projection without the prior run's id; `prior.runId` beside it is the one carry reads too.
+  const scope = isRecord(run.summary['scope']) ? run.summary['scope'] : {};
+  if (scope['kind'] === undefined || scope['kind'] === 'full') return 'normal';
+  const first = isRecord(run.summary['prior']) ? run.summary['prior']['runId'] : null;
+  if (typeof first !== 'string') {
+    run.notes.push("The scope was narrowed without a recorded earlier run, so the pull request's risk is unknown.");
+    return 'unknown';
+  }
+  try {
+    const db = openDatabase();
+    try {
+      const seen = new Set<string>();
+      let id = first;
+      // Normal only once a full-scope run assessed the whole pull request; a
+      // chain that ends anywhere else, or runs out, never saw all of it.
+      for (;;) {
+        if (seen.has(id) || seen.size >= 20) {
+          run.notes.push(`The earlier runs of this pull request ${seen.has(id) ? 'refer to each other in a cycle' : 'run deeper than the twenty that were read'}, so its risk is unknown.`);
+          return 'unknown';
+        }
+        seen.add(id);
+        const earlier = runDetail(db, id);
+        if (earlier === null || earlier.complexity === null) {
+          run.notes.push(`Earlier run ${id} of this pull request ${earlier === null ? 'is not in the store' : 'recorded no risk assessment'}, so the pull request's risk is unknown.`);
+          return 'unknown';
+        }
+        if (earlier.complexity.level === 'high') return 'high';
+        if (earlier.scope === null || earlier.scope.kind === 'full') return 'normal';
+        if (earlier.scope.priorRunId === null) {
+          run.notes.push(`Earlier run ${id} of this pull request was itself narrowed with no recorded earlier run, so the pull request's risk is unknown.`);
+          return 'unknown';
+        }
+        id = earlier.scope.priorRunId;
+      }
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    run.notes.push(`Earlier runs of this pull request could not be read: ${firstLines(error instanceof Error ? error.message : String(error))}`);
+    return 'unknown';
+  }
+}
+
+function failureOf(run: Run, code: number): ReviewFailure {
+  const assessed = run.summary['complexity'];
+  const complexity = isRecord(assessed) && (assessed['level'] === 'high' || assessed['level'] === 'normal') ? (assessed as unknown as ComplexityAssessment) : null;
+  const own: Risk = complexity === null ? 'unknown' : complexity.level;
+  // The scope's own risk settles a high or unknown case; a normal scope defers to the pull request's history.
+  const history = own === 'normal' ? priorRisk(run) : 'normal';
+  const risk: Risk = own !== 'normal' ? own : history;
+  const reasons =
+    own === 'unknown'
+      ? ['risk not assessed']
+      : own === 'high'
+        ? complexity!.reasons
+        : history === 'high'
+          ? ['an earlier run of this pull request assessed it as high risk']
+          : history === 'unknown'
+            ? ["the earlier runs of this pull request could not be read, so its risk is unknown"]
+            : [];
+  const size = (key: string): number | null => {
+    const value = isRecord(run.summary['structure']) ? run.summary['structure'][key] : undefined;
+    return Array.isArray(value) ? value.length : null;
+  };
+  const [sizeCrossings, branchGrowth, typeEscapes] = [size('sizeCrossings'), size('branchGrowth'), size('typeEscapes')];
+  const note = run.summary['humanReviewNote'];
+  return {
+    code,
+    stage: run.stage,
+    mode: risk === 'normal' ? 'failed_open' : 'failed_closed',
+    risk,
+    reasons,
+    humanReviewNote: typeof note === 'string' ? note : null,
+    facts: {
+      complexity,
+      structure: sizeCrossings === null || branchGrowth === null || typeEscapes === null ? null : { sizeCrossings, branchGrowth, typeEscapes },
+      staticChecks: staticChecksOf(run),
+    },
+  };
+}
+
+/** One `review_failed` audit event: ids and codes only, never diff content. Best effort, so a broken store cannot hide the failure itself. */
+function auditFailure(run: Run, failure: ReviewFailure): void {
+  try {
+    const db = openDatabase();
+    try {
+      const { repository, pullNumber } = run.options;
+      recordAudit(db, 'review_failed', { type: 'pull_request', id: `${repository.toLowerCase()}#${pullNumber}` }, {
+        repository,
+        pull: pullNumber,
+        head: run.head === '' ? null : run.head,
+        code: failure.code,
+        stage: failure.stage,
+        mode: failure.mode,
+      });
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    run.notes.push(`The failure was not recorded in the audit log: ${firstLines(error instanceof Error ? error.message : String(error))}`);
+  }
+}
+
 export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promise<ReviewReport> {
   const run: Run = {
     options,
@@ -981,6 +1161,7 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     started: performance.now(),
     dir: '',
     head: '',
+    stage: 'unknown',
     pullBase: { sha: null, ref: null },
     configSource: null,
     claudeVersion: undefined,
@@ -1015,6 +1196,7 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     done: false,
   };
   let error: string | undefined;
+  let failure: ReviewFailure | null = null;
   const cleanUp = (): void => {
     for (const undo of run.cleanup.splice(0).reverse()) undo();
   };
@@ -1041,6 +1223,7 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     resolveConfig(run);
     for (const stage of STAGES) {
       if (run.done) break;
+      run.stage = stage.name;
       if (stage.kind === 'agent' && run.headDir === null) prepareWorkspace(run);
       await HANDLERS[stage.name](run);
       if (stage.name === 'carry' && run.done) break;
@@ -1048,6 +1231,13 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
   } catch (caught) {
     run.exitCode = caught instanceof Stop ? caught.code : 1;
     error = caught instanceof Error ? caught.message : String(caught);
+    // A head that moved is not a failure: the next pass reviews the new head.
+    // Nor is an error after the run was recorded: the review exists, and what
+    // broke is the bookkeeping after it, which the error text still reports.
+    if (run.exitCode !== 3 && run.runId === null) {
+      failure = failureOf(run, run.exitCode);
+      auditFailure(run, failure);
+    }
   } finally {
     cleanUp();
     process.off('SIGINT', onSignal);
@@ -1074,13 +1264,33 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     notes: run.notes,
     configSource: run.configSource,
     provenance: run.provenance,
+    failure,
     ...(error === undefined ? {} : { error }),
   };
 }
 
+/** The "Review unavailable" block: the mode, the risk and the checks the run did establish. */
+function failureLines(report: ReviewReport, failure: ReviewFailure): string[] {
+  const lines = [
+    `Review unavailable (${failure.mode}, exit ${failure.code}): ${report.error ?? 'the review could not complete'}`,
+    `Risk: ${failure.risk}. Reasons: ${failure.reasons.length === 0 ? 'none' : failure.reasons.join('; ')}`,
+  ];
+  const checks = failure.facts.staticChecks;
+  if (checks !== null) {
+    const failed = new Map(checks.failed.map((entry) => [entry.name, entry.exitCode]));
+    const parts = [...checks.ran.map((name) => `${name} ran (exit ${failed.get(name) ?? 0})`), ...checks.didNotRun.map((name) => `${name} did not run`)];
+    lines.push(`Checks: ${parts.length === 0 ? 'none recorded' : parts.join(', ')}`);
+  }
+  if (failure.humanReviewNote !== null) lines.push(`Needs a human reviewer: ${failure.humanReviewNote}`);
+  return lines;
+}
+
 /** The short text report: one line per finding, held counts, the verdict, the URL, cost and time. */
 export function reportText(report: ReviewReport): string {
-  const lines = report.findings.map((finding) => `${finding.findingId} [${finding.severity}] ${finding.path}:${finding.line}`);
+  const lines: string[] = [];
+  const failure = report.failure ?? null;
+  if (failure !== null) lines.push(...failureLines(report, failure));
+  lines.push(...report.findings.map((finding) => `${finding.findingId} [${finding.severity}] ${finding.path}:${finding.line}`));
   if (report.findings.length === 0 && report.runId !== null) lines.push(NO_FINDINGS);
   const held = new Map<string, number>();
   for (const entry of report.held) held.set(entry.verdict, (held.get(entry.verdict) ?? 0) + 1);
@@ -1097,7 +1307,7 @@ export function reportText(report: ReviewReport): string {
     lines.push(`Config: ${where}`);
   }
   for (const note of report.notes) lines.push(`Note: ${note}`);
-  if (report.error !== undefined) lines.push(`Stopped (exit ${report.exitCode}): ${report.error}`);
+  if (report.error !== undefined && failure === null) lines.push(`Stopped (exit ${report.exitCode}): ${report.error}`);
   lines.push(`Cost: ${report.costUsd === null ? 'unknown' : `$${report.costUsd.toFixed(4)}`}, ${report.seconds}s. Run directory: ${report.runDir ?? 'none'}`);
   return lines.join('\n');
 }

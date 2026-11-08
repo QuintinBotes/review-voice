@@ -70,7 +70,12 @@ export function previewPurge(db: Database, scope: PurgeScope): PurgePreview {
   return { events, reviewRuns, feedback, auditEvents, watermarks, byRepository };
 }
 
-export function executePurge(db: Database, scope: PurgeScope): PurgePreview {
+/**
+ * Database tables only: run directories are files, and removing them is the
+ * caller's job (`removeRunDirectories`), so this never touches the filesystem.
+ * `runDirectories` is how many the caller removed, kept in the audit entry.
+ */
+export function executePurge(db: Database, scope: PurgeScope, runDirectories?: number): PurgePreview {
   const preview = previewPurge(db, scope);
   const { where, params } = scopeClause(scope);
 
@@ -95,6 +100,6 @@ export function executePurge(db: Database, scope: PurgeScope): PurgePreview {
   // The audit entry survives the purge it records. Deleting the evidence that
   // a deletion happened would make the audit trail useless precisely when it
   // matters most.
-  recordAudit(db, 'purge', null, { scope, removed: preview });
+  recordAudit(db, 'purge', null, { scope, removed: runDirectories === undefined ? preview : { ...preview, runDirectories } });
   return preview;
 }

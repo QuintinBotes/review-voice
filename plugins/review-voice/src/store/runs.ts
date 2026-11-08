@@ -515,46 +515,57 @@ export function recordRun(
           policyVersions,
         };
 
-  db.prepare(
-    `INSERT INTO review_runs (
-       review_run_id, repository, base_ref, head_ref, diff_hash,
-       active_policy_versions_json, retrieved_precedents_json,
-       candidates_json, output_json, created_at, stages_json,
-       pull_number, scope_json, complexity_json, provenance_json
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    reviewRunId,
-    input.repository,
-    input.baseRef,
-    input.headRef,
-    hashDiff(input.diff),
-    JSON.stringify(policyVersions),
-    JSON.stringify(input.precedents ?? []),
-    JSON.stringify((input.candidates ?? []).map(storedCandidate)),
-    JSON.stringify({
-      output: input.output,
-      findings,
-      scores: input.scores ?? [],
-      verdicts: input.verdicts ?? [],
-      tieBreaks: input.tieBreaks ?? [],
-      held: input.held ?? [],
-      ...(input.bodyFindings === undefined || input.bodyFindings.length === 0 ? {} : { bodyFindings: input.bodyFindings }),
-      ...(input.carry === undefined ? {} : { carry: input.carry }),
-      ...(input.followUps === undefined || input.followUps.length === 0 ? {} : { followUps: input.followUps }),
-    }),
-    new Date().toISOString(),
-    JSON.stringify(input.stages ?? []),
-    input.pullNumber ?? null,
-    input.scope === undefined ? null : JSON.stringify(input.scope),
-    input.complexity === undefined || input.complexity === null ? null : JSON.stringify(input.complexity),
-    provenance === null ? null : JSON.stringify(provenance),
-  );
+  // The run row and its audit event land together or not at all: a row left by
+  // a failed audit write would read as a recorded review while the caller saw
+  // a failure. A savepoint nests inside a caller's own transaction.
+  db.exec('SAVEPOINT record_run');
+  try {
+    db.prepare(
+      `INSERT INTO review_runs (
+         review_run_id, repository, base_ref, head_ref, diff_hash,
+         active_policy_versions_json, retrieved_precedents_json,
+         candidates_json, output_json, created_at, stages_json,
+         pull_number, scope_json, complexity_json, provenance_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      reviewRunId,
+      input.repository,
+      input.baseRef,
+      input.headRef,
+      hashDiff(input.diff),
+      JSON.stringify(policyVersions),
+      JSON.stringify(input.precedents ?? []),
+      JSON.stringify((input.candidates ?? []).map(storedCandidate)),
+      JSON.stringify({
+        output: input.output,
+        findings,
+        scores: input.scores ?? [],
+        verdicts: input.verdicts ?? [],
+        tieBreaks: input.tieBreaks ?? [],
+        held: input.held ?? [],
+        ...(input.bodyFindings === undefined || input.bodyFindings.length === 0 ? {} : { bodyFindings: input.bodyFindings }),
+        ...(input.carry === undefined ? {} : { carry: input.carry }),
+        ...(input.followUps === undefined || input.followUps.length === 0 ? {} : { followUps: input.followUps }),
+      }),
+      new Date().toISOString(),
+      JSON.stringify(input.stages ?? []),
+      input.pullNumber ?? null,
+      input.scope === undefined ? null : JSON.stringify(input.scope),
+      input.complexity === undefined || input.complexity === null ? null : JSON.stringify(input.complexity),
+      provenance === null ? null : JSON.stringify(provenance),
+    );
 
-  recordAudit(db, 'review_run_recorded', { type: 'review_run', id: reviewRunId }, {
-    repository: input.repository,
-    findingCount: findings.length,
-    ...(provenance === null ? {} : { origin: provenance.origin }),
-  });
+    recordAudit(db, 'review_run_recorded', { type: 'review_run', id: reviewRunId }, {
+      repository: input.repository,
+      findingCount: findings.length,
+      ...(provenance === null ? {} : { origin: provenance.origin }),
+    });
+    db.exec('RELEASE record_run');
+  } catch (error) {
+    db.exec('ROLLBACK TO record_run');
+    db.exec('RELEASE record_run');
+    throw error;
+  }
 
   return { reviewRunId, findings, provenance };
 }

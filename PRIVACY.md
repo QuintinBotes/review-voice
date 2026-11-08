@@ -38,29 +38,36 @@ never anywhere we control**:
 
 | Path | Contents |
 |---|---|
-| `review-voice.db` | Normalised, redacted events; feedback; policies; audit |
+| `review-voice.db` | Normalised, redacted events; feedback; policies; the audit log (the `audit_events` table; there is no audit file) |
+| `runs/` | One directory per pull request review: the diff, copies of the changed files at the base, the review thread and every stage's input and output, kept raw because they are the code under review |
+| `clones/` | The watcher's clones of allowlisted repositories, reused between passes (`watch.workspace` moves them) |
 | `embeddings/` | Retrieval index |
 | `policies/` | Versioned policy artifacts, including archived versions |
-| `audit/events.jsonl` | Local audit log |
 | `exports/` | Anything you explicitly export |
 
 Linux uses `~/.local/share/review-voice/`; macOS and Windows use their
-platform-appropriate equivalents.
+platform-appropriate equivalents. The GitHub Action caches the whole data
+directory between runs, `runs/` included.
 
-Everything is redacted before it is persisted, indexed, logged, or placed in a
-prompt. See [SECURITY.md](SECURITY.md) for the limits of that.
+Review history is redacted before it is persisted, indexed, logged, or placed
+in a prompt. See [SECURITY.md](SECURITY.md) for the limits of that. The code
+under review is not redacted: it is what the review is about.
 
 ## Retention defaults
 
 | Data | Default |
 |---|---|
-| Original, unredacted text | **Never stored.** Redaction happens on download; only the cleaned copy is written to disk. |
+| Review history text (comments, descriptions, summaries) | Redacted on download; the raw text is never stored |
+| The reviewed pull request's diff, changed files and thread, under `runs/` | `retention.runs_days`, 30 days; a failed run is kept twice as long so it can be resumed |
 | Redacted normalised text | Until you purge it |
 | Derived policy rules | Until superseded or purged |
-| Audit logs | 180 days |
+| Audit events | `retention.audit_days`, 180 days; the records of what was posted are kept until purged, because they stop a review being posted twice |
 | Embeddings | Deleted with the event they derive from |
 
-All configurable in `.review-voice/config.yaml`.
+`watch` applies the two retention sweeps once per pass, and `purge --runs`
+applies the run-directory sweep on demand; `review` never deletes anything.
+Both figures are configurable in `.review-voice/config.yaml`, and `0` or
+`null` turns a sweep off.
 
 ## Before anything is read
 
@@ -77,10 +84,12 @@ Bot comments and outside contributors' comments are never stored.
 ```
 /review-voice:purge --repo your-org/your-repo
 /review-voice:purge --before 2026-01-01
+/review-voice:purge --runs --before 2026-01-01
 /review-voice:purge --all
 ```
 
-Each shows exactly what will be deleted before deleting it. `--all` asks twice.
+Each shows exactly what will be deleted before deleting it. `--all` asks twice
+and includes the run directories.
 
 ## What leaves your machine
 

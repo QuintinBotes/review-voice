@@ -87,7 +87,7 @@ interface QueueEntry {
 }
 
 // What the watcher remembers per head. One row per (repository, pull, head).
-type HeadStatus = 'reviewed' | 'posted' | 'carried' | 'waiting-ci' | 'held' | 'failed' | 'skipped';
+type HeadStatus = 'reviewed' | 'posted' | 'carried' | 'waiting-ci' | 'held' | 'failed' | 'failed-open' | 'failed-closed' | 'skipped';
 interface WatchHead {
   repository: string; pull: number; head: string;
   runId: string | null;                // review_runs.review_run_id
@@ -95,7 +95,7 @@ interface WatchHead {
   reviewUrl: string | null;
   status: HeadStatus;
   detail: string | null;               // the refusal, failure or skip reason
-  attempts: number;                    // failed attempts on this head
+  attempts: number;                    // failed attempts on this head, in any of the three failure statuses
   updatedAt: string;
 }
 
@@ -221,7 +221,10 @@ review-voice review --pr <n> [--repository owner/repo] [--mode M] [--post]
   directory under `<dataDir>/runs/<repo>-<n>-<sha8>/`), so a failed run can be
   read and resumed by hand with the existing commands.
 - Prints one JSON document: `{ runId, head, scope, plan, findings, held,
-  verdict, posted, reviewUrl, costUsd, seconds, stages[] }`.
+  verdict, posted, reviewUrl, costUsd, seconds, stages[], failure }`; `failure` is
+  null unless the review could not complete, and then holds `{ code, stage,
+  mode, risk, reasons, humanReviewNote, facts }` with `mode` `failed_open` or
+  `failed_closed`.
 - Exit codes follow `verdict` and `post`: 0 done, 2 refused or bad invocation,
   3 head moved, 4 waiting on CI, 6 CI needs a rerun, 7 an agent failed twice.
 
@@ -267,7 +270,13 @@ Each pass runs `queue`, then for every entry:
 - `skip`: records the skip and does nothing else.
 
 It then writes a `WatchHead` row and prints one report line per pull request,
-in the format `owner/repo#n: <summary> (<status> <url>)`. A second watcher on
+in the format `owner/repo#n: <summary> (<status> <url>)`, where `<status>` is
+one of the `HeadStatus` values: a review that reported `failure.mode` shows
+`failed-open` or `failed-closed`, and one with no report shows `failed`. All
+three count toward `watch.max_attempts_per_head`, appear in `queue --settled`
+and make `--once` exit 1. After the outcomes step the pass applies the
+`retention` block and prints one line such as `removed 2 run directories, 15
+audit events` (through stderr with `--json`). A second watcher on
 the same data directory exits at once (a lock file). `--once` runs one pass for
 cron, launchd or a scheduled workflow.
 

@@ -659,6 +659,95 @@ test('reviewResult reads review JSON defensively and maps the exit code to a det
   assert.equal(reviewResult(9, '', '').detail, 'review exited 9');
 });
 
+// --- S03 AC-5: a review that could not complete has one of three statuses ---
+
+test('S03 AC-5: reviewResult carries failureMode only when the review JSON names one', () => {
+  assert.equal(reviewResult(7, JSON.stringify({ runId: 'r', failure: { mode: 'failed_closed', stage: 'verify', risk: 'high' } }), '').failureMode, 'failed_closed');
+  assert.equal(reviewResult(7, JSON.stringify({ failure: { mode: 'failed_open' } }), '').failureMode, 'failed_open');
+  for (const stdout of ['', 'not json', JSON.stringify({ failure: { mode: 'sideways' } }), JSON.stringify({ failure: 'failed_closed' }), JSON.stringify({ runId: 'r' })]) {
+    assert.equal('failureMode' in reviewResult(7, stdout, ''), false, stdout);
+  }
+});
+
+test('S03 AC-5: the watcher records failed-closed, failed-open and failed from the child, counts each towards the cap, and --once exits 1', async () => {
+  await withWatcher(async (h) => {
+    const impl = fakeGitHub({
+      requested: [item(REPO, 7), item(REPO, 8), item(REPO, 9)],
+      pulls: { [`${REPO}#7`]: openPull({ head: sha('7') }), [`${REPO}#8`]: openPull({ head: sha('8') }), [`${REPO}#9`]: openPull({ head: sha('9') }) },
+    });
+    const failed = (failureMode) => ({ exitCode: 7, runId: null, event: null, reviewUrl: null, detail: 'an agent failed twice', ...(failureMode === undefined ? {} : { failureMode }) });
+    // The queue reads the three pull requests in order, so the fake answers in that order: closed, open, and a child with no report.
+    const review = () => fakeReview([failed('failed_closed'), failed('failed_open'), failed(undefined)]);
+
+    assert.equal(await h.run(['--once'], { impl, review: review() }), 1, 'a pass with a failure exits 1');
+    assert.deepEqual(
+      rows(h).map((row) => [row.pull_number, row.status, row.detail, row.attempts]),
+      [
+        [7, 'failed-closed', 'failed_closed: an agent failed twice', 1],
+        [8, 'failed-open', 'an agent failed twice', 1],
+        [9, 'failed', 'an agent failed twice', 1],
+      ],
+    );
+    assert.deepEqual(h.out[0].split('\n'), [
+      'acme/web#7: review (failed-closed failed_closed: an agent failed twice)',
+      'acme/web#8: review (failed-open an agent failed twice)',
+      'acme/web#9: review (failed an agent failed twice)',
+      '3 entries: 1 failed-closed, 1 failed-open, 1 failed; 0 not reached; outcomes followed on 0 pull request(s)',
+    ]);
+
+    assert.equal(await h.run(['--once'], { impl, review: review() }), 1);
+    assert.deepEqual(rows(h).map((row) => row.attempts), [2, 2, 2], 'every kind of failure counts towards the cap');
+
+    // At watch.max_attempts_per_head (two by default) each head is left for a person and no longer queued.
+    assert.equal(await h.run(['--once'], { impl, review: review() }), 0);
+    assert.match(h.out[0], /^0 entries;/);
+    assert.deepEqual(rows(h).map((row) => row.attempts), [2, 2, 2]);
+  });
+});
+
+test('S03 AC-5: queue --settled names a capped head with its attempts and failure kind, and status counts the three apart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-watch-failure-kinds-'));
+  const db = openDatabase(join(dir, 'review-voice.db'));
+  try {
+    const impl = fakeGitHub({
+      requested: [item(REPO, 1), item(REPO, 2), item(REPO, 3)],
+      pulls: { 'acme/web#1': openPull({ head: sha('1') }), 'acme/web#2': openPull({ head: sha('2') }), 'acme/web#3': openPull({ head: sha('3') }) },
+    });
+    const row = (pull, status, detail, at) => saveWatchHead(db, { repository: REPO, pull, head: sha(String(pull)), runId: null, event: null, reviewUrl: null, status, detail }, at);
+    row(1, 'failed', 'review timed out after 45m', new Date('2026-10-20T00:00:00Z'));
+    row(2, 'failed-open', 'an agent failed twice', new Date('2026-10-21T00:00:00Z'));
+    row(3, 'failed-closed', 'failed_closed: an agent failed twice', new Date('2026-10-22T00:00:00Z'));
+    const out = [];
+    const deps = (cap) => ({
+      config: { allowlist: ['acme/*'], queue: { ...defaultQueueConfig(), sources: ['requested'] }, warnings: [], watch: { maxAttemptsPerHead: cap } },
+      client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true, token: 't', fetchImpl: impl, sleep: async () => {} }),
+      openDb: () => ({ prepare: (...args) => db.prepare(...args), close: () => {} }),
+      now: NOW,
+      out: (text) => out.push(text),
+      err: () => {},
+    });
+
+    assert.equal(await queueCommand(['--settled'], deps(1)), 0);
+    assert.equal(
+      out.pop(),
+      [
+        'FAILED-CLOSED acme/web#3 3333333 (1 attempts) failed_closed: an agent failed twice',
+        'FAILED-OPEN acme/web#2 2222222 (1 attempts) an agent failed twice',
+        'FAILED acme/web#1 1111111 (1 attempts) review timed out after 45m',
+        '3 left for a person',
+      ].join('\n'),
+    );
+    assert.equal(await queueCommand([], deps(1)), 0);
+    assert.equal(out.pop().split('\n').length, 1, 'at the cap none of the three is queued again');
+    assert.equal(await queueCommand([], deps(2)), 0);
+    assert.equal(out.pop().split('\n').length, 4, 'under the cap all three are queued again');
+    assert.equal(watchSummary(db)[0], 'watcher          1 failed, 1 failed-closed, 1 failed-open');
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 const SPAWN = { configPath: null };
 const CALL = { repository: REPO, pull: 7, expectHead: sha('a'), timeoutMs: 60_000, runRepositoryCommands: false };
 

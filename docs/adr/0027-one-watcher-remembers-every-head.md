@@ -52,3 +52,15 @@ redone every pass.
 
 **A daemon with a socket.** Rejected. A lock file and `--once` cover
 schedulers, and an interval loop covers a terminal.
+
+## Amendment - 2026-11-07
+
+A review whose report names a failure mode is stored as `failed-open` or
+`failed-closed`; a child that produced no report is still `failed`. One helper,
+`isFailure`, treats the three alike, so `watch.max_attempts_per_head` caps them,
+`queue --settled` lists them with their attempts and mode, `--once` exits 1 for
+them and `status` counts them apart. The watcher also applies the `retention`
+block once per pass, after outcomes: run directories older than
+`retention.runs_days` and audit events older than `retention.audit_days` are
+removed, except the posting records, which stay until `purge`. Zero or null
+turns a sweep off.

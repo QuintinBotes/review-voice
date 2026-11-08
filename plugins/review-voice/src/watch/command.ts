@@ -10,7 +10,8 @@ import { MODES } from '../review/plan.ts';
 import type { Database } from '../store/db.ts';
 import { checkOutcomes } from '../store/outcomes.ts';
 import { recordedRunsForPull, runDetail } from '../store/runs.ts';
-import { recentlySentPulls, saveWatchHead, type HeadStatus, type WatchHead } from '../store/watch.ts';
+import { applyRetention, DEFAULT_RETENTION, retentionLine } from '../store/retention.ts';
+import { isFailure, recentlySentPulls, saveWatchHead, type HeadStatus, type WatchHead } from '../store/watch.ts';
 import { parseDuration } from './config.ts';
 import { acquireLock, lockPort } from './lock.ts';
 import type { ReviewPullRequest } from './review.ts';
@@ -19,7 +20,9 @@ import { cloneDir, type PrepareClone } from './workspace.ts';
 type WatchSettings = Pick<
   LoadedConfig,
   'allowlist' | 'queue' | 'watch' | 'warnings' | 'postingEnabled' | 'ciGateChecks' | 'ciRules' | 'ownerReviewer' | 'verdictPolicy'
->;
+> &
+  // Optional so a settings reader that predates the block still gets the documented defaults.
+  Partial<Pick<LoadedConfig, 'retention'>>;
 
 export interface WatchCommandDeps {
   /** The config file watch was started with; null outside a repository. */
@@ -242,19 +245,37 @@ async function runPass(options: PassOptions, json: boolean): Promise<boolean> {
     }
 
     const followed = await followOutcomes(client, db, deps);
+    const swept = sweepRetention(db, config, deps);
     if (json) {
       deps.out(JSON.stringify(rows, null, 2));
+      // Stdout stays one JSON document, so the line goes to the error stream.
+      if (swept !== null) deps.err(swept);
     } else {
       const totals = [...counts].map(([status, count]) => `${count} ${status}`).join(', ');
       lines.push(
         `${queue.entries.length} entr${queue.entries.length === 1 ? 'y' : 'ies'}${totals === '' ? '' : `: ${totals}`}; ` +
           `${queue.notReached.length} not reached; outcomes followed on ${followed} pull request(s)`,
       );
+      if (swept !== null) lines.push(swept);
       deps.out(lines.join('\n'));
     }
-    return rows.some((row) => row.status === 'failed');
+    return rows.some((row) => isFailure(row.status));
   } finally {
     db.close();
+  }
+}
+
+/**
+ * Retention, once per pass and after the outcomes it may read. A failure to
+ * sweep is reported and never fails the pass: the reviews already ran.
+ * Returns the line to print, or null when nothing was removed.
+ */
+function sweepRetention(db: Database, config: WatchSettings, deps: WatchCommandDeps): string | null {
+  try {
+    return retentionLine(applyRetention(deps.dataDir, db, config.retention ?? DEFAULT_RETENTION, deps.now()));
+  } catch (error) {
+    deps.err(`Retention was not applied: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
   }
 }
 
@@ -304,7 +325,11 @@ async function review(options: PassOptions, entry: QueueEntry): Promise<Outcome>
         ? 'waiting-ci'
         : result.exitCode === 6
           ? 'held'
-          : 'failed';
+          : result.failureMode === 'failed_open'
+            ? 'failed-open'
+            : result.failureMode === 'failed_closed'
+              ? 'failed-closed'
+              : 'failed';
   return {
     row: {
       repository: entry.repository,
@@ -314,7 +339,8 @@ async function review(options: PassOptions, entry: QueueEntry): Promise<Outcome>
       event: result.event,
       reviewUrl: result.reviewUrl,
       status,
-      detail: status === 'failed' ? (result.detail ?? `review exited ${result.exitCode}`) : result.detail,
+      // A failed-closed head is left for a person, so its detail says so in the words the review reported.
+      detail: isFailure(status) ? `${status === 'failed-closed' ? 'failed_closed: ' : ''}${result.detail ?? `review exited ${result.exitCode}`}` : result.detail,
     },
   };
 }
