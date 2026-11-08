@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync16, readSync, writeFileSync as writeFileSync5, mkdirSync as mkdirSync8, statSync as statSync4, renameSync as renameSync2, rmSync as rmSync5, existsSync as existsSync12 } from "node:fs";
-import { dirname as dirname13, isAbsolute as isAbsolute4, join as join19, relative as relative4, resolve as resolve5 } from "node:path";
+import { readFileSync as readFileSync16, readSync, writeFileSync as writeFileSync5, mkdirSync as mkdirSync8, statSync as statSync4, lstatSync as lstatSync3, renameSync as renameSync2, rmSync as rmSync5, existsSync as existsSync12, realpathSync as realpathSync2 } from "node:fs";
+import { basename as basename3, dirname as dirname13, isAbsolute as isAbsolute4, join as join19, relative as relative3, resolve as resolve5, sep as sep4 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 import { execFileSync as execFileSync15 } from "node:child_process";
 import { format } from "node:util";
@@ -11391,10 +11391,10 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
   let offset = bm.offset;
   let commentEnd = null;
   for (const collItem of bm.items) {
-    const { start, key: key2, sep: sep4, value } = collItem;
+    const { start, key: key2, sep: sep5, value } = collItem;
     const keyProps = resolveProps(start, {
       indicator: "explicit-key-ind",
-      next: key2 ?? sep4?.[0],
+      next: key2 ?? sep5?.[0],
       offset,
       onError,
       parentIndent: bm.indent,
@@ -11408,7 +11408,7 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
         else if ("indent" in key2 && key2.indent !== bm.indent)
           onError(offset, "BAD_INDENT", startColMsg);
       }
-      if (!keyProps.anchor && !keyProps.tag && !sep4) {
+      if (!keyProps.anchor && !keyProps.tag && !sep5) {
         commentEnd = keyProps.end;
         if (keyProps.comment) {
           if (map2.comment)
@@ -11432,7 +11432,7 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
     ctx.atKey = false;
     if (mapIncludes(ctx, map2.items, keyNode))
       onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-    const valueProps = resolveProps(sep4 ?? [], {
+    const valueProps = resolveProps(sep5 ?? [], {
       indicator: "map-value-ind",
       next: value,
       offset: keyNode.range[2],
@@ -11448,7 +11448,7 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
         if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
           onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
       }
-      const valueNode = value ? composeNode2(ctx, value, valueProps, onError) : composeEmptyNode2(ctx, offset, sep4, null, valueProps, onError);
+      const valueNode = value ? composeNode2(ctx, value, valueProps, onError) : composeEmptyNode2(ctx, offset, sep5, null, valueProps, onError);
       if (ctx.schema.compat)
         flowIndentCheck(bm.indent, value, onError);
       offset = valueNode.range[2];
@@ -11524,7 +11524,7 @@ function resolveEnd(end, offset, reqSpace, onError) {
   let comment = "";
   if (end) {
     let hasSpace = false;
-    let sep4 = "";
+    let sep5 = "";
     for (const token of end) {
       const { source, type } = token;
       switch (type) {
@@ -11538,13 +11538,13 @@ function resolveEnd(end, offset, reqSpace, onError) {
           if (!comment)
             comment = cb;
           else
-            comment += sep4 + cb;
-          sep4 = "";
+            comment += sep5 + cb;
+          sep5 = "";
           break;
         }
         case "newline":
           if (comment)
-            sep4 += source;
+            sep5 += source;
           hasSpace = true;
           break;
         default:
@@ -11573,18 +11573,18 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
   let offset = fc.offset + fc.start.source.length;
   for (let i = 0; i < fc.items.length; ++i) {
     const collItem = fc.items[i];
-    const { start, key: key2, sep: sep4, value } = collItem;
+    const { start, key: key2, sep: sep5, value } = collItem;
     const props = resolveProps(start, {
       flow: fcName,
       indicator: "explicit-key-ind",
-      next: key2 ?? sep4?.[0],
+      next: key2 ?? sep5?.[0],
       offset,
       onError,
       parentIndent: fc.indent,
       startOnNewline: false
     });
     if (!props.found) {
-      if (!props.anchor && !props.tag && !sep4 && !value) {
+      if (!props.anchor && !props.tag && !sep5 && !value) {
         if (i === 0 && props.comma)
           onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
         else if (i < fc.items.length - 1)
@@ -11638,8 +11638,8 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
         }
       }
     }
-    if (!isMap2 && !sep4 && !props.found) {
-      const valueNode = value ? composeNode2(ctx, value, props, onError) : composeEmptyNode2(ctx, props.end, sep4, null, props, onError);
+    if (!isMap2 && !sep5 && !props.found) {
+      const valueNode = value ? composeNode2(ctx, value, props, onError) : composeEmptyNode2(ctx, props.end, sep5, null, props, onError);
       coll.items.push(valueNode);
       offset = valueNode.range[2];
       if (isBlock(value))
@@ -11651,7 +11651,7 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
       if (isBlock(key2))
         onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
       ctx.atKey = false;
-      const valueProps = resolveProps(sep4 ?? [], {
+      const valueProps = resolveProps(sep5 ?? [], {
         flow: fcName,
         indicator: "map-value-ind",
         next: value,
@@ -11662,8 +11662,8 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
       });
       if (valueProps.found) {
         if (!isMap2 && !props.found && ctx.options.strict) {
-          if (sep4)
-            for (const st of sep4) {
+          if (sep5)
+            for (const st of sep5) {
               if (st === valueProps.found)
                 break;
               if (st.type === "newline") {
@@ -11680,7 +11680,7 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
         else
           onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
       }
-      const valueNode = value ? composeNode2(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode2(ctx, valueProps.end, sep4, null, valueProps, onError) : null;
+      const valueNode = value ? composeNode2(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode2(ctx, valueProps.end, sep5, null, valueProps, onError) : null;
       if (valueNode) {
         if (isBlock(value))
           onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -11840,7 +11840,7 @@ function resolveBlockScalar(ctx, scalar2, onError) {
       chompStart = i + 1;
   }
   let value = "";
-  let sep4 = "";
+  let sep5 = "";
   let prevMoreIndented = false;
   for (let i = 0; i < contentStart; ++i)
     value += lines2[i][0].slice(trimIndent) + "\n";
@@ -11857,24 +11857,24 @@ function resolveBlockScalar(ctx, scalar2, onError) {
       indent = "";
     }
     if (type === Scalar.BLOCK_LITERAL) {
-      value += sep4 + indent.slice(trimIndent) + content;
-      sep4 = "\n";
+      value += sep5 + indent.slice(trimIndent) + content;
+      sep5 = "\n";
     } else if (indent.length > trimIndent || content[0] === "	") {
-      if (sep4 === " ")
-        sep4 = "\n";
-      else if (!prevMoreIndented && sep4 === "\n")
-        sep4 = "\n\n";
-      value += sep4 + indent.slice(trimIndent) + content;
-      sep4 = "\n";
+      if (sep5 === " ")
+        sep5 = "\n";
+      else if (!prevMoreIndented && sep5 === "\n")
+        sep5 = "\n\n";
+      value += sep5 + indent.slice(trimIndent) + content;
+      sep5 = "\n";
       prevMoreIndented = true;
     } else if (content === "") {
-      if (sep4 === "\n")
+      if (sep5 === "\n")
         value += "\n";
       else
-        sep4 = "\n";
+        sep5 = "\n";
     } else {
-      value += sep4 + content;
-      sep4 = " ";
+      value += sep5 + content;
+      sep5 = " ";
       prevMoreIndented = false;
     }
   }
@@ -12049,25 +12049,25 @@ function unfoldLines(source) {
     trimBoth = /^[ \t]+|[ \t]+$/g;
   }
   let res = match[1].replace(trimEnd, "");
-  let sep4 = " ";
+  let sep5 = " ";
   let pos = line3.lastIndex;
   while (match = line3.exec(source)) {
     const lm = match[1].replace(trimBoth, "");
     if (lm === "") {
-      if (sep4 === "\n")
-        res += sep4;
+      if (sep5 === "\n")
+        res += sep5;
       else
-        sep4 = "\n";
+        sep5 = "\n";
     } else {
-      res += sep4 + lm;
-      sep4 = " ";
+      res += sep5 + lm;
+      sep5 = " ";
     }
     pos = line3.lastIndex;
   }
   const last = /[ \t]*(.*)/sy;
   last.lastIndex = pos;
   match = last.exec(source);
-  return res + sep4 + (match?.[1] ?? "");
+  return res + sep5 + (match?.[1] ?? "");
 }
 function doubleQuotedValue(source, onError) {
   let res = "";
@@ -13684,18 +13684,18 @@ var Parser = class {
     if (this.type === "map-value-ind") {
       const prev = getPrevProps(this.peek(2));
       const start = getFirstKeyStartProps(prev);
-      let sep4;
+      let sep5;
       if (scalar2.end) {
-        sep4 = scalar2.end;
-        sep4.push(this.sourceToken);
+        sep5 = scalar2.end;
+        sep5.push(this.sourceToken);
         delete scalar2.end;
       } else
-        sep4 = [this.sourceToken];
+        sep5 = [this.sourceToken];
       const map2 = {
         type: "block-map",
         offset: scalar2.offset,
         indent: scalar2.indent,
-        items: [{ start, key: scalar2, sep: sep4 }]
+        items: [{ start, key: scalar2, sep: sep5 }]
       };
       this.onKeyLine = true;
       this.stack[this.stack.length - 1] = map2;
@@ -13848,15 +13848,15 @@ var Parser = class {
             } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
               const start2 = getFirstKeyStartProps(it.start);
               const key2 = it.key;
-              const sep4 = it.sep;
-              sep4.push(this.sourceToken);
+              const sep5 = it.sep;
+              sep5.push(this.sourceToken);
               delete it.key;
               delete it.sep;
               this.stack.push({
                 type: "block-map",
                 offset: this.offset,
                 indent: this.indent,
-                items: [{ start: start2, key: key2, sep: sep4 }]
+                items: [{ start: start2, key: key2, sep: sep5 }]
               });
             } else if (start.length > 0) {
               it.sep = it.sep.concat(start, this.sourceToken);
@@ -14050,13 +14050,13 @@ var Parser = class {
         const prev = getPrevProps(parent);
         const start = getFirstKeyStartProps(prev);
         fixFlowSeqItems(fc);
-        const sep4 = fc.end.splice(1, fc.end.length);
-        sep4.push(this.sourceToken);
+        const sep5 = fc.end.splice(1, fc.end.length);
+        sep5.push(this.sourceToken);
         const map2 = {
           type: "block-map",
           offset: fc.offset,
           indent: fc.indent,
-          items: [{ start, key: fc, sep: sep4 }]
+          items: [{ start, key: fc, sep: sep5 }]
         };
         this.onKeyLine = true;
         this.stack[this.stack.length - 1] = map2;
@@ -16873,12 +16873,12 @@ function resolvePointer(root, pointerPath, target) {
 }
 function listRuleDocuments(root, directory) {
   const out = [];
-  for (const { path: relative5, kind } of RULE_DIRECTORIES) {
-    const base = join10(root, directory, relative5);
+  for (const { path: relative4, kind } of RULE_DIRECTORIES) {
+    const base = join10(root, directory, relative4);
     if (!existsSync6(base)) continue;
     try {
       for (const entry of readdirSync2(base).sort()) {
-        for (const candidate of [join10(directory, relative5, entry, "SKILL.md"), join10(directory, relative5, entry)]) {
+        for (const candidate of [join10(directory, relative4, entry, "SKILL.md"), join10(directory, relative4, entry)]) {
           if (!candidate.endsWith(".md")) continue;
           if (!existsSync6(join10(root, candidate))) continue;
           out.push({ path: candidate, kind });
@@ -19410,8 +19410,8 @@ function isCorpusEmpty(db) {
 }
 function baselineVoice() {
   const here = dirname10(fileURLToPath5(import.meta.url));
-  for (const relative5 of ["..", "../.."]) {
-    const candidate = join14(here, relative5, "templates", "voice.baseline.md");
+  for (const relative4 of ["..", "../.."]) {
+    const candidate = join14(here, relative4, "templates", "voice.baseline.md");
     if (existsSync8(candidate)) return readFileSync11(candidate, "utf8").trim();
   }
   throw new Error("templates/voice.baseline.md is missing from the plugin.");
@@ -19569,6 +19569,29 @@ function summariseResults(results) {
 }
 var isRecord3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var isFigure = (value) => value === null || typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+function recordProblem(entry) {
+  const count3 = (key2) => entry[key2] === void 0 || entry[key2] === null || Number.isInteger(entry[key2]) && entry[key2] >= 0 ? null : `${key2} is not a whole number`;
+  if (entry["skipped"] !== void 0) {
+    const carried = ["hit", "silent", "lineDelta", "findings", "exitCode", "error"].filter((key2) => entry[key2] !== void 0);
+    return carried.length === 0 ? null : `a skipped fixture carries no result, but this one has ${carried.join(", ")}`;
+  }
+  const badCount = count3("findings") ?? count3("lineDelta");
+  if (badCount !== null) return badCount;
+  if (entry["exitCode"] !== 0 || entry["error"] !== void 0) {
+    return (entry["hit"] ?? null) === null && (entry["silent"] ?? null) === null ? null : "a failed run scores nothing, but this one has a hit or silent value";
+  }
+  if (entry["class"] === "positive") {
+    if (typeof entry["hit"] !== "boolean") return "a completed positive has no hit value";
+    const delta = entry["lineDelta"];
+    if (typeof delta === "number" && entry["findings"] === 0) return "lineDelta is set but findings is 0";
+    const within = typeof delta === "number" && delta <= AGREEMENT_LINE_TOLERANCE;
+    if (entry["hit"] !== within) return `hit is ${String(entry["hit"])} but lineDelta is ${delta === void 0 || delta === null ? "absent" : String(delta)} against a tolerance of ${AGREEMENT_LINE_TOLERANCE}`;
+    return null;
+  }
+  if (typeof entry["silent"] !== "boolean") return "a completed clean fixture has no silent value";
+  if (entry["silent"] === true && typeof entry["findings"] === "number" && entry["findings"] > 0) return `silent is true but findings is ${entry["findings"]}`;
+  return null;
+}
 function readRecallResults(path) {
   let text4;
   try {
@@ -19597,12 +19620,20 @@ function readRecallResults(path) {
     }
     if (entry["lineDelta"] !== void 0 && entry["lineDelta"] !== null && typeof entry["lineDelta"] !== "number") throw bad(`fixtures[${index}].lineDelta is not a number`);
     if (entry["exitCode"] !== void 0 && entry["exitCode"] !== null && typeof entry["exitCode"] !== "number") throw bad(`fixtures[${index}].exitCode is not a number`);
-    if (entry["skipped"] !== void 0 && typeof entry["skipped"] !== "string") throw bad(`fixtures[${index}].skipped is not a string`);
+    for (const key2 of ["skipped", "error"]) {
+      if (entry[key2] !== void 0 && typeof entry[key2] !== "string") throw bad(`fixtures[${index}].${key2} is not a string`);
+    }
+    const problem = recordProblem(entry);
+    if (problem !== null) throw bad(`fixtures[${index}]: ${problem}`);
   }
   const summary = document["summary"];
   if (!isRecord3(summary)) throw bad("summary is not an object");
   for (const key2 of ["keyBugRecall", "causalLineHit", "cleanSilence"]) {
     if (!isFigure(summary[key2])) throw bad(`summary.${key2} is not a number from 0 to 1, or null`);
+  }
+  const recomputed = summariseResults(fixtures);
+  for (const key2 of Object.keys(recomputed)) {
+    if (summary[key2] !== recomputed[key2]) throw bad(`summary.${key2} is ${JSON.stringify(summary[key2])} but the fixtures give ${JSON.stringify(recomputed[key2])}`);
   }
   return document;
 }
@@ -19632,9 +19663,9 @@ function recallMetrics(results) {
 
 // plugins/review-voice/src/evaluate/recall.ts
 import { execFileSync as execFileSync14 } from "node:child_process";
-import { cpSync, existsSync as existsSync11, mkdirSync as mkdirSync7, mkdtempSync as mkdtempSync2, readdirSync as readdirSync5, readFileSync as readFileSync15, rmSync as rmSync4, statSync as statSync3 } from "node:fs";
+import { copyFileSync as copyFileSync2, existsSync as existsSync11, mkdirSync as mkdirSync7, mkdtempSync as mkdtempSync2, readdirSync as readdirSync5, readFileSync as readFileSync15, rmSync as rmSync4, statSync as statSync3 } from "node:fs";
 import { tmpdir as tmpdir2 } from "node:os";
-import { join as join18, relative as relative3, resolve as resolve4 } from "node:path";
+import { join as join18, resolve as resolve4 } from "node:path";
 
 // plugins/review-voice/src/review/driver.ts
 import { execFileSync as execFileSync12 } from "node:child_process";
@@ -21151,6 +21182,7 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
 var REPOSITORY = "example/fixtures";
 var PULL_NUMBER = 1;
 var PLACEHOLDER_TOKEN = "recall-placeholder-token";
+var CANNED_OUTPUT = /^[a-z][a-z0-9-]*\.\d+\.json$/;
 var RecallUsageError = class extends Error {
 };
 function scalar(raw) {
@@ -21219,7 +21251,7 @@ function selectFixtures(options) {
 var json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 function shimFiles(repoDir, base, head, paths) {
   return paths.map((path) => {
-    const text4 = execFileSync14("git", ["-c", "core.quotepath=off", "diff", "--no-renames", "--no-color", base, head, "--", path], {
+    const text4 = execFileSync14("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
       cwd: repoDir,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024
@@ -21322,7 +21354,11 @@ async function runFixture(fixture, index, context2) {
     const fakes = join18(context2.root, "agents", String(index));
     mkdirSync7(fakes, { recursive: true });
     const canned = join18(fixture.dir, "agents");
-    if (existsSync11(canned)) cpSync(canned, fakes, { recursive: true, filter: (source) => relative3(canned, source) !== ".calls" });
+    if (existsSync11(canned)) {
+      for (const entry of readdirSync5(canned, { withFileTypes: true })) {
+        if (entry.isFile() && CANNED_OUTPUT.test(entry.name)) copyFileSync2(join18(canned, entry.name), join18(fakes, entry.name));
+      }
+    }
     env["REVIEW_VOICE_FAKE_AGENTS"] = fakes;
   } else {
     delete env["REVIEW_VOICE_FAKE_AGENTS"];
@@ -21371,11 +21407,15 @@ async function runRecall(options, deps) {
   const root = mkdtempSync2(join18(tmpdir2(), "rv-recall-"));
   const dataDir = join18(root, "data");
   mkdirSync7(dataDir, { recursive: true });
-  const touched = ["REVIEW_VOICE_DATA_DIR", "GITHUB_TOKEN", "REVIEW_VOICE_CONFIG"];
+  const quiet = { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" };
+  const gitKeys = [.../* @__PURE__ */ new Set([...Object.keys(process.env).filter((key2) => key2.startsWith("GIT_")), ...Object.keys(quiet)])];
+  const touched = ["REVIEW_VOICE_DATA_DIR", "GITHUB_TOKEN", "REVIEW_VOICE_CONFIG", ...gitKeys];
   const previous = Object.fromEntries(touched.map((key2) => [key2, process.env[key2]]));
   const cwd = process.cwd();
   const fixtureResults = [];
   try {
+    for (const key2 of gitKeys) delete process.env[key2];
+    Object.assign(process.env, quiet);
     process.env["REVIEW_VOICE_DATA_DIR"] = dataDir;
     delete process.env["REVIEW_VOICE_CONFIG"];
     const hasToken = [process.env["GITHUB_TOKEN"], process.env["GH_TOKEN"]].some((value) => value !== void 0 && value !== "");
@@ -26470,6 +26510,17 @@ async function reviewCommand(argv) {
   else console.log(reportText(report));
   return report.exitCode;
 }
+function realExistingPath(path) {
+  let existing = path;
+  const rest = [];
+  while (!existsSync12(existing)) {
+    const parent = dirname13(existing);
+    if (parent === existing) return path;
+    rest.unshift(basename3(existing));
+    existing = parent;
+  }
+  return join19(realpathSync2.native(existing), ...rest);
+}
 async function recallCommand(argv) {
   const known = /* @__PURE__ */ new Set(["--fixtures", "--class", "--runner", "--mode", "--out", "--only", "--keep"]);
   const valued = /* @__PURE__ */ new Set(["--fixtures", "--class", "--runner", "--mode", "--out", "--only"]);
@@ -26512,8 +26563,18 @@ async function recallCommand(argv) {
     return 2;
   }
   const out = resolve5(flag(argv, "--out") ?? "results.json");
-  const inside = relative4(resolve5(fixtures), out);
-  if (inside === "" || !inside.startsWith("..") && !isAbsolute4(inside)) {
+  let linked = false;
+  try {
+    linked = lstatSync3(out).isSymbolicLink();
+  } catch {
+  }
+  if (linked) {
+    console.error(`--out ${out} is a symbolic link; name the file itself.`);
+    return 2;
+  }
+  const inside = relative3(realExistingPath(resolve5(fixtures)), realExistingPath(out));
+  const outside = inside === ".." || inside.startsWith(`..${sep4}`) || isAbsolute4(inside);
+  if (!outside) {
     console.error(`--out ${out} is inside the fixtures; recall never writes there.`);
     return 2;
   }
@@ -26541,8 +26602,11 @@ async function recallCommand(argv) {
     }
     throw error;
   }
-  writeFileSync5(out, `${JSON.stringify(run.results, null, 2)}
-`);
+  const staging = `${out}.${process.pid}.tmp`;
+  rmSync5(staging, { force: true });
+  writeFileSync5(staging, `${JSON.stringify(run.results, null, 2)}
+`, { flag: "wx" });
+  renameSync2(staging, out);
   const { summary } = run.results;
   const figure = (value) => value === null ? "no data" : value.toFixed(2);
   console.log(

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { GitHubClient } from '../github/client.ts';
 import type { RequestedMode } from '../review/plan.ts';
 import { NO_FINDINGS, runReview, type ReviewReport, type RunCommand } from '../review/driver.ts';
@@ -32,6 +32,8 @@ const REPOSITORY = 'example/fixtures';
 const PULL_NUMBER = 1;
 /** Stands in for a credential so no shimmed command ever runs `gh`; it is never sent anywhere real. */
 const PLACEHOLDER_TOKEN = 'recall-placeholder-token';
+/** A canned agent output as the fake backend names them: `<agent>.<call>.json`. */
+const CANNED_OUTPUT = /^[a-z][a-z0-9-]*\.\d+\.json$/;
 
 /** A bad invocation, which the command reports as exit 2 rather than as a crash. */
 export class RecallUsageError extends Error {}
@@ -161,7 +163,7 @@ interface ShimFile {
 /** The patch GitHub would serve for each changed file, read from the materialised repository. */
 function shimFiles(repoDir: string, base: string, head: string, paths: readonly string[]): ShimFile[] {
   return paths.map((path) => {
-    const text = execFileSync('git', ['-c', 'core.quotepath=off', 'diff', '--no-renames', '--no-color', base, head, '--', path], {
+    const text = execFileSync('git', ['-c', 'core.quotepath=off', 'diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-color', base, head, '--', path], {
       cwd: repoDir,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
@@ -298,7 +300,14 @@ async function runFixture(fixture: Fixture, index: number, context: Context): Pr
     const fakes = join(context.root, 'agents', String(index));
     mkdirSync(fakes, { recursive: true });
     const canned = join(fixture.dir, 'agents');
-    if (existsSync(canned)) cpSync(canned, fakes, { recursive: true, filter: (source) => relative(canned, source) !== '.calls' });
+    // Only the canned outputs are copied, as plain files. A link or a directory
+    // under agents/ (a `.calls` under any spelling the file system folds
+    // together with it) could carry the backend's writes outside this directory.
+    if (existsSync(canned)) {
+      for (const entry of readdirSync(canned, { withFileTypes: true })) {
+        if (entry.isFile() && CANNED_OUTPUT.test(entry.name)) copyFileSync(join(canned, entry.name), join(fakes, entry.name));
+      }
+    }
     env['REVIEW_VOICE_FAKE_AGENTS'] = fakes;
   } else {
     // An operator's own fake setup must never turn a real run into a canned one.
@@ -358,11 +367,21 @@ export async function runRecall(options: RecallOptions, deps: RecallDeps): Promi
   const dataDir = join(root, 'data');
   mkdirSync(dataDir, { recursive: true });
 
-  const touched = ['REVIEW_VOICE_DATA_DIR', 'GITHUB_TOKEN', 'REVIEW_VOICE_CONFIG'] as const;
+  // The base checkout, the shim's diffs and every git command the driver runs
+  // in a fixture repository read process.env. An exported GIT_DIR or
+  // GIT_WORK_TREE (a git hook sets both) would point each of them at the
+  // operator's repository instead, and the base checkout would switch it. The
+  // operator's global and system git configuration go with them: a
+  // diff.external or a textconv there would run under those diffs.
+  const quiet = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' };
+  const gitKeys = [...new Set([...Object.keys(process.env).filter((key) => key.startsWith('GIT_')), ...Object.keys(quiet)])];
+  const touched = ['REVIEW_VOICE_DATA_DIR', 'GITHUB_TOKEN', 'REVIEW_VOICE_CONFIG', ...gitKeys];
   const previous = Object.fromEntries(touched.map((key) => [key, process.env[key]]));
   const cwd = process.cwd();
   const fixtureResults: FixtureResult[] = [];
   try {
+    for (const key of gitKeys) delete process.env[key];
+    Object.assign(process.env, quiet);
     process.env['REVIEW_VOICE_DATA_DIR'] = dataDir;
     // The base commit of each fixture supplies its configuration; the operator's must not beat it.
     delete process.env['REVIEW_VOICE_CONFIG'];

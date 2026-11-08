@@ -6,8 +6,8 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,6 +66,7 @@ test('canned fixtures: the hit is a hit, the miss is a miss, the clean one is si
   const hit = results.fixtures[0];
   assert.equal(hit.hit, true);
   assert.equal(hit.lineDelta, 0);
+  assert.equal(hit.categoryMatch, true, 'the canned candidate carries the expected category, and it reaches the score');
   const miss = results.fixtures[1];
   assert.equal(miss.hit, false);
   assert.ok(miss.lineDelta >= 4, `the miss is at least 4 lines away, got ${miss.lineDelta}`);
@@ -322,4 +323,172 @@ test('help names recall and the --recall flag', async () => {
   for (const heading of ['Flags:', 'Reads:', 'Writes:', 'Exit codes:']) assert.ok(recallHelp.stdout.includes(heading), heading);
   const evaluateHelp = await runInProcess(['help', 'evaluate']);
   assert.ok(evaluateHelp.stdout.includes('--recall <results.json>'));
+});
+
+test('an exported GIT_DIR and GIT_WORK_TREE reach neither the fixture repositories nor the operator checkout', async (t) => {
+  // A git hook exports both; every git command the harness and the driver run
+  // in a fixture repository would otherwise act on the operator's repository,
+  // and the base checkout would switch its branch.
+  const operator = scratch(t, 'rv-recall-gitdir-');
+  const identity = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'x', GIT_AUTHOR_EMAIL: 'x@example.com', GIT_COMMITTER_NAME: 'x', GIT_COMMITTER_EMAIL: 'x@example.com' };
+  const git = (...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], { cwd: operator, encoding: 'utf8', env: { ...process.env, ...identity } }).trim();
+  git('init', '-q', '-b', 'main');
+  writeFileSync(join(operator, 'f.txt'), 'one\n');
+  git('add', 'f.txt');
+  git('commit', '-q', '-m', 'one');
+  git('checkout', '-q', '-b', 'work');
+  const saved = { GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE };
+  t.after(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  process.env.GIT_DIR = join(operator, '.git');
+  process.env.GIT_WORK_TREE = operator;
+
+  const run = await recall();
+
+  assert.equal(run.results.summary.failedRuns, 0, JSON.stringify(run.results.fixtures.map((fixture) => fixture.error)));
+  assert.equal(git('rev-parse', '--abbrev-ref', 'HEAD'), 'work', 'the operator checkout is still on its branch');
+  assert.equal(process.env.GIT_DIR, join(operator, '.git'), 'the variables are put back afterwards');
+  assert.equal(process.env.GIT_WORK_TREE, operator);
+});
+
+test('--out is judged by where it is, not by how it is spelled', (t) => {
+  const dir = scratch(t);
+  const fixtures = join(dir, 'fixtures');
+  cpSync(canned, fixtures, { recursive: true });
+  const run = (out) => spawnSync(process.execPath, [cli, 'recall', '--fixtures', fixtures, '--runner', 'fake', '--out', out], { encoding: 'utf8', env: { ...process.env, REVIEW_VOICE_DATA_DIR: join(dir, 'data') } });
+
+  const dotted = run(join(fixtures, '..results.json'));
+  assert.equal(dotted.status, 2, 'a name that begins with two dots is still inside');
+  assert.equal(existsSync(join(fixtures, '..results.json')), false);
+
+  symlinkSync(fixtures, join(dir, 'link'));
+  const linked = run(join(dir, 'link', 'results.json'));
+  assert.equal(linked.status, 2, 'a link into the fixtures is inside');
+  assert.equal(existsSync(join(fixtures, 'results.json')), false);
+
+  const sibling = run(join(dir, 'fixtures-results.json'));
+  assert.equal(sibling.status, 0, sibling.stderr);
+  assert.equal(existsSync(join(dir, 'fixtures-results.json')), true);
+});
+
+test('evaluate --recall refuses a summary that no longer follows from its fixtures', (t) => {
+  const dir = scratch(t);
+  const file = join(dir, 'edited.json');
+  writeFileSync(
+    file,
+    JSON.stringify({
+      pluginVersion: '1',
+      mode: 'auto',
+      runner: 'fake',
+      fixtures: [{ name: 'positive/a', class: 'positive', hit: false, lineDelta: 5, exitCode: 0 }],
+      summary: { keyBugRecall: 1, causalLineHit: 1, cleanSilence: 1, positives: 1, skipped: 0, cleanFixtures: 0, failedRuns: 0 },
+    }),
+  );
+  const result = evaluate(t, '--recall', file);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /summary\.keyBugRecall is 1 but the fixtures give 0/);
+  assert.throws(() => readRecallResults(file), /summary\.keyBugRecall/);
+});
+
+test('the operator global git configuration does not reach a recall run', async (t) => {
+  // A diff.external in the home directory's git configuration would run under
+  // every diff the shim takes, with its output read as the patch.
+  const home = scratch(t, 'rv-recall-home-');
+  const marker = join(home, 'external-ran');
+  const script = join(home, 'external.sh');
+  writeFileSync(script, `#!/bin/sh\ntouch "${marker}"\nexit 0\n`, { mode: 0o755 });
+  writeFileSync(join(home, '.gitconfig'), `[diff]\n\texternal = ${script}\n`);
+  const savedHome = process.env.HOME;
+  t.after(() => {
+    process.env.HOME = savedHome;
+  });
+  process.env.HOME = home;
+
+  const run = await recall();
+
+  assert.equal(existsSync(marker), false, 'the external diff never ran');
+  assert.equal(run.results.summary.failedRuns, 0, JSON.stringify(run.results.fixtures.map((fixture) => fixture.error)));
+  assert.equal(process.env.GIT_CONFIG_GLOBAL, undefined, 'the quieting variables do not outlive the run');
+});
+
+test('--out that is a symbolic link is refused, dangling or not', (t) => {
+  const dir = scratch(t);
+  const fixtures = join(dir, 'fixtures');
+  cpSync(canned, fixtures, { recursive: true });
+  const link = join(dir, 'results.json');
+  symlinkSync(join(fixtures, 'planted.json'), link);
+  const result = spawnSync(process.execPath, [cli, 'recall', '--fixtures', fixtures, '--runner', 'fake', '--out', link], { encoding: 'utf8' });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /is a symbolic link/);
+  assert.equal(existsSync(join(fixtures, 'planted.json')), false, 'nothing was written through the link');
+});
+
+test('a fixture record that cannot be true as written is refused, even with a summary that agrees with it', (t) => {
+  const dir = scratch(t);
+  let written = 0;
+  const file = (fixtures) => {
+    const path = join(dir, `${(written += 1)}.json`);
+    writeFileSync(path, JSON.stringify({ pluginVersion: '1', mode: 'auto', runner: 'fake', fixtures, summary: summariseResults(fixtures) }));
+    return path;
+  };
+  assert.throws(() => readRecallResults(file([{ name: 'positive/a', class: 'positive', hit: true, lineDelta: 1000, findings: 1, exitCode: 0 }])), /fixtures\[0\]: hit is true but lineDelta is 1000 against a tolerance of 3/);
+  assert.throws(() => readRecallResults(file([{ name: 'positive/a', class: 'positive', hit: true, lineDelta: 0, findings: 0, exitCode: 0 }])), /lineDelta is set but findings is 0/);
+  assert.throws(() => readRecallResults(file([{ name: 'positive/a', class: 'positive', hit: false, lineDelta: 1, findings: 1, exitCode: 0 }])), /hit is false but lineDelta is 1/);
+  assert.throws(() => readRecallResults(file([{ name: 'no-findings/a', class: 'no-findings', silent: true, findings: 2, exitCode: 0 }])), /silent is true but findings is 2/);
+  assert.throws(() => readRecallResults(file([{ name: 'positive/a', class: 'positive', hit: true, lineDelta: 0, exitCode: 1, error: 'boom' }])), /a failed run scores nothing/);
+  assert.throws(() => readRecallResults(file([{ name: 'positive/a', class: 'positive', skipped: 'r', hit: true }])), /a skipped fixture carries no result/);
+  assert.throws(() => readRecallResults(file([{ name: 'positive/a', class: 'positive', hit: false, lineDelta: -1, exitCode: 0 }])), /lineDelta is not a whole number/);
+  const sound = file([
+    { name: 'positive/a', class: 'positive', hit: false, lineDelta: 5, findings: 1, exitCode: 0 },
+    { name: 'positive/b', class: 'positive', hit: null, lineDelta: null, exitCode: 1, error: 'boom' },
+    { name: 'positive/c', class: 'positive', skipped: 'r' },
+    { name: 'no-findings/d', class: 'no-findings', silent: true, findings: 0, exitCode: 0 },
+  ]);
+  assert.deepEqual(readRecallResults(sound).summary, { keyBugRecall: 0, causalLineHit: 0, cleanSilence: 1, positives: 2, skipped: 1, cleanFixtures: 1, failedRuns: 1 });
+});
+
+test('a miss that names a distance but no finding is refused', (t) => {
+  const dir = scratch(t);
+  const file = join(dir, 'miss.json');
+  const fixtures = [{ name: 'positive/a', class: 'positive', hit: false, lineDelta: 5, findings: 0, exitCode: 0 }];
+  writeFileSync(file, JSON.stringify({ pluginVersion: '1', mode: 'auto', runner: 'fake', fixtures, summary: summariseResults(fixtures) }));
+  assert.throws(() => readRecallResults(file), /fixtures\[0\]: lineDelta is set but findings is 0/);
+});
+
+test('a fixture whose agents directory holds a link or a folder has only its canned outputs copied', async (t) => {
+  // A `.calls` under any spelling the file system folds together, or a linked
+  // output file, would otherwise carry the fake backend's writes elsewhere.
+  const dir = scratch(t);
+  const operator = join(dir, 'operator');
+  mkdirSync(operator);
+  const fixtures = join(dir, 'fixtures');
+  cpSync(join(canned, 'positive/hit'), join(fixtures, 'positive/hit'), { recursive: true });
+  const agents = join(fixtures, 'positive/hit/agents');
+  symlinkSync(operator, join(agents, '.CALLS'));
+  symlinkSync(join(operator, 'planted.json'), join(agents, 'challenger.9.json'));
+  mkdirSync(join(agents, 'nested'));
+  writeFileSync(join(agents, 'nested', 'diff-analyst.1.json'), '{}');
+  const run = await recall({ fixtures, classes: ['positive'] });
+  assert.equal(run.results.fixtures[0].exitCode, 0, run.results.fixtures[0].error);
+  assert.equal(run.results.fixtures[0].hit, true);
+  assert.deepEqual(readdirSync(operator), [], 'nothing was written through the links');
+});
+
+test('the results file replaces what is at --out instead of writing through it', (t) => {
+  const dir = scratch(t);
+  const fixtures = join(dir, 'fixtures');
+  cpSync(canned, fixtures, { recursive: true });
+  const victim = join(dir, 'victim.txt');
+  writeFileSync(victim, 'keep me\n');
+  const out = join(dir, 'results.json');
+  linkSync(victim, out);
+  const result = spawnSync(process.execPath, [cli, 'recall', '--fixtures', fixtures, '--runner', 'fake', '--out', out], { encoding: 'utf8', env: { ...process.env, REVIEW_VOICE_DATA_DIR: join(dir, 'data') } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(victim, 'utf8'), 'keep me\n', 'the hard-linked file keeps its content');
+  assert.equal(JSON.parse(readFileSync(out, 'utf8')).runner, 'fake');
+  assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith('.tmp')), [], 'no staging file is left behind');
 });

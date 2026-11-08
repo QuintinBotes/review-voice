@@ -7,8 +7,8 @@
  * (candidate generation, verification, wording) live in the plugin's agents.
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
-import { readFileSync, readSync, writeFileSync, mkdirSync, statSync, renameSync, rmSync, existsSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { readFileSync, readSync, writeFileSync, mkdirSync, statSync, lstatSync, renameSync, rmSync, existsSync, realpathSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { format } from 'node:util';
@@ -5462,6 +5462,19 @@ async function reviewCommand(argv: string[]): Promise<number> {
   return report.exitCode;
 }
 
+/** The path with its existing ancestors resolved through links, so two spellings of one place compare equal. */
+function realExistingPath(path: string): string {
+  let existing = path;
+  const rest: string[] = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) return path;
+    rest.unshift(basename(existing));
+    existing = parent;
+  }
+  return join(realpathSync.native(existing), ...rest);
+}
+
 /**
  * Scores recall over the fixtures. It runs the review driver itself, one
  * fixture at a time, so it is never run through `runInProcess` (which does not
@@ -5509,8 +5522,23 @@ async function recallCommand(argv: string[]): Promise<number> {
     return 2;
   }
   const out = resolve(flag(argv, '--out') ?? 'results.json');
-  const inside = relative(resolve(fixtures), out);
-  if (inside === '' || (!inside.startsWith('..') && !isAbsolute(inside))) {
+  // A link at the output path would be written through to wherever it points,
+  // and a dangling one looks like a missing file to every existence check.
+  let linked = false;
+  try {
+    linked = lstatSync(out).isSymbolicLink();
+  } catch {
+    // Nothing there yet, which is the ordinary case.
+  }
+  if (linked) {
+    console.error(`--out ${out} is a symbolic link; name the file itself.`);
+    return 2;
+  }
+  // Judged by where the two are, not how they are spelled: a link under the
+  // fixtures, or a name that merely begins with two dots, is still inside.
+  const inside = relative(realExistingPath(resolve(fixtures)), realExistingPath(out));
+  const outside = inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside);
+  if (!outside) {
     console.error(`--out ${out} is inside the fixtures; recall never writes there.`);
     return 2;
   }
@@ -5552,7 +5580,13 @@ async function recallCommand(argv: string[]): Promise<number> {
     }
     throw error;
   }
-  writeFileSync(out, `${JSON.stringify(run.results, null, 2)}\n`);
+  // Written beside the destination and moved into place: whatever sits at
+  // `out` by now (a file hard-linked elsewhere, a link put there during the
+  // run) is replaced as a directory entry, never written through.
+  const staging = `${out}.${process.pid}.tmp`;
+  rmSync(staging, { force: true });
+  writeFileSync(staging, `${JSON.stringify(run.results, null, 2)}\n`, { flag: 'wx' });
+  renameSync(staging, out);
   const { summary } = run.results;
   const figure = (value: number | null): string => (value === null ? 'no data' : value.toFixed(2));
   console.log(

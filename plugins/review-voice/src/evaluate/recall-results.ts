@@ -177,9 +177,42 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const isFigure = (value: unknown): boolean => value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1);
 
 /**
+ * Why one fixture record, whose fields already have the right types, cannot
+ * be true as written; null when it can. `scoreFixture` is the reference: a
+ * record the command wrote always passes, and one that says both "hit" and
+ * "a thousand lines away" is an edit, not a measurement.
+ */
+function recordProblem(entry: Record<string, unknown>): string | null {
+  const count = (key: string): string | null =>
+    entry[key] === undefined || entry[key] === null || (Number.isInteger(entry[key]) && (entry[key] as number) >= 0) ? null : `${key} is not a whole number`;
+  if (entry['skipped'] !== undefined) {
+    const carried = ['hit', 'silent', 'lineDelta', 'findings', 'exitCode', 'error'].filter((key) => entry[key] !== undefined);
+    return carried.length === 0 ? null : `a skipped fixture carries no result, but this one has ${carried.join(', ')}`;
+  }
+  const badCount = count('findings') ?? count('lineDelta');
+  if (badCount !== null) return badCount;
+  if (entry['exitCode'] !== 0 || entry['error'] !== undefined) {
+    return (entry['hit'] ?? null) === null && (entry['silent'] ?? null) === null ? null : 'a failed run scores nothing, but this one has a hit or silent value';
+  }
+  if (entry['class'] === 'positive') {
+    if (typeof entry['hit'] !== 'boolean') return 'a completed positive has no hit value';
+    const delta = entry['lineDelta'];
+    // A distance is measured from a finding, so there was one.
+    if (typeof delta === 'number' && entry['findings'] === 0) return 'lineDelta is set but findings is 0';
+    const within = typeof delta === 'number' && delta <= AGREEMENT_LINE_TOLERANCE;
+    if (entry['hit'] !== within) return `hit is ${String(entry['hit'])} but lineDelta is ${delta === undefined || delta === null ? 'absent' : String(delta)} against a tolerance of ${AGREEMENT_LINE_TOLERANCE}`;
+    return null;
+  }
+  if (typeof entry['silent'] !== 'boolean') return 'a completed clean fixture has no silent value';
+  if (entry['silent'] === true && typeof entry['findings'] === 'number' && entry['findings'] > 0) return `silent is true but findings is ${entry['findings']}`;
+  return null;
+}
+
+/**
  * Reads a results file defensively: it is an operator-supplied file, and a
  * truncated or hand-edited one must be a clear error, not a figure computed
- * from garbage. Throws an Error whose message names the file and the problem.
+ * from garbage. The summary must be the one its fixtures give. Throws an Error
+ * whose message names the file and the problem.
  */
 export function readRecallResults(path: string): RecallResults {
   let text: string;
@@ -209,12 +242,23 @@ export function readRecallResults(path: string): RecallResults {
     }
     if (entry['lineDelta'] !== undefined && entry['lineDelta'] !== null && typeof entry['lineDelta'] !== 'number') throw bad(`fixtures[${index}].lineDelta is not a number`);
     if (entry['exitCode'] !== undefined && entry['exitCode'] !== null && typeof entry['exitCode'] !== 'number') throw bad(`fixtures[${index}].exitCode is not a number`);
-    if (entry['skipped'] !== undefined && typeof entry['skipped'] !== 'string') throw bad(`fixtures[${index}].skipped is not a string`);
+    for (const key of ['skipped', 'error'] as const) {
+      if (entry[key] !== undefined && typeof entry[key] !== 'string') throw bad(`fixtures[${index}].${key} is not a string`);
+    }
+    const problem = recordProblem(entry);
+    if (problem !== null) throw bad(`fixtures[${index}]: ${problem}`);
   }
   const summary = document['summary'];
   if (!isRecord(summary)) throw bad('summary is not an object');
   for (const key of ['keyBugRecall', 'causalLineHit', 'cleanSilence'] as const) {
     if (!isFigure(summary[key])) throw bad(`summary.${key} is not a number from 0 to 1, or null`);
+  }
+  // The figures are shown beside counts taken from the fixtures, so a summary
+  // that no longer follows from them (an edited or merged file) would print a
+  // ratio next to a tally that contradicts it.
+  const recomputed = summariseResults(fixtures as FixtureResult[]);
+  for (const key of Object.keys(recomputed) as (keyof RecallSummary)[]) {
+    if (summary[key] !== recomputed[key]) throw bad(`summary.${key} is ${JSON.stringify(summary[key])} but the fixtures give ${JSON.stringify(recomputed[key])}`);
   }
   return document as unknown as RecallResults;
 }
