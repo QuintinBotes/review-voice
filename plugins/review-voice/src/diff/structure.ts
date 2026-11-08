@@ -6,6 +6,7 @@ import { parseHunks } from './hunks.ts';
 import { countHunks } from './complexity.ts';
 import type { ReviewScope } from './incremental.ts';
 import { findRemovedControls, type DeletedFile, type RemovedControl } from './removed-controls.ts';
+import { findRiskMarkers, type RiskMarker } from './risk-markers.ts';
 import { findTypeEscapes, type TypeEscape } from './type-escapes.ts';
 
 /**
@@ -67,6 +68,12 @@ export interface StructureSignals {
    * a deleted production file read from the base. Lexical leads, not findings.
    */
   removedControls: RemovedControl[];
+  /**
+   * Added lines that open a route, take a lock or fan out, build a query from
+   * text, or call something unsafe, at most 20 per file. Path, line and kind
+   * only. Lexical leads, not findings.
+   */
+  riskMarkers: RiskMarker[];
   /**
    * Production files whose base or head could not be read, so whether they
    * crossed is unknown rather than no. Paths are capped at 20, sorted.
@@ -280,6 +287,7 @@ export function findStructureSignals(
     branchGrowth: findBranchGrowth(diff, paths, limits.maxAddedBranchesPerFunction),
     typeEscapes: findTypeEscapes(diff, paths),
     removedControls: findRemovedControls(diff, paths, deletedFiles),
+    riskMarkers: findRiskMarkers(diff, paths),
     unmeasured: { count: unmeasured.length, paths: unmeasured.slice(0, MAX_UNMEASURED_LISTED) },
   };
 }

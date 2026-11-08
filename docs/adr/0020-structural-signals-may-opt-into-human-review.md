@@ -52,3 +52,18 @@ a reason for a human to approve an otherwise clean change.
 would derive severity from a measurement, contrary to the traced-impact rules
 in ADR 0009 and ADR 0011, and could turn a review-coverage choice into
 REQUEST_CHANGES.
+
+## Amendment - 2026-11-08
+
+The record named two opt-in signals. A third joins them, on the same terms:
+`review.human_review.structure.removed_controls: true` applies when
+`structure.removedControls` is nonempty, that is, when the change removes a
+line that reads as a check, limit or allowlist entry. It is off by default. The
+list is a lexical lead and not a defect, so the cap holds approval for a
+person; it adds no finding and changes no tier.
+
+The reason is named in the assessment and in the local `humanReviewNote`, and
+the cap only turns an otherwise APPROVE into COMMENT. Nothing about it is
+posted, and no GitHub write is added. A value that is not `true` or `false`
+warns and keeps the default. With the setting off, every assessment, note and
+verdict is what it was before this amendment.

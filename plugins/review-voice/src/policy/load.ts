@@ -14,7 +14,7 @@ import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity
 import { DEFAULT_STRUCTURE, type StructureConfig } from '../diff/structure.ts';
 import { DEFAULT_VERDICT_POLICY, type VerdictPolicy } from '../publish/verdict.ts';
 import { CHANGE_KINDS, MODEL_KEYS, MODES, type ChangeKind, type ModelOverrides, type RequestedMode, type Tier } from '../review/plan.ts';
-import { agentExists, DIFF_LANE, LANE_TIERS, type Lane } from '../review/lanes.ts';
+import { agentExists, DIFF_LANE, LANE_SIGNALS, LANE_TIERS, type Lane, type LaneSignal } from '../review/lanes.ts';
 import { allowlistEntryProblem } from '../github/client.ts';
 import { defaultQueueConfig, QUEUE_SOURCES, type QueueConfig, type QueueSource } from '../queue/config.ts';
 import { defaultWatchConfig, MAX_REVIEW_TIMEOUT_MS, parseDuration, type WatchConfig } from '../watch/config.ts';
@@ -157,6 +157,7 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
   result.humanReview.structure.fileLineCrossing =
     enabled('file_line_crossing') ?? result.humanReview.structure.fileLineCrossing;
   result.humanReview.structure.branchGrowth = enabled('branch_growth') ?? result.humanReview.structure.branchGrowth;
+  result.humanReview.structure.removedControls = enabled('removed_controls') ?? result.humanReview.structure.removedControls;
 }
 
 /** Same rule as the human-review limits: a limit must be a whole number above zero. */
@@ -240,6 +241,13 @@ function parseLane(entry: unknown, taken: readonly Lane[]): Lane | string {
         return `when.exclude_kinds must list only ${CHANGE_KINDS.join(', ')}`;
       }
       when.excludeKinds = kinds as ChangeKind[];
+    }
+    const signals = rule['signals'];
+    if (signals !== undefined) {
+      if (!Array.isArray(signals) || !signals.every((signal) => (LANE_SIGNALS as readonly unknown[]).includes(signal))) {
+        return `when.signals must list only ${LANE_SIGNALS.join(', ')}`;
+      }
+      when.signals = signals as LaneSignal[];
     }
   }
 

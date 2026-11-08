@@ -47,3 +47,19 @@ the change and the finding, not on the agent.
 
 **A token budget instead of modes.** Rejected. A budget cut mid-stage leaves a
 partial review, while a mode decides up front what runs.
+
+## Amendment - 2026-11-08
+
+`auto` gains one rule. A change whose `structure.removedControls` is nonempty
+picks `thorough`, and the plan's `reason` says a control was removed. The rule
+sits after the no-production-source clause, so a change with no production
+source stays `fast`, and after the complexity clause, so a high complexity keeps
+its reason. `auto` therefore reads:
+
+  - `fast` when no production source changed.
+  - `thorough` when complexity is `high`, when a control was removed, or when
+    more than 150 production lines changed.
+  - `standard` otherwise.
+
+A removed control changes which models and stages run, never the verdict. An
+explicit `--mode` or `review.mode` other than `auto` is not changed by it.

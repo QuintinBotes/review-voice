@@ -56,3 +56,36 @@ reviews, and the severity rule differs per perspective.
 **Lane severity as a free-form expression.** Rejected. Cap and escalate cover
 every rule in use. An expression language would be a new trust surface in
 repository configuration.
+
+## Amendment - 2026-11-08
+
+**A lane may wake on a signal, and two specialist analysts ship.**
+
+- **`when.signals`.** A lane may list `removed-controls`, `risk-markers`,
+  `type-escapes`, `branch-growth` or `size-crossing`, each the name of a list in
+  the `diff --out` manifest's `structure` block (`removedControls`,
+  `riskMarkers`, `typeEscapes`, `branchGrowth`, `sizeCrossings`). An unknown name
+  drops the lane with a warning. The list is closed: a new signal is a new
+  reading of the diff.
+- **Eligibility.** A lane with `signals` runs when any listed signal has an entry
+  inside the lane's `paths` (all paths when it sets none), or when
+  `min_changed_source_lines` is set explicitly and met. With `signals`, an
+  absent minimum is no minimum rather than zero, so such a lane runs on a signal
+  alone. A manifest with no `structure` block, or without a listed key, counts
+  as no signal. The reason names the clause that held. A lane without `signals`
+  behaves as before: an absent minimum still means it always runs.
+- **Two shipped analysts, off by default.** `agents/security-analyst.md` (prefix
+  `sec_`; categories `security`, `authorization`, `authentication` and
+  `trust_boundary`; blocker classes `removed-control`,
+  `missing-object-authorization`, `string-built-query` and `fail-open-default`)
+  and `agents/concurrency-analyst.md` (prefix `cc_`; category `concurrency`;
+  blocker classes `unguarded-read-decide-write`, `lock-order` and
+  `missing-cancellation`). Each checklist item needs a cited search for the
+  guard. The verifier defines each class beside the structure lane's, and a
+  lane escalation still needs 0011's traced impact and confidence.
+  `templates/config.example.yaml` shows both as commented-out entries, so no
+  lane is on until a repository configures it. The diff analyst keeps its own
+  coverage of these categories.
+
+Neither the signals nor the markers behind them are findings. They decide which
+analyst reads the change, never what the verdict is.

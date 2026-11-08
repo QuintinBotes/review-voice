@@ -49,18 +49,19 @@ test('human-review structural switches default off, accept booleans, and reject 
   assert.deepEqual(configIn('review:\n  max_findings: 5\n').humanReview.structure, {
     fileLineCrossing: false,
     branchGrowth: false,
+    removedControls: false,
   });
 
   const enabled = configIn(
     'review:\n  human_review:\n    structure:\n      file_line_crossing: true\n      branch_growth: true\n',
   );
-  assert.deepEqual(enabled.humanReview.structure, { fileLineCrossing: true, branchGrowth: true });
+  assert.deepEqual(enabled.humanReview.structure, { fileLineCrossing: true, branchGrowth: true, removedControls: false });
   assert.deepEqual(enabled.warnings, []);
 
   const invalid = configIn(
     'review:\n  human_review:\n    structure:\n      file_line_crossing: yes\n      branch_growth: 1\n',
   );
-  assert.deepEqual(invalid.humanReview.structure, { fileLineCrossing: false, branchGrowth: false });
+  assert.deepEqual(invalid.humanReview.structure, { fileLineCrossing: false, branchGrowth: false, removedControls: false });
   assert.deepEqual(invalid.warnings, [
     'review.human_review.structure.file_line_crossing must be true or false; using the default.',
     'review.human_review.structure.branch_growth must be true or false; using the default.',

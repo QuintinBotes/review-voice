@@ -2,7 +2,7 @@
 
 // plugins/review-voice/src/cli.ts
 import { readFileSync as readFileSync16, readSync, writeFileSync as writeFileSync5, mkdirSync as mkdirSync8, statSync as statSync4, lstatSync as lstatSync4, renameSync as renameSync2, rmSync as rmSync5, existsSync as existsSync12, realpathSync as realpathSync2 } from "node:fs";
-import { basename as basename4, dirname as dirname13, isAbsolute as isAbsolute4, join as join19, posix as posix3, relative as relative3, resolve as resolve5, sep as sep4 } from "node:path";
+import { basename as basename5, dirname as dirname13, isAbsolute as isAbsolute4, join as join19, posix as posix3, relative as relative3, resolve as resolve5, sep as sep4 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 import { execFileSync as execFileSync15 } from "node:child_process";
 import { format } from "node:util";
@@ -2376,7 +2376,7 @@ var DEFAULT_HUMAN_REVIEW = {
   sensitiveExemptPaths: [],
   testPaths: DEFAULT_TEST_PATHS,
   generatedPaths: [],
-  structure: { fileLineCrossing: false, branchGrowth: false }
+  structure: { fileLineCrossing: false, branchGrowth: false, removedControls: false }
 };
 var NOTHING_EXCLUDED = {
   documentationFiles: 0,
@@ -2504,7 +2504,8 @@ function config(partial) {
     generatedPaths: partial?.generatedPaths ?? DEFAULT_HUMAN_REVIEW.generatedPaths,
     structure: {
       fileLineCrossing: partial?.structure?.fileLineCrossing ?? DEFAULT_HUMAN_REVIEW.structure.fileLineCrossing,
-      branchGrowth: partial?.structure?.branchGrowth ?? DEFAULT_HUMAN_REVIEW.structure.branchGrowth
+      branchGrowth: partial?.structure?.branchGrowth ?? DEFAULT_HUMAN_REVIEW.structure.branchGrowth,
+      removedControls: partial?.structure?.removedControls ?? DEFAULT_HUMAN_REVIEW.structure.removedControls
     }
   };
 }
@@ -2661,6 +2662,14 @@ function applyStructureHumanReviewCap(assessment, signals, partial) {
       `branch-growth signal (structure.branchGrowth): ${listedStructure(
         signals.branchGrowth,
         (growth) => `${growth.path}:${growth.line} (${growth.function}; ${growth.addedDecisionPoints} added decision points; threshold ${growth.threshold})`
+      )}`
+    );
+  }
+  if (enabled2.removedControls && signals.removedControls.length > 0) {
+    reasons.push(
+      `removed-control signal (structure.removedControls): ${listedStructure(
+        signals.removedControls,
+        (control) => `${control.path}:${control.line} (${control.kind})`
       )}`
     );
   }
@@ -2841,8 +2850,8 @@ var LANGUAGES2 = {
   ".py": PYTHON,
   ".pyi": PYTHON
 };
-function splitLine(text4, language2) {
-  if (language2.blockComments && text4.trimStart().startsWith("*")) return { code: "", comment: text4, raw: "" };
+function splitLine(text4, language3) {
+  if (language3.blockComments && text4.trimStart().startsWith("*")) return { code: "", comment: text4, raw: "" };
   let code = "";
   let raw = "";
   let comment = "";
@@ -2862,22 +2871,22 @@ function splitLine(text4, language2) {
         code += " ";
         raw += char;
       }
-    } else if (language2.quotes.includes(char)) {
+    } else if (language3.quotes.includes(char)) {
       quote2 = char;
       code += char;
       raw += char;
-    } else if (text4.startsWith(language2.lineComment, index)) {
+    } else if (text4.startsWith(language3.lineComment, index)) {
       comment += text4.slice(index);
       break;
-    } else if (language2.altLineComment !== void 0 && text4.startsWith(language2.altLineComment, index) && !text4.startsWith("#[", index)) {
+    } else if (language3.altLineComment !== void 0 && text4.startsWith(language3.altLineComment, index) && !text4.startsWith("#[", index)) {
       comment += text4.slice(index);
       break;
-    } else if (language2.blockComments && text4.startsWith("/*", index)) {
+    } else if (language3.blockComments && text4.startsWith("/*", index)) {
       const end = text4.indexOf("*/", index + 2);
       comment += `${text4.slice(index, end === -1 ? void 0 : end + 2)} `;
       if (end === -1) break;
       index = end + 1;
-    } else if (language2.regexLiterals === true && char === "/" && opensRegex(code)) {
+    } else if (language3.regexLiterals === true && char === "/" && opensRegex(code)) {
       const end = regexEnd(text4, index);
       if (end === -1) {
         code += char;
@@ -2910,11 +2919,11 @@ function regexEnd(text4, start) {
   }
   return -1;
 }
-function kindsIn(text4, language2) {
-  const line3 = splitLine(text4, language2);
+function kindsIn(text4, language3) {
+  const line3 = splitLine(text4, language3);
   const kinds = [];
-  for (const rule of language2.rules) {
-    if (rule.in === "code" && language2.skip?.test(line3.code)) continue;
+  for (const rule of language3.rules) {
+    if (rule.in === "code" && language3.skip?.test(line3.code)) continue;
     const source = line3[rule.in];
     for (const match of source.matchAll(rule.pattern)) {
       if (rule.accept === void 0 || rule.accept(match, line3)) kinds.push(rule.kind);
@@ -2925,10 +2934,10 @@ function kindsIn(text4, language2) {
 function findTypeEscapes(diff, paths) {
   const found = [];
   for (const hunk of countHunks(diff, new Set(paths))) {
-    const language2 = LANGUAGES2[extname(hunk.path).toLowerCase()];
-    if (language2 === void 0) continue;
+    const language3 = LANGUAGES2[extname(hunk.path).toLowerCase()];
+    if (language3 === void 0) continue;
     for (const { line: line3, text: text4 } of hunk.added) {
-      for (const kind of kindsIn(text4, language2)) found.push({ path: hunk.path, line: line3, kind });
+      for (const kind of kindsIn(text4, language3)) found.push({ path: hunk.path, line: line3, kind });
     }
   }
   const byPathLineKind = (a, b) => {
@@ -3179,6 +3188,136 @@ function findRemovedControls(diff, paths, deletedFiles = []) {
   return found.sort((a, b) => a.path === b.path ? a.line - b.line : a.path < b.path ? -1 : 1);
 }
 
+// plugins/review-voice/src/diff/risk-markers.ts
+import { basename as basename2, extname as extname3 } from "node:path";
+var MAX_PER_FILE3 = 20;
+var MAX_SCANNED_LINE2 = 1e3;
+var WORD_START = "(?<![A-Za-z])";
+var HUMP = "(?<=[a-z0-9])";
+var CONCURRENCY_WORDS = ["lock", "mutex", "semaphore"];
+var capitalised2 = (word) => word.charAt(0).toUpperCase() + word.slice(1);
+var CONCURRENCY_WORD = new RegExp(
+  `${WORD_START}(?:${[...CONCURRENCY_WORDS, ...CONCURRENCY_WORDS.map(capitalised2), ...CONCURRENCY_WORDS.map((w) => w.toUpperCase())].join("|")}|RW(?:Lock|Mutex))|${HUMP}(?:${CONCURRENCY_WORDS.map(capitalised2).join("|")})`,
+  "g"
+);
+var CODE_RULES = [
+  {
+    kind: "new-route",
+    in: "code",
+    pattern: /\bapp\.(?:get|post|put|patch|delete)\s*\(|\brouter\.\w|@(?:Get|Post|Put|Patch|Delete|Route)(?:Mapping)?\b|\[Http(?:Get|Post|Put|Delete)\b|@app\.route\b/g
+  },
+  {
+    kind: "lock-or-async",
+    in: "code",
+    pattern: CONCURRENCY_WORD
+  },
+  {
+    kind: "lock-or-async",
+    in: "code",
+    pattern: /\bInterlocked\b|\bsynchronized\b|\bMonitor\.|\bPromise\.all(?:Settled)?\b|\bTask\.WhenAll\b|\bgo\s+func\b|\bParallel\./g
+  },
+  {
+    kind: "unsafe",
+    in: "code",
+    pattern: /\bunsafe\b|\beval\s*\(|\bexec\s*\(|\bdangerouslySetInnerHTML\b|\bMarshal\.|\bpickle\.loads\b/g
+  },
+  {
+    // A loader that names SafeLoader on the same line is the safe form.
+    kind: "unsafe",
+    in: "code",
+    pattern: /\byaml\.load\s*\(/g,
+    accept: (_match, line3) => !/SafeLoader/.test(line3.code)
+  }
+];
+var URL_RULE = { kind: "new-route", in: "code", pattern: /(?<![\w.])path\s*\(/g };
+function buildsQuery(code, raw, quotes, at2) {
+  let open = -1;
+  let quote2 = "";
+  for (let index = 0; index <= code.length; index += 1) {
+    const char = code[index];
+    if (open === -1) {
+      if (char !== void 0 && quotes.includes(char)) {
+        open = index;
+        quote2 = char;
+      }
+      continue;
+    }
+    const closed = char === quote2;
+    if (!closed && index < code.length) continue;
+    if (at2 > open && at2 < index) {
+      const inside = raw.slice(open + 1, index);
+      const prefix = code.slice(0, open);
+      const interpolated = /\$\{|%s/.test(inside) || /(?<![\w$])(?:rf|fr|f)$/i.test(prefix) && inside.includes("{");
+      const before = prefix.trimEnd();
+      const after = closed ? code.slice(index + 1).trimStart() : "";
+      const joined = before.endsWith("+") || /^(?:\+|%(?!=)|\.format\s*\()/.test(after);
+      return interpolated || joined;
+    }
+    open = -1;
+  }
+  return false;
+}
+function queryRule(quotes) {
+  return {
+    kind: "string-built-query",
+    in: "raw",
+    pattern: /\b(?:SELECT|INSERT|UPDATE|DELETE)\b/g,
+    accept: (match, line3) => buildsQuery(line3.code, line3.raw, quotes, match.index ?? 0)
+  };
+}
+function language2(quotes, lineComment2, blockComments, regexLiterals = false) {
+  return { rules: [...CODE_RULES, queryRule(quotes)], quotes, lineComment: lineComment2, blockComments, ...regexLiterals ? { regexLiterals } : {} };
+}
+var SCRIPT2 = language2("'\"`", "//", true, true);
+var C_STYLE2 = language2(`'"`, "//", true);
+var GO2 = language2("'\"`", "//", true);
+var PHP2 = { ...C_STYLE2, altLineComment: "#" };
+var HASH2 = language2(`'"`, "#", false);
+var LANGUAGES4 = {
+  ...Object.fromEntries([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, SCRIPT2])),
+  ...Object.fromEntries([".cs", ".java", ".kt"].map((ext) => [ext, C_STYLE2])),
+  ".php": PHP2,
+  ".go": GO2,
+  ".py": HASH2,
+  ".rb": HASH2
+};
+function kindsIn3(text4, lang, urls) {
+  const line3 = splitLine(text4.slice(0, MAX_SCANNED_LINE2), lang);
+  const kinds = /* @__PURE__ */ new Set();
+  for (const rule of urls ? [...lang.rules, URL_RULE] : lang.rules) {
+    if (kinds.has(rule.kind)) continue;
+    for (const match of line3[rule.in].matchAll(rule.pattern)) {
+      if (rule.accept === void 0 || rule.accept(match, line3)) {
+        kinds.add(rule.kind);
+        break;
+      }
+    }
+  }
+  return [...kinds];
+}
+function findRiskMarkers(diff, paths) {
+  const found = [];
+  for (const hunk of countHunks(diff, new Set(paths))) {
+    const lang = LANGUAGES4[extname3(hunk.path).toLowerCase()];
+    if (lang === void 0) continue;
+    const urls = /^urls?$/i.test(basename2(hunk.path, extname3(hunk.path)));
+    for (const { line: line3, text: text4 } of hunk.added) {
+      for (const kind of kindsIn3(text4, lang, urls)) found.push({ path: hunk.path, line: line3, kind });
+    }
+  }
+  found.sort((a, b) => {
+    if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+    if (a.line !== b.line) return a.line - b.line;
+    return a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0;
+  });
+  const perFile = /* @__PURE__ */ new Map();
+  return found.filter((marker) => {
+    const seen = perFile.get(marker.path) ?? 0;
+    perFile.set(marker.path, seen + 1);
+    return seen < MAX_PER_FILE3;
+  });
+}
+
 // plugins/review-voice/src/diff/structure.ts
 var DEFAULT_STRUCTURE = {
   maxFileLines: 1e3,
@@ -3313,6 +3452,7 @@ function findStructureSignals(diff, paths, counts, limits = DEFAULT_STRUCTURE, d
     branchGrowth: findBranchGrowth(diff, paths, limits.maxAddedBranchesPerFunction),
     typeEscapes: findTypeEscapes(diff, paths),
     removedControls: findRemovedControls(diff, paths, deletedFiles),
+    riskMarkers: findRiskMarkers(diff, paths),
     unmeasured: { count: unmeasured.length, paths: unmeasured.slice(0, MAX_UNMEASURED_LISTED) }
   };
 }
@@ -3570,6 +3710,10 @@ var THOROUGH_LINE_LIMIT = 150;
 function autoMode(input) {
   if (!input.productionSourceChanged) return { mode: "fast", reason: "auto: no production source changed" };
   if (input.complexity === "high") return { mode: "thorough", reason: "auto: complexity is high" };
+  const removed = input.removedControls ?? 0;
+  if (removed > 0) {
+    return { mode: "thorough", reason: `auto: ${removed} control${removed === 1 ? " was" : "s were"} removed` };
+  }
   if (input.productionLinesChanged > THOROUGH_LINE_LIMIT) {
     return {
       mode: "thorough",
@@ -3668,6 +3812,14 @@ function productionChange(files2, diffText, partial, markedGenerated2 = /* @__PU
 
 // plugins/review-voice/src/review/lanes.ts
 var LANE_TIERS = ["nit", "minor", "important", "blocking"];
+var LANE_SIGNAL_KEYS = {
+  "removed-controls": "removedControls",
+  "risk-markers": "riskMarkers",
+  "type-escapes": "typeEscapes",
+  "branch-growth": "branchGrowth",
+  "size-crossing": "sizeCrossings"
+};
+var LANE_SIGNALS = Object.keys(LANE_SIGNAL_KEYS);
 var DIFF_LANE = { name: "diff", agent: "diff-analyst", prefix: "cand_", when: {}, severity: {} };
 function laneNamed(lanes2, name) {
   return lanes2.find((lane) => lane.name === (name ?? DIFF_LANE.name));
@@ -3686,6 +3838,15 @@ function agentExists(name) {
   const dir = agentsDirectory();
   return dir !== null && existsSync3(join6(dir, `${name}.md`));
 }
+function signalCount(structure, signal2, paths) {
+  if (typeof structure !== "object" || structure === null) return 0;
+  const entries = structure[LANE_SIGNAL_KEYS[signal2]];
+  if (!Array.isArray(entries)) return 0;
+  return entries.filter((entry) => {
+    const path = typeof entry === "object" && entry !== null ? entry.path : void 0;
+    return typeof path === "string" && (paths === void 0 || governsAny(paths, [path]));
+  }).length;
+}
 function eligibleLanes(lanes2, files2, diffText, options = {}) {
   return lanes2.map((lane) => {
     if (lane.name === DIFF_LANE.name) return { lane, eligible: true, reason: "the diff lane always runs" };
@@ -3696,6 +3857,24 @@ function eligibleLanes(lanes2, files2, diffText, options = {}) {
       counts
     });
     const measured = `${lines2} changed source line${lines2 === 1 ? "" : "s"}${paths === void 0 ? "" : ` in ${paths.join(", ")}`}`;
+    const signals = lane.when.signals;
+    if (signals !== void 0) {
+      const where = paths === void 0 ? "" : ` in ${paths.join(", ")}`;
+      const fired = signals.map((signal2) => ({ signal: signal2, count: signalCount(options.structure, signal2, paths) })).filter(({ count: count3 }) => count3 > 0);
+      const set2 = lane.when.minChangedSourceLines;
+      const met = set2 !== void 0 && lines2 >= set2;
+      const held = [
+        ...fired.map(({ signal: signal2, count: count3 }) => `${signal2}: ${count3} entr${count3 === 1 ? "y" : "ies"}${where}`),
+        ...met ? [`${measured}, at least ${set2}`] : []
+      ];
+      if (held.length > 0) return { lane, eligible: true, reason: held.join("; ") };
+      const asked = `none of ${signals.length === 0 ? "no signals" : signals.join(", ")} fired${where}`;
+      return {
+        lane,
+        eligible: false,
+        reason: set2 === void 0 ? `${asked}, and no line minimum is set` : `${asked}, and ${measured} is under the minimum of ${set2}`
+      };
+    }
     const minimum = lane.when.minChangedSourceLines ?? 0;
     return lines2 >= minimum ? { lane, eligible: true, reason: `${measured}, at least ${minimum}` } : { lane, eligible: false, reason: `${measured}, under the minimum of ${minimum}` };
   });
@@ -14549,13 +14728,13 @@ function describeChecks(checks) {
   const symbols = checks.symbolsInconclusive === 0 ? "every symbol file finished" : `${checks.symbolsInconclusive} symbol file${checks.symbolsInconclusive === 1 ? "" : "s"} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}`;
   return `Checks ${staticParts.length === 0 ? "no static checks" : staticParts.join("; ")}; ${symbols}`;
 }
-var basename2 = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
+var basename3 = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
 function attribute(finding, hints, taken) {
   const free = hints.filter((hint) => !taken.has(hint));
   const exact = free.find((hint) => hint.path === finding.path && hint.line === finding.line);
   if (exact !== void 0) return { hint: exact, how: "exact" };
   const sameFile = free.filter(
-    (hint) => basename2(hint.path) === basename2(finding.path) && hint.line === finding.line
+    (hint) => basename3(hint.path) === basename3(finding.path) && hint.line === finding.line
   );
   if (sameFile.length === 1) return { hint: sameFile[0], how: "basename" };
   const sameLine = free.filter((hint) => hint.line === finding.line);
@@ -15478,6 +15657,7 @@ function readHumanReview(block, result) {
   };
   result.humanReview.structure.fileLineCrossing = enabled2("file_line_crossing") ?? result.humanReview.structure.fileLineCrossing;
   result.humanReview.structure.branchGrowth = enabled2("branch_growth") ?? result.humanReview.structure.branchGrowth;
+  result.humanReview.structure.removedControls = enabled2("removed_controls") ?? result.humanReview.structure.removedControls;
 }
 function readStructure(block, result) {
   if (block === null) return;
@@ -15551,6 +15731,13 @@ function parseLane(entry, taken) {
         return `when.exclude_kinds must list only ${CHANGE_KINDS.join(", ")}`;
       }
       when.excludeKinds = kinds;
+    }
+    const signals = rule["signals"];
+    if (signals !== void 0) {
+      if (!Array.isArray(signals) || !signals.every((signal2) => LANE_SIGNALS.includes(signal2))) {
+        return `when.signals must list only ${LANE_SIGNALS.join(", ")}`;
+      }
+      when.signals = signals;
     }
   }
   const severity = {};
@@ -21973,7 +22160,7 @@ import {
   writeFileSync as writeFileSync4
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename as basename3, dirname as dirname12, join as join17, relative as relative2, resolve as resolve3, sep as sep3 } from "node:path";
+import { basename as basename4, dirname as dirname12, join as join17, relative as relative2, resolve as resolve3, sep as sep3 } from "node:path";
 var AUTHOR_NAME = "review-voice-fixtures";
 var AUTHOR_EMAIL = "fixtures@example.com";
 var COMMIT_DATE = "2026-01-01T00:00:00Z";
@@ -22111,7 +22298,7 @@ function parsePatchFiles(normalised) {
   return files2;
 }
 function fillerFor(path) {
-  const extension = basename3(path).includes(".") ? basename3(path).split(".").pop().toLowerCase() : "";
+  const extension = basename4(path).includes(".") ? basename4(path).split(".").pop().toLowerCase() : "";
   const hash2 = ["yml", "yaml", "tf", "py", "rb", "sh", "toml", "ini", "cfg", "conf", "md", "txt"];
   return hash2.includes(extension) ? "# filler" : "// filler";
 }
@@ -22214,7 +22401,7 @@ function git5(cwd, label2, args) {
   }
 }
 function materializeFixture(fixtureDir, targetDir, options = {}) {
-  const label2 = options.name ?? `${basename3(dirname12(resolve3(fixtureDir)))}/${basename3(resolve3(fixtureDir))}`;
+  const label2 = options.name ?? `${basename4(dirname12(resolve3(fixtureDir)))}/${basename4(resolve3(fixtureDir))}`;
   const patchPath = join17(fixtureDir, "diff.patch");
   if (!existsSync10(patchPath)) throw new Error(`${label2}: fixture has no diff.patch`);
   if (existsSync10(targetDir) && readdirSync4(targetDir).length > 0) {
@@ -24541,6 +24728,7 @@ function planCommand(argv) {
     models: config2?.costMode.models ?? {},
     ...change,
     complexity,
+    removedControls: structureEntries(manifest["structure"], "removedControls"),
     secondPassConfigured: config2?.verification.enabled ?? false
   });
   console.log(JSON.stringify(plan, null, 2));
@@ -24579,10 +24767,16 @@ function lanesCommand(argv) {
   for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
   const lanes2 = eligibleLanes(config2?.lanes ?? [DIFF_LANE], input.changed, input.diffText, {
     humanReview: config2?.humanReview,
-    markedGenerated: input.generated
+    markedGenerated: input.generated,
+    structure: input.manifest["structure"]
   });
   console.log(JSON.stringify(lanes2, null, 2));
   return 0;
+}
+function structureEntries(structure, key2) {
+  if (typeof structure !== "object" || structure === null) return 0;
+  const entries = structure[key2];
+  return Array.isArray(entries) ? entries.length : 0;
 }
 function asLevel(value) {
   return typeof value === "object" && value !== null && value.level === "high" ? "high" : "normal";
@@ -27932,7 +28126,7 @@ function realExistingPath(path) {
   while (!existsSync12(existing)) {
     const parent = dirname13(existing);
     if (parent === existing) return path;
-    rest.unshift(basename4(existing));
+    rest.unshift(basename5(existing));
     existing = parent;
   }
   return join19(realpathSync2.native(existing), ...rest);

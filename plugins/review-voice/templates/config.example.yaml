@@ -41,12 +41,23 @@ review:
   # `severity` may cap the derived tier, and raise it to `escalate.to` only when
   # the verifier sets blocker_confirmed and traced the impact at confidence of
   # at least 0.85. An invalid lane is reported and dropped.
+  # `when.signals` (removed-controls, risk-markers, type-escapes, branch-growth, size-crossing) wakes a lane on a signal, or on an explicit minimum (docs/adr/0023).
   # lanes:
   #   - name: structure
   #     agent: structure-analyst
   #     prefix: st_
   #     when: { min_changed_source_lines: 40, paths: ['src/**'], exclude_kinds: [test, docs, config, generated] }
   #     severity: { cap: minor, escalate: { to: important, requires: blocker_confirmed } }
+  #   - name: security
+  #     agent: security-analyst
+  #     prefix: sec_
+  #     when: { signals: [removed-controls, risk-markers], paths: ['src/**'] }
+  #     severity: { escalate: { to: blocking, requires: blocker_confirmed } }
+  #   - name: concurrency
+  #     agent: concurrency-analyst
+  #     prefix: cc_
+  #     when: { signals: [risk-markers], min_changed_source_lines: 80 }
+  #     severity: { cap: important }
   # Uncomment to impose a cap. There is none by default: volume is bounded by
   # the word budget, which scales with the size of the change. A layer may
   # tighten a limit but never loosen one.
@@ -78,12 +89,13 @@ review:
     # false lets a clean high-complexity change approve; the local note and
     # flag stay, and nothing about it is posted (docs/adr/0028).
     cap_approval: true
-    # Opt in only when either structural regression should leave approval to a
-    # human. These cap APPROVE at COMMENT; they do not add a finding or text to
-    # the posted review (docs/adr/0020).
+    # Opt in only when a structural regression or a removed control should
+    # leave approval to a human. These cap APPROVE at COMMENT; they do not add a
+    # finding or text to the posted review (docs/adr/0020).
     structure:
       file_line_crossing: false     # a production file crosses max_file_lines
       branch_growth: false          # an existing function gains branches
+      removed_controls: false       # the change removes a check, limit or allowlist line
     # A list here replaces the defaults; an empty list turns off every sensitive
     # path except .review-voice/** and .github/workflows/**, which stay sensitive
     # whatever this says.
