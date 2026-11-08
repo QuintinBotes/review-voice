@@ -386,6 +386,8 @@ function readVerdictPolicy(block: Record<string, unknown> | null, result: Loaded
   policy.carryApprovalOnUnchanged = enabled('carry_approval_on_unchanged', DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
   policy.recheckThreadBeforePost = enabled('recheck_thread_before_post', DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
   policy.neverApprove = enabled('never_approve', DEFAULT_VERDICT_POLICY.neverApprove);
+  policy.scopeBlock = enabled('scope_block', DEFAULT_VERDICT_POLICY.scopeBlock);
+  policy.scopeBlockModels = enabled('scope_block_models', DEFAULT_VERDICT_POLICY.scopeBlockModels);
 }
 
 const TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;

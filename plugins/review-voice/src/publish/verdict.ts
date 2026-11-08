@@ -282,6 +282,10 @@ export interface VerdictPolicy {
   recheckThreadBeforePost: boolean;
   /** `verdict.never_approve`: every review is advisory, so approval is left to a person. */
   neverApprove: boolean;
+  /** `verdict.scope_block`: end the posted body with the collapsed review scope block (docs/adr/0028). */
+  scopeBlock: boolean;
+  /** `verdict.scope_block_models`: name the models of the stages in that block; a public repository need not advertise them. */
+  scopeBlockModels: boolean;
 }
 
 export const DEFAULT_VERDICT_POLICY: Readonly<VerdictPolicy> = Object.freeze({
@@ -292,6 +296,8 @@ export const DEFAULT_VERDICT_POLICY: Readonly<VerdictPolicy> = Object.freeze({
   carryApprovalOnUnchanged: false,
   recheckThreadBeforePost: false,
   neverApprove: false,
+  scopeBlock: false,
+  scopeBlockModels: false,
 });
 
 export function verdictPolicy(policy: Partial<VerdictPolicy> | undefined): VerdictPolicy {
@@ -308,7 +314,7 @@ const MAX_CHECK_NAME = 60;
  * A check name is whatever the CI integration chose, so it goes into the posted
  * body as inline code on one line: no markdown, link or mention can render.
  */
-function safeCheckName(name: string): string {
+export function safeCheckName(name: string): string {
   const flat = name
     // Bidi controls and zero-width characters can reorder or hide text.
     .replace(/[\u202a-\u202e\u2066-\u2069\u200b-\u200d\ufeff`]/g, '')
@@ -712,6 +718,162 @@ export function buildPayload(input: {
  */
 export function withAnnotations(body: string, annotations: readonly string[]): string {
   return [body, ...annotations].join('\n\n');
+}
+
+/** How many held claims there are of each kind, by the reason that held them. */
+export interface HeldCounts {
+  unverified: number;
+  belowGate: number;
+  challenge: number;
+  restatesTool: number;
+  policySuppressed: number;
+  other: number;
+}
+
+/**
+ * Counts the held entries of a recorded run by reason. A verdict this code does
+ * not know (one added later) lands in `other`, so no held claim is ever left out
+ * of the total.
+ */
+export function heldCounts(held: readonly { verdict: string }[]): HeldCounts {
+  const counts: HeldCounts = { unverified: 0, belowGate: 0, challenge: 0, restatesTool: 0, policySuppressed: 0, other: 0 };
+  for (const entry of held) {
+    switch (entry.verdict) {
+      case 'unverified':
+        counts.unverified += 1;
+        break;
+      case 'below-gate':
+        counts.belowGate += 1;
+        break;
+      case 'challenge-refuted':
+      case 'challenge-partly':
+        counts.challenge += 1;
+        break;
+      case 'restates-tool':
+        counts.restatesTool += 1;
+        break;
+      case 'policy-suppressed':
+        counts.policySuppressed += 1;
+        break;
+      default:
+        counts.other += 1;
+    }
+  }
+  return counts;
+}
+
+const NOT_RECORDED = 'not recorded';
+/** A hex commit id; anything else in a recorded head is not put in the machine-readable trailer. */
+const FULL_SHA = /^[0-9a-f]{40,64}$/i;
+/** Fixed: no stage of Review Voice examines these, so the block says so on every review. */
+const NEVER_CHECKED = ['UI behaviour', 'product policy', 'load behaviour'];
+
+
+/**
+ * The collapsed "Review scope" block, then a trailing HTML comment with the same
+ * facts as JSON for scripts (docs/adr/0028, `verdict.scope_block`).
+ *
+ * Pure and built from the recorded run alone, so two renders of one run are
+ * identical and the block cannot drift from what was reviewed. A fact the run
+ * did not record reads `not recorded`; it is never left out, because a missing
+ * line would read as "nothing to say". Only counts of held claims appear: the
+ * lists stay local (docs/adr/0016). The human-review note, the would-have
+ * verdict and a carry reason are never inputs here (docs/adr/0012, 0017).
+ * Every name that came from configuration or the store goes through
+ * `safeCheckName`, so none can break the markup or the comment.
+ */
+export function scopeBlock(
+  run: RunDetail,
+  planned: PlannedFindings,
+  policy: Pick<VerdictPolicy, 'scopeBlockModels'>,
+): string {
+  const head = run.headRef;
+  const fullHead = head !== null && FULL_SHA.test(head) ? head.toLowerCase() : null;
+  const provenance = run.provenance;
+  const checks = run.checks;
+
+  const headPart = head === null || safeCheckName(head) === '' ? `Head ${NOT_RECORDED}` : `Head \`${safeCheckName(head).slice(0, 7)}\``;
+  const scopePart = run.scope === null ? `scope ${NOT_RECORDED}` : `${run.scope.kind} scope`;
+  const modePart = provenance?.mode == null ? `mode ${NOT_RECORDED}` : `${provenance.mode} mode`;
+  const originPart =
+    provenance === null ? `Origin: ${NOT_RECORDED}.` : `Origin: ${safeCheckName(provenance.origin)} (${safeCheckName(provenance.independence)}).`;
+
+  const stageNames = run.stages.flatMap((stage) => {
+    if (typeof stage.name !== 'string' || safeCheckName(stage.name) === '') return [];
+    const name = safeCheckName(stage.name);
+    if (!policy.scopeBlockModels) return [name];
+    const models = [...new Set([...(Array.isArray(stage.models) ? stage.models : []), ...(typeof stage.model === 'string' ? [stage.model] : [])])]
+      .filter((model): model is string => typeof model === 'string')
+      .map(safeCheckName)
+      .filter((model) => model !== '');
+    return [models.length === 0 ? name : `${name} (${[...new Set(models)].join(', ')})`];
+  });
+  const stagesLine = `Stages: ${stageNames.length === 0 ? NOT_RECORDED : stageNames.join(', ')}.`;
+
+  let staticLine = `Static checks: ${NOT_RECORDED}.`;
+  let symbolLine = `Symbol context: ${NOT_RECORDED}.`;
+  const notChecked = [...NEVER_CHECKED];
+  if (checks !== null) {
+    const parts = [
+      ...checks.staticRan.map(
+        (check) => `${safeCheckName(check.name)} ran (exit ${check.exitCode ?? 'none'}, ${plural(check.signals, 'signal')})`,
+      ),
+      ...checks.staticDidNotRun.map((check) => `${safeCheckName(check.name)} did not run (${safeCheckName(check.reason)})`),
+    ];
+    staticLine = `Static checks: ${parts.length === 0 ? 'none configured' : parts.join('; ')}.`;
+    symbolLine =
+      checks.symbolsInconclusive === 0
+        ? 'Symbol context: every changed file finished.'
+        : `Symbol context: ${plural(checks.symbolsInconclusive, 'file')} not finished${checks.symbolsBudgetExhausted ? ' (time budget)' : ''}.`;
+    if (checks.symbolsInconclusive > 0) notChecked.push('files the symbol search did not finish');
+  }
+
+  const held = heldCounts(run.held);
+  const notPosted = [
+    held.unverified > 0 ? plural(held.unverified, 'unverified claim') : null,
+    held.belowGate > 0 ? `${held.belowGate} below the gate` : null,
+    held.challenge > 0 ? `${held.challenge} held by the challenger` : null,
+    held.restatesTool > 0 ? `${held.restatesTool} restating a static check` : null,
+    held.policySuppressed > 0 ? `${held.policySuppressed} suppressed by policy` : null,
+    held.other > 0 ? `${held.other} held for other reasons` : null,
+  ].filter((part): part is string => part !== null);
+
+  const posted = [...planned.inline, ...planned.unanchored];
+  const findings = Object.fromEntries(
+    (['blocking', 'important', 'minor', 'nit', 'question'] as const).map((severity) => [
+      severity,
+      posted.filter((finding) => finding.severity === severity).length,
+    ]),
+  );
+  const facts = {
+    head: fullHead,
+    origin: provenance?.origin ?? null,
+    independence: provenance?.independence ?? null,
+    findings,
+    held,
+    checks: checks === null ? null : { ran: checks.staticRan.length, didNotRun: checks.staticDidNotRun.length },
+  };
+  // Escaped, so no value can close the comment early or open markup inside it.
+  const trailer = JSON.stringify(facts).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+
+  return [
+    '<details><summary>Review scope</summary>',
+    '',
+    `${headPart}, ${scopePart}, ${modePart}. ${originPart}`,
+    stagesLine,
+    staticLine,
+    symbolLine,
+    `Not posted: ${notPosted.length === 0 ? 'nothing held back' : notPosted.join(', ')}.`,
+    `Not checked: ${notChecked.join(', ')}.`,
+    '',
+    '</details>',
+    `<!-- review-voice ${trailer} -->`,
+  ].join('\n');
+}
+
+/** The body with the scope block after the findings; CI annotations are added after this, never before. */
+export function withScopeBlock(body: string, block: string): string {
+  return `${body}\n\n${block}`;
 }
 
 /**

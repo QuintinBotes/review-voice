@@ -1330,7 +1330,9 @@ var DEFAULT_VERDICT_POLICY = Object.freeze({
   capApproval: true,
   carryApprovalOnUnchanged: false,
   recheckThreadBeforePost: false,
-  neverApprove: false
+  neverApprove: false,
+  scopeBlock: false,
+  scopeBlockModels: false
 });
 function verdictPolicy(policy) {
   return { ...DEFAULT_VERDICT_POLICY, ...policy };
@@ -14008,6 +14010,82 @@ function storedProvenance(raw, reviewRunId) {
     policyVersions
   };
 }
+var asRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+function recordedChecks(evidence, symbols) {
+  const report = asRecord(evidence);
+  if (report === null) throw new Error("the evidence report is not an object");
+  const commands = report["commands"];
+  const didNotRun = report["didNotRun"];
+  if (!Array.isArray(commands)) throw new Error("the evidence report has no commands list");
+  if (!Array.isArray(didNotRun) || !didNotRun.every((name) => typeof name === "string")) {
+    throw new Error("the evidence report has no didNotRun list of names");
+  }
+  const skipped = typeof report["skipped"] === "string" && report["skipped"].trim() !== "" ? report["skipped"] : null;
+  const entries = commands.map((entry, index) => {
+    const command = asRecord(entry);
+    if (command === null || typeof command["name"] !== "string") throw new Error(`commands entry ${index} has no name`);
+    return command;
+  });
+  const notRun = [...new Set(didNotRun)];
+  const staticRan = entries.filter((command) => !notRun.includes(command.name)).map((command) => ({
+    name: command.name,
+    exitCode: Number.isInteger(command["exitCode"]) ? command["exitCode"] : null,
+    signals: Array.isArray(command["signals"]) ? command["signals"].length : 0,
+    ...typeof command["version"] === "string" && command["version"] !== "" ? { version: command["version"] } : {}
+  }));
+  const staticDidNotRun = notRun.map((name) => {
+    const unavailable = entries.find((command) => command.name === name)?.["unavailable"];
+    return {
+      name,
+      reason: typeof unavailable === "string" && unavailable.trim() !== "" ? unavailable : skipped ?? "not run"
+    };
+  });
+  const search = asRecord(symbols);
+  if (search === null || !Array.isArray(search["files"])) throw new Error("the symbols report has no files list");
+  const budget = asRecord(search["budget"]);
+  return {
+    staticRan,
+    staticDidNotRun,
+    symbolsInconclusive: search["files"].filter((file2) => asRecord(file2)?.["inconclusive"] === true).length,
+    symbolsBudgetExhausted: budget?.["exhausted"] === true
+  };
+}
+function storedChecks(raw) {
+  const value = asRecord(raw);
+  if (value === null || !Array.isArray(value["staticRan"]) || !Array.isArray(value["staticDidNotRun"])) return null;
+  if (!Number.isInteger(value["symbolsInconclusive"]) || typeof value["symbolsBudgetExhausted"] !== "boolean") return null;
+  const ran = [];
+  for (const entry of value["staticRan"]) {
+    const c = asRecord(entry);
+    if (c === null || typeof c["name"] !== "string" || !Number.isInteger(c["signals"])) return null;
+    ran.push({
+      name: c["name"],
+      exitCode: Number.isInteger(c["exitCode"]) ? c["exitCode"] : null,
+      signals: c["signals"],
+      ...typeof c["version"] === "string" ? { version: c["version"] } : {}
+    });
+  }
+  const didNot = [];
+  for (const entry of value["staticDidNotRun"]) {
+    const c = asRecord(entry);
+    if (c === null || typeof c["name"] !== "string" || typeof c["reason"] !== "string") return null;
+    didNot.push({ name: c["name"], reason: c["reason"] });
+  }
+  return {
+    staticRan: ran,
+    staticDidNotRun: didNot,
+    symbolsInconclusive: value["symbolsInconclusive"],
+    symbolsBudgetExhausted: value["symbolsBudgetExhausted"]
+  };
+}
+function describeChecks(checks) {
+  if (checks === null) return "Checks not recorded";
+  const ran = checks.staticRan.map((c) => `${c.name} ran (exit ${c.exitCode ?? "none"}, ${c.signals} signal${c.signals === 1 ? "" : "s"})`);
+  const didNot = checks.staticDidNotRun.map((c) => `${c.name} did not run (${c.reason})`);
+  const staticParts = [...ran, ...didNot];
+  const symbols = checks.symbolsInconclusive === 0 ? "every symbol file finished" : `${checks.symbolsInconclusive} symbol file${checks.symbolsInconclusive === 1 ? "" : "s"} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}`;
+  return `Checks ${staticParts.length === 0 ? "no static checks" : staticParts.join("; ")}; ${symbols}`;
+}
 var basename = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
 function attribute(finding, hints, taken) {
   const free = hints.filter((hint) => !taken.has(hint));
@@ -14114,7 +14192,8 @@ function recordRun(db, input) {
         held: input.held ?? [],
         ...input.bodyFindings === void 0 || input.bodyFindings.length === 0 ? {} : { bodyFindings: input.bodyFindings },
         ...input.carry === void 0 ? {} : { carry: input.carry },
-        ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps }
+        ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps },
+        ...input.checks === void 0 ? {} : { checks: input.checks }
       }),
       (/* @__PURE__ */ new Date()).toISOString(),
       JSON.stringify(input.stages ?? []),
@@ -14196,6 +14275,7 @@ function runDetail(db, reviewRunId) {
     carry: parseCarryMarker(parsed2.carry),
     followUps: Array.isArray(parsed2.followUps) ? parsed2.followUps : [],
     bodyFindings: Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : [],
+    checks: storedChecks(parsed2.checks),
     // Older rows predate the column, so absence is normal rather than an error.
     stages: (() => {
       const raw = row["stages_json"];
@@ -14883,7 +14963,7 @@ function retentionLine(result) {
 }
 
 // plugins/review-voice/src/policy/load.ts
-function asRecord(value) {
+function asRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
 }
 function asStringArray(value) {
@@ -14921,7 +15001,7 @@ function readHumanReview(block, result) {
   }
   const structure = block["structure"];
   if (structure === void 0) return;
-  const signals = asRecord(structure);
+  const signals = asRecord2(structure);
   if (signals === null) {
     result.warnings.push("review.human_review.structure must be a mapping; using the defaults.");
     return;
@@ -14962,7 +15042,7 @@ function readCostMode(review2, result) {
   }
   const models = review2["models"];
   if (models === void 0) return;
-  const block = asRecord(models);
+  const block = asRecord2(models);
   if (block === null) {
     result.warnings.push("review.models must be a map of stage to model name; ignoring it.");
     return;
@@ -14979,7 +15059,7 @@ function readCostMode(review2, result) {
   }
 }
 function parseLane(entry, taken) {
-  const block = asRecord(entry);
+  const block = asRecord2(entry);
   if (block === null) return "must be a mapping";
   const { name, agent: agent2, prefix } = block;
   if (typeof name !== "string" || !/^[a-z][a-z0-9-]*$/.test(name)) return "name must be lower-case letters, digits and dashes";
@@ -14990,7 +15070,7 @@ function parseLane(entry, taken) {
   if (typeof agent2 !== "string" || !agentExists(agent2)) return `agent ${String(agent2)} is not an agent under agents/`;
   const when = {};
   if (block["when"] !== void 0) {
-    const rule = asRecord(block["when"]);
+    const rule = asRecord2(block["when"]);
     if (rule === null) return "when must be a mapping";
     const min = rule["min_changed_source_lines"];
     if (min !== void 0) {
@@ -15012,7 +15092,7 @@ function parseLane(entry, taken) {
   }
   const severity = {};
   if (block["severity"] !== void 0) {
-    const rule = asRecord(block["severity"]);
+    const rule = asRecord2(block["severity"]);
     if (rule === null) return "severity must be a mapping";
     const tier = (value) => LANE_TIERS.find((known) => known === value);
     if (rule["cap"] !== void 0) {
@@ -15021,7 +15101,7 @@ function parseLane(entry, taken) {
       severity.cap = cap;
     }
     if (rule["escalate"] !== void 0) {
-      const escalate = asRecord(rule["escalate"]);
+      const escalate = asRecord2(rule["escalate"]);
       const to = tier(escalate?.["to"]);
       if (to === void 0) return `severity.escalate.to must be one of ${LANE_TIERS.join(", ")}`;
       if (escalate?.["requires"] !== "blocker_confirmed") return "severity.escalate.requires must be blocker_confirmed";
@@ -15095,7 +15175,7 @@ function readCiRules(block, result) {
   } else if (overrides !== void 0) {
     const stuckAfter = [];
     for (const entry of overrides) {
-      const override = asRecord(entry);
+      const override = asRecord2(entry);
       const name = override?.["name"];
       const value = minutes(override?.["minutes"]);
       if (typeof name !== "string" || name.length === 0 || value === void 0) {
@@ -15156,6 +15236,8 @@ function readVerdictPolicy(block, result) {
   policy.carryApprovalOnUnchanged = enabled2("carry_approval_on_unchanged", DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
   policy.recheckThreadBeforePost = enabled2("recheck_thread_before_post", DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
   policy.neverApprove = enabled2("never_approve", DEFAULT_VERDICT_POLICY.neverApprove);
+  policy.scopeBlock = enabled2("scope_block", DEFAULT_VERDICT_POLICY.scopeBlock);
+  policy.scopeBlockModels = enabled2("scope_block_models", DEFAULT_VERDICT_POLICY.scopeBlockModels);
 }
 var TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 function readQueue(block, result) {
@@ -15213,7 +15295,7 @@ function readQueue(block, result) {
   queue.maxPerPass = wholeAboveZero("max_per_pass") ?? queue.maxPerPass;
   queue.followUpDays = wholeAboveZero("follow_up_days") ?? queue.followUpDays;
   if (block["skip"] === void 0) return;
-  const skip2 = asRecord(block["skip"]);
+  const skip2 = asRecord2(block["skip"]);
   if (skip2 === null) {
     result.warnings.push("queue.skip must be a mapping; using the defaults.");
     return;
@@ -15236,7 +15318,7 @@ function readQueue(block, result) {
   queue.skip.allowBotsWhenRequested = flag2(skip2, "allow_bots_when_requested") ?? queue.skip.allowBotsWhenRequested;
   queue.skip.drafts = flag2(skip2, "drafts") ?? queue.skip.drafts;
   if (skip2["approved_at_head_by"] !== void 0) {
-    const approved = asRecord(skip2["approved_at_head_by"]);
+    const approved = asRecord2(skip2["approved_at_head_by"]);
     if (approved === null) {
       result.warnings.push("queue.skip.approved_at_head_by must be a mapping; ignoring it.");
     } else {
@@ -15310,12 +15392,12 @@ function contentHash(text4) {
   return createHash4("sha256").update(text4).digest("hex").slice(0, 16);
 }
 function layerFromPolicyFile(text4, source, fallbackKey) {
-  const doc = asRecord(parse(text4));
+  const doc = asRecord2(parse(text4));
   if (doc === null) return null;
-  const scope = asRecord(doc["scope"]);
+  const scope = asRecord2(doc["scope"]);
   const type = typeof scope?.["type"] === "string" ? scope["type"] : "repository";
   const key2 = typeof scope?.["key"] === "string" ? scope["key"] : fallbackKey;
-  const priorities = Array.isArray(doc["priorities"]) ? doc["priorities"].map((item) => asRecord(item)).filter((item) => item !== null).filter((item) => typeof item["category"] === "string").map((item) => ({
+  const priorities = Array.isArray(doc["priorities"]) ? doc["priorities"].map((item) => asRecord2(item)).filter((item) => item !== null).filter((item) => typeof item["category"] === "string").map((item) => ({
     category: item["category"],
     weight: typeof item["weight"] === "string" ? item["weight"] : "normal"
   })) : [];
@@ -15337,7 +15419,7 @@ function approvedPolicyLayers(db, warnings) {
     versions.push({ scopeType: row.scopeType, scopeKey: row.scopeKey, policyId: row.policyId, version: row.version });
     const label2 = `approved policy version ${row.version}`;
     try {
-      const doc = asRecord(parse(row.contentYaml));
+      const doc = asRecord2(parse(row.contentYaml));
       if (doc === null) {
         warnings.push(`${label2} is empty; ignoring it.`);
         continue;
@@ -15372,9 +15454,9 @@ function pluginRoot2() {
 function loadBaselineLayer(owner, path = join9(pluginRoot2(), "policies", "baseline-global.yaml")) {
   if (!existsSync5(path)) return null;
   try {
-    const doc = asRecord(parse(readFileSync7(path, "utf8")));
+    const doc = asRecord2(parse(readFileSync7(path, "utf8")));
     if (doc === null) return null;
-    const voice = asRecord(doc["voice"]);
+    const voice = asRecord2(doc["voice"]);
     const maxFindings = positiveInt(voice?.["max_findings"]);
     const maxWords = positiveInt(voice?.["max_words_per_finding"]);
     const maxTotal = positiveInt(voice?.["max_total_words"]);
@@ -15474,34 +15556,34 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
   const configPath = path ?? configFile(repositoryRoot2, result.warnings);
   if (existsSync5(configPath)) {
     try {
-      const doc = asRecord(parse(readFileSync7(configPath, "utf8")));
+      const doc = asRecord2(parse(readFileSync7(configPath, "utf8")));
       if (doc !== null) {
         for (const key2 of Object.keys(doc)) {
           if (!KNOWN_TOP_LEVEL.includes(key2)) result.warnings.push(`${key2} is not a setting Review Voice reads; ignoring it.`);
         }
-        const identity2 = asRecord(doc["identity"]);
+        const identity2 = asRecord2(doc["identity"]);
         if (typeof identity2?.["owner_reviewer"] === "string") {
           result.ownerReviewer = identity2["owner_reviewer"];
         }
         readReviewers(identity2, result);
-        const repositories = asRecord(doc["repositories"]);
+        const repositories = asRecord2(doc["repositories"]);
         for (const entry of asStringArray(repositories?.["include"])) {
           const problem = allowlistEntryProblem(entry);
           if (problem === null) result.allowlist.push(entry);
           else result.warnings.push(`repositories.include: ${problem} Skipping it.`);
         }
-        if (doc["queue"] !== void 0 && asRecord(doc["queue"]) === null) {
+        if (doc["queue"] !== void 0 && asRecord2(doc["queue"]) === null) {
           result.warnings.push("queue must be a mapping; using the defaults.");
         }
-        readQueue(asRecord(doc["queue"]), result);
-        if (doc["watch"] !== void 0) readWatch(asRecord(doc["watch"]), result);
-        if (doc["retention"] !== void 0) readRetention(asRecord(doc["retention"]), result);
-        const staticEvidence = asRecord(doc["static_evidence"]);
+        readQueue(asRecord2(doc["queue"]), result);
+        if (doc["watch"] !== void 0) readWatch(asRecord2(doc["watch"]), result);
+        if (doc["retention"] !== void 0) readRetention(asRecord2(doc["retention"]), result);
+        const staticEvidence = asRecord2(doc["static_evidence"]);
         if (staticEvidence !== null) {
           result.staticEvidence.enabled = staticEvidence["enabled"] === true;
           const commands = Array.isArray(staticEvidence["commands"]) ? staticEvidence["commands"] : [];
           for (const entry of commands) {
-            const command = asRecord(entry);
+            const command = asRecord2(entry);
             if (command === null) continue;
             const name = command["name"];
             const run = command["run"];
@@ -15516,16 +15598,16 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
             });
           }
         }
-        const writes = asRecord(doc["writes"]);
+        const writes = asRecord2(doc["writes"]);
         result.postingEnabled = writes?.["github_posting_enabled"] === true;
-        const ci = asRecord(doc["ci"]);
+        const ci = asRecord2(doc["ci"]);
         const gateChecks = Array.isArray(ci?.["gate_checks"]) ? ci["gate_checks"] : [];
         for (const entry of gateChecks) {
           if (typeof entry === "string" && entry.length > 0) {
             result.ciGateChecks.push({ name: entry });
             continue;
           }
-          const gate = asRecord(entry);
+          const gate = asRecord2(entry);
           const name = gate?.["name"];
           if (typeof name !== "string" || name.length === 0) continue;
           const summary = gate?.["summary"];
@@ -15536,11 +15618,11 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
         }
         readCiRules(ci, result);
         if (doc["verdict"] !== void 0) {
-          const verdict2 = asRecord(doc["verdict"]);
+          const verdict2 = asRecord2(doc["verdict"]);
           if (verdict2 === null) result.warnings.push("verdict must be a mapping; using the defaults.");
           readVerdictPolicy(verdict2, result);
         }
-        const verification2 = asRecord(doc["verification"]);
+        const verification2 = asRecord2(doc["verification"]);
         if (verification2 !== null) {
           const command = verification2["command"];
           result.verification = {
@@ -15552,10 +15634,10 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
             blockPresent: true
           };
         }
-        const review2 = asRecord(doc["review"]);
+        const review2 = asRecord2(doc["review"]);
         if (review2 !== null) {
-          readHumanReview(asRecord(review2["human_review"]), result);
-          readStructure(asRecord(review2["structure"]), result);
+          readHumanReview(asRecord2(review2["human_review"]), result);
+          readStructure(asRecord2(review2["structure"]), result);
           readCostMode(review2, result);
           readThresholds(review2, result);
           readLanes(review2["lanes"], result);
@@ -21074,6 +21156,10 @@ async function record2(run, extra) {
       at(run, "held.json"),
       "--stages",
       at(run, "stages.json"),
+      // Both reports are written in prep, even when the commands were switched
+      // off, so the record says what ran and what did not; passed only when both
+      // are there, as `record` refuses one without the other.
+      ...existsSync9(at(run, "evidence.json")) && existsSync9(at(run, "symbols.json")) ? ["--evidence", at(run, "evidence.json"), "--symbols", at(run, "symbols.json")] : [],
       "--origin",
       run.options.origin ?? "driver",
       ...run.plan?.mode === void 0 ? [] : ["--mode", run.plan.mode],
@@ -22619,6 +22705,12 @@ var COMMAND_HELP = {
       "                                          when a clean approval's scope is unchanged and",
       "                                          the owner's approval of its start still stands",
       "                                          (carriedReviewUrl)",
+      '  verdict.scope_block: false              true ends the posted body with a collapsed "Review',
+      '                                          scope" block and a JSON comment, from the recorded',
+      "                                          run: head, scope, origin, stages, checks that ran or",
+      "                                          did not, and counts (never the lists) of held claims;",
+      "                                          never the human-review note or a carry reason",
+      "  verdict.scope_block_models: false       true also names the model of each stage in it",
       '  An annotation names at most five checks and appears in "annotations".',
       "Reads: the validated review on stdin.",
       "Writes: JSON on stdout. Nothing is sent to GitHub.",
@@ -22753,6 +22845,10 @@ var COMMAND_HELP = {
       "  --stages <path>        Per-stage timings as",
       '                         [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean',
       "                         result from a shallow analyst pass is warned about",
+      "  --evidence <path>      evidence.json from `evidence`; needs --symbols. With it, stores which",
+      "                         static checks ran and which did not, for `explain` and the scope block",
+      "  --symbols <path>       symbols.json from `symbols`; needs --evidence. Stores how many files",
+      "                         the symbol search left unfinished",
       "  --origin <driver|interactive|watch|action>",
       "                         Where the run came from (default interactive, the slash command).",
       "                         Stored with an independence label derived from it alone: interactive",
@@ -25300,6 +25396,26 @@ function recordCommand(argv) {
       return 2;
     }
   }
+  const evidenceFile = flag(argv, "--evidence");
+  const symbolsFile = flag(argv, "--symbols");
+  let checks;
+  if (argv.includes("--evidence") || argv.includes("--symbols")) {
+    if (evidenceFile === null || symbolsFile === null) {
+      console.error("--evidence and --symbols go together: pass the evidence.json and the symbols.json of this review.");
+      return 2;
+    }
+    try {
+      checks = recordedChecks(
+        JSON.parse(readFileSync16(evidenceFile, "utf8")),
+        JSON.parse(readFileSync16(symbolsFile, "utf8"))
+      );
+    } catch (error) {
+      console.error(
+        `Cannot read the checks from ${evidenceFile} and ${symbolsFile}: ${error instanceof Error ? error.message : String(error)}.`
+      );
+      return 2;
+    }
+  }
   const followUpThreadFile = flag(argv, "--thread");
   let followUpThread = null;
   let followUpThreadFor = null;
@@ -25441,6 +25557,7 @@ function recordCommand(argv) {
       ...carry2 === void 0 ? {} : { carry: carry2 },
       followUps,
       stages,
+      ...checks === void 0 ? {} : { checks },
       provenance: {
         ...carriedProvenance === null ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode } : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode },
         // The versions this run was held to: the ones `score` loaded when there
@@ -26066,6 +26183,7 @@ function explainCommand(argv) {
     const recordedScope = describeReviewScope(detail.scope);
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
     console.log(describeProvenance(detail.provenance));
+    console.log(describeChecks(detail.checks));
     for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
     const shallow = shallowPassWarning(detail.stages, detail.findings.length);
     if (shallow !== null) console.log(`Warning ${shallow}`);

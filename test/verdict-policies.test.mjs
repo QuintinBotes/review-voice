@@ -748,6 +748,8 @@ test('config: each setting is read', () => {
       '  carry_approval_on_unchanged: true',
       '  recheck_thread_before_post: true',
       '  never_approve: false',
+      '  scope_block: true',
+      '  scope_block_models: true',
       'review:',
       '  human_review:',
       '    cap_approval: false',
@@ -762,6 +764,8 @@ test('config: each setting is read', () => {
     carryApprovalOnUnchanged: true,
     recheckThreadBeforePost: true,
     neverApprove: false,
+    scopeBlock: true,
+    scopeBlockModels: true,
   });
   assert.deepEqual(config.warnings, []);
 });
@@ -775,6 +779,8 @@ test('config: an invalid value warns and keeps that setting\'s default', () => {
       '  ci_needs_rerun: 3',
       '  carry_approval_on_unchanged: "yes"',
       '  recheck_thread_before_post: maybe',
+      '  scope_block: sometimes',
+      '  scope_block_models: 3',
       'review:',
       '  human_review:',
       '    cap_approval: no-thanks',
@@ -782,7 +788,7 @@ test('config: an invalid value warns and keeps that setting\'s default', () => {
     ].join('\n'),
   );
   assert.deepEqual(config.verdictPolicy, { ...DEFAULT_VERDICT_POLICY, ciRed: 'annotate' });
-  assert.equal(config.warnings.length, 5);
+  assert.equal(config.warnings.length, 7);
   assert.ok(config.warnings.some((w) => w.startsWith('verdict.ci_pending must be one of wait, proceed')));
   assert.ok(config.warnings.some((w) => w.startsWith('review.human_review.cap_approval must be true or false')));
   assert.deepEqual(configFrom('verdict: annotate\n').warnings, ['verdict must be a mapping; using the defaults.']);
@@ -791,7 +797,7 @@ test('config: an invalid value warns and keeps that setting\'s default', () => {
 test('help for verdict and post names the settings and exit 8', () => {
   const help = (command) => execFileSync(process.execPath, [bundle, command, '--help'], { encoding: 'utf8' });
   const verdictHelp = help('verdict');
-  for (const key of ['ci_pending', 'ci_red', 'ci_needs_rerun', 'cap_approval', 'carry_approval_on_unchanged', 'never_approve']) {
+  for (const key of ['ci_pending', 'ci_red', 'ci_needs_rerun', 'cap_approval', 'carry_approval_on_unchanged', 'never_approve', 'scope_block', 'scope_block_models']) {
     assert.ok(verdictHelp.includes(key), `verdict --help: ${key}`);
   }
   const postHelp = help('post');

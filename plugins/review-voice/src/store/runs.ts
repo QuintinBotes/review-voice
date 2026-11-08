@@ -415,6 +415,125 @@ export interface RecordRunInput {
    * The independence label and the policy rows are filled in here, not trusted.
    */
   provenance?: RunProvenanceInput | undefined;
+  /** What the static checks and the symbol search did; see `recordedChecks`. Absent for a run that was not given them. */
+  checks?: RecordedChecks | undefined;
+}
+
+/**
+ * What the static checks and the symbol search did for one run, kept with the
+ * run so the review scope block (docs/adr/0028) is built from the record and
+ * never from whatever the working tree or the environment says later.
+ */
+export interface RecordedChecks {
+  /** Commands that executed, in the report's order; one that could not start is not here. */
+  staticRan: { name: string; exitCode: number | null; signals: number; version?: string }[];
+  /** Every name the report lists as not having run, in its order, each once. */
+  staticDidNotRun: { name: string; reason: string }[];
+  /** Changed files whose symbol search was left unfinished. */
+  symbolsInconclusive: number;
+  /** True when the symbol search stopped on its time budget. */
+  symbolsBudgetExhausted: boolean;
+}
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+
+/**
+ * The checks summary from an `evidence` report and a `symbols` report.
+ *
+ * A name in both `commands` and `didNotRun` (a command that could not start,
+ * exit 126 or 127) is reported once, as not run: it never produced a verdict, so
+ * listing it as ran would imply a check that passed. The reason is the command's
+ * own `unavailable` text, else the report's `skipped` switch, else `not run`.
+ * Throws on a shape the commands do not write, so a hand-edited file cannot
+ * record a summary that looks complete.
+ */
+export function recordedChecks(evidence: unknown, symbols: unknown): RecordedChecks {
+  const report = asRecord(evidence);
+  if (report === null) throw new Error('the evidence report is not an object');
+  const commands = report['commands'];
+  const didNotRun = report['didNotRun'];
+  if (!Array.isArray(commands)) throw new Error('the evidence report has no commands list');
+  if (!Array.isArray(didNotRun) || !didNotRun.every((name) => typeof name === 'string')) {
+    throw new Error('the evidence report has no didNotRun list of names');
+  }
+  const skipped = typeof report['skipped'] === 'string' && report['skipped'].trim() !== '' ? report['skipped'] : null;
+
+  const entries = commands.map((entry, index) => {
+    const command = asRecord(entry);
+    if (command === null || typeof command['name'] !== 'string') throw new Error(`commands entry ${index} has no name`);
+    return command as Record<string, unknown> & { name: string };
+  });
+  const notRun = [...new Set(didNotRun as string[])];
+
+  const staticRan = entries
+    .filter((command) => !notRun.includes(command.name))
+    .map((command) => ({
+      name: command.name,
+      exitCode: Number.isInteger(command['exitCode']) ? (command['exitCode'] as number) : null,
+      signals: Array.isArray(command['signals']) ? command['signals'].length : 0,
+      ...(typeof command['version'] === 'string' && command['version'] !== '' ? { version: command['version'] } : {}),
+    }));
+  const staticDidNotRun = notRun.map((name) => {
+    const unavailable = entries.find((command) => command.name === name)?.['unavailable'];
+    return {
+      name,
+      reason: typeof unavailable === 'string' && unavailable.trim() !== '' ? unavailable : (skipped ?? 'not run'),
+    };
+  });
+
+  const search = asRecord(symbols);
+  if (search === null || !Array.isArray(search['files'])) throw new Error('the symbols report has no files list');
+  const budget = asRecord(search['budget']);
+  return {
+    staticRan,
+    staticDidNotRun,
+    symbolsInconclusive: search['files'].filter((file) => asRecord(file)?.['inconclusive'] === true).length,
+    symbolsBudgetExhausted: budget?.['exhausted'] === true,
+  };
+}
+
+/** The stored checks, or null for a row recorded before they existed or one that does not hold them. */
+function storedChecks(raw: unknown): RecordedChecks | null {
+  const value = asRecord(raw);
+  if (value === null || !Array.isArray(value['staticRan']) || !Array.isArray(value['staticDidNotRun'])) return null;
+  if (!Number.isInteger(value['symbolsInconclusive']) || typeof value['symbolsBudgetExhausted'] !== 'boolean') return null;
+  const ran: RecordedChecks['staticRan'] = [];
+  for (const entry of value['staticRan']) {
+    const c = asRecord(entry);
+    if (c === null || typeof c['name'] !== 'string' || !Number.isInteger(c['signals'])) return null;
+    ran.push({
+      name: c['name'],
+      exitCode: Number.isInteger(c['exitCode']) ? (c['exitCode'] as number) : null,
+      signals: c['signals'] as number,
+      ...(typeof c['version'] === 'string' ? { version: c['version'] } : {}),
+    });
+  }
+  const didNot: RecordedChecks['staticDidNotRun'] = [];
+  for (const entry of value['staticDidNotRun']) {
+    const c = asRecord(entry);
+    if (c === null || typeof c['name'] !== 'string' || typeof c['reason'] !== 'string') return null;
+    didNot.push({ name: c['name'], reason: c['reason'] });
+  }
+  return {
+    staticRan: ran,
+    staticDidNotRun: didNot,
+    symbolsInconclusive: value['symbolsInconclusive'] as number,
+    symbolsBudgetExhausted: value['symbolsBudgetExhausted'] as boolean,
+  };
+}
+
+/** The `Checks` line `explain` prints. */
+export function describeChecks(checks: RecordedChecks | null): string {
+  if (checks === null) return 'Checks not recorded';
+  const ran = checks.staticRan.map((c) => `${c.name} ran (exit ${c.exitCode ?? 'none'}, ${c.signals} signal${c.signals === 1 ? '' : 's'})`);
+  const didNot = checks.staticDidNotRun.map((c) => `${c.name} did not run (${c.reason})`);
+  const staticParts = [...ran, ...didNot];
+  const symbols =
+    checks.symbolsInconclusive === 0
+      ? 'every symbol file finished'
+      : `${checks.symbolsInconclusive} symbol file${checks.symbolsInconclusive === 1 ? '' : 's'} not finished${checks.symbolsBudgetExhausted ? ' (time budget)' : ''}`;
+  return `Checks ${staticParts.length === 0 ? 'no static checks' : staticParts.join('; ')}; ${symbols}`;
 }
 
 export interface StageTiming {
@@ -604,6 +723,7 @@ export function recordRun(
         ...(input.bodyFindings === undefined || input.bodyFindings.length === 0 ? {} : { bodyFindings: input.bodyFindings }),
         ...(input.carry === undefined ? {} : { carry: input.carry }),
         ...(input.followUps === undefined || input.followUps.length === 0 ? {} : { followUps: input.followUps }),
+        ...(input.checks === undefined ? {} : { checks: input.checks }),
       }),
       new Date().toISOString(),
       JSON.stringify(input.stages ?? []),
@@ -658,6 +778,8 @@ export interface RunDetail {
   followUps: FollowUpState[];
   /** Verified body-only restructuring advice; never contributes to the verdict. */
   bodyFindings: VerifiedSimplification[];
+  /** Null for rows recorded before checks were kept, or recorded without `--evidence` and `--symbols`. */
+  checks: RecordedChecks | null;
 }
 
 function storedComplexity(raw: unknown): ComplexityAssessment | null {
@@ -737,6 +859,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     carry?: unknown;
     followUps?: unknown;
     bodyFindings?: unknown;
+    checks?: unknown;
   };
 
   return {
@@ -757,6 +880,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     carry: parseCarryMarker(parsed.carry),
     followUps: Array.isArray(parsed.followUps) ? (parsed.followUps as FollowUpState[]) : [],
     bodyFindings: Array.isArray(parsed.bodyFindings) ? (parsed.bodyFindings as VerifiedSimplification[]) : [],
+    checks: storedChecks(parsed.checks),
     // Older rows predate the column, so absence is normal rather than an error.
     stages: ((): StageTiming[] => {
       const raw = row['stages_json'];
