@@ -42,6 +42,14 @@ export function runFake(
   }
   const record = parsed !== null && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
   if (typeof record['error'] === 'string') return { ok: false, output: null, costUsd: null, error: record['error'] };
-  if ('output' in record) return { ok: true, output: record['output'], costUsd: null };
+  if ('output' in record) {
+    const tokens = record['tokens'];
+    return {
+      ok: true,
+      output: record['output'],
+      costUsd: null,
+      ...(typeof tokens === 'number' && Number.isFinite(tokens) && tokens >= 0 ? { tokens } : {}),
+    };
+  }
   return { ok: false, output: null, costUsd: null, error: `${path} has neither "output" nor "error"` };
 }

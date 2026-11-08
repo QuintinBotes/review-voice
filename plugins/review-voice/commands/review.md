@@ -882,8 +882,10 @@ stray directory and another project's notes took the reviewed count from 11 to
   so a finding step 4b moved carries its category at its new line, to a
   temporary file and pass it:
   `RV record --repository <owner/repo> --base <ref> --head <sha> --candidates <file>
-  --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --stages <file>` with the validated output on
-  stdin. Only when step 3d produced a non-empty `bodyFindings` array, add
+  --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --stages <file> --origin interactive` with the validated output on
+  stdin. `--origin interactive` is the default and is spelled out so the record says what it means:
+  this review ran inside your own Claude Code session, which may be the session that wrote the
+  change, so it is stored as not independent. `explain` and `status` show it. Only when step 3d produced a non-empty `bodyFindings` array, add
   `--body-findings <tmpdir>/simplification-body.json`. Never pass that flag
   for an off, null, or rejected simplification pass.
 

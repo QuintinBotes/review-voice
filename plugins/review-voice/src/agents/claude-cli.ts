@@ -101,6 +101,20 @@ interface Envelope {
   result?: unknown;
   structured_output?: unknown;
   total_cost_usd?: unknown;
+  usage?: unknown;
+}
+
+const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+
+/**
+ * Input plus output tokens, or undefined when either is missing or not a count.
+ * Cache creation and cache read tokens are left out on purpose: they are not
+ * what the stage was asked to read or write.
+ */
+function tokensOf(usage: unknown): number | undefined {
+  if (usage === null || typeof usage !== 'object') return undefined;
+  const { input_tokens: input, output_tokens: output } = usage as Record<string, unknown>;
+  return isCount(input) && isCount(output) ? input + output : undefined;
 }
 
 /** `spec.tools` is already narrowed by runnerTools. */
@@ -145,8 +159,10 @@ export function interpretEnvelope(stdout: string, stderr: string, code: number |
     envelope = null;
   }
   const costUsd = typeof envelope?.total_cost_usd === 'number' ? envelope.total_cost_usd : null;
+  const tokens = tokensOf(envelope?.usage);
+  const counted = tokens === undefined ? {} : { tokens };
   if (code === 0 && envelope !== null && envelope.is_error === false && envelope.structured_output !== undefined) {
-    return { ok: true, output: envelope.structured_output, costUsd };
+    return { ok: true, output: envelope.structured_output, costUsd, ...counted };
   }
   const result = typeof envelope?.result === 'string' ? envelope.result : '';
   const detail =
@@ -154,7 +170,7 @@ export function interpretEnvelope(stdout: string, stderr: string, code: number |
     firstChars(stderr) ||
     firstChars(stdout) ||
     (code === 0 ? 'claude returned no structured output' : `claude exited with code ${code}`);
-  return { ok: false, output: null, costUsd, error: detail };
+  return { ok: false, output: null, costUsd, ...counted, error: detail };
 }
 
 export function runClaudeCli(

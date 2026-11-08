@@ -76,6 +76,11 @@ import {
   type CandidateHint,
   type HeldFinding,
   type StageTiming,
+  type RunProvenance,
+  ORIGINS,
+  PROVENANCE_MODES,
+  describeOrigin,
+  describeProvenance,
 } from './store/runs.ts';
 import { heldBackFindings, parseThreadFile, postedReviewIds } from './diff/held.ts';
 import { carryCandidates, carryFindings, CarryError, commitReadable, followLine, seriousNotCarried, type CarriedFinding } from './diff/carry.ts';
@@ -2599,6 +2604,25 @@ function recordCommand(argv: string[]): number {
       return 2;
     }
   }
+  // Checked before anything is read or written: an origin outside the enum would
+  // otherwise store a label for a source that does not exist.
+  const originFlag = flag(argv, '--origin');
+  const origin = argv.includes('--origin') ? ORIGINS.find((known) => known === originFlag) : 'interactive';
+  if (origin === undefined) {
+    console.error(`--origin takes one of ${ORIGINS.join(', ')}.`);
+    return 2;
+  }
+  const modeFlag = flag(argv, '--mode');
+  const provenanceMode = PROVENANCE_MODES.find((known) => known === modeFlag) ?? null;
+  if (argv.includes('--mode') && provenanceMode === null) {
+    console.error(`--mode takes one of ${PROVENANCE_MODES.join(', ')}.`);
+    return 2;
+  }
+  // The same policy cleanStages applies to model names: free text from a flag is
+  // kept only when it looks like a version string, and dropped otherwise.
+  const claudeFlag = flag(argv, '--claude-version');
+  const claudeVersion = claudeFlag !== null && /^[\w.\- ()]{1,100}$/.test(claudeFlag) ? claudeFlag : null;
+
   const output = readStdin();
   if (output.trim().length === 0) {
     console.error('Nothing on stdin. Pipe the validated review in.');
@@ -2881,6 +2905,7 @@ function recordCommand(argv: string[]): number {
   try {
     let carried: { runId: string; findings: CarriedFinding[] } | undefined;
     let carry: CarryMarker | undefined;
+    let carriedProvenance: RunProvenance | null = null;
     const carriedFrom = flag(argv, '--carried-from');
     if (carriedFrom !== null) {
       const head = flag(argv, '--head');
@@ -2904,8 +2929,14 @@ function recordCommand(argv: string[]): number {
           return 2;
         }
         carried = { runId: carriedFrom, findings: result.carried };
-        const prior = runDetail(db, carriedFrom)?.carry ?? null;
+        const source = runDetail(db, carriedFrom);
+        const prior = source?.carry ?? null;
         if (prior !== null && !prior.covered) carry = { ...prior, inheritedFrom: prior.inheritedFrom ?? carriedFrom };
+        // Nothing re-reviewed the carried findings, so the record keeps the
+        // provenance of the run that produced them: a carry by the driver must
+        // not turn an interactive review into an independent one. A source from
+        // before the column has none to keep, and the flags stand.
+        carriedProvenance = source?.provenance ?? null;
       } catch (error) {
         console.error((error as Error).message);
         return 2;
@@ -2987,7 +3018,7 @@ function recordCommand(argv: string[]): number {
       console.error('Warning: --thread and --follow-ups need --repository and a pull request in --files; ignored.');
     }
 
-    const { reviewRunId, findings } = recordRun(db, {
+    const { reviewRunId, findings, provenance } = recordRun(db, {
       repository,
       baseRef: flag(argv, '--base'),
       headRef,
@@ -3006,6 +3037,10 @@ function recordCommand(argv: string[]): number {
       ...(carry === undefined ? {} : { carry }),
       followUps,
       stages,
+      provenance:
+        carriedProvenance === null
+          ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode }
+          : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode },
     });
     // Local only: printed here and by `explain`, never part of what is posted.
     const warning = shallowPassWarning(stages, findings.length);
@@ -3014,6 +3049,8 @@ function recordCommand(argv: string[]): number {
         {
           reviewRunId,
           findings,
+          // So the review driver can print the line without a second command.
+          provenance,
           ...(followUps.length === 0 ? {} : { followUps }),
           ...(warning === null ? {} : { warnings: [warning] }),
         },
@@ -3795,6 +3832,7 @@ function explainCommand(argv: string[]): number {
     if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
     const recordedScope = describeReviewScope(detail.scope);
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
+    console.log(describeProvenance(detail.provenance));
     for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
     const shallow = shallowPassWarning(detail.stages, detail.findings.length);
     if (shallow !== null) console.log(`Warning ${shallow}`);
@@ -4875,7 +4913,9 @@ function statusCommand(): number {
       );
     }
     if (last !== null) {
-      console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(', ') || 'none'}`);
+      // The origin goes last so the count and ids keep their position.
+      const origin = lastDetail?.provenance == null ? '' : `; ${describeOrigin(lastDetail.provenance)}`;
+      console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(', ') || 'none'}${origin}`);
       const recordedScope = describeReviewScope(lastDetail?.scope ?? null);
       if (recordedScope !== null) console.log(`last scope       ${recordedScope}`);
     }
@@ -5302,6 +5342,14 @@ async function reviewCommand(argv: string[]): Promise<number> {
       return 2;
     }
   }
+  // Only the callers that start a review for someone else name themselves; a
+  // person at a terminal is the driver, and `interactive` is the slash command's.
+  const originFlag = flag(argv, '--origin');
+  const reviewOrigin = argv.includes('--origin') ? (['watch', 'action'] as const).find((known) => known === originFlag) : 'driver';
+  if (reviewOrigin === undefined) {
+    console.error('--origin takes one of watch, action.');
+    return 2;
+  }
   const repository = flag(argv, '--repository') ?? inferRepository(process.cwd());
   if (repository === null) {
     console.error('Cannot tell which repository. Pass --repository <owner/repo>.');
@@ -5319,6 +5367,7 @@ async function reviewCommand(argv: string[]): Promise<number> {
       recheckThread: !argv.includes('--no-recheck-thread'),
       expectHead: flag(argv, '--expect-head'),
       config: flag(argv, '--config'),
+      origin: reviewOrigin,
     },
     { command: (args, stdin) => runInProcess(args, { stdin }), client: githubClient([repository]) },
   );
