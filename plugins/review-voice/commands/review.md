@@ -256,9 +256,19 @@ Report anything in `warnings` the same way.
 
 ## Step 1c - Collect static evidence
 
-Run `RV evidence > <tmpdir>/evidence.json` and keep the file for step 6, which
-records what the checks did; it is written even when static evidence is off,
-as a report that says nothing ran.
+**Check the head out first on a `--pr` run.** When `refs.head.available` is
+true, run `RV worktree add --dir <tmpdir> --head <refs.head.sha>`. It checks
+the pull request's head out at `<tmpdir>/head` with hooks, LFS filters,
+fsmonitor and submodule recursion off, the same checkout the review driver
+makes. Then run `RV evidence --cwd <tmpdir>/head > <tmpdir>/evidence.json`, so
+the checks describe the code under review rather than whatever this checkout
+holds. The configuration that names the checks still comes from this checkout,
+never from the head. On any other run, or when the head is not readable, run
+`RV evidence > <tmpdir>/evidence.json`; the `refs.note` you print already says
+the head was missing.
+
+Keep the file for step 6, which records what the checks did; it is written
+even when static evidence is off, as a report that says nothing ran.
 
 If `enabled` is false in that output, say nothing further about this step.
 Static checks are opt-in; their absence is not a finding.
@@ -537,7 +547,9 @@ Run `RV verify --repository <owner/repo> --diff-file <tmpdir>/diff.patch` with t
 surviving candidates as `{"candidates": [...]}` on stdin, adding `--base <ref>`
 and `--head <head sha>` on a pull-request or `--base` review, the same refs step
 4 passes to `score`. The command is told which change it is judging; without
-them it can only guess from whatever is checked out.
+them it can only guess from whatever is checked out. When step 1c added the
+head worktree, add `--cwd <tmpdir>/head` too, so the command runs on the code
+it judges; its configuration still comes from this checkout.
 
 If `enabled` is false, skip this step. It is opt-in. When the output carries
 `howToEnable`, print it once after the findings, so the user knows a
@@ -1029,6 +1041,12 @@ stray directory and another project's notes took the reviewed count from 11 to
 **Never display output that has not passed validation**, and never edit it
 yourself to make it pass - the validator is the contract, and hand-patching it
 defeats the measurement.
+
+**Remove the head worktree.** When step 1c added one, run
+`RV worktree remove --dir <tmpdir>` once the review is recorded, and on every
+other way out too: a stop on an exit code, a review with nothing to report, or
+the person stopping it part way. It is safe to run when nothing is there. A
+worktree left behind stays registered in this clone until someone removes it.
 
 ## When the head moves before posting
 

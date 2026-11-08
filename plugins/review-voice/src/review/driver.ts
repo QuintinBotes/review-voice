@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { claudeBin } from '../agents/claude-cli.ts';
 import { ownSignals, readAgentTools, runAgent, stopAll, type AgentResult } from '../agents/runner.ts';
@@ -21,6 +21,7 @@ import type { Lane, LaneEligibility } from './lanes.ts';
 import { modelForFinding, type RequestedMode, type StagePlan } from './plan.ts';
 import * as prompts from './prompts.ts';
 import { STAGES, type StageId } from './stages.ts';
+import { SAFE_GIT, addHeadWorktree, removeHeadWorktree } from './worktree.ts';
 
 /**
  * `review-voice review` (docs/adr/0022): walks the stage table, calling the
@@ -539,20 +540,6 @@ async function reviewInFull(run: Run, why: string): Promise<void> {
   await prep(run);
 }
 
-/**
- * Git with every way a checkout can run repository code turned off: hooks
- * (including a clone's own core.hooksPath), LFS filters, fsmonitor and
- * submodule recursion. The head is untrusted pull request content.
- */
-const SAFE_GIT = [
-  '-c', 'core.hooksPath=/dev/null',
-  '-c', 'filter.lfs.smudge=',
-  '-c', 'filter.lfs.process=',
-  '-c', 'filter.lfs.required=false',
-  '-c', 'core.fsmonitor=false',
-  '-c', 'submodule.recurse=false',
-];
-
 /** The history file of a changed path: flat and collision-free, so no path can clash with another. */
 export function historyName(path: string): string {
   return `${encodeURIComponent(path)}.txt`;
@@ -575,31 +562,8 @@ function prepareWorkspace(run: Run): string {
     execFileSync('git', [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
   const headDir = at(run, 'head');
   if (run.headDir === null) {
-    // A run killed outright (SIGKILL after a watcher's grace period, say, while
-    // a configured command held the process) ran no cleanup, so a re-run into
-    // the same directory finds its worktree still there. It is this run's to
-    // replace: the directory is the run's own, and the stale checkout is of a
-    // head this run reads afresh. Git locks a worktree while it initialises
-    // it, so a run killed during the checkout leaves a locked one, which
-    // remove refuses and prune keeps; it is unlocked first. Either command
-    // fails when there is nothing registered, which is the usual case. A
-    // symbolic link at the path would make git act on wherever it points, so
-    // a link is unlinked, never followed.
-    const stale = lstatSync(headDir, { throwIfNoEntry: false });
-    if (stale?.isSymbolicLink()) {
-      unlinkSync(headDir);
-    } else {
-      for (const args of [['worktree', 'unlock', headDir], ['worktree', 'remove', '--force', '--force', headDir]]) {
-        try {
-          git(args);
-        } catch {
-          // Nothing registered at the path, or not locked: nothing to undo.
-        }
-      }
-      if (stale !== undefined) rmSync(headDir, { recursive: true, force: true });
-    }
-    git(['worktree', 'prune']);
-    git(['worktree', 'add', '--detach', headDir, run.head]);
+    // A stale worktree a killed run left at the path is replaced (worktree.ts).
+    addHeadWorktree(headDir, run.head);
     run.headDir = headDir;
     run.cleanup.push(() => removeWorktree(run, headDir));
   }
@@ -647,11 +611,7 @@ function prepareWorkspace(run: Run): string {
 }
 
 function removeWorktree(run: Run, headDir: string): void {
-  try {
-    execFileSync('git', ['worktree', 'remove', '--force', headDir], { cwd: process.cwd(), stdio: 'ignore' });
-  } catch {
-    run.notes.push(`Could not remove the worktree ${headDir}; remove it with git worktree remove.`);
-  }
+  if (!removeHeadWorktree(headDir)) run.notes.push(`Could not remove the worktree ${headDir}; remove it with git worktree remove.`);
 }
 
 /**

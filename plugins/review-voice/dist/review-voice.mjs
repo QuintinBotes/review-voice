@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync16, readSync, writeFileSync as writeFileSync5, mkdirSync as mkdirSync8, statSync as statSync4, lstatSync as lstatSync4, renameSync as renameSync2, rmSync as rmSync5, existsSync as existsSync12, realpathSync as realpathSync2 } from "node:fs";
+import { readFileSync as readFileSync16, readSync, writeFileSync as writeFileSync5, mkdirSync as mkdirSync8, statSync as statSync4, lstatSync as lstatSync4, renameSync as renameSync2, rmSync as rmSync6, existsSync as existsSync12, realpathSync as realpathSync2 } from "node:fs";
 import { basename as basename5, dirname as dirname13, isAbsolute as isAbsolute4, join as join20, posix as posix3, relative as relative3, resolve as resolve5, sep as sep5 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
-import { execFileSync as execFileSync16 } from "node:child_process";
+import { execFileSync as execFileSync17 } from "node:child_process";
 import { format } from "node:util";
 
 // plugins/review-voice/src/warnings.ts
@@ -16401,6 +16401,51 @@ function resolvePolicy(layers) {
   return resolved;
 }
 
+// plugins/review-voice/src/review/worktree.ts
+import { execFileSync as execFileSync10 } from "node:child_process";
+import { lstatSync as lstatSync2, rmSync as rmSync2, unlinkSync } from "node:fs";
+var SAFE_GIT = [
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "filter.lfs.smudge=",
+  "-c",
+  "filter.lfs.process=",
+  "-c",
+  "filter.lfs.required=false",
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "submodule.recurse=false"
+];
+function safeGit(args, cwd) {
+  execFileSync10("git", [...SAFE_GIT, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+}
+function addHeadWorktree(headDir, head, cwd = process.cwd()) {
+  const stale = lstatSync2(headDir, { throwIfNoEntry: false });
+  if (stale?.isSymbolicLink()) {
+    unlinkSync(headDir);
+  } else {
+    for (const args of [["worktree", "unlock", headDir], ["worktree", "remove", "--force", "--force", headDir]]) {
+      try {
+        safeGit(args, cwd);
+      } catch {
+      }
+    }
+    if (stale !== void 0) rmSync2(headDir, { recursive: true, force: true });
+  }
+  safeGit(["worktree", "prune"], cwd);
+  safeGit(["worktree", "add", "--detach", headDir, head], cwd);
+}
+function removeHeadWorktree(headDir, cwd = process.cwd()) {
+  try {
+    execFileSync10("git", ["worktree", "remove", "--force", headDir], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // plugins/review-voice/src/evidence/run.ts
 import { spawnSync } from "node:child_process";
 
@@ -17957,7 +18002,7 @@ function scaledRepositoryShare(repositoryCount) {
 import { dirname as dirname8, join as join11, sep as sep2 } from "node:path";
 
 // plugins/review-voice/src/conventions/tree.ts
-import { execFileSync as execFileSync10 } from "node:child_process";
+import { execFileSync as execFileSync11 } from "node:child_process";
 import { existsSync as existsSync6, readFileSync as readFileSync8, readdirSync as readdirSync2, statSync } from "node:fs";
 import { join as join10, sep } from "node:path";
 function filesystemReader(root) {
@@ -17977,7 +18022,7 @@ function filesystemReader(root) {
 }
 var GIT_BUFFER = 512 * 1024 * 1024;
 function gitTreeReader(root, ref) {
-  const listing = execFileSync10("git", ["ls-tree", "-r", "-l", "--full-tree", "-z", ref], {
+  const listing = execFileSync11("git", ["ls-tree", "-r", "-l", "--full-tree", "-z", ref], {
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: GIT_BUFFER
@@ -18022,7 +18067,7 @@ function gitTreeReader(root, ref) {
       const { object } = file2(path);
       let blob = blobs.get(object);
       if (blob === void 0) {
-        blob = execFileSync10("git", ["cat-file", "blob", object], {
+        blob = execFileSync11("git", ["cat-file", "blob", object], {
           cwd: root,
           stdio: ["ignore", "pipe", "pipe"],
           maxBuffer: GIT_BUFFER
@@ -18436,9 +18481,9 @@ function changedPathsFrom(filesJson) {
 }
 
 // plugins/review-voice/src/scoring/citation.ts
-import { execFileSync as execFileSync11 } from "node:child_process";
+import { execFileSync as execFileSync12 } from "node:child_process";
 function git4(args, cwd) {
-  return execFileSync11("git", args, {
+  return execFileSync12("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -19020,7 +19065,7 @@ async function queueCommand(argv, deps) {
 }
 
 // plugins/review-voice/src/watch/command.ts
-import { closeSync, constants, fsyncSync, mkdirSync as mkdirSync4, openSync, readFileSync as readFileSync10, renameSync, unlinkSync as unlinkSync3, writeSync } from "node:fs";
+import { closeSync, constants, fsyncSync, mkdirSync as mkdirSync4, openSync, readFileSync as readFileSync10, renameSync, unlinkSync as unlinkSync4, writeSync } from "node:fs";
 import { join as join14 } from "node:path";
 
 // plugins/review-voice/src/github/writer.ts
@@ -20057,7 +20102,7 @@ async function postReview(options) {
 
 // plugins/review-voice/src/watch/lock.ts
 import { createHash as createHash6 } from "node:crypto";
-import { readFileSync as readFileSync9, realpathSync, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { readFileSync as readFileSync9, realpathSync, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { connect, createServer } from "node:net";
 import { join as join12 } from "node:path";
 var PROBE_MS = 1500;
@@ -20128,7 +20173,7 @@ async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT
       released = true;
       server.close();
       try {
-        if (readFileSync9(display, "utf8") === mine) unlinkSync(display);
+        if (readFileSync9(display, "utf8") === mine) unlinkSync2(display);
       } catch {
       }
     }
@@ -20136,8 +20181,8 @@ async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT
 }
 
 // plugins/review-voice/src/watch/workspace.ts
-import { execFileSync as execFileSync12 } from "node:child_process";
-import { existsSync as existsSync7, mkdirSync as mkdirSync3, readdirSync as readdirSync3, statSync as statSync2, unlinkSync as unlinkSync2 } from "node:fs";
+import { execFileSync as execFileSync13 } from "node:child_process";
+import { existsSync as existsSync7, mkdirSync as mkdirSync3, readdirSync as readdirSync3, statSync as statSync2, unlinkSync as unlinkSync3 } from "node:fs";
 import { dirname as dirname9, join as join13 } from "node:path";
 var NAME = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
 function cloneDir(workspace, repository) {
@@ -20146,7 +20191,7 @@ function cloneDir(workspace, repository) {
   return join13(workspace, ...repository.split("/"));
 }
 var runQuietly = (command, args) => {
-  execFileSync12(command, args, { stdio: ["ignore", "ignore", "pipe"], timeout: 6e5 });
+  execFileSync13(command, args, { stdio: ["ignore", "ignore", "pipe"], timeout: 6e5 });
 };
 var STALE_LOCK_MS = 10 * 6e4;
 function removeStaleGitLocks(dir, now = Date.now()) {
@@ -20170,7 +20215,7 @@ function removeStaleGitLocks(dir, now = Date.now()) {
   for (const path of candidates) {
     try {
       if (now - statSync2(path).mtimeMs < STALE_LOCK_MS) continue;
-      unlinkSync2(path);
+      unlinkSync3(path);
       removed.push(path);
     } catch {
     }
@@ -20200,7 +20245,7 @@ function writeCopy(source, copy) {
   const text4 = readFileSync10(source);
   const temp = `${copy}.tmp-${process.pid}`;
   try {
-    unlinkSync3(temp);
+    unlinkSync4(temp);
   } catch {
   }
   const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 384);
@@ -20209,7 +20254,7 @@ function writeCopy(source, copy) {
     fsyncSync(fd);
   } catch (error) {
     closeSync(fd);
-    unlinkSync3(temp);
+    unlinkSync4(temp);
     throw error;
   }
   closeSync(fd);
@@ -21043,14 +21088,14 @@ function recallMetrics(results) {
 }
 
 // plugins/review-voice/src/evaluate/recall.ts
-import { execFileSync as execFileSync15 } from "node:child_process";
-import { copyFileSync as copyFileSync2, existsSync as existsSync11, mkdirSync as mkdirSync7, mkdtempSync as mkdtempSync2, readdirSync as readdirSync5, readFileSync as readFileSync15, rmSync as rmSync4, statSync as statSync3 } from "node:fs";
+import { execFileSync as execFileSync16 } from "node:child_process";
+import { copyFileSync as copyFileSync2, existsSync as existsSync11, mkdirSync as mkdirSync7, mkdtempSync as mkdtempSync2, readdirSync as readdirSync5, readFileSync as readFileSync15, rmSync as rmSync5, statSync as statSync3 } from "node:fs";
 import { tmpdir as tmpdir2 } from "node:os";
 import { join as join19, resolve as resolve4 } from "node:path";
 
 // plugins/review-voice/src/review/driver.ts
-import { execFileSync as execFileSync13 } from "node:child_process";
-import { appendFileSync, copyFileSync, existsSync as existsSync9, lstatSync as lstatSync2, mkdirSync as mkdirSync5, readFileSync as readFileSync13, rmSync as rmSync2, unlinkSync as unlinkSync4, writeFileSync as writeFileSync3 } from "node:fs";
+import { execFileSync as execFileSync14 } from "node:child_process";
+import { appendFileSync, copyFileSync, existsSync as existsSync9, mkdirSync as mkdirSync5, readFileSync as readFileSync13, rmSync as rmSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname11, isAbsolute as isAbsolute3, join as join17, resolve as resolve2, sep as sep3 } from "node:path";
 
 // plugins/review-voice/src/review/prompts.ts
@@ -21303,7 +21348,7 @@ var CONFIG_PATH = ".review-voice/config.yaml";
 var shortRef = (ref) => /^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 7) : ref;
 function showAt(ref, path) {
   try {
-    return execFileSync13("git", [...SAFE_GIT, "show", `${ref}:${path}`], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024 });
+    return execFileSync14("git", [...SAFE_GIT, "show", `${ref}:${path}`], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024 });
   } catch {
     return null;
   }
@@ -21331,7 +21376,7 @@ function resolveConfig(run) {
   const { sha, ref } = run.pullBase;
   if (sha === null) throw new Stop(2, `GitHub returned no base commit for ${run.options.repository}#${run.options.pullNumber}, so there is no trusted configuration to read.`);
   const path = at(run, "config.yaml");
-  rmSync2(path, { force: true });
+  rmSync3(path, { force: true });
   let from = sha;
   let content = showAt(sha, CONFIG_PATH);
   if (content === null && ref !== null && showAt(sha, "") === null && originRepository(process.cwd())?.toLowerCase() === run.options.repository.toLowerCase()) {
@@ -21519,20 +21564,6 @@ async function reviewInFull(run, why) {
   run.options = { ...run.options, full: true };
   await prep(run);
 }
-var SAFE_GIT = [
-  "-c",
-  "core.hooksPath=/dev/null",
-  "-c",
-  "filter.lfs.smudge=",
-  "-c",
-  "filter.lfs.process=",
-  "-c",
-  "filter.lfs.required=false",
-  "-c",
-  "core.fsmonitor=false",
-  "-c",
-  "submodule.recurse=false"
-];
 function historyName(path) {
   return `${encodeURIComponent(path)}.txt`;
 }
@@ -21541,31 +21572,18 @@ function prepareWorkspace(run) {
   if (!(isRecord4(refs["head"]) && refs["head"]["available"] === true)) {
     throw new Stop(2, `The head ${run.head} is not in this clone. Fetch it and run again.`);
   }
-  const git6 = (args) => execFileSync13("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync14("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
   const headDir = at(run, "head");
   if (run.headDir === null) {
-    const stale = lstatSync2(headDir, { throwIfNoEntry: false });
-    if (stale?.isSymbolicLink()) {
-      unlinkSync4(headDir);
-    } else {
-      for (const args of [["worktree", "unlock", headDir], ["worktree", "remove", "--force", "--force", headDir]]) {
-        try {
-          git6(args);
-        } catch {
-        }
-      }
-      if (stale !== void 0) rmSync2(headDir, { recursive: true, force: true });
-    }
-    git6(["worktree", "prune"]);
-    git6(["worktree", "add", "--detach", headDir, run.head]);
+    addHeadWorktree(headDir, run.head);
     run.headDir = headDir;
     run.cleanup.push(() => removeWorktree(run, headDir));
   }
   const manifest = readJson(at(run, "files.json"));
   const changed = list(isRecord4(manifest) ? manifest["files"] : []).filter((f) => (f["reviewed"] === true || f["status"] === "deleted") && typeof f["path"] === "string");
   const baseRoot = at(run, "base");
-  rmSync2(baseRoot, { recursive: true, force: true });
-  rmSync2(at(run, "history"), { recursive: true, force: true });
+  rmSync3(baseRoot, { recursive: true, force: true });
+  rmSync3(at(run, "history"), { recursive: true, force: true });
   mkdirSync5(baseRoot, { recursive: true });
   mkdirSync5(at(run, "history"), { recursive: true });
   for (const changedFile of changed) {
@@ -21598,11 +21616,7 @@ function prepareWorkspace(run) {
   return headDir;
 }
 function removeWorktree(run, headDir) {
-  try {
-    execFileSync13("git", ["worktree", "remove", "--force", headDir], { cwd: process.cwd(), stdio: "ignore" });
-  } catch {
-    run.notes.push(`Could not remove the worktree ${headDir}; remove it with git worktree remove.`);
-  }
+  if (!removeHeadWorktree(headDir)) run.notes.push(`Could not remove the worktree ${headDir}; remove it with git worktree remove.`);
 }
 function heldForRecord(held, diff) {
   const hunks = parseHunks(diff);
@@ -21960,7 +21974,7 @@ function claudeVersionOf(run) {
   if (run.claudeVersion !== void 0) return run.claudeVersion;
   const env = run.deps.env ?? process.env;
   try {
-    const out = execFileSync13(claudeBin(env), ["--version"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15e3 });
+    const out = execFileSync14(claudeBin(env), ["--version"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15e3 });
     run.claudeVersion = out.split("\n")[0].trim() || null;
   } catch {
     run.claudeVersion = null;
@@ -22308,7 +22322,7 @@ function reportText(report) {
 }
 
 // plugins/review-voice/src/evaluate/fixtures.ts
-import { execFileSync as execFileSync14 } from "node:child_process";
+import { execFileSync as execFileSync15 } from "node:child_process";
 import {
   existsSync as existsSync10,
   lstatSync as lstatSync3,
@@ -22316,7 +22330,7 @@ import {
   mkdtempSync,
   readdirSync as readdirSync4,
   readFileSync as readFileSync14,
-  rmSync as rmSync3,
+  rmSync as rmSync4,
   writeFileSync as writeFileSync4
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22548,7 +22562,7 @@ function gitEnvironment() {
 }
 function git5(cwd, label2, args) {
   try {
-    return execFileSync14("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", ...args], {
+    return execFileSync15("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", ...args], {
       cwd,
       env: gitEnvironment(),
       encoding: "utf8",
@@ -22628,7 +22642,7 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
       throw new Error(`${error.message} (the patch does not apply to its reconstructed pre-image)`);
     }
   } finally {
-    rmSync3(scratch, { recursive: true, force: true });
+    rmSync4(scratch, { recursive: true, force: true });
   }
   git5(targetDir, label2, ["add", "-A"]);
   git5(targetDir, label2, ["commit", "-q", "-m", `head: ${label2}`]);
@@ -22714,7 +22728,7 @@ function selectFixtures(options) {
 var json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 function shimFiles(repoDir, base, head, paths) {
   return paths.map((path) => {
-    const text4 = execFileSync15("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
+    const text4 = execFileSync16("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
       cwd: repoDir,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024
@@ -22788,7 +22802,7 @@ function reviewIsSilent(report) {
   }
 }
 function checkoutBase(repoDir) {
-  execFileSync15("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync16("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
 }
 async function runFixture(fixture, index, context2) {
   const { expectation } = fixture;
@@ -22895,7 +22909,7 @@ async function runRecall(options, deps) {
       if (before === void 0) delete process.env[key2];
       else process.env[key2] = before;
     }
-    if (!options.keep) rmSync4(root, { recursive: true, force: true });
+    if (!options.keep) rmSync5(root, { recursive: true, force: true });
   }
   return {
     results: {
@@ -23250,6 +23264,22 @@ var COMMAND_HELP = {
       "  listing their names in didNotRun with skipped: REVIEW_VOICE_NO_COMMANDS.",
       "  The report records the directory the commands ran in as cwd.",
       "Exit codes: 0 ok (a failing check is evidence, not an error), 2 not in a repository or --cwd is not a directory."
+    )
+  },
+  worktree: {
+    summary: "Check a pull request's head out for the evidence and verify steps",
+    body: lines(
+      "review-voice worktree add --dir <dir> --head <commit>",
+      "review-voice worktree remove --dir <dir>",
+      "  add checks <commit> out, detached, at <dir>/head with hooks, LFS filters, fsmonitor and",
+      "  submodule recursion off, replacing a worktree a stopped run left there. The slash command passes",
+      "  that path to evidence --cwd and verify --cwd, so the checks read the code under review.",
+      "  remove removes it, and is safe to run when nothing is there.",
+      "",
+      "Reads: nothing on stdin.",
+      "Writes: JSON on stdout: {path, head} for add, {path, removed} for remove.",
+      "Exit codes: 0 ok, 1 git could not add or remove the worktree, 2 bad invocation, not a repository,",
+      "  --dir is not a directory, or --head is not a commit in this clone."
     )
   },
   verify: {
@@ -24167,7 +24197,7 @@ ${result.violations.length} contract violation(s).`);
 }
 function inferRepository(cwd) {
   try {
-    const url = execFileSync16("git", ["remote", "get-url", "origin"], {
+    const url = execFileSync17("git", ["remote", "get-url", "origin"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -24181,7 +24211,7 @@ function inferRepository(cwd) {
 function remoteRepositories(cwd) {
   let out;
   try {
-    out = execFileSync16("git", ["config", "--get-regexp", "^remote\\..*\\.url$"], {
+    out = execFileSync17("git", ["config", "--get-regexp", "^remote\\..*\\.url$"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -25201,7 +25231,7 @@ function deletedFileCheck(argv) {
   const head = flag(argv, "--head");
   const cwd = process.cwd();
   if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
-  const git6 = (args) => execFileSync16("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync17("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
   let deleted;
   const deletions = () => {
     if (deleted !== void 0) return deleted;
@@ -25995,7 +26025,7 @@ function verifyCommand(argv) {
     const commitOf = (ref) => {
       if (ref === null) return null;
       try {
-        return execFileSync16("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        return execFileSync17("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
         console.error(`${ref} does not resolve to a commit here, so the verification command is not told about it.`);
         return null;
@@ -26128,6 +26158,63 @@ function evidenceCommand(argv) {
     }
     throw error;
   }
+}
+function worktreeCommand(argv) {
+  const action = argv[0];
+  const dir = flag(argv, "--dir");
+  if (action !== "add" && action !== "remove" || dir === null) {
+    console.error("Usage: review-voice worktree add --dir <dir> --head <commit> | review-voice worktree remove --dir <dir>");
+    return 2;
+  }
+  if (statSync4(resolve5(dir), { throwIfNoEntry: false })?.isDirectory() !== true) {
+    console.error(`--dir ${dir} is not a directory.`);
+    return 2;
+  }
+  let root;
+  try {
+    root = repositoryRoot(process.cwd());
+  } catch (error) {
+    if (error instanceof GitError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+  const headDir = join20(resolve5(dir), "head");
+  if (action === "remove") {
+    const present = lstatSync4(headDir, { throwIfNoEntry: false });
+    if (present?.isSymbolicLink()) rmSync6(headDir, { force: true });
+    if (present === void 0 || present.isSymbolicLink()) {
+      console.log(JSON.stringify({ path: headDir, removed: false }));
+      return 0;
+    }
+    if (!removeHeadWorktree(headDir, root)) {
+      console.error(`Could not remove the worktree ${headDir}; remove it with git worktree remove.`);
+      return 1;
+    }
+    console.log(JSON.stringify({ path: headDir, removed: true }));
+    return 0;
+  }
+  const head = flag(argv, "--head");
+  if (head === null || head.startsWith("-")) {
+    console.error("worktree add needs --head <commit>.");
+    return 2;
+  }
+  let sha;
+  try {
+    sha = execFileSync17("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    console.error(`--head ${head} is not a commit in this clone. Fetch it and run again.`);
+    return 2;
+  }
+  try {
+    addHeadWorktree(headDir, sha, root);
+  } catch (error) {
+    console.error(`Could not check out ${sha} at ${headDir}: ${String(error.message).split("\n")[0]}`);
+    return 1;
+  }
+  console.log(JSON.stringify({ path: headDir, head: sha }));
+  return 0;
 }
 function reviewScopeFromManifest(value) {
   return parseReviewScope(value) ?? void 0;
@@ -26721,7 +26808,7 @@ function reanchorCommand(argv) {
 `);
     for (const [temporary, target] of staged) renameSync2(temporary, target);
   } catch (error) {
-    for (const [temporary] of staged) rmSync5(temporary, { force: true });
+    for (const [temporary] of staged) rmSync6(temporary, { force: true });
     console.error(`Cannot write: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
@@ -27329,7 +27416,7 @@ function conventionsCommand(argv) {
 }
 function refExists(ref, cwd) {
   try {
-    execFileSync16("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    execFileSync17("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -28243,6 +28330,8 @@ ${topLevelHelp()}`);
       return conventionsCommand(argv.slice(1));
     case "evidence":
       return evidenceCommand(argv.slice(1));
+    case "worktree":
+      return worktreeCommand(argv.slice(1));
     case "reconcile":
       return reconcileCommand(argv.slice(1));
     case "verify":
@@ -28467,7 +28556,7 @@ async function recallCommand(argv) {
     throw error;
   }
   const staging = `${out}.${process.pid}.tmp`;
-  rmSync5(staging, { force: true });
+  rmSync6(staging, { force: true });
   writeFileSync5(staging, `${JSON.stringify(run.results, null, 2)}
 `, { flag: "wx" });
   renameSync2(staging, out);
