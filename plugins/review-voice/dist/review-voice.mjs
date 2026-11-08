@@ -15610,771 +15610,6 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks) {
   return { ok: true, document: { ...document, challengeHeld: held, challenge: summary }, summary };
 }
 
-// plugins/review-voice/src/github/roles.ts
-var BOT_HINTS = [
-  /\[bot\]$/i,
-  /^(dependabot|renovate|greenkeeper|snyk|codecov|coveralls|sonarcloud|sonarqube|github-actions|copilot|mergify|allcontributors|imgbot|semantic-release|stale|codeclimate|deepsource|reviewpad|restyled)/i,
-  /-bot$/i,
-  /^bot-/i
-];
-function isBot(login, accountType) {
-  if (accountType !== void 0 && accountType.toLowerCase() === "bot") return true;
-  return BOT_HINTS.some((pattern) => pattern.test(login));
-}
-function classifyReviewer(input) {
-  if (isBot(input.login, input.accountType)) return "bot";
-  const login = input.login.toLowerCase();
-  if (login === input.ownerLogin.toLowerCase()) return "owner";
-  if ((input.reviewerLogins ?? []).some((reviewer) => reviewer.toLowerCase() === login)) return "owner";
-  const team = (input.teamLogins ?? []).map((login2) => login2.toLowerCase());
-  if (team.includes(input.login.toLowerCase())) return "team";
-  const association = (input.authorAssociation ?? "").toUpperCase();
-  if (association === "OWNER" || association === "MEMBER" || association === "COLLABORATOR") {
-    return "team";
-  }
-  return "external";
-}
-
-// plugins/review-voice/src/redact/redact.ts
-import { createHash as createHash4 } from "node:crypto";
-
-// plugins/review-voice/src/redact/patterns.ts
-var SECRET_PATTERNS = [
-  // Key material is replaced whole: a PEM block's header is not the secret,
-  // but leaving it invites someone to reconstruct what was removed.
-  {
-    label: "PRIVATE_KEY",
-    pattern: /-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----/g
-  },
-  { label: "PEM_BLOCK", pattern: /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g },
-  { label: "GITHUB_TOKEN", pattern: /\b(gh[pousr]_[A-Za-z0-9]{16,255})\b/g, group: 1 },
-  { label: "GITHUB_TOKEN", pattern: /\b(github_pat_[A-Za-z0-9_]{20,})\b/g, group: 1 },
-  { label: "AWS_ACCESS_KEY", pattern: /\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b/g, group: 1 },
-  {
-    label: "AWS_SECRET_KEY",
-    pattern: /\b(?:aws_secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi,
-    group: 1
-  },
-  { label: "GOOGLE_API_KEY", pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g, group: 1 },
-  { label: "SLACK_TOKEN", pattern: /\b(xox[abposr]-[0-9A-Za-z-]{10,})\b/g, group: 1 },
-  { label: "STRIPE_KEY", pattern: /\b((?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,})\b/g, group: 1 },
-  { label: "NPM_TOKEN", pattern: /\b(npm_[A-Za-z0-9]{36})\b/g, group: 1 },
-  { label: "PYPI_TOKEN", pattern: /\b(pypi-[A-Za-z0-9_-]{16,})\b/g, group: 1 },
-  { label: "OPENAI_KEY", pattern: /\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b/g, group: 1 },
-  { label: "ANTHROPIC_KEY", pattern: /\b(sk-ant-[A-Za-z0-9_-]{20,})\b/g, group: 1 },
-  // JWTs: three base64url segments. The payload is often the sensitive part.
-  {
-    label: "JWT",
-    pattern: /\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g,
-    group: 1
-  },
-  // A connection string's credentials, keeping the scheme and host so the
-  // surrounding review comment still makes sense.
-  {
-    label: "DB_CREDENTIALS",
-    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi,
-    group: 3
-  },
-  {
-    label: "AUTHORIZATION_HEADER",
-    pattern: /\b(?:Authorization|Proxy-Authorization)\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12,})/gi,
-    group: 1
-  },
-  // Assignment-shaped secrets. Deliberately last: it is the broadest rule, and
-  // a more specific label above is more useful in an audit than "SECRET".
-  {
-    label: "SECRET_ASSIGNMENT",
-    pattern: /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["']([^"'\s]{8,})["']/gi,
-    group: 1
-  }
-];
-var PLACEHOLDERS = /* @__PURE__ */ new Set([
-  "xxxxxxxx",
-  "changeme",
-  "password",
-  "redacted",
-  "your_token_here",
-  "example",
-  "placeholder",
-  "dummy",
-  "notarealsecret",
-  "test",
-  "password123",
-  "<token>",
-  "secret",
-  "todo",
-  "fixme",
-  "null",
-  "undefined",
-  "none"
-]);
-
-// plugins/review-voice/src/redact/redact.ts
-var REDACTION_VERSION = "1";
-function hash(value) {
-  return createHash4("sha256").update(value).digest("hex").slice(0, 32);
-}
-function isPlaceholder(value) {
-  const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
-  if (PLACEHOLDERS.has(normalised)) return true;
-  return /^(.)\1{3,}$/.test(value);
-}
-function redact(input) {
-  const counts = {};
-  let text4 = input;
-  for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
-    pattern.lastIndex = 0;
-    text4 = text4.replace(pattern, (match, ...groups) => {
-      const captured = group === void 0 || group === 0 ? match : groups[group - 1];
-      if (captured === void 0 || captured.length === 0) return match;
-      if (isPlaceholder(captured)) return match;
-      counts[label2] = (counts[label2] ?? 0) + 1;
-      const replacement = `[REDACTED:${label2}]`;
-      return group === void 0 || group === 0 ? replacement : match.replace(captured, replacement);
-    });
-  }
-  return {
-    text: text4,
-    counts,
-    sourceHash: hash(input),
-    redactedHash: hash(text4),
-    version: REDACTION_VERSION
-  };
-}
-
-// plugins/review-voice/src/corpus/eligibility.ts
-var APPROVAL_PHRASES = /\b(lgtm|looks good(?: to me)?|ship it|approv(?:ed|ing|al)|sgtm|ack(?:nowledged)?|thanks|thank you|ty|nice work|nice one|great|\+1|done|no comments?|nothing from me|all good|fine by me)\b/gi;
-var DECORATION = /[\s.!?,;:\u2013\u2014-]|👍|🚀|✅|🎉|💯|🙏|😄/gu;
-var AUTOMATION_STATUS = [
-  /\bcodecov\b.*\breport\b/i,
-  /\bdeploy(ed|ment) (preview|succeeded|failed)\b/i,
-  /\bbuild (succeeded|failed)\b/i
-];
-var STRUCTURE_LINE = /^\s*(?:-\s*\[[ x]\]\s|#{1,3}\s|\|.*\||-{3,}\s*$)/i;
-var TEMPLATE_HEADING = /^\s*#{1,3}\s*(description|checklist|type of change|how has this been tested)/im;
-function isTemplate(body) {
-  const lines2 = body.split("\n").filter((line3) => line3.trim().length > 0);
-  if (lines2.length === 0) return true;
-  const structural = lines2.filter((line3) => STRUCTURE_LINE.test(line3)).length;
-  const structureRatio = structural / lines2.length;
-  if (TEMPLATE_HEADING.test(body) && structureRatio >= 0.4) return true;
-  return structureRatio >= 0.6;
-}
-var SELF_GENERATED = /^\s*\[(blocking|important|minor|nit|question)\]\s+`[^`]+:\d+`\s+-\s/im;
-var GENERATED_PATH = [
-  /(^|\/)(dist|build|out|coverage|node_modules|vendor|third_party)\//,
-  /\.min\.(js|css)$/,
-  /(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|go\.sum)$/
-];
-function ineligibleReason(input) {
-  if (input.role === "bot") return "bot";
-  if (input.role === "external") return "external_reviewer";
-  const body = input.body.trim();
-  if (body.length === 0) return "too_short";
-  if (SELF_GENERATED.test(body)) return "self_generated";
-  const substantive = body.replace(APPROVAL_PHRASES, "").replace(DECORATION, "");
-  if (substantive.length < 15) return "approval_only";
-  if (body.length < 15) return "too_short";
-  if (AUTOMATION_STATUS.some((pattern) => pattern.test(body))) return "template_or_status";
-  if (isTemplate(body)) return "template_or_status";
-  const filePath = input.filePath;
-  if (filePath !== void 0 && GENERATED_PATH.some((pattern) => pattern.test(filePath))) {
-    return "generated_file";
-  }
-  if (!input.hasCodeContext && filePath !== void 0) return "no_code_context";
-  return null;
-}
-
-// plugins/review-voice/src/corpus/dedup.ts
-import { createHash as createHash5 } from "node:crypto";
-function contentKey(parts) {
-  const normalised = parts.body.replace(/\s+/g, " ").trim().toLowerCase();
-  const SEPARATOR = String.fromCharCode(31);
-  return createHash5("sha256").update(
-    [
-      parts.repository.toLowerCase(),
-      parts.reviewerLogin.toLowerCase(),
-      parts.filePath ?? "",
-      String(parts.lineStart ?? ""),
-      normalised
-    ].join(SEPARATOR)
-  ).digest("hex").slice(0, 32);
-}
-
-// plugins/review-voice/src/corpus/outcome.ts
-function inferOutcome(signals) {
-  if (signals.reply === "reject") return { status: "dismissed", certainty: "strong" };
-  if (signals.changed && (signals.resolved === true || signals.reply === "acknowledge")) {
-    return { status: "accepted", certainty: "strong" };
-  }
-  if (signals.changed || signals.resolved === true || signals.reply === "acknowledge") {
-    return { status: "accepted", certainty: "weak" };
-  }
-  return { status: "unknown", certainty: "weak" };
-}
-
-// plugins/review-voice/src/publish/suggestion.ts
-async function fileAtRef(client, repository, path, ref) {
-  const encoded = path.split("/").map(encodeURIComponent).join("/");
-  try {
-    const { data } = await client.get(
-      `/repos/${repository}/contents/${encoded}?ref=${encodeURIComponent(ref)}`
-    );
-    if (data?.type !== "file" || data.encoding !== "base64" || typeof data.content !== "string") return null;
-    return Buffer.from(data.content, "base64").toString("utf8");
-  } catch {
-    return null;
-  }
-}
-function linesAt(text4, start, count3) {
-  const lines2 = text4.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
-  if (start < 1 || start - 1 + count3 > lines2.length) return null;
-  return lines2.slice(start - 1, start - 1 + count3).join("\n");
-}
-function suggestionApplied(reviewed, current, patch) {
-  const before = reviewed.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
-  const after = current.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
-  const start = patch.start_line - 1;
-  const original = unixLines(patch.original);
-  const replacement = unixLines(patch.replacement);
-  const replaced = replacement.split("\n");
-  if (original === replacement || before.join("\n") === after.join("\n")) return false;
-  if (after.slice(start, patch.end_line).join("\n") === original) return false;
-  if (before.slice(start, patch.end_line).join("\n") !== original) return false;
-  if (after.slice(start, start + replaced.length).join("\n") !== replacement) return false;
-  if (before.slice(0, start).join("\n") !== after.slice(0, start).join("\n")) return false;
-  return after[start + replaced.length] === before[patch.end_line];
-}
-function unixLines(text4) {
-  return text4.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3).join("\n");
-}
-
-// plugins/review-voice/src/store/outcomes.ts
-var NEGATED_ACK = /\bnot (?:yet )?(?:fixed|done|addressed|changed|updated)\b/i;
-var REJECT = /\b(?:won'?t fix|wontfix|not a (?:bug|issue|problem)|false positive|by design|intentional(?:ly)?|working as (?:intended|designed)|disagree|(?:does not|doesn'?t) apply|not applicable|not needed|unnecessary|incorrect|this is wrong|that'?s wrong)\b/i;
-var ACKNOWLEDGE = /\b(?:fixed|done|addressed|good catch|nice catch|will fix|will do|updated|applied|agreed|makes sense|you'?re right|thanks|thank you)\b/i;
-function classifyReply(body) {
-  if (REJECT.test(body)) return "reject";
-  if (NEGATED_ACK.test(body)) return "other";
-  if (ACKNOWLEDGE.test(body)) return "acknowledge";
-  return "other";
-}
-function patchTouches(patch, first, last) {
-  let oldLine = 0;
-  for (const line3 of patch.split("\n")) {
-    const header = /^@@ -(\d+)(?:,\d+)? \+\d+/.exec(line3);
-    if (header !== null) {
-      oldLine = Number(header[1]);
-      continue;
-    }
-    if (line3.startsWith("\\")) continue;
-    if (line3.startsWith("-")) {
-      if (oldLine >= first && oldLine <= last) return true;
-      oldLine += 1;
-    } else if (line3.startsWith("+")) {
-      if (oldLine > first && oldLine <= last) return true;
-    } else {
-      oldLine += 1;
-    }
-  }
-  return false;
-}
-var READ_LIMIT = 1e3;
-async function readStates(client, repository, pullNumber) {
-  const states = /* @__PURE__ */ new Map();
-  let cursor = null;
-  for (let read = 0; read < READ_LIMIT; read += 100) {
-    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
-    const threads = data?.repository?.pullRequest?.reviewThreads;
-    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
-    for (const thread of threads.nodes) {
-      const state = { resolved: thread?.isResolved === true, outdated: thread?.isOutdated === true };
-      for (const comment of thread?.comments?.nodes ?? []) {
-        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
-      }
-    }
-    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
-    cursor = threads.pageInfo.endCursor;
-  }
-  return states;
-}
-function sentRuns(db, options) {
-  const attempts = /* @__PURE__ */ new Map();
-  for (const row of db.prepare(`SELECT audit_id, json_extract(metadata_json, '$.run') AS run FROM audit_events WHERE action = 'review_post_attempted'`).all()) {
-    if (typeof row.run === "string") attempts.set(row.audit_id, row.run);
-  }
-  const reviewIdsByRun = /* @__PURE__ */ new Map();
-  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ?`).all(options.since)) {
-    let meta;
-    try {
-      meta = JSON.parse(row.metadata_json);
-    } catch {
-      continue;
-    }
-    const run = typeof meta.attempt === "string" ? attempts.get(meta.attempt) : void 0;
-    if (run === void 0) continue;
-    const ids = reviewIdsByRun.get(run) ?? [];
-    const id = Number(meta.reviewId);
-    if (Number.isInteger(id) && id > 0) ids.push(id);
-    reviewIdsByRun.set(run, ids);
-  }
-  const rows = db.prepare(
-    `SELECT review_run_id, repository, pull_number, head_ref FROM review_runs
-       WHERE repository IS NOT NULL AND pull_number IS NOT NULL ORDER BY created_at, rowid`
-  ).all();
-  const wanted = options.repository?.toLowerCase();
-  const runs = [];
-  for (const row of rows) {
-    const reviewIds = reviewIdsByRun.get(row.review_run_id);
-    if (reviewIds === void 0) continue;
-    if (wanted !== void 0 && row.repository.toLowerCase() !== wanted) continue;
-    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, headRef: row.head_ref, reviewIds });
-  }
-  return runs;
-}
-var isBot2 = (user) => user?.type === "Bot" || (user?.login ?? "").endsWith("[bot]");
-function sameHead(a, b) {
-  const left = a.toLowerCase();
-  const right = b.toLowerCase();
-  return left === right || left.length >= 7 && right.startsWith(left) || right.length >= 7 && left.startsWith(right);
-}
-async function checkOutcomes(options) {
-  const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
-  const result = { outcomes: [], skipped: [], warnings: [] };
-  const byPull = /* @__PURE__ */ new Map();
-  for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
-    const key2 = `${run.repository.toLowerCase()}#${run.pullNumber}`;
-    byPull.set(key2, [...byPull.get(key2) ?? [], run]);
-  }
-  let viewer = null;
-  const viewerLogin = () => {
-    viewer ??= options.client.get("/user").then(({ data }) => data.login?.toLowerCase() ?? null).catch(() => null);
-    return viewer;
-  };
-  for (const runs of byPull.values()) {
-    const first = runs[0];
-    const { repository, pullNumber } = first;
-    if (!allowed.has(repository.toLowerCase())) {
-      result.skipped.push({ repository, pullNumber, reason: "not in the allowlist" });
-      continue;
-    }
-    try {
-      const context2 = await readPull(options.client, repository, pullNumber, result.warnings);
-      for (const run of runs) {
-        result.outcomes.push(...await followRun(options, context2, run, viewerLogin));
-      }
-    } catch (error) {
-      result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
-    }
-  }
-  return result;
-}
-async function readPull(client, repository, pullNumber, warnings) {
-  const { data: pull } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
-  const replies = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/comments?per_page=100`, READ_LIMIT);
-  let states = null;
-  try {
-    states = await readStates(client, repository, pullNumber);
-  } catch (error) {
-    warnings.push(
-      `${repository}#${pullNumber}: could not read which threads are resolved (${error instanceof Error ? error.message.slice(0, 120) : String(error)}); resolution is unknown`
-    );
-  }
-  const sha = pull?.head?.sha;
-  return { repository, pullNumber, currentHead: typeof sha === "string" ? sha : null, replies, states, compares: /* @__PURE__ */ new Map() };
-}
-async function reviewIdsOf(options, run, viewerLogin) {
-  if (run.reviewIds.length > 0) return { ids: run.reviewIds, source: "audit" };
-  const login = await viewerLogin();
-  if (login === null || run.headRef === null) return { ids: [], source: "reviews-list" };
-  const reviews = await options.client.paginate(`/repos/${run.repository}/pulls/${run.pullNumber}/reviews?per_page=100`, READ_LIMIT);
-  const ids = reviews.filter((review2) => typeof review2.id === "number" && review2.user?.login?.toLowerCase() === login).filter((review2) => typeof review2.commit_id === "string" && sameHead(review2.commit_id, run.headRef)).map((review2) => review2.id);
-  return { ids, source: "reviews-list" };
-}
-function severityPrefix(finding) {
-  return `**${finding.severity}** - `;
-}
-function matchComments(findings, comments) {
-  const taken = /* @__PURE__ */ new Set();
-  const matched = /* @__PURE__ */ new Map();
-  for (const finding of findings) {
-    const words = significantWords(finding.text);
-    const candidates = comments.filter(
-      (comment) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line)
-    );
-    let best;
-    let bestScore = -1;
-    for (const comment of candidates) {
-      const body = comment.body ?? "";
-      const score2 = overlap(words, significantWords(body)) + (body.startsWith(severityPrefix(finding)) ? 0.01 : 0);
-      if (score2 > bestScore) {
-        best = comment;
-        bestScore = score2;
-      }
-    }
-    if (best !== void 0) {
-      taken.add(best.id);
-      matched.set(finding.findingId, best);
-    }
-  }
-  return matched;
-}
-async function followRun(options, context2, run, viewerLogin) {
-  const detail = runDetail(options.db, run.runId);
-  if (detail === null) return [];
-  const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
-  const comments = [];
-  for (const id of ids) {
-    comments.push(
-      ...await options.client.paginate(
-        `/repos/${run.repository}/pulls/${run.pullNumber}/reviews/${id}/comments?per_page=100`,
-        READ_LIMIT
-      )
-    );
-  }
-  const matched = matchComments(detail.findings, comments);
-  const checkedAt = (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
-  const outcomes = [];
-  for (const finding of detail.findings) {
-    const comment = matched.get(finding.findingId);
-    if (comment === void 0) continue;
-    const decided = await decide2(options, context2, run, finding, comment);
-    const outcome = {
-      reviewRunId: run.runId,
-      findingId: finding.findingId,
-      repository: run.repository,
-      pullNumber: run.pullNumber,
-      commentId: comment.id,
-      ...decided,
-      evidence: source === "reviews-list" ? `${decided.evidence}; review found by commit and author` : decided.evidence,
-      checkedAt,
-      path: finding.path,
-      line: finding.line,
-      reviewIdSource: source
-    };
-    saveOutcome(options.db, outcome);
-    outcomes.push(outcome);
-  }
-  return outcomes;
-}
-async function linesChanged(options, context2, run, comment, finding) {
-  if (run.headRef === null || context2.currentHead === null) return null;
-  if (sameHead(run.headRef, context2.currentHead)) return false;
-  const key2 = run.headRef.toLowerCase();
-  let compare = context2.compares.get(key2);
-  if (compare === void 0) {
-    compare = options.client.paginateWrapped(`/repos/${run.repository}/compare/${run.headRef}...${context2.currentHead}?per_page=100`, "files", READ_LIMIT).catch(() => null);
-    context2.compares.set(key2, compare);
-  }
-  const files2 = await compare;
-  if (files2 === null) return null;
-  const file2 = files2.find((entry) => entry.filename === finding.path || entry.previous_filename === finding.path);
-  if (file2 === void 0) return false;
-  if (typeof file2.patch !== "string") return null;
-  const start = comment.start_line ?? comment.original_start_line ?? finding.line;
-  return patchTouches(file2.patch, Math.min(start, finding.line), finding.line);
-}
-async function decide2(options, context2, run, finding, comment) {
-  const dismissedByOwner = options.db.prepare(`SELECT 1 FROM feedback WHERE review_run_id = ? AND finding_id = ? AND action = 'dismiss'`).get(run.runId, finding.findingId);
-  if (dismissedByOwner !== void 0) {
-    return {
-      outcome: "dismissed",
-      strength: "strong",
-      evidence: "the owner recorded dismiss for this finding",
-      decidedBy: options.ownerReviewer ?? null
-    };
-  }
-  const poster = comment.user?.login?.toLowerCase();
-  const owner = options.ownerReviewer?.toLowerCase();
-  const classified = context2.replies.filter((reply) => reply.in_reply_to_id === comment.id && !isBot2(reply.user)).map((reply) => ({
-    stance: classifyReply(reply.body ?? ""),
-    at: reply.created_at ?? "",
-    author: reply.user?.login ?? "unknown",
-    login: reply.user?.login ?? null
-  })).filter((answer2) => answer2.stance !== "other").sort((a, b) => a.at.localeCompare(b.at));
-  const ownerLatest = owner === void 0 ? void 0 : [...classified].reverse().find((answer2) => answer2.login?.toLowerCase() === owner);
-  if (ownerLatest?.stance === "reject") {
-    return { outcome: "dismissed", strength: "strong", evidence: `${ownerLatest.author} replied turning it down`, decidedBy: ownerLatest.login };
-  }
-  const answers = classified.filter((answer2) => answer2.login?.toLowerCase() !== poster);
-  const latest = answers[answers.length - 1];
-  if (latest?.stance === "reject") {
-    return { outcome: "dismissed", strength: "strong", evidence: `${latest.author} replied turning it down`, decidedBy: latest.login };
-  }
-  const state = context2.states?.get(comment.id) ?? null;
-  const changed = await linesChanged(options, context2, run, comment, finding) ?? (state?.outdated === true ? true : null);
-  const resolved = state === null ? null : state.resolved;
-  const agreed = latest?.stance === "acknowledge";
-  const patch = suggestedPatchOf(finding.suggestedPatch);
-  const offered = (comment.body ?? "").includes("\n```suggestion\n");
-  if (offered && patch !== null && patch.replacement !== "" && patch.replacement !== patch.original && context2.currentHead !== null && run.headRef !== null && !sameHead(run.headRef, context2.currentHead)) {
-    const [reviewed, current] = await Promise.all([
-      fileAtRef(options.client, run.repository, finding.path, run.headRef),
-      fileAtRef(options.client, run.repository, finding.path, context2.currentHead)
-    ]);
-    if (reviewed !== null && current !== null && suggestionApplied(reviewed, current, patch)) {
-      return { outcome: "fixed", strength: "strong", evidence: "suggestion applied", decidedBy: null };
-    }
-  }
-  if (changed === true && (resolved === true || agreed)) {
-    return {
-      outcome: "fixed",
-      strength: "strong",
-      evidence: `the anchored lines changed after the comment and ${resolved === true ? "the thread was resolved" : `${latest.author} agreed`}`,
-      decidedBy: null
-    };
-  }
-  if (resolved === true) {
-    return {
-      outcome: "resolved",
-      strength: "weak",
-      evidence: changed === false ? "the thread was resolved and the anchored lines are unchanged" : "the thread was resolved; whether the lines changed could not be read",
-      decidedBy: null
-    };
-  }
-  if (resolved === false && changed === true) {
-    return { outcome: "outdated", strength: "weak", evidence: "the anchored lines changed and the thread is still open", decidedBy: null };
-  }
-  if (resolved === false && changed === false) {
-    return {
-      outcome: "open",
-      strength: "weak",
-      evidence: agreed ? "agreed in reply, but the lines are unchanged and the thread is open" : "nothing has changed and the thread is open",
-      decidedBy: null
-    };
-  }
-  return { outcome: "unknown", strength: "weak", evidence: "the thread state or the later commits could not be read", decidedBy: null };
-}
-function saveOutcome(db, outcome) {
-  db.prepare(
-    `INSERT INTO finding_outcomes
-       (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at, decided_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (review_run_id, finding_id) DO UPDATE SET
-       repository = excluded.repository, pull_number = excluded.pull_number, comment_id = excluded.comment_id,
-       outcome = excluded.outcome, strength = excluded.strength, evidence = excluded.evidence, checked_at = excluded.checked_at,
-       decided_by = excluded.decided_by`
-  ).run(
-    outcome.reviewRunId,
-    outcome.findingId,
-    outcome.repository,
-    outcome.pullNumber,
-    outcome.commentId,
-    outcome.outcome,
-    outcome.strength,
-    outcome.evidence,
-    outcome.checkedAt,
-    // Only a strong dismissal names its decider; anything else is stored as null.
-    outcome.outcome === "dismissed" && outcome.strength === "strong" ? outcome.decidedBy ?? null : null
-  );
-}
-function statsOf(rows) {
-  const strong = rows.filter((row) => row.strength === "strong");
-  const fixed = strong.filter((row) => row.outcome === "fixed").length;
-  const dismissed = strong.filter((row) => row.outcome === "dismissed").length;
-  const decided = fixed + dismissed;
-  return {
-    tracked: rows.length,
-    fixed,
-    dismissed,
-    fixedRate: decided === 0 ? null : fixed / decided,
-    dismissedRate: decided === 0 ? null : dismissed / decided
-  };
-}
-function postedStats(db, { since } = {}) {
-  if (since === void 0) {
-    return statsOf(db.prepare("SELECT outcome, strength FROM finding_outcomes").all());
-  }
-  return statsOf(
-    db.prepare(
-      `SELECT o.outcome AS outcome, o.strength AS strength FROM finding_outcomes o
-         JOIN review_runs r ON r.review_run_id = o.review_run_id WHERE r.created_at >= ?`
-    ).all(since)
-  );
-}
-function postedBreakdown(db) {
-  const rows = db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all();
-  const findings = /* @__PURE__ */ new Map();
-  const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map(), rule: /* @__PURE__ */ new Map() };
-  for (const row of rows) {
-    let known = findings.get(row.review_run_id);
-    if (known === void 0) {
-      known = /* @__PURE__ */ new Map();
-      findings.set(row.review_run_id, known);
-      const stored = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(row.review_run_id);
-      try {
-        const parsed2 = JSON.parse(stored?.output_json ?? "{}");
-        for (const finding of parsed2.findings ?? []) {
-          const lane = typeof finding["lane"] === "string" ? finding["lane"] : "diff";
-          known.set(String(finding["findingId"]), {
-            severity: typeof finding["severity"] === "string" ? finding["severity"] : "unknown",
-            lane,
-            rule: typeof finding["ruleId"] === "string" && finding["ruleId"].length > 0 ? finding["ruleId"] : ruleIdFor(typeof finding["category"] === "string" ? finding["category"] : null, lane) ?? "unknown"
-          });
-        }
-      } catch {
-      }
-    }
-    const info = known.get(row.finding_id) ?? { severity: "unknown", lane: "diff", rule: "unknown" };
-    groups.severity.set(info.severity, [...groups.severity.get(info.severity) ?? [], row]);
-    groups.lane.set(info.lane, [...groups.lane.get(info.lane) ?? [], row]);
-    groups.rule.set(info.rule, [...groups.rule.get(info.rule) ?? [], row]);
-  }
-  const collect = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list2]) => [key2, statsOf(list2)]));
-  return { bySeverity: collect(groups.severity), byLane: collect(groups.lane), byRule: collect(groups.rule) };
-}
-
-// plugins/review-voice/src/corpus/collect.ts
-async function collectRepository(client, options, stats) {
-  const pulls = await client.paginate(
-    `/repos/${options.repository}/pulls?state=all&sort=updated&direction=desc&per_page=50`,
-    options.maxPullRequests
-  );
-  const events = [];
-  const seenKeys = /* @__PURE__ */ new Set();
-  const watermarks = [];
-  for (const pull of pulls) {
-    if (options.updatedSince !== void 0 && pull.updated_at < options.updatedSince) continue;
-    if (!options.includeForks && pull.head?.repo?.fork === true) continue;
-    if (options.watermarks?.get(pull.number) === pull.updated_at) {
-      stats.pullRequestsUnchanged += 1;
-      continue;
-    }
-    stats.pullRequestsScanned += 1;
-    watermarks.push({ pullNumber: pull.number, updatedAt: pull.updated_at });
-    const comments = await client.paginate(
-      `/repos/${options.repository}/pulls/${pull.number}/comments?per_page=100`,
-      options.maxCommentsPerPull
-    );
-    const ingest = (raw) => {
-      stats.commentsSeen += 1;
-      if (raw.login === void 0 || raw.body.length === 0) return;
-      const role = classifyReviewer({
-        login: raw.login,
-        accountType: raw.accountType,
-        ownerLogin: options.ownerLogin,
-        reviewerLogins: options.reviewerLogins,
-        teamLogins: options.teamLogins,
-        authorAssociation: raw.association
-      });
-      const reason2 = ineligibleReason({
-        body: raw.body,
-        role,
-        filePath: raw.filePath,
-        hasCodeContext: (raw.diffHunk ?? "").length > 0
-      });
-      if (reason2 !== null) {
-        stats.excluded[reason2] = (stats.excluded[reason2] ?? 0) + 1;
-        return;
-      }
-      const key2 = contentKey({
-        repository: options.repository,
-        reviewerLogin: raw.login,
-        body: raw.body,
-        filePath: raw.filePath,
-        lineStart: raw.line
-      });
-      if (seenKeys.has(key2)) {
-        stats.duplicates += 1;
-        return;
-      }
-      seenKeys.add(key2);
-      const redactedBody = redact(raw.body);
-      const redactedHunk = raw.diffHunk === void 0 ? void 0 : redact(raw.diffHunk);
-      events.push({
-        eventId: `${raw.idPrefix}${raw.id}`,
-        source: "github",
-        repository: options.repository,
-        pullNumber: pull.number,
-        pullRequestUrl: pull.html_url,
-        commentId: String(raw.id),
-        reviewerLogin: raw.login,
-        role,
-        createdAt: raw.createdAt ?? pull.updated_at,
-        bodyRedacted: redactedBody.text,
-        filePath: raw.filePath,
-        lineStart: raw.line,
-        diffHunkRedacted: redactedHunk?.text,
-        contentKey: key2,
-        redactionVersion: REDACTION_VERSION,
-        redactionCounts: {
-          ...redactedBody.counts,
-          ...redactedHunk === void 0 ? {} : redactedHunk.counts
-        },
-        outcome: raw.outcome
-      });
-      stats.eligible += 1;
-    };
-    const outcomeOf = (comment) => {
-      if (comment.in_reply_to_id != null) return void 0;
-      const poster = comment.user?.login?.toLowerCase();
-      const stances = comments.filter(
-        (reply) => reply.in_reply_to_id === comment.id && reply.user?.login !== void 0 && !isBot(reply.user.login, reply.user.type) && reply.user.login.toLowerCase() !== poster
-      ).sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? "")).map((reply) => classifyReply(reply.body ?? "")).filter((stance) => stance !== "other");
-      return inferOutcome({
-        reply: stances.at(-1) ?? null,
-        // Thread resolution is GraphQL-only, and collection does not read it.
-        resolved: null,
-        // GitHub nulls `line` once a later commit in the pull request changes the anchored lines.
-        changed: comment.line === null && typeof comment.original_line === "number"
-      });
-    };
-    for (const comment of comments) {
-      stats.bySource.inline += 1;
-      ingest({
-        id: comment.id,
-        body: comment.body ?? "",
-        login: comment.user?.login,
-        accountType: comment.user?.type,
-        association: comment.author_association,
-        createdAt: comment.created_at,
-        filePath: comment.path,
-        line: comment.line ?? comment.original_line ?? void 0,
-        diffHunk: comment.diff_hunk,
-        idPrefix: "ghc_",
-        outcome: outcomeOf(comment)
-      });
-    }
-    const reviews = await client.paginate(
-      `/repos/${options.repository}/pulls/${pull.number}/reviews?per_page=100`,
-      options.maxCommentsPerPull
-    );
-    for (const review2 of reviews) {
-      const body = review2.body ?? "";
-      if (body.length === 0) continue;
-      stats.bySource.reviewSummary += 1;
-      ingest({
-        id: review2.id,
-        body,
-        login: review2.user?.login,
-        accountType: review2.user?.type,
-        association: review2.author_association,
-        createdAt: review2.submitted_at,
-        idPrefix: "ghr_"
-      });
-    }
-    if (options.includeConversationComments) {
-      const conversation = await client.paginate(
-        `/repos/${options.repository}/issues/${pull.number}/comments?per_page=100`,
-        options.maxCommentsPerPull
-      );
-      for (const comment of conversation) {
-        stats.bySource.conversation += 1;
-        ingest({
-          id: comment.id,
-          body: comment.body ?? "",
-          login: comment.user?.login,
-          accountType: comment.user?.type,
-          association: comment.author_association,
-          createdAt: comment.created_at,
-          idPrefix: "ghi_"
-        });
-      }
-    }
-  }
-  return { events, watermarks };
-}
-
 // plugins/review-voice/src/corpus/select.ts
 function selectEvents(events, options) {
   const discoveredEligible = events.length;
@@ -17090,44 +16325,6 @@ function corpusCoverage(db, options = {}) {
   return { total, byRepository, byRole, oldest: range.oldest, newest: range.newest, warnings };
 }
 
-// plugins/review-voice/src/consent/plan.ts
-function buildConsentPlan(input) {
-  const pooled = input.reviewerLogins ?? [];
-  return {
-    ownerLogin: input.ownerLogin,
-    ...pooled.length > 1 ? { reviewerLogins: [...pooled] } : {},
-    repositories: [...input.repositories],
-    targetEvents: input.targetEvents,
-    dataCategories: [
-      "Inline pull-request review comments you or your teammates wrote",
-      "The diff hunk each comment was attached to",
-      "File path and line number for each comment",
-      "Pull request number, title and URL",
-      "Comment author login and their association with the repository"
-    ],
-    storageLocation: input.storageLocation,
-    retention: [
-      "Secrets are removed before anything is written; the original text is never stored",
-      "Redacted text is kept until you purge it",
-      "Comments from bots and from outside contributors are not stored at all",
-      "Nothing is uploaded anywhere; the store never leaves this machine"
-    ],
-    writeOperations: "none"
-  };
-}
-async function discoverRepositories(client, limit = 100) {
-  const repos = await client.paginate(
-    "/user/repos?affiliation=owner,collaborator&sort=pushed&per_page=100",
-    limit
-  );
-  return repos.map((repo) => ({
-    fullName: repo.full_name,
-    private: repo.private,
-    archived: repo.archived,
-    pushedAt: repo.pushed_at
-  }));
-}
-
 // plugins/review-voice/src/store/watch.ts
 var isFailure2 = (status) => status === "failed" || status === "failed-open" || status === "failed-closed";
 var fromRow = (row) => ({
@@ -17572,6 +16769,113 @@ function assertPayload(payload) {
   }
 }
 
+// plugins/review-voice/src/redact/redact.ts
+import { createHash as createHash4 } from "node:crypto";
+
+// plugins/review-voice/src/redact/patterns.ts
+var SECRET_PATTERNS = [
+  // Key material is replaced whole: a PEM block's header is not the secret,
+  // but leaving it invites someone to reconstruct what was removed.
+  {
+    label: "PRIVATE_KEY",
+    pattern: /-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----/g
+  },
+  { label: "PEM_BLOCK", pattern: /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g },
+  { label: "GITHUB_TOKEN", pattern: /\b(gh[pousr]_[A-Za-z0-9]{16,255})\b/g, group: 1 },
+  { label: "GITHUB_TOKEN", pattern: /\b(github_pat_[A-Za-z0-9_]{20,})\b/g, group: 1 },
+  { label: "AWS_ACCESS_KEY", pattern: /\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b/g, group: 1 },
+  {
+    label: "AWS_SECRET_KEY",
+    pattern: /\b(?:aws_secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi,
+    group: 1
+  },
+  { label: "GOOGLE_API_KEY", pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g, group: 1 },
+  { label: "SLACK_TOKEN", pattern: /\b(xox[abposr]-[0-9A-Za-z-]{10,})\b/g, group: 1 },
+  { label: "STRIPE_KEY", pattern: /\b((?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,})\b/g, group: 1 },
+  { label: "NPM_TOKEN", pattern: /\b(npm_[A-Za-z0-9]{36})\b/g, group: 1 },
+  { label: "PYPI_TOKEN", pattern: /\b(pypi-[A-Za-z0-9_-]{16,})\b/g, group: 1 },
+  { label: "OPENAI_KEY", pattern: /\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b/g, group: 1 },
+  { label: "ANTHROPIC_KEY", pattern: /\b(sk-ant-[A-Za-z0-9_-]{20,})\b/g, group: 1 },
+  // JWTs: three base64url segments. The payload is often the sensitive part.
+  {
+    label: "JWT",
+    pattern: /\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g,
+    group: 1
+  },
+  // A connection string's credentials, keeping the scheme and host so the
+  // surrounding review comment still makes sense.
+  {
+    label: "DB_CREDENTIALS",
+    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi,
+    group: 3
+  },
+  {
+    label: "AUTHORIZATION_HEADER",
+    pattern: /\b(?:Authorization|Proxy-Authorization)\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12,})/gi,
+    group: 1
+  },
+  // Assignment-shaped secrets. Deliberately last: it is the broadest rule, and
+  // a more specific label above is more useful in an audit than "SECRET".
+  {
+    label: "SECRET_ASSIGNMENT",
+    pattern: /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["']([^"'\s]{8,})["']/gi,
+    group: 1
+  }
+];
+var PLACEHOLDERS = /* @__PURE__ */ new Set([
+  "xxxxxxxx",
+  "changeme",
+  "password",
+  "redacted",
+  "your_token_here",
+  "example",
+  "placeholder",
+  "dummy",
+  "notarealsecret",
+  "test",
+  "password123",
+  "<token>",
+  "secret",
+  "todo",
+  "fixme",
+  "null",
+  "undefined",
+  "none"
+]);
+
+// plugins/review-voice/src/redact/redact.ts
+var REDACTION_VERSION = "1";
+function hash(value) {
+  return createHash4("sha256").update(value).digest("hex").slice(0, 32);
+}
+function isPlaceholder(value) {
+  const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
+  if (PLACEHOLDERS.has(normalised)) return true;
+  return /^(.)\1{3,}$/.test(value);
+}
+function redact(input) {
+  const counts = {};
+  let text4 = input;
+  for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
+    pattern.lastIndex = 0;
+    text4 = text4.replace(pattern, (match, ...groups) => {
+      const captured = group === void 0 || group === 0 ? match : groups[group - 1];
+      if (captured === void 0 || captured.length === 0) return match;
+      if (isPlaceholder(captured)) return match;
+      counts[label2] = (counts[label2] ?? 0) + 1;
+      const replacement = `[REDACTED:${label2}]`;
+      return group === void 0 || group === 0 ? replacement : match.replace(captured, replacement);
+    });
+  }
+  return {
+    text: text4,
+    counts,
+    sourceHash: hash(input),
+    redactedHash: hash(text4),
+    version: REDACTION_VERSION
+  };
+}
+
 // plugins/review-voice/src/diff/thread.ts
 var MAX_COMMENTS = 300;
 function clean(body, author) {
@@ -17716,6 +17020,417 @@ async function readThreadStates(client, repository, pullNumber) {
     cursor = threads.pageInfo.endCursor;
   }
   return states;
+}
+
+// plugins/review-voice/src/publish/suggestion.ts
+async function fileAtRef(client, repository, path, ref) {
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  try {
+    const { data } = await client.get(
+      `/repos/${repository}/contents/${encoded}?ref=${encodeURIComponent(ref)}`
+    );
+    if (data?.type !== "file" || data.encoding !== "base64" || typeof data.content !== "string") return null;
+    return Buffer.from(data.content, "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+function linesAt(text4, start, count3) {
+  const lines2 = text4.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+  if (start < 1 || start - 1 + count3 > lines2.length) return null;
+  return lines2.slice(start - 1, start - 1 + count3).join("\n");
+}
+function suggestionApplied(reviewed, current, patch) {
+  const before = reviewed.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+  const after = current.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+  const start = patch.start_line - 1;
+  const original = unixLines(patch.original);
+  const replacement = unixLines(patch.replacement);
+  const replaced = replacement.split("\n");
+  if (original === replacement || before.join("\n") === after.join("\n")) return false;
+  if (after.slice(start, patch.end_line).join("\n") === original) return false;
+  if (before.slice(start, patch.end_line).join("\n") !== original) return false;
+  if (after.slice(start, start + replaced.length).join("\n") !== replacement) return false;
+  if (before.slice(0, start).join("\n") !== after.slice(0, start).join("\n")) return false;
+  return after[start + replaced.length] === before[patch.end_line];
+}
+function unixLines(text4) {
+  return text4.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3).join("\n");
+}
+
+// plugins/review-voice/src/store/outcomes.ts
+var NEGATED_ACK = /\bnot (?:yet )?(?:fixed|done|addressed|changed|updated)\b/i;
+var REJECT = /\b(?:won'?t fix|wontfix|not a (?:bug|issue|problem)|false positive|by design|intentional(?:ly)?|working as (?:intended|designed)|disagree|(?:does not|doesn'?t) apply|not applicable|not needed|unnecessary|incorrect|this is wrong|that'?s wrong)\b/i;
+var ACKNOWLEDGE = /\b(?:fixed|done|addressed|good catch|nice catch|will fix|will do|updated|applied|agreed|makes sense|you'?re right|thanks|thank you)\b/i;
+function classifyReply(body) {
+  if (REJECT.test(body)) return "reject";
+  if (NEGATED_ACK.test(body)) return "other";
+  if (ACKNOWLEDGE.test(body)) return "acknowledge";
+  return "other";
+}
+function patchTouches(patch, first, last) {
+  let oldLine = 0;
+  for (const line3 of patch.split("\n")) {
+    const header = /^@@ -(\d+)(?:,\d+)? \+\d+/.exec(line3);
+    if (header !== null) {
+      oldLine = Number(header[1]);
+      continue;
+    }
+    if (line3.startsWith("\\")) continue;
+    if (line3.startsWith("-")) {
+      if (oldLine >= first && oldLine <= last) return true;
+      oldLine += 1;
+    } else if (line3.startsWith("+")) {
+      if (oldLine > first && oldLine <= last) return true;
+    } else {
+      oldLine += 1;
+    }
+  }
+  return false;
+}
+var READ_LIMIT = 1e3;
+async function readStates(client, repository, pullNumber) {
+  const states = /* @__PURE__ */ new Map();
+  let cursor = null;
+  for (let read = 0; read < READ_LIMIT; read += 100) {
+    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
+    const threads = data?.repository?.pullRequest?.reviewThreads;
+    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
+    for (const thread of threads.nodes) {
+      const state = { resolved: thread?.isResolved === true, outdated: thread?.isOutdated === true };
+      for (const comment of thread?.comments?.nodes ?? []) {
+        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
+      }
+    }
+    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
+    cursor = threads.pageInfo.endCursor;
+  }
+  return states;
+}
+function sentRuns(db, options) {
+  const attempts = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(`SELECT audit_id, json_extract(metadata_json, '$.run') AS run FROM audit_events WHERE action = 'review_post_attempted'`).all()) {
+    if (typeof row.run === "string") attempts.set(row.audit_id, row.run);
+  }
+  const reviewIdsByRun = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ?`).all(options.since)) {
+    let meta;
+    try {
+      meta = JSON.parse(row.metadata_json);
+    } catch {
+      continue;
+    }
+    const run = typeof meta.attempt === "string" ? attempts.get(meta.attempt) : void 0;
+    if (run === void 0) continue;
+    const ids = reviewIdsByRun.get(run) ?? [];
+    const id = Number(meta.reviewId);
+    if (Number.isInteger(id) && id > 0) ids.push(id);
+    reviewIdsByRun.set(run, ids);
+  }
+  const rows = db.prepare(
+    `SELECT review_run_id, repository, pull_number, head_ref FROM review_runs
+       WHERE repository IS NOT NULL AND pull_number IS NOT NULL ORDER BY created_at, rowid`
+  ).all();
+  const wanted = options.repository?.toLowerCase();
+  const runs = [];
+  for (const row of rows) {
+    const reviewIds = reviewIdsByRun.get(row.review_run_id);
+    if (reviewIds === void 0) continue;
+    if (wanted !== void 0 && row.repository.toLowerCase() !== wanted) continue;
+    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, headRef: row.head_ref, reviewIds });
+  }
+  return runs;
+}
+var isBot = (user) => user?.type === "Bot" || (user?.login ?? "").endsWith("[bot]");
+function sameHead(a, b) {
+  const left = a.toLowerCase();
+  const right = b.toLowerCase();
+  return left === right || left.length >= 7 && right.startsWith(left) || right.length >= 7 && left.startsWith(right);
+}
+async function checkOutcomes(options) {
+  const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
+  const result = { outcomes: [], skipped: [], warnings: [] };
+  const byPull = /* @__PURE__ */ new Map();
+  for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
+    const key2 = `${run.repository.toLowerCase()}#${run.pullNumber}`;
+    byPull.set(key2, [...byPull.get(key2) ?? [], run]);
+  }
+  let viewer = null;
+  const viewerLogin = () => {
+    viewer ??= options.client.get("/user").then(({ data }) => data.login?.toLowerCase() ?? null).catch(() => null);
+    return viewer;
+  };
+  for (const runs of byPull.values()) {
+    const first = runs[0];
+    const { repository, pullNumber } = first;
+    if (!allowed.has(repository.toLowerCase())) {
+      result.skipped.push({ repository, pullNumber, reason: "not in the allowlist" });
+      continue;
+    }
+    try {
+      const context2 = await readPull(options.client, repository, pullNumber, result.warnings);
+      for (const run of runs) {
+        result.outcomes.push(...await followRun(options, context2, run, viewerLogin));
+      }
+    } catch (error) {
+      result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
+    }
+  }
+  return result;
+}
+async function readPull(client, repository, pullNumber, warnings) {
+  const { data: pull } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
+  const replies = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/comments?per_page=100`, READ_LIMIT);
+  let states = null;
+  try {
+    states = await readStates(client, repository, pullNumber);
+  } catch (error) {
+    warnings.push(
+      `${repository}#${pullNumber}: could not read which threads are resolved (${error instanceof Error ? error.message.slice(0, 120) : String(error)}); resolution is unknown`
+    );
+  }
+  const sha = pull?.head?.sha;
+  return { repository, pullNumber, currentHead: typeof sha === "string" ? sha : null, replies, states, compares: /* @__PURE__ */ new Map() };
+}
+async function reviewIdsOf(options, run, viewerLogin) {
+  if (run.reviewIds.length > 0) return { ids: run.reviewIds, source: "audit" };
+  const login = await viewerLogin();
+  if (login === null || run.headRef === null) return { ids: [], source: "reviews-list" };
+  const reviews = await options.client.paginate(`/repos/${run.repository}/pulls/${run.pullNumber}/reviews?per_page=100`, READ_LIMIT);
+  const ids = reviews.filter((review2) => typeof review2.id === "number" && review2.user?.login?.toLowerCase() === login).filter((review2) => typeof review2.commit_id === "string" && sameHead(review2.commit_id, run.headRef)).map((review2) => review2.id);
+  return { ids, source: "reviews-list" };
+}
+function severityPrefix(finding) {
+  return `**${finding.severity}** - `;
+}
+function matchComments(findings, comments) {
+  const taken = /* @__PURE__ */ new Set();
+  const matched = /* @__PURE__ */ new Map();
+  for (const finding of findings) {
+    const words = significantWords(finding.text);
+    const candidates = comments.filter(
+      (comment) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line)
+    );
+    let best;
+    let bestScore = -1;
+    for (const comment of candidates) {
+      const body = comment.body ?? "";
+      const score2 = overlap(words, significantWords(body)) + (body.startsWith(severityPrefix(finding)) ? 0.01 : 0);
+      if (score2 > bestScore) {
+        best = comment;
+        bestScore = score2;
+      }
+    }
+    if (best !== void 0) {
+      taken.add(best.id);
+      matched.set(finding.findingId, best);
+    }
+  }
+  return matched;
+}
+async function followRun(options, context2, run, viewerLogin) {
+  const detail = runDetail(options.db, run.runId);
+  if (detail === null) return [];
+  const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
+  const comments = [];
+  for (const id of ids) {
+    comments.push(
+      ...await options.client.paginate(
+        `/repos/${run.repository}/pulls/${run.pullNumber}/reviews/${id}/comments?per_page=100`,
+        READ_LIMIT
+      )
+    );
+  }
+  const matched = matchComments(detail.findings, comments);
+  const checkedAt = (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+  const outcomes = [];
+  for (const finding of detail.findings) {
+    const comment = matched.get(finding.findingId);
+    if (comment === void 0) continue;
+    const decided = await decide2(options, context2, run, finding, comment);
+    const outcome = {
+      reviewRunId: run.runId,
+      findingId: finding.findingId,
+      repository: run.repository,
+      pullNumber: run.pullNumber,
+      commentId: comment.id,
+      ...decided,
+      evidence: source === "reviews-list" ? `${decided.evidence}; review found by commit and author` : decided.evidence,
+      checkedAt,
+      path: finding.path,
+      line: finding.line,
+      reviewIdSource: source
+    };
+    saveOutcome(options.db, outcome);
+    outcomes.push(outcome);
+  }
+  return outcomes;
+}
+async function linesChanged(options, context2, run, comment, finding) {
+  if (run.headRef === null || context2.currentHead === null) return null;
+  if (sameHead(run.headRef, context2.currentHead)) return false;
+  const key2 = run.headRef.toLowerCase();
+  let compare = context2.compares.get(key2);
+  if (compare === void 0) {
+    compare = options.client.paginateWrapped(`/repos/${run.repository}/compare/${run.headRef}...${context2.currentHead}?per_page=100`, "files", READ_LIMIT).catch(() => null);
+    context2.compares.set(key2, compare);
+  }
+  const files2 = await compare;
+  if (files2 === null) return null;
+  const file2 = files2.find((entry) => entry.filename === finding.path || entry.previous_filename === finding.path);
+  if (file2 === void 0) return false;
+  if (typeof file2.patch !== "string") return null;
+  const start = comment.start_line ?? comment.original_start_line ?? finding.line;
+  return patchTouches(file2.patch, Math.min(start, finding.line), finding.line);
+}
+async function decide2(options, context2, run, finding, comment) {
+  const dismissedByOwner = options.db.prepare(`SELECT 1 FROM feedback WHERE review_run_id = ? AND finding_id = ? AND action = 'dismiss'`).get(run.runId, finding.findingId);
+  if (dismissedByOwner !== void 0) {
+    return {
+      outcome: "dismissed",
+      strength: "strong",
+      evidence: "the owner recorded dismiss for this finding",
+      decidedBy: options.ownerReviewer ?? null
+    };
+  }
+  const poster = comment.user?.login?.toLowerCase();
+  const owner = options.ownerReviewer?.toLowerCase();
+  const classified = context2.replies.filter((reply) => reply.in_reply_to_id === comment.id && !isBot(reply.user)).map((reply) => ({
+    stance: classifyReply(reply.body ?? ""),
+    at: reply.created_at ?? "",
+    author: reply.user?.login ?? "unknown",
+    login: reply.user?.login ?? null
+  })).filter((answer2) => answer2.stance !== "other").sort((a, b) => a.at.localeCompare(b.at));
+  const ownerLatest = owner === void 0 ? void 0 : [...classified].reverse().find((answer2) => answer2.login?.toLowerCase() === owner);
+  if (ownerLatest?.stance === "reject") {
+    return { outcome: "dismissed", strength: "strong", evidence: `${ownerLatest.author} replied turning it down`, decidedBy: ownerLatest.login };
+  }
+  const answers = classified.filter((answer2) => answer2.login?.toLowerCase() !== poster);
+  const latest = answers[answers.length - 1];
+  if (latest?.stance === "reject") {
+    return { outcome: "dismissed", strength: "strong", evidence: `${latest.author} replied turning it down`, decidedBy: latest.login };
+  }
+  const state = context2.states?.get(comment.id) ?? null;
+  const changed = await linesChanged(options, context2, run, comment, finding) ?? (state?.outdated === true ? true : null);
+  const resolved = state === null ? null : state.resolved;
+  const agreed = latest?.stance === "acknowledge";
+  const patch = suggestedPatchOf(finding.suggestedPatch);
+  const offered = (comment.body ?? "").includes("\n```suggestion\n");
+  if (offered && patch !== null && patch.replacement !== "" && patch.replacement !== patch.original && context2.currentHead !== null && run.headRef !== null && !sameHead(run.headRef, context2.currentHead)) {
+    const [reviewed, current] = await Promise.all([
+      fileAtRef(options.client, run.repository, finding.path, run.headRef),
+      fileAtRef(options.client, run.repository, finding.path, context2.currentHead)
+    ]);
+    if (reviewed !== null && current !== null && suggestionApplied(reviewed, current, patch)) {
+      return { outcome: "fixed", strength: "strong", evidence: "suggestion applied", decidedBy: null };
+    }
+  }
+  if (changed === true && (resolved === true || agreed)) {
+    return {
+      outcome: "fixed",
+      strength: "strong",
+      evidence: `the anchored lines changed after the comment and ${resolved === true ? "the thread was resolved" : `${latest.author} agreed`}`,
+      decidedBy: null
+    };
+  }
+  if (resolved === true) {
+    return {
+      outcome: "resolved",
+      strength: "weak",
+      evidence: changed === false ? "the thread was resolved and the anchored lines are unchanged" : "the thread was resolved; whether the lines changed could not be read",
+      decidedBy: null
+    };
+  }
+  if (resolved === false && changed === true) {
+    return { outcome: "outdated", strength: "weak", evidence: "the anchored lines changed and the thread is still open", decidedBy: null };
+  }
+  if (resolved === false && changed === false) {
+    return {
+      outcome: "open",
+      strength: "weak",
+      evidence: agreed ? "agreed in reply, but the lines are unchanged and the thread is open" : "nothing has changed and the thread is open",
+      decidedBy: null
+    };
+  }
+  return { outcome: "unknown", strength: "weak", evidence: "the thread state or the later commits could not be read", decidedBy: null };
+}
+function saveOutcome(db, outcome) {
+  db.prepare(
+    `INSERT INTO finding_outcomes
+       (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at, decided_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (review_run_id, finding_id) DO UPDATE SET
+       repository = excluded.repository, pull_number = excluded.pull_number, comment_id = excluded.comment_id,
+       outcome = excluded.outcome, strength = excluded.strength, evidence = excluded.evidence, checked_at = excluded.checked_at,
+       decided_by = excluded.decided_by`
+  ).run(
+    outcome.reviewRunId,
+    outcome.findingId,
+    outcome.repository,
+    outcome.pullNumber,
+    outcome.commentId,
+    outcome.outcome,
+    outcome.strength,
+    outcome.evidence,
+    outcome.checkedAt,
+    // Only a strong dismissal names its decider; anything else is stored as null.
+    outcome.outcome === "dismissed" && outcome.strength === "strong" ? outcome.decidedBy ?? null : null
+  );
+}
+function statsOf(rows) {
+  const strong = rows.filter((row) => row.strength === "strong");
+  const fixed = strong.filter((row) => row.outcome === "fixed").length;
+  const dismissed = strong.filter((row) => row.outcome === "dismissed").length;
+  const decided = fixed + dismissed;
+  return {
+    tracked: rows.length,
+    fixed,
+    dismissed,
+    fixedRate: decided === 0 ? null : fixed / decided,
+    dismissedRate: decided === 0 ? null : dismissed / decided
+  };
+}
+function postedStats(db, { since } = {}) {
+  if (since === void 0) {
+    return statsOf(db.prepare("SELECT outcome, strength FROM finding_outcomes").all());
+  }
+  return statsOf(
+    db.prepare(
+      `SELECT o.outcome AS outcome, o.strength AS strength FROM finding_outcomes o
+         JOIN review_runs r ON r.review_run_id = o.review_run_id WHERE r.created_at >= ?`
+    ).all(since)
+  );
+}
+function postedBreakdown(db) {
+  const rows = db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all();
+  const findings = /* @__PURE__ */ new Map();
+  const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map(), rule: /* @__PURE__ */ new Map() };
+  for (const row of rows) {
+    let known = findings.get(row.review_run_id);
+    if (known === void 0) {
+      known = /* @__PURE__ */ new Map();
+      findings.set(row.review_run_id, known);
+      const stored = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(row.review_run_id);
+      try {
+        const parsed2 = JSON.parse(stored?.output_json ?? "{}");
+        for (const finding of parsed2.findings ?? []) {
+          const lane = typeof finding["lane"] === "string" ? finding["lane"] : "diff";
+          known.set(String(finding["findingId"]), {
+            severity: typeof finding["severity"] === "string" ? finding["severity"] : "unknown",
+            lane,
+            rule: typeof finding["ruleId"] === "string" && finding["ruleId"].length > 0 ? finding["ruleId"] : ruleIdFor(typeof finding["category"] === "string" ? finding["category"] : null, lane) ?? "unknown"
+          });
+        }
+      } catch {
+      }
+    }
+    const info = known.get(row.finding_id) ?? { severity: "unknown", lane: "diff", rule: "unknown" };
+    groups.severity.set(info.severity, [...groups.severity.get(info.severity) ?? [], row]);
+    groups.lane.set(info.lane, [...groups.lane.get(info.lane) ?? [], row]);
+    groups.rule.set(info.rule, [...groups.rule.get(info.rule) ?? [], row]);
+  }
+  const collect = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list2]) => [key2, statsOf(list2)]));
+  return { bySeverity: collect(groups.severity), byLane: collect(groups.lane), byRule: collect(groups.rule) };
 }
 
 // plugins/review-voice/src/evaluate/metrics.ts
@@ -18721,7 +18436,7 @@ async function postReview(options) {
 }
 
 // plugins/review-voice/src/watch/lock.ts
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { readFileSync as readFileSync8, realpathSync, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { connect, createServer } from "node:net";
 import { join as join10 } from "node:path";
@@ -18732,7 +18447,7 @@ function lockPort(dataDir) {
     path = realpathSync(dataDir);
   } catch {
   }
-  return 49152 + Number(createHash6("sha256").update(path).digest().readBigUInt64BE(0) % 16000n);
+  return 49152 + Number(createHash5("sha256").update(path).digest().readBigUInt64BE(0) % 16000n);
 }
 var answer = (dataDir) => `review-voice-watch ${process.pid} ${dataDir}
 `;
@@ -19476,46 +19191,6 @@ function retrievePrecedents(db, query) {
   const positive = scored.filter((p) => p.weight > 0).sort(rank2).slice(0, query.maxPositive);
   const negative = scored.filter((p) => p.weight < 0).sort(rank2).slice(0, query.maxNegative);
   return [...negative, ...positive];
-}
-
-// plugins/review-voice/src/sync/window.ts
-var QUICK_TARGET = 50;
-var QUICK_SINCE = "90d";
-function resolveSyncWindow(input, now = /* @__PURE__ */ new Date()) {
-  const since = input.since ?? (input.quick ? QUICK_SINCE : null);
-  let updatedSince;
-  if (since !== null) {
-    const days = /^(\d+)d$/.exec(since);
-    if (days === null || Number(days[1]) === 0) {
-      return { error: `--since ${JSON.stringify(since)} must be a number of days such as 90d.` };
-    }
-    updatedSince = new Date(now.getTime() - Number(days[1]) * 864e5).toISOString();
-  }
-  return { target: input.target ?? (input.quick ? QUICK_TARGET : null), updatedSince };
-}
-
-// plugins/review-voice/src/sync/watermark.ts
-function loadWatermarks(db, repository) {
-  const rows = db.prepare("SELECT pull_number, updated_at FROM sync_watermarks WHERE repository = ?").all(repository);
-  return new Map(rows.map((row) => [row.pull_number, row.updated_at]));
-}
-function saveWatermarks(db, marks) {
-  const upsert = db.prepare(
-    `INSERT INTO sync_watermarks (repository, pull_number, updated_at, processed_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT (repository, pull_number) DO UPDATE SET
-       updated_at = excluded.updated_at,
-       processed_at = excluded.processed_at`
-  );
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  db.exec("BEGIN");
-  try {
-    for (const mark of marks) upsert.run(mark.repository, mark.pullNumber, mark.updatedAt, now);
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
 }
 
 // plugins/review-voice/src/store/effort.ts
@@ -22744,6 +22419,44 @@ function postCheckCommand() {
   }
 }
 
+// plugins/review-voice/src/consent/plan.ts
+function buildConsentPlan(input) {
+  const pooled = input.reviewerLogins ?? [];
+  return {
+    ownerLogin: input.ownerLogin,
+    ...pooled.length > 1 ? { reviewerLogins: [...pooled] } : {},
+    repositories: [...input.repositories],
+    targetEvents: input.targetEvents,
+    dataCategories: [
+      "Inline pull-request review comments you or your teammates wrote",
+      "The diff hunk each comment was attached to",
+      "File path and line number for each comment",
+      "Pull request number, title and URL",
+      "Comment author login and their association with the repository"
+    ],
+    storageLocation: input.storageLocation,
+    retention: [
+      "Secrets are removed before anything is written; the original text is never stored",
+      "Redacted text is kept until you purge it",
+      "Comments from bots and from outside contributors are not stored at all",
+      "Nothing is uploaded anywhere; the store never leaves this machine"
+    ],
+    writeOperations: "none"
+  };
+}
+async function discoverRepositories(client, limit = 100) {
+  const repos = await client.paginate(
+    "/user/repos?affiliation=owner,collaborator&sort=pushed&per_page=100",
+    limit
+  );
+  return repos.map((repo) => ({
+    fullName: repo.full_name,
+    private: repo.private,
+    archived: repo.archived,
+    pushedAt: repo.pushed_at
+  }));
+}
+
 // plugins/review-voice/src/cli/discover.ts
 async function discoverCommand() {
   const client = new GitHubClient({ allowlist: [] });
@@ -25787,7 +25500,418 @@ function symbolsCommand(argv) {
   }
 }
 
-// plugins/review-voice/src/cli.ts
+// plugins/review-voice/src/cli/plan.ts
+function planCommand(argv) {
+  const filesPath = flag(argv, "--files");
+  const diffPath = flag(argv, "--diff-file");
+  const modeFlag = flag(argv, "--mode");
+  const requested = MODES.find((mode) => mode === modeFlag);
+  if (filesPath === null || diffPath === null || argv.includes("--mode") && requested === void 0) {
+    console.error("Usage: plan --files <files.json> --diff-file <diff.patch> [--mode fast|standard|thorough|auto]");
+    return 2;
+  }
+  const input = readFilesAndDiff(filesPath, diffPath);
+  if (input === null) return 2;
+  const { manifest, changed, diffText, generated } = input;
+  const config2 = repositoryConfig();
+  for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
+  const change = productionChange(changed, diffText, config2?.humanReview, generated);
+  const complexity = asLevel(manifest["complexity"]);
+  const plan = resolvePlan({
+    requested: requested ?? config2?.costMode.mode ?? "auto",
+    models: config2?.costMode.models ?? {},
+    ...change,
+    complexity,
+    removedControls: structureEntries(manifest["structure"], "removedControls"),
+    secondPassConfigured: config2?.verification.enabled ?? false
+  });
+  console.log(JSON.stringify(plan, null, 2));
+  return 0;
+}
+function lanesCommand(argv) {
+  const filesPath = flag(argv, "--files");
+  const diffPath = flag(argv, "--diff-file");
+  if (filesPath === null || diffPath === null) {
+    console.error("Usage: lanes --files <files.json> --diff-file <diff.patch>");
+    return 2;
+  }
+  const input = readFilesAndDiff(filesPath, diffPath);
+  if (input === null) return 2;
+  const config2 = repositoryConfig();
+  for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
+  const lanes2 = eligibleLanes(config2?.lanes ?? [DIFF_LANE], input.changed, input.diffText, {
+    humanReview: config2?.humanReview,
+    markedGenerated: input.generated,
+    structure: input.manifest["structure"]
+  });
+  console.log(JSON.stringify(lanes2, null, 2));
+  return 0;
+}
+function structureEntries(structure, key2) {
+  if (typeof structure !== "object" || structure === null) return 0;
+  const entries = structure[key2];
+  return Array.isArray(entries) ? entries.length : 0;
+}
+function asLevel(value) {
+  return typeof value === "object" && value !== null && value.level === "high" ? "high" : "normal";
+}
+
+// plugins/review-voice/src/cli/verdict.ts
+function reviewTarget(argv, command) {
+  const pullNumber = Number(flag(argv, "--pr"));
+  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
+  const head = flag(argv, "--head");
+  if (!Number.isInteger(pullNumber) || pullNumber < 1 || repository === null || head === null) {
+    return `${command} needs --pr <number>, --head <sha> and --repository <owner/repo>, with the validated review on stdin.`;
+  }
+  const review2 = readStdin();
+  if (review2.trim().length === 0) return "Nothing on stdin. Pipe the validated review in.";
+  return { repository, pullNumber, head, review: review2, runId: flag(argv, "--run") ?? void 0 };
+}
+async function verdictCommand(argv) {
+  const target = reviewTarget(argv, "verdict");
+  if (typeof target === "string") {
+    console.error(target);
+    return 2;
+  }
+  const config2 = repositoryConfig();
+  const db = openDatabase();
+  try {
+    const { exitCode, output } = await computeVerdict({
+      ...target,
+      db,
+      client: githubClient([target.repository]),
+      recheck: argv.includes("--recheck"),
+      gateChecks: config2?.ciGateChecks ?? [],
+      ciRules: config2?.ciRules ?? {},
+      owner: config2?.ownerReviewer ?? null,
+      policy: config2?.verdictPolicy
+    });
+    console.log(JSON.stringify(output, null, 2));
+    return exitCode;
+  } finally {
+    db.close();
+  }
+}
+async function postCommand(argv) {
+  const target = reviewTarget(argv, "post");
+  if (typeof target === "string") {
+    console.error(target);
+    return 2;
+  }
+  const config2 = repositoryConfig();
+  const db = openDatabase();
+  try {
+    const { exitCode, output } = await postReview({
+      ...target,
+      db,
+      client: githubClient([target.repository]),
+      // Built from the recorded run's repository, not from --repository.
+      writerFor: (allowlist) => new ReviewWriter({ allowlist, ...inProcessState()?.fetchImpl === void 0 ? {} : { fetchImpl: inProcessState().fetchImpl } }),
+      confirm: argv.includes("--confirm"),
+      event: flag(argv, "--event")?.toUpperCase(),
+      postingEnabled: config2?.postingEnabled ?? false,
+      gateChecks: config2?.ciGateChecks ?? [],
+      ciRules: config2?.ciRules ?? {},
+      owner: config2?.ownerReviewer ?? null,
+      policy: config2?.verdictPolicy,
+      recheckThread: argv.includes("--recheck-thread")
+    });
+    console.log(JSON.stringify(output, null, 2));
+    return exitCode;
+  } finally {
+    db.close();
+  }
+}
+
+// plugins/review-voice/src/github/roles.ts
+var BOT_HINTS = [
+  /\[bot\]$/i,
+  /^(dependabot|renovate|greenkeeper|snyk|codecov|coveralls|sonarcloud|sonarqube|github-actions|copilot|mergify|allcontributors|imgbot|semantic-release|stale|codeclimate|deepsource|reviewpad|restyled)/i,
+  /-bot$/i,
+  /^bot-/i
+];
+function isBot2(login, accountType) {
+  if (accountType !== void 0 && accountType.toLowerCase() === "bot") return true;
+  return BOT_HINTS.some((pattern) => pattern.test(login));
+}
+function classifyReviewer(input) {
+  if (isBot2(input.login, input.accountType)) return "bot";
+  const login = input.login.toLowerCase();
+  if (login === input.ownerLogin.toLowerCase()) return "owner";
+  if ((input.reviewerLogins ?? []).some((reviewer) => reviewer.toLowerCase() === login)) return "owner";
+  const team = (input.teamLogins ?? []).map((login2) => login2.toLowerCase());
+  if (team.includes(input.login.toLowerCase())) return "team";
+  const association = (input.authorAssociation ?? "").toUpperCase();
+  if (association === "OWNER" || association === "MEMBER" || association === "COLLABORATOR") {
+    return "team";
+  }
+  return "external";
+}
+
+// plugins/review-voice/src/corpus/eligibility.ts
+var APPROVAL_PHRASES = /\b(lgtm|looks good(?: to me)?|ship it|approv(?:ed|ing|al)|sgtm|ack(?:nowledged)?|thanks|thank you|ty|nice work|nice one|great|\+1|done|no comments?|nothing from me|all good|fine by me)\b/gi;
+var DECORATION = /[\s.!?,;:\u2013\u2014-]|👍|🚀|✅|🎉|💯|🙏|😄/gu;
+var AUTOMATION_STATUS = [
+  /\bcodecov\b.*\breport\b/i,
+  /\bdeploy(ed|ment) (preview|succeeded|failed)\b/i,
+  /\bbuild (succeeded|failed)\b/i
+];
+var STRUCTURE_LINE = /^\s*(?:-\s*\[[ x]\]\s|#{1,3}\s|\|.*\||-{3,}\s*$)/i;
+var TEMPLATE_HEADING = /^\s*#{1,3}\s*(description|checklist|type of change|how has this been tested)/im;
+function isTemplate(body) {
+  const lines2 = body.split("\n").filter((line3) => line3.trim().length > 0);
+  if (lines2.length === 0) return true;
+  const structural = lines2.filter((line3) => STRUCTURE_LINE.test(line3)).length;
+  const structureRatio = structural / lines2.length;
+  if (TEMPLATE_HEADING.test(body) && structureRatio >= 0.4) return true;
+  return structureRatio >= 0.6;
+}
+var SELF_GENERATED = /^\s*\[(blocking|important|minor|nit|question)\]\s+`[^`]+:\d+`\s+-\s/im;
+var GENERATED_PATH = [
+  /(^|\/)(dist|build|out|coverage|node_modules|vendor|third_party)\//,
+  /\.min\.(js|css)$/,
+  /(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|go\.sum)$/
+];
+function ineligibleReason(input) {
+  if (input.role === "bot") return "bot";
+  if (input.role === "external") return "external_reviewer";
+  const body = input.body.trim();
+  if (body.length === 0) return "too_short";
+  if (SELF_GENERATED.test(body)) return "self_generated";
+  const substantive = body.replace(APPROVAL_PHRASES, "").replace(DECORATION, "");
+  if (substantive.length < 15) return "approval_only";
+  if (body.length < 15) return "too_short";
+  if (AUTOMATION_STATUS.some((pattern) => pattern.test(body))) return "template_or_status";
+  if (isTemplate(body)) return "template_or_status";
+  const filePath = input.filePath;
+  if (filePath !== void 0 && GENERATED_PATH.some((pattern) => pattern.test(filePath))) {
+    return "generated_file";
+  }
+  if (!input.hasCodeContext && filePath !== void 0) return "no_code_context";
+  return null;
+}
+
+// plugins/review-voice/src/corpus/dedup.ts
+import { createHash as createHash6 } from "node:crypto";
+function contentKey(parts) {
+  const normalised = parts.body.replace(/\s+/g, " ").trim().toLowerCase();
+  const SEPARATOR = String.fromCharCode(31);
+  return createHash6("sha256").update(
+    [
+      parts.repository.toLowerCase(),
+      parts.reviewerLogin.toLowerCase(),
+      parts.filePath ?? "",
+      String(parts.lineStart ?? ""),
+      normalised
+    ].join(SEPARATOR)
+  ).digest("hex").slice(0, 32);
+}
+
+// plugins/review-voice/src/corpus/outcome.ts
+function inferOutcome(signals) {
+  if (signals.reply === "reject") return { status: "dismissed", certainty: "strong" };
+  if (signals.changed && (signals.resolved === true || signals.reply === "acknowledge")) {
+    return { status: "accepted", certainty: "strong" };
+  }
+  if (signals.changed || signals.resolved === true || signals.reply === "acknowledge") {
+    return { status: "accepted", certainty: "weak" };
+  }
+  return { status: "unknown", certainty: "weak" };
+}
+
+// plugins/review-voice/src/corpus/collect.ts
+async function collectRepository(client, options, stats) {
+  const pulls = await client.paginate(
+    `/repos/${options.repository}/pulls?state=all&sort=updated&direction=desc&per_page=50`,
+    options.maxPullRequests
+  );
+  const events = [];
+  const seenKeys = /* @__PURE__ */ new Set();
+  const watermarks = [];
+  for (const pull of pulls) {
+    if (options.updatedSince !== void 0 && pull.updated_at < options.updatedSince) continue;
+    if (!options.includeForks && pull.head?.repo?.fork === true) continue;
+    if (options.watermarks?.get(pull.number) === pull.updated_at) {
+      stats.pullRequestsUnchanged += 1;
+      continue;
+    }
+    stats.pullRequestsScanned += 1;
+    watermarks.push({ pullNumber: pull.number, updatedAt: pull.updated_at });
+    const comments = await client.paginate(
+      `/repos/${options.repository}/pulls/${pull.number}/comments?per_page=100`,
+      options.maxCommentsPerPull
+    );
+    const ingest = (raw) => {
+      stats.commentsSeen += 1;
+      if (raw.login === void 0 || raw.body.length === 0) return;
+      const role = classifyReviewer({
+        login: raw.login,
+        accountType: raw.accountType,
+        ownerLogin: options.ownerLogin,
+        reviewerLogins: options.reviewerLogins,
+        teamLogins: options.teamLogins,
+        authorAssociation: raw.association
+      });
+      const reason2 = ineligibleReason({
+        body: raw.body,
+        role,
+        filePath: raw.filePath,
+        hasCodeContext: (raw.diffHunk ?? "").length > 0
+      });
+      if (reason2 !== null) {
+        stats.excluded[reason2] = (stats.excluded[reason2] ?? 0) + 1;
+        return;
+      }
+      const key2 = contentKey({
+        repository: options.repository,
+        reviewerLogin: raw.login,
+        body: raw.body,
+        filePath: raw.filePath,
+        lineStart: raw.line
+      });
+      if (seenKeys.has(key2)) {
+        stats.duplicates += 1;
+        return;
+      }
+      seenKeys.add(key2);
+      const redactedBody = redact(raw.body);
+      const redactedHunk = raw.diffHunk === void 0 ? void 0 : redact(raw.diffHunk);
+      events.push({
+        eventId: `${raw.idPrefix}${raw.id}`,
+        source: "github",
+        repository: options.repository,
+        pullNumber: pull.number,
+        pullRequestUrl: pull.html_url,
+        commentId: String(raw.id),
+        reviewerLogin: raw.login,
+        role,
+        createdAt: raw.createdAt ?? pull.updated_at,
+        bodyRedacted: redactedBody.text,
+        filePath: raw.filePath,
+        lineStart: raw.line,
+        diffHunkRedacted: redactedHunk?.text,
+        contentKey: key2,
+        redactionVersion: REDACTION_VERSION,
+        redactionCounts: {
+          ...redactedBody.counts,
+          ...redactedHunk === void 0 ? {} : redactedHunk.counts
+        },
+        outcome: raw.outcome
+      });
+      stats.eligible += 1;
+    };
+    const outcomeOf = (comment) => {
+      if (comment.in_reply_to_id != null) return void 0;
+      const poster = comment.user?.login?.toLowerCase();
+      const stances = comments.filter(
+        (reply) => reply.in_reply_to_id === comment.id && reply.user?.login !== void 0 && !isBot2(reply.user.login, reply.user.type) && reply.user.login.toLowerCase() !== poster
+      ).sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? "")).map((reply) => classifyReply(reply.body ?? "")).filter((stance) => stance !== "other");
+      return inferOutcome({
+        reply: stances.at(-1) ?? null,
+        // Thread resolution is GraphQL-only, and collection does not read it.
+        resolved: null,
+        // GitHub nulls `line` once a later commit in the pull request changes the anchored lines.
+        changed: comment.line === null && typeof comment.original_line === "number"
+      });
+    };
+    for (const comment of comments) {
+      stats.bySource.inline += 1;
+      ingest({
+        id: comment.id,
+        body: comment.body ?? "",
+        login: comment.user?.login,
+        accountType: comment.user?.type,
+        association: comment.author_association,
+        createdAt: comment.created_at,
+        filePath: comment.path,
+        line: comment.line ?? comment.original_line ?? void 0,
+        diffHunk: comment.diff_hunk,
+        idPrefix: "ghc_",
+        outcome: outcomeOf(comment)
+      });
+    }
+    const reviews = await client.paginate(
+      `/repos/${options.repository}/pulls/${pull.number}/reviews?per_page=100`,
+      options.maxCommentsPerPull
+    );
+    for (const review2 of reviews) {
+      const body = review2.body ?? "";
+      if (body.length === 0) continue;
+      stats.bySource.reviewSummary += 1;
+      ingest({
+        id: review2.id,
+        body,
+        login: review2.user?.login,
+        accountType: review2.user?.type,
+        association: review2.author_association,
+        createdAt: review2.submitted_at,
+        idPrefix: "ghr_"
+      });
+    }
+    if (options.includeConversationComments) {
+      const conversation = await client.paginate(
+        `/repos/${options.repository}/issues/${pull.number}/comments?per_page=100`,
+        options.maxCommentsPerPull
+      );
+      for (const comment of conversation) {
+        stats.bySource.conversation += 1;
+        ingest({
+          id: comment.id,
+          body: comment.body ?? "",
+          login: comment.user?.login,
+          accountType: comment.user?.type,
+          association: comment.author_association,
+          createdAt: comment.created_at,
+          idPrefix: "ghi_"
+        });
+      }
+    }
+  }
+  return { events, watermarks };
+}
+
+// plugins/review-voice/src/sync/window.ts
+var QUICK_TARGET = 50;
+var QUICK_SINCE = "90d";
+function resolveSyncWindow(input, now = /* @__PURE__ */ new Date()) {
+  const since = input.since ?? (input.quick ? QUICK_SINCE : null);
+  let updatedSince;
+  if (since !== null) {
+    const days = /^(\d+)d$/.exec(since);
+    if (days === null || Number(days[1]) === 0) {
+      return { error: `--since ${JSON.stringify(since)} must be a number of days such as 90d.` };
+    }
+    updatedSince = new Date(now.getTime() - Number(days[1]) * 864e5).toISOString();
+  }
+  return { target: input.target ?? (input.quick ? QUICK_TARGET : null), updatedSince };
+}
+
+// plugins/review-voice/src/sync/watermark.ts
+function loadWatermarks(db, repository) {
+  const rows = db.prepare("SELECT pull_number, updated_at FROM sync_watermarks WHERE repository = ?").all(repository);
+  return new Map(rows.map((row) => [row.pull_number, row.updated_at]));
+}
+function saveWatermarks(db, marks) {
+  const upsert = db.prepare(
+    `INSERT INTO sync_watermarks (repository, pull_number, updated_at, processed_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT (repository, pull_number) DO UPDATE SET
+       updated_at = excluded.updated_at,
+       processed_at = excluded.processed_at`
+  );
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  db.exec("BEGIN");
+  try {
+    for (const mark of marks) upsert.run(mark.repository, mark.pullNumber, mark.updatedAt, now);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+// plugins/review-voice/src/cli/sync.ts
 function namedRepositories(entries, command) {
   return entries.filter((entry) => {
     if (!entry.includes("*")) return true;
@@ -25934,126 +26058,8 @@ async function syncCommand(argv) {
     db.close();
   }
 }
-function reviewTarget(argv, command) {
-  const pullNumber = Number(flag(argv, "--pr"));
-  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
-  const head = flag(argv, "--head");
-  if (!Number.isInteger(pullNumber) || pullNumber < 1 || repository === null || head === null) {
-    return `${command} needs --pr <number>, --head <sha> and --repository <owner/repo>, with the validated review on stdin.`;
-  }
-  const review2 = readStdin();
-  if (review2.trim().length === 0) return "Nothing on stdin. Pipe the validated review in.";
-  return { repository, pullNumber, head, review: review2, runId: flag(argv, "--run") ?? void 0 };
-}
-function planCommand(argv) {
-  const filesPath = flag(argv, "--files");
-  const diffPath = flag(argv, "--diff-file");
-  const modeFlag = flag(argv, "--mode");
-  const requested = MODES.find((mode) => mode === modeFlag);
-  if (filesPath === null || diffPath === null || argv.includes("--mode") && requested === void 0) {
-    console.error("Usage: plan --files <files.json> --diff-file <diff.patch> [--mode fast|standard|thorough|auto]");
-    return 2;
-  }
-  const input = readFilesAndDiff(filesPath, diffPath);
-  if (input === null) return 2;
-  const { manifest, changed, diffText, generated } = input;
-  const config2 = repositoryConfig();
-  for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
-  const change = productionChange(changed, diffText, config2?.humanReview, generated);
-  const complexity = asLevel(manifest["complexity"]);
-  const plan = resolvePlan({
-    requested: requested ?? config2?.costMode.mode ?? "auto",
-    models: config2?.costMode.models ?? {},
-    ...change,
-    complexity,
-    removedControls: structureEntries(manifest["structure"], "removedControls"),
-    secondPassConfigured: config2?.verification.enabled ?? false
-  });
-  console.log(JSON.stringify(plan, null, 2));
-  return 0;
-}
-function lanesCommand(argv) {
-  const filesPath = flag(argv, "--files");
-  const diffPath = flag(argv, "--diff-file");
-  if (filesPath === null || diffPath === null) {
-    console.error("Usage: lanes --files <files.json> --diff-file <diff.patch>");
-    return 2;
-  }
-  const input = readFilesAndDiff(filesPath, diffPath);
-  if (input === null) return 2;
-  const config2 = repositoryConfig();
-  for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
-  const lanes2 = eligibleLanes(config2?.lanes ?? [DIFF_LANE], input.changed, input.diffText, {
-    humanReview: config2?.humanReview,
-    markedGenerated: input.generated,
-    structure: input.manifest["structure"]
-  });
-  console.log(JSON.stringify(lanes2, null, 2));
-  return 0;
-}
-function structureEntries(structure, key2) {
-  if (typeof structure !== "object" || structure === null) return 0;
-  const entries = structure[key2];
-  return Array.isArray(entries) ? entries.length : 0;
-}
-function asLevel(value) {
-  return typeof value === "object" && value !== null && value.level === "high" ? "high" : "normal";
-}
-async function verdictCommand(argv) {
-  const target = reviewTarget(argv, "verdict");
-  if (typeof target === "string") {
-    console.error(target);
-    return 2;
-  }
-  const config2 = repositoryConfig();
-  const db = openDatabase();
-  try {
-    const { exitCode, output } = await computeVerdict({
-      ...target,
-      db,
-      client: githubClient([target.repository]),
-      recheck: argv.includes("--recheck"),
-      gateChecks: config2?.ciGateChecks ?? [],
-      ciRules: config2?.ciRules ?? {},
-      owner: config2?.ownerReviewer ?? null,
-      policy: config2?.verdictPolicy
-    });
-    console.log(JSON.stringify(output, null, 2));
-    return exitCode;
-  } finally {
-    db.close();
-  }
-}
-async function postCommand(argv) {
-  const target = reviewTarget(argv, "post");
-  if (typeof target === "string") {
-    console.error(target);
-    return 2;
-  }
-  const config2 = repositoryConfig();
-  const db = openDatabase();
-  try {
-    const { exitCode, output } = await postReview({
-      ...target,
-      db,
-      client: githubClient([target.repository]),
-      // Built from the recorded run's repository, not from --repository.
-      writerFor: (allowlist) => new ReviewWriter({ allowlist, ...inProcessState()?.fetchImpl === void 0 ? {} : { fetchImpl: inProcessState().fetchImpl } }),
-      confirm: argv.includes("--confirm"),
-      event: flag(argv, "--event")?.toUpperCase(),
-      postingEnabled: config2?.postingEnabled ?? false,
-      gateChecks: config2?.ciGateChecks ?? [],
-      ciRules: config2?.ciRules ?? {},
-      owner: config2?.ownerReviewer ?? null,
-      policy: config2?.verdictPolicy,
-      recheckThread: argv.includes("--recheck-thread")
-    });
-    console.log(JSON.stringify(output, null, 2));
-    return exitCode;
-  } finally {
-    db.close();
-  }
-}
+
+// plugins/review-voice/src/cli/outcomes.ts
 async function outcomesCommand(argv) {
   const repository = flag(argv, "--repository");
   if (argv.includes("--repository") && (repository === null || !/^[^/\s]+\/[^/\s]+$/.test(repository))) {
@@ -26124,6 +26130,8 @@ async function outcomesCommand(argv) {
     db.close();
   }
 }
+
+// plugins/review-voice/src/cli.ts
 function withSnakeCaseId(entry) {
   if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
   const out = {};
