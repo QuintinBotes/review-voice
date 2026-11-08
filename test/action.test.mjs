@@ -9,13 +9,22 @@ const steps = action.runs.steps;
 
 test('declares the inputs with their defaults', () => {
   const { inputs } = action;
-  for (const name of ['mode', 'post', 'anthropic-api-key', 'github-token', 'claude-code-version', 'config']) {
+  for (const name of ['mode', 'post', 'anthropic-api-key', 'github-token', 'claude-code-version', 'config', 'fail-open']) {
     assert.ok(inputs[name], name);
   }
   assert.equal(inputs.mode.default, 'auto');
   assert.equal(String(inputs.post.default), 'false');
+  assert.equal(String(inputs['fail-open'].default), 'false', 'a review that could not run fails the job unless the workflow opts in');
   assert.equal(inputs.config.default, '.review-voice/config.yaml');
   assert.match(inputs['claude-code-version'].default, /^\d+\.\d+\.\d+$/);
+});
+
+// The GitHub Marketplace lists an action by its name, description and branding.
+test('carries the metadata the GitHub Marketplace lists', () => {
+  assert.equal(action.name, 'Review Voice');
+  assert.ok(action.description.length > 0 && action.description.length <= 125, 'the Marketplace shows up to 125 characters');
+  assert.match(action.branding.icon, /^[a-z-]+$/);
+  assert.ok(['white', 'black', 'yellow', 'blue', 'green', 'orange', 'red', 'purple', 'gray-dark'].includes(action.branding.color));
 });
 
 test('every third-party action is pinned by a 40-hex SHA', () => {
