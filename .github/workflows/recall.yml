@@ -1,0 +1,74 @@
+name: Recall
+
+# Scores key-bug recall, causal-line hit and clean-fixture silence over the
+# fixture suite with real agents (S04, #273), so a recall regression shows up
+# between releases. It spends API credit, so it runs weekly and on demand,
+# never on a pull request. The harness posts nothing, runs no repository
+# command and uses a temporary store.
+on:
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Review mode for every fixture (auto, fast, standard or thorough)
+        default: auto
+
+permissions: {}
+
+jobs:
+  recall:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Claude Code
+        # The agent runner's CLI, pinned like the action's default.
+        run: npm install -g @anthropic-ai/claude-code@2.1.319
+
+      - name: Run recall
+        id: recall
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODE: ${{ inputs.mode || 'auto' }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "Recall skipped: the repository has no ANTHROPIC_API_KEY secret." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          case "$MODE" in auto | fast | standard | thorough) ;; *) echo "::error::mode must be auto, fast, standard or thorough"; exit 2 ;; esac
+          set +e
+          node plugins/review-voice/dist/review-voice.mjs recall --fixtures fixtures --runner claude --mode "$MODE" --out recall.json
+          code=$?
+          set -e
+          if [ -f recall.json ]; then
+            {
+              echo "## Recall ($MODE)"
+              echo
+              echo '```'
+              node plugins/review-voice/dist/review-voice.mjs evaluate --recall recall.json || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Exit 1 means a fixture's run failed; the results are still written and uploaded.
+          exit "$code"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: recall-results
+          path: recall.json
+          if-no-files-found: ignore

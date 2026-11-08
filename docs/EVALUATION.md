@@ -490,6 +490,13 @@ The command never posts, never runs the repository's configured commands
 (`REVIEW_VOICE_NO_COMMANDS=1`) and never writes to the operator's data
 directory: it records into one temporary directory, removed unless `--keep`.
 
+The `Recall` workflow (`.github/workflows/recall.yml`) runs it weekly, on Monday
+at 04:00 UTC, and on demand with a `mode` input, using the repository's
+`ANTHROPIC_API_KEY` secret. It writes the figures to the job summary and
+uploads `recall.json` as the `recall-results` artifact, also when a fixture's
+run failed, and it skips with a summary line when the secret is absent. It
+never runs on a pull request, since it spends API credit.
+
 One pass per fixture is a noisy sample. Candidate-set agreement between two
 runs over the same diff has measured 0.25 to 0.60, so a single figure moves
 between runs with no change to the plugin, and a difference of one fixture is
