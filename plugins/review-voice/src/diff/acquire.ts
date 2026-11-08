@@ -171,9 +171,10 @@ const STATUS: Record<string, ChangedFile['status']> = {
 };
 
 // Parsers consume these patches, so their shape cannot depend on a user's git
-// configuration or an external diff driver. Metadata queries stay untouched:
-// they do not produce patch text for a parser to read.
-const PATCH_OPTIONS = ['--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/'];
+// configuration or an external diff driver; the context size is fixed too,
+// since diff.context would otherwise move hunk boundaries (#251). Metadata
+// queries stay untouched: they do not produce patch text for a parser to read.
+const PATCH_OPTIONS = ['--no-ext-diff', '--no-color', '--unified=3', '--src-prefix=a/', '--dst-prefix=b/'];
 
 /** Parse `git diff --name-status -z`, which is NUL-delimited to survive odd paths. */
 function parseNameStatus(raw: string): { status: string; path: string; previousPath?: string }[] {

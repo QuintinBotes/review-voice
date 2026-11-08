@@ -339,7 +339,7 @@ const systemGit: IncrementalGit = {
   },
   diffText(from, to, paths, cwd) {
     return runGit(
-      ['diff', '--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', from, to, '--', ...topPathspecs(paths)],
+      ['diff', '--no-ext-diff', '--no-color', '--unified=3', '--src-prefix=a/', '--dst-prefix=b/', from, to, '--', ...topPathspecs(paths)],
       cwd,
     );
   },
