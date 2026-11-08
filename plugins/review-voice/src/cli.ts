@@ -2839,23 +2839,40 @@ function reconcileCommand(argv: string[]): number {
   }
 }
 
-function evidenceCommand(): number {
+function evidenceCommand(argv: string[]): number {
+  // The configuration names the commands and comes from this checkout or
+  // REVIEW_VOICE_CONFIG; --cwd is only where they run. So a review of a pull
+  // request runs the checks on the head tree without ever reading the head's
+  // own config (issue 262, ADR 0003).
+  const cwdFlag = flag(argv, '--cwd');
+  if (argv.includes('--cwd') && cwdFlag === null) {
+    console.error('--cwd needs a directory.');
+    return 2;
+  }
+  if (cwdFlag !== null && statSync(resolve(cwdFlag), { throwIfNoEntry: false })?.isDirectory() !== true) {
+    console.error(`--cwd ${cwdFlag} is not a directory.`);
+    return 2;
+  }
   try {
     const root = repositoryRoot(process.cwd());
     const config = loadConfig(root);
+    const cwd = cwdFlag === null ? root : resolve(cwdFlag);
     // The driver already refuses to call this under the switch; refusing here
     // too means a caller outside the driver cannot run repository commands by
-    // accident. The report still names what was skipped.
-    const report =
+    // accident. The report still names what was skipped. The directory is
+    // recorded only when something ran there; a report in which nothing ran,
+    // switched off or with no command, is what it always was.
+    const collected =
       process.env['REVIEW_VOICE_NO_COMMANDS'] === '1'
         ? notRunReport(
             config.staticEvidence.commands.map((command) => command.name),
             'REVIEW_VOICE_NO_COMMANDS',
           )
         : collectEvidence(config.staticEvidence.commands, {
-            cwd: root,
+            cwd,
             enabled: config.staticEvidence.enabled,
           });
+    const report = collected.enabled ? { ...collected, cwd } : collected;
     console.log(JSON.stringify(report, null, 2));
     // A failing check is evidence, not an error in collecting it.
     return 0;
@@ -4857,15 +4874,20 @@ function readSignals(file: string, root: string): EvidenceSignal[] {
   const signals = (document as { signals?: unknown }).signals;
   if (signals === undefined) return [];
   if (!Array.isArray(signals)) throw new Error('signals is not a list');
+  // The commands may have run in another tree than this one, the pull
+  // request's head worktree under the driver, so an absolute path a tool
+  // printed is relative to where it ran, which the report records as cwd.
+  const ranIn = (document as { cwd?: unknown }).cwd;
+  const signalRoot = typeof ranIn === 'string' && ranIn !== '' ? ranIn : root;
   return signals.flatMap((entry): EvidenceSignal[] => {
     const s = entry as Partial<EvidenceSignal> | null;
     if (typeof s !== 'object' || s === null || typeof s.path !== 'string' || typeof s.line !== 'number' || typeof s.claim !== 'string') return [];
     // Some tools print absolute paths; a candidate names a repository-relative
     // one. The two must compare as the same file, through whatever links sit
-    // above them, and a path outside the repository names nothing a candidate
-    // could be about.
+    // above them, and a path outside the tree the tool ran in names nothing a
+    // candidate could be about.
     const spelled = s.path.split('\\').join('/');
-    const path = isAbsolute(spelled) ? relative(realExistingPath(root), realExistingPath(spelled)) : posix.normalize(spelled).replace(/^\.\//, '');
+    const path = isAbsolute(spelled) ? relative(realExistingPath(signalRoot), realExistingPath(spelled)) : posix.normalize(spelled).replace(/^\.\//, '');
     if (path === '' || path === '.' || path.startsWith('..') || isAbsolute(path)) return [];
     return [
       {
@@ -5687,7 +5709,7 @@ async function dispatch(argv: string[]): Promise<number> {
       return conventionsCommand(argv.slice(1));
 
     case 'evidence':
-      return evidenceCommand();
+      return evidenceCommand(argv.slice(1));
 
     case 'reconcile':
       return reconcileCommand(argv.slice(1));

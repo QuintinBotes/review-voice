@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, writeFileSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -177,6 +177,44 @@ test('the adapter is chosen from the user’s own name for the check', () => {
     assert.equal(command.signals.length, 1);
     assert.match(command.signals[0].claim, /CS0103/);
     assert.equal(command.signals[0].tool, 'dotnet-build');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('--cwd runs this checkout\'s configured commands in another directory, never that directory\'s configuration', () => {
+  const here = repoWith({ enabled: true, commands: [{ name: 'present', run: 'test -f here' }] });
+  const there = repoWith({ enabled: true, commands: [{ name: 'planted', run: 'touch should-not-run' }] });
+  try {
+    writeFileSync(join(there, 'here'), '');
+    const alone = evidence(here);
+    assert.equal(alone.commands[0].exitCode, 1, 'the file is not in this checkout');
+    assert.equal(realpathSync(alone.cwd), realpathSync(here));
+    const report = JSON.parse(execFileSync(process.execPath, [bundle, 'evidence', '--cwd', there], { cwd: here, encoding: 'utf8' }));
+    assert.deepEqual(report.commands.map((command) => command.name), ['present'], 'the commands are this checkout\'s');
+    assert.equal(report.commands[0].exitCode, 0, 'and they ran where --cwd said');
+    assert.equal(report.cwd, there);
+    assert.equal(existsSync(join(here, 'should-not-run')), false);
+    assert.equal(existsSync(join(there, 'should-not-run')), false);
+    // A report in which nothing ran records no directory, with or without the flag.
+    writeFileSync(join(here, '.review-voice/config.yaml'), JSON.stringify({ static_evidence: { enabled: false, commands: [{ name: 'present', run: 'test -f here' }] } }));
+    const off = JSON.parse(execFileSync(process.execPath, [bundle, 'evidence', '--cwd', there], { cwd: here, encoding: 'utf8' }));
+    assert.deepEqual(off, { enabled: false, signals: [], commands: [], didNotRun: ['present'] });
+  } finally {
+    rmSync(here, { recursive: true, force: true });
+    rmSync(there, { recursive: true, force: true });
+  }
+});
+
+test('--cwd needs an existing directory, and the help names the flag', () => {
+  const dir = repoWith({ enabled: true, commands: [] });
+  try {
+    for (const args of [['--cwd'], ['--cwd', join(dir, 'missing')]]) {
+      const run = spawnSync(process.execPath, [bundle, 'evidence', ...args], { cwd: dir, encoding: 'utf8' });
+      assert.equal(run.status, 2, run.stdout);
+      assert.match(run.stderr, /--cwd/);
+    }
+    assert.match(execFileSync(process.execPath, [bundle, 'evidence', '--help'], { cwd: dir, encoding: 'utf8' }), /--cwd <dir>/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

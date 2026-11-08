@@ -44,4 +44,10 @@ export interface EvidenceReport {
   didNotRun: string[];
   /** Why no command ran at all, when an environment switch (not the config) stopped them. */
   skipped?: string;
+  /**
+   * The directory the commands ran in, absent when nothing was spawned. Under
+   * the driver it is the pull request's head worktree, so a tool's absolute
+   * path is resolved against it rather than the caller's checkout.
+   */
+  cwd?: string;
 }

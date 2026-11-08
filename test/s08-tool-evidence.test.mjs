@@ -362,3 +362,28 @@ test('a check that exits non-zero takes its background child with it', (t) => {
   if (alive) process.kill(pid, 'SIGKILL');
   assert.equal(alive, false, 'the background child was reaped with its process group');
 });
+
+test('a tool\'s absolute path is resolved against the directory the commands ran in, not the caller\'s checkout', (t) => {
+  const ranIn = temporary(t, 'rv-s08-ran-in-');
+  mkdirSync(join(ranIn, 'src'));
+  writeFileSync(join(ranIn, 'src/app.ts'), '');
+  const dir = temporary(t, 'rv-s08-candidates-');
+  const diff = join(dir, 'diff.patch');
+  writeFileSync(diff, [
+    'diff --git a/src/app.ts b/src/app.ts', 'new file mode 100644',
+    '--- /dev/null', '+++ b/src/app.ts', '@@ -0,0 +1,6 @@',
+    '+export function total(items) {', '+  let sum = 0;',
+    '+  for (const item of items) sum += item.price * item.qty;',
+    '+  return sum;', '+}', '+', '',
+  ].join('\n'));
+  const absolute = signal({ path: join(ranIn, 'src/app.ts') });
+  const withCwd = join(dir, 'with-cwd.json');
+  writeFileSync(withCwd, JSON.stringify({ enabled: true, signals: [absolute], commands: [], didNotRun: [], cwd: ranIn }));
+  const dropped = cli(t, dir, ['check-candidates', '--diff-file', diff, '--evidence', withCwd], JSON.stringify({ candidates: [candidate()] }));
+  assert.deepEqual(dropped.droppedAsTool.map((entry) => entry.candidateId), ['cand_001'], 'the head path and the candidate path are the same file');
+  // Without the record of where the commands ran, the path is read against the caller's directory, as before.
+  const without = join(dir, 'without-cwd.json');
+  writeFileSync(without, JSON.stringify({ enabled: true, signals: [absolute], commands: [], didNotRun: [] }));
+  const kept = cli(t, dir, ['check-candidates', '--diff-file', diff, '--evidence', without], JSON.stringify({ candidates: [candidate()] }));
+  assert.deepEqual(kept.kept, [candidate()]);
+});

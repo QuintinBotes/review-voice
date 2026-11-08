@@ -156,7 +156,10 @@ test('AC-2: the driver checks evidence, records the tool hold and explains the c
   assert.equal(evidence.signals[0].claim, MESSAGE);
   assert.equal(evidence.signals[0].line, 1);
   assert.equal(evidence.commands[0].version, 'tool 1.2');
-  assert.equal(existsSync(join(repo.dir, 'typecheck-ran')), true);
+  // The check ran in the head worktree, which the run removed, not in the caller's checkout (issue 262).
+  assert.equal(existsSync(join(repo.dir, 'typecheck-ran')), false);
+  assert.equal(evidence.cwd, join(report.runDir, 'head'));
+  assert.ok(readFileSync(join(report.runDir, 'commands.log'), 'utf8').includes(`$ review-voice evidence --cwd ${join(report.runDir, 'head')}`));
   assert.equal(existsSync(join(fakes, '.calls/evidence-verifier.count')), false);
   const db = openDatabase(join(data, 'review-voice.db'));
   try {
