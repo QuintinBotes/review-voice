@@ -22,17 +22,32 @@ export interface TypeEscape {
   kind: TypeEscapeKind;
 }
 
-interface Rule {
-  kind: TypeEscapeKind;
-  /** Code patterns see string contents blanked; directives are read from comments only. */
-  in: 'code' | 'comment';
-  pattern: RegExp;
-  /** Narrows a match, e.g. to the directives that name a type rule. */
-  accept?: (match: RegExpMatchArray) => boolean;
+/** One line split by `splitLine`; `code` and `raw` are the same length, so an index in one is an index in the other. */
+export interface SplitLine {
+  code: string;
+  comment: string;
+  raw: string;
 }
 
-interface Language {
-  rules: Rule[];
+/**
+ * Generic over its kind so a second scanner can share the tokenizer and the
+ * rule shape; the default keeps every type-escape rule as it was.
+ */
+export interface Rule<Kind extends string = TypeEscapeKind> {
+  kind: Kind;
+  /**
+   * Code patterns see string contents blanked; directives are read from
+   * comments only; raw patterns see the text before the line comment with
+   * string contents intact, for a rule whose signal lives in a string.
+   */
+  in: 'code' | 'comment' | 'raw';
+  pattern: RegExp;
+  /** Narrows a match, e.g. to the directives that name a type rule. The line is there for a rule that reads a second view of it. */
+  accept?: (match: RegExpMatchArray, line: SplitLine) => boolean;
+}
+
+export interface Language<Kind extends string = TypeEscapeKind> {
+  rules: Rule<Kind>[];
   quotes: string;
   lineComment: string;
   blockComments: boolean;
@@ -107,14 +122,17 @@ const LANGUAGES: Record<string, Language> = {
 };
 
 /**
- * One line as code, with string contents blanked, and comment. Lexical, one
- * line at a time: a string or block comment that spans lines is not tracked,
- * so a continuation line is read as code and a template literal can miss or
- * add a hit. A line starting with `*` is the middle of a block comment.
+ * One line as code, with string contents blanked, and comment; `raw` is the
+ * code with string contents intact, so a word inside a string can be read
+ * without a keyword inside one being mistaken for code. Lexical, one line at
+ * a time: a string or block comment that spans lines is not tracked, so a
+ * continuation line is read as code and a template literal can miss or add a
+ * hit. A line starting with `*` is the middle of a block comment.
  */
-function splitLine(text: string, language: Language): { code: string; comment: string } {
-  if (language.blockComments && text.trimStart().startsWith('*')) return { code: '', comment: text };
+export function splitLine<Kind extends string>(text: string, language: Language<Kind>): SplitLine {
+  if (language.blockComments && text.trimStart().startsWith('*')) return { code: '', comment: text, raw: '' };
   let code = '';
+  let raw = '';
   let comment = '';
   let quote: string | null = null;
   for (let index = 0; index < text.length; index += 1) {
@@ -122,16 +140,20 @@ function splitLine(text: string, language: Language): { code: string; comment: s
     if (quote !== null) {
       if (char === '\\') {
         code += '  ';
+        raw += text.slice(index, index + 2);
         index += 1;
       } else if (char === quote) {
         quote = null;
         code += char;
+        raw += char;
       } else {
         code += ' ';
+        raw += char;
       }
     } else if (language.quotes.includes(char)) {
       quote = char;
       code += char;
+      raw += char;
     } else if (text.startsWith(language.lineComment, index)) {
       comment += text.slice(index);
       break;
@@ -142,19 +164,20 @@ function splitLine(text: string, language: Language): { code: string; comment: s
       index = end + 1;
     } else {
       code += char;
+      raw += char;
     }
   }
-  return { code, comment };
+  return { code, comment, raw };
 }
 
 function kindsIn(text: string, language: Language): TypeEscapeKind[] {
-  const { code, comment } = splitLine(text, language);
+  const line = splitLine(text, language);
   const kinds: TypeEscapeKind[] = [];
   for (const rule of language.rules) {
-    if (rule.in === 'code' && language.skip?.test(code)) continue;
-    const source = rule.in === 'code' ? code : comment;
+    if (rule.in === 'code' && language.skip?.test(line.code)) continue;
+    const source = line[rule.in];
     for (const match of source.matchAll(rule.pattern)) {
-      if (rule.accept === undefined || rule.accept(match)) kinds.push(rule.kind);
+      if (rule.accept === undefined || rule.accept(match, line)) kinds.push(rule.kind);
     }
   }
   return kinds;

@@ -2,7 +2,7 @@
 
 // plugins/review-voice/src/cli.ts
 import { readFileSync as readFileSync16, readSync, writeFileSync as writeFileSync5, mkdirSync as mkdirSync8, statSync as statSync4, lstatSync as lstatSync3, renameSync as renameSync2, rmSync as rmSync5, existsSync as existsSync12, realpathSync as realpathSync2 } from "node:fs";
-import { basename as basename3, dirname as dirname13, isAbsolute as isAbsolute4, join as join19, posix as posix3, relative as relative3, resolve as resolve5, sep as sep4 } from "node:path";
+import { basename as basename4, dirname as dirname13, isAbsolute as isAbsolute4, join as join19, posix as posix3, relative as relative3, resolve as resolve5, sep as sep4 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 import { execFileSync as execFileSync15 } from "node:child_process";
 import { format } from "node:util";
@@ -2447,6 +2447,7 @@ function countHunks(diff, wanted) {
           replacing = true;
         }
         record3(current, text4, true);
+        current.removed.push({ line: newLine, text: text4, scope });
         remainingOld -= 1;
         continue;
       }
@@ -2475,7 +2476,7 @@ function countHunks(diff, wanted) {
     if (header !== null && path !== null) {
       remainingOld = header[1] === void 0 ? 1 : Number(header[1]);
       remainingNew = header[3] === void 0 ? 1 : Number(header[3]);
-      current = { path, line: Number(header[2]), decisionPoints: 0, branches: [], added: [] };
+      current = { path, line: Number(header[2]), decisionPoints: 0, branches: [], added: [], removed: [] };
       newLine = Number(header[2]);
       scope = declarationIn((header[4] ?? "").trim());
       replacing = false;
@@ -2551,6 +2552,10 @@ function reviewedFileKinds(files2, partial, markedGenerated2 = /* @__PURE__ */ n
 function productionPaths(files2, partial, markedGenerated2 = /* @__PURE__ */ new Set()) {
   const { kinds } = reviewedKinds(files2, config(partial), markedGenerated2);
   return [...kinds].filter(([, kind]) => kind === "production").map(([path]) => path);
+}
+function deletedProductionPaths(files2, partial, markedGenerated2 = /* @__PURE__ */ new Set()) {
+  const deleted = files2.filter((file2) => file2.status === "deleted").map((file2) => ({ ...file2, reviewed: true }));
+  return productionPaths(deleted, partial, markedGenerated2);
 }
 function assessComplexity(diff, files2, partial, markedGenerated2 = /* @__PURE__ */ new Set()) {
   const limits = config(partial);
@@ -2764,6 +2769,9 @@ import { execFileSync as execFileSync3 } from "node:child_process";
 import { readFileSync as readFileSync6 } from "node:fs";
 import { join as join5 } from "node:path";
 
+// plugins/review-voice/src/diff/removed-controls.ts
+import { basename, extname as extname2 } from "node:path";
+
 // plugins/review-voice/src/diff/type-escapes.ts
 import { extname } from "node:path";
 var MAX_PER_FILE = 20;
@@ -2824,9 +2832,10 @@ var LANGUAGES2 = {
   ".py": PYTHON,
   ".pyi": PYTHON
 };
-function splitLine(text4, language) {
-  if (language.blockComments && text4.trimStart().startsWith("*")) return { code: "", comment: text4 };
+function splitLine(text4, language2) {
+  if (language2.blockComments && text4.trimStart().startsWith("*")) return { code: "", comment: text4, raw: "" };
   let code = "";
+  let raw = "";
   let comment = "";
   let quote2 = null;
   for (let index = 0; index < text4.length; index += 1) {
@@ -2834,38 +2843,43 @@ function splitLine(text4, language) {
     if (quote2 !== null) {
       if (char === "\\") {
         code += "  ";
+        raw += text4.slice(index, index + 2);
         index += 1;
       } else if (char === quote2) {
         quote2 = null;
         code += char;
+        raw += char;
       } else {
         code += " ";
+        raw += char;
       }
-    } else if (language.quotes.includes(char)) {
+    } else if (language2.quotes.includes(char)) {
       quote2 = char;
       code += char;
-    } else if (text4.startsWith(language.lineComment, index)) {
+      raw += char;
+    } else if (text4.startsWith(language2.lineComment, index)) {
       comment += text4.slice(index);
       break;
-    } else if (language.blockComments && text4.startsWith("/*", index)) {
+    } else if (language2.blockComments && text4.startsWith("/*", index)) {
       const end = text4.indexOf("*/", index + 2);
       comment += `${text4.slice(index, end === -1 ? void 0 : end + 2)} `;
       if (end === -1) break;
       index = end + 1;
     } else {
       code += char;
+      raw += char;
     }
   }
-  return { code, comment };
+  return { code, comment, raw };
 }
-function kindsIn(text4, language) {
-  const { code, comment } = splitLine(text4, language);
+function kindsIn(text4, language2) {
+  const line3 = splitLine(text4, language2);
   const kinds = [];
-  for (const rule of language.rules) {
-    if (rule.in === "code" && language.skip?.test(code)) continue;
-    const source = rule.in === "code" ? code : comment;
+  for (const rule of language2.rules) {
+    if (rule.in === "code" && language2.skip?.test(line3.code)) continue;
+    const source = line3[rule.in];
     for (const match of source.matchAll(rule.pattern)) {
-      if (rule.accept === void 0 || rule.accept(match)) kinds.push(rule.kind);
+      if (rule.accept === void 0 || rule.accept(match, line3)) kinds.push(rule.kind);
     }
   }
   return kinds;
@@ -2873,10 +2887,10 @@ function kindsIn(text4, language) {
 function findTypeEscapes(diff, paths) {
   const found = [];
   for (const hunk of countHunks(diff, new Set(paths))) {
-    const language = LANGUAGES2[extname(hunk.path).toLowerCase()];
-    if (language === void 0) continue;
+    const language2 = LANGUAGES2[extname(hunk.path).toLowerCase()];
+    if (language2 === void 0) continue;
     for (const { line: line3, text: text4 } of hunk.added) {
-      for (const kind of kindsIn(text4, language)) found.push({ path: hunk.path, line: line3, kind });
+      for (const kind of kindsIn(text4, language2)) found.push({ path: hunk.path, line: line3, kind });
     }
   }
   const byPathLineKind = (a, b) => {
@@ -2891,6 +2905,184 @@ function findTypeEscapes(diff, paths) {
     perFile.set(escape.path, seen + 1);
     return seen < MAX_PER_FILE;
   });
+}
+
+// plugins/review-voice/src/diff/removed-controls.ts
+var MAX_PER_FILE2 = 20;
+var MAX_TEXT = 120;
+var MAX_SCANNED_LINE = 1e3;
+var GUARD_WORDS = [
+  "auth",
+  "authoriz",
+  "permission",
+  "role",
+  "scope",
+  "token",
+  "session",
+  "owner",
+  "admin",
+  "allow",
+  "deny",
+  "validate",
+  "verify",
+  "check",
+  "limit",
+  "quota",
+  "rate",
+  "throttle",
+  "sanitize",
+  "escape",
+  "csrf",
+  "origin"
+];
+var capitalised = (word) => word.charAt(0).toUpperCase() + word.slice(1);
+var GUARD_WORD = new RegExp(
+  `(?<![A-Za-z])(?:${GUARD_WORDS.join("|")}|${GUARD_WORDS.map(capitalised).join("|")}|${GUARD_WORDS.map((w) => w.toUpperCase()).join("|")})|(?<=[a-z0-9])(?:${GUARD_WORDS.map(capitalised).join("|")})`
+);
+function conditionAfter(raw, from) {
+  const rest = raw.slice(from);
+  const open = /^\s*\(/.exec(rest);
+  if (open === null) return rest;
+  let depth = 0;
+  for (let index = open[0].length - 1; index < rest.length; index += 1) {
+    if (rest[index] === "(") depth += 1;
+    else if (rest[index] === ")") {
+      depth -= 1;
+      if (depth === 0) return rest.slice(0, index + 1);
+    }
+  }
+  return rest;
+}
+var MIDDLEWARE_NAME = "(?:[Aa]uth|[Vv]erify|[Rr]equire[A-Z_]|[Cc]srf|CSRF|[Rr]ate_?[Ll]imit|RATE_?LIMIT)";
+var STATEMENT_WORD = /\b(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|raise|when|import|export|const|let|var|def|class|function)\b/;
+var ALLOWLIST_NAME = /allow|whitelist|permitted|roles|scopes|origins/i;
+var LIST_ELEMENT = /^\s*(?:"[^"]*"|'[^']*'|`[^`]*`|[\w$.@*/-]+|["']?[\w$.-]+["']?\s*:\s*[^,]+?)\s*,?\s*$/g;
+var RULES = [
+  {
+    // Matched on code so a conditional named only in a string is not one; the
+    // words are read from the condition as written, so `if (role === 'admin')`
+    // counts for what it compares against. Not a parser: `if (isReady) check()`
+    // is read as a conditional on `isReady`, which has no such word, and passes.
+    kind: "guard",
+    in: "code",
+    pattern: /\b(?:if|elif|unless|guard|when|case)\b/g,
+    accept: (match, line3) => GUARD_WORD.test(conditionAfter(line3.raw, (match.index ?? 0) + match[0].length))
+  },
+  {
+    // A refusal is mostly a status or a message, so it is read from the raw
+    // line: `throw new Error('Forbidden')` keeps its word. A `return` that merely
+    // sits in a string is read too; that is the price of reading strings at all.
+    kind: "refusal",
+    in: "raw",
+    pattern: /\b(?:throw|raise|return)\b.{0,160}?(?:\b40[13]\b|Forbidden|Unauthori[sz]ed|TooMany|Invalid|Denied)/g
+  },
+  {
+    // An attribute or decorator that gates a handler. Code only, and anchored
+    // to the start of the line, so `'@Authorize'` in a string is not one.
+    kind: "decorator",
+    in: "code",
+    pattern: /^\s*[@[]\s*(?:[\w.]+\.)?(?:authori[sz]e\w*|require_?(?:role|auth|permission|login)\w*|login_required|permission_required|permission_classes|pre_?authorize|post_?authorize|roles?_?required|roles?_?allowed|secured|use_?guards|roles?(?=\s*\())\b/gi
+  },
+  {
+    // A registration that puts an access or abuse control in front of routes.
+    kind: "middleware",
+    in: "code",
+    pattern: new RegExp(`\\.use\\([^;]*?${MIDDLEWARE_NAME}`, "g")
+  },
+  {
+    kind: "middleware",
+    in: "code",
+    pattern: new RegExp(`\\b(?:router|app|routes?)\\.\\w+\\([^;]*?${MIDDLEWARE_NAME}`, "g")
+  },
+  {
+    // One element of a list, removed from a file or declaration whose name says
+    // it is an allowlist (the scanner checks the name). Read from the raw line
+    // for the element and the code for what disqualifies it, so a quoted
+    // `'for'` is an entry and a bare `for` is not.
+    kind: "allowlist-entry",
+    in: "raw",
+    pattern: LIST_ELEMENT,
+    accept: (_match, line3) => !/[=(]/.test(line3.code) && !STATEMENT_WORD.test(line3.code)
+  }
+];
+function language(quotes, lineComment2, blockComments) {
+  return { rules: RULES, quotes, lineComment: lineComment2, blockComments };
+}
+var C_STYLE = language(`'"`, "//", true);
+var SCRIPT = language("'\"`", "//", true);
+var GO = language("'\"`", "//", true);
+var HASH = language(`'"`, "#", false);
+var LANGUAGES3 = {
+  ...Object.fromEntries([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, SCRIPT])),
+  ...Object.fromEntries([".cs", ".java", ".kt", ".php"].map((ext) => [ext, C_STYLE])),
+  ".go": GO,
+  ".py": HASH,
+  ".rb": HASH
+};
+var collapse = (text4) => text4.replace(/\s+/g, " ").trim();
+function kindsIn2(text4, lang, allowlisted) {
+  const line3 = splitLine(text4.slice(0, MAX_SCANNED_LINE), lang);
+  const kinds = /* @__PURE__ */ new Set();
+  for (const rule of lang.rules) {
+    if (rule.kind === "allowlist-entry" && !allowlisted) continue;
+    for (const match of line3[rule.in].matchAll(rule.pattern)) {
+      if (rule.accept === void 0 || rule.accept(match, line3)) {
+        kinds.add(rule.kind);
+        break;
+      }
+    }
+  }
+  return [...kinds];
+}
+var EVERY_PATH = { has: () => true };
+function findRemovedControls(diff, paths, deletedFiles = []) {
+  const wanted = new Set(paths);
+  const hunks = countHunks(diff, EVERY_PATH);
+  const added = /* @__PURE__ */ new Set();
+  for (const hunk of hunks) {
+    for (const line3 of hunk.added) added.add(collapse(line3.text));
+  }
+  const found = [];
+  const byPath = /* @__PURE__ */ new Map();
+  const entriesOf = (path) => {
+    const entries = byPath.get(path) ?? [];
+    byPath.set(path, entries);
+    return entries;
+  };
+  for (const hunk of hunks) {
+    if (!wanted.has(hunk.path)) continue;
+    const lang = LANGUAGES3[extname2(hunk.path).toLowerCase()];
+    if (lang === void 0) continue;
+    const named = ALLOWLIST_NAME.test(basename(hunk.path));
+    for (const { line: line3, text: text4, scope } of hunk.removed) {
+      if (added.has(collapse(text4))) continue;
+      const allowlisted = named || scope !== null && ALLOWLIST_NAME.test(scope);
+      for (const kind of kindsIn2(text4, lang, allowlisted)) {
+        entriesOf(hunk.path).push({ path: hunk.path, line: line3, kind, text: text4.trim().slice(0, MAX_TEXT) });
+      }
+    }
+  }
+  for (const entries of byPath.values()) {
+    entries.sort((a, b) => a.line - b.line);
+    found.push(...entries.slice(0, MAX_PER_FILE2));
+  }
+  for (const file2 of deletedFiles) {
+    const lang = LANGUAGES3[extname2(file2.path).toLowerCase()];
+    if (lang === void 0) continue;
+    const allowlisted = ALLOWLIST_NAME.test(basename(file2.path));
+    let kept = 0;
+    for (const raw of file2.text.split("\n")) {
+      if (kept >= MAX_PER_FILE2) break;
+      const text4 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+      if (added.has(collapse(text4))) continue;
+      for (const kind of kindsIn2(text4, lang, allowlisted)) {
+        if (kept >= MAX_PER_FILE2) break;
+        found.push({ path: file2.path, line: 1, kind, text: text4.trim().slice(0, MAX_TEXT), deletedFile: true });
+        kept += 1;
+      }
+    }
+  }
+  return found.sort((a, b) => a.path === b.path ? a.line - b.line : a.path < b.path ? -1 : 1);
 }
 
 // plugins/review-voice/src/diff/structure.ts
@@ -3001,7 +3193,7 @@ function findBranchGrowth(diff, paths, threshold) {
   };
   return [...grown.values()].filter((entry) => entry.line !== null && entry.net >= threshold).map((entry) => ({ path: entry.path, function: entry.scope, addedDecisionPoints: entry.net, threshold, line: entry.line })).sort(byPathThenLine);
 }
-function findStructureSignals(diff, paths, counts, limits = DEFAULT_STRUCTURE) {
+function findStructureSignals(diff, paths, counts, limits = DEFAULT_STRUCTURE, deletedFiles = []) {
   const hunks = parseHunks(diff);
   const threshold = limits.maxFileLines;
   const sizeCrossings = [];
@@ -3026,20 +3218,41 @@ function findStructureSignals(diff, paths, counts, limits = DEFAULT_STRUCTURE) {
     sizeCrossings,
     branchGrowth: findBranchGrowth(diff, paths, limits.maxAddedBranchesPerFunction),
     typeEscapes: findTypeEscapes(diff, paths),
+    removedControls: findRemovedControls(diff, paths, deletedFiles),
     unmeasured: { count: unmeasured.length, paths: unmeasured.slice(0, MAX_UNMEASURED_LISTED) }
   };
 }
-function collectStructure(cwd, change, production, limits = DEFAULT_STRUCTURE) {
+function readDeletedFiles(root, files2, deletedProduction, sides) {
+  if (sides.base === null) return [];
+  const specs = /* @__PURE__ */ new Map();
+  for (const path of deletedProduction) {
+    const file2 = files2.find((entry) => entry.status === "deleted" && entry.path === path);
+    const source = file2?.previousPath ?? path;
+    if (!source.includes("\n")) specs.set(path, `${sides.base}:${source}`);
+  }
+  const blobs = readBlobs(root, [...new Set(specs.values())]);
+  const read = [];
+  for (const [path, spec] of specs) {
+    const blob = blobs.get(spec) ?? null;
+    if (blob === null || blob.includes(0)) continue;
+    read.push({ path, text: blob.toString("utf8") });
+  }
+  return read;
+}
+function collectStructure(cwd, change, production, limits = DEFAULT_STRUCTURE, deletedProduction = []) {
   const files2 = change.files ?? [];
   const deleted = new Set(files2.filter((file2) => file2.status === "deleted").map((file2) => file2.path));
   const paths = production.filter((path) => !deleted.has(path));
   let counts = /* @__PURE__ */ new Map();
+  let deletedFiles = [];
   try {
     const root = repositoryRoot(cwd);
-    counts = measureLines(root, files2, paths, changeSides(root, change));
+    const sides = changeSides(root, change);
+    counts = measureLines(root, files2, paths, sides);
+    deletedFiles = readDeletedFiles(root, files2, deletedProduction, sides);
   } catch {
   }
-  return findStructureSignals(change.diff, paths, counts, limits);
+  return findStructureSignals(change.diff, paths, counts, limits, deletedFiles);
 }
 
 // plugins/review-voice/src/scoring/severity.ts
@@ -4132,7 +4345,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
 // plugins/review-voice/src/intent.ts
 var INTENT_KINDS = ["goal", "non-goal", "deliberate", "claim", "qa"];
 var MAX_INTENT_STATEMENTS = 40;
-var MAX_TEXT = 300;
+var MAX_TEXT2 = 300;
 var MAX_QUOTE = 600;
 var MIN_QUOTE_WORDS = 4;
 var HEADING = /^\s*#{1,6}\s+/u;
@@ -4140,7 +4353,7 @@ var ID = /^int_[0-9]{3,}$/;
 var LIST_OR_HEADING = /^\s*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?|\[[ xX]\]\s+|#{1,6}\s+|>\s*)/u;
 var LEAD_LABEL = /^(?:(?:\[[^\]]*\]\([^)\s]+\)|https?:\/\/\S+):|\*\*[^*]+?[.:]\*\*)(?= |$)/u;
 var QUALIFYING_LABEL = /\b(?:not|no|out of scope|non-goals?|won't|without|except|unless|only if|later|follow-ups?)\b|n't\b/iu;
-var collapse = (text4) => text4.replace(/\s+/gu, " ").trim();
+var collapse2 = (text4) => text4.replace(/\s+/gu, " ").trim();
 function sentencesOf(description) {
   let text4 = "";
   const starts = /* @__PURE__ */ new Set([0]);
@@ -4153,7 +4366,7 @@ function sentencesOf(description) {
   let contentEnd = 0;
   for (const line3 of description.split(/\r?\n/u)) {
     const marked = LIST_OR_HEADING.test(line3);
-    const content = collapse(line3.replace(LIST_OR_HEADING, ""));
+    const content = collapse2(line3.replace(LIST_OR_HEADING, ""));
     if (content === "") {
       blank = true;
       continue;
@@ -4196,14 +4409,14 @@ function statesSomething(wanted, sentences) {
   return LEAD_LABEL.exec(wanted)?.[0] !== wanted && !sentences.headings.has(wanted);
 }
 function sectionHeading(quote2, sentences) {
-  const wanted = collapse(quote2.replace(LIST_OR_HEADING, ""));
+  const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
   let at2 = sentences.text.indexOf(wanted);
   while (at2 !== -1 && !(sentences.starts.has(at2) && sentences.ends.has(at2 + wanted.length))) at2 = sentences.text.indexOf(wanted, at2 + 1);
   return sentences.sections.find(({ from, to }) => at2 >= from && at2 < to)?.heading ?? null;
 }
-var isShort = (quote2) => collapse(quote2.replace(LIST_OR_HEADING, "")).split(" ").length < MIN_QUOTE_WORDS;
+var isShort = (quote2) => collapse2(quote2.replace(LIST_OR_HEADING, "")).split(" ").length < MIN_QUOTE_WORDS;
 function excerptProblem(quote2, sentences, name) {
-  const wanted = collapse(quote2.replace(LIST_OR_HEADING, ""));
+  const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
   if (isShort(wanted) && !statesSomething(wanted, sentences)) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
   let at2 = sentences.text.indexOf(wanted);
   if (at2 === -1) return `${name} does not occur in the pull request description`;
@@ -4213,7 +4426,7 @@ function excerptProblem(quote2, sentences, name) {
   return `${name} must be a whole sentence or list item of the description, not part of one`;
 }
 function widenToSentence(quote2, sentences) {
-  const wanted = collapse(quote2.replace(LIST_OR_HEADING, ""));
+  const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
   const at2 = sentences.text.indexOf(wanted);
   if (at2 === -1) return null;
   const end = at2 + wanted.length;
@@ -4226,7 +4439,7 @@ function widenToSentence(quote2, sentences) {
   return sentence.length <= MAX_QUOTE ? sentence : null;
 }
 function answeredHeading(quote2, sentences) {
-  const wanted = collapse(quote2.replace(LIST_OR_HEADING, ""));
+  const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
   if (wanted === "" || wanted.split(" ").length >= MIN_QUOTE_WORDS) return null;
   const section = sentences.sections.find(({ from, to }) => {
     const body = sentences.text.slice(from, to);
@@ -4246,7 +4459,7 @@ function excerptOf(value, sentences, name, id, notes) {
   notes.push(`Widened ${name.split(".").pop()} of ${id} to its whole sentence`);
   return { value: widened, problem: null };
 }
-function text2(value, name, max = MAX_TEXT) {
+function text2(value, name, max = MAX_TEXT2) {
   if (typeof value !== "string" || value.trim().length === 0) return { value: null, problem: `${name} must be non-empty text` };
   if (value.length > max) return { value: null, problem: `${name} must be at most ${max} characters` };
   return { value: value.trim(), problem: null };
@@ -14192,13 +14405,13 @@ function describeChecks(checks) {
   const symbols = checks.symbolsInconclusive === 0 ? "every symbol file finished" : `${checks.symbolsInconclusive} symbol file${checks.symbolsInconclusive === 1 ? "" : "s"} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}`;
   return `Checks ${staticParts.length === 0 ? "no static checks" : staticParts.join("; ")}; ${symbols}`;
 }
-var basename = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
+var basename2 = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
 function attribute(finding, hints, taken) {
   const free = hints.filter((hint) => !taken.has(hint));
   const exact = free.find((hint) => hint.path === finding.path && hint.line === finding.line);
   if (exact !== void 0) return { hint: exact, how: "exact" };
   const sameFile = free.filter(
-    (hint) => basename(hint.path) === basename(finding.path) && hint.line === finding.line
+    (hint) => basename2(hint.path) === basename2(finding.path) && hint.line === finding.line
   );
   if (sameFile.length === 1) return { hint: sameFile[0], how: "basename" };
   const sameLine = free.filter((hint) => hint.line === finding.line);
@@ -21587,7 +21800,7 @@ import {
   writeFileSync as writeFileSync4
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename as basename2, dirname as dirname12, join as join17, relative as relative2, resolve as resolve3, sep as sep3 } from "node:path";
+import { basename as basename3, dirname as dirname12, join as join17, relative as relative2, resolve as resolve3, sep as sep3 } from "node:path";
 var AUTHOR_NAME = "review-voice-fixtures";
 var AUTHOR_EMAIL = "fixtures@example.com";
 var COMMIT_DATE = "2026-01-01T00:00:00Z";
@@ -21725,7 +21938,7 @@ function parsePatchFiles(normalised) {
   return files2;
 }
 function fillerFor(path) {
-  const extension = basename2(path).includes(".") ? basename2(path).split(".").pop().toLowerCase() : "";
+  const extension = basename3(path).includes(".") ? basename3(path).split(".").pop().toLowerCase() : "";
   const hash2 = ["yml", "yaml", "tf", "py", "rb", "sh", "toml", "ini", "cfg", "conf", "md", "txt"];
   return hash2.includes(extension) ? "# filler" : "// filler";
 }
@@ -21828,7 +22041,7 @@ function git5(cwd, label2, args) {
   }
 }
 function materializeFixture(fixtureDir, targetDir, options = {}) {
-  const label2 = options.name ?? `${basename2(dirname12(resolve3(fixtureDir)))}/${basename2(resolve3(fixtureDir))}`;
+  const label2 = options.name ?? `${basename3(dirname12(resolve3(fixtureDir)))}/${basename3(resolve3(fixtureDir))}`;
   const patchPath = join17(fixtureDir, "diff.patch");
   if (!existsSync10(patchPath)) throw new Error(`${label2}: fixture has no diff.patch`);
   if (existsSync10(targetDir) && readdirSync4(targetDir).length > 0) {
@@ -23631,10 +23844,10 @@ function diffSummary(result) {
   };
 }
 function markedGenerated(acquired) {
-  const reviewed = (acquired.files ?? []).filter((file2) => file2.reviewed).map((file2) => file2.path);
+  const asked = (acquired.files ?? []).filter((file2) => file2.reviewed || file2.status === "deleted").map((file2) => file2.path);
   try {
     const root = repositoryRoot(process.cwd());
-    return linguistGeneratedPaths(root, reviewed, attributeSource(root, acquired));
+    return linguistGeneratedPaths(root, asked, attributeSource(root, acquired));
   } catch {
     return /* @__PURE__ */ new Set();
   }
@@ -23648,7 +23861,8 @@ function emitDiff(acquired, outDir) {
   const scopedFiles = (acquired.files ?? []).filter((file2) => narrowed === null || narrowed.includes(file2.path));
   const assessed = assessComplexity(acquired.diff, scopedFiles, config2?.humanReview, generated);
   const production = productionPaths(scopedFiles, config2?.humanReview, generated);
-  const structure = collectStructure(process.cwd(), acquired, production, config2?.structure);
+  const deletedProduction = deletedProductionPaths(scopedFiles, config2?.humanReview, generated);
+  const structure = collectStructure(process.cwd(), acquired, production, config2?.structure, deletedProduction);
   const complexity = applyStructureHumanReviewCap(assessed, structure, config2?.humanReview);
   const result = {
     ...acquired,
@@ -27515,7 +27729,7 @@ function realExistingPath(path) {
   while (!existsSync12(existing)) {
     const parent = dirname13(existing);
     if (parent === existing) return path;
-    rest.unshift(basename3(existing));
+    rest.unshift(basename4(existing));
     existing = parent;
   }
   return join19(realpathSync2.native(existing), ...rest);

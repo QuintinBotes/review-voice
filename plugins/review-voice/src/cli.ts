@@ -25,6 +25,7 @@ import { acquireDiff, attributeSource, GitError, linguistGeneratedPaths, type Ch
 import {
   applyStructureHumanReviewCap,
   assessComplexity,
+  deletedProductionPaths,
   humanReviewNote,
   parseComplexity,
   productionPaths,
@@ -697,15 +698,17 @@ export function diffSummary(result: EmittedDiff): {
 }
 
 /**
- * Reviewed paths the repository's `.gitattributes` marks generated, as of the
- * commit the change starts from (see attributeSource). Outside a repository,
- * or without that commit, nothing is marked.
+ * Reviewed and deleted paths the repository's `.gitattributes` marks generated,
+ * as of the commit the change starts from (see attributeSource). Outside a
+ * repository, or without that commit, nothing is marked.
  */
 function markedGenerated(acquired: EmittedDiff): Set<string> {
-  const reviewed = (acquired.files ?? []).filter((file) => file.reviewed).map((file) => file.path);
+  // A deleted file is asked about too, so a deleted generated file is not read
+  // for removed controls; no reviewed-only path is affected by the extra names.
+  const asked = (acquired.files ?? []).filter((file) => file.reviewed || file.status === 'deleted').map((file) => file.path);
   try {
     const root = repositoryRoot(process.cwd());
-    return linguistGeneratedPaths(root, reviewed, attributeSource(root, acquired));
+    return linguistGeneratedPaths(root, asked, attributeSource(root, acquired));
   } catch {
     return new Set();
   }
@@ -725,7 +728,10 @@ export function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
   const scopedFiles = (acquired.files ?? []).filter((file) => narrowed === null || narrowed.includes(file.path));
   const assessed = assessComplexity(acquired.diff, scopedFiles, config?.humanReview, generated);
   const production = productionPaths(scopedFiles, config?.humanReview, generated);
-  const structure = collectStructure(process.cwd(), acquired, production, config?.structure);
+  // A wholly deleted file is not in the patch, so removed controls read it from
+  // the base; it is classified by the same rules as the files the review reads.
+  const deletedProduction = deletedProductionPaths(scopedFiles, config?.humanReview, generated);
+  const structure = collectStructure(process.cwd(), acquired, production, config?.structure, deletedProduction);
   const complexity = applyStructureHumanReviewCap(assessed, structure, config?.humanReview);
   const result: EmittedDiff = {
     ...acquired,
