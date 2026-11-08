@@ -84,6 +84,8 @@ export interface ScoreLike {
   severity?: { severity?: unknown } | null;
   anchor?: unknown;
   anchorCheck?: { kind?: unknown } | null;
+  /** Set by `score --files` for a finding about a file the change deletes (#265). */
+  deletedFile?: unknown;
 }
 
 /**
@@ -129,7 +131,7 @@ export function verification(
   run: RunDetail,
   loadRun: RunLoader,
   used: Set<object> = new Set(),
-): { verified: boolean; reason: string; runId: string; staleConsumer?: boolean } {
+): { verified: boolean; reason: string; runId: string; staleConsumer?: boolean; deletedFile?: boolean } {
   if (finding.path === null || finding.severity === null) {
     return { verified: false, reason: 'it names no file, so no score can be matched to it', runId: run.reviewRunId };
   }
@@ -152,6 +154,7 @@ export function verification(
         reason: 'established by the verifier',
         runId: current.reviewRunId,
         ...(isStaleConsumer(backing) ? { staleConsumer: true } : {}),
+        ...(backing.deletedFile === true ? { deletedFile: true } : {}),
       };
     }
     if (same.some((score) => score.confidenceSource === 'verifier')) {
@@ -252,8 +255,9 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
       continue;
     }
     // A stale consumer keeps its `path:line` in the body text: the reader still
-    // needs to know where, and an inline comment there would be refused.
-    const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true;
+    // needs to know where, and an inline comment there would be refused. So
+    // does a finding about a file the change deletes, which has no new side.
+    const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true && result.deletedFile !== true;
     (anchorable ? inline : unanchored).push(finding);
   }
 

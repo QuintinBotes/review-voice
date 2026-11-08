@@ -117,11 +117,18 @@ and `carry` cannot be used until a run id is found, for example in
 Do not make a claim about earlier changes from an `interdiff` or `incremental`
 patch. If the user asks for a complete review, pass `--full` to `RV diff`.
 
-If `reviewedFileCount` is `0`, output exactly this and stop:
+If `reviewedFileCount` is `0` and `structure.removedControls` is empty, output
+exactly this and stop:
 
 ```
 No actionable findings.
 ```
+
+When `reviewedFileCount` is `0` but `structure.removedControls` lists entries,
+every one is from a file the change deleted (`deletedFile: true`). Do not
+stop: a deleted check is what this review exists to catch. Continue with the
+steps below; the diff is empty, the leads are in `files.json`, and a finding
+about a deleted file posts in the review body.
 
 Do not explain that the diff was empty. Silence is the answer.
 
@@ -344,7 +351,10 @@ It returns JSON matching `schemas/candidate.schema.json`. `{"candidates": []}`
 is a correct and common answer.
 
 **Check the shape and anchors before going further:** pipe the output into
-`RV check-candidates --diff-file <tmpdir>/diff.patch`.
+`RV check-candidates --diff-file <tmpdir>/diff.patch`, adding
+`--base <ref> --head <head sha>` on a pull-request or `--base` review. With
+both, a candidate on a file the change deleted is accepted at a line its base
+copy has; it has no new-side line, so it posts in the review body.
 
 When step 1c wrote `evidence.json`, add `--evidence <tmpdir>/evidence.json`.
 This flag alone selects the full report with `kept`, `droppedAsRepeat`,
@@ -619,7 +629,7 @@ severity, score, or event.
 
 Pipe the verified candidates - step 3c's `candidates` when it ran - plus those
 set aside in step 3, as `{"candidates": [...]}` into
-`RV score --repository <name> --verification <tmpdir>/verification.json --base <ref> --diff-file <tmpdir>/diff.patch`,
+`RV score --repository <name> --verification <tmpdir>/verification.json --base <ref> --head <head sha> --diff-file <tmpdir>/diff.patch`,
 adding `--thread <tmpdir>/thread.json` on a `--pr` run.
 
 **`--thread` is the file from step 1a**, so pass it only on a pull request run;

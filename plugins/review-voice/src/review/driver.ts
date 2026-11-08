@@ -592,7 +592,10 @@ function prepareWorkspace(run: Run): string {
   }
 
   const manifest = readJson(at(run, 'files.json'));
-  const changed = list(isRecord(manifest) ? manifest['files'] : []).filter((f) => f['reviewed'] === true && typeof f['path'] === 'string');
+  // A deleted file is not reviewed, but a control it held is a lead the agents
+  // must read, and they have no shell for git show, so its base copy is
+  // written too (#265).
+  const changed = list(isRecord(manifest) ? manifest['files'] : []).filter((f) => (f['reviewed'] === true || f['status'] === 'deleted') && typeof f['path'] === 'string');
   const baseRoot = at(run, 'base');
   // A re-run into the same directory must not read copies taken from an older merge base.
   rmSync(baseRoot, { recursive: true, force: true });
@@ -706,11 +709,13 @@ async function lanes(run: Run): Promise<void> {
     'check-candidates',
     '--diff-file',
     at(run, 'diff.patch'),
+    // A candidate on a file the change deleted is checked against git at these two commits (#265).
+    ...(run.base === null ? [] : ['--base', run.base, '--head', run.head]),
     '--thread',
     at(run, 'thread.json'),
     '--evidence',
     at(run, 'evidence.json'),
-    ...(typeof prior === 'string' ? ['--held-from', prior, '--head', run.head] : []),
+    ...(typeof prior === 'string' ? ['--held-from', prior, ...(run.base === null ? ['--head', run.head] : [])] : []),
     ...(run.intent ? ['--intent', at(run, 'intent.json')] : []),
   ];
   const merged = (): Json[] => running.flatMap((lane) => output.get(lane.name) ?? []);
@@ -872,6 +877,8 @@ async function score(run: Run): Promise<void> {
       ...(run.base === null ? [] : ['--base', run.base]),
       '--diff-file',
       at(run, 'diff.patch'),
+      '--head',
+      run.head,
       '--thread',
       at(run, 'thread.json'),
       '--exclude-pull',
@@ -1200,7 +1207,12 @@ function priorRisk(run: Run): Risk {
 function failureOf(run: Run, code: number): ReviewFailure {
   const assessed = run.summary['complexity'];
   const complexity = isRecord(assessed) && (assessed['level'] === 'high' || assessed['level'] === 'normal') ? (assessed as unknown as ComplexityAssessment) : null;
-  const own: Risk = complexity === null ? 'unknown' : complexity.level;
+  const assessedRisk: Risk = complexity === null ? 'unknown' : complexity.level;
+  // A change that removed a control (a guard, a refusal, an allowlist entry,
+  // even in a file it deleted) is high risk for this purpose whatever its
+  // size: a review that could not run on it must not pass the job (#265).
+  const removedControls = isRecord(run.summary['structure']) && Array.isArray(run.summary['structure']['removedControls']) ? run.summary['structure']['removedControls'].length : 0;
+  const own: Risk = assessedRisk === 'normal' && removedControls > 0 ? 'high' : assessedRisk;
   // The scope's own risk settles a high or unknown case; a normal scope defers to the pull request's history.
   const history = own === 'normal' ? priorRisk(run) : 'normal';
   const risk: Risk = own !== 'normal' ? own : history;
@@ -1208,7 +1220,9 @@ function failureOf(run: Run, code: number): ReviewFailure {
     own === 'unknown'
       ? ['risk not assessed']
       : own === 'high'
-        ? complexity!.reasons
+        ? assessedRisk === 'high'
+          ? complexity!.reasons
+          : [`the change removed ${removedControls === 1 ? 'a control' : `${removedControls} controls`}`]
         : history === 'high'
           ? ['an earlier run of this pull request assessed it as high risk']
           : history === 'unknown'

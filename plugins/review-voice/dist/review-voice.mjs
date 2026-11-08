@@ -1258,7 +1258,8 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
         verified: true,
         reason: "established by the verifier",
         runId: current.reviewRunId,
-        ...isStaleConsumer(backing) ? { staleConsumer: true } : {}
+        ...isStaleConsumer(backing) ? { staleConsumer: true } : {},
+        ...backing.deletedFile === true ? { deletedFile: true } : {}
       };
     }
     if (same.some((score2) => score2.confidenceSource === "verifier")) {
@@ -1314,7 +1315,7 @@ function planFindings(output, run, loadRun) {
       heldSeverities.push(finding.severity ?? "minor");
       continue;
     }
-    const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true;
+    const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true && result.deletedFile !== true;
     (anchorable ? inline : unanchored).push(finding);
   }
   const posted = [...inline, ...unanchored].map((finding) => finding.severity);
@@ -20988,7 +20989,7 @@ function context(run, extra = []) {
     file(run, "symbols.json", "changed-symbol context; an inconclusive file is not a report of zero consumers"),
     file(run, "thread.json", "what is already said on the pull request; a point made there is not a new one"),
     ...run.intent ? [file(run, "intent.json", "what the description states, checked against it")] : [],
-    `- ${join15(run.dir, "base")}/: each changed file as it was at the merge base (an added file has none)`,
+    `- ${join15(run.dir, "base")}/: each changed or deleted file as it was at the merge base (an added file has none)`,
     `- ${join15(run.dir, "history")}/: the last commits that touched each changed file, one file per path named <URI-encoded path>.txt`
   ];
 }
@@ -21422,7 +21423,7 @@ function prepareWorkspace(run) {
     run.cleanup.push(() => removeWorktree(run, headDir));
   }
   const manifest = readJson(at(run, "files.json"));
-  const changed = list(isRecord4(manifest) ? manifest["files"] : []).filter((f) => f["reviewed"] === true && typeof f["path"] === "string");
+  const changed = list(isRecord4(manifest) ? manifest["files"] : []).filter((f) => (f["reviewed"] === true || f["status"] === "deleted") && typeof f["path"] === "string");
   const baseRoot = at(run, "base");
   rmSync2(baseRoot, { recursive: true, force: true });
   rmSync2(at(run, "history"), { recursive: true, force: true });
@@ -21520,11 +21521,13 @@ async function lanes(run) {
     "check-candidates",
     "--diff-file",
     at(run, "diff.patch"),
+    // A candidate on a file the change deleted is checked against git at these two commits (#265).
+    ...run.base === null ? [] : ["--base", run.base, "--head", run.head],
     "--thread",
     at(run, "thread.json"),
     "--evidence",
     at(run, "evidence.json"),
-    ...typeof prior === "string" ? ["--held-from", prior, "--head", run.head] : [],
+    ...typeof prior === "string" ? ["--held-from", prior, ...run.base === null ? ["--head", run.head] : []] : [],
     ...run.intent ? ["--intent", at(run, "intent.json")] : []
   ];
   const merged = () => running.flatMap((lane) => output.get(lane.name) ?? []);
@@ -21681,6 +21684,8 @@ async function score(run) {
       ...run.base === null ? [] : ["--base", run.base],
       "--diff-file",
       at(run, "diff.patch"),
+      "--head",
+      run.head,
       "--thread",
       at(run, "thread.json"),
       "--exclude-pull",
@@ -21963,10 +21968,12 @@ function priorRisk(run) {
 function failureOf(run, code) {
   const assessed = run.summary["complexity"];
   const complexity = isRecord4(assessed) && (assessed["level"] === "high" || assessed["level"] === "normal") ? assessed : null;
-  const own = complexity === null ? "unknown" : complexity.level;
+  const assessedRisk = complexity === null ? "unknown" : complexity.level;
+  const removedControls = isRecord4(run.summary["structure"]) && Array.isArray(run.summary["structure"]["removedControls"]) ? run.summary["structure"]["removedControls"].length : 0;
+  const own = assessedRisk === "normal" && removedControls > 0 ? "high" : assessedRisk;
   const history = own === "normal" ? priorRisk(run) : "normal";
   const risk = own !== "normal" ? own : history;
-  const reasons = own === "unknown" ? ["risk not assessed"] : own === "high" ? complexity.reasons : history === "high" ? ["an earlier run of this pull request assessed it as high risk"] : history === "unknown" ? ["the earlier runs of this pull request could not be read, so its risk is unknown"] : [];
+  const reasons = own === "unknown" ? ["risk not assessed"] : own === "high" ? assessedRisk === "high" ? complexity.reasons : [`the change removed ${removedControls === 1 ? "a control" : `${removedControls} controls`}`] : history === "high" ? ["an earlier run of this pull request assessed it as high risk"] : history === "unknown" ? ["the earlier runs of this pull request could not be read, so its risk is unknown"] : [];
   const size = (key2) => {
     const value = isRecord4(run.summary["structure"]) ? run.summary["structure"][key2] : void 0;
     return Array.isArray(value) ? value.length : null;
@@ -22823,9 +22830,11 @@ function extractAnchors(output, checks = {}) {
     if (finding.severity === null || finding.path === null || finding.line === null) continue;
     index += 1;
     const findingId = `rv_${String(index).padStart(2, "0")}`;
-    const stale = scoresAtLocation(scores, finding.path, finding.line).some(isStaleConsumer);
+    const here = scoresAtLocation(scores, finding.path, finding.line);
+    const stale = here.some(isStaleConsumer);
+    const deletedFile = here.some((score2) => score2.deletedFile === true);
     const check = hunks === null ? null : classifyAnchor(hunks, finding.path, finding.line);
-    const reason2 = stale ? "stale-consumer" : check !== null && (check.kind === "outside-hunk" || check.kind === "file-not-in-diff") ? check.kind : null;
+    const reason2 = stale ? "stale-consumer" : deletedFile ? "file-not-in-diff" : check !== null && (check.kind === "outside-hunk" || check.kind === "file-not-in-diff") ? check.kind : null;
     if (reason2 !== null) {
       unanchored.push({ findingId, severity: finding.severity, path: finding.path, line: finding.line, body: finding.raw, reason: reason2 });
       continue;
@@ -22985,6 +22994,8 @@ var COMMAND_HELP = {
       "",
       "Flags:",
       "  --diff-file <path>     Require anchors on changed lines",
+      "  --base <ref>           With --head: a candidate on a file present at --base and absent at --head",
+      "                         is accepted at a line of its base copy, and posts in the review body",
       "  --apply-patch-lines    Move a line that is a diff.patch line number to the new-file line it names",
       "                         (same file, added line); notes on stderr, and kept is listed on stdout",
       "  --thread <path>        Drop thread repeats; flag near ones for the verifier",
@@ -22992,7 +23003,7 @@ var COMMAND_HELP = {
       "  --owner <login>        Owner for --thread; default from config",
       "  --held-from <run-ids>  Drop or flag repeats of those runs' held findings; several",
       "                         run ids separated by commas, e.g. a stacked sibling's (needs --head)",
-      "  --head <sha>           Head the candidates were produced against (with --held-from)",
+      "  --head <sha>           Head the candidates were produced against (with --held-from or --base)",
       "  --intent <path>        intent.json from check-intent; every intent_ref must name a statement in it",
       "Reads: candidates JSON on stdin; review.lanes from .review-voice/config.yaml. A candidate that",
       "  names a lane needs a configured one and a candidate_id with that lane's prefix; one naming",
@@ -23239,6 +23250,8 @@ var COMMAND_HELP = {
       "  --min-analyst-confidence <n>  Analyst-only gate (default 0.7)",
       "  --thread <path>           Existing pull-request comments",
       "  --diff-file <path>        Diff for reach and anchor checks",
+      "  --head <ref>              With --base: a finding on a file present at --base and absent at --head",
+      "                            passes the anchor check at a line of its base copy and is marked deletedFile",
       "  --min-score <n>           Final score gate (default 0.68)",
       "  --severity <id>=<tier>    Owner downgrade, or a raise up to the requested tier when reach is unknown (repeatable)",
       "  --promote <id>            Owner posts a belowGate or suppressed[] finding past its gate (repeatable)",
@@ -25031,6 +25044,49 @@ function containsCut(before, after) {
 function anchorFor(hunks, candidate) {
   return candidateAnchor(hunks, candidate);
 }
+function deletedFileCheck(argv) {
+  const base = flag(argv, "--base");
+  const head = flag(argv, "--head");
+  const cwd = process.cwd();
+  if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
+  const git6 = (args) => execFileSync15("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+  let deleted;
+  const deletions = () => {
+    if (deleted !== void 0) return deleted;
+    try {
+      const from = git6(["merge-base", base, head]).trim();
+      const listing = git6(["diff", "--no-ext-diff", "--name-status", "-M", "-z", "--diff-filter=D", from, head]);
+      const fields = listing.split("\0").filter((field) => field !== "");
+      const paths = /* @__PURE__ */ new Set();
+      for (let index = 0; index + 1 < fields.length; index += 2) if (fields[index] === "D") paths.add(fields[index + 1]);
+      deleted = { from, paths };
+    } catch {
+      deleted = null;
+    }
+    return deleted;
+  };
+  const lines2 = /* @__PURE__ */ new Map();
+  const baseLines = (from, path) => {
+    if (lines2.has(path)) return lines2.get(path);
+    let count3 = null;
+    try {
+      const text4 = git6(["show", `${from}:${path}`]);
+      count3 = text4.endsWith("\n") ? text4.split("\n").length - 1 : text4.split("\n").length;
+    } catch {
+    }
+    lines2.set(path, count3);
+    return count3;
+  };
+  return (candidate, anchor) => {
+    if (anchor.ok || anchor.kind !== "file-not-in-diff") return false;
+    const path = candidate.path.replace(/^\.\/+/, "");
+    if (path === "" || path.startsWith("/") || path.split(/[\\/]/).includes("..") || !isReviewable(path, false)) return false;
+    const found = deletions();
+    if (found === null || !found.paths.has(path)) return false;
+    const count3 = baseLines(found.from, path);
+    return count3 !== null && Number.isInteger(candidate.line) && candidate.line >= 1 && candidate.line <= count3;
+  };
+}
 var OWNER_OVERRIDE_SEVERITIES = ["blocking", "important", "minor", "nit"];
 function ownerSeverityOverrides(argv, candidates) {
   const overrides = /* @__PURE__ */ new Map();
@@ -25258,6 +25314,7 @@ function scoreCommand(argv) {
       return 2;
     }
   }
+  const onDeletedFile = deletedFileCheck(argv);
   let thread = [];
   if (argv.includes("--thread")) {
     const path = flag(argv, "--thread");
@@ -25381,7 +25438,7 @@ function scoreCommand(argv) {
         }
       }
       const anchorCheck = anchorHunks === null ? null : anchorFor(anchorHunks, candidate);
-      if (anchorCheck !== null && !anchorCheck.ok) {
+      if (anchorCheck !== null && !anchorCheck.ok && !onDeletedFile(candidate, anchorCheck)) {
         const earlier = breakdown.rejectedBecause;
         breakdown.eligible = false;
         breakdown.rejectedBecause = reason(anchorCheck) + (earlier === null ? "" : ` Also: ${earlier}`);
@@ -25413,6 +25470,8 @@ function scoreCommand(argv) {
         precedents,
         ...absence === null ? {} : { absenceCheck: absence },
         ...anchorCheck === null ? {} : { anchorCheck },
+        // Read by the posting plan: a finding with no new-side line goes in the body.
+        ...anchorCheck !== null && onDeletedFile(candidate, anchorCheck) ? { deletedFile: true } : {},
         ...citation === null ? {} : { citationCheck: citation }
       });
     }
@@ -27521,6 +27580,7 @@ function checkCandidatesCommand(argv) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
     }
+    const onDeletedFile = deletedFileCheck(argv);
     const applyPatchLines = argv.includes("--apply-patch-lines");
     const anchors = candidates.map((candidate, index) => {
       let anchor = anchorFor(hunks, candidate);
@@ -27541,7 +27601,11 @@ function checkCandidatesCommand(argv) {
       suggestion: ordinaryFindingHint(anchor)
     }));
     const extra = suggestions.length > 0 ? { suggestions } : {};
-    const anchorFailures = anchors.filter(({ anchor }) => !anchor.ok).map(({ candidate, anchor }) => ({
+    const deletedFileCandidates = anchors.filter(({ candidate, anchor }) => onDeletedFile(candidate, anchor)).map(({ candidate }) => candidate.candidateId);
+    if (deletedFileCandidates.length > 0) {
+      console.error(`${deletedFileCandidates.length} candidate${deletedFileCandidates.length === 1 ? "" : "s"} on a deleted file, posted in the review body: ${deletedFileCandidates.join(", ")}`);
+    }
+    const anchorFailures = anchors.filter(({ candidate, anchor }) => !anchor.ok && !onDeletedFile(candidate, anchor)).map(({ candidate, anchor }) => ({
       candidateId: candidate.candidateId,
       path: candidate.path,
       line: candidate.line,

@@ -66,6 +66,11 @@ that the control is absent before verifying the claim. A check re-established
 elsewhere means there is no finding. If the search finds nothing and the
 consequence cannot be traced, the claim remains a `question`.
 
+A candidate on a file the change deletes cites a line of the base copy, since
+the head has none. Read its base copy (the `base/` directory the prompt
+names, or `git show <base>:<path>` where you have git) and verify that the
+control the candidate names is gone from the head, not only from that file.
+
 For the structural patterns below, verify the cited shape and its named "and so"
 consequence; reject a preference with no nameable consequence. These are
 `maintainability` claims, except independent serialized awaits, which are

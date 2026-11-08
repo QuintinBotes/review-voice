@@ -47,6 +47,7 @@ import { describeScope, parseReviewScope, planScope, type ReviewScope } from './
 import {
   classifyAnchor,
   classifyStaleConsumer,
+  normalisePath,
   ordinaryFindingHint,
   parseHunks,
   reason,
@@ -1730,6 +1731,73 @@ function anchorFor(hunks: Map<string, FileHunks>, candidate: Candidate): AnchorC
   return candidateAnchor(hunks, candidate);
 }
 
+/**
+ * Whether a candidate whose anchor failed only because its file is in no patch
+ * is about a file this change deleted, with the cited line one that file had.
+ * A deleted file has nothing left to review, so it is never in the patch, yet
+ * a control it held is a lead and a finding about it is real (#265). Such a
+ * finding posts in the review body, since the file has no new side.
+ *
+ * Asked of git, never of a manifest, so no stale or crafted file can grant it:
+ * both commits must be in the clone, a rename-aware comparison from their merge
+ * base to --head must list the path as deleted (so neither an upstream addition
+ * nor a rename's old path counts), the path must be one a review would read
+ * (not generated, vendored or a lock file), and the line must lie within its
+ * copy at the merge base.
+ * Without both refs, as on a working-tree or staged review, nothing is exempt.
+ */
+function deletedFileCheck(argv: string[]): (candidate: { path: string; line: number }, anchor: AnchorCheck) => boolean {
+  const base = flag(argv, '--base');
+  const head = flag(argv, '--head');
+  const cwd = process.cwd();
+  // refExists asks for a commit, which is what both refs must name.
+  if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
+  const git = (args: string[]): string => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
+  // What this change deleted, measured from where it forked: a file the base
+  // branch added later is not one, and neither is a rename's old path, which
+  // a rename-aware comparison reports as R rather than D. One git call, made
+  // only when a candidate needs it.
+  let deleted: { from: string; paths: Set<string> } | null | undefined;
+  const deletions = (): { from: string; paths: Set<string> } | null => {
+    if (deleted !== undefined) return deleted;
+    try {
+      const from = git(['merge-base', base, head]).trim();
+      const listing = git(['diff', '--no-ext-diff', '--name-status', '-M', '-z', '--diff-filter=D', from, head]);
+      const fields = listing.split('\0').filter((field) => field !== '');
+      const paths = new Set<string>();
+      // Kept as git spells them: a normalised path could match a different,
+      // unchanged file (src\\guard.ts against src/guard.ts) and read its blob.
+      for (let index = 0; index + 1 < fields.length; index += 2) if (fields[index] === 'D') paths.add(fields[index + 1] as string);
+      deleted = { from, paths };
+    } catch {
+      deleted = null;
+    }
+    return deleted;
+  };
+  const lines = new Map<string, number | null>();
+  const baseLines = (from: string, path: string): number | null => {
+    if (lines.has(path)) return lines.get(path)!;
+    let count: number | null = null;
+    try {
+      const text = git(['show', `${from}:${path}`]);
+      count = text.endsWith('\n') ? text.split('\n').length - 1 : text.split('\n').length;
+    } catch {
+      // Not a file at the fork point: nothing to cite.
+    }
+    lines.set(path, count);
+    return count;
+  };
+  return (candidate, anchor) => {
+    if (anchor.ok || anchor.kind !== 'file-not-in-diff') return false;
+    const path = candidate.path.replace(/^\.\/+/, '');
+    if (path === '' || path.startsWith('/') || path.split(/[\\/]/).includes('..') || !isReviewable(path, false)) return false;
+    const found = deletions();
+    if (found === null || !found.paths.has(path)) return false;
+    const count = baseLines(found.from, path);
+    return count !== null && Number.isInteger(candidate.line) && candidate.line >= 1 && candidate.line <= count;
+  };
+}
+
 /** A tier an owner may explicitly lower a scored finding to. Questions are not tiers to override. */
 const OWNER_OVERRIDE_SEVERITIES = ['blocking', 'important', 'minor', 'nit'] as const;
 type OwnerOverrideSeverity = (typeof OWNER_OVERRIDE_SEVERITIES)[number];
@@ -2048,6 +2116,7 @@ function scoreCommand(argv: string[]): number {
       return 2;
     }
   }
+  const onDeletedFile = deletedFileCheck(argv);
 
   let thread: ThreadComment[] = [];
   if (argv.includes('--thread')) {
@@ -2239,7 +2308,7 @@ function scoreCommand(argv: string[]): number {
       // The anchor reason leads even when something else rejected the
       // candidate first: it is the one an analyst can act on, and leaving it
       // behind a score threshold hides why re-anchoring was needed.
-      if (anchorCheck !== null && !anchorCheck.ok) {
+      if (anchorCheck !== null && !anchorCheck.ok && !onDeletedFile(candidate, anchorCheck)) {
         const earlier = breakdown.rejectedBecause;
         breakdown.eligible = false;
         breakdown.rejectedBecause = reason(anchorCheck) + (earlier === null ? '' : ` Also: ${earlier}`);
@@ -2278,6 +2347,8 @@ function scoreCommand(argv: string[]): number {
         precedents,
         ...(absence === null ? {} : { absenceCheck: absence }),
         ...(anchorCheck === null ? {} : { anchorCheck }),
+        // Read by the posting plan: a finding with no new-side line goes in the body.
+        ...(anchorCheck !== null && onDeletedFile(candidate, anchorCheck) ? { deletedFile: true } : {}),
         ...(citation === null ? {} : { citationCheck: citation }),
       });
     }
@@ -5103,6 +5174,8 @@ function checkCandidatesCommand(argv: string[]): number {
       return 2;
     }
 
+    const onDeletedFile = deletedFileCheck(argv);
+
     // --apply-patch-lines: a line that is really a diff.patch line number moves
     // to the new-file line it names, when that is an added line of the same file.
     const applyPatchLines = argv.includes('--apply-patch-lines');
@@ -5130,8 +5203,14 @@ function checkCandidatesCommand(argv: string[]): number {
         suggestion: ordinaryFindingHint(anchor),
       }));
     const extra = suggestions.length > 0 ? { suggestions } : {};
+    const deletedFileCandidates = anchors
+      .filter(({ candidate, anchor }) => onDeletedFile(candidate, anchor))
+      .map(({ candidate }) => candidate.candidateId);
+    if (deletedFileCandidates.length > 0) {
+      console.error(`${deletedFileCandidates.length} candidate${deletedFileCandidates.length === 1 ? '' : 's'} on a deleted file, posted in the review body: ${deletedFileCandidates.join(', ')}`);
+    }
     const anchorFailures = anchors
-      .filter(({ anchor }) => !anchor.ok)
+      .filter(({ candidate, anchor }) => !anchor.ok && !onDeletedFile(candidate, anchor))
       .map(({ candidate, anchor }) => ({
         candidateId: candidate.candidateId,
         path: candidate.path,
