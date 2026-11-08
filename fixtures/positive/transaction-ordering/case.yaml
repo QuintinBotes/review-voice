@@ -6,4 +6,5 @@ expect:
   min_findings: 1
   severity: blocking
   path: src/auth/session.ts
+  line: 66
   category: correctness

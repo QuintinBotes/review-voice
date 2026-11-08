@@ -7,4 +7,5 @@ expect:
   findings: 1
   verified: true
   path: src/orders/invoice-actions.ts
+  line: 3
   category: maintainability

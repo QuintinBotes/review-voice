@@ -8,3 +8,4 @@ expect:
   severity: nit
   category: maintainability
   path: src/registration.ts
+  line: 2

@@ -6,4 +6,5 @@ expect:
   min_findings: 1
   severity: minor
   path: test/catalog/PageReaderTests.cs
+  line: 7
   category: test_coverage

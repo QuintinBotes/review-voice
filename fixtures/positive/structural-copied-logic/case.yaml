@@ -7,4 +7,5 @@ expect:
   findings: 1
   verified: true
   path: src/orders/participant-labels.ts
+  line: 6
   category: maintainability

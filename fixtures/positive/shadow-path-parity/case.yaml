@@ -5,3 +5,4 @@ asserts: >
 expect:
   min_findings: 1
   path: src/orders/shadow.ts
+  line: 20
