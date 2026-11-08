@@ -187,3 +187,21 @@ test('a config that is not a plain repository-relative path stops before the rev
     assert.match(result.stdout, /::error::The config input must be a repository-relative path/);
   }
 });
+
+// Found by the first end-to-end run: a review that stopped printed nothing to
+// the log, so the reason was only in the job summary.
+test('a review that stopped prints its reason as one escaped error annotation', (t) => {
+  const s = scratch(t);
+  const report = JSON.stringify({ exitCode: 7, error: 'The diff lane failed twice: API Error: 400 at 100% load\r\nsecond line ::add-mask::x' });
+  const result = run(t, s, { report, code: 7 });
+  assert.equal(result.status, 7);
+  const annotations = result.stdout.split('\n').filter((line) => line.startsWith('::'));
+  assert.deepEqual(annotations, ['::error::Review Voice: The diff lane failed twice: API Error: 400 at 100%25 load%0D']);
+});
+
+test('a report with no error prints no annotation', (t) => {
+  const s = scratch(t);
+  const result = run(t, s, { report: JSON.stringify({ exitCode: 0, findings: [] }) });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout.includes('::error::'), false);
+});

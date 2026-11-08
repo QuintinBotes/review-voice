@@ -36,7 +36,7 @@ Pin the action to a release tag. Tags are named `review-voice--v<version>`; the 
 
 Pin both actions by commit SHA in your own repository.
 
-Add one secret, `ANTHROPIC_API_KEY`, under your repository's Actions secrets. The action has no key of its own: every review it runs is paid for by the key of the repository that runs it.
+Add one secret, `ANTHROPIC_API_KEY`, under your repository's Actions secrets. The action has no key of its own: every review it runs is paid for by the key of the repository that runs it. Create the key inside a workspace in the Anthropic Console, ideally one with a spend limit: a key that is not scoped to a workspace is refused with "This API key is not scoped to a workspace", and the review then fails closed with exit 7. A failed review prints its reason as an error annotation in the job log as well as in the summary.
 
 ## Inputs
 
