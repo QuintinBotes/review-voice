@@ -27,14 +27,13 @@ A gate is only meaningful if something checks it, so each one names what does.
 | Policy provenance coverage | 100% | a test, not a report: a rule cannot activate without evidence |
 | Prompt-injection test pass rate | 100% | `claude plugin eval` over `fixtures/prompt-injection/` |
 | False-positive rate on reviewed diffs | ≤ 15% | not automated; the inverse of precision, and it needs labels |
-| Small-diff median latency | ≤ 90s | not automated; observed, not asserted |
 
 The compliance targets are achievable only because they are enforced by a
 validator rather than requested in a prompt. If one of them ever reports below
 100%, the bug is in the validator, not the model.
 
-The last two are listed honestly rather than quietly dropped. Neither is
-measured today, and claiming a number for either would be the kind of
+The false-positive rate is listed honestly rather than quietly dropped. It is
+not measured today, and claiming a number for it would be the kind of
 over-reporting this document exists to prevent.
 
 ### Goals
@@ -42,8 +41,16 @@ over-reporting this document exists to prevent.
 | Metric | Goal |
 |---|---:|
 | Median words per finding | ≤ 28 |
+| Small-diff median latency | ≤ 90s |
+
+`RV evaluate` reports `median_review_seconds` for every run, not only small
+diffs, with no target; the 90 second goal is for small diffs and is read from
+that figure and the diff sizes, not asserted by a check.
 
 ### Reported, not scored
+
+Each figure below is reported and never a gate. A figure with no data prints
+`no data`, never zero, and every one prints its basis.
 
 | Metric | Why |
 |---|---|
@@ -52,6 +59,53 @@ over-reporting this document exists to prevent.
 | Candidate set agreement | Measured, published, and not yet targeted |
 | Posted findings tracked | How many posted comments have a recorded outcome |
 | Posted fixed rate, posted dismissed rate | What the pull request shows became of posted comments; see below |
+| 95th percentile review seconds | The slow tail beside the median; per-run sum of stage seconds |
+| Median and 95th percentile review cost (USD) | Per-run sum of stage `costUsd`, over costed runs only; see below |
+| Challenge hold rate | Of the findings the challenger judged, the share it held; see below |
+| Posted fixed rate and dismissed rate, recent | The same strong-outcome rates over a rolling window; see below |
+
+`RV evaluate --json` also carries a top-level `stage_seconds` map of stage name
+to `{ median, p95, runs }`, beside `metrics` and `posted_breakdown`. It is not a
+metric, because its value is a map, and the text output does not print it.
+
+#### Cost per review
+
+A run is costed when it recorded at least one stage and every recorded stage
+carries a numeric `costUsd`. The key is absent when an agent reported no cost,
+and the slash command's stages carry none at all, so summing only the stages
+that have one would understate a run. A run with no stages, or with any stage
+lacking the key, is excluded, and the basis prints
+`N costed run(s), M excluded (no cost recorded)`. A `costUsd` of 0 is a real
+cost. With no costed run the figure is `no data`.
+
+#### Challenge hold rate
+
+```
+challenge_hold_rate = held / judged
+```
+
+Both counts come from `scores[]` in the recorded output. A judged finding is a
+score entry carrying a `challenge` key; a held one is a judged entry whose
+`rejectedBecause` starts `challenge-`. Runs with no judged entry are excluded,
+and the basis prints `H held / J judged over R run(s)`. The `held` array and
+the stage list are not consulted, so the rate is never above 1.
+
+#### The window
+
+`posted_fixed_rate_recent` and `posted_dismissed_rate_recent` are the posted
+rates restricted to outcomes whose run was created inside the window, taken
+from the run's creation time because that is when its findings were posted. The
+default is 30 days and `RV evaluate --since <Nd>` changes it (a value that is
+not a whole number of days exits 2). The basis names the window, as in
+`N fixed / M fixed or dismissed from runs created in the last D days; weak
+outcomes excluded`, so the name never claims a window the number does not use.
+The all-time rates are unchanged, and an outcome with no run row counts in
+them only.
+
+`RV status` warns when more than 20% of the strong outcomes in the default
+30-day window are dismissals and the window holds at least 10 of them. Both
+numbers are a starting point taken from the product specification, not a
+measured optimum, and the warning is the only alert: nothing is sent anywhere.
 
 #### Posted findings
 

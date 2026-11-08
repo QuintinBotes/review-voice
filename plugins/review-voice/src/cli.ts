@@ -160,10 +160,10 @@ import {
 } from './scoring/score.ts';
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
-import { computeMetrics } from './evaluate/metrics.ts';
+import { computeMetrics, dismissedRateWarning, DEFAULT_WINDOW_DAYS, stageSeconds, windowStart } from './evaluate/metrics.ts';
 import { RECALL_CLASSES, readRecallResults, recallMetrics, type RecallClass, type RecallResults } from './evaluate/recall-results.ts';
 import { RecallUsageError, runRecall } from './evaluate/recall.ts';
-import { checkOutcomes, postedBreakdown } from './store/outcomes.ts';
+import { checkOutcomes, postedBreakdown, postedStats } from './store/outcomes.ts';
 import { beginSyncRun, finishSyncRun, lastSync } from './sync/state.ts';
 import { loadWatermarks, saveWatermarks, type Watermark } from './sync/watermark.ts';
 import { evaluatePostingGate } from './publish/gate.ts';
@@ -1465,12 +1465,30 @@ function evaluateCommand(argv: string[]): number {
       return 2;
     }
   }
+  // The window for the `_recent` posted rates. Checked before the store is
+  // opened for the same reason as --recall.
+  let windowDays = DEFAULT_WINDOW_DAYS;
+  if (argv.includes('--since')) {
+    const wanted = flag(argv, '--since');
+    const match = wanted === null ? null : /^(\d{1,5})d$/.exec(wanted);
+    if (match === null) {
+      console.error('--since takes a whole number of days, such as 30d.');
+      return 2;
+    }
+    windowDays = Number(match[1]);
+  }
   const db = openDatabase();
   try {
-    const metrics = [...computeMetrics(db), ...recallMetrics(recall)];
+    const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
     if (argv.includes('--json')) {
       const { bySeverity, byLane } = postedBreakdown(db);
-      console.log(JSON.stringify({ metrics, posted_breakdown: { by_severity: bySeverity, by_lane: byLane } }, null, 2));
+      console.log(
+        JSON.stringify(
+          { metrics, posted_breakdown: { by_severity: bySeverity, by_lane: byLane }, stage_seconds: stageSeconds(db) },
+          null,
+          2,
+        ),
+      );
     } else {
       for (const metric of metrics) {
         const value = metric.value === null ? 'no data' : (Number.isInteger(metric.value) && metric.name.endsWith('_tracked') ? String(metric.value) : metric.value.toFixed(2));
@@ -4995,6 +5013,16 @@ function statusCommand(): number {
           'a verdict: /review-voice:feedback <id> keep|dismiss|rewrite',
       );
     }
+    // A rising dismissed rate is the earliest sign the reviewer has drifted. It
+    // is judged over the default window because `status` takes no flags, and
+    // nothing is printed when the sample is too small or the rate is fine.
+    const recent = postedStats(db, { since: windowStart(DEFAULT_WINDOW_DAYS) });
+    const dismissalWarning = dismissedRateWarning({
+      dismissed: recent.dismissed,
+      strong: recent.fixed + recent.dismissed,
+      windowDays: DEFAULT_WINDOW_DAYS,
+    });
+    if (dismissalWarning !== null) console.log(dismissalWarning);
     if (last !== null) {
       // The origin goes last so the count and ids keep their position.
       const origin = lastDetail?.provenance == null ? '' : `; ${describeOrigin(lastDetail.provenance)}`;

@@ -16451,8 +16451,16 @@ function statsOf(rows) {
     dismissedRate: decided === 0 ? null : dismissed / decided
   };
 }
-function postedStats(db) {
-  return statsOf(db.prepare("SELECT outcome, strength FROM finding_outcomes").all());
+function postedStats(db, { since } = {}) {
+  if (since === void 0) {
+    return statsOf(db.prepare("SELECT outcome, strength FROM finding_outcomes").all());
+  }
+  return statsOf(
+    db.prepare(
+      `SELECT o.outcome AS outcome, o.strength AS strength FROM finding_outcomes o
+         JOIN review_runs r ON r.review_run_id = o.review_run_id WHERE r.created_at >= ?`
+    ).all(since)
+  );
 }
 function postedBreakdown(db) {
   const rows = db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all();
@@ -17801,22 +17809,112 @@ function percentile(values, p) {
 function median(values) {
   return percentile(values, 50);
 }
-function computeMetrics(db) {
-  const runs = db.prepare("SELECT output_json FROM review_runs").all();
-  const stageRows = db.prepare("SELECT stages_json FROM review_runs WHERE stages_json IS NOT NULL AND stages_json != '[]'").all();
-  const runSeconds = [];
-  for (const row of stageRows) {
-    try {
-      const parsed2 = JSON.parse(row.stages_json);
-      if (!Array.isArray(parsed2)) continue;
-      const total = parsed2.reduce(
-        (sum, stage) => sum + (typeof stage === "object" && stage !== null && Number.isFinite(stage.seconds) ? stage.seconds : 0),
-        0
-      );
-      if (total > 0) runSeconds.push(total);
-    } catch {
+var DEFAULT_WINDOW_DAYS = 30;
+var DISMISSED_RATE_WARNING_THRESHOLD = 0.2;
+var DISMISSED_RATE_WARNING_MIN_STRONG = 10;
+function dismissedRateWarning(input) {
+  const { dismissed, strong, windowDays } = input;
+  if (strong < DISMISSED_RATE_WARNING_MIN_STRONG) return null;
+  const rate = dismissed / strong;
+  if (!(rate > DISMISSED_RATE_WARNING_THRESHOLD)) return null;
+  return `Warning: ${dismissed} of ${strong} posted findings in the last ${windowDays} days were dismissed (${(rate * 100).toFixed(0)}%); run \`review-voice explain\` on the dismissed ones and consider /review-voice:feedback.`;
+}
+function windowStart(days, now = () => /* @__PURE__ */ new Date()) {
+  return new Date(now().getTime() - days * 864e5).toISOString();
+}
+function parseStages(raw) {
+  if (raw === null) return [];
+  let parsed2;
+  try {
+    parsed2 = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed2)) return null;
+  return parsed2.map((stage) => {
+    const record3 = typeof stage === "object" && stage !== null ? stage : {};
+    const seconds = record3["seconds"];
+    const cost = record3["costUsd"];
+    return {
+      name: typeof record3["name"] === "string" ? record3["name"] : null,
+      // A non-finite duration contributes nothing, as it always has.
+      seconds: typeof seconds === "number" && Number.isFinite(seconds) ? seconds : 0,
+      cost: typeof cost === "number" && Number.isFinite(cost) ? cost : null
+    };
+  });
+}
+function storedStages(db) {
+  const rows = db.prepare("SELECT stages_json FROM review_runs").all();
+  return rows.map((row) => parseStages(row.stages_json));
+}
+function stageSeconds(db) {
+  const byName = /* @__PURE__ */ new Map();
+  for (const stages of storedStages(db)) {
+    if (stages === null) continue;
+    const inRun = /* @__PURE__ */ new Map();
+    for (const stage of stages) {
+      if (stage.name === null) continue;
+      inRun.set(stage.name, (inRun.get(stage.name) ?? 0) + stage.seconds);
+    }
+    for (const [name, total] of inRun) {
+      if (total > 0) byName.set(name, [...byName.get(name) ?? [], total]);
     }
   }
+  return Object.fromEntries(
+    [...byName.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, values]) => [name, { median: median(values), p95: percentile(values, 95), runs: values.length }])
+  );
+}
+function runCosts(db) {
+  const costs = [];
+  let excluded = 0;
+  for (const stages of storedStages(db)) {
+    if (stages === null || stages.length === 0 || stages.some((stage) => stage.cost === null)) {
+      excluded += 1;
+      continue;
+    }
+    costs.push(stages.reduce((sum, stage) => sum + stage.cost, 0));
+  }
+  return { costs, excluded };
+}
+function challengeCounts(db) {
+  const rows = db.prepare("SELECT output_json FROM review_runs").all();
+  let held = 0;
+  let judged = 0;
+  let runs = 0;
+  for (const row of rows) {
+    let scores;
+    try {
+      scores = JSON.parse(row.output_json)?.scores;
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(scores)) continue;
+    let judgedHere = 0;
+    for (const entry of scores) {
+      if (typeof entry !== "object" || entry === null || !Object.hasOwn(entry, "challenge")) continue;
+      judgedHere += 1;
+      const because = entry.rejectedBecause;
+      if (typeof because === "string" && because.startsWith("challenge-")) held += 1;
+    }
+    if (judgedHere > 0) {
+      judged += judgedHere;
+      runs += 1;
+    }
+  }
+  return { held, judged, runs };
+}
+function computeMetrics(db, options = {}) {
+  const runs = db.prepare("SELECT output_json FROM review_runs").all();
+  const windowDays = options.windowDays ?? DEFAULT_WINDOW_DAYS;
+  const runSeconds = [];
+  for (const stages of storedStages(db)) {
+    if (stages === null) continue;
+    const total = stages.reduce((sum, stage) => sum + stage.seconds, 0);
+    if (total > 0) runSeconds.push(total);
+  }
+  const { costs, excluded: uncosted } = runCosts(db);
+  const costBasis = `${costs.length} costed run(s), ${uncosted} excluded (no cost recorded)`;
+  const challenge2 = challengeCounts(db);
   const agreement = candidateSetAgreement(db);
   const findingsPerRun = [];
   const wordsPerFinding = [];
@@ -17848,6 +17946,8 @@ function computeMetrics(db) {
   const labelled = kept + dismissed;
   const ratio2 = (numerator, denominator) => denominator === 0 ? null : numerator / denominator;
   const posted = postedStats(db);
+  const recent = postedStats(db, { since: windowStart(windowDays, options.now) });
+  const recentDecided = recent.fixed + recent.dismissed;
   const metric = (name, value, target, meets, basis, kind = "gate") => ({
     name,
     value,
@@ -17876,6 +17976,38 @@ function computeMetrics(db) {
       "no target",
       () => true,
       runSeconds.length === 0 ? "no run has recorded stage timings; pass `record --stages`" : `${runSeconds.length} run(s) with recorded stages`,
+      "goal"
+    ),
+    metric(
+      "p95_review_seconds",
+      percentile(runSeconds, 95),
+      "no target",
+      () => true,
+      runSeconds.length === 0 ? "no run has recorded stage timings; pass `record --stages`" : `${runSeconds.length} run(s) with recorded stages`,
+      "goal"
+    ),
+    metric(
+      "median_review_cost_usd",
+      median(costs),
+      "no target",
+      () => true,
+      costBasis,
+      "goal"
+    ),
+    metric(
+      "p95_review_cost_usd",
+      percentile(costs, 95),
+      "no target",
+      () => true,
+      costBasis,
+      "goal"
+    ),
+    metric(
+      "challenge_hold_rate",
+      challenge2.judged === 0 ? null : challenge2.held / challenge2.judged,
+      "no target",
+      () => true,
+      `${challenge2.held} held / ${challenge2.judged} judged over ${challenge2.runs} run(s)`,
       "goal"
     ),
     metric(
@@ -17961,6 +18093,25 @@ function computeMetrics(db) {
       "no target",
       () => true,
       `${posted.dismissed} dismissed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
+      "goal"
+    ),
+    // The same rates over a rolling window, so a change to the reviewer shows
+    // up before the all-time figure moves. The window is by the run's creation
+    // time, which is when the finding was posted.
+    metric(
+      "posted_fixed_rate_recent",
+      recent.fixedRate,
+      "no target",
+      () => true,
+      `${recent.fixed} fixed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
+      "goal"
+    ),
+    metric(
+      "posted_dismissed_rate_recent",
+      recent.dismissedRate,
+      "no target",
+      () => true,
+      `${recent.dismissed} dismissed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
       "goal"
     )
   ];
@@ -21967,9 +22118,10 @@ var COMMAND_HELP = {
       "Flags:",
       "  --json                 Emit the metrics as JSON, with posted-finding outcomes by severity and lane",
       "  --recall <results.json>  Also report the fixture recall figures from a file `review-voice recall` wrote",
+      "  --since <Nd>           Window in days for posted_fixed_rate_recent and posted_dismissed_rate_recent (default 30d)",
       "Reads: nothing on stdin; the local store, and the results file with --recall.",
-      "Writes: text (or JSON) on stdout.",
-      "Exit codes: 0 ok, 2 bad invocation (a missing or malformed results file)."
+      "Writes: text (or JSON) on stdout; --json also carries stage_seconds, the median and p95 seconds per stage.",
+      "Exit codes: 0 ok, 2 bad invocation."
     )
   },
   recall: {
@@ -23494,12 +23646,28 @@ function evaluateCommand(argv) {
       return 2;
     }
   }
+  let windowDays = DEFAULT_WINDOW_DAYS;
+  if (argv.includes("--since")) {
+    const wanted = flag(argv, "--since");
+    const match = wanted === null ? null : /^(\d{1,5})d$/.exec(wanted);
+    if (match === null) {
+      console.error("--since takes a whole number of days, such as 30d.");
+      return 2;
+    }
+    windowDays = Number(match[1]);
+  }
   const db = openDatabase();
   try {
-    const metrics = [...computeMetrics(db), ...recallMetrics(recall)];
+    const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
     if (argv.includes("--json")) {
       const { bySeverity, byLane } = postedBreakdown(db);
-      console.log(JSON.stringify({ metrics, posted_breakdown: { by_severity: bySeverity, by_lane: byLane } }, null, 2));
+      console.log(
+        JSON.stringify(
+          { metrics, posted_breakdown: { by_severity: bySeverity, by_lane: byLane }, stage_seconds: stageSeconds(db) },
+          null,
+          2
+        )
+      );
     } else {
       for (const metric of metrics) {
         const value = metric.value === null ? "no data" : Number.isInteger(metric.value) && metric.name.endsWith("_tracked") ? String(metric.value) : metric.value.toFixed(2);
@@ -26147,6 +26315,13 @@ function statusCommand() {
         `unlabelled       ${unlabelled} finding(s). Precision cannot be measured until these carry a verdict: /review-voice:feedback <id> keep|dismiss|rewrite`
       );
     }
+    const recent = postedStats(db, { since: windowStart(DEFAULT_WINDOW_DAYS) });
+    const dismissalWarning = dismissedRateWarning({
+      dismissed: recent.dismissed,
+      strong: recent.fixed + recent.dismissed,
+      windowDays: DEFAULT_WINDOW_DAYS
+    });
+    if (dismissalWarning !== null) console.log(dismissalWarning);
     if (last !== null) {
       const origin = lastDetail?.provenance == null ? "" : `; ${describeOrigin(lastDetail.provenance)}`;
       console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(", ") || "none"}${origin}`);

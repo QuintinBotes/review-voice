@@ -516,8 +516,24 @@ interface OutcomeRow {
   strength: string;
 }
 
-export function postedStats(db: Database): PostedStats {
-  return statsOf(db.prepare('SELECT outcome, strength FROM finding_outcomes').all() as unknown as OutcomeRow[]);
+/**
+ * Strong-outcome figures over every stored outcome, or with `since` (an ISO
+ * time) only those whose run was created at or after it. The window joins
+ * `review_runs`, so an outcome with no run row falls outside any window and
+ * stays in the all-time figures only.
+ */
+export function postedStats(db: Database, { since }: { since?: string } = {}): PostedStats {
+  if (since === undefined) {
+    return statsOf(db.prepare('SELECT outcome, strength FROM finding_outcomes').all() as unknown as OutcomeRow[]);
+  }
+  return statsOf(
+    db
+      .prepare(
+        `SELECT o.outcome AS outcome, o.strength AS strength FROM finding_outcomes o
+         JOIN review_runs r ON r.review_run_id = o.review_run_id WHERE r.created_at >= ?`,
+      )
+      .all(since) as unknown as OutcomeRow[],
+  );
 }
 
 /** The same figures by the finding's severity and lane (a finding with no lane is a `diff` finding). */

@@ -42,6 +42,175 @@ interface RunRow {
 }
 
 /**
+ * The window the rolling posted rates and the `status` warning use when the
+ * caller names none. Thirty days is long enough to hold a useful number of
+ * strong outcomes on a quiet repository and short enough that a change to the
+ * reviewer shows up in it.
+ */
+export const DEFAULT_WINDOW_DAYS = 30;
+
+/**
+ * Above this share of dismissed strong outcomes, `status` warns. The product
+ * specification this programme draws on alerts when the invalid-comment rate on
+ * human dismissals exceeds 20%; that figure is a starting point, not a measured
+ * optimum, and moves when real windows say otherwise.
+ */
+export const DISMISSED_RATE_WARNING_THRESHOLD = 0.2;
+
+/**
+ * Fewest strong outcomes in the window before the warning can fire. Three
+ * dismissals of four is 75% and means nothing; ten is a starting point chosen
+ * so one reply cannot swing the rate by more than ten points.
+ */
+export const DISMISSED_RATE_WARNING_MIN_STRONG = 10;
+
+/**
+ * The `status` line for a dismissed rate over the threshold, or null.
+ *
+ * Pure so the boundary is testable: the rate must be strictly above the
+ * threshold (exactly 20% is quiet) and the window must hold at least the
+ * minimum of strong outcomes. Nothing is said below that, because a warning
+ * from three outcomes would be noise the reader learns to ignore.
+ */
+export function dismissedRateWarning(input: { dismissed: number; strong: number; windowDays: number }): string | null {
+  const { dismissed, strong, windowDays } = input;
+  if (strong < DISMISSED_RATE_WARNING_MIN_STRONG) return null;
+  const rate = dismissed / strong;
+  if (!(rate > DISMISSED_RATE_WARNING_THRESHOLD)) return null;
+  return (
+    `Warning: ${dismissed} of ${strong} posted findings in the last ${windowDays} days were dismissed ` +
+    `(${(rate * 100).toFixed(0)}%); run \`review-voice explain\` on the dismissed ones and consider /review-voice:feedback.`
+  );
+}
+
+export interface ComputeOptions {
+  /** Days the `_recent` posted rates look back; default 30. */
+  windowDays?: number;
+  now?: () => Date;
+}
+
+/** The ISO time `days` before now, the form `review_runs.created_at` is stored in. */
+export function windowStart(days: number, now: () => Date = () => new Date()): string {
+  return new Date(now().getTime() - days * 86_400_000).toISOString();
+}
+
+interface ParsedStage {
+  name: string | null;
+  seconds: number;
+  cost: number | null;
+}
+
+/** The stages of one stored `stages_json`, or null when it will not parse. */
+function parseStages(raw: string | null): ParsedStage[] | null {
+  if (raw === null) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  return parsed.map((stage: unknown): ParsedStage => {
+    const record = typeof stage === 'object' && stage !== null ? (stage as Record<string, unknown>) : {};
+    const seconds = record['seconds'];
+    const cost = record['costUsd'];
+    return {
+      name: typeof record['name'] === 'string' ? record['name'] : null,
+      // A non-finite duration contributes nothing, as it always has.
+      seconds: typeof seconds === 'number' && Number.isFinite(seconds) ? seconds : 0,
+      cost: typeof cost === 'number' && Number.isFinite(cost) ? cost : null,
+    };
+  });
+}
+
+function storedStages(db: Database): (ParsedStage[] | null)[] {
+  const rows = db.prepare('SELECT stages_json FROM review_runs').all() as unknown as { stages_json: string | null }[];
+  return rows.map((row) => parseStages(row.stages_json));
+}
+
+/**
+ * Seconds per stage across runs: for each stage name, the median and 95th
+ * percentile of the time that stage took in a run (summed when a run names it
+ * twice) and the number of runs that recorded it.
+ *
+ * Not a `Metric`: its value is a map, and the tests that walk every metric
+ * assert a number or null. `evaluate --json` carries it beside the metrics.
+ */
+export function stageSeconds(db: Database): Record<string, { median: number; p95: number; runs: number }> {
+  const byName = new Map<string, number[]>();
+  for (const stages of storedStages(db)) {
+    if (stages === null) continue;
+    const inRun = new Map<string, number>();
+    for (const stage of stages) {
+      if (stage.name === null) continue;
+      inRun.set(stage.name, (inRun.get(stage.name) ?? 0) + stage.seconds);
+    }
+    for (const [name, total] of inRun) {
+      // As with a whole run, zero seconds is an unmeasured stage.
+      if (total > 0) byName.set(name, [...(byName.get(name) ?? []), total]);
+    }
+  }
+  return Object.fromEntries(
+    [...byName.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, values]) => [name, { median: median(values) as number, p95: percentile(values, 95) as number, runs: values.length }]),
+  );
+}
+
+/**
+ * Per-review cost over costed runs. A run is costed when it recorded at least
+ * one stage and every stage carries a numeric `costUsd`; the slash command's
+ * stages carry no cost at all, and an agent that reported none leaves the key
+ * absent. Summing the stages that happen to have one would understate a run.
+ */
+function runCosts(db: Database): { costs: number[]; excluded: number } {
+  const costs: number[] = [];
+  let excluded = 0;
+  for (const stages of storedStages(db)) {
+    if (stages === null || stages.length === 0 || stages.some((stage) => stage.cost === null)) {
+      excluded += 1;
+      continue;
+    }
+    costs.push(stages.reduce((sum, stage) => sum + (stage.cost as number), 0));
+  }
+  return { costs, excluded };
+}
+
+/**
+ * Held and judged counts from `output_json.scores[]`. An entry the challenger
+ * judged carries a `challenge` key, and one it held also has a
+ * `rejectedBecause` starting `challenge-`. The `held` array and the stage list
+ * are not consulted, so held can never exceed judged.
+ */
+function challengeCounts(db: Database): { held: number; judged: number; runs: number } {
+  const rows = db.prepare('SELECT output_json FROM review_runs').all() as unknown as RunRow[];
+  let held = 0;
+  let judged = 0;
+  let runs = 0;
+  for (const row of rows) {
+    let scores: unknown;
+    try {
+      scores = (JSON.parse(row.output_json) as { scores?: unknown } | null)?.scores;
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(scores)) continue;
+    let judgedHere = 0;
+    for (const entry of scores) {
+      if (typeof entry !== 'object' || entry === null || !Object.hasOwn(entry, 'challenge')) continue;
+      judgedHere += 1;
+      const because = (entry as { rejectedBecause?: unknown }).rejectedBecause;
+      if (typeof because === 'string' && because.startsWith('challenge-')) held += 1;
+    }
+    if (judgedHere > 0) {
+      judged += judgedHere;
+      runs += 1;
+    }
+  }
+  return { held, judged, runs };
+}
+
+/**
  * Computes the specification's evaluation metrics from recorded runs and
  * feedback.
  *
@@ -49,34 +218,24 @@ interface RunRow {
  * reviewer that has never run is not a reviewer with perfect compliance, and
  * reporting 100% from zero samples is how a dashboard starts lying.
  */
-export function computeMetrics(db: Database): Metric[] {
+export function computeMetrics(db: Database, options: ComputeOptions = {}): Metric[] {
   const runs = db.prepare('SELECT output_json FROM review_runs').all() as unknown as RunRow[];
+  const windowDays = options.windowDays ?? DEFAULT_WINDOW_DAYS;
 
   // How long a review actually takes. Recorded per stage so the cadence
   // question - a recurring sweep at ten minutes cannot wrap a review that runs
   // for twenty-five - rests on a distribution rather than the one run somebody
   // happened to time.
-  const stageRows = db
-    .prepare("SELECT stages_json FROM review_runs WHERE stages_json IS NOT NULL AND stages_json != '[]'")
-    .all() as unknown as { stages_json: string }[];
   const runSeconds: number[] = [];
-  for (const row of stageRows) {
-    try {
-      const parsed: unknown = JSON.parse(row.stages_json);
-      if (!Array.isArray(parsed)) continue;
-      const total = parsed.reduce(
-        (sum: number, stage: unknown) =>
-          sum +
-          (typeof stage === 'object' && stage !== null && Number.isFinite((stage as { seconds?: number }).seconds)
-            ? ((stage as { seconds: number }).seconds)
-            : 0),
-        0,
-      );
-      if (total > 0) runSeconds.push(total);
-    } catch {
-      // A row that will not parse is not a measurement.
-    }
+  for (const stages of storedStages(db)) {
+    // A row that will not parse is not a measurement.
+    if (stages === null) continue;
+    const total = stages.reduce((sum, stage) => sum + stage.seconds, 0);
+    if (total > 0) runSeconds.push(total);
   }
+  const { costs, excluded: uncosted } = runCosts(db);
+  const costBasis = `${costs.length} costed run(s), ${uncosted} excluded (no cost recorded)`;
+  const challenge = challengeCounts(db);
 
   const agreement = candidateSetAgreement(db);
 
@@ -122,6 +281,8 @@ export function computeMetrics(db: Database): Metric[] {
     denominator === 0 ? null : numerator / denominator;
 
   const posted = postedStats(db);
+  const recent = postedStats(db, { since: windowStart(windowDays, options.now) });
+  const recentDecided = recent.fixed + recent.dismissed;
 
   const metric = (
     name: string,
@@ -161,6 +322,40 @@ export function computeMetrics(db: Database): Metric[] {
       runSeconds.length === 0
         ? 'no run has recorded stage timings; pass `record --stages`'
         : `${runSeconds.length} run(s) with recorded stages`,
+      'goal',
+    ),
+    metric(
+      'p95_review_seconds',
+      percentile(runSeconds, 95),
+      'no target',
+      () => true,
+      runSeconds.length === 0
+        ? 'no run has recorded stage timings; pass `record --stages`'
+        : `${runSeconds.length} run(s) with recorded stages`,
+      'goal',
+    ),
+    metric(
+      'median_review_cost_usd',
+      median(costs),
+      'no target',
+      () => true,
+      costBasis,
+      'goal',
+    ),
+    metric(
+      'p95_review_cost_usd',
+      percentile(costs, 95),
+      'no target',
+      () => true,
+      costBasis,
+      'goal',
+    ),
+    metric(
+      'challenge_hold_rate',
+      challenge.judged === 0 ? null : challenge.held / challenge.judged,
+      'no target',
+      () => true,
+      `${challenge.held} held / ${challenge.judged} judged over ${challenge.runs} run(s)`,
       'goal',
     ),
     metric(
@@ -246,6 +441,25 @@ export function computeMetrics(db: Database): Metric[] {
       'no target',
       () => true,
       `${posted.dismissed} dismissed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
+      'goal',
+    ),
+    // The same rates over a rolling window, so a change to the reviewer shows
+    // up before the all-time figure moves. The window is by the run's creation
+    // time, which is when the finding was posted.
+    metric(
+      'posted_fixed_rate_recent',
+      recent.fixedRate,
+      'no target',
+      () => true,
+      `${recent.fixed} fixed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
+      'goal',
+    ),
+    metric(
+      'posted_dismissed_rate_recent',
+      recent.dismissedRate,
+      'no target',
+      () => true,
+      `${recent.dismissed} dismissed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
       'goal',
     ),
   ];
