@@ -10,6 +10,7 @@
 import { readFileSync, readSync, writeFileSync, mkdirSync, statSync, lstatSync, renameSync, rmSync, existsSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import { format } from 'node:util';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
@@ -105,7 +106,7 @@ import { configFile, loadConfig } from './policy/load.ts';
 import { resolvePolicy } from './policy/schema.ts';
 import { repositoryRoot } from './diff/acquire.ts';
 import { addHeadWorktree, removeHeadWorktree } from './review/worktree.ts';
-import { collectEvidence, notRunReport } from './evidence/run.ts';
+import { collectEvidence, notRunReport, stopCommandsOnSignal } from './evidence/run.ts';
 import type { EvidenceSignal } from './evidence/types.ts';
 import { verifyFindings, type VerifiableFinding } from './verify/external.ts';
 import { parseSecondPass, parseTieBreaks, reconcile, ReconcileInputError, type TieBreak } from './verify/reconcile.ts';
@@ -2773,7 +2774,7 @@ function redactCommand(argv: string[]): number {
   return 0;
 }
 
-function verifyCommand(argv: string[]): number {
+async function verifyCommand(argv: string[]): Promise<number> {
   // As with `evidence`, the configuration names the command and comes from
   // this checkout or REVIEW_VOICE_CONFIG, and --cwd is only where it runs, so
   // the second pass judges findings about the head against the head (issue 275).
@@ -2837,7 +2838,7 @@ function verifyCommand(argv: string[]): number {
     };
     const base = commitOf(flag(argv, '--base'));
     const head = commitOf(flag(argv, '--head'));
-    const report = verifyFindings(findings, config.verification, {
+    const report = await verifyFindings(findings, config.verification, {
       cwd: cwdFlag === null ? root : resolve(cwdFlag),
       context: {
         repository: flag(argv, '--repository') ?? inferRepository(root),
@@ -2947,7 +2948,7 @@ function reconcileCommand(argv: string[]): number {
   }
 }
 
-function evidenceCommand(argv: string[]): number {
+async function evidenceCommand(argv: string[]): Promise<number> {
   // The configuration names the commands and comes from this checkout or
   // REVIEW_VOICE_CONFIG; --cwd is only where they run. So a review of a pull
   // request runs the checks on the head tree without ever reading the head's
@@ -2976,7 +2977,7 @@ function evidenceCommand(argv: string[]): number {
             config.staticEvidence.commands.map((command) => command.name),
             'REVIEW_VOICE_NO_COMMANDS',
           )
-        : collectEvidence(config.staticEvidence.commands, {
+        : await collectEvidence(config.staticEvidence.commands, {
             cwd,
             enabled: config.staticEvidence.enabled,
             envPassthrough: config.staticEvidence.envPassthrough,
@@ -5736,6 +5737,21 @@ async function agentCommand(argv: string[]): Promise<number> {
   return result.ok ? 0 : 1;
 }
 
+/**
+ * A command that runs configured commands, run on its own: a stop signal
+ * kills them too (#277). Under the review driver, its own handler does that
+ * and removes the worktree, so none is added here.
+ */
+async function whileStoppable(run: () => Promise<number>): Promise<number> {
+  if (inProcess !== null) return run();
+  const release = stopCommandsOnSignal();
+  try {
+    return await run();
+  } finally {
+    release();
+  }
+}
+
 async function dispatch(argv: string[]): Promise<number> {
   const command = argv[0];
 
@@ -5906,7 +5922,7 @@ async function dispatch(argv: string[]): Promise<number> {
       return conventionsCommand(argv.slice(1));
 
     case 'evidence':
-      return evidenceCommand(argv.slice(1));
+      return await whileStoppable(() => evidenceCommand(argv.slice(1)));
 
     case 'worktree':
       return worktreeCommand(argv.slice(1));
@@ -5914,7 +5930,7 @@ async function dispatch(argv: string[]): Promise<number> {
     case 'reconcile':
       return reconcileCommand(argv.slice(1));
     case 'verify':
-      return verifyCommand(argv);
+      return await whileStoppable(() => verifyCommand(argv));
 
     case 'record':
       return recordCommand(argv.slice(1));
@@ -5998,6 +6014,14 @@ export interface CommandResult {
 }
 
 /**
+ * Set inside the in-process command's own calls. A command that awaits (a
+ * configured check now does, issue 277) leaves the event loop to other code,
+ * and what that code prints is not the command's output, so it goes where it
+ * was going. Under node:test that is the runner's own event stream.
+ */
+const inCommand = new AsyncLocalStorage<true>();
+
+/**
  * Runs one command in this process with its output captured, for the review
  * driver: every stage calls the command itself, so the driver adds no review
  * logic of its own (docs/adr/0022). One command at a time.
@@ -6011,15 +6035,17 @@ export async function runInProcess(
   const err: string[] = [];
   const saved = { log: console.log, error: console.error, write: process.stdout.write };
   inProcess = { stdin: options.stdin ?? '', fetchImpl: options.fetchImpl };
-  console.log = (...args: unknown[]) => void out.push(`${format(...args)}\n`);
-  console.error = (...args: unknown[]) => void err.push(`${format(...args)}\n`);
-  process.stdout.write = ((chunk: string | Uint8Array) => {
+  const mine = (): boolean => inCommand.getStore() === true;
+  console.log = (...args: unknown[]) => (mine() ? void out.push(`${format(...args)}\n`) : saved.log(...args));
+  console.error = (...args: unknown[]) => (mine() ? void err.push(`${format(...args)}\n`) : saved.error(...args));
+  process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+    if (!mine()) return (saved.write as (...args: unknown[]) => boolean).call(process.stdout, chunk, ...rest);
     out.push(String(chunk));
     return true;
   }) as typeof process.stdout.write;
   let code: number;
   try {
-    code = await dispatch(argv);
+    code = await inCommand.run(true, () => dispatch(argv));
   } catch (error) {
     const failure = failureOf(error);
     err.push(`${failure.message}\n`);

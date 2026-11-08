@@ -8,6 +8,7 @@ import { seriousNotCarried, type NotCarriedFinding } from '../diff/carry.ts';
 import type { ComplexityAssessment } from '../diff/complexity.ts';
 import { originRepository } from '../diff/pull-request.ts';
 import { parseHunks } from '../diff/hunks.ts';
+import { stopCommands } from '../evidence/run.ts';
 import type { GitHubClient } from '../github/client.ts';
 import { descriptionOf } from '../intent.ts';
 import { blockingContext, type MissingContext } from '../scoring/score.ts';
@@ -1299,9 +1300,11 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
   const cleanUp = (): void => {
     for (const undo of run.cleanup.splice(0).reverse()) undo();
   };
-  // A signal stops the agents, removes the worktree, then exits as the runner would.
+  // A signal stops the agents and any configured command running in the
+  // worktree, removes the worktree, then exits as the runner would.
   const onSignal = (signal: NodeJS.Signals): void => {
     stopAll();
+    stopCommands();
     cleanUp();
     process.exit(signal === 'SIGINT' ? 130 : 143);
   };

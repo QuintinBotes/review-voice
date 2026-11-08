@@ -95,10 +95,10 @@ test('AC-3: the evidence CLI skips every configured check and version command', 
   }
 });
 
-test('AC-5: only configured versions spawn and use the check limits with a sanitised first line', () => {
+test('AC-5: only configured versions spawn and use the check limits with a sanitised first line', async () => {
   const calls = [];
   const stdout = ` \u0000Tool\u202e\u200b\u2066\u2028\u2029 1.2 ${'\u{1f680}'.repeat(90)}\r\nignored second line`;
-  const report = collectEvidence([
+  const report = await collectEvidence([
     { name: 'plain', run: 'check plain' },
     { name: 'versioned', run: 'check versioned', version: 'tool --version', timeoutSeconds: 7 },
   ], {
@@ -121,7 +121,7 @@ test('AC-5: only configured versions spawn and use the check limits with a sanit
   assert.deepEqual(report.didNotRun, []);
 });
 
-test('AC-5: failed or empty version commands add no version, signal or didNotRun entry', () => {
+test('AC-5: failed or empty version commands add no version, signal or didNotRun entry', async () => {
   for (const result of [
     { status: 1, stdout: 'src/app.ts(3,1): error TS1234: Version failed.' },
     { status: 0, stdout: 'ignored', error: new Error('spawn failed') },
@@ -130,7 +130,7 @@ test('AC-5: failed or empty version commands add no version, signal or didNotRun
     { status: 0, stdout: ' \u202e\u200b\r\n' },
   ]) {
     const calls = [];
-    const report = collectEvidence([{ name: 'typecheck', run: 'check', version: 'version' }], {
+    const report = await collectEvidence([{ name: 'typecheck', run: 'check', version: 'version' }], {
       cwd: '/synthetic/repository', enabled: true,
       spawn: (command) => {
         calls.push(command);
@@ -206,10 +206,10 @@ test('verify spawns nothing under REVIEW_VOICE_NO_COMMANDS and says so', (t) => 
 
 // A timed-out version command's shell is killed by the timeout; what it left
 // running in the background has to go with it, or it outlives the review.
-test('a version command that times out takes its background children with it', (t) => {
+test('a version command that times out takes its background children with it', async (t) => {
   const dir = temporary(t, 'rv-s08-reap-');
   const pidFile = join(dir, 'child.pid');
-  const report = collectEvidence(
+  const report = await collectEvidence(
     [{ name: 'slow', run: 'true', timeoutSeconds: 1, version: `sleep 30 & echo $! > "${pidFile}"; wait` }],
     { cwd: dir, enabled: true },
   );
@@ -259,9 +259,9 @@ test('a candidate path spelled with a leading dot still matches its signal', (t)
 });
 
 // A version command that ignores the polite signal must not hold the review.
-test('a version command that traps the termination signal is still cut off at the timeout', () => {
+test('a version command that traps the termination signal is still cut off at the timeout', async () => {
   const started = Date.now();
-  const report = collectEvidence(
+  const report = await collectEvidence(
     [{ name: 'stubborn', run: 'true', timeoutSeconds: 1, version: "trap '' TERM; sleep 5; printf 'tool 1.2\\n'" }],
     { cwd: tmpdir(), enabled: true },
   );
@@ -298,11 +298,11 @@ test('a signal path with a dot segment matches the plain candidate path', (t) =>
 
 // A check, not only a version command, runs in its own process group, and the
 // group goes on every failure: a timeout here, output past the cap below.
-test('a check that times out and a version command that overflows both take their children with them', (t) => {
+test('a check that times out and a version command that overflows both take their children with them', async (t) => {
   const dir = temporary(t, 'rv-s08-reap-all-');
   const checkPid = join(dir, 'check.pid');
   const versionPid = join(dir, 'version.pid');
-  const report = collectEvidence(
+  const report = await collectEvidence(
     [
       { name: 'slow-check', run: `sleep 30 & echo $! > "${checkPid}"; wait`, timeoutSeconds: 1 },
       { name: 'loud-version', run: 'true', timeoutSeconds: 5, version: `sleep 30 & echo $! > "${versionPid}"; head -c 20000000 /dev/zero` },
@@ -347,10 +347,10 @@ test('quoted names are compared as spelled, and a suggested fix is not required'
 
 // A check that exits non-zero has returned; whatever it left in the background
 // goes with its process group all the same.
-test('a check that exits non-zero takes its background child with it', (t) => {
+test('a check that exits non-zero takes its background child with it', async (t) => {
   const dir = temporary(t, 'rv-s08-reap-exit-');
   const pidFile = join(dir, 'child.pid');
-  const report = collectEvidence([{ name: 'failing', run: `sleep 30 > /dev/null 2>&1 & echo $! > "${pidFile}"; exit 1` }], { cwd: dir, enabled: true });
+  const report = await collectEvidence([{ name: 'failing', run: `sleep 30 > /dev/null 2>&1 & echo $! > "${pidFile}"; exit 1` }], { cwd: dir, enabled: true });
   assert.equal(report.commands[0].exitCode, 1);
   const pid = Number(execFileSync('cat', [pidFile], { encoding: 'utf8' }).trim());
   assert.ok(pid > 0);

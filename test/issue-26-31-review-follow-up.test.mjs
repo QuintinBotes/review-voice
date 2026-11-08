@@ -33,8 +33,8 @@ const verify = (stdout) =>
     runner: () => ({ stdout, stderr: '', failed: false }),
   });
 
-test('an unknown label on the final verdict is no verdict, not the earlier draft', () => {
-  const report = verify(
+test('an unknown label on the final verdict is no verdict, not the earlier draft', async () => {
+  const report = await verify(
     'Draft: {"verdict": "rejected", "confidence": 0.95, "reason": "guarded"}\n' +
       'On reflection, final: {"verdict": "PARTLY", "confidence": 0.7, "reason": "half of it holds"}',
   );
@@ -43,15 +43,15 @@ test('an unknown label on the final verdict is no verdict, not the earlier draft
   assert.equal(v.finalSeverity, 'important');
 
   // A known final label still wins over the draft, as before.
-  const revised = verify('{"verdict": "rejected", "confidence": 0.95}\n{"verdict": "Confirmed", "confidence": 0.9}');
+  const revised = await verify('{"verdict": "rejected", "confidence": 0.95}\n{"verdict": "Confirmed", "confidence": 0.9}');
   assert.equal(revised.verdicts[0].outcome, 'kept');
   // An object with no verdict after the final one does not hide it.
-  const trailing = verify('{"verdict": "rejected", "confidence": 0.95, "reason": "guarded"}\n{"note": "done"}');
+  const trailing = await verify('{"verdict": "rejected", "confidence": 0.95, "reason": "guarded"}\n{"note": "done"}');
   assert.equal(trailing.verdicts[0].outcome, 'dropped');
 });
 
-test('a reason that is not text is read as none, and the run goes on', () => {
-  const report = verify(
+test('a reason that is not text is read as none, and the run goes on', async () => {
+  const report = await verify(
     JSON.stringify({ verdict: 'confirmed', confidence: 0.9, reason: { text: 'worse' }, suggested_severity: 'blocking', decisive_evidence: [{ path: 'a.ts', line: 1, why: 'w' }] }),
   );
   const [v] = report.verdicts;
