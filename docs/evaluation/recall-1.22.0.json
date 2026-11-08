@@ -1,0 +1,557 @@
+{
+  "pluginVersion": "1.22.0",
+  "mode": "auto",
+  "runner": "claude",
+  "fixtures": [
+    {
+      "name": "positive/alert-threshold-meaning",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 27.56,
+      "costUsd": 0.2234,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ci-gate",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": true,
+      "findings": 1,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 66.81,
+      "costUsd": 0.5974,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/complete-call-sites",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": false,
+      "findings": 1,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 34.83,
+      "costUsd": 0.1183,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/contract-provider-drift",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 44.76,
+      "costUsd": 0.0944,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/degenerate-parser-input",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 24.21,
+      "costUsd": 0.088,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/factual-claim-consistency",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 38.7,
+      "costUsd": 0.1505,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/metric-label-evidence",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": true,
+      "findings": 1,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 55.71,
+      "costUsd": 0.1945,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/paged-mock-any-argument",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 6,
+      "categoryMatch": true,
+      "findings": 2,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 67.48,
+      "costUsd": 0.2293,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/read-endpoint-exposure",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 2,
+      "categoryMatch": false,
+      "findings": 1,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 78.05,
+      "costUsd": 0.2633,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/removed-allowlist-entry",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": false,
+      "findings": 1,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 48.84,
+      "costUsd": 0.2195,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/removed-auth-check",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": true,
+      "findings": 1,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 48.47,
+      "costUsd": 0.2361,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/removed-rate-limit",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": true,
+      "findings": 1,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 59.57,
+      "costUsd": 0.2568,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/runtime-endpoint-metadata",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": true,
+      "findings": 1,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 44.62,
+      "costUsd": 0.1248,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/shadow-path-parity",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 4,
+      "categoryMatch": null,
+      "findings": 2,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 72.2,
+      "costUsd": 0.2649,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/simplification-dispatcher",
+      "class": "positive",
+      "skipped": "The opt-in simplification pass is not a stage runReview drives, so the recall harness cannot score this fixture."
+    },
+    {
+      "name": "positive/structural-copied-logic",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": true,
+      "findings": 1,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 32.19,
+      "costUsd": 0.099,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/structural-mode-parameter",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 22.55,
+      "costUsd": 0.0879,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/structural-serialized-awaits",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 19.44,
+      "costUsd": 0.0692,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/structural-shared-module",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": false,
+      "findings": 1,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 71.26,
+      "costUsd": 0.1965,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/structural-silent-fallback",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 19.9,
+      "costUsd": 0.0755,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/structural-thin-wrapper",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 19.82,
+      "costUsd": 0.0735,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/test-revert-blind",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": true,
+      "findings": 1,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 29.92,
+      "costUsd": 0.0999,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/transaction-ordering",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": false,
+      "findings": 1,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 65.36,
+      "costUsd": 0.3019,
+      "exitCode": 0
+    },
+    {
+      "name": "negative/alert-threshold-meaning",
+      "class": "negative",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 6.92,
+      "costUsd": 0.0432,
+      "exitCode": 0
+    },
+    {
+      "name": "negative/complete-call-sites-covered",
+      "class": "negative",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 6.58,
+      "costUsd": 0.0403,
+      "exitCode": 0
+    },
+    {
+      "name": "negative/contract-provider-drift-sensitive",
+      "class": "negative",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 8.43,
+      "costUsd": 0.019,
+      "exitCode": 0
+    },
+    {
+      "name": "negative/document-only-endpoint-metadata",
+      "class": "negative",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 35.26,
+      "costUsd": 0.0822,
+      "exitCode": 0
+    },
+    {
+      "name": "negative/factual-claim-stated-conditionally",
+      "class": "negative",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 13.56,
+      "costUsd": 0.0549,
+      "exitCode": 0
+    },
+    {
+      "name": "negative/metric-label-evidence",
+      "class": "negative",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 19.79,
+      "costUsd": 0.0704,
+      "exitCode": 0
+    },
+    {
+      "name": "negative/moved-auth-check",
+      "class": "negative",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 7.46,
+      "costUsd": 0.042,
+      "exitCode": 0
+    },
+    {
+      "name": "negative/naming-preference",
+      "class": "negative",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 8.13,
+      "costUsd": 0.0427,
+      "exitCode": 0
+    },
+    {
+      "name": "negative/paged-mock-exact-arguments",
+      "class": "negative",
+      "silent": false,
+      "findings": 1,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 78.34,
+      "costUsd": 0.2327,
+      "exitCode": 0
+    },
+    {
+      "name": "negative/read-endpoint-exposure",
+      "class": "negative",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 18.78,
+      "costUsd": 0.0751,
+      "exitCode": 0
+    },
+    {
+      "name": "negative/shadow-path-parity",
+      "class": "negative",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 27.23,
+      "costUsd": 0.0846,
+      "exitCode": 0
+    },
+    {
+      "name": "negative/test-revert-sensitive",
+      "class": "negative",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 9.05,
+      "costUsd": 0.0494,
+      "exitCode": 0
+    },
+    {
+      "name": "negative/validated-parser-input",
+      "class": "negative",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 7.51,
+      "costUsd": 0.0417,
+      "exitCode": 0
+    },
+    {
+      "name": "no-findings/formatting-only",
+      "class": "no-findings",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 6.38,
+      "costUsd": 0.04,
+      "exitCode": 0
+    },
+    {
+      "name": "no-findings/simplification-direct-change",
+      "class": "no-findings",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 6.98,
+      "costUsd": 0.039,
+      "exitCode": 0
+    },
+    {
+      "name": "no-findings/structural-direct-change",
+      "class": "no-findings",
+      "silent": true,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 7.8,
+      "costUsd": 0.0394,
+      "exitCode": 0
+    }
+  ],
+  "summary": {
+    "keyBugRecall": 0.5454545454545454,
+    "causalLineHit": 0.8571428571428571,
+    "cleanSilence": 0.9375,
+    "positives": 22,
+    "skipped": 1,
+    "cleanFixtures": 16,
+    "failedRuns": 0
+  }
+}

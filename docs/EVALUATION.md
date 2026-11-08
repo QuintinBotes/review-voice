@@ -506,6 +506,59 @@ The frozen fixture set must not be tuned against. Editing a prompt until these
 fixtures pass measures the prompt's fit to the fixtures, not the reviewer; a
 fixture that is wrong is fixed in its own change, with the reason.
 
+### Measured on 1.22.0
+
+**Basis.** One `recall` run of release 1.22.0 (commit `0ae900f`) on
+2026-11-08, with `--runner claude`, the default mode (`auto`) and each stage's
+default model. It covered 39 fixtures: 23 positive, 13 negative and 3
+no-findings. One positive, `simplification-dispatcher`, is marked
+`harness: skip`, because the simplification pass is not a stage `runReview`
+drives. No run failed. The whole results file is
+[`docs/evaluation/recall-1.22.0.json`](evaluation/recall-1.22.0.json).
+
+| Figure | Result |
+|---|---|
+| Key-bug recall | 0.55, 12 of 22 positives |
+| Causal-line hit | 0.86, 12 of 14 positives with a finding on the expected file |
+| Clean silence | 0.94, 15 of 16 clean fixtures |
+| Review seconds per fixture, median | 27 |
+| Review seconds per fixture, 95th percentile | 78 |
+| Agent cost for the whole run, as the runner reported it | $5.06 over 38 reviews |
+
+Ten positives were missed:
+
+- **No finding on the expected file.** This happened on eight:
+  `alert-threshold-meaning`, `contract-provider-drift`,
+  `degenerate-parser-input`, `factual-claim-consistency`,
+  `structural-mode-parameter`, `structural-serialized-awaits`,
+  `structural-silent-fallback` and `structural-thin-wrapper`.
+- **The right file, outside the 3-line window.** This happened on two:
+  `paged-mock-any-argument`, 6 lines away, and `shadow-path-parity`, 4 lines
+  away.
+
+The structural fixtures account for most of the misses: 2 of 6 were found.
+The three removed-control fixtures were all found. One clean fixture,
+`negative/paged-mock-exact-arguments`, drew a finding.
+
+The fixture diffs are small. Their median of 27 seconds is inside the 90-second
+goal for small diffs.
+
+Real reviews are slower. `RV evaluate` over the maintainer's own recorded
+reviews gives the following figures:
+
+| Figure | Result |
+|---|---|
+| Review seconds, median | 150 |
+| Review seconds, 95th percentile | 713 |
+
+Of 97 recorded runs, these come from the 46 that have stage timings. Those
+runs are real pull requests of mixed size, across earlier releases. They do not
+compare with the fixture figures.
+
+This is a single run. One pass per fixture is a noisy sample, as this section
+says above, so a difference of one fixture is noise, not a trend. The weekly `Recall` workflow keeps the figure current once
+the repository has its `ANTHROPIC_API_KEY` secret.
+
 ## Reading the numbers
 
 `review-voice evaluate` computes these from recorded runs and feedback, and
