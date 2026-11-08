@@ -2510,8 +2510,13 @@ function calibrateCommand(): number {
     }
     // One policies row per scope, each with its own version sequence, so
     // approving or rolling back one directory's rules leaves the rest alone.
+    // Only a rule that can be approved goes into a row: a blocked one (a
+    // teammate's dismissals with no owner signal, say) would make the whole
+    // row unapprovable and so veto the owner's own rules beside it. It is
+    // printed with its reason instead, and proposed again once it qualifies.
     const byScope = new Map<string, { scope: PolicyScope; rules: typeof proposals }>();
     for (const proposal of proposals) {
+      if (!proposal.activatable) continue;
       const label = scopeLabel(proposal.scope);
       const group = byScope.get(label) ?? { scope: proposal.scope, rules: [] };
       group.rules.push(proposal);
@@ -2523,7 +2528,10 @@ function calibrateCommand(): number {
         const stored = proposePolicy(db, rules, scope);
         return { policyId: stored.policyId, version: stored.version, scope: scopeLabel(scope), active: stored.active };
       });
-    console.log(JSON.stringify({ policies, proposals }, null, 2));
+    const blocked = proposals
+      .filter((proposal) => !proposal.activatable)
+      .map((proposal) => ({ ruleId: proposal.ruleId, scope: scopeLabel(proposal.scope), blockedBecause: proposal.blockedBecause }));
+    console.log(JSON.stringify({ policies, blocked, proposals }, null, 2));
     return 0;
   } finally {
     db.close();

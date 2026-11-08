@@ -48,3 +48,11 @@ unrelated.
 **Treat merge-without-change as dismissal.** Rejected explicitly by the
 specification, and correctly: pull requests merge for deadline reasons that have
 nothing to do with whether a comment was right.
+
+## Amendment - 2026-11-08
+
+The strength rules also decide whether an inferred outcome may become policy
+evidence. Only strong outcomes qualify: strong thread dismissals can support
+suppression proposals during calibration. Weak outcomes and silence cannot
+contribute to a policy rule, even when repeated. A proposal must still meet
+the evidence bar and receive owner approval before activation.

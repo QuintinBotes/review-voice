@@ -74,6 +74,39 @@ provenance:
     most_recent_evidence_at: 2026-09-07T00:00:00Z
 ```
 
+## Path scopes and versions
+
+`calibrate` groups proposals by scope, storing one `policies` row per scope
+with its own version sequence. Suppression proposals use the longest common
+directory of their dismissals as a path glob, or the global scope when that
+directory is the repository root. Priority proposals stay global. A path
+policy carries the scope and the same glob on its suppressions:
+
+```yaml
+policy_version: 1
+scope:
+  type: path
+  key: "src/billing/**"
+
+suppressions:
+  - rule_id: maintainability:diff
+    glob: "src/billing/**"
+    reason: "owner dismissed 3 of 3 in November 2026"
+```
+
+Rules stay keyed by rule id. An approved rule's path scope only narrows where
+it applies; the directory does not become the rule's identity. Active path
+policies load after the global policy. A suppression without a glob in a path
+policy inherits the policy's glob.
+
+`policy show` lists every scope. Use `policy show --scope global` or
+`policy show --scope 'path:src/billing/**'` to inspect one scope.
+`policy rollback <version> --scope 'path:src/billing/**'` restores a previously
+approved version in that scope only; omitting `--scope` selects global.
+`policy approve <policy-id>` needs no scope because the id identifies the row.
+Approving a path policy replaces only the active version in that row's scope,
+leaving the global policy and other path policies unchanged.
+
 ## Suppressions
 
 `suppressed_patterns` is prose for readers. `suppressions` is the structured
@@ -86,8 +119,9 @@ has three fields:
   a blocker class. The lane is `diff` for a finding with none. A suppression
   matches a candidate only when their rule ids are exactly equal, so a rule
   about one lane says nothing about the same category in another lane.
-- `glob` narrows the suppression to candidates whose path matches it. Null
-  means everywhere.
+- `glob` narrows the suppression to candidates whose path matches it. A null
+  or omitted glob inherits a path policy's scope; in other scopes it means
+  everywhere.
 - `reason` says why the owner's signals formed the rule, in the owner's terms.
 
 A matched candidate is held at scoring time with the reason
@@ -120,11 +154,11 @@ If a rule needs a paragraph to express, it is two rules or none.
 
 ## Activation
 
-An inferred rule activates only if the owner approves it, **or** it has at least
-three corroborating positive signals including at least one owner signal, no
-contradicting owner signal, and it passes the regression suite.
-
-Global changes always require approval.
+An inferred rule requires at least three corroborating signals including at
+least one owner signal and no contradicting owner signal before it can be
+approved. Explicit feedback and strong thread dismissals supply evidence;
+weak outcomes and silence do not. `calibrate` creates inactive proposals.
+Every scope requires explicit owner approval; no proposal activates automatically.
 
 ## Provenance is mandatory
 

@@ -1,4 +1,6 @@
+import { posix } from 'node:path';
 import type { Database } from '../store/db.ts';
+import { isSuppressionExempt } from '../scoring/score.ts';
 import { categoryOfRuleId, ruleIdFor } from './rules.ts';
 
 export interface RuleEvidence {
@@ -124,18 +126,19 @@ export const GLOBAL_SCOPE = { type: 'global', key: 'owner' } as const;
 /**
  * The longest directory every path sits under, as segments; empty when they
  * share only the repository root. Whole segments, so `src/bill` and
- * `src/billing` meet at `src`, not at a half-named directory. A segment holding
- * a glob character ends the prefix: it would widen the glob it is written into.
+ * `src/billing` meet at `src`, not at a half-named directory. Each path is
+ * normalised first, so `src/billing/../orders/a.ts` sits under `src/orders`,
+ * and one that climbs out of the repository sits under nothing. A segment that
+ * happens to hold a glob character is kept as written: cutting the prefix
+ * short there would widen the scope to the parent, which is the one direction
+ * a scope derived from dismissals must never move.
  */
 function commonDirectory(paths: string[]): string[] {
   let common: string[] | null = null;
   for (const path of paths) {
-    const segments = path.split('\\').join('/').split('/').filter((part) => part.length > 0 && part !== '.');
-    const directories: string[] = [];
-    for (const segment of segments.slice(0, -1)) {
-      if (/[*?]/.test(segment) || segment === '..') break;
-      directories.push(segment);
-    }
+    const normalised = posix.normalize(path.split('\\').join('/'));
+    const segments = normalised.split('/').filter((part) => part.length > 0 && part !== '.');
+    const directories = segments[0] === '..' ? [] : segments.slice(0, -1);
     if (common === null) {
       common = directories;
     } else {
@@ -200,7 +203,17 @@ export function compileProposals(db: Database, options: { ownerReviewer?: string
       output_json: row.output_json,
     }),
   );
-  const rows = [...feedbackRows, ...threadRows].sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+  const merged = [...feedbackRows, ...threadRows].sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+  // One finding dismissed is one signal, whether the owner ran dismiss, then
+  // never_flag, and the thread said so too. The newest row of a finding stands.
+  const dismissed = new Set<string>();
+  const rows = merged.filter((row) => {
+    if (row.action !== 'dismiss' && row.action !== 'never_flag') return true;
+    const finding = `${row.review_run_id}${KEY_SEPARATOR}${row.finding_id}`;
+    if (dismissed.has(finding)) return false;
+    dismissed.add(finding);
+    return true;
+  });
 
   // Grouped by rule id (category, lane, blocker class), not by file path.
   // "Suppress naming comments" is a rule; "suppress things like the ones in
@@ -235,9 +248,11 @@ export function compileProposals(db: Database, options: { ownerReviewer?: string
     const rewrites = group.filter((g) => g.row.action === 'rewrite').length;
 
     // A contradicting signal is the owner having gone the other way on the
-    // same rule - the one case where a rule should not form quietly.
+    // same rule - the one case where a rule should not form quietly. Only the
+    // owner's: a teammate's dismissal on the thread is evidence for a rule,
+    // never a veto over one (docs/adr/0006).
     const opposite = `${kind === 'suppress' ? 'prioritise' : 'suppress'}${KEY_SEPARATOR}${ruleId}`;
-    const contradictingSignals = (buckets.get(opposite) ?? []).length;
+    const contradictingSignals = (buckets.get(opposite) ?? []).filter((g) => g.row.actor === 'owner').length;
 
     const evidence: RuleEvidence = {
       keeps,
@@ -251,7 +266,6 @@ export function compileProposals(db: Database, options: { ownerReviewer?: string
       eventIds: group.map((g) => `${g.row.review_run_id}:${g.row.finding_id}`),
     };
 
-    const gate = canActivate(evidence);
     const reasons = group.map((g) => g.row.reason).filter((r): r is string => r !== null && r.length > 0);
     const severities = [...new Set(group.map((g) => g.severity).filter((s): s is string => s !== null))];
 
@@ -259,7 +273,24 @@ export function compileProposals(db: Database, options: { ownerReviewer?: string
     // and its `priorities` entry carries no glob, so it stays global. A bucket
     // whose dismissals share only the root is global too.
     const directory = kind === 'suppress' ? commonDirectory(group.map((g) => g.path)) : [];
-    const glob = directory.length === 0 ? null : `${directory.join('/')}/**`;
+    // A glob is the only form a scope can take, and a directory whose name
+    // holds a glob character cannot be written as one without widening it
+    // (`bill*` would take in `billing`), so such a rule is proposed unscoped
+    // and blocked until the owner writes its scope by hand.
+    const unwritable = directory.some((segment) => /[*?[\]{}]/.test(segment));
+    const glob = directory.length === 0 || unwritable ? null : `${directory.join('/')}/**`;
+    // A suppression of a category that names a breach or a trust boundary can
+    // never be approved (docs/adr/0032), so it is never activatable either:
+    // left in a row it would only stop the rules beside it from being approved.
+    const exempt = kind === 'suppress' && isSuppressionExempt(category);
+    const gate = exempt
+      ? { ok: false, reason: `a suppression may not reach ${category}, which names a breach or a trust boundary (docs/adr/0032)` }
+      : unwritable
+        ? {
+            ok: false,
+            reason: `the dismissals share the directory ${directory.join('/')}, whose name holds a glob character, so the rule cannot be scoped to it; write the scope by hand`,
+          }
+        : canActivate(evidence);
 
     proposals.push({
       scope: glob === null ? { ...GLOBAL_SCOPE } : { type: 'path', key: glob },

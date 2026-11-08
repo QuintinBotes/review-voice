@@ -3137,6 +3137,9 @@ function verifierConfidence(technicalConfidence, evidenceQuality2) {
   return QUALITY_CONFIDENCE[evidenceQuality2] ?? null;
 }
 
+// plugins/review-voice/src/scoring/score.ts
+import { posix } from "node:path";
+
 // plugins/review-voice/src/review/lanes.ts
 import { existsSync as existsSync3 } from "node:fs";
 import { dirname as dirname4, join as join6 } from "node:path";
@@ -3382,8 +3385,9 @@ function matchingSuppression(suppressions, candidate) {
   if (suppressions.length === 0 || isSuppressionExempt(candidate.category)) return null;
   const ruleId = ruleIdFor(candidate.category, candidate.lane, candidate.blockerClass);
   if (ruleId === null) return null;
+  const path = posix.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
   return suppressions.find(
-    (suppression) => suppression.ruleId === ruleId && !isSuppressionExempt(categoryOfRuleId(suppression.ruleId)) && (suppression.glob === null || governsAny([suppression.glob], [candidate.path]))
+    (suppression) => suppression.ruleId === ruleId && !isSuppressionExempt(categoryOfRuleId(suppression.ruleId)) && (suppression.glob === null || governsAny([suppression.glob], [path]))
   ) ?? null;
 }
 var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
@@ -13266,6 +13270,7 @@ function parse(src, reviver, options) {
 }
 
 // plugins/review-voice/src/policy/compile.ts
+import { posix as posix2 } from "node:path";
 var MIN_CORROBORATING = 3;
 function canActivate(evidence) {
   const supporting = evidence.dismissals + evidence.keeps + evidence.rewrites;
@@ -13310,12 +13315,9 @@ var GLOBAL_SCOPE = { type: "global", key: "owner" };
 function commonDirectory(paths) {
   let common = null;
   for (const path of paths) {
-    const segments = path.split("\\").join("/").split("/").filter((part) => part.length > 0 && part !== ".");
-    const directories = [];
-    for (const segment of segments.slice(0, -1)) {
-      if (/[*?]/.test(segment) || segment === "..") break;
-      directories.push(segment);
-    }
+    const normalised = posix2.normalize(path.split("\\").join("/"));
+    const segments = normalised.split("/").filter((part) => part.length > 0 && part !== ".");
+    const directories = segments[0] === ".." ? [] : segments.slice(0, -1);
     if (common === null) {
       common = directories;
     } else {
@@ -13355,7 +13357,15 @@ function compileProposals(db, options = {}) {
       output_json: row.output_json
     })
   );
-  const rows = [...feedbackRows, ...threadRows].sort((a, b) => a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0);
+  const merged = [...feedbackRows, ...threadRows].sort((a, b) => a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0);
+  const dismissed = /* @__PURE__ */ new Set();
+  const rows = merged.filter((row) => {
+    if (row.action !== "dismiss" && row.action !== "never_flag") return true;
+    const finding = `${row.review_run_id}${KEY_SEPARATOR}${row.finding_id}`;
+    if (dismissed.has(finding)) return false;
+    dismissed.add(finding);
+    return true;
+  });
   const buckets = /* @__PURE__ */ new Map();
   for (const row of rows) {
     const labelled = label(row);
@@ -13373,7 +13383,7 @@ function compileProposals(db, options = {}) {
     const dismissals = group.filter((g) => g.row.action === "dismiss" || g.row.action === "never_flag").length;
     const rewrites = group.filter((g) => g.row.action === "rewrite").length;
     const opposite = `${kind === "suppress" ? "prioritise" : "suppress"}${KEY_SEPARATOR}${ruleId}`;
-    const contradictingSignals = (buckets.get(opposite) ?? []).length;
+    const contradictingSignals = (buckets.get(opposite) ?? []).filter((g) => g.row.actor === "owner").length;
     const evidence = {
       keeps,
       dismissals,
@@ -13385,11 +13395,16 @@ function compileProposals(db, options = {}) {
       mostRecentAt: group[0]?.row.created_at ?? null,
       eventIds: group.map((g) => `${g.row.review_run_id}:${g.row.finding_id}`)
     };
-    const gate = canActivate(evidence);
     const reasons = group.map((g) => g.row.reason).filter((r) => r !== null && r.length > 0);
     const severities = [...new Set(group.map((g) => g.severity).filter((s) => s !== null))];
     const directory = kind === "suppress" ? commonDirectory(group.map((g) => g.path)) : [];
-    const glob = directory.length === 0 ? null : `${directory.join("/")}/**`;
+    const unwritable = directory.some((segment) => /[*?[\]{}]/.test(segment));
+    const glob = directory.length === 0 || unwritable ? null : `${directory.join("/")}/**`;
+    const exempt = kind === "suppress" && isSuppressionExempt(category);
+    const gate = exempt ? { ok: false, reason: `a suppression may not reach ${category}, which names a breach or a trust boundary (docs/adr/0032)` } : unwritable ? {
+      ok: false,
+      reason: `the dismissals share the directory ${directory.join("/")}, whose name holds a glob character, so the rule cannot be scoped to it; write the scope by hand`
+    } : canActivate(evidence);
     proposals.push({
       scope: glob === null ? { ...GLOBAL_SCOPE } : { type: "path", key: glob },
       glob,
@@ -15329,7 +15344,12 @@ function approvedPolicyLayers(db, warnings) {
       const read = readSuppressions(doc["suppressions"], row.version);
       for (const warning of read.warnings) warnings.push(`${label2}: ${warning}`);
       const isPath2 = row.scopeType === "path";
-      const suppressions = isPath2 ? read.suppressions.map((suppression) => suppression.glob === null ? { ...suppression, glob: row.scopeKey } : suppression) : read.suppressions;
+      const suppressions = isPath2 ? read.suppressions.map((suppression) => {
+        if (suppression.glob !== null && suppression.glob !== row.scopeKey) {
+          warnings.push(`${label2}: suppression ${suppression.ruleId} names glob ${suppression.glob}; the policy's scope ${row.scopeKey} applies.`);
+        }
+        return { ...suppression, glob: row.scopeKey };
+      }) : read.suppressions;
       layers.push({
         scope: { type: isPath2 ? "path" : "global", key: row.scopeKey },
         source: `${label2} (policies table)`,
@@ -16735,12 +16755,17 @@ async function decide2(options, context2, run, finding, comment) {
   }
   const poster = comment.user?.login?.toLowerCase();
   const owner = options.ownerReviewer?.toLowerCase();
-  const answers = context2.replies.filter((reply) => reply.in_reply_to_id === comment.id && !isBot2(reply.user)).map((reply) => ({
+  const classified = context2.replies.filter((reply) => reply.in_reply_to_id === comment.id && !isBot2(reply.user)).map((reply) => ({
     stance: classifyReply(reply.body ?? ""),
     at: reply.created_at ?? "",
     author: reply.user?.login ?? "unknown",
     login: reply.user?.login ?? null
-  })).filter((answer2) => answer2.stance !== "other").filter((answer2) => answer2.login?.toLowerCase() !== poster || owner !== void 0 && poster === owner && answer2.stance === "reject").sort((a, b) => a.at.localeCompare(b.at));
+  })).filter((answer2) => answer2.stance !== "other").sort((a, b) => a.at.localeCompare(b.at));
+  const ownerLatest = owner === void 0 ? void 0 : [...classified].reverse().find((answer2) => answer2.login?.toLowerCase() === owner);
+  if (ownerLatest?.stance === "reject") {
+    return { outcome: "dismissed", strength: "strong", evidence: `${ownerLatest.author} replied turning it down`, decidedBy: ownerLatest.login };
+  }
+  const answers = classified.filter((answer2) => answer2.login?.toLowerCase() !== poster);
   const latest = answers[answers.length - 1];
   if (latest?.stance === "reject") {
     return { outcome: "dismissed", strength: "strong", evidence: `${latest.author} replied turning it down`, decidedBy: latest.login };
@@ -22378,10 +22403,12 @@ var COMMAND_HELP = {
       "",
       "Reads: nothing on stdin; the local store, and identity.owner_reviewer from",
       "  .review-voice/config.yaml, which makes the owner's own thread replies owner signals.",
-      "Writes: JSON on stdout; stores one pending policy version per scope and prints",
-      "  { policyId, version, scope } for each in policies[]. A suppression takes the",
-      "  directory its dismissals share (scope path:<dir>/**), or global when they share none;",
-      "  strong thread dismissals count as evidence, weak outcomes and silence do not.",
+      "Writes: JSON on stdout; stores one pending policy version per scope, holding the rules",
+      "  that can be approved, and prints { policyId, version, scope } for each in policies[];",
+      "  a rule that cannot be approved yet is listed in blocked[] with its reason instead.",
+      "  A suppression takes the directory its dismissals share (scope path:<dir>/**), or",
+      "  global when they share none; strong thread dismissals count as evidence, weak",
+      "  outcomes and silence do not.",
       "Exit codes: 0 ok."
     )
   },
@@ -24692,6 +24719,7 @@ function calibrateCommand() {
     }
     const byScope = /* @__PURE__ */ new Map();
     for (const proposal of proposals) {
+      if (!proposal.activatable) continue;
       const label2 = scopeLabel(proposal.scope);
       const group = byScope.get(label2) ?? { scope: proposal.scope, rules: [] };
       group.rules.push(proposal);
@@ -24701,7 +24729,8 @@ function calibrateCommand() {
       const stored = proposePolicy(db, rules, scope);
       return { policyId: stored.policyId, version: stored.version, scope: scopeLabel(scope), active: stored.active };
     });
-    console.log(JSON.stringify({ policies, proposals }, null, 2));
+    const blocked = proposals.filter((proposal) => !proposal.activatable).map((proposal) => ({ ruleId: proposal.ruleId, scope: scopeLabel(proposal.scope), blockedBecause: proposal.blockedBecause }));
+    console.log(JSON.stringify({ policies, blocked, proposals }, null, 2));
     return 0;
   } finally {
     db.close();

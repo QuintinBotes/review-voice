@@ -441,7 +441,7 @@ async function decide(
 
   const poster = comment.user?.login?.toLowerCase();
   const owner = options.ownerReviewer?.toLowerCase();
-  const answers = context.replies
+  const classified = context.replies
     .filter((reply) => reply.in_reply_to_id === comment.id && !isBot(reply.user))
     .map((reply) => ({
       stance: classifyReply(reply.body ?? ''),
@@ -450,12 +450,21 @@ async function decide(
       login: reply.user?.login ?? null,
     }))
     .filter((answer) => answer.stance !== 'other')
-    // The posting account agreeing with itself is not evidence, so its replies
-    // are ignored. The one exception is the owner turning a finding down: when
-    // the review went out under the owner's own credential that account is the
-    // owner, and its rejection is the owner's word (docs/adr/0029).
-    .filter((answer) => answer.login?.toLowerCase() !== poster || (owner !== undefined && poster === owner && answer.stance === 'reject'))
     .sort((a, b) => a.at.localeCompare(b.at));
+  // The owner's latest word decides first, read before the poster filter below
+  // so that an owner who posted the review can still take a rejection back. A
+  // rejection the owner has not taken back holds against whatever a teammate
+  // says afterwards, and one the owner did take back is not revived by a
+  // teammate's reject: the order of teammates' replies must not decide what
+  // counts as the owner's evidence.
+  const ownerLatest = owner === undefined ? undefined : [...classified].reverse().find((answer) => answer.login?.toLowerCase() === owner);
+  if (ownerLatest?.stance === 'reject') {
+    return { outcome: 'dismissed', strength: 'strong', evidence: `${ownerLatest.author} replied turning it down`, decidedBy: ownerLatest.login };
+  }
+  // The posting account agreeing with itself is not evidence of a fix, so its
+  // replies are ignored from here on; its rejection, when it is the owner's,
+  // was read above (docs/adr/0029).
+  const answers = classified.filter((answer) => answer.login?.toLowerCase() !== poster);
   const latest = answers[answers.length - 1];
 
   if (latest?.stance === 'reject') {

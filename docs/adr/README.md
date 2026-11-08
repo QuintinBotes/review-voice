@@ -15,7 +15,7 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0001](0001-embedding-implementation.md) | Embedding and retrieval implementation | Accepted |
 | [0002](0002-github-auth-model.md) | GitHub authentication model | Accepted, amended 2026-10-06 by 0018 and 2026-10-25 by 0026 |
 | [0003](0003-static-analysis-adapters.md) | Static analysis adapter strategy | Accepted |
-| [0004](0004-outcome-inference-limits.md) | Outcome inference limits | Accepted, amended by 0029 |
+| [0004](0004-outcome-inference-limits.md) | Outcome inference limits | Accepted, amended by 0029, amended 2026-11-08 |
 | [0005](0005-data-encryption.md) | Data encryption at rest | Accepted |
 | [0006](0006-team-governance.md) | Team and policy governance | Accepted |
 | [0007](0007-comment-posting.md) | GitHub comment posting | Accepted, superseded in part by 0010 |
@@ -40,7 +40,7 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0026](0026-the-queue-reads-github-search-inside-the-allowlist.md) | The queue reads GitHub search, inside the allowlist | Accepted |
 | [0027](0027-one-watcher-remembers-every-head.md) | One watcher remembers every head | Accepted, amended 2026-11-07 (failure statuses, retention) |
 | [0028](0028-verdict-policies-are-configurable.md) | Verdict policies for CI and complexity are configurable | Accepted, amended 2026-11-07 (`never_approve`) |
-| [0029](0029-posted-findings-are-followed-to-an-outcome.md) | Posted findings are followed to an outcome | Accepted |
+| [0029](0029-posted-findings-are-followed-to-an-outcome.md) | Posted findings are followed to an outcome | Accepted, amended 2026-11-08 |
 | [0030](0030-team-profiles-and-cold-start.md) | Team profiles pool reviewers, and a new install starts from a baseline | Accepted |
 | [0031](0031-a-github-action-runs-one-review-per-pull-request-event.md) | A GitHub Action runs one review per pull request event | Accepted, amended 2026-11-07 (config read from the base commit) |
 | [0032](0032-approved-policies-are-enforced-at-scoring.md) | Approved policies are enforced at scoring | Accepted |
