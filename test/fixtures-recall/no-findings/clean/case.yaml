@@ -1,0 +1,5 @@
+name: clean
+asserts: >
+  Canned fixture for the harness test: nothing to report, so the review is silent.
+expect:
+  output: "No actionable findings."

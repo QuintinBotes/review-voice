@@ -1,0 +1,1 @@
+{"output":{"candidates":[{"candidate_id":"cand_001","path":"src/app.ts","line":3,"category":"correctness","severity":"minor","claim":"The total now multiplies by qty, which is undefined for items created before qty existed.","failure_mode":"Old cart items produce NaN totals.","evidence":["src/app.ts:3 multiplies by item.qty without a default."],"technical_confidence":0.9}]}}

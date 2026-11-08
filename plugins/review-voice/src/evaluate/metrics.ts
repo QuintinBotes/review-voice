@@ -263,7 +263,7 @@ export function computeMetrics(db: Database): Metric[] {
  * one exactly as confidence 0.82 against 0.90 fell across the severity
  * boundary. A tolerance has no edge to land on.
  */
-const AGREEMENT_LINE_TOLERANCE = 3;
+export const AGREEMENT_LINE_TOLERANCE = 3;
 
 interface Located {
   path: string;

@@ -8,7 +8,7 @@
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
 import { readFileSync, readSync, writeFileSync, mkdirSync, statSync, renameSync, rmSync, existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { format } from 'node:util';
@@ -161,6 +161,8 @@ import {
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
 import { computeMetrics } from './evaluate/metrics.ts';
+import { RECALL_CLASSES, readRecallResults, recallMetrics, type RecallClass, type RecallResults } from './evaluate/recall-results.ts';
+import { RecallUsageError, runRecall } from './evaluate/recall.ts';
 import { checkOutcomes, postedBreakdown } from './store/outcomes.ts';
 import { beginSyncRun, finishSyncRun, lastSync } from './sync/state.ts';
 import { loadWatermarks, saveWatermarks, type Watermark } from './sync/watermark.ts';
@@ -1447,9 +1449,25 @@ async function postCommand(argv: string[]): Promise<number> {
 }
 
 function evaluateCommand(argv: string[]): number {
+  // Read before the store is opened: a bad file is a bad invocation, and
+  // should not touch the data directory on the way out.
+  let recall: RecallResults | null = null;
+  if (argv.includes('--recall')) {
+    const file = flag(argv, '--recall');
+    if (file === null) {
+      console.error('--recall needs a results file written by `review-voice recall`.');
+      return 2;
+    }
+    try {
+      recall = readRecallResults(file);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      return 2;
+    }
+  }
   const db = openDatabase();
   try {
-    const metrics = computeMetrics(db);
+    const metrics = [...computeMetrics(db), ...recallMetrics(recall)];
     if (argv.includes('--json')) {
       const { bySeverity, byLane } = postedBreakdown(db);
       console.log(JSON.stringify({ metrics, posted_breakdown: { by_severity: bySeverity, by_lane: byLane } }, null, 2));
@@ -5190,6 +5208,9 @@ async function dispatch(argv: string[]): Promise<number> {
     case 'evaluate':
       return evaluateCommand(argv.slice(1));
 
+    case 'recall':
+      return await recallCommand(argv.slice(1));
+
     case 'outcomes':
       return outcomesCommand(argv.slice(1));
 
@@ -5439,6 +5460,109 @@ async function reviewCommand(argv: string[]): Promise<number> {
   if (argv.includes('--json')) console.log(JSON.stringify(report, null, 2));
   else console.log(reportText(report));
   return report.exitCode;
+}
+
+/**
+ * Scores recall over the fixtures. It runs the review driver itself, one
+ * fixture at a time, so it is never run through `runInProcess` (which does not
+ * nest): the driver calls that for its own stages.
+ */
+async function recallCommand(argv: string[]): Promise<number> {
+  const known = new Set(['--fixtures', '--class', '--runner', '--mode', '--out', '--only', '--keep']);
+  const valued = new Set(['--fixtures', '--class', '--runner', '--mode', '--out', '--only']);
+  for (const [index, arg] of argv.entries()) {
+    if (arg.startsWith('--') ? !known.has(arg) : !valued.has(argv[index - 1] ?? '')) {
+      console.error(`Unexpected argument ${arg}.`);
+      return 2;
+    }
+  }
+  for (const name of valued) {
+    if (argv.includes(name) && flag(argv, name) === null) {
+      console.error(`${name} needs a value.`);
+      return 2;
+    }
+  }
+  const fixtures = flag(argv, '--fixtures');
+  if (fixtures === null) {
+    console.error('recall needs --fixtures <dir>.');
+    return 2;
+  }
+  const classText = flag(argv, '--class');
+  const classes: RecallClass[] = [];
+  for (const name of classText === null ? RECALL_CLASSES : classText.split(',')) {
+    const found = RECALL_CLASSES.find((known) => known === name);
+    if (found === undefined) {
+      console.error(`--class takes ${RECALL_CLASSES.join(', ')} (comma separated); ${name} is not scored.`);
+      return 2;
+    }
+    if (!classes.includes(found)) classes.push(found);
+  }
+  const runner = flag(argv, '--runner') ?? 'claude';
+  if (runner !== 'claude' && runner !== 'fake') {
+    console.error('--runner takes claude or fake.');
+    return 2;
+  }
+  const modeFlag = flag(argv, '--mode');
+  const mode = MODES.find((candidate) => candidate === modeFlag);
+  if (argv.includes('--mode') && mode === undefined) {
+    console.error(`--mode takes one of ${MODES.join(', ')}.`);
+    return 2;
+  }
+  const out = resolve(flag(argv, '--out') ?? 'results.json');
+  const inside = relative(resolve(fixtures), out);
+  if (inside === '' || (!inside.startsWith('..') && !isAbsolute(inside))) {
+    console.error(`--out ${out} is inside the fixtures; recall never writes there.`);
+    return 2;
+  }
+  if (existsSync(out) && statSync(out).isDirectory()) {
+    console.error(`--out ${out} is a directory; name the results file.`);
+    return 2;
+  }
+
+  let run;
+  try {
+    mkdirSync(dirname(out), { recursive: true });
+    run = await runRecall(
+      { fixtures, classes, runner, mode, only: flag(argv, '--only'), keep: argv.includes('--keep') },
+      {
+        commandWith: (fetchImpl) => (args, stdin) => runInProcess(args, { stdin, fetchImpl }),
+        onResult: (result) => {
+          const verdict =
+            result.skipped !== undefined
+              ? `skipped: ${result.skipped}`
+              : result.error !== undefined
+                ? `failed: ${result.error.split('\n')[0]}`
+                : result.class === 'positive'
+                  ? result.hit === true
+                    ? `hit (line delta ${result.lineDelta})`
+                    : result.lineDelta === null || result.lineDelta === undefined
+                      ? 'miss (no finding on the expected file)'
+                      : `miss (line delta ${result.lineDelta})`
+                  : result.silent === true
+                    ? 'silent'
+                    : `not silent (${result.findings} finding(s))`;
+          console.log(`${result.name.padEnd(48)} ${verdict}`);
+        },
+      },
+    );
+  } catch (error) {
+    if (error instanceof RecallUsageError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+  writeFileSync(out, `${JSON.stringify(run.results, null, 2)}\n`);
+  const { summary } = run.results;
+  const figure = (value: number | null): string => (value === null ? 'no data' : value.toFixed(2));
+  console.log(
+    `key-bug recall ${figure(summary.keyBugRecall)}, causal-line hit ${figure(summary.causalLineHit)}, clean silence ${figure(summary.cleanSilence)}; ` +
+      `${summary.positives} positive(s), ${summary.cleanFixtures} clean, ${summary.skipped} skipped, ${summary.failedRuns} failed run(s)`,
+  );
+  console.log(`Results: ${out}`);
+  if (run.kept) console.log(`Kept: ${run.dataDir}`);
+  // A failed run is a hole in the measurement, so it fails the command; the file is still written.
+  return summary.failedRuns > 0 ? 1 : 0;
 }
 
 suppressSqliteExperimentalWarning();

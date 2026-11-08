@@ -1,0 +1,9 @@
+name: hit
+asserts: >
+  Canned fixture for the harness test: the canned finding sits on the causal line.
+expect:
+  min_findings: 1
+  severity: minor
+  path: src/app.ts
+  line: 3
+  category: correctness

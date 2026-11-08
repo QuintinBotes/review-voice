@@ -111,7 +111,8 @@ export interface ReviewReport {
   runDir: string | null;
   scope: unknown;
   plan: StagePlan | null;
-  findings: { findingId: string; severity: string; path: string; line: number; text: string }[];
+  /** `category` is the producing candidate's, absent when no candidate could be paired with the finding. */
+  findings: { findingId: string; severity: string; path: string; line: number; text: string; category?: string }[];
   held: HeldFinding[];
   verdict: unknown;
   posted: boolean;
