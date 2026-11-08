@@ -230,3 +230,16 @@ test('a verifier with no supplied context is told so explicitly, not left guessi
 
   assert.equal(received.context, null);
 });
+
+// A verifier that answers without reading the finding it was given can exit
+// before the finding is written, and the write fails with EPIPE; it still ran.
+test('a verifier that ignores its input still counts as having run', async () => {
+  const { verifyFindings } = await import('../plugins/review-voice/src/verify/external.ts');
+  const verdict = '{"verdict":"confirmed","confidence":0.9,"reason":"seen"}';
+  const finding = { candidateId: 'cand_001', path: 'src/a.ts', line: 1, severity: 'minor', claim: 'x'.repeat(200000), failureMode: 'y', evidence: ['src/a.ts:1'] };
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const report = verifyFindings([finding], { enabled: true, command: `printf '%s\\n' '${verdict}'` }, { cwd: process.cwd() });
+    assert.deepEqual(report.didNotRun, [], `attempt ${attempt}`);
+    assert.equal(report.verdicts[0].verdict, 'confirmed');
+  }
+});

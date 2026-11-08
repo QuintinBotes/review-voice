@@ -194,7 +194,11 @@ const spawnRunner: Runner = (command, input, timeoutMs, cwd, env) => {
   return {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
-    failed: result.error !== undefined || result.status === null,
+    // A command that answers without reading its input can exit before the
+    // finding is written to it, and the write then fails with EPIPE. It still
+    // ran and its verdict is on stdout, so only a command that never ran, or
+    // was killed (no exit status), is a failure.
+    failed: (result.error !== undefined && (result.error as NodeJS.ErrnoException).code !== 'EPIPE') || result.status === null,
   };
 };
 
