@@ -32,11 +32,11 @@ jobs:
           post: false
 ```
 
-Pin the action to a release tag. Tags are named `review-voice--v<version>`; the first release with the action is 1.19.0, and 1.22.0 is the first listed on the GitHub Marketplace. Pin a full commit SHA instead if your organisation requires it.
+Pin the action to a release tag. Tags are named `review-voice--v<version>`; the first release with the action is 1.19.0, and 1.22.0 is the first ready for the GitHub Marketplace. Pin a full commit SHA instead if your organisation requires it.
 
 Pin both actions by commit SHA in your own repository.
 
-Add one secret, `ANTHROPIC_API_KEY`, under the repository's Actions secrets.
+Add one secret, `ANTHROPIC_API_KEY`, under your repository's Actions secrets. The action has no key of its own: every review it runs is paid for by the key of the repository that runs it.
 
 ## Inputs
 

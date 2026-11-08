@@ -495,7 +495,9 @@ at 04:00 UTC, and on demand with a `mode` input, using the repository's
 `ANTHROPIC_API_KEY` secret. It writes the figures to the job summary and
 uploads `recall.json` as the `recall-results` artifact, also when a fixture's
 run failed, and it skips with a summary line when the secret is absent. It
-never runs on a pull request, since it spends API credit.
+never runs on a pull request, since it spends API credit. This repository sets
+no such secret on purpose, so here the workflow always skips; it is for a fork
+or a deployment that supplies its own key.
 
 One pass per fixture is a noisy sample. Candidate-set agreement between two
 runs over the same diff has measured 0.25 to 0.60, so a single figure moves
@@ -556,8 +558,9 @@ runs are real pull requests of mixed size, across earlier releases. They do not
 compare with the fixture figures.
 
 This is a single run. One pass per fixture is a noisy sample, as this section
-says above, so a difference of one fixture is noise, not a trend. The weekly `Recall` workflow keeps the figure current once
-the repository has its `ANTHROPIC_API_KEY` secret.
+says above, so a difference of one fixture is noise, not a trend. This
+repository has no `ANTHROPIC_API_KEY` secret, so the weekly `Recall` workflow
+skips here, and the figure is refreshed by a run the maintainer starts locally.
 
 ## Reading the numbers
 
