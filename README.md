@@ -116,7 +116,37 @@ Then:
 history ingestion. There is no install step - the plugin ships a single
 pre-built bundle with zero runtime dependencies.
 
-To review every pull request in CI instead, see [docs/ACTION.md](docs/ACTION.md).
+### As a GitHub Action
+
+To review every pull request in CI, add one workflow and one secret,
+`ANTHROPIC_API_KEY`. The action is listed on the GitHub Marketplace.
+
+```yaml
+name: Review Voice
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: QuintinBotes/review-voice@review-voice--v1.22.0
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          post: false
+```
+
+It runs in your CI with your key, reads its configuration from the pull
+request's base commit, and posts only when both `post: true` and the
+repository's `writes.github_posting_enabled` say so. Pin it by release tag or
+commit SHA. Inputs, forks, cost and exit codes are in
+[docs/ACTION.md](docs/ACTION.md).
 
 ## Privacy in one paragraph
 

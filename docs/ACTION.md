@@ -26,13 +26,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: QuintinBotes/review-voice@review-voice--v1.19.0
+      - uses: QuintinBotes/review-voice@review-voice--v1.22.0
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           post: false
 ```
 
-Pin the action to a release tag. Tags are named `review-voice--v<version>`; the first release with the action is 1.19.0. Pin a full commit SHA instead if your organisation requires it.
+Pin the action to a release tag. Tags are named `review-voice--v<version>`; the first release with the action is 1.19.0, and 1.22.0 is the first listed on the GitHub Marketplace. Pin a full commit SHA instead if your organisation requires it.
 
 Pin both actions by commit SHA in your own repository.
 
@@ -47,7 +47,8 @@ Add one secret, `ANTHROPIC_API_KEY`, under the repository's Actions secrets.
 | `anthropic-api-key` | none | Required for a review; empty means the action skips |
 | `github-token` | the workflow token | Reads the pull request and authors a posted review |
 | `claude-code-version` | pinned | Version of Claude Code to install |
-| `config` | `.review-voice/config.yaml` | A different path is copied over the default before the run |
+| `config` | `.review-voice/config.yaml` | A repository-relative path, read from the pull request's base commit |
+| `fail-open` | `false` | Pass the job when the review is unavailable on a low-risk change (`failed_open`) |
 
 ## Which configuration a review reads
 
@@ -57,8 +58,23 @@ The run uses `--config`, else an absolute `REVIEW_VOICE_CONFIG`, else the
 file at the pull request's **base commit**. The base commit must be in the
 clone, which is why the examples check out with `fetch-depth: 0`; when it is
 missing, or has no config file, the review runs with the built-in defaults and
-says so in its notes. The `config` input above is ignored by `review --pr`
-until the action passes it as `--config`.
+says so in its notes.
+
+The `config` input follows the same rule. A repository path other than the
+default is read from the pull request's base commit, written to a private file
+under `RUNNER_TEMP`, and passed to the review as `--config`, so a pull request
+that edits that file does not change its own review. When the base commit has
+no file at that path, as in the pull request that adds it, the review runs with
+the built-in defaults and the job summary says so. When the base commit is not
+in the clone, the step stops with an error asking for `fetch-depth: 0`.
+
+The input must be a plain repository-relative path, such as
+`ci/review-voice.yaml` or `./ci/review-voice.yaml`. An absolute path, a `.` or
+`..` component, a doubled slash, or a leading dash stops the step with an
+error, because resolving such a path on disk is how a link or an alias could
+reach the head's copy. To use a file from outside the repository, such as one
+an earlier step wrote, set `REVIEW_VOICE_CONFIG` to its absolute path in the
+job's `env` and leave `config` at its default.
 
 ## Posting
 
@@ -96,9 +112,16 @@ Exit 7 means an agent failed twice, so no review exists. The report's
 `failure.mode` says whether that matters: `failed_open` for a change assessed
 as normal risk (such as documentation only), `failed_closed` for a high-risk
 change, one whose risk was never assessed, or a follow-up to a pull request an
-earlier run assessed as high. The action still exits 7 for both,
-so a required check stays red. To let a low-risk change through, a person can
-set `continue-on-error: true` on the review step; that also lets a
-`failed_closed` change through, so prefer a fail-open input that reads
-`failure.mode` once the action offers one. Nothing about a failure is ever
+earlier run assessed as high. By default the action exits 7 for both, so a
+required check stays red. With `fail-open: true` a `failed_open` review
+passes the job, with a line in the summary saying the review was unavailable
+on a low-risk change; a `failed_closed` review still exits 7 whatever the
+input says. Prefer it to `continue-on-error: true` on the step, which lets a
+`failed_closed` change through as well. Nothing about a failure is ever
 posted to the pull request.
+
+## Provenance
+
+Every review the action runs is recorded with the origin `action`, which
+`explain`, `status` and the report's `Provenance` line show, so an Action
+review can be told apart from a local `review --pr`.

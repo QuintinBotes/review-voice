@@ -1,5 +1,9 @@
 name: Review Voice
-description: Run one Review Voice review for the pull request that triggered the workflow.
+description: Evidence-backed pull request review that posts only verified findings, and stays silent when nothing qualifies.
+author: QuintinBotes
+branding:
+  icon: git-pull-request
+  color: purple
 inputs:
   mode:
     description: Cost mode (auto, fast, standard or thorough).
@@ -16,10 +20,13 @@ inputs:
     default: ${{ github.token }}
   claude-code-version:
     description: Version of @anthropic-ai/claude-code to install.
-    default: 2.1.273
+    default: 2.1.319
   config:
-    description: Repository config file. A path other than the default is copied over it before the run.
+    description: Repository config file, as a repository-relative path. It is read from the pull request's base commit, never from the checked-out head. For a file outside the repository, set REVIEW_VOICE_CONFIG to its absolute path in the job's env.
     default: .review-voice/config.yaml
+  fail-open:
+    description: When the review is unavailable on a change assessed as low risk (failure mode failed_open), pass the job instead of failing it. A failed_closed review fails the job whatever this says.
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -83,14 +90,42 @@ runs:
         MODE: ${{ inputs.mode }}
         POST: ${{ inputs.post }}
         CONFIG: ${{ inputs.config }}
+        FAIL_OPEN: ${{ inputs.fail-open }}
       run: |
         mkdir -p "$REVIEW_VOICE_DATA_DIR"
-        if [ "$CONFIG" != ".review-voice/config.yaml" ]; then
-          mkdir -p .review-voice
-          cp "$CONFIG" .review-voice/config.yaml
-        fi
-        args=(review --pr "$PR" --repository "$GITHUB_REPOSITORY" --mode "$MODE" --json)
+        args=(review --pr "$PR" --repository "$GITHUB_REPOSITORY" --mode "$MODE" --origin action --json)
         [ "$POST" = "true" ] && args+=(--post)
+        # The default path needs nothing here: review --pr reads it from the base
+        # commit itself. Another path is read from the base commit too, never from
+        # the checked-out head, which the pull request's author controls (S01,
+        # ADR 0031). Only a plain repository-relative spelling is accepted, so no
+        # path is resolved on disk, where a link, a case alias or a parent
+        # component could reach the head's copy. A file outside the repository
+        # is set through an absolute REVIEW_VOICE_CONFIG in the job's env.
+        if [ "$CONFIG" != ".review-voice/config.yaml" ]; then
+          rel="${CONFIG#./}"
+          plain=no
+          if [[ "$rel" =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*$ ]] && [[ "$rel" != */ ]]; then
+            case "/$rel/" in */../* | */./* | *//*) ;; *) plain=yes ;; esac
+          fi
+          if [ "$plain" != "yes" ]; then
+            echo "::error::The config input must be a repository-relative path such as ci/review-voice.yaml, with no . or .. component. For a file outside the repository, set REVIEW_VOICE_CONFIG to its absolute path in the job's env."
+            exit 2
+          fi
+          base_sha=$(jq -r '.pull_request.base.sha // empty' "$GITHUB_EVENT_PATH")
+          if [ -z "$base_sha" ] || ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+            echo "::error::The pull request's base commit is not in the clone, so the config input cannot be read from it. Check out with fetch-depth: 0."
+            exit 2
+          fi
+          trusted="$RUNNER_TEMP/review-voice-config.yaml"
+          (umask 077 && : > "$trusted")
+          if git cat-file -e "${base_sha}:${rel}" 2>/dev/null; then
+            git show "${base_sha}:${rel}" > "$trusted"
+          else
+            echo "Review Voice: $rel is not in the base commit, so the review used the built-in defaults." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          args+=(--config "$trusted")
+        fi
         report="$REVIEW_VOICE_DATA_DIR/report.json"
         set +e
         node "$GITHUB_ACTION_PATH/plugins/review-voice/dist/review-voice.mjs" "${args[@]}" > "$report"
@@ -113,4 +148,17 @@ runs:
           3) echo "Review Voice: the head moved during the review; a newer run covers it." >> "$GITHUB_STEP_SUMMARY"; code=0 ;;
           4 | 6) echo "Review Voice: CI is pending or needs a rerun, so no review was posted." >> "$GITHUB_STEP_SUMMARY"; code=0 ;;
         esac
+        # S03: a review that could not run on a low-risk change may pass the job
+        # when the workflow opts in; a high-risk or unassessed one never does.
+        # Only one well-formed report saying failed_open can pass the job; a report
+        # that does not parse keeps the review's own exit code.
+        # Parsed strictly: jq accepts NaN and Infinity, which no review writes.
+        if [ "$FAIL_OPEN" = "true" ] && node -e '
+          const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+          const ok = report !== null && typeof report === "object" && !Array.isArray(report) && report.failure?.mode === "failed_open";
+          process.exit(ok ? 0 : 1);
+        ' -- "$report" > /dev/null 2>&1; then
+          echo "Review Voice: the review was unavailable on a low-risk change (failed_open); passing." >> "$GITHUB_STEP_SUMMARY"
+          code=0
+        fi
         exit "$code"
