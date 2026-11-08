@@ -1047,6 +1047,8 @@ async function record(run: Run, extra: string[]): Promise<void> {
       ...(existsSync(at(run, 'evidence.json')) && existsSync(at(run, 'symbols.json'))
         ? ['--evidence', at(run, 'evidence.json'), '--symbols', at(run, 'symbols.json')]
         : []),
+      // So a convention quote the analyst cited is stored only when the document holds it.
+      ...(existsSync(at(run, 'conventions.json')) ? ['--conventions', at(run, 'conventions.json')] : []),
       '--origin',
       run.options.origin ?? 'driver',
       ...(run.plan?.mode === undefined ? [] : ['--mode', run.plan.mode]),

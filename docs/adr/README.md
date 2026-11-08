@@ -35,11 +35,11 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0021](0021-agents-run-in-a-confined-headless-runner.md) | Agents run in a confined headless runner | Accepted |
 | [0022](0022-one-command-drives-a-review.md) | One command drives a review | Accepted, amended 2026-11-07 (`failure` in the report) |
 | [0023](0023-analyst-lanes-are-configured.md) | Analyst lanes are configured, each with its own severity rule | Accepted, amended 2026-11-08 (`when.signals`; security and concurrency analysts) |
-| [0024](0024-an-independent-challenge-gates-every-posted-finding.md) | An independent challenge gates every posted finding | Accepted |
+| [0024](0024-an-independent-challenge-gates-every-posted-finding.md) | An independent challenge gates every posted finding | Accepted, amended 2026-11-08 (evidence block) |
 | [0025](0025-cost-modes-choose-stages-and-models.md) | Cost modes choose stages and models | Accepted, amended 2026-11-08 (`auto` and a removed control) |
 | [0026](0026-the-queue-reads-github-search-inside-the-allowlist.md) | The queue reads GitHub search, inside the allowlist | Accepted |
 | [0027](0027-one-watcher-remembers-every-head.md) | One watcher remembers every head | Accepted, amended 2026-11-07 (failure statuses, retention) |
-| [0028](0028-verdict-policies-are-configurable.md) | Verdict policies for CI and complexity are configurable | Accepted, amended 2026-11-07 (`never_approve`), amended 2026-11-08 (scope block) |
+| [0028](0028-verdict-policies-are-configurable.md) | Verdict policies for CI and complexity are configurable | Accepted, amended 2026-11-07 (`never_approve`), amended 2026-11-08 (scope block), amended 2026-11-08 (evidence block) |
 | [0029](0029-posted-findings-are-followed-to-an-outcome.md) | Posted findings are followed to an outcome | Accepted, amended 2026-11-08, and by 0033 (applied suggestions) |
 | [0030](0030-team-profiles-and-cold-start.md) | Team profiles pool reviewers, and a new install starts from a baseline | Accepted |
 | [0031](0031-a-github-action-runs-one-review-per-pull-request-event.md) | A GitHub Action runs one review per pull request event | Accepted, amended 2026-11-07 (config read from the base commit) |

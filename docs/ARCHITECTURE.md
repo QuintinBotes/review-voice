@@ -1009,7 +1009,9 @@ refuses a second-pass verdict. `confirmed` with the line confirmed passes;
 `confirmed` with a corrected line moves through the same check `reanchor` uses;
 everything else is held as `challenge-partly` or `challenge-refuted` and marked
 ineligible in `scores`, so neither validation nor posting can match a rendered
-finding to it. A challenger cannot raise a tier. See
+finding to it. A challenger cannot raise a tier. Under `verdict.evidence_block`
+its verdict and decisive lines are posted in each inline comment's Evidence
+block, and its `reason` never is. See
 [ADR 0024](adr/0024-an-independent-challenge-gates-every-posted-finding.md).
 
 ### Fixes are verified separately
@@ -1263,6 +1265,31 @@ idempotency key is taken and before CI annotations, so toggling it keeps the
 same key and annotation replacement still works. `verdict`, `post` and the
 watcher share the payload and preview through `computeVerdict`; the existing
 review write carries the block (ADR 0028).
+
+**Evidence block.** `verdict.evidence_block` (default `false`) ends each inline
+comment, after any suggestion block, with a collapsed Evidence block that
+`evidenceBlock` in `src/publish/evidence-block.ts` builds from the stored
+finding and the score that verified it, both from the run that scored it, so a
+carried finding describes its origin run. It says the evidence verifier
+established the finding and what the challenger decided, with the anchor it
+moved from when it moved, and lists the challenger's decisive `path:line`
+references, a static check that flagged the same line (`toolSignal`, stored by
+`record --evidence`), and a convention quote the cited document holds
+(`conventionQuotes`, stored by `record --conventions`).
+`verdict.evidence_block_precedents` (default `false`) adds how many retrieved
+owner precedents favoured the finding. Every string is flattened through
+`safeCheckName` into inline code and capped, and a decisive reference with an
+absolute path or `..` is dropped. A static check named by a path on the
+reviewer's machine is left out, and a convention quote shows only beside the
+score of the candidate that cited it, so two candidates at one anchor cannot
+mix their evidence. It never carries a reason any agent wrote, a
+confidence, a model, a held or unverified claim, a precedent's excerpt, id or
+login, or the human-review note. The block is appended after the idempotency
+key is taken and the comments already sent are filtered out, and
+`commentSignature` hashes the body without it, so the setting moves neither.
+Every reader of a posted comment (`thread`, the outcome matcher) cuts it off
+at its marker first. `evidenceBlocks` in the verdict, and on the
+`review_post_attempted` row, counts the comments that carry one.
 
 **Carry.** With `carry_approval_on_unchanged`, a run whose scope is `unchanged`
 and that maps to a clean approval looks for the owner's latest deciding review.

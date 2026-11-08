@@ -90,3 +90,30 @@ appended after the idempotency key is taken and before CI annotations, so
 `verdict`, `post` and the watcher share the same preview, a CI annotation can
 still be replaced, and toggling the block cannot make the same review a
 second post. The existing review write carries it; no GitHub write is added.
+
+## Amendment - 2026-11-08
+
+`verdict.evidence_block` (default `false`) ends each inline comment with a
+collapsed Evidence block of recorded facts. The inline comment body is then
+the validated finding, any committable suggestion block
+([0033](0033-committable-suggestions-are-verified-patches.md)), and, under
+`evidence_block`, the block. It says that the evidence verifier established
+the finding, and gives the challenger's verdict and the `path:line`
+references it turned on, a static check that flagged the same line, and a
+convention quote the cited document holds. Every string is flattened to inline code and capped. A
+decisive reference with an absolute path or `..` is dropped, so nothing from
+the reviewer's machine posts.
+
+`verdict.evidence_block_precedents` (default `false`) adds how many of the
+retrieved owner precedents favoured the finding, as a count and never an
+excerpt, id or login. It has its own key because the line reveals that a
+precedent store exists, which a public repository may not want to say.
+
+The block is appended after the idempotency key is taken and after comments
+already sent on the head are filtered out, and the comment signature hashes
+the body with the block removed. Turning either key on or off therefore never
+makes the same review, or the same comment, a second post. The block never
+carries a reason any agent wrote, a confidence, a model, a held or unverified
+claim, or anything the human-review note says. The existing review write
+carries it; no GitHub write or read is added. No verified repair is offered
+as a prompt to copy. The committable suggestion is the only repair surface.

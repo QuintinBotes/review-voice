@@ -42,6 +42,7 @@ import {
   wouldHaveSummary,
 } from './verdict.ts';
 import { fileAtRef, linesAt, unixLines } from './suggestion.ts';
+import { withEvidenceBlocks } from './evidence-block.ts';
 
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
@@ -118,6 +119,8 @@ export interface VerdictOutput {
   preview: string | null;
   /** With `review.suggestions`, the suggestion blocks left out of their comments, and why (docs/adr/0033). */
   withheldSuggestions: WithheldSuggestion[];
+  /** With `verdict.evidence_block`, how many comments in the payload carry the evidence block; 0 otherwise. */
+  evidenceBlocks: number;
 }
 
 function normalise(text: string): string {
@@ -161,6 +164,7 @@ function refusal(head: string, reason: string): { exitCode: number; output: Verd
       key: null,
       preview: null,
       withheldSuggestions: [],
+      evidenceBlocks: 0,
     },
   };
 }
@@ -496,6 +500,7 @@ export async function computeVerdict(
   let key: string | null = null;
   let alreadyInline = 0;
   let withheldSuggestions: WithheldSuggestion[] = [];
+  let evidenceBlocks = 0;
   if (decision.action === 'post' && decision.event !== null) {
     const checked = policy.suggestions ? await checkedSuggestions(options, run, planned, head) : null;
     withheldSuggestions = checked?.withheld ?? [];
@@ -526,10 +531,14 @@ export async function computeVerdict(
     // A comment already posted on this head, by an earlier COMMENT while CI
     // was red, is not posted again when the approval follows.
     const sent = sentInline(options.db, options.repository, options.pullNumber, head);
-    const comments = full.comments.filter((comment) => !sent.has(commentSignature(comment)));
-    alreadyInline = full.comments.length - comments.length;
+    const unsent = full.comments.filter((comment) => !sent.has(commentSignature(comment)));
+    alreadyInline = full.comments.length - unsent.length;
+    // After the key and the filter, so a run keys and signs the same with the
+    // block on and off, as the scope block and annotations do.
+    const evidence = policy.evidenceBlock ? withEvidenceBlocks(unsent, planned, policy) : { comments: unsent, blocks: 0 };
+    evidenceBlocks = evidence.blocks;
     const body = policy.scopeBlock ? withScopeBlock(full.body, scopeBlock(run, planned, policy)) : full.body;
-    payload = { ...full, body: withAnnotations(body, decision.annotations), comments };
+    payload = { ...full, body: withAnnotations(body, decision.annotations), comments: evidence.comments };
     preview = renderPreview({
       repository: options.repository,
       pullNumber: options.pullNumber,
@@ -566,6 +575,7 @@ export async function computeVerdict(
       key,
       preview,
       withheldSuggestions,
+      evidenceBlocks,
     },
   };
 }
@@ -937,6 +947,8 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
     event: payload.event,
     comments: payload.comments.length,
     run: run.reviewRunId,
+    // Whether the posted comments carried the evidence block, so outcomes can be split by it.
+    evidenceBlocks: verdict.evidenceBlocks,
   });
   if (typeof claimed !== 'string') return refuse(2, [claimed.blocked], verdict, key);
   const attempt = claimed;

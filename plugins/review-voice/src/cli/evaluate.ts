@@ -37,12 +37,12 @@ export function evaluateCommand(argv: string[]): number {
   try {
     const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
     if (argv.includes('--json')) {
-      const { bySeverity, byLane, byRule } = postedBreakdown(db);
+      const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
       console.log(
         JSON.stringify(
           {
             metrics,
-            posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule },
+            posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule, by_evidence_block: byEvidenceBlock },
             stage_seconds: stageSeconds(db),
           },
           null,

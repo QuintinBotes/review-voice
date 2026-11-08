@@ -1,5 +1,6 @@
 import { GitHubClient, REVIEW_THREADS_QUERY } from '../github/client.ts';
 import { redact } from '../redact/redact.ts';
+import { stripEvidenceBlock } from '../publish/evidence-block.ts';
 
 /**
  * What has already been said on this pull request.
@@ -105,7 +106,9 @@ const MAX_COMMENTS = 300;
 
 function clean(body: string | undefined, author: string | undefined): { body: string; author: string } | null {
   if (body === undefined || body.trim().length === 0) return null;
-  return { body: redact(body).text, author: author ?? 'unknown' };
+  // The evidence block is derived text whose decisive lines name other
+  // locations, which must not read as points raised there.
+  return { body: redact(stripEvidenceBlock(body)).text, author: author ?? 'unknown' };
 }
 
 /**

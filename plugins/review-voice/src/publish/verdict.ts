@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { SEVERITIES, type Severity } from '../contract/limits.ts';
-import type { RunDetail } from '../store/runs.ts';
+import type { RunDetail, StoredFinding } from '../store/runs.ts';
 import type { ReviewComment, ReviewEvent, ReviewPayload } from '../github/writer.ts';
 import type { CiEntry, CiState } from './ci.ts';
 import { renderSimplification, type VerifiedSimplification } from '../simplification.ts';
 import type { SuggestedPatch } from '../scoring/score.ts';
+import { stripEvidenceBlock } from './evidence-block.ts';
 
 export type { ReviewEvent, ReviewPayload };
 
@@ -90,6 +91,12 @@ export interface ScoreLike {
   /** The repair decision; only `render: 'fix'` lets a suggestion block post (docs/adr/0033). */
   fix?: { render?: unknown } | null;
   candidateId?: unknown;
+  /** The challenger's verdict, as `challenge` stored it (docs/adr/0024). */
+  challenge?: { verdict?: unknown; line_ok?: unknown; corrected_line?: unknown; decisive_evidence?: unknown } | null;
+  /** Where `reanchor` or the challenge moved the finding from. */
+  reanchoredFrom?: { line?: unknown } | null;
+  /** The precedents retrieved for the candidate, each with `role` and `polarity`. */
+  precedents?: unknown;
 }
 
 /**
@@ -141,9 +148,20 @@ export function verification(
   run: RunDetail,
   loadRun: RunLoader,
   used: Set<object> = new Set(),
-): { verified: boolean; reason: string; runId: string; staleConsumer?: boolean; deletedFile?: boolean; fixVerified?: FixBacking } {
+): {
+  verified: boolean;
+  reason: string;
+  runId: string;
+  staleConsumer?: boolean;
+  deletedFile?: boolean;
+  fixVerified?: FixBacking;
+  /** The score that verified it, in the run `runId` names; null when unverified. */
+  score: ScoreLike | null;
+  /** The finding as that run stored it, which is the origin finding when it was carried. */
+  stored?: StoredFinding;
+} {
   if (finding.path === null || finding.severity === null) {
-    return { verified: false, reason: 'it names no file, so no score can be matched to it', runId: run.reviewRunId };
+    return { verified: false, reason: 'it names no file, so no score can be matched to it', runId: run.reviewRunId, score: null };
   }
 
   let current: RunDetail = run;
@@ -157,12 +175,18 @@ export function verification(
     const here = scoresAtLocation(scores, path, line);
     const same = here.filter((score) => score.severity?.severity === severity && !used.has(score));
     const backing = same.find((score) => score.confidenceSource === 'verifier' && score.eligible === true);
+    const stored =
+      line === null
+        ? undefined
+        : current.findings.find((candidate) => candidate.path === path && candidate.line === line && candidate.severity === severity);
     if (backing !== undefined) {
       used.add(backing);
       return {
         verified: true,
         reason: 'established by the verifier',
         runId: current.reviewRunId,
+        score: backing,
+        ...(stored === undefined ? {} : { stored }),
         ...(isStaleConsumer(backing) ? { staleConsumer: true } : {}),
         ...(backing.deletedFile === true ? { deletedFile: true } : {}),
         ...(backing.fix?.render === 'fix'
@@ -179,9 +203,6 @@ export function verification(
     }
 
     if (line === null) break;
-    const stored = current.findings.find(
-      (candidate) => candidate.path === path && candidate.line === line && candidate.severity === severity,
-    );
     if (stored?.carriedFrom === undefined) break;
     const from = stored.carriedFrom;
     const source = loadRun(from.runId);
@@ -195,7 +216,7 @@ export function verification(
     line = origin.line;
   }
 
-  return { verified: false, reason, runId: current.reviewRunId };
+  return { verified: false, reason, runId: current.reviewRunId, score: null };
 }
 
 export interface HeldBack {
@@ -222,6 +243,19 @@ export interface PlannedFindings {
   /** Inline findings whose backing score verified the repair, so a suggestion may render on them. */
   /** The score that verified each finding's fix, so a patch posts only from its own candidate. */
   fixVerified: ReadonlyMap<ReviewFinding, FixBacking>;
+  /**
+   * The score and stored finding that verified each inline finding, from the
+   * run that scored it, so the evidence block is read from that run and is
+   * never looked up a second time.
+   */
+  backing: ReadonlyMap<ReviewFinding, EvidenceBacking>;
+}
+
+/** What verified one inline finding, in the run that scored it. */
+export interface EvidenceBacking {
+  score: ScoreLike;
+  stored: StoredFinding | undefined;
+  runId: string;
 }
 
 /**
@@ -240,6 +274,7 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
   const held: HeldBack[] = [];
   const heldSeverities: Severity[] = [];
   const fixVerified = new Map<ReviewFinding, FixBacking>();
+  const backing = new Map<ReviewFinding, EvidenceBacking>();
 
   // One object per run, so a score marked used stays used across findings.
   const loaded = new Map<string, RunDetail | null>([[run.reviewRunId, run]]);
@@ -277,6 +312,7 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
     const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true && result.deletedFile !== true;
     (anchorable ? inline : unanchored).push(finding);
     if (anchorable && result.fixVerified !== undefined) fixVerified.set(finding, result.fixVerified);
+    if (anchorable && result.score !== null) backing.set(finding, { score: result.score, stored: result.stored, runId: result.runId });
   }
 
   const posted = [...inline, ...unanchored].map((finding) => finding.severity as Severity);
@@ -284,7 +320,7 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
   const heldBackApproval = mapped === 'APPROVE' && eventFor(heldSeverities) !== 'APPROVE';
   if (heldBackApproval) mapped = 'COMMENT';
 
-  return { inline, unanchored, held, mapped, heldBackApproval, fixVerified };
+  return { inline, unanchored, held, mapped, heldBackApproval, fixVerified, backing };
 }
 
 export type Action = 'post' | 'wait' | 'refuse' | 'carry';
@@ -310,6 +346,10 @@ export interface VerdictPolicy {
   scopeBlockModels: boolean;
   /** `review.suggestions`: render a verified patch as a committable suggestion block (docs/adr/0033). */
   suggestions: boolean;
+  /** `verdict.evidence_block`: end each inline comment with the collapsed evidence block (docs/adr/0028). */
+  evidenceBlock: boolean;
+  /** `verdict.evidence_block_precedents`: count the owner precedents in that block; it reveals that a precedent store exists. */
+  evidenceBlockPrecedents: boolean;
 }
 
 export const DEFAULT_VERDICT_POLICY: Readonly<VerdictPolicy> = Object.freeze({
@@ -323,6 +363,8 @@ export const DEFAULT_VERDICT_POLICY: Readonly<VerdictPolicy> = Object.freeze({
   scopeBlock: false,
   scopeBlockModels: false,
   suggestions: false,
+  evidenceBlock: false,
+  evidenceBlockPrecedents: false,
 });
 
 export function verdictPolicy(policy: Partial<VerdictPolicy> | undefined): VerdictPolicy {
@@ -338,8 +380,9 @@ const MAX_CHECK_NAME = 60;
 /**
  * A check name is whatever the CI integration chose, so it goes into the posted
  * body as inline code on one line: no markdown, link or mention can render.
+ * `max` lets the same rule serve the longer recorded facts of the evidence block.
  */
-export function safeCheckName(name: string): string {
+export function safeCheckName(name: string, max: number = MAX_CHECK_NAME): string {
   const flat = name
     // Bidi controls and zero-width characters can reorder or hide text.
     .replace(/[\u202a-\u202e\u2066-\u2069\u200b-\u200d\ufeff`]/g, '')
@@ -348,7 +391,7 @@ export function safeCheckName(name: string): string {
     .trim();
   // By code point, so a surrogate pair is never split.
   const points = [...flat];
-  return points.length > MAX_CHECK_NAME ? `${points.slice(0, MAX_CHECK_NAME - 1).join('')}…` : flat;
+  return points.length > max ? `${points.slice(0, max - 1).join('')}…` : flat;
 }
 
 function checkNames(entries: readonly CiEntry[]): string {
@@ -848,7 +891,8 @@ export function scopeBlock(
     if (!policy.scopeBlockModels) return [name];
     const models = [...new Set([...(Array.isArray(stage.models) ? stage.models : []), ...(typeof stage.model === 'string' ? [stage.model] : [])])]
       .filter((model): model is string => typeof model === 'string')
-      .map(safeCheckName)
+      // Not point-free, since `map` would pass the index as the cap.
+      .map((model) => safeCheckName(model))
       .filter((model) => model !== '');
     return [models.length === 0 ? name : `${name} (${[...new Set(models)].map(code).join(', ')})`];
   });
@@ -988,9 +1032,12 @@ export function renderPreview(input: {
 export function commentSignature(comment: ReviewComment): string {
   // The suggestion block is left out, so a finding posted without its block
   // (a contents read that failed) is not sent again with it once the read
-  // succeeds on a later post of the same head (S14).
-  const block = comment.body.lastIndexOf('\n\n```suggestion\n');
-  const prose = block >= 0 && comment.body.endsWith('```') ? comment.body.slice(0, block) : comment.body;
+  // succeeds on a later post of the same head (S14). The evidence block comes
+  // after it and is derived text, so it is removed first, and a comment posted
+  // under any combination of the two settings keeps one signature.
+  const body = stripEvidenceBlock(comment.body);
+  const block = body.lastIndexOf('\n\n```suggestion\n');
+  const prose = block >= 0 && body.endsWith('```') ? body.slice(0, block) : body;
   return `${comment.path}:${comment.line}:${createHash('sha256').update(prose).digest('hex').slice(0, 32)}`;
 }
 

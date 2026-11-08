@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
+import { posix } from 'node:path';
 import type { Database } from './db.ts';
 import { recordAudit } from './audit.ts';
 import { activePolicyVersions } from '../policy/versions.ts';
@@ -11,6 +12,9 @@ import type { TieBreak } from '../verify/reconcile.ts';
 import type { FollowUpState } from './follow-ups.ts';
 import type { VerifiedSimplification } from '../simplification.ts';
 import { suggestedPatchOf, type SuggestedPatch } from '../scoring/score.ts';
+import { redact } from '../redact/redact.ts';
+import type { EvidenceSignal } from '../evidence/types.ts';
+import { flatten, MACHINE_PATH } from '../publish/evidence-block.ts';
 
 export interface StoredFinding {
   findingId: string;
@@ -62,6 +66,20 @@ export interface StoredFinding {
    * that file, from that candidate's own verified fix (docs/adr/0033).
    */
   suggestedPatchSource?: { path: string; candidateId: string | null } | undefined;
+  /**
+   * The first static signal on this finding's own path and line, from
+   * `record --evidence`. The same line only, because a candidate restating a
+   * nearby signal was already held as `restates-tool`, so this is a tool that
+   * spoke about the line in other words. The text is redacted and capped.
+   */
+  toolSignal?: { tool: string; line: number; text: string } | undefined;
+  /**
+   * Convention quotes the analyst cited that occur verbatim in the named
+   * document, from `record --conventions`. A paraphrase is never stored here.
+   */
+  conventionQuotes?: { path: string; quote: string }[] | undefined;
+  /** The candidate whose evidence cited the quotes; they post only beside that candidate's score. */
+  conventionQuotesCandidate?: string | null | undefined;
 }
 
 export interface PartlyAddressedFinding {
@@ -234,6 +252,8 @@ export interface CandidateHint {
   suggested_patch?: unknown;
   /** The candidate this hint was scored as, so a patch is tied to its own verified fix. */
   candidate_id?: unknown;
+  /** The analyst's evidence strings, read for the convention quotes they cite. */
+  evidence?: unknown;
 }
 
 export const ORIGINS = ['driver', 'interactive', 'watch', 'action'] as const;
@@ -433,6 +453,10 @@ export interface RecordRunInput {
   provenance?: RunProvenanceInput | undefined;
   /** What the static checks and the symbol search did; see `recordedChecks`. Absent for a run that was not given them. */
   checks?: RecordedChecks | undefined;
+  /** The static signals of `evidence.json`, with repository-relative paths, for each finding's `toolSignal`. */
+  toolSignals?: readonly EvidenceSignal[] | undefined;
+  /** The convention documents `conventions` returned, for each finding's `conventionQuotes`. */
+  conventions?: readonly { path: string; content: string }[] | undefined;
 }
 
 /**
@@ -638,7 +662,99 @@ function patchPath(hint: CandidateHint): string {
   return typeof inside === 'string' ? inside : hint.path;
 }
 
-function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
+/** Longest stored tool text, in code points, ellipsis included. */
+const TOOL_TEXT_CAP = 160;
+const MAX_CONVENTION_QUOTES = 2;
+
+/** By code point, so a surrogate pair is never split. */
+function cut(text: string, max: number): string {
+  const points = [...text];
+  return points.length > max ? `${points.slice(0, max - 1).join('')}…` : text;
+}
+
+/** The anchor checks accept `./src/a.ts`, and the signals were made relative the same way. */
+const plainPath = (path: string): string => posix.normalize(path.split('\\').join('/')).replace(/^\.\//, '');
+
+/** The first signal at exactly this path and line, as stored on the finding. */
+function toolSignalFor(finding: { path: string; line: number }, signals: readonly EvidenceSignal[]): StoredFinding['toolSignal'] {
+  const path = plainPath(finding.path);
+  const signal = signals.find((entry) => entry.path === path && entry.line === finding.line);
+  if (signal === undefined) return undefined;
+  // A configured check's name is the operator's own words and can be a path
+  // on their machine, so a signal from one named that way is not stored.
+  if (MACHINE_PATH.test(flatten(signal.tool, Number.POSITIVE_INFINITY))) return undefined;
+  // A tool's line can name where it ran, which under the driver is the run
+  // directory in the reviewer's home, so it gives way to the claim, which the
+  // adapters build without the file. Checked as the block will flatten it.
+  const shown = [signal.evidence[0], signal.claim].find(
+    (text): text is string => text !== undefined && !MACHINE_PATH.test(flatten(text, Number.POSITIVE_INFINITY)),
+  );
+  if (shown === undefined) return undefined;
+  // A secret scanner's message can quote the secret it found.
+  return { tool: signal.tool, line: finding.line, text: cut(redactedAsPosted(shown), TOOL_TEXT_CAP) };
+}
+
+/**
+ * Redacted as given and again as the block will flatten it, since removing a
+ * backtick or an invisible character can join a secret the raw text split,
+ * and can also remove the boundary a raw match needed.
+ */
+const redactedAsPosted = (text: string): string => redact(flatten(redact(text).text, Number.POSITIVE_INFINITY)).text;
+
+const squashed = (text: string): string => text.replace(/\s+/g, ' ').trim();
+
+/** A quoted segment of at least four words, between straight or curly double quotes. */
+const QUOTED = /["\u201c]([^"\u201c\u201d]+)["\u201d]/g;
+
+/**
+ * Whether `name` stands alone in `text`, so `packages/web/CLAUDE.md` or
+ * `NOT_AGENTS.md` names neither `CLAUDE.md` nor `AGENTS.md`. A leading `./`
+ * and a full stop ending the sentence are allowed.
+ */
+function namesWhole(text: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![\\w./\\\\-])(?:\\./)?${escaped}(?![\\w/\\\\-]|\\.\\w)`).test(text);
+}
+
+/**
+ * The document an evidence string names. A document path it names wins, the
+ * longest first, else a basename exactly one document in the report has.
+ */
+function documentNamed(text: string, documents: readonly { path: string; content: string }[]): { path: string; content: string } | undefined {
+  const exact = documents.filter((doc) => doc.path !== '' && namesWhole(text, doc.path)).sort((a, b) => b.path.length - a.path.length)[0];
+  if (exact !== undefined) return exact;
+  const base = (path: string): string => path.split('/').pop() ?? path;
+  return documents.find((doc) => namesWhole(text, base(doc.path)) && documents.filter((other) => base(other.path) === base(doc.path)).length === 1);
+}
+
+/**
+ * The quotes the analyst's evidence cites from a convention document, kept
+ * only when the document contains them, whitespace collapsed and case folded.
+ * It is the verbatim check `check-intent` applies to the description, applied
+ * to the other repository text the analyst is told to cite.
+ */
+function conventionQuotesFor(evidence: unknown, documents: readonly { path: string; content: string }[]): StoredFinding['conventionQuotes'] {
+  if (!Array.isArray(evidence) || documents.length === 0) return undefined;
+  const found: { path: string; quote: string }[] = [];
+  for (const entry of evidence) {
+    if (found.length >= MAX_CONVENTION_QUOTES) break;
+    if (typeof entry !== 'string') continue;
+    const document = documentNamed(entry, documents);
+    if (document === undefined) continue;
+    const content = squashed(document.content).toLowerCase();
+    const quote = [...entry.matchAll(QUOTED)]
+      .map((match) => squashed(match[1] ?? ''))
+      .find((segment) => segment.split(' ').length >= 4 && content.includes(segment.toLowerCase()));
+    if (quote !== undefined) found.push({ path: document.path, quote: redactedAsPosted(quote) });
+  }
+  return found.length === 0 ? undefined : found;
+}
+
+function assignIds(
+  output: string,
+  hints: CandidateHint[],
+  facts: { toolSignals?: readonly EvidenceSignal[] | undefined; conventions?: readonly { path: string; content: string }[] | undefined } = {},
+): StoredFinding[] {
   const taken = new Set<CandidateHint>();
   return splitFindings(output)
     .map((block) => parseFinding(block.raw, block.startLine))
@@ -652,6 +768,8 @@ function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
       const patch = suggestedPatchOf(hint?.suggested_patch);
       const blockerClass = blockerClassOf(hint);
       const ruleId = ruleIdFor(hint?.category, laneOf(hint), blockerClass);
+      const toolSignal = toolSignalFor(anchor, facts.toolSignals ?? []);
+      const conventionQuotes = conventionQuotesFor(hint?.evidence, facts.conventions ?? []);
       return {
         findingId: `rv_${String(index + 1).padStart(2, '0')}`,
         severity: finding.severity!,
@@ -673,6 +791,12 @@ function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
         ...(patch === null || hint === undefined
           ? {}
           : { suggestedPatch: patch, suggestedPatchSource: { path: patchPath(hint), candidateId: typeof hint.candidate_id === 'string' ? hint.candidate_id : null } }),
+        ...(toolSignal === undefined ? {} : { toolSignal }),
+        // Tied to the candidate that cited them, so the block shows them only
+        // beside that candidate's own verified score (as S14 ties a patch).
+        ...(conventionQuotes === undefined
+          ? {}
+          : { conventionQuotes, conventionQuotesCandidate: typeof hint?.candidate_id === 'string' ? hint.candidate_id : null }),
       };
     });
 }
@@ -689,7 +813,7 @@ export function recordRun(
     throw new Error('A review may record at most one body-only simplification finding.');
   }
   const reviewRunId = randomUUID();
-  const findings = assignIds(input.output, input.candidates ?? []);
+  const findings = assignIds(input.output, input.candidates ?? [], { toolSignals: input.toolSignals, conventions: input.conventions });
 
   // Checked before anything is written, so a refused record leaves no run behind.
   if (input.carried !== undefined) {
