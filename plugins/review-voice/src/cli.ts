@@ -20,18 +20,11 @@ import { AgentSpecError, readAgentTools, runAgent, runnerTools, schemaForRunner 
 import { validateOutput } from './contract/validate.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
 import { DEFAULT_LIMITS, SEVERITY_ORDER, type Severity } from './contract/limits.ts';
-import { acquireDiff, attributeSource, GitError, linguistGeneratedPaths, type ChangedFile } from './diff/acquire.ts';
+import { GitError } from './diff/acquire.ts';
 import {
-  applyStructureHumanReviewCap,
-  assessComplexity,
-  DEFAULT_TEST_PATHS,
-  deletedProductionPaths,
-  humanReviewNote,
   parseComplexity,
-  productionPaths,
   type ComplexityAssessment,
 } from './diff/complexity.ts';
-import { collectStructure, type StructureSignals } from './diff/structure.ts';
 import {
   parseSimplificationCandidate,
   parseSimplificationVerification,
@@ -39,9 +32,8 @@ import {
   simplificationDiffProblem,
   type VerifiedSimplification,
 } from './simplification.ts';
-import { acquirePullRequestDiff, applyReviewScope, type SquashedParentSuspected, type SuspectedWrongBase } from './diff/pull-request.ts';
 import { isReviewable } from './diff/classify.ts';
-import { describeScope, parseReviewScope, planScope, type ReviewScope } from './diff/incremental.ts';
+import { describeScope, parseReviewScope, type ReviewScope } from './diff/incremental.ts';
 import {
   classifyAnchor,
   classifyStaleConsumer,
@@ -53,7 +45,7 @@ import {
   type AnchorCheck,
   type FileHunks,
 } from './diff/hunks.ts';
-import { readThread, type ThreadComment } from './diff/thread.ts';
+import type { ThreadComment } from './diff/thread.ts';
 import {
   followUpHistory,
   FollowUpRulingError,
@@ -63,13 +55,11 @@ import {
   type FollowUpRuling,
   type FollowUpState,
 } from './store/follow-ups.ts';
-import { collectSymbolContext, DEFAULT_MAX_MS } from './diff/symbols.ts';
 import { openDatabase, type Database } from './store/db.ts';
 import { databasePath, dataDirectory } from './store/paths.ts';
 import {
   recordRun,
   latestRun,
-  recordedRunsForPull,
   runDetail,
   heldProblem,
   type CarryMarker,
@@ -91,7 +81,7 @@ import { carryCandidates, carryFindings, CarryError, commitReadable, followLine,
 import { productionChange, resolvePlan, MODES, type RequestedMode } from './review/plan.ts';
 import { DIFF_LANE, eligibleLanes, laneNamed } from './review/lanes.ts';
 import { candidateAnchor, reanchorCandidates, reanchorScores } from './diff/reanchor.ts';
-import { fetchPriorHead, latestOwnReview, resolveCommit, resolvePrior, resolveSince, type PriorResolution, type RecordedRun } from './diff/prior.ts';
+import { resolveCommit } from './diff/prior.ts';
 import {
   feedbackTotals,
   unlabelledFindings,
@@ -174,7 +164,6 @@ import {
   inferRepository,
   remoteRepositories,
   flag,
-  resolveOutPath,
   repositoryConfig,
   boundLists,
   refExists,
@@ -203,495 +192,11 @@ import { conventionsCommand } from './cli/conventions.ts';
 import { checkIntentCommand } from './cli/check-intent.ts';
 import { recallCommand } from './cli/recall.ts';
 import { worktreeCommand } from './cli/worktree.ts';
+import { pullRequestDiffCommand, diffCommand, readFilesAndDiff } from './cli/diff.ts';
+import { threadCommand } from './cli/thread.ts';
+import { symbolsCommand } from './cli/symbols.ts';
+export { diffSummary, emitDiff } from './cli/diff.ts';
 export { resolveOutPath, verificationProblem } from './cli/shared.ts';
-
-async function threadCommand(argv: string[]): Promise<number> {
-  const pullNumber = Number(flag(argv, '--pr'));
-  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
-    console.error('--pr needs a pull request number.');
-    return 2;
-  }
-
-  const repository = flag(argv, '--repository') ?? inferRepository(process.cwd());
-  if (repository === null) {
-    console.error('Cannot tell which repository. Pass --repository <owner/repo>.');
-    return 2;
-  }
-
-  const result = await readThread({ repository, pullNumber, client: githubClient([repository]) });
-  // Local only, never posted: the review goes on without thread resolution.
-  for (const warning of result.warnings ?? []) console.error(`Warning: ${warning}`);
-  const out = flag(argv, '--out');
-  if (out === null) {
-    console.log(JSON.stringify(result, null, 2));
-    return 0;
-  }
-  try {
-    const path = resolveOutPath(out, 'thread.json');
-    writeFileSync(path, JSON.stringify(result, null, 2), 'utf8');
-    console.log(
-      JSON.stringify(
-        {
-          path,
-          comments: result.comments.length,
-          truncated: result.truncated,
-          ...(result.warnings === undefined ? {} : { warnings: result.warnings }),
-        },
-        null,
-        2,
-      ),
-    );
-    return 0;
-  } catch (error) {
-    console.error(
-      `Cannot write ${out}: expected a file path or a directory; ` +
-        `${error instanceof Error ? error.message : String(error)}`,
-    );
-    return 2;
-  }
-}
-
-async function pullRequestDiffCommand(argv: string[]): Promise<number> {
-  const pullNumber = Number(flag(argv, '--pr'));
-  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
-    console.error('--pr needs a pull request number.');
-    return 2;
-  }
-
-  const repository = flag(argv, '--repository') ?? inferRepository(process.cwd());
-  if (repository === null) {
-    console.error('Cannot tell which repository. Pass --repository <owner/repo>.');
-    return 2;
-  }
-
-  // An explicit previous head overrides whatever was recorded, and must be a
-  // commit this clone can read: comparing against a guess would narrow the
-  // review on a boundary nobody checked.
-  let since: string | null = null;
-  if (argv.includes('--since')) {
-    const wanted = flag(argv, '--since');
-    since = wanted === null ? null : resolveSince(wanted, repository, process.cwd());
-    if (since === null) {
-      console.error(
-        wanted === null ? '--since needs a commit.' : `--since ${wanted} is not a commit in this clone.`,
-      );
-      return 2;
-    }
-  }
-
-  const result = await acquirePullRequestDiff({
-    repository,
-    pullNumber,
-    includeGenerated: argv.includes('--include-generated'),
-    cwd: process.cwd(),
-    client: githubClient([repository]),
-  });
-
-  let recorded: RecordedRun[] = [];
-  let uncoveredPrior: string | null = null;
-  try {
-    const db = openDatabase();
-    try {
-      recorded = recordedRunsForPull(db, repository, pullNumber);
-      // A run whose carry left commits unreviewed is no boundary: reading
-      // only what came after it would never read those commits. With no
-      // prior, the whole pull request is read (docs/adr/0017).
-      if (recorded.length > 0 && runDetail(db, recorded[0]!.runId)?.carry?.covered === false) {
-        uncoveredPrior = recorded[0]!.runId;
-        recorded = [];
-      }
-    } finally {
-      db.close();
-    }
-  } catch {
-    // A store that cannot be read only removes one source of the previous head.
-  }
-
-  const { prior, resolution } = await resolvePrior({
-    since,
-    recorded,
-    pull: `${repository}#${pullNumber}`,
-    ownReview: () =>
-      uncoveredPrior !== null
-        ? Promise.resolve(null)
-        : latestOwnReview(githubClient([repository]), repository, pullNumber),
-  });
-  if (uncoveredPrior !== null && since === null) {
-    console.error(`Run ${uncoveredPrior} carried candidates without reviewing the commits before it, so the whole pull request is read.`);
-  }
-
-  let planned: { scope: ReviewScope; interdiffPatch: string | null };
-  try {
-    planned = planScope({
-      priorRun: prior,
-      head: result.head,
-      headAvailable: result.refs.head.available,
-      reviewedFiles: result.files.filter((file) => file.reviewed),
-      // Deletions are never reviewed, but a follow-up must still show one. A
-      // deleted lock file or generated output stays out, as it would anyway.
-      deletedFiles: result.files
-        .filter((file) => file.status === 'deleted' && isReviewable(file.path, argv.includes('--include-generated')))
-        .map((file) => file.path),
-      cwd: process.cwd(),
-      truncated: result.truncated,
-      forceFull: argv.includes('--full'),
-      base: result.refs.base.available && result.base !== null ? result.base : undefined,
-      fetchPriorHead: (sha) => fetchPriorHead(sha, repository, process.cwd()),
-      includeGenerated: argv.includes('--include-generated'),
-    });
-  } catch (error) {
-    planned = {
-      scope: {
-        kind: 'full',
-        cause: 'compare-unavailable',
-        since: prior?.headRef ?? null,
-        priorRunId: prior?.reviewRunId ?? null,
-        detail: `planning the scope failed: ${(error instanceof Error ? error.message : String(error)).split('\n')[0]}`,
-      },
-      interdiffPatch: null,
-    };
-  }
-
-  const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), undefined, planned.interdiffPatch);
-  return emitDiff({ ...scoped, repository, prior: resolution }, flag(argv, '--out'));
-}
-
-/**
- * A whole unified diff inline in a JSON blob is awkward to hand to an agent -
- * the patch for a mid-sized pull request runs past a hundred kilobytes, and
- * the caller ends up splitting it back out. `--out` does that here instead.
- */
-interface EmittedDiff {
-  diff: string;
-  mode: 'worktree' | 'staged' | 'base' | 'pull-request';
-  base: string | null;
-  head: string;
-  reviewedFileCount: number;
-  hunkFileCount: number;
-  excludedFileCount: number;
-  files?: ChangedFile[];
-  pullNumber?: number;
-  scope?: ReviewScope;
-  scopeNote?: string | null;
-  truncated?: boolean;
-  truncationNote?: string | null;
-  suspectedWrongBase?: SuspectedWrongBase | null;
-  squashedParentSuspected?: SquashedParentSuspected | null;
-  /** Added by `emitDiff`; see docs/adr/0012. */
-  complexity?: ComplexityAssessment;
-  humanReviewNote?: string | null;
-  /** Structural evidence for the analyst; enabled human-review settings may also cap an approval. */
-  structure?: StructureSignals;
-  refs?: {
-    base: { sha: string; available: boolean };
-    head: { sha: string; available: boolean };
-    mergeBase: string | null;
-  };
-  prior?: PriorResolution;
-  /** On `--pr`: the repository the diff was read for, so `record --files` can store it. */
-  repository?: string;
-}
-
-/** The compact metadata a command runner needs after `diff --out`. */
-export function diffSummary(result: EmittedDiff): {
-  mode: EmittedDiff['mode'];
-  base: string | null;
-  /** On `--pr`, where the branch left the base; see `refs.mergeBase`. */
-  mergeBase: string | null;
-  head: string;
-  pullNumber: number | null;
-  scope: {
-    kind: ReviewScope['kind'];
-    cause: string | null;
-    /**
-     * Which condition sent a full read, and which git command failed, when one
-     * did; on an interdiff, which conflicted files were narrowed or read whole.
-     */
-    detail: string | null;
-    since: string | null;
-    mergeBase: string | null;
-  } | null;
-  scopeNote: string | null;
-  /**
-   * Files the pull request no longer changes because the new base already
-   * makes the same change; review.md prints them after the findings.
-   */
-  absorbedByBase: string[];
-  /**
-   * Files whose replay conflicted that the pull request no longer changes;
-   * review.md prints them after the findings.
-   */
-  noLongerChanged: string[];
-  complexity: ComplexityAssessment | null;
-  humanReviewNote: string | null;
-  structure: StructureSignals | null;
-  truncated: boolean;
-  truncationNote: string | null;
-  /** A pull request whose commits mostly sit on the default branch; see `acquirePullRequestDiff`. */
-  suspectedWrongBase: SuspectedWrongBase | null;
-  /** Listed files already identical on the base tip, excluded from the review; see `acquirePullRequestDiff`. */
-  squashedParentSuspected: SquashedParentSuspected | null;
-  reviewedFileCount: number;
-  hunkFileCount: number;
-  excludedFileCount: number;
-  handEditSuspected: string[];
-  refs: {
-    base: { sha: string; available: boolean };
-    head: { sha: string; available: boolean };
-    mergeBase: string | null;
-  } | null;
-  prior: {
-    source: PriorResolution['source'];
-    head: string | null;
-    runId: string | null;
-    runIdNote: string | null;
-  } | null;
-} {
-  const scope = result.scope === undefined
-    ? null
-    : {
-        kind: result.scope.kind,
-        cause:
-          result.scope.kind === 'full'
-            ? result.scope.cause
-            : result.scope.kind === 'unchanged'
-              ? result.scope.reason
-              : null,
-        detail:
-          result.scope.kind === 'full' || result.scope.kind === 'interdiff' ? (result.scope.detail ?? null) : null,
-        since: result.scope.since,
-        mergeBase:
-          result.scope.kind === 'unchanged' || result.scope.kind === 'interdiff' ? result.scope.mergeBase : null,
-      };
-  return {
-    mode: result.mode,
-    base: result.base,
-    mergeBase: result.refs?.mergeBase ?? null,
-    head: result.head,
-    pullNumber: result.pullNumber ?? null,
-    scope,
-    scopeNote: result.scopeNote ?? null,
-    absorbedByBase:
-      result.scope !== undefined && (result.scope.kind === 'unchanged' || result.scope.kind === 'interdiff')
-        ? (result.scope.absorbedByBase ?? [])
-        : [],
-    noLongerChanged:
-      result.scope !== undefined && (result.scope.kind === 'unchanged' || result.scope.kind === 'interdiff')
-        ? (result.scope.noLongerChanged ?? [])
-        : [],
-    complexity: result.complexity ?? null,
-    humanReviewNote: result.humanReviewNote ?? null,
-    structure: result.structure ?? null,
-    truncated: result.truncated ?? false,
-    truncationNote: result.truncationNote ?? null,
-    suspectedWrongBase: result.suspectedWrongBase ?? null,
-    squashedParentSuspected: result.squashedParentSuspected ?? null,
-    reviewedFileCount: result.reviewedFileCount,
-    hunkFileCount: result.hunkFileCount,
-    excludedFileCount: result.excludedFileCount,
-    handEditSuspected: (result.files ?? []).filter((file) => file.handEditSuspected === true).map((file) => file.path),
-    refs:
-      result.refs === undefined
-        ? null
-        : { base: result.refs.base, head: result.refs.head, mergeBase: result.refs.mergeBase },
-    prior:
-      result.prior === undefined
-        ? null
-        : {
-            source: result.prior.source,
-            head: result.prior.head,
-            runId: result.prior.runId,
-            runIdNote: result.prior.runIdNote ?? null,
-          },
-  };
-}
-
-/**
- * Reviewed and deleted paths the repository's `.gitattributes` marks generated,
- * as of the commit the change starts from (see attributeSource). Outside a
- * repository, or without that commit, nothing is marked.
- */
-function markedGenerated(acquired: EmittedDiff): Set<string> {
-  // A deleted file is asked about too, so a deleted generated file is not read
-  // for removed controls; no reviewed-only path is affected by the extra names.
-  const asked = (acquired.files ?? []).filter((file) => file.reviewed || file.status === 'deleted').map((file) => file.path);
-  try {
-    const root = repositoryRoot(process.cwd());
-    return linguistGeneratedPaths(root, asked, attributeSource(root, acquired));
-  } catch {
-    return new Set();
-  }
-}
-
-export function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
-  // Assessed here, from the diff the analyst will read, so the manifest and
-  // the summary say the same thing and `record --files` carries it forward.
-  const config = repositoryConfig();
-  for (const warning of config?.warnings ?? []) console.error(`Warning: ${warning}`);
-  const generated = markedGenerated(acquired);
-  // A narrowed review is flagged for what it reads: files earlier commits
-  // changed are not this run's. The pull request stays flagged through the
-  // prior runs (ADR 0012, sticky).
-  const scope = acquired.scope;
-  const narrowed = scope !== undefined && (scope.kind === 'interdiff' || scope.kind === 'incremental') ? scope.files : null;
-  const scopedFiles = (acquired.files ?? []).filter((file) => narrowed === null || narrowed.includes(file.path));
-  const assessed = assessComplexity(acquired.diff, scopedFiles, config?.humanReview, generated);
-  const production = productionPaths(scopedFiles, config?.humanReview, generated);
-  // A wholly deleted file is not in the patch, so removed controls read it from
-  // the base; it is classified by the same rules as the files the review reads.
-  const deletedProduction = deletedProductionPaths(scopedFiles, config?.humanReview, generated);
-  const structure = collectStructure(process.cwd(), acquired, production, config?.structure, deletedProduction);
-  const complexity = applyStructureHumanReviewCap(assessed, structure, config?.humanReview);
-  const result: EmittedDiff = {
-    ...acquired,
-    complexity,
-    humanReviewNote: humanReviewNote(complexity),
-    structure,
-  };
-
-  if (outDir === null) {
-    console.log(JSON.stringify(result, null, 2));
-    return 0;
-  }
-
-  try {
-    mkdirSync(outDir, { recursive: true });
-    const patchPath = join(outDir, 'diff.patch');
-    const metaPath = join(outDir, 'files.json');
-    writeFileSync(patchPath, result.diff);
-    writeFileSync(metaPath, JSON.stringify({ ...result, diff: undefined }, null, 2));
-    console.log(
-      JSON.stringify(
-        { patch: patchPath, files: metaPath, diffBytes: result.diff.length, summary: diffSummary(result) },
-        null,
-        2,
-      ),
-    );
-    return 0;
-  } catch (error) {
-    console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-}
-
-function diffCommand(argv: string[]): number {
-  const baseIndex = argv.indexOf('--base');
-  const base = baseIndex === -1 ? null : (argv[baseIndex + 1] ?? null);
-  if (baseIndex !== -1 && (base === null || base.startsWith('--'))) {
-    console.error('--base needs a git ref, for example: --base origin/main');
-    return 2;
-  }
-
-  try {
-    const result = acquireDiff({
-      cwd: process.cwd(),
-      staged: argv.includes('--staged'),
-      base,
-      includeGenerated: argv.includes('--include-generated'),
-    });
-    // An empty diff is a valid answer, not an error: the caller should say so
-    // rather than invent something to review.
-    return emitDiff(result, flag(argv, '--out'));
-  } catch (error) {
-    if (error instanceof GitError) {
-      console.error(error.message);
-      console.error('Run this inside a git repository.');
-      return 2;
-    }
-    throw error;
-  }
-}
-
-/**
- * Gives the agents a bounded list of places worth reading after the diff.
- *
- * The search ref has to resolve before collection begins. Passing a bad ref to
- * git grep would be caught per symbol and correctly marked inconclusive, but
- * treating that as a normal `--base` invocation would quietly turn a caller's
- * request for a reviewed tree into a pile of partial working-tree-like data.
- */
-function symbolsCommand(argv: string[]): number {
-  const diffFile = flag(argv, '--diff-file');
-  if (diffFile === null) {
-    console.error('--diff-file needs a unified diff path.');
-    return 2;
-  }
-
-  let diff: string;
-  try {
-    diff = readFileSync(diffFile, 'utf8');
-  } catch (error) {
-    console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-
-  const baseIndex = argv.indexOf('--base');
-  const base = flag(argv, '--base');
-  if (baseIndex !== -1 && base === null) {
-    console.error('--base needs a git ref, for example: --base origin/main');
-    return 2;
-  }
-  if (base !== null && !refExists(base, process.cwd())) {
-    console.error(`--base ${base} does not resolve in this repository. Fetch it before collecting symbol context.`);
-    return 2;
-  }
-
-  const headIndex = argv.indexOf('--head');
-  const head = flag(argv, '--head');
-  if (headIndex !== -1 && head === null) {
-    console.error('--head needs a git ref, for example: --head HEAD');
-    return 2;
-  }
-  if (head !== null && !refExists(head, process.cwd())) {
-    console.error(`--head ${head} does not resolve in this repository. Fetch it before collecting symbol context.`);
-    return 2;
-  }
-
-  let maxMs = DEFAULT_MAX_MS;
-  if (argv.includes('--max-ms')) {
-    const wanted = flag(argv, '--max-ms');
-    maxMs = wanted !== null && /^\d+$/.test(wanted) ? Number(wanted) : Number.NaN;
-    if (!Number.isSafeInteger(maxMs) || maxMs < 1) {
-      console.error('--max-ms needs a positive number of milliseconds, for example: --max-ms 60000');
-      return 2;
-    }
-  }
-
-  // The same configured test paths the size signals use, so a repository that
-  // names its tests differently gets the same split here.
-  const testPaths = repositoryConfig()?.humanReview.testPaths ?? DEFAULT_TEST_PATHS;
-  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, maxMs });
-  const out = flag(argv, '--out');
-  if (out === null) {
-    console.log(JSON.stringify(result, null, 2));
-    return 0;
-  }
-
-  try {
-    const path = resolveOutPath(out, 'symbols.json');
-    writeFileSync(path, JSON.stringify(result, null, 2), 'utf8');
-    console.log(
-      JSON.stringify(
-        {
-          path,
-          files: result.files.length,
-          downstreamFiles: result.downstreamFiles,
-          inconclusiveFiles: result.files.filter((file) => file.inconclusive === true).length,
-          budgetExhausted: result.budget.exhausted,
-        },
-        null,
-        2,
-      ),
-    );
-    return 0;
-  } catch (error) {
-    console.error(
-      `Cannot write ${out}: expected a file path or a directory; ` +
-        `${error instanceof Error ? error.message : String(error)}`,
-    );
-    return 2;
-  }
-}
 
 /**
  * The allowlist entries a command reads by name. An `owner/*` pattern is
@@ -925,31 +430,6 @@ function planCommand(argv: string[]): number {
   });
   console.log(JSON.stringify(plan, null, 2));
   return 0;
-}
-
-/** files.json and diff.patch from `diff --out`, or null after saying what was wrong. */
-function readFilesAndDiff(
-  filesPath: string,
-  diffPath: string,
-): { manifest: Record<string, unknown>; changed: ChangedFile[]; diffText: string; generated: Set<string> } | null {
-  let manifest: Record<string, unknown>;
-  let diffText: string;
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(filesPath, 'utf8'));
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('not a JSON object');
-    manifest = parsed as Record<string, unknown>;
-    diffText = readFileSync(diffPath, 'utf8');
-  } catch (error) {
-    console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
-    return null;
-  }
-  const files = manifest['files'];
-  if (!Array.isArray(files) || !files.every((file) => typeof file === 'object' && file !== null && typeof file.path === 'string')) {
-    console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
-    return null;
-  }
-  const generated = markedGenerated({ ...manifest, diff: diffText } as unknown as EmittedDiff);
-  return { manifest, changed: files as ChangedFile[], diffText, generated };
 }
 
 /** Which configured lanes run on this change (docs/adr/0023). */

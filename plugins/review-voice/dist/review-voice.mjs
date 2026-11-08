@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync20, writeFileSync as writeFileSync6, mkdirSync as mkdirSync10, statSync as statSync8, renameSync as renameSync3, rmSync as rmSync8 } from "node:fs";
-import { dirname as dirname15, isAbsolute as isAbsolute5, join as join23, posix as posix3, relative as relative4, resolve as resolve8 } from "node:path";
+import { readFileSync as readFileSync22, writeFileSync as writeFileSync9, mkdirSync as mkdirSync11, statSync as statSync8, renameSync as renameSync3, rmSync as rmSync8 } from "node:fs";
+import { dirname as dirname15, isAbsolute as isAbsolute5, join as join24, posix as posix3, relative as relative4, resolve as resolve8 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFileSync as execFileSync19 } from "node:child_process";
@@ -1998,722 +1998,6 @@ function parseComplexity(value) {
   };
 }
 
-// plugins/review-voice/src/diff/structure.ts
-import { execFileSync as execFileSync3 } from "node:child_process";
-import { readFileSync as readFileSync6 } from "node:fs";
-import { join as join5 } from "node:path";
-
-// plugins/review-voice/src/diff/removed-controls.ts
-import { basename, extname as extname2 } from "node:path";
-
-// plugins/review-voice/src/diff/type-escapes.ts
-import { extname } from "node:path";
-var MAX_PER_FILE = 20;
-var POSTFIX_BANG = /[\w$)\]]!(?=[.[)\],;:])/g;
-var TYPESCRIPT = {
-  quotes: "'\"`",
-  lineComment: "//",
-  blockComments: true,
-  rules: [
-    { kind: "any", in: "code", pattern: /:\s*any\b|\bas\s+any\b|<any>/g },
-    { kind: "double-cast", in: "code", pattern: /\bas\s+unknown\s+as\b/g },
-    { kind: "non-null", in: "code", pattern: POSTFIX_BANG },
-    { kind: "ts-ignore", in: "comment", pattern: /@ts-ignore\b/g },
-    { kind: "ts-expect-error", in: "comment", pattern: /@ts-expect-error\b/g },
-    {
-      kind: "lint-disable",
-      in: "comment",
-      pattern: /\beslint-disable(?:-next-line|-line)?(?![\w-])([^]*)/g,
-      // Names no rule (disables them all), or names one from the type-aware set.
-      accept: (match) => {
-        const rules = (match[1] ?? "").replace(/\*\/[^]*$/, "").split(/\s--\s/)[0].trim();
-        return rules === "" || rules.includes("@typescript-eslint/");
-      }
-    }
-  ]
-};
-var CSHARP = {
-  quotes: `'"`,
-  lineComment: "//",
-  blockComments: true,
-  rules: [
-    { kind: "null-forgiving", in: "code", pattern: POSTFIX_BANG },
-    { kind: "dynamic", in: "code", pattern: /\bdynamic\b/g },
-    { kind: "object-cast", in: "code", pattern: /\(object\)\s*[\w@$("']/g },
-    { kind: "nullable-disable", in: "code", pattern: /^\s*#\s*nullable\s+disable\b/g },
-    {
-      kind: "nullable-disable",
-      in: "code",
-      pattern: /^\s*#\s*pragma\s+warning\s+disable\b(.*)$/g,
-      accept: (match) => /\bCS8[67]\d\d\b|\bnullable\b/i.test(match[1] ?? "")
-    }
-  ]
-};
-var PYTHON = {
-  quotes: `'"`,
-  lineComment: "#",
-  blockComments: false,
-  skip: /^\s*(?:import\s|from\s+\S+\s+import\b)/,
-  rules: [
-    { kind: "type-ignore", in: "comment", pattern: /type:\s*ignore\b/g },
-    { kind: "cast", in: "code", pattern: /\bcast\(/g },
-    { kind: "any", in: "code", pattern: /\bAny\b/g }
-  ]
-};
-var LANGUAGES2 = {
-  ...Object.fromEntries([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, TYPESCRIPT])),
-  ".cs": CSHARP,
-  ".py": PYTHON,
-  ".pyi": PYTHON
-};
-function splitLine(text4, language3) {
-  if (language3.blockComments && text4.trimStart().startsWith("*")) return { code: "", comment: text4, raw: "" };
-  let code = "";
-  let raw = "";
-  let comment = "";
-  let quote2 = null;
-  for (let index = 0; index < text4.length; index += 1) {
-    const char = text4[index];
-    if (quote2 !== null) {
-      if (char === "\\") {
-        code += "  ";
-        raw += text4.slice(index, index + 2);
-        index += 1;
-      } else if (text4.startsWith(quote2, index)) {
-        code += quote2;
-        raw += quote2;
-        index += quote2.length - 1;
-        quote2 = null;
-      } else {
-        code += " ";
-        raw += char;
-      }
-    } else if (language3.quotes.includes(char)) {
-      quote2 = language3.tripleQuotes === true && text4.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
-      code += quote2;
-      raw += quote2;
-      index += quote2.length - 1;
-    } else if (text4.startsWith(language3.lineComment, index)) {
-      comment += text4.slice(index);
-      break;
-    } else if (language3.altLineComment !== void 0 && text4.startsWith(language3.altLineComment, index) && !text4.startsWith("#[", index)) {
-      comment += text4.slice(index);
-      break;
-    } else if (language3.blockComments && text4.startsWith("/*", index)) {
-      const end = text4.indexOf("*/", index + 2);
-      comment += `${text4.slice(index, end === -1 ? void 0 : end + 2)} `;
-      if (end === -1) break;
-      index = end + 1;
-    } else if (language3.regexLiterals === true && char === "/" && opensRegex(code)) {
-      const end = regexEnd(text4, index);
-      if (end === -1) {
-        code += char;
-        raw += char;
-      } else {
-        code += `/${" ".repeat(end - index - 1)}/`;
-        raw += text4.slice(index, end + 1);
-        index = end;
-      }
-    } else {
-      code += char;
-      raw += char;
-    }
-  }
-  return { code, comment, raw };
-}
-function opensRegex(before) {
-  const trimmed = before.trimEnd();
-  if (trimmed === "" || /[(,=:[!&|?{};+\-*%<>~^]$/.test(trimmed)) return true;
-  return /(?:^|[^\w$.])(?:return|typeof|case|in|of|delete|void|throw|new|instanceof|do|else)$/.test(trimmed);
-}
-function regexEnd(text4, start) {
-  let inClass = false;
-  for (let index = start + 1; index < text4.length; index += 1) {
-    const char = text4[index];
-    if (char === "\\") index += 1;
-    else if (inClass) inClass = char !== "]";
-    else if (char === "[") inClass = true;
-    else if (char === "/") return index;
-  }
-  return -1;
-}
-function kindsIn(text4, language3) {
-  const line3 = splitLine(text4, language3);
-  const kinds = [];
-  for (const rule of language3.rules) {
-    if (rule.in === "code" && language3.skip?.test(line3.code)) continue;
-    const source = line3[rule.in];
-    for (const match of source.matchAll(rule.pattern)) {
-      if (rule.accept === void 0 || rule.accept(match, line3)) kinds.push(rule.kind);
-    }
-  }
-  return kinds;
-}
-function findTypeEscapes(diff, paths) {
-  const found = [];
-  for (const hunk of countHunks(diff, new Set(paths))) {
-    const language3 = LANGUAGES2[extname(hunk.path).toLowerCase()];
-    if (language3 === void 0) continue;
-    for (const { line: line3, text: text4 } of hunk.added) {
-      for (const kind of kindsIn(text4, language3)) found.push({ path: hunk.path, line: line3, kind });
-    }
-  }
-  const byPathLineKind = (a, b) => {
-    if (a.path !== b.path) return a.path < b.path ? -1 : 1;
-    if (a.line !== b.line) return a.line - b.line;
-    return a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0;
-  };
-  found.sort(byPathLineKind);
-  const perFile = /* @__PURE__ */ new Map();
-  return found.filter((escape) => {
-    const seen = perFile.get(escape.path) ?? 0;
-    perFile.set(escape.path, seen + 1);
-    return seen < MAX_PER_FILE;
-  });
-}
-
-// plugins/review-voice/src/diff/removed-controls.ts
-var MAX_PER_FILE2 = 20;
-var MAX_TEXT = 120;
-var MAX_SCANNED_LINE = 1e3;
-var GUARD_WORDS = [
-  "auth",
-  "authoriz",
-  "permission",
-  "role",
-  "scope",
-  "token",
-  "session",
-  "owner",
-  "admin",
-  "allow",
-  "deny",
-  "validate",
-  "verify",
-  "check",
-  "limit",
-  "quota",
-  "rate",
-  "throttle",
-  "sanitize",
-  "escape",
-  "csrf",
-  "origin"
-];
-var capitalised = (word) => word.charAt(0).toUpperCase() + word.slice(1);
-var GUARD_WORD = new RegExp(
-  `(?<![A-Za-z])(?:${GUARD_WORDS.join("|")}|${GUARD_WORDS.map(capitalised).join("|")}|${GUARD_WORDS.map((w) => w.toUpperCase()).join("|")})|(?<=[a-z0-9])(?:${GUARD_WORDS.map(capitalised).join("|")})`
-);
-function conditionAfter(line3, from) {
-  const code = line3.code.slice(from);
-  const open = /^\s*\(/.exec(code);
-  if (open === null) return line3.raw.slice(from, toBody(code, from, 0));
-  let depth = 0;
-  for (let index = open[0].length - 1; index < code.length; index += 1) {
-    if (code[index] === "(") depth += 1;
-    else if (code[index] === ")") {
-      depth -= 1;
-      if (depth === 0) {
-        const continues = /^\s*(?:and|or|&&|\|\|)(?![\w$])/.test(code.slice(index + 1));
-        return line3.raw.slice(from, continues ? toBody(code, from, index + 1) : from + index + 1);
-      }
-    }
-  }
-  return line3.raw.slice(from);
-}
-function toBody(code, from, start) {
-  const body = /:(?=\s|$)|\{|\bthen\b|\bdo\b/.exec(code.slice(start));
-  return body === null ? void 0 : from + start + body.index;
-}
-var MIDDLEWARE_NAME = "(?:[Aa]uth|[Vv]erify|[Rr]equire[A-Z_]|[Cc]srf|CSRF|[Rr]ate_?[Ll]imit|RATE_?LIMIT)";
-var STATEMENT_WORD = /\b(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|raise|when|import|export|const|let|var|def|class|function)\b/;
-var ALLOWLIST_NAME = /allow|whitelist|permitted|roles|scopes|origins/i;
-var WHOLE_LINE = /^.*$/g;
-function isListElement(raw) {
-  let text4 = raw.trim();
-  if (text4.endsWith(",")) text4 = text4.slice(0, -1).trimEnd();
-  if (text4 === "") return false;
-  const quote2 = text4[0];
-  if ((quote2 === '"' || quote2 === "'" || quote2 === "`") && text4.length >= 2 && text4.endsWith(quote2) && !text4.slice(1, -1).includes(quote2)) {
-    return true;
-  }
-  if (/^[\w$.@*/-]+$/.test(text4)) return true;
-  const colon = text4.indexOf(":");
-  if (colon <= 0) return false;
-  const key2 = text4.slice(0, colon).trim();
-  const value = text4.slice(colon + 1).trim();
-  return /^["']?[\w$.-]+["']?$/.test(key2) && value !== "" && !value.includes(",");
-}
-var RULES = [
-  {
-    // Matched on code so a conditional named only in a string is not one; the
-    // words are read from the condition as written, so `if (role === 'admin')`
-    // counts for what it compares against. Not a parser: `if (isReady) check()`
-    // is read as a conditional on `isReady`, which has no such word, and passes.
-    kind: "guard",
-    in: "code",
-    // Declarations and assignments can name a variable guard without introducing a conditional.
-    pattern: /\b(?:if|elif|unless|guard|when|case)\b(?!\s*=)/g,
-    accept: (match, line3) => !/\b(?:const|let|var)\s+$/.test(line3.code.slice(0, match.index ?? 0)) && GUARD_WORD.test(conditionAfter(line3, (match.index ?? 0) + match[0].length))
-  },
-  {
-    // The keyword is read from the code view, so a `return` that merely sits in
-    // a string is not one; what follows it is read from the raw line, since the
-    // refusal is mostly a status or a message: `throw new Error('Forbidden')`
-    // keeps its word. Code and raw are the same length, so the index carries.
-    kind: "refusal",
-    in: "code",
-    pattern: /\b(?:throw|raise|return)\b/g,
-    accept: (match, line3) => /^.{0,160}?(?:\b40[13]\b|Forbidden|Unauthori[sz]ed|TooMany|Invalid|Denied)/.test(line3.raw.slice((match.index ?? 0) + match[0].length))
-  },
-  {
-    // An attribute or decorator that gates a handler. Code only, and anchored
-    // to the start of the line, so `'@Authorize'` in a string is not one.
-    kind: "decorator",
-    in: "code",
-    pattern: /^\s*[@[]\s*(?:[\w.]+\.)?(?:authori[sz]e\w*|require_?(?:role|auth|permission|login)\w*|login_required|permission_required|permission_classes|pre_?authorize|post_?authorize|roles?_?required|roles?_?allowed|secured|use_?guards|roles?(?=\s*\())\b/gi
-  },
-  {
-    // A registration that puts an access or abuse control in front of routes.
-    kind: "middleware",
-    in: "code",
-    pattern: new RegExp(`\\.use\\([^;]*?${MIDDLEWARE_NAME}`, "g")
-  },
-  {
-    kind: "middleware",
-    in: "code",
-    pattern: new RegExp(`\\b(?:router|app|routes?)\\.\\w+\\([^;]*?${MIDDLEWARE_NAME}`, "g")
-  },
-  {
-    // One element of a list, removed from a file or declaration whose name says
-    // it is an allowlist (the scanner checks the name). Read from the raw line
-    // for the element and the code for what disqualifies it, so a quoted
-    // `'for'` is an entry and a bare `for` is not.
-    kind: "allowlist-entry",
-    in: "raw",
-    pattern: WHOLE_LINE,
-    accept: (_match, line3) => isListElement(line3.raw) && !/[=(]/.test(line3.code) && !STATEMENT_WORD.test(line3.code)
-  }
-];
-function language(quotes, lineComment2, blockComments) {
-  return { rules: RULES, quotes, lineComment: lineComment2, blockComments };
-}
-var C_STYLE = language(`'"`, "//", true);
-var SCRIPT = { ...language("'\"`", "//", true), regexLiterals: true };
-var GO = language("'\"`", "//", true);
-var HASH = language(`'"`, "#", false);
-var PHP = { ...C_STYLE, altLineComment: "#" };
-var LANGUAGES3 = {
-  ...Object.fromEntries([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, SCRIPT])),
-  ...Object.fromEntries([".cs", ".java", ".kt"].map((ext) => [ext, C_STYLE])),
-  ".php": PHP,
-  ".go": GO,
-  ".py": HASH,
-  ".rb": HASH
-};
-var collapse = (text4) => text4.replace(/\s+/g, " ").trim();
-function kindsIn2(text4, lang, allowlisted) {
-  const line3 = splitLine(text4.slice(0, MAX_SCANNED_LINE), lang);
-  const kinds = /* @__PURE__ */ new Set();
-  for (const rule of lang.rules) {
-    if (rule.kind === "allowlist-entry" && !allowlisted) continue;
-    for (const match of line3[rule.in].matchAll(rule.pattern)) {
-      if (rule.accept === void 0 || rule.accept(match, line3)) {
-        kinds.add(rule.kind);
-        break;
-      }
-    }
-  }
-  return [...kinds];
-}
-var EVERY_PATH = { has: () => true };
-function findRemovedControls(diff, paths, deletedFiles = []) {
-  const wanted = new Set(paths);
-  const hunks = countHunks(diff, EVERY_PATH);
-  const added = /* @__PURE__ */ new Map();
-  const addedByFile = /* @__PURE__ */ new Map();
-  for (const hunk of hunks) {
-    const own = addedByFile.get(hunk.path) ?? /* @__PURE__ */ new Map();
-    addedByFile.set(hunk.path, own);
-    for (const line3 of hunk.added) {
-      const key2 = collapse(line3.text);
-      added.set(key2, (added.get(key2) ?? 0) + 1);
-      own.set(key2, (own.get(key2) ?? 0) + 1);
-    }
-  }
-  const spend = (pool, key2) => {
-    const left = pool.get(key2) ?? 0;
-    if (left === 0) return false;
-    pool.set(key2, left - 1);
-    return true;
-  };
-  const netted = (text4) => spend(added, collapse(text4));
-  const found = [];
-  const byPath = /* @__PURE__ */ new Map();
-  const entriesOf = (path) => {
-    const entries = byPath.get(path) ?? [];
-    byPath.set(path, entries);
-    return entries;
-  };
-  const movedWithinFile = /* @__PURE__ */ new Set();
-  for (const hunk of hunks) {
-    const own = addedByFile.get(hunk.path);
-    if (own === void 0) continue;
-    for (const removed of hunk.removed) {
-      const key2 = collapse(removed.text);
-      if (spend(own, key2)) {
-        spend(added, key2);
-        movedWithinFile.add(removed);
-      }
-    }
-  }
-  for (const hunk of hunks) {
-    const lang = wanted.has(hunk.path) ? LANGUAGES3[extname2(hunk.path).toLowerCase()] : void 0;
-    const named = ALLOWLIST_NAME.test(basename(hunk.path));
-    const emptied = hunk.line === 0;
-    for (const removed of hunk.removed) {
-      if (movedWithinFile.has(removed) || netted(removed.text)) continue;
-      if (lang === void 0) continue;
-      const { line: line3, text: text4, scope } = removed;
-      const allowlisted = named || scope !== null && ALLOWLIST_NAME.test(scope);
-      for (const kind of kindsIn2(text4, lang, allowlisted)) {
-        const entry = { path: hunk.path, line: line3, kind, text: text4.trim().slice(0, MAX_TEXT) };
-        if (emptied) entry.deletedFile = true;
-        entriesOf(hunk.path).push(entry);
-      }
-    }
-  }
-  for (const entries of byPath.values()) {
-    entries.sort((a, b) => a.line - b.line);
-    found.push(...entries.slice(0, MAX_PER_FILE2));
-  }
-  for (const file2 of deletedFiles) {
-    const lang = LANGUAGES3[extname2(file2.path).toLowerCase()];
-    if (lang === void 0) continue;
-    const allowlisted = ALLOWLIST_NAME.test(basename(file2.path));
-    let kept = 0;
-    for (const raw of file2.text.split("\n")) {
-      const text4 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-      if (netted(text4)) continue;
-      if (kept >= MAX_PER_FILE2) continue;
-      for (const kind of kindsIn2(text4, lang, allowlisted)) {
-        if (kept >= MAX_PER_FILE2) break;
-        found.push({ path: file2.path, line: 1, kind, text: text4.trim().slice(0, MAX_TEXT), deletedFile: true });
-        kept += 1;
-      }
-    }
-  }
-  return found.sort((a, b) => a.path === b.path ? a.line - b.line : a.path < b.path ? -1 : 1);
-}
-
-// plugins/review-voice/src/diff/risk-markers.ts
-import { basename as basename2, extname as extname3 } from "node:path";
-var MAX_PER_FILE3 = 20;
-var MAX_SCANNED_LINE2 = 1e3;
-var WORD_START = "(?<![A-Za-z])";
-var HUMP = "(?<=[a-z0-9])";
-var CONCURRENCY_WORDS = ["lock", "mutex", "semaphore"];
-var capitalised2 = (word) => word.charAt(0).toUpperCase() + word.slice(1);
-var CONCURRENCY_WORD = new RegExp(
-  `${WORD_START}(?:${[...CONCURRENCY_WORDS, ...CONCURRENCY_WORDS.map(capitalised2), ...CONCURRENCY_WORDS.map((w) => w.toUpperCase())].join("|")}|RW(?:Lock|Mutex))|${HUMP}(?:${CONCURRENCY_WORDS.map(capitalised2).join("|")})`,
-  "g"
-);
-var CODE_RULES = [
-  {
-    kind: "new-route",
-    in: "code",
-    pattern: /\bapp\.(?:get|post|put|patch|delete)\s*\(|\brouter\.\w|@(?:Get|Post|Put|Patch|Delete|Route)(?:Mapping)?\b|\[Http(?:Get|Post|Put|Delete)\b|@app\.route\b/g
-  },
-  {
-    kind: "lock-or-async",
-    in: "code",
-    pattern: CONCURRENCY_WORD
-  },
-  {
-    kind: "lock-or-async",
-    in: "code",
-    pattern: /\bInterlocked\b|\bsynchronized\b|\bMonitor\.|\bPromise\.all(?:Settled)?\b|\bTask\.WhenAll\b|\bgo\s+func\b|\bParallel\./g
-  },
-  {
-    kind: "unsafe",
-    in: "code",
-    pattern: /\bunsafe\b|\beval\s*\(|\bexec\s*\(|\bdangerouslySetInnerHTML\b|\bMarshal\.|\bpickle\.loads\b/g
-  },
-  {
-    // A loader that names SafeLoader on the same line is the safe form.
-    kind: "unsafe",
-    in: "code",
-    pattern: /\byaml\.load\s*\(/g,
-    accept: (_match, line3) => !/SafeLoader/.test(line3.code)
-  }
-];
-var URL_RULE = { kind: "new-route", in: "code", pattern: /(?<![\w.])path\s*\(/g };
-function buildsQuery(code, raw, quotes, triple, at2) {
-  let index = 0;
-  while (index < code.length) {
-    const char = code[index];
-    if (!quotes.includes(char)) {
-      index += 1;
-      continue;
-    }
-    const delimiter = triple && code.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
-    const open = index;
-    const close = code.indexOf(delimiter, open + delimiter.length);
-    const end = close === -1 ? code.length : close;
-    if (at2 > open && at2 < end) {
-      const inside = raw.slice(open + delimiter.length, end);
-      const prefix = code.slice(0, open);
-      const interpolated = /\$\{|%s/.test(inside) || /(?<![\w$])(?:rf|fr|f)$/i.test(prefix) && inside.includes("{");
-      const before = prefix.trimEnd();
-      const after = close === -1 ? "" : code.slice(end + delimiter.length).trimStart();
-      const joined = before.endsWith("+") || /^(?:\+|%(?!=)|\.format\s*\()/.test(after);
-      return interpolated || joined;
-    }
-    index = close === -1 ? code.length : close + delimiter.length;
-  }
-  return false;
-}
-function queryRule(quotes, triple) {
-  return {
-    kind: "string-built-query",
-    in: "raw",
-    pattern: /\b(?:SELECT|INSERT|UPDATE|DELETE)\b/g,
-    accept: (match, line3) => buildsQuery(line3.code, line3.raw, quotes, triple, match.index ?? 0)
-  };
-}
-function language2(quotes, lineComment2, blockComments, regexLiterals = false, tripleQuotes = false) {
-  return {
-    rules: [...CODE_RULES, queryRule(quotes, tripleQuotes)],
-    quotes,
-    lineComment: lineComment2,
-    blockComments,
-    ...regexLiterals ? { regexLiterals } : {},
-    ...tripleQuotes ? { tripleQuotes } : {}
-  };
-}
-var SCRIPT2 = language2("'\"`", "//", true, true);
-var C_STYLE2 = language2(`'"`, "//", true);
-var GO2 = language2("'\"`", "//", true);
-var PHP2 = { ...C_STYLE2, altLineComment: "#" };
-var HASH2 = language2(`'"`, "#", false);
-var PYTHON2 = language2(`'"`, "#", false, false, true);
-var LANGUAGES4 = {
-  ...Object.fromEntries([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, SCRIPT2])),
-  ...Object.fromEntries([".cs", ".java", ".kt"].map((ext) => [ext, C_STYLE2])),
-  ".php": PHP2,
-  ".go": GO2,
-  ".py": PYTHON2,
-  ".rb": HASH2
-};
-function kindsIn3(text4, lang, urls) {
-  const line3 = splitLine(text4.slice(0, MAX_SCANNED_LINE2), lang);
-  const kinds = /* @__PURE__ */ new Set();
-  for (const rule of urls ? [...lang.rules, URL_RULE] : lang.rules) {
-    if (kinds.has(rule.kind)) continue;
-    for (const match of line3[rule.in].matchAll(rule.pattern)) {
-      if (rule.accept === void 0 || rule.accept(match, line3)) {
-        kinds.add(rule.kind);
-        break;
-      }
-    }
-  }
-  return [...kinds];
-}
-function findRiskMarkers(diff, paths) {
-  const found = [];
-  for (const hunk of countHunks(diff, new Set(paths))) {
-    const lang = LANGUAGES4[extname3(hunk.path).toLowerCase()];
-    if (lang === void 0) continue;
-    const urls = /^urls?$/i.test(basename2(hunk.path, extname3(hunk.path)));
-    for (const { line: line3, text: text4 } of hunk.added) {
-      for (const kind of kindsIn3(text4, lang, urls)) found.push({ path: hunk.path, line: line3, kind });
-    }
-  }
-  found.sort((a, b) => {
-    if (a.path !== b.path) return a.path < b.path ? -1 : 1;
-    if (a.line !== b.line) return a.line - b.line;
-    return a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0;
-  });
-  const perFile = /* @__PURE__ */ new Map();
-  return found.filter((marker) => {
-    const seen = perFile.get(marker.path) ?? 0;
-    perFile.set(marker.path, seen + 1);
-    return seen < MAX_PER_FILE3;
-  });
-}
-
-// plugins/review-voice/src/diff/structure.ts
-var DEFAULT_STRUCTURE = {
-  maxFileLines: 1e3,
-  maxAddedBranchesPerFunction: 3,
-  simplify: false
-};
-var MAX_UNMEASURED_LISTED = 20;
-function countLines(content) {
-  let lines2 = 0;
-  for (const byte of content) {
-    if (byte === 10) lines2 += 1;
-  }
-  return content.length > 0 && content[content.length - 1] !== 10 ? lines2 + 1 : lines2;
-}
-function startOf(root, diff) {
-  if (diff.scope?.kind === "incremental" || diff.scope?.kind === "interdiff") return diff.scope.since;
-  return attributeSource(root, diff);
-}
-function changeSides(root, diff) {
-  const base = startOf(root, diff);
-  switch (diff.mode) {
-    case "worktree":
-      return { base, head: { from: "worktree" } };
-    case "staged":
-      return { base, head: { from: "index" } };
-    case "base":
-      return { base, head: { from: "commit", commit: diff.head } };
-    case "pull-request":
-      return { base, head: diff.refs?.head.available === true ? { from: "commit", commit: diff.head } : null };
-  }
-}
-function readBlobs(root, specs) {
-  const blobs = new Map(specs.map((spec) => [spec, null]));
-  if (specs.length === 0) return blobs;
-  let out;
-  try {
-    out = execFileSync3("git", ["cat-file", "--batch"], {
-      cwd: root,
-      input: `${specs.join("\n")}
-`,
-      maxBuffer: 512 * 1024 * 1024,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-  } catch {
-    return blobs;
-  }
-  let offset = 0;
-  for (const spec of specs) {
-    const end = out.indexOf(10, offset);
-    if (end === -1) break;
-    const header = out.subarray(offset, end).toString("utf8");
-    offset = end + 1;
-    const match = /^[0-9a-f]+ (\w+) (\d+)$/.exec(header);
-    if (match === null) continue;
-    const size = Number(match[2]);
-    if (match[1] === "blob") blobs.set(spec, out.subarray(offset, offset + size));
-    offset += size + 1;
-  }
-  return blobs;
-}
-function measureLines(root, files2, paths, sides) {
-  const asked = new Set(paths);
-  const wanted = files2.filter((file2) => asked.has(file2.path) && !file2.path.includes("\n"));
-  const baseSpec = (file2) => sides.base === null || file2.status === "added" || (file2.previousPath ?? file2.path).includes("\n") ? null : `${sides.base}:${file2.previousPath ?? file2.path}`;
-  const headSpec = (file2) => {
-    if (sides.head === null || sides.head.from === "worktree") return null;
-    return sides.head.from === "index" ? `:${file2.path}` : `${sides.head.commit}:${file2.path}`;
-  };
-  const specs = wanted.flatMap((file2) => [baseSpec(file2), headSpec(file2)]).filter((spec) => spec !== null);
-  const blobs = readBlobs(root, [...new Set(specs)]);
-  const linesOf = (spec) => {
-    const blob = spec === null ? null : blobs.get(spec) ?? null;
-    return blob === null ? null : countLines(blob);
-  };
-  const fromWorktree = (path) => {
-    try {
-      return countLines(readFileSync6(join5(root, path)));
-    } catch {
-      return null;
-    }
-  };
-  const counts = /* @__PURE__ */ new Map();
-  for (const file2 of wanted) {
-    counts.set(file2.path, {
-      base: file2.status === "added" ? 0 : linesOf(baseSpec(file2)),
-      head: sides.head?.from === "worktree" ? fromWorktree(file2.path) : linesOf(headSpec(file2))
-    });
-  }
-  return counts;
-}
-function findBranchGrowth(diff, paths, threshold) {
-  const grown = /* @__PURE__ */ new Map();
-  for (const hunk of countHunks(diff, new Set(paths))) {
-    for (const branch of hunk.branches) {
-      if (branch.scope === null) continue;
-      const key2 = `${hunk.path}\0${branch.scope}`;
-      const entry = grown.get(key2) ?? { path: hunk.path, scope: branch.scope, net: 0, line: null };
-      entry.net += branch.removed ? -branch.decisionPoints : branch.decisionPoints;
-      if (!branch.removed) entry.line = Math.min(entry.line ?? branch.line, branch.line);
-      grown.set(key2, entry);
-    }
-  }
-  const byPathThenLine = (a, b) => {
-    if (a.path !== b.path) return a.path < b.path ? -1 : 1;
-    return a.line - b.line;
-  };
-  return [...grown.values()].filter((entry) => entry.line !== null && entry.net >= threshold).map((entry) => ({ path: entry.path, function: entry.scope, addedDecisionPoints: entry.net, threshold, line: entry.line })).sort(byPathThenLine);
-}
-function findStructureSignals(diff, paths, counts, limits = DEFAULT_STRUCTURE, deletedFiles = []) {
-  const hunks = parseHunks(diff);
-  const threshold = limits.maxFileLines;
-  const sizeCrossings = [];
-  const unmeasured = [];
-  for (const path of [...paths].sort()) {
-    const lines2 = counts.get(path);
-    if (lines2 === void 0 || lines2.base === null || lines2.head === null) {
-      unmeasured.push(path);
-      continue;
-    }
-    if (lines2.base > threshold || lines2.head <= threshold) continue;
-    const added = [...hunks.get(path)?.added ?? []].sort((a, b) => a - b);
-    sizeCrossings.push({
-      path,
-      baseLines: lines2.base,
-      headLines: lines2.head,
-      threshold,
-      line: added.find((line3) => line3 > threshold) ?? added[0] ?? null
-    });
-  }
-  return {
-    sizeCrossings,
-    branchGrowth: findBranchGrowth(diff, paths, limits.maxAddedBranchesPerFunction),
-    typeEscapes: findTypeEscapes(diff, paths),
-    removedControls: findRemovedControls(diff, paths, deletedFiles),
-    riskMarkers: findRiskMarkers(diff, paths),
-    unmeasured: { count: unmeasured.length, paths: unmeasured.slice(0, MAX_UNMEASURED_LISTED) }
-  };
-}
-function readDeletedFiles(root, files2, deletedProduction, sides, mode) {
-  if (sides.base === null) return [];
-  const specs = /* @__PURE__ */ new Map();
-  for (const path of deletedProduction) {
-    const file2 = files2.find((entry) => entry.status === "deleted" && entry.path === path);
-    const source = file2?.previousPath ?? path;
-    const side = mode === "worktree" ? "" : sides.base;
-    if (!source.includes("\n")) specs.set(path, `${side}:${source}`);
-  }
-  const blobs = readBlobs(root, [...new Set(specs.values())]);
-  const read = [];
-  for (const [path, spec] of specs) {
-    const blob = blobs.get(spec) ?? null;
-    if (blob === null || blob.includes(0)) continue;
-    read.push({ path, text: blob.toString("utf8") });
-  }
-  return read;
-}
-function collectStructure(cwd, change, production, limits = DEFAULT_STRUCTURE, deletedProduction = []) {
-  const files2 = change.files ?? [];
-  const deleted = new Set(files2.filter((file2) => file2.status === "deleted").map((file2) => file2.path));
-  const paths = production.filter((path) => !deleted.has(path));
-  let counts = /* @__PURE__ */ new Map();
-  let deletedFiles = [];
-  try {
-    const root = repositoryRoot(cwd);
-    const sides = changeSides(root, change);
-    counts = measureLines(root, files2, paths, sides);
-    deletedFiles = readDeletedFiles(root, files2, deletedProduction, sides, change.mode);
-  } catch {
-  }
-  return findStructureSignals(change.diff, paths, counts, limits, deletedFiles);
-}
-
 // plugins/review-voice/src/simplification.ts
 function record(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
@@ -2882,368 +2166,8 @@ function renderSimplification(finding) {
   return `**maintainability** - ${finding.candidate.claim} Remove ${removed}; use \`${abstraction2.path}:${abstraction2.line}\` (${abstraction2.name}).`;
 }
 
-// plugins/review-voice/src/diff/pull-request.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
-
-// plugins/review-voice/src/github/auth.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
-var AuthError = class extends Error {
-};
-function githubToken(env = process.env) {
-  const fromEnv = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
-  if (fromEnv !== void 0 && fromEnv.length > 0) return fromEnv;
-  try {
-    const token = execFileSync4("gh", ["auth", "token"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
-    }).trim();
-    if (token.length > 0) return token;
-  } catch {
-  }
-  throw new AuthError(
-    "No GitHub credential. Run `gh auth login`, or set GITHUB_TOKEN. Review Voice needs read access only."
-  );
-}
-
-// plugins/review-voice/src/github/client.ts
-var ReadOnlyViolation = class extends Error {
-};
-var NotAllowlisted = class extends Error {
-};
-var GitHubError = class extends Error {
-  // Written out rather than declared as a parameter property: Node strips
-  // types to run TypeScript directly, and parameter properties are syntax it
-  // cannot strip. Keeping the source loadable without a build step means tests
-  // can import it directly.
-  status;
-  constructor(message, status) {
-    super(message);
-    this.status = status;
-  }
-};
-var REPO_PATH = /^\/repos\/([^/]+\/[^/]+)(\/|$)/;
-var SEARCH_PATH = /^\/search(\/|$|\?)/i;
-var ID_REPO_PATH = /^\/repositories(\/|$|\?)/i;
-var PATH_ESCAPE = /(^|\/)\.\.?(\/|$)|%2e|%2f|%5c|\\/i;
-var GITHUB_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-function allowlistEntryProblem(entry) {
-  const parts = entry.split("/");
-  if (entry.includes("*")) {
-    if (parts.length === 2 && parts[1] === "*" && GITHUB_NAME.test(parts[0])) return null;
-    return `"${entry}" is not allowed: the only glob is owner/*, for every repository of one named owner.`;
-  }
-  if (parts.length !== 2 || parts[0] === "" || parts[1] === "") return `"${entry}" is not owner/repo or owner/*.`;
-  return null;
-}
-var SEARCH_BASE = "is:pr is:open draft:false";
-var SEARCH_PER_PAGE = 100;
-var SEARCH_MAX_PAGES = 5;
-function searchQuery(source) {
-  if (source === "requested") return `${SEARCH_BASE} user-review-requested:@me`;
-  if (source === "assigned") return `${SEARCH_BASE} assignee:@me`;
-  if (source === "reviewed") return `${SEARCH_BASE} reviewed-by:@me`;
-  if (typeof source === "string" && source.startsWith("team:")) {
-    const [org, slug, ...rest] = source.slice("team:".length).split("/");
-    if (org !== void 0 && slug !== void 0 && rest.length === 0 && GITHUB_NAME.test(org) && GITHUB_NAME.test(slug)) {
-      return `${SEARCH_BASE} team-review-requested:${org}/${slug}`;
-    }
-  }
-  throw new NotAllowlisted(`Refused a search source that is not one Review Voice builds: ${JSON.stringify(source)}.`);
-}
-function repositoryOf(repositoryUrl) {
-  if (typeof repositoryUrl !== "string") return null;
-  const match = /\/repos\/([^/?#]+)\/([^/?#]+)\/?$/.exec(repositoryUrl);
-  return match === null ? null : `${match[1]}/${match[2]}`;
-}
-var GRAPHQL_FORBIDDEN = /\b(?:mutation|subscription)\b/i;
-var REVIEW_THREADS_QUERY = `query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      reviewThreads(first: 100, after: $cursor) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          isResolved
-          isOutdated
-          resolvedBy { login }
-          comments(first: 100) { nodes { databaseId path line } }
-        }
-      }
-    }
-  }
-}`;
-var KNOWN_QUERIES = /* @__PURE__ */ new Map([
-  [
-    REVIEW_THREADS_QUERY,
-    {
-      number: (value) => Number.isInteger(value) && value > 0,
-      cursor: (value) => value === null || typeof value === "string"
-    }
-  ]
-]);
-function graphqlUrl(baseUrl) {
-  const root = baseUrl.replace(/\/+$/, "");
-  return /\/api\/v3$/.test(root) ? root.replace(/\/v3$/, "/graphql") : `${root}/graphql`;
-}
-var GitHubClient = class {
-  allowlist;
-  /** Owners whose every repository is allowlisted, from `owner/*` entries. */
-  allowedOwners;
-  baseUrl;
-  doFetch;
-  sleep;
-  token;
-  constructor(options) {
-    this.allowlist = /* @__PURE__ */ new Set();
-    this.allowedOwners = /* @__PURE__ */ new Set();
-    for (const entry of options.allowlist) {
-      if (entry.includes("*")) {
-        const problem = options.allowGlobs === true ? allowlistEntryProblem(entry) : `"${entry}" is a pattern, and this client reads only repositories named one by one.`;
-        if (problem !== null) throw new NotAllowlisted(`Refused allowlist entry ${problem}`);
-        this.allowedOwners.add(entry.slice(0, -2).toLowerCase());
-      } else {
-        this.allowlist.add(entry.toLowerCase());
-      }
-    }
-    this.baseUrl = options.baseUrl ?? "https://api.github.com";
-    this.doFetch = options.fetchImpl ?? fetch;
-    this.sleep = options.sleep ?? ((ms) => new Promise((resolve9) => setTimeout(resolve9, ms)));
-    this.token = options.token ?? null;
-  }
-  authorization() {
-    this.token ??= githubToken();
-    return `Bearer ${this.token}`;
-  }
-  /** Whether `owner/name` is inside the allowlist, by exact entry or `owner/*`. */
-  allows(repository) {
-    const name = repository.toLowerCase();
-    if (this.allowlist.has(name)) return true;
-    const [owner, repo, ...rest] = name.split("/");
-    return owner !== void 0 && repo !== void 0 && rest.length === 0 && GITHUB_NAME.test(repo) && this.allowedOwners.has(owner);
-  }
-  /**
-   * The URL a path is sent to, and its path below the API root.
-   *
-   * Every request goes through here, relative or absolute, so the credential
-   * only ever goes to the API's own origin, and the allowlist is checked on the
-   * path GitHub will actually serve: a dot segment or an encoded dot or slash
-   * could otherwise step out of an allowlisted repository after the check.
-   */
-  resolve(path) {
-    const rawPath = path.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i, "").split(/[?#]/, 1)[0];
-    if (PATH_ESCAPE.test(rawPath)) {
-      throw new NotAllowlisted(`Refused ${path}: a dot segment or an encoded dot or slash in the path.`);
-    }
-    const base = new URL(this.baseUrl);
-    const basePath = base.pathname.replace(/\/+$/, "");
-    const url = /^[a-z][a-z0-9+.-]*:/i.test(path) ? new URL(path) : new URL(`${base.origin}${basePath}${path}`);
-    if (url.origin !== base.origin || basePath !== "" && !url.pathname.startsWith(`${basePath}/`)) {
-      throw new NotAllowlisted(`Refused a request to ${url.origin}${url.pathname}: only ${this.baseUrl} receives the credential.`);
-    }
-    return { url, apiPath: `${url.pathname.slice(basePath.length)}${url.search}` };
-  }
-  assertAllowed(path) {
-    const { apiPath } = this.resolve(path);
-    if (ID_REPO_PATH.test(apiPath)) {
-      throw new NotAllowlisted(`Refused ${path}: a repository addressed by id cannot be checked against the allowlist.`);
-    }
-    if (SEARCH_PATH.test(apiPath)) {
-      throw new NotAllowlisted("Refused a search request: search is sent only with a query Review Voice builds itself.");
-    }
-    const match = REPO_PATH.exec(apiPath);
-    if (match === null) return;
-    if (!this.allows(match[1])) {
-      throw new NotAllowlisted(
-        `${match[1]} is not in the allowlist. Add it with /review-voice:init before reading it.`
-      );
-    }
-  }
-  /**
-   * `retryRateLimits: false` fails at once on a rate limit instead of waiting
-   * it out, for a read the caller can do without.
-   */
-  async get(path, init = {}) {
-    if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
-      throw new ReadOnlyViolation(
-        `Review Voice is read-only; refused a ${init.method} to ${path}.`
-      );
-    }
-    this.assertAllowed(path);
-    return this.request(path, init.retryRateLimits !== false);
-  }
-  /** The GET itself, once the caller has checked the path. */
-  async request(path, retryRateLimits) {
-    const { url: resolved, apiPath } = this.resolve(path);
-    const url = resolved.href;
-    for (let attempt = 0; ; attempt += 1) {
-      const response = await this.doFetch(url, {
-        method: "GET",
-        headers: {
-          accept: "application/vnd.github+json",
-          authorization: this.authorization(),
-          "x-github-api-version": "2022-11-28",
-          "user-agent": "review-voice"
-        }
-      });
-      if (response.status === 403 || response.status === 429) {
-        const retryAfter = Number(response.headers.get("retry-after") ?? "0");
-        const remaining = response.headers.get("x-ratelimit-remaining");
-        if (retryRateLimits && (remaining === "0" || retryAfter > 0) && attempt < 4) {
-          const waitMs = retryAfter > 0 ? retryAfter * 1e3 : 2 ** attempt * 1e3;
-          await this.sleep(waitMs);
-          continue;
-        }
-      }
-      if (!response.ok) {
-        throw new GitHubError(
-          `GitHub returned ${response.status} for ${path}: ${(await response.text()).slice(0, 200)}`,
-          response.status
-        );
-      }
-      const link = response.headers.get("link");
-      const href = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
-      const next = href === null ? null : `${apiPath.split("?", 1)[0]}${new URL(href, this.baseUrl).search}`;
-      return { data: await response.json(), linkNext: next };
-    }
-  }
-  /**
-   * One known GraphQL query about one allowlisted repository (docs/adr/0018).
-   *
-   * The only request this client sends that is not a GET. GraphQL has no GET
-   * form on GitHub, and some state - whether a review thread is resolved -
-   * has no REST endpoint at all. So the read-only promise moves from the HTTP
-   * method to the document, and is checked here before anything is sent:
-   *
-   *   - the document must be, character for character, one of
-   *     `KNOWN_QUERIES`, none of which is a mutation or subscription;
-   *   - its variables must be ones that query declares, with values of the
-   *     declared shape; `owner` and `name` may not be passed at all and are
-   *     set from `repository`, which must be allowlisted.
-   *
-   * It never retries. Every caller can do without the answer, and waiting out
-   * a rate limit for an optional read only spends the user's quota.
-   */
-  async graphql(repository, document, variables = {}) {
-    const declared = KNOWN_QUERIES.get(document);
-    if (declared === void 0 || GRAPHQL_FORBIDDEN.test(document)) {
-      throw new ReadOnlyViolation("Review Voice is read-only; refused a GraphQL document that is not one of its known queries.");
-    }
-    for (const [key2, value] of Object.entries(variables)) {
-      const check = declared[key2];
-      if (check === void 0 || !check(value)) {
-        throw new ReadOnlyViolation(`Refused GraphQL variable ${key2}: not one this query declares, or not of its shape.`);
-      }
-    }
-    const [owner, name, ...rest] = repository.split("/");
-    if (owner === void 0 || name === void 0 || rest.length > 0 || owner.length === 0 || name.length === 0) {
-      throw new NotAllowlisted(`${repository} is not an owner/repo name.`);
-    }
-    this.assertAllowed(`/repos/${owner}/${name}`);
-    const response = await this.doFetch(graphqlUrl(this.baseUrl), {
-      method: "POST",
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: this.authorization(),
-        "content-type": "application/json",
-        "user-agent": "review-voice"
-      },
-      body: JSON.stringify({ query: document, variables: { ...variables, owner, name } })
-    });
-    if (!response.ok) {
-      throw new GitHubError(
-        `GitHub GraphQL returned ${response.status}: ${(await response.text()).slice(0, 200)}`,
-        response.status
-      );
-    }
-    const body = await response.json();
-    if (body === null || typeof body !== "object" || Array.isArray(body)) {
-      throw new GitHubError("GitHub GraphQL returned no data.", response.status);
-    }
-    if (Array.isArray(body.errors) && body.errors.length > 0) {
-      throw new GitHubError(
-        `GitHub GraphQL returned errors: ${body.errors.map((e) => e?.message ?? "unknown").join("; ").slice(0, 200)}`,
-        response.status
-      );
-    }
-    if (body.data === void 0 || body.data === null) {
-      throw new GitHubError("GitHub GraphQL returned no data.", response.status);
-    }
-    return body.data;
-  }
-  /**
-   * Open, non-draft pull requests from one GitHub search (docs/adr/0026).
-   *
-   * The only request this client sends outside a repository path. The query is
-   * built here from `source`, never from caller text, because a query is the
-   * easiest place to reach outside the allowlist by accident. Each result's
-   * repository is matched against the allowlist before it is returned; one
-   * outside it is only counted, so nothing further is ever read about it.
-   * Pages are numbered here rather than followed from a Link header, and stop
-   * at five.
-   */
-  async searchPullRequests(source) {
-    const q = encodeURIComponent(searchQuery(source));
-    const pullRequests = [];
-    let outsideAllowlist = 0;
-    let truncated = false;
-    let seen = 0;
-    for (let page = 1; page <= SEARCH_MAX_PAGES; page += 1) {
-      const { data } = await this.request(
-        `/search/issues?q=${q}&sort=created&order=asc&per_page=${SEARCH_PER_PAGE}&page=${page}`,
-        true
-      );
-      const items = Array.isArray(data?.items) ? data.items : [];
-      const total = typeof data?.total_count === "number" ? data.total_count : 0;
-      if (data?.incomplete_results === true) truncated = true;
-      seen += items.length;
-      for (const item of items) {
-        const repository = repositoryOf(item?.["repository_url"]);
-        const number = item?.["number"];
-        if (repository === null || !this.allows(repository) || !Number.isInteger(number) || number <= 0) {
-          outsideAllowlist += 1;
-          continue;
-        }
-        pullRequests.push({ repository, number });
-      }
-      if (items.length < SEARCH_PER_PAGE || seen >= total) break;
-      if (page === SEARCH_MAX_PAGES) truncated = true;
-    }
-    return { pullRequests, outsideAllowlist, truncated };
-  }
-  /** Follows pagination up to `limit` items, so a huge repository cannot run away. */
-  async paginate(path, limit) {
-    const items = [];
-    let next = path;
-    while (next !== null && items.length < limit) {
-      const page = await this.get(next);
-      if (!Array.isArray(page.data)) break;
-      items.push(...page.data);
-      next = page.linkNext;
-    }
-    return items.slice(0, limit);
-  }
-  /**
-   * Pagination for endpoints that wrap each page as `{ total_count, <key>: [] }`
-   * rather than returning an array, such as check runs and combined statuses.
-   * `paginate` stops at the first page of those, because the page is not an
-   * array, which is how a pull request with more than 100 check runs read as
-   * having only its first 100.
-   */
-  async paginateWrapped(path, key2, limit) {
-    const items = [];
-    let next = path;
-    while (next !== null && items.length < limit) {
-      const page = await this.get(next);
-      const list2 = page.data?.[key2];
-      if (!Array.isArray(list2)) break;
-      items.push(...list2);
-      next = page.linkNext;
-    }
-    return items.slice(0, limit);
-  }
-};
-
 // plugins/review-voice/src/diff/incremental.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { execFileSync as execFileSync3 } from "node:child_process";
 var nullableString = (value) => typeof value === "string" || value === null;
 var UNCHANGED_REASONS = /* @__PURE__ */ new Set(["base-merged", "history-rewritten", "base-sync-only"]);
 function parseReviewScope(value) {
@@ -3295,7 +2219,7 @@ function firstLine(error) {
 }
 function runGit(args, cwd) {
   try {
-    return execFileSync5("git", args, {
+    return execFileSync3("git", args, {
       cwd,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024,
@@ -3357,7 +2281,7 @@ var systemGit = {
     let output;
     let conflicted = false;
     try {
-      output = execFileSync5("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+      output = execFileSync3("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
     } catch (error) {
       const failure = error;
       if (failure.status !== 1 || typeof failure.stdout !== "string") throw new Error(gitFailure(args, error));
@@ -3752,579 +2676,6 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
   };
 }
 
-// plugins/review-voice/src/diff/pull-request.ts
-var STATUS2 = {
-  added: "added",
-  modified: "modified",
-  removed: "deleted",
-  renamed: "renamed",
-  copied: "copied",
-  changed: "changed"
-};
-function toUnifiedDiff(file2) {
-  const previous = file2.previous_filename ?? file2.filename;
-  return [
-    `diff --git a/${previous} b/${file2.filename}`,
-    `--- a/${previous}`,
-    `+++ b/${file2.filename}`,
-    file2.patch ?? "",
-    ""
-  ].join("\n");
-}
-var GITHUB_MAX_FILES = 3e3;
-function git2(args, cwd, timeout = 6e4) {
-  return execFileSync6("git", args, {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout
-  });
-}
-function hasCommit(sha, cwd) {
-  try {
-    git2(["cat-file", "-e", `${sha}^{commit}`], cwd, 1e4);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function mergeBaseOf(base, head, cwd) {
-  try {
-    return git2(["merge-base", base, head], cwd, 1e4).trim() || null;
-  } catch {
-    return null;
-  }
-}
-function originRepository(cwd) {
-  try {
-    const url = git2(["remote", "get-url", "origin"], cwd, 1e4).trim();
-    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
-  } catch {
-    return null;
-  }
-}
-function ensureRefs(options) {
-  const check = () => ({
-    base: hasCommit(options.base, options.cwd),
-    head: hasCommit(options.head, options.cwd)
-  });
-  let present = check();
-  const result = (fetched, note) => ({
-    base: { sha: options.base, available: present.base },
-    head: { sha: options.head, available: present.head },
-    mergeBase: present.base && present.head ? mergeBaseOf(options.base, options.head, options.cwd) : null,
-    fetched,
-    note
-  });
-  if (present.base && present.head) return result(false, null);
-  const origin = originRepository(options.cwd);
-  if (origin === null) {
-    return result(false, "No origin remote resolved, so the pull request commits were not fetched.");
-  }
-  if (origin.toLowerCase() !== options.repository.toLowerCase()) {
-    return result(
-      false,
-      `origin is ${origin} but the review is of ${options.repository}, so nothing was fetched. Fetching a pull request from an unrelated clone would supply commits from the wrong project.`
-    );
-  }
-  try {
-    git2(
-      [
-        "fetch",
-        "--no-tags",
-        "--quiet",
-        "origin",
-        `pull/${options.pullNumber}/head:refs/review-voice/pr/${options.pullNumber}/head`
-      ],
-      options.cwd
-    );
-  } catch {
-  }
-  present = check();
-  if (!present.base) {
-    try {
-      git2(["fetch", "--no-tags", "--quiet", "origin", options.base], options.cwd);
-    } catch {
-    }
-    present = check();
-  }
-  if (present.base && present.head) {
-    return result(true, null);
-  }
-  const missing = [!present.base ? "base" : null, !present.head ? "head" : null].filter(Boolean);
-  return result(
-    true,
-    `The ${missing.join(" and ")} commit could not be made available locally. Reading code at that ref will fail, so evidence from it is unavailable rather than absent.`
-  );
-}
-var SAME_AS_BASE_TIP = "identical to the base branch tip (already merged there)";
-function differingFromBaseTip(base, head, cwd) {
-  try {
-    const args = ["diff", "--no-ext-diff", "--no-relative", "--ignore-submodules=none", "--no-renames", "--name-only", "-z", base, head];
-    return new Set(git2(args, cwd).split("\0").filter(Boolean));
-  } catch {
-    return null;
-  }
-}
-function earlierReview(scope) {
-  return scope.priorReviewedAt === null ? `the review at ${scope.since.slice(0, 7)}` : `the review of ${scope.priorReviewedAt.slice(0, 10)}`;
-}
-function scopeNote(scope) {
-  switch (scope.kind) {
-    case "incremental":
-      return `Reviewed ${scope.commits} commit(s) since ${scope.since.slice(0, 7)}; earlier changes were covered by ${earlierReview(scope)}.`;
-    case "unchanged":
-      return `No change to this pull request's own diff since ${scope.since.slice(0, 7)}; ${earlierReview(scope)} still applies.`;
-    case "interdiff":
-      return `Reviewed changes to this pull request's own diff since ${scope.since.slice(0, 7)}; base-branch changes merged in were not reviewed${scope.detail === void 0 ? "" : `; ${scope.detail}`}.`;
-  }
-}
-function pathsWithHunks(diff) {
-  return new Set([...parseHunks(diff)].filter(([, file2]) => file2.ranges.length > 0).map(([path]) => path));
-}
-function fullScopeResult(result, pullNumber, scope) {
-  return { ...result, pullNumber, scope, scopeNote: null };
-}
-function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = (since, head, files2, root) => {
-  const args = ["diff", "--no-ext-diff", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", since, head, "--", ...topPathspecs(files2)];
-  try {
-    return execFileSync6("git", args, {
-      cwd: root,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 6e4
-    });
-  } catch (error) {
-    throw new Error(gitFailure(args, error));
-  }
-}, interdiffPatch = null) {
-  if (scope.kind === "full") return fullScopeResult(result, pullNumber, scope);
-  const fallBack = (detail) => fullScopeResult(result, pullNumber, {
-    kind: "full",
-    cause: "compare-unavailable",
-    since: scope.since,
-    priorRunId: scope.priorRunId,
-    detail
-  });
-  let diff;
-  let included;
-  if (scope.kind === "unchanged") {
-    diff = "";
-    included = /* @__PURE__ */ new Set();
-  } else if (scope.kind === "interdiff") {
-    if (interdiffPatch === null) return fallBack("an interdiff scope came with no interdiff patch");
-    diff = interdiffPatch;
-    included = new Set(scope.files);
-  } else {
-    try {
-      diff = readIncrementalDiff(scope.since, result.head, scope.files, cwd);
-    } catch (error) {
-      return fallBack(`reading the incremental diff failed: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
-    }
-    included = new Set(scope.files);
-  }
-  const excludedBecause = `unchanged since the last review (${scope.since.slice(0, 7)})`;
-  const files2 = result.files.map((file2) => {
-    if (file2.reviewed && !included.has(file2.path)) return { ...file2, reviewed: false, excludedBecause };
-    if (scope.kind === "interdiff" && file2.status === "deleted" && included.has(file2.path)) {
-      const { excludedBecause: _skipped, ...rest } = file2;
-      return { ...rest, reviewed: true };
-    }
-    return file2;
-  });
-  const hunkPaths = pathsWithHunks(diff);
-  const reviewedFileCount = files2.filter((file2) => file2.reviewed).length;
-  return {
-    ...result,
-    pullNumber,
-    scope,
-    scopeNote: scopeNote(scope),
-    files: files2,
-    reviewedFileCount,
-    hunkFileCount: files2.filter((file2) => file2.reviewed && hunkPaths.has(file2.path)).length,
-    excludedFileCount: files2.length - reviewedFileCount,
-    diff
-  };
-}
-var WRONG_BASE_MIN_COMMITS = 5;
-var WRONG_BASE_MAJORITY = 0.5;
-async function detectWrongBase(client, repository, pull) {
-  try {
-    if (!Number.isInteger(pull.commits)) return null;
-    const { data: repo } = await client.get(`/repos/${repository}`);
-    const other = repo.default_branch;
-    if (typeof other !== "string" || other === "" || pull.base.ref === other || pull.head.ref === other) return null;
-    const { data: compare } = await client.get(
-      `/repos/${repository}/compare/${encodeURIComponent(other)}...${pull.head.sha}`
-    );
-    if (typeof compare.ahead_by !== "number") return null;
-    const alreadyOn = Math.max(0, pull.commits - compare.ahead_by);
-    if (alreadyOn < WRONG_BASE_MIN_COMMITS || alreadyOn <= pull.commits * WRONG_BASE_MAJORITY) return null;
-    return {
-      base: pull.base.ref,
-      otherBranch: other,
-      commits: pull.commits,
-      alreadyOn,
-      files: pull.changed_files,
-      note: `${alreadyOn} of the pull request's ${pull.commits} commits are already on ${other}, which suggests it was opened against ${pull.base.ref} by mistake (a branch cut from ${other}). Ask about the base before reviewing the whole patch, unless bringing ${other}'s commits into ${pull.base.ref} is the intent.`
-    };
-  } catch {
-    return null;
-  }
-}
-function squashedParent(files2, baseRef) {
-  if (files2 === 0) return null;
-  return {
-    files: files2,
-    note: `${files2} listed file(s) already match ${baseRef}'s tip (most likely a squash-merged parent branch, or a change that also landed on ${baseRef}); they are left out.`
-  };
-}
-async function acquirePullRequestDiff(options) {
-  const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
-  const { data: pull } = await client.get(
-    `/repos/${options.repository}/pulls/${options.pullNumber}`
-  );
-  const limit = options.maxFiles ?? GITHUB_MAX_FILES;
-  const rawFiles = await client.paginate(
-    `/repos/${options.repository}/pulls/${options.pullNumber}/files?per_page=100`,
-    limit
-  );
-  const truncated = rawFiles.length < pull.changed_files;
-  const cwd = options.cwd ?? process.cwd();
-  const headLocal = hasCommit(pull.head.sha, cwd);
-  const byName = new Map(rawFiles.map((file2) => [file2.filename, file2]));
-  const handEdited = findHandEdited(
-    rawFiles.filter((file2) => file2.status !== "removed" && file2.patch !== void 0).map((file2) => file2.filename),
-    (path) => {
-      if (headLocal) {
-        try {
-          return git2(["show", `${pull.head.sha}:${path}`], cwd);
-        } catch {
-          return null;
-        }
-      }
-      const added = (byName.get(path)?.patch ?? "").split("\n").filter((line3) => line3.startsWith("+")).map((line3) => line3.slice(1));
-      return added.join("\n");
-    }
-  );
-  const refs = ensureRefs({
-    repository: options.repository,
-    pullNumber: options.pullNumber,
-    base: pull.base.sha,
-    head: pull.head.sha,
-    cwd
-  });
-  const differing = refs.base.available && refs.head.available ? differingFromBaseTip(pull.base.sha, pull.head.sha, cwd) : null;
-  const sameAsBaseTip = (file2) => differing !== null && !differing.has(file2.filename) && (file2.previous_filename === void 0 || !differing.has(file2.previous_filename));
-  const files2 = rawFiles.map((file2) => {
-    const cls = classify(file2.filename);
-    const deleted = file2.status === "removed";
-    const suspected = handEdited.has(file2.filename);
-    const merged = sameAsBaseTip(file2);
-    const reviewed = !merged && !deleted && (suspected || isReviewable(file2.filename, options.includeGenerated)) && file2.patch !== void 0;
-    let excludedBecause;
-    if (!reviewed) {
-      if (merged) excludedBecause = SAME_AS_BASE_TIP;
-      else if (deleted) excludedBecause = "file deleted";
-      else if (file2.patch === void 0) excludedBecause = "no patch returned (binary or too large)";
-      else excludedBecause = `${cls} file`;
-    }
-    return {
-      path: file2.filename,
-      ...file2.previous_filename === void 0 ? {} : { previousPath: file2.previous_filename },
-      status: STATUS2[file2.status] ?? "changed",
-      class: cls,
-      language: languageOf(file2.filename),
-      additions: file2.additions ?? 0,
-      deletions: file2.deletions ?? 0,
-      reviewed,
-      ...suspected ? { handEditSuspected: true } : {},
-      ...excludedBecause === void 0 ? {} : { excludedBecause }
-    };
-  });
-  const diff = rawFiles.filter((file2) => files2.find((f) => f.path === file2.filename)?.reviewed === true).map(toUnifiedDiff).join("");
-  return {
-    repositoryRoot: options.repository,
-    mode: "pull-request",
-    base: pull.base.sha,
-    head: pull.head.sha,
-    title: pull.title,
-    files: files2,
-    reviewedFileCount: files2.filter((file2) => file2.reviewed).length,
-    // A pull request file with no patch is already excluded, so every reviewed
-    // file here carries a hunk by construction.
-    hunkFileCount: files2.filter((file2) => file2.reviewed).length,
-    excludedFileCount: files2.filter((file2) => !file2.reviewed).length,
-    diff,
-    totalChangedFiles: pull.changed_files,
-    additions: pull.additions,
-    deletions: pull.deletions,
-    truncated,
-    // Reviewing part of a change and presenting it as the whole is the one
-    // failure mode a reviewer cannot recover from, because nothing downstream
-    // can tell that anything is missing.
-    truncationNote: truncated ? `Only ${rawFiles.length} of ${pull.changed_files} changed files were read. This review covers part of the change.` : null,
-    refs,
-    suspectedWrongBase: await detectWrongBase(client, options.repository, pull),
-    squashedParentSuspected: squashedParent(files2.filter((file2) => file2.excludedBecause === SAME_AS_BASE_TIP).length, pull.base.ref)
-  };
-}
-
-// plugins/review-voice/src/redact/redact.ts
-import { createHash } from "node:crypto";
-
-// plugins/review-voice/src/redact/patterns.ts
-var SECRET_PATTERNS = [
-  // Key material is replaced whole: a PEM block's header is not the secret,
-  // but leaving it invites someone to reconstruct what was removed.
-  {
-    label: "PRIVATE_KEY",
-    pattern: /-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----/g
-  },
-  { label: "PEM_BLOCK", pattern: /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g },
-  { label: "GITHUB_TOKEN", pattern: /\b(gh[pousr]_[A-Za-z0-9]{16,255})\b/g, group: 1 },
-  { label: "GITHUB_TOKEN", pattern: /\b(github_pat_[A-Za-z0-9_]{20,})\b/g, group: 1 },
-  { label: "AWS_ACCESS_KEY", pattern: /\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b/g, group: 1 },
-  {
-    label: "AWS_SECRET_KEY",
-    pattern: /\b(?:aws_secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi,
-    group: 1
-  },
-  { label: "GOOGLE_API_KEY", pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g, group: 1 },
-  { label: "SLACK_TOKEN", pattern: /\b(xox[abposr]-[0-9A-Za-z-]{10,})\b/g, group: 1 },
-  { label: "STRIPE_KEY", pattern: /\b((?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,})\b/g, group: 1 },
-  { label: "NPM_TOKEN", pattern: /\b(npm_[A-Za-z0-9]{36})\b/g, group: 1 },
-  { label: "PYPI_TOKEN", pattern: /\b(pypi-[A-Za-z0-9_-]{16,})\b/g, group: 1 },
-  { label: "OPENAI_KEY", pattern: /\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b/g, group: 1 },
-  { label: "ANTHROPIC_KEY", pattern: /\b(sk-ant-[A-Za-z0-9_-]{20,})\b/g, group: 1 },
-  // JWTs: three base64url segments. The payload is often the sensitive part.
-  {
-    label: "JWT",
-    pattern: /\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g,
-    group: 1
-  },
-  // A connection string's credentials, keeping the scheme and host so the
-  // surrounding review comment still makes sense.
-  {
-    label: "DB_CREDENTIALS",
-    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi,
-    group: 3
-  },
-  {
-    label: "AUTHORIZATION_HEADER",
-    pattern: /\b(?:Authorization|Proxy-Authorization)\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12,})/gi,
-    group: 1
-  },
-  // Assignment-shaped secrets. Deliberately last: it is the broadest rule, and
-  // a more specific label above is more useful in an audit than "SECRET".
-  {
-    label: "SECRET_ASSIGNMENT",
-    pattern: /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["']([^"'\s]{8,})["']/gi,
-    group: 1
-  }
-];
-var PLACEHOLDERS = /* @__PURE__ */ new Set([
-  "xxxxxxxx",
-  "changeme",
-  "password",
-  "redacted",
-  "your_token_here",
-  "example",
-  "placeholder",
-  "dummy",
-  "notarealsecret",
-  "test",
-  "password123",
-  "<token>",
-  "secret",
-  "todo",
-  "fixme",
-  "null",
-  "undefined",
-  "none"
-]);
-
-// plugins/review-voice/src/redact/redact.ts
-var REDACTION_VERSION = "1";
-function hash(value) {
-  return createHash("sha256").update(value).digest("hex").slice(0, 32);
-}
-function isPlaceholder(value) {
-  const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
-  if (PLACEHOLDERS.has(normalised)) return true;
-  return /^(.)\1{3,}$/.test(value);
-}
-function redact(input) {
-  const counts = {};
-  let text4 = input;
-  for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
-    pattern.lastIndex = 0;
-    text4 = text4.replace(pattern, (match, ...groups) => {
-      const captured = group === void 0 || group === 0 ? match : groups[group - 1];
-      if (captured === void 0 || captured.length === 0) return match;
-      if (isPlaceholder(captured)) return match;
-      counts[label2] = (counts[label2] ?? 0) + 1;
-      const replacement = `[REDACTED:${label2}]`;
-      return group === void 0 || group === 0 ? replacement : match.replace(captured, replacement);
-    });
-  }
-  return {
-    text: text4,
-    counts,
-    sourceHash: hash(input),
-    redactedHash: hash(text4),
-    version: REDACTION_VERSION
-  };
-}
-
-// plugins/review-voice/src/diff/thread.ts
-var MAX_COMMENTS = 300;
-function clean(body, author) {
-  if (body === void 0 || body.trim().length === 0) return null;
-  return { body: redact(body).text, author: author ?? "unknown" };
-}
-async function readThread(options) {
-  const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
-  const comments = [];
-  const pull = await client.get(
-    `/repos/${options.repository}/pulls/${options.pullNumber}`
-  );
-  const description = clean(pull.data.body ?? void 0, pull.data.user?.login);
-  if (description !== null) {
-    comments.push({ path: null, line: null, author: description.author, body: description.body, kind: "description" });
-  }
-  const inline = await client.paginate(
-    `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,
-    MAX_COMMENTS
-  );
-  const warnings = [];
-  let states = /* @__PURE__ */ new Map();
-  if (inline.length > 0) {
-    try {
-      states = await readThreadStates(client, options.repository, options.pullNumber);
-    } catch (error) {
-      warnings.push(
-        `Could not read which review threads are resolved (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing with the REST data, so no comment is marked resolved.`
-      );
-    }
-  }
-  for (const raw of inline) {
-    const kept = clean(raw.body, raw.user?.login);
-    if (kept === null) continue;
-    const state = typeof raw.id === "number" ? states.get(raw.id) : void 0;
-    const outdated = (raw.line ?? null) === null && (raw.original_line ?? null) !== null || state?.outdated === true;
-    comments.push({
-      path: raw.path ?? null,
-      line: raw.line ?? raw.original_line ?? null,
-      author: kept.author,
-      body: kept.body,
-      kind: "review-comment",
-      ...outdated ? { outdated: true } : {},
-      ...typeof raw.id === "number" ? { id: raw.id } : {},
-      ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
-      ...typeof raw.pull_request_review_id === "number" ? { reviewId: raw.pull_request_review_id } : {},
-      ...typeof raw.in_reply_to_id === "number" ? { inReplyTo: raw.in_reply_to_id } : {},
-      ...state?.resolved === true ? { resolved: true } : {},
-      ...state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {},
-      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
-    });
-  }
-  const reviews = await client.paginate(
-    `/repos/${options.repository}/pulls/${options.pullNumber}/reviews?per_page=100`,
-    MAX_COMMENTS
-  );
-  const threadReviews = [];
-  for (const raw of reviews) {
-    if (typeof raw.id === "number") {
-      threadReviews.push({
-        id: raw.id,
-        author: raw.user?.login ?? "unknown",
-        state: raw.state ?? "UNKNOWN",
-        ...typeof raw.submitted_at === "string" ? { submittedAt: raw.submitted_at } : {}
-      });
-    }
-    const kept = clean(raw.body, raw.user?.login);
-    if (kept === null) continue;
-    comments.push({
-      path: null,
-      line: null,
-      author: kept.author,
-      body: kept.body,
-      kind: "review-body",
-      ...typeof raw.submitted_at === "string" ? { createdAt: raw.submitted_at } : {},
-      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
-    });
-  }
-  if (threadReviews.some((review2) => review2.state === "DISMISSED")) {
-    try {
-      const events = await client.paginate(
-        `/repos/${options.repository}/issues/${options.pullNumber}/events?per_page=100`,
-        MAX_COMMENTS
-      );
-      for (const event of events) {
-        const dismissed = event.event === "review_dismissed" ? event.dismissed_review : null;
-        if (typeof dismissed?.review_id !== "number") continue;
-        const message = clean(dismissed.dismissal_message ?? void 0, void 0);
-        const review2 = threadReviews.find((candidate) => candidate.id === dismissed.review_id);
-        if (review2 !== void 0 && message !== null) review2.dismissalMessage = message.body;
-      }
-    } catch (error) {
-      warnings.push(
-        `Could not read why a review was dismissed (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing, so no dismissal message is recorded.`
-      );
-    }
-  }
-  const conversation = await client.paginate(
-    `/repos/${options.repository}/issues/${options.pullNumber}/comments?per_page=100`,
-    MAX_COMMENTS
-  );
-  for (const raw of conversation) {
-    const kept = clean(raw.body, raw.user?.login);
-    if (kept === null) continue;
-    comments.push({
-      path: null,
-      line: null,
-      author: kept.author,
-      body: kept.body,
-      kind: "conversation",
-      ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
-      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
-    });
-  }
-  return {
-    repository: options.repository,
-    pullNumber: options.pullNumber,
-    comments,
-    reviews: threadReviews,
-    truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
-    ...warnings.length > 0 ? { warnings } : {}
-  };
-}
-async function readThreadStates(client, repository, pullNumber) {
-  const states = /* @__PURE__ */ new Map();
-  let cursor = null;
-  for (let read = 0; read < MAX_COMMENTS; read += 100) {
-    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
-    const threads = data?.repository?.pullRequest?.reviewThreads;
-    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
-    for (const thread of threads.nodes) {
-      const state = {
-        resolved: thread?.isResolved === true,
-        outdated: thread?.isOutdated === true,
-        resolvedBy: typeof thread?.resolvedBy?.login === "string" ? thread.resolvedBy.login : null
-      };
-      for (const comment of thread?.comments?.nodes ?? []) {
-        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
-      }
-    }
-    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
-    cursor = threads.pageInfo.endCursor;
-  }
-  return states;
-}
-
 // plugins/review-voice/src/scoring/severity.ts
 var LEGACY_BY_CATEGORY = {
   // Fixed security and authorization categories. `trust_boundary` keeps its
@@ -4533,7 +2884,7 @@ import { posix } from "node:path";
 
 // plugins/review-voice/src/review/lanes.ts
 import { existsSync as existsSync3 } from "node:fs";
-import { dirname as dirname4, join as join6 } from "node:path";
+import { dirname as dirname4, join as join5 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // plugins/review-voice/src/review/plan.ts
@@ -4662,8 +3013,8 @@ function laneNamed(lanes2, name) {
 function agentsDirectory() {
   let dir = dirname4(fileURLToPath3(import.meta.url));
   for (let depth = 0; depth < 4; depth += 1) {
-    const candidate = join6(dir, "agents");
-    if (existsSync3(join6(candidate, `${DIFF_LANE.agent}.md`))) return candidate;
+    const candidate = join5(dir, "agents");
+    if (existsSync3(join5(candidate, `${DIFF_LANE.agent}.md`))) return candidate;
     dir = dirname4(dir);
   }
   return null;
@@ -4671,7 +3022,7 @@ function agentsDirectory() {
 function agentExists(name) {
   if (!/^[a-z][a-z0-9-]*$/.test(name)) return false;
   const dir = agentsDirectory();
-  return dir !== null && existsSync3(join6(dir, `${name}.md`));
+  return dir !== null && existsSync3(join5(dir, `${name}.md`));
 }
 function signalCount(structure, signal2, paths) {
   if (typeof structure !== "object" || structure === null) return 0;
@@ -5640,892 +3991,6 @@ function settleFollowUps(open, evidence) {
   return { states, unmatched: evidence.rulings.map((ruling) => ruling.id).filter((id) => !known.has(id)) };
 }
 
-// plugins/review-voice/src/scoring/existence.ts
-import { execFileSync as execFileSync7 } from "node:child_process";
-var ASSERTS_ABSENCE = [
-  /\b(?:does|do)\s+not\s+exist\b/i,
-  /\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)\b/i,
-  /\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)\b/i,
-  /\bnever\s+(?:defined|declared|exported)\b/i,
-  /\bcannot\s+be\s+found\b/i,
-  /\bnowhere\s+in\s+the\s+(?:repo|repository|codebase)\b/i
-];
-var DETERMINER = /^(?:the|this|that|these|those|our|your|their|its|his|her|my|a|an)\s+/i;
-function withoutDeterminer(complement) {
-  let text4 = complement.trim().replace(/[`'"]/g, "");
-  for (let i = 0; i < 3; i += 1) text4 = text4.replace(DETERMINER, "");
-  return text4.trim();
-}
-var GENERIC_REPOSITORY = /^(?:entire\s+|whole\s+)?(?:mono)?(?:repo|repository|code\s?base|project|tree)\b/i;
-var NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
-var NAMED_UNIT_SUFFIX = /^(?:the\s+)?\S+\s+(?:repo|repository|service|package|library)\b/i;
-var ANOTHER_UNIT = /^(?:another|a\s+different|a\s+sibling|the\s+other)\s+(?:repo|repository|package|service)\b/i;
-var ABSENCE_WITH_COMPLEMENT = /\b(?:does|do)\s+not\s+exist|\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)|\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)|\bnever\s+(?:defined|declared|exported)|\bcannot\s+be\s+found/i;
-var LOCATIVE = /\b(?:in|from|within|under|inside|throughout|across)\s+([^.,;]+)/i;
-function namesThisRepository(complement, repository) {
-  if (repository === null) return false;
-  const candidates = [repository, repository.split("/").pop() ?? repository].map((name) => name.trim().toLowerCase()).filter((name) => name.length > 0);
-  const said = withoutDeterminer(complement).toLowerCase();
-  return candidates.some(
-    (name) => [name, `${name} repository`, `${name} repo`, `${name} monorepo`, `${name} codebase`].includes(said)
-  );
-}
-var PROPERTY_NOT_PLACE = /\b(?:ex|im)ported\b|\bnot\s+(?:public|exposed|re-?exported)\b/i;
-function absenceScope(text4, repository = null) {
-  if (PROPERTY_NOT_PLACE.test(text4)) return "bounded";
-  if (/\b(?:anywhere|nowhere)\b/i.test(text4)) return "repository";
-  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text4);
-  if (assertion === null) return "repository";
-  const after = text4.slice(assertion.index + assertion[0].length);
-  const locative = LOCATIVE.exec(after);
-  if (locative === null) return "repository";
-  const complement = (locative[1] ?? "").trim();
-  const bare = withoutDeterminer(complement);
-  if (GENERIC_REPOSITORY.test(bare)) return "repository";
-  if (namesThisRepository(complement, repository)) return "repository";
-  if (ANOTHER_UNIT.test(complement) || NAMED_UNIT.test(bare) || NAMED_UNIT_SUFFIX.test(bare)) {
-    return "elsewhere";
-  }
-  return "bounded";
-}
-function namedSymbols(text4) {
-  const found = /* @__PURE__ */ new Set();
-  for (const match of text4.matchAll(/`([^`]+)`/g)) {
-    const token = (match[1] ?? "").trim();
-    if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found.add(token);
-  }
-  for (const match of text4.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
-    if (match[1] !== void 0) found.add(match[1]);
-  }
-  for (const match of text4.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
-    if (match[1] !== void 0) found.add(match[1]);
-  }
-  for (const token of [...found]) {
-    const base = token.split("/").pop();
-    if (base !== void 0 && base !== token && base.length >= 4 && !base.startsWith("-")) found.add(base);
-  }
-  return [...found];
-}
-var gitGrep = (symbol, cwd, ref) => {
-  const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "-e", symbol] : ["grep", "--fixed-strings", "--quiet", "-e", symbol, ref];
-  try {
-    execFileSync7("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
-    return true;
-  } catch (error) {
-    if (error.status === 1) return false;
-    throw error;
-  }
-};
-var gitGrepPaths = (...search) => grepPaths(false, ...search);
-var gitGrepWordPaths = (...search) => grepPaths(true, ...search);
-var NOT_IDENTIFIER = "[^[:alnum:]_$]";
-function grepPaths(wholeIdentifier, ...[symbol, cwd, ref, timeoutMs]) {
-  const pattern = wholeIdentifier ? `(^|${NOT_IDENTIFIER})${symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(${NOT_IDENTIFIER}|$)` : symbol;
-  const args = [
-    "grep",
-    wholeIdentifier ? "--extended-regexp" : "--fixed-strings",
-    "--full-name",
-    "-l",
-    "-z",
-    "-e",
-    pattern,
-    ...ref === null ? [] : [ref]
-  ];
-  try {
-    const output = execFileSync7("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
-    const prefix = ref === null ? "" : `${ref}:`;
-    return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
-  } catch (error) {
-    if (error.status === 1) return [];
-    throw error;
-  }
-}
-var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
-  const [first, second] = patterns;
-  const args = ref === null ? ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second] : ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second, ref];
-  try {
-    const output = execFileSync7("git", args, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: Math.min(1e4, timeoutMs ?? 1e4),
-      maxBuffer: 32 * 1024 * 1024
-    });
-    const prefix = ref === null ? "" : `${ref}:`;
-    const lines2 = [];
-    for (const record3 of output.split("\n")) {
-      const [rawPath = "", number = "", ...rest] = record3.split("\0");
-      const line3 = Number(number);
-      const text4 = rest.join("\0");
-      if (!Number.isSafeInteger(line3) || line3 < 1) continue;
-      lines2.push({
-        path: prefix !== "" && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
-        line: line3,
-        text: text4
-      });
-    }
-    return lines2;
-  } catch (error) {
-    if (error.status === 1) return [];
-    throw error;
-  }
-};
-var gitTrackedPaths = (cwd, ref) => {
-  const args = ref === null ? ["ls-files", "-z", "--full-name", "--", ":/"] : ["ls-tree", "-r", "-z", "--name-only", "--full-tree", ref];
-  const output = execFileSync7("git", args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 1e4,
-    maxBuffer: 64 * 1024 * 1024
-  });
-  return output.split("\0").filter((path) => path.length > 0);
-};
-var RESOURCE_PATHSPECS = [
-  ":(glob)**/*.resx",
-  ":(glob)**/*.resw",
-  ":(glob)**/*.po",
-  ":(glob)**/*.xlf",
-  ":(glob)**/*.xliff",
-  ":(glob)**/*.arb",
-  ":(glob)**/locales/**",
-  ":(glob)**/i18n/**"
-];
-var gitResourceSources = (cwd) => {
-  try {
-    const output = execFileSync7("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 1e4,
-      maxBuffer: 16 * 1024 * 1024
-    });
-    return output.split("\0").filter((path) => path.length > 0);
-  } catch {
-    return [];
-  }
-};
-var GENERATED_ACCESSOR = [
-  /^R\.[a-z]+\.[a-z_]\w*$/,
-  /^(?:\w+\.)*\w*(?:Resources|Resource|Strings)\.[A-Z]\w*$/,
-  /^(?:S|AppLocalizations)\.of\([^)]*\)\.\w+$/,
-  /^(?:L10n|l10n)\.[A-Za-z_]\w*$/
-];
-var FILE_NAME = /\.(?:tsx?|jsx?|mjs|cjs|cs|py|go|rb|java|kt|rs|swift|dart|json|ya?ml|md|xml|resx|resw|po|xlf|xliff|arb)$/i;
-function isPath(symbol) {
-  return symbol.includes("/") || FILE_NAME.test(symbol);
-}
-var LOOSE_ABSENCE = [
-  /\b(?:does|do|did)\s*(?:not|n't)\s+exist|\bmissing\b|\babsent\b|\b(?:deleted|removed)\b|\bnot\s+(?:found|present)\b/i
-];
-var CLAUSE_BREAK = /[.;!?](?=\s|$)|\b(?:which|that|who|but|whereas|while)\b/gi;
-function tiedToAbsence(text4, symbols) {
-  const strict = tiedBy(ASSERTS_ABSENCE, text4, symbols);
-  return strict.size > 0 ? strict : tiedBy(LOOSE_ABSENCE, text4, symbols);
-}
-function tiedBy(phrases, text4, symbols) {
-  const masked = text4.replace(/`[^`]*`/g, (span) => `\`${"x".repeat(span.length - 2)}\``);
-  const starts = [0];
-  for (const match of masked.matchAll(CLAUSE_BREAK)) {
-    starts.push(match[0].length === 1 ? match.index + 1 : match.index);
-  }
-  starts.push(text4.length);
-  const occurrences = symbols.flatMap((symbol) => {
-    const at2 = [];
-    for (let index = text4.indexOf(symbol); index !== -1; index = text4.indexOf(symbol, index + 1)) {
-      if (text4[index - 1] !== "/") at2.push({ symbol, index });
-    }
-    return at2;
-  });
-  const tied = /* @__PURE__ */ new Set();
-  for (let i = 0; i + 1 < starts.length; i += 1) {
-    const start = starts[i] ?? 0;
-    const end = starts[i + 1] ?? text4.length;
-    const clause = masked.slice(start, end);
-    if (!phrases.some((phrase) => phrase.test(clause))) continue;
-    const inClause = occurrences.filter(({ index }) => index >= start && index < end);
-    if (inClause.length > 0) {
-      for (const { symbol } of inClause) tied.add(symbol);
-    } else if (/^\s*(?:which|that|who)\b/i.test(clause)) {
-      let antecedent;
-      for (const occurrence of occurrences) {
-        if (occurrence.index < start && (antecedent === void 0 || occurrence.index > antecedent.index)) {
-          antecedent = occurrence;
-        }
-      }
-      if (antecedent !== void 0) tied.add(antecedent.symbol);
-    }
-  }
-  return tied;
-}
-function generatedAccessor(symbol) {
-  return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
-}
-function checkAbsenceClaim(text4, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths) {
-  const searchedRefLabel = ref ?? "working tree";
-  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text4))) return null;
-  const scope = absenceScope(text4, repository);
-  if (scope === "bounded") return null;
-  if (scope === "elsewhere") {
-    return {
-      found: [],
-      checked: [],
-      // Not silence. An empty `found` with `inconclusive: false` is the shape
-      // that reads as corroboration, and this repository cannot speak for
-      // another one.
-      inconclusive: true,
-      searchedRef: searchedRefLabel
-    };
-  }
-  const stated = namedSymbols(text4).filter(
-    (symbol) => text4.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
-  );
-  const tied = tiedToAbsence(text4, stated);
-  const symbols = stated.filter((symbol) => !isPath(symbol) || tied.size === 0 || tied.has(symbol));
-  if (symbols.length === 0) return null;
-  const searchedRef = ref ?? "working tree";
-  const found = [];
-  const checked = [];
-  let paths = null;
-  for (const symbol of symbols.slice(0, 12)) {
-    try {
-      checked.push(symbol);
-      if (isPath(symbol)) {
-        paths ??= trackedPaths(cwd, ref);
-        const path = symbol.replace(/^\.?\//, "").replace(/\/$/, "");
-        const exists = path.includes("/") ? paths.some((tracked) => tracked === path || tracked.startsWith(`${path}/`)) : paths.some((tracked) => tracked === path || tracked.endsWith(`/${path}`));
-        if (exists) found.push(symbol);
-      } else if (search(symbol, cwd, ref)) {
-        found.push(symbol);
-      }
-    } catch {
-      return { found: [], checked, inconclusive: true, searchedRef };
-    }
-  }
-  if (found.length === 0) {
-    const accessor = checked.find(generatedAccessor);
-    const sources = accessor === void 0 ? resources(cwd) : [];
-    if (accessor !== void 0 || sources.length > 0) {
-      const why = accessor !== void 0 ? `\`${accessor}\` is shaped like a generated resource accessor` : `the repository tracks resource sources (${sources.slice(0, 3).join(", ")}${sources.length > 3 ? ", ..." : ""})`;
-      return {
-        found,
-        checked,
-        inconclusive: true,
-        searchedRef,
-        reason: `${why}, so the name may be generated at build time; finding it nowhere tracked does not show it is absent`
-      };
-    }
-  }
-  return { found, checked, inconclusive: false, searchedRef };
-}
-
-// plugins/review-voice/src/diff/declarations.ts
-var IDENTIFIER = "[A-Za-z_$][A-Za-z0-9_$]*";
-var PREFIX = "(?:(?:export|default|declare|public|private|protected|static|abstract|override|readonly)\\s+)*";
-var METHOD_PREFIX = "(?:(?:public|private|protected|internal|static|override|async|abstract|readonly|get|set)\\s+)*";
-var TYPE = "[A-Za-z_$][A-Za-z0-9_$]*(?:\\s*<[^>{}()]*>)?(?:\\s*\\[\\])?(?:\\?)?(?:\\s*\\.\\s*[A-Za-z_$][A-Za-z0-9_$]*)*";
-var TS_FUNCTION = new RegExp(`^\\s*${PREFIX}(?:async\\s+)?function\\s+(${IDENTIFIER})\\s*\\(`);
-var VARIABLE_FUNCTION = new RegExp(
-  `^\\s*${PREFIX}(?:const|let|var)\\s+(${IDENTIFIER})(?:\\s*:\\s*[^=]+)?\\s*=\\s*(?:async\\b|function\\b|\\(|${IDENTIFIER}\\s*=>)`
-);
-var PYTHON_FUNCTION = new RegExp(`^\\s*(?:async\\s+)?def\\s+(${IDENTIFIER})\\s*\\(`);
-var GO_FUNCTION = new RegExp(`^\\s*func\\s+(?:\\([^)]*\\)\\s+)?(${IDENTIFIER})\\s*\\(`);
-var RUST_FUNCTION = new RegExp(`^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?(?:async\\s+)?fn\\s+(${IDENTIFIER})\\s*\\(`);
-var MODIFIED_METHOD = new RegExp(
-  `^\\s*(?:(?:public|private|protected|internal|static|override|async|fun)\\s+)+(?:${TYPE})\\s+(${IDENTIFIER})(?:\\s*<[^>{}()]*>)?\\s*\\(`
-);
-var KOTLIN_FUNCTION = new RegExp(
-  `^\\s*(?:(?:public|private|protected|internal|override|async|static)\\s+)*fun\\s+(?:<[^>{}()]*>\\s+)?(?:${TYPE}\\s*\\.\\s*)?(${IDENTIFIER})(?:\\s*<[^>{}()]*>)?\\s*\\(`
-);
-var CLASS_METHOD = new RegExp(
-  `^\\s+${METHOD_PREFIX}(${IDENTIFIER})(?:\\s*<[^>{}()]*>)?\\s*\\([^)]*\\)\\s*(?::\\s*[^{}]+)?\\{`
-);
-var STATEMENT_KEYWORDS = /* @__PURE__ */ new Set([
-  "if",
-  "else",
-  "for",
-  "foreach",
-  "while",
-  "switch",
-  "case",
-  "catch",
-  "return",
-  "throw",
-  "try",
-  "finally",
-  "do",
-  "break",
-  "continue",
-  "await",
-  "when",
-  "with",
-  "match",
-  "loop",
-  "function",
-  "def",
-  "fn",
-  "class",
-  "interface",
-  "enum",
-  "new"
-]);
-var STOP_TOKENS = /* @__PURE__ */ new Set([
-  "to",
-  "from",
-  "get",
-  "set",
-  "is",
-  "has",
-  "do",
-  "make",
-  "create",
-  "build",
-  "new",
-  "the",
-  "a",
-  "an",
-  "of",
-  "for",
-  "by",
-  "with",
-  "on",
-  "in",
-  "at",
-  "as",
-  "and",
-  "or",
-  "util",
-  "utils",
-  "helper",
-  "helpers"
-]);
-function declarationName(text4) {
-  for (const pattern of [
-    TS_FUNCTION,
-    VARIABLE_FUNCTION,
-    PYTHON_FUNCTION,
-    GO_FUNCTION,
-    RUST_FUNCTION,
-    MODIFIED_METHOD,
-    KOTLIN_FUNCTION
-  ]) {
-    const match = pattern.exec(text4);
-    if (match?.[1] !== void 0) return match[1];
-  }
-  const method = CLASS_METHOD.exec(text4);
-  const name = method?.[1];
-  if (name === void 0 || STATEMENT_KEYWORDS.has(name.toLowerCase())) return null;
-  return name;
-}
-function declarationTokens(name) {
-  const words = name.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").replace(/([A-Za-z])([0-9])/g, "$1 $2").replace(/([0-9])([A-Za-z])/g, "$1 $2").split(/[_\-\s]+/).map((word) => word.toLowerCase()).filter((word) => word.length > 0 && !STOP_TOKENS.has(word));
-  return [...new Set(words)];
-}
-function declarationSearchTokens(name) {
-  const tokens = declarationTokens(name);
-  if (tokens.length < 2) return null;
-  const longest = tokens.map((token, index) => ({ token, index })).sort((left, right) => right.token.length - left.token.length || left.index - right.index).slice(0, 2);
-  const first = longest[0]?.token;
-  const second = longest[1]?.token;
-  return first === void 0 || second === void 0 ? null : [first, second];
-}
-function normalisePath2(path) {
-  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
-}
-function headerPath3(raw) {
-  const field = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
-  const path = unquoteGitPath(field.trimEnd());
-  if (path === "/dev/null") return null;
-  return normalisePath2(path.replace(/^[ab]\//, ""));
-}
-function hunkHeader2(line3) {
-  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line3);
-  if (match === null) return null;
-  const oldLine = Number(match[1]);
-  const newLine = Number(match[3]);
-  const remainingOld = Number(match[2] ?? 1);
-  const remainingNew = Number(match[4] ?? 1);
-  if (![oldLine, newLine, remainingOld, remainingNew].every(Number.isSafeInteger)) return null;
-  return { oldLine, newLine, remainingOld, remainingNew };
-}
-function declarationsFromDiff(diff) {
-  const found = [];
-  let path = null;
-  let active = null;
-  const finishWhenCounted = () => {
-    if (active !== null && active.remainingOld <= 0 && active.remainingNew <= 0) active = null;
-  };
-  for (const raw of diff.split("\n")) {
-    const line3 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-    if (active !== null) {
-      if (line3 === "\\ No newline at end of file") continue;
-      if (line3.startsWith("+")) {
-        const name = declarationName(line3.slice(1));
-        if (path !== null && name !== null) found.push({ path, name, line: active.newLine, added: true });
-        active.newLine += 1;
-        active.remainingNew -= 1;
-        finishWhenCounted();
-        continue;
-      }
-      if (line3.startsWith("-")) {
-        const name = declarationName(line3.slice(1));
-        if (path !== null && name !== null) found.push({ path, name, line: active.oldLine, added: false });
-        active.oldLine += 1;
-        active.remainingOld -= 1;
-        finishWhenCounted();
-        continue;
-      }
-      if (line3.startsWith(" ") || line3 === "" && active.remainingOld > 0 && active.remainingNew > 0) {
-        active.oldLine += 1;
-        active.newLine += 1;
-        active.remainingOld -= 1;
-        active.remainingNew -= 1;
-        finishWhenCounted();
-        continue;
-      }
-      active = null;
-    }
-    if (line3.startsWith("diff --git ")) {
-      path = null;
-      continue;
-    }
-    if (line3.startsWith("+++ ")) {
-      path = headerPath3(line3.slice(4));
-      continue;
-    }
-    const header = hunkHeader2(line3);
-    if (header !== null) active = header;
-  }
-  return found;
-}
-
-// plugins/review-voice/src/scoring/reach.ts
-function symbolsFromHunks(diff, changedPath) {
-  const wanted = changedPath === null ? null : normalisePath3(changedPath);
-  const found = /* @__PURE__ */ new Set();
-  let inFile = false;
-  for (const raw of diff.split(/\r?\n/)) {
-    if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
-      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
-      if (match?.[1] !== void 0) inFile = wanted === null || normalisePath3(match[1]) === wanted;
-      else if (raw.startsWith("diff --git ")) inFile = false;
-      continue;
-    }
-    if (!inFile) continue;
-    if (raw.startsWith("--- ")) continue;
-    if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
-    const text4 = raw.slice(1);
-    for (const m of text4.matchAll(
-      /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g
-    )) {
-      if (m[1] !== void 0) found.add(m[1]);
-    }
-  }
-  return [...found];
-}
-var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
-  /(?:^|\/)(?:eslint\.config\.[^/]+|\.eslintrc(?:\.[^/]+)?|biome\.json|\.stylelintrc(?:\.[^/]+)?|\.prettierrc(?:\.[^/]+)?)$/i,
-  /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/i,
-  /^(?:\.github\/workflows\/|\.gitlab-ci(?:\.yml)?$|\.circleci\/config\.yml$|azure-pipelines(?:\.[^/]+)?\.ya?ml$|Jenkinsfile$)/i,
-  /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|Pipfile\.lock|composer\.lock|go\.sum)$/i,
-  /^(?:package\.json|Makefile|GNUmakefile|justfile|Taskfile\.ya?ml|turbo\.json|nx\.json)$/i,
-  /^(?:scripts|tools|build|bin)\//i
-];
-function normalisePath3(path) {
-  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
-}
-function directoryOf(path) {
-  const parts = normalisePath3(path).split("/");
-  parts.pop();
-  return parts.join("/");
-}
-function directoryCount(paths) {
-  return new Set([...paths].map(directoryOf)).size;
-}
-var PROSE_EXTENSIONS = /* @__PURE__ */ new Set(["md", "markdown", "mdx", "txt", "rst", "adoc"]);
-function isCode(path) {
-  const name = normalisePath3(path).split("/").pop() ?? "";
-  const dot = name.lastIndexOf(".");
-  const extension = dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
-  if (PROSE_EXTENSIONS.has(extension)) return false;
-  return classify(normalisePath3(path)) === "source";
-}
-var NON_DISCRIMINATING_DIRECTORIES = 12;
-var IMPORT_LINE = [
-  /^import\s+(?:type\s+)?(?:[\w$*{}\s,]+\s+from\s+)?['"][^'"]+['"]\s*;?$/,
-  /^from\s+[\w.]+\s+import\s+[\w*,\s()]+$/,
-  /^import\s+[\w.]+(?:\s+as\s+\w+)?(?:\s*,\s*[\w.]+(?:\s+as\s+\w+)?)*$/,
-  /^import\s+(?:static\s+)?[\w.]+(?:\.\*)?;?$/
-];
-function isImportOnlyChange(diff, changedPath) {
-  const wanted = normalisePath3(changedPath);
-  let inFile = false;
-  let imports = 0;
-  for (const raw of diff.split(/\r?\n/)) {
-    if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
-      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
-      if (match?.[1] !== void 0) inFile = normalisePath3(match[1]) === wanted;
-      else if (raw.startsWith("diff --git ")) inFile = false;
-      continue;
-    }
-    if (!inFile || raw.startsWith("--- ")) continue;
-    if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
-    const text4 = raw.slice(1).trim();
-    if (text4 === "") continue;
-    if (!IMPORT_LINE.some((pattern) => pattern.test(text4))) return false;
-    imports += 1;
-  }
-  return imports > 0;
-}
-function withinSubtree(path, changedDirectory) {
-  if (changedDirectory === "") return false;
-  const normalised = normalisePath3(path);
-  return normalised === changedDirectory || normalised.startsWith(`${changedDirectory}/`);
-}
-function isRepositoryWideToolchainPath(path) {
-  const normalised = normalisePath3(path);
-  return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
-}
-function computeReach(text4, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
-  const searchedRef = ref ?? "working tree";
-  const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
-  const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
-  const source = ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
-  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text4)).slice(0, 12);
-  const searched = [];
-  const ignored = [];
-  const hits = /* @__PURE__ */ new Set();
-  let usedModuleFallback = false;
-  const normalisedChangedPath = normalisePath3(changedPath);
-  const changedDirectory = directoryOf(changedPath);
-  const result = (reach, inconclusive) => {
-    const counted2 = [...hits].filter(isCode).sort();
-    const outside = counted2.filter(
-      (path) => normalisePath3(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
-    );
-    return {
-      reach,
-      symbolSource: source,
-      moduleFallback: usedModuleFallback,
-      symbols: searched,
-      ignoredSymbols: [...ignored].sort(),
-      paths: [...hits].sort(),
-      countedPaths: counted2,
-      directoryCount: directoryCount(counted2),
-      outsideDirectoryCount: directoryCount(outside),
-      inconclusive,
-      searchedRef
-    };
-  };
-  if (symbols.length === 0) return result(null, false);
-  if (diff !== null && isImportOnlyChange(diff, changedPath)) return result(null, false);
-  for (const symbol of symbols) {
-    searched.push(symbol);
-    let found;
-    try {
-      found = search(symbol, cwd, ref);
-    } catch {
-      return result(null, true);
-    }
-    const code = found.filter(isCode);
-    if (source !== "diff" && !code.some((path) => normalisePath3(path) === normalisedChangedPath)) {
-      ignored.push(symbol);
-      continue;
-    }
-    if (directoryCount(code) > NON_DISCRIMINATING_DIRECTORIES) {
-      ignored.push(symbol);
-      continue;
-    }
-    for (const path of found) hits.add(path);
-  }
-  if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
-  let counted = [...hits].filter(isCode);
-  if (counted.length === 0 && source !== "claim") {
-    const moduleName = normalisePath3(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
-    if (moduleName !== void 0 && moduleName.length >= 4) {
-      searched.push(moduleName);
-      try {
-        for (const path of search(moduleName, cwd, ref)) hits.add(path);
-      } catch {
-        return result(null, true);
-      }
-      counted = [...hits].filter(isCode);
-      usedModuleFallback = counted.length > 0;
-    }
-  }
-  if (counted.length === 0) return result(null, false);
-  if (counted.every((path) => normalisePath3(path) === normalisedChangedPath)) {
-    return result("local", false);
-  }
-  const outsideDirectories = directoryCount(
-    counted.filter(
-      (path) => normalisePath3(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
-    )
-  );
-  if (outsideDirectories >= 2) return result("repository", false);
-  return result("component", false);
-}
-
-// plugins/review-voice/src/diff/symbols.ts
-var DEFAULT_MAX_MS = 6e4;
-var MAX_SYMBOLS_PER_FILE = 12;
-var MAX_REFERENCES_PER_SYMBOL = 8;
-var MAX_DECLARATIONS_PER_FILE = 8;
-var MAX_CALLERS_PER_DECLARATION = 8;
-var MAX_POSSIBLE_EXISTING = 3;
-function normalisePath4(path) {
-  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
-}
-function directoryCount2(paths) {
-  return new Set([...paths].map((path) => normalisePath4(path).split("/").slice(0, -1).join("/"))).size;
-}
-function testPathMatcher(globs) {
-  const patterns = globs.map((glob) => globToRegExp(glob));
-  return (path) => patterns.some((pattern) => pattern.test(normalisePath4(path)));
-}
-function declarationsByPath(declarations) {
-  const addedNames = new Set(declarations.filter((declaration) => declaration.added).map((declaration) => declaration.name));
-  const removedNames = /* @__PURE__ */ new Map();
-  for (const declaration of declarations) {
-    if (declaration.added) continue;
-    const names = removedNames.get(declaration.path) ?? /* @__PURE__ */ new Set();
-    names.add(declaration.name);
-    removedNames.set(declaration.path, names);
-  }
-  const byPath = /* @__PURE__ */ new Map();
-  for (const declaration of declarations) {
-    if (!declaration.added || removedNames.get(declaration.path)?.has(declaration.name)) continue;
-    const searchTokens = declarationSearchTokens(declaration.name);
-    if (searchTokens === null) continue;
-    const candidates = byPath.get(declaration.path) ?? [];
-    candidates.push({
-      name: declaration.name,
-      line: declaration.line,
-      searchTokens,
-      tokens: declarationTokens(declaration.name)
-    });
-    byPath.set(declaration.path, candidates);
-  }
-  for (const [path, candidates] of byPath) {
-    candidates.sort((left, right) => left.line - right.line || left.name.localeCompare(right.name));
-    byPath.set(path, candidates.slice(0, MAX_DECLARATIONS_PER_FILE));
-  }
-  return { addedNames, byPath };
-}
-function possibleExisting(declaration, hits, addedNames, isTestPath) {
-  const matches = [];
-  for (const hit of hits) {
-    const path = normalisePath4(hit.path);
-    if (!isCode(path) || isTestPath(path)) continue;
-    const name = declarationName(hit.text);
-    if (name === null || addedNames.has(name)) continue;
-    const hitTokens = new Set(declarationTokens(name));
-    const overlap2 = declaration.tokens.filter((token) => hitTokens.has(token)).length;
-    const union = (/* @__PURE__ */ new Set([...declaration.tokens, ...hitTokens])).size;
-    const score2 = union === 0 ? 0 : overlap2 / union;
-    if (overlap2 >= 2 && score2 >= 0.5) matches.push({ path, line: hit.line, name, score: score2 });
-  }
-  return matches.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path) || left.line - right.line).slice(0, MAX_POSSIBLE_EXISTING).map(({ path, line: line3, name }) => ({ path, line: line3, name }));
-}
-function timeBudgetDeclaration(declaration) {
-  return {
-    name: declaration.name,
-    line: declaration.line,
-    possibleExisting: [],
-    inconclusive: true,
-    reason: "time-budget",
-    callersInconclusive: true
-  };
-}
-function unfinishedFile(path, declarations) {
-  const declared = declarations.map(timeBudgetDeclaration);
-  return {
-    file: {
-      path,
-      symbols: [],
-      ...declared.length === 0 ? {} : { declared },
-      inconclusive: true,
-      reason: "time-budget"
-    },
-    references: /* @__PURE__ */ new Set()
-  };
-}
-function pathsWithHunks2(diff) {
-  const paths = [];
-  const seen = /* @__PURE__ */ new Set();
-  let path = null;
-  let hasHunkLine = false;
-  const keepCurrent = () => {
-    if (path === null || !hasHunkLine) return;
-    const normalised = normalisePath4(path);
-    if (seen.has(normalised)) return;
-    seen.add(normalised);
-    paths.push(normalised);
-  };
-  for (const raw of diff.split(/\r?\n/)) {
-    if (raw.startsWith("diff --git ")) {
-      keepCurrent();
-      path = null;
-      hasHunkLine = false;
-      continue;
-    }
-    if (raw.startsWith("+++ ")) {
-      const match = /^\+\+\+ b\/(.+)$/.exec(raw);
-      path = match?.[1] === void 0 ? null : match[1];
-      continue;
-    }
-    if (path === null || raw.startsWith("--- ")) continue;
-    if (raw.startsWith("+") || raw.startsWith("-")) hasHunkLine = true;
-  }
-  keepCurrent();
-  return paths;
-}
-function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declarations, addedNames, head, headSearch, isTestPath) {
-  const allSymbols = symbolsFromHunks(diff, path);
-  const omitted = Math.max(0, allSymbols.length - MAX_SYMBOLS_PER_FILE);
-  const symbols = [];
-  const declared = [];
-  const references = /* @__PURE__ */ new Set();
-  const normalisedPath = normalisePath4(path);
-  let incomplete = false;
-  const file2 = (inconclusive, reason2) => ({
-    path,
-    symbols,
-    ...declared.length === 0 ? {} : { declared },
-    ...omitted === 0 ? {} : { moreSymbols: omitted },
-    ...inconclusive ? { inconclusive: true } : {},
-    ...reason2 === void 0 ? {} : { reason: reason2 }
-  });
-  for (const symbol of allSymbols.slice(0, MAX_SYMBOLS_PER_FILE)) {
-    if (remaining() <= 0) {
-      declared.push(...declarations.map(timeBudgetDeclaration));
-      return { file: file2(true, "time-budget"), references };
-    }
-    let found;
-    try {
-      found = search(symbol, cwd, ref, remaining());
-    } catch {
-      incomplete = true;
-      break;
-    }
-    const code = new Set(found.filter(isCode).map(normalisePath4));
-    if (directoryCount2(code) > NON_DISCRIMINATING_DIRECTORIES) {
-      symbols.push({ symbol, common: true });
-      continue;
-    }
-    const others = [...code].filter((candidate) => candidate !== normalisedPath).sort();
-    const paths = others.filter((candidate) => !isTestPath(candidate));
-    const tests = others.filter((candidate) => isTestPath(candidate));
-    for (const candidate of paths) references.add(candidate);
-    symbols.push({
-      symbol,
-      references: paths.slice(0, MAX_REFERENCES_PER_SYMBOL),
-      referenceCount: paths.length,
-      ...paths.length > MAX_REFERENCES_PER_SYMBOL ? { truncated: true } : {},
-      ...tests.length === 0 ? {} : {
-        testReferences: tests.slice(0, MAX_REFERENCES_PER_SYMBOL),
-        testReferenceCount: tests.length
-      }
-    });
-  }
-  let budgetEnded = false;
-  for (let index = 0; index < declarations.length; index += 1) {
-    if (remaining() <= 0) {
-      declared.push(...declarations.slice(index).map(timeBudgetDeclaration));
-      return { file: file2(true, "time-budget"), references };
-    }
-    const declaration = declarations[index];
-    try {
-      const hits = lineSearch(declaration.searchTokens, cwd, ref, remaining());
-      const entry = {
-        name: declaration.name,
-        line: declaration.line,
-        possibleExisting: possibleExisting(declaration, hits, addedNames, isTestPath)
-      };
-      declared.push(entry);
-      if (head === null) {
-        entry.callersInconclusive = true;
-      } else if (remaining() <= 0) {
-        entry.callersInconclusive = true;
-        budgetEnded = true;
-      } else {
-        try {
-          const callers = [
-            ...new Set(
-              headSearch(declaration.name, cwd, head, remaining()).filter(isCode).map(normalisePath4).filter((candidate) => candidate !== normalisedPath && !isTestPath(candidate))
-            )
-          ].sort();
-          entry.callers = callers.slice(0, MAX_CALLERS_PER_DECLARATION);
-          entry.callerCount = callers.length;
-        } catch {
-          incomplete = true;
-          entry.callersInconclusive = true;
-        }
-      }
-    } catch {
-      incomplete = true;
-      declared.push({
-        name: declaration.name,
-        line: declaration.line,
-        possibleExisting: [],
-        inconclusive: true,
-        callersInconclusive: true
-      });
-    }
-  }
-  return budgetEnded ? { file: file2(true, "time-budget"), references } : { file: file2(incomplete), references };
-}
-function collectSymbolContext(options) {
-  const search = options.search ?? gitGrepPaths;
-  const lineSearch = options.lineSearch ?? gitGrepLines;
-  const headSearch = options.headSearch ?? gitGrepWordPaths;
-  const head = options.head ?? null;
-  const isTestPath = testPathMatcher(options.testPaths ?? DEFAULT_TEST_PATHS);
-  const now = options.now ?? Date.now;
-  const maxMs = options.maxMs ?? DEFAULT_MAX_MS;
-  const started = now();
-  const remaining = () => maxMs - (now() - started);
-  const paths = pathsWithHunks2(options.diff);
-  const declarationContext = declarationsByPath(declarationsFromDiff(options.diff));
-  const records = paths.map((path) => {
-    const declarations = declarationContext.byPath.get(normalisePath4(path)) ?? [];
-    return remaining() <= 0 ? unfinishedFile(path, declarations) : reportFile(
-      options.diff,
-      path,
-      options.cwd,
-      options.ref,
-      search,
-      lineSearch,
-      remaining,
-      declarations,
-      declarationContext.addedNames,
-      head,
-      headSearch,
-      isTestPath
-    );
-  });
-  const changed = new Set(paths.map(normalisePath4));
-  const downstream = /* @__PURE__ */ new Set();
-  for (const record3 of records) {
-    for (const path of record3.references) {
-      if (!changed.has(normalisePath4(path))) downstream.add(path);
-    }
-  }
-  records.sort(
-    (a, b) => b.references.size - a.references.size || a.file.path.localeCompare(b.file.path)
-  );
-  return {
-    searchedRef: options.ref ?? "working tree",
-    files: records.map((record3) => record3.file),
-    downstreamFiles: downstream.size,
-    budget: {
-      maxMs,
-      elapsedMs: Math.max(0, now() - started),
-      exhausted: records.some((record3) => record3.file.reason === "time-budget")
-    }
-  };
-}
-
 // plugins/review-voice/src/store/db.ts
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync as mkdirSync2, chmodSync } from "node:fs";
@@ -6533,26 +3998,26 @@ import { dirname as dirname5 } from "node:path";
 
 // plugins/review-voice/src/store/paths.ts
 import { homedir } from "node:os";
-import { join as join7 } from "node:path";
+import { join as join6 } from "node:path";
 function dataDirectory(env = process.env) {
   const override = env["REVIEW_VOICE_DATA_DIR"];
   if (override !== void 0 && override.length > 0) return override;
   const home = homedir();
   switch (process.platform) {
     case "darwin":
-      return join7(home, "Library", "Application Support", "review-voice");
+      return join6(home, "Library", "Application Support", "review-voice");
     case "win32": {
       const appData = env["APPDATA"];
-      return appData !== void 0 && appData.length > 0 ? join7(appData, "review-voice") : join7(home, "AppData", "Roaming", "review-voice");
+      return appData !== void 0 && appData.length > 0 ? join6(appData, "review-voice") : join6(home, "AppData", "Roaming", "review-voice");
     }
     default: {
       const xdg = env["XDG_DATA_HOME"];
-      return xdg !== void 0 && xdg.length > 0 ? join7(xdg, "review-voice") : join7(home, ".local", "share", "review-voice");
+      return xdg !== void 0 && xdg.length > 0 ? join6(xdg, "review-voice") : join6(home, ".local", "share", "review-voice");
     }
   }
 }
 function databasePath(env) {
-  return join7(dataDirectory(env), "review-voice.db");
+  return join6(dataDirectory(env), "review-voice.db");
 }
 
 // plugins/review-voice/src/store/db.ts
@@ -6842,7 +4307,7 @@ function openDatabase(path = databasePath()) {
 }
 
 // plugins/review-voice/src/store/runs.ts
-import { randomUUID as randomUUID3, createHash as createHash2 } from "node:crypto";
+import { randomUUID as randomUUID3, createHash } from "node:crypto";
 
 // plugins/review-voice/src/store/audit.ts
 import { randomUUID } from "node:crypto";
@@ -13444,7 +10909,7 @@ function listPolicies(db, scope) {
 }
 
 // plugins/review-voice/src/diff/carry.ts
-import { execFileSync as execFileSync8 } from "node:child_process";
+import { execFileSync as execFileSync4 } from "node:child_process";
 
 // plugins/review-voice/src/diff/reanchor.ts
 function candidateAnchor(hunks, candidate) {
@@ -13516,7 +10981,7 @@ function seriousNotCarried(notCarried) {
 var NEIGHBOURHOOD = 2;
 function commitReadable(ref, cwd) {
   try {
-    execFileSync8("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    execFileSync4("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -13551,7 +11016,7 @@ var CarryError = class extends Error {
 };
 function gitOut(args, cwd) {
   try {
-    return execFileSync8("git", args, {
+    return execFileSync4("git", args, {
       cwd,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024,
@@ -13563,7 +11028,7 @@ function gitOut(args, cwd) {
 }
 function existsAt(ref, path, cwd) {
   try {
-    execFileSync8("git", ["cat-file", "-e", `${ref}:${path}`], { cwd, stdio: "ignore" });
+    execFileSync4("git", ["cat-file", "-e", `${ref}:${path}`], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -13948,13 +11413,13 @@ function describeChecks(checks) {
   const symbols = checks.symbolsInconclusive === 0 ? "every symbol file finished" : `${checks.symbolsInconclusive} symbol file${checks.symbolsInconclusive === 1 ? "" : "s"} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}`;
   return `Checks ${staticParts.length === 0 ? "no static checks" : staticParts.join("; ")}; ${symbols}`;
 }
-var basename3 = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
+var basename = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
 function attribute(finding, hints, taken) {
   const free = hints.filter((hint) => !taken.has(hint));
   const exact = free.find((hint) => hint.path === finding.path && hint.line === finding.line);
   if (exact !== void 0) return { hint: exact, how: "exact" };
   const sameFile = free.filter(
-    (hint) => basename3(hint.path) === basename3(finding.path) && hint.line === finding.line
+    (hint) => basename(hint.path) === basename(finding.path) && hint.line === finding.line
   );
   if (sameFile.length === 1) return { hint: sameFile[0], how: "basename" };
   const sameLine = free.filter((hint) => hint.line === finding.line);
@@ -14008,7 +11473,7 @@ function assignIds(output, hints) {
   });
 }
 function hashDiff(diff) {
-  return createHash2("sha256").update(diff).digest("hex").slice(0, 32);
+  return createHash("sha256").update(diff).digest("hex").slice(0, 32);
 }
 function recordRun(db, input) {
   if ((input.bodyFindings?.length ?? 0) > 1) {
@@ -14281,20 +11746,20 @@ function heldBackFindings(findings, thread, run, reviewIds) {
 }
 
 // plugins/review-voice/src/diff/prior.ts
-import { execFileSync as execFileSync9 } from "node:child_process";
-function git3(args, cwd) {
-  return execFileSync9("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
+import { execFileSync as execFileSync5 } from "node:child_process";
+function git2(args, cwd) {
+  return execFileSync5("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
 }
 function resolveCommit(ref, cwd) {
   try {
-    return git3(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd).trim() || null;
+    return git2(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd).trim() || null;
   } catch {
     return null;
   }
 }
-function originRepository2(cwd) {
+function originRepository(cwd) {
   try {
-    const url = git3(["remote", "get-url", "origin"], cwd).trim();
+    const url = git2(["remote", "get-url", "origin"], cwd).trim();
     return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
   } catch {
     return null;
@@ -14304,9 +11769,9 @@ function resolveSince(since, repository, cwd) {
   const present = resolveCommit(since, cwd);
   if (present !== null) return present;
   if (!/^[0-9a-f]{7,64}$/i.test(since)) return null;
-  if (originRepository2(cwd)?.toLowerCase() !== repository.toLowerCase()) return null;
+  if (originRepository(cwd)?.toLowerCase() !== repository.toLowerCase()) return null;
   try {
-    git3(["fetch", "--no-tags", "--quiet", "origin", since], cwd);
+    git2(["fetch", "--no-tags", "--quiet", "origin", since], cwd);
   } catch {
     return null;
   }
@@ -14314,14 +11779,14 @@ function resolveSince(since, repository, cwd) {
 }
 function fetchPriorHead(sha, repository, cwd) {
   if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha)) return "it is not a full commit id, so it was not fetched";
-  const origin = originRepository2(cwd);
+  const origin = originRepository(cwd);
   if (origin === null) return "no origin remote on GitHub resolved, so it was not fetched";
   if (origin.toLowerCase() !== repository.toLowerCase()) {
     return `origin is ${origin}, not ${repository}, so it was not fetched`;
   }
   const args = ["fetch", "--no-tags", "--quiet", "origin", sha];
   try {
-    execFileSync9("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
+    execFileSync5("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
     return null;
   } catch (error) {
     return gitFailure(args, error);
@@ -14493,10 +11958,367 @@ function feedbackTotals(db) {
 
 // plugins/review-voice/src/policy/load.ts
 import { readFileSync as readFileSync7, existsSync as existsSync5 } from "node:fs";
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import { dirname as dirname7, isAbsolute as isAbsolute2, join as join9 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
+
+// plugins/review-voice/src/github/auth.ts
+import { execFileSync as execFileSync6 } from "node:child_process";
+var AuthError = class extends Error {
+};
+function githubToken(env = process.env) {
+  const fromEnv = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
+  if (fromEnv !== void 0 && fromEnv.length > 0) return fromEnv;
+  try {
+    const token = execFileSync6("gh", ["auth", "token"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    if (token.length > 0) return token;
+  } catch {
+  }
+  throw new AuthError(
+    "No GitHub credential. Run `gh auth login`, or set GITHUB_TOKEN. Review Voice needs read access only."
+  );
+}
+
+// plugins/review-voice/src/github/client.ts
+var ReadOnlyViolation = class extends Error {
+};
+var NotAllowlisted = class extends Error {
+};
+var GitHubError = class extends Error {
+  // Written out rather than declared as a parameter property: Node strips
+  // types to run TypeScript directly, and parameter properties are syntax it
+  // cannot strip. Keeping the source loadable without a build step means tests
+  // can import it directly.
+  status;
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+};
+var REPO_PATH = /^\/repos\/([^/]+\/[^/]+)(\/|$)/;
+var SEARCH_PATH = /^\/search(\/|$|\?)/i;
+var ID_REPO_PATH = /^\/repositories(\/|$|\?)/i;
+var PATH_ESCAPE = /(^|\/)\.\.?(\/|$)|%2e|%2f|%5c|\\/i;
+var GITHUB_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+function allowlistEntryProblem(entry) {
+  const parts = entry.split("/");
+  if (entry.includes("*")) {
+    if (parts.length === 2 && parts[1] === "*" && GITHUB_NAME.test(parts[0])) return null;
+    return `"${entry}" is not allowed: the only glob is owner/*, for every repository of one named owner.`;
+  }
+  if (parts.length !== 2 || parts[0] === "" || parts[1] === "") return `"${entry}" is not owner/repo or owner/*.`;
+  return null;
+}
+var SEARCH_BASE = "is:pr is:open draft:false";
+var SEARCH_PER_PAGE = 100;
+var SEARCH_MAX_PAGES = 5;
+function searchQuery(source) {
+  if (source === "requested") return `${SEARCH_BASE} user-review-requested:@me`;
+  if (source === "assigned") return `${SEARCH_BASE} assignee:@me`;
+  if (source === "reviewed") return `${SEARCH_BASE} reviewed-by:@me`;
+  if (typeof source === "string" && source.startsWith("team:")) {
+    const [org, slug, ...rest] = source.slice("team:".length).split("/");
+    if (org !== void 0 && slug !== void 0 && rest.length === 0 && GITHUB_NAME.test(org) && GITHUB_NAME.test(slug)) {
+      return `${SEARCH_BASE} team-review-requested:${org}/${slug}`;
+    }
+  }
+  throw new NotAllowlisted(`Refused a search source that is not one Review Voice builds: ${JSON.stringify(source)}.`);
+}
+function repositoryOf(repositoryUrl) {
+  if (typeof repositoryUrl !== "string") return null;
+  const match = /\/repos\/([^/?#]+)\/([^/?#]+)\/?$/.exec(repositoryUrl);
+  return match === null ? null : `${match[1]}/${match[2]}`;
+}
+var GRAPHQL_FORBIDDEN = /\b(?:mutation|subscription)\b/i;
+var REVIEW_THREADS_QUERY = `query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          isResolved
+          isOutdated
+          resolvedBy { login }
+          comments(first: 100) { nodes { databaseId path line } }
+        }
+      }
+    }
+  }
+}`;
+var KNOWN_QUERIES = /* @__PURE__ */ new Map([
+  [
+    REVIEW_THREADS_QUERY,
+    {
+      number: (value) => Number.isInteger(value) && value > 0,
+      cursor: (value) => value === null || typeof value === "string"
+    }
+  ]
+]);
+function graphqlUrl(baseUrl) {
+  const root = baseUrl.replace(/\/+$/, "");
+  return /\/api\/v3$/.test(root) ? root.replace(/\/v3$/, "/graphql") : `${root}/graphql`;
+}
+var GitHubClient = class {
+  allowlist;
+  /** Owners whose every repository is allowlisted, from `owner/*` entries. */
+  allowedOwners;
+  baseUrl;
+  doFetch;
+  sleep;
+  token;
+  constructor(options) {
+    this.allowlist = /* @__PURE__ */ new Set();
+    this.allowedOwners = /* @__PURE__ */ new Set();
+    for (const entry of options.allowlist) {
+      if (entry.includes("*")) {
+        const problem = options.allowGlobs === true ? allowlistEntryProblem(entry) : `"${entry}" is a pattern, and this client reads only repositories named one by one.`;
+        if (problem !== null) throw new NotAllowlisted(`Refused allowlist entry ${problem}`);
+        this.allowedOwners.add(entry.slice(0, -2).toLowerCase());
+      } else {
+        this.allowlist.add(entry.toLowerCase());
+      }
+    }
+    this.baseUrl = options.baseUrl ?? "https://api.github.com";
+    this.doFetch = options.fetchImpl ?? fetch;
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve9) => setTimeout(resolve9, ms)));
+    this.token = options.token ?? null;
+  }
+  authorization() {
+    this.token ??= githubToken();
+    return `Bearer ${this.token}`;
+  }
+  /** Whether `owner/name` is inside the allowlist, by exact entry or `owner/*`. */
+  allows(repository) {
+    const name = repository.toLowerCase();
+    if (this.allowlist.has(name)) return true;
+    const [owner, repo, ...rest] = name.split("/");
+    return owner !== void 0 && repo !== void 0 && rest.length === 0 && GITHUB_NAME.test(repo) && this.allowedOwners.has(owner);
+  }
+  /**
+   * The URL a path is sent to, and its path below the API root.
+   *
+   * Every request goes through here, relative or absolute, so the credential
+   * only ever goes to the API's own origin, and the allowlist is checked on the
+   * path GitHub will actually serve: a dot segment or an encoded dot or slash
+   * could otherwise step out of an allowlisted repository after the check.
+   */
+  resolve(path) {
+    const rawPath = path.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i, "").split(/[?#]/, 1)[0];
+    if (PATH_ESCAPE.test(rawPath)) {
+      throw new NotAllowlisted(`Refused ${path}: a dot segment or an encoded dot or slash in the path.`);
+    }
+    const base = new URL(this.baseUrl);
+    const basePath = base.pathname.replace(/\/+$/, "");
+    const url = /^[a-z][a-z0-9+.-]*:/i.test(path) ? new URL(path) : new URL(`${base.origin}${basePath}${path}`);
+    if (url.origin !== base.origin || basePath !== "" && !url.pathname.startsWith(`${basePath}/`)) {
+      throw new NotAllowlisted(`Refused a request to ${url.origin}${url.pathname}: only ${this.baseUrl} receives the credential.`);
+    }
+    return { url, apiPath: `${url.pathname.slice(basePath.length)}${url.search}` };
+  }
+  assertAllowed(path) {
+    const { apiPath } = this.resolve(path);
+    if (ID_REPO_PATH.test(apiPath)) {
+      throw new NotAllowlisted(`Refused ${path}: a repository addressed by id cannot be checked against the allowlist.`);
+    }
+    if (SEARCH_PATH.test(apiPath)) {
+      throw new NotAllowlisted("Refused a search request: search is sent only with a query Review Voice builds itself.");
+    }
+    const match = REPO_PATH.exec(apiPath);
+    if (match === null) return;
+    if (!this.allows(match[1])) {
+      throw new NotAllowlisted(
+        `${match[1]} is not in the allowlist. Add it with /review-voice:init before reading it.`
+      );
+    }
+  }
+  /**
+   * `retryRateLimits: false` fails at once on a rate limit instead of waiting
+   * it out, for a read the caller can do without.
+   */
+  async get(path, init = {}) {
+    if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
+      throw new ReadOnlyViolation(
+        `Review Voice is read-only; refused a ${init.method} to ${path}.`
+      );
+    }
+    this.assertAllowed(path);
+    return this.request(path, init.retryRateLimits !== false);
+  }
+  /** The GET itself, once the caller has checked the path. */
+  async request(path, retryRateLimits) {
+    const { url: resolved, apiPath } = this.resolve(path);
+    const url = resolved.href;
+    for (let attempt = 0; ; attempt += 1) {
+      const response = await this.doFetch(url, {
+        method: "GET",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: this.authorization(),
+          "x-github-api-version": "2022-11-28",
+          "user-agent": "review-voice"
+        }
+      });
+      if (response.status === 403 || response.status === 429) {
+        const retryAfter = Number(response.headers.get("retry-after") ?? "0");
+        const remaining = response.headers.get("x-ratelimit-remaining");
+        if (retryRateLimits && (remaining === "0" || retryAfter > 0) && attempt < 4) {
+          const waitMs = retryAfter > 0 ? retryAfter * 1e3 : 2 ** attempt * 1e3;
+          await this.sleep(waitMs);
+          continue;
+        }
+      }
+      if (!response.ok) {
+        throw new GitHubError(
+          `GitHub returned ${response.status} for ${path}: ${(await response.text()).slice(0, 200)}`,
+          response.status
+        );
+      }
+      const link = response.headers.get("link");
+      const href = link === null ? null : /<([^>]+)>;\s*rel="next"/.exec(link)?.[1] ?? null;
+      const next = href === null ? null : `${apiPath.split("?", 1)[0]}${new URL(href, this.baseUrl).search}`;
+      return { data: await response.json(), linkNext: next };
+    }
+  }
+  /**
+   * One known GraphQL query about one allowlisted repository (docs/adr/0018).
+   *
+   * The only request this client sends that is not a GET. GraphQL has no GET
+   * form on GitHub, and some state - whether a review thread is resolved -
+   * has no REST endpoint at all. So the read-only promise moves from the HTTP
+   * method to the document, and is checked here before anything is sent:
+   *
+   *   - the document must be, character for character, one of
+   *     `KNOWN_QUERIES`, none of which is a mutation or subscription;
+   *   - its variables must be ones that query declares, with values of the
+   *     declared shape; `owner` and `name` may not be passed at all and are
+   *     set from `repository`, which must be allowlisted.
+   *
+   * It never retries. Every caller can do without the answer, and waiting out
+   * a rate limit for an optional read only spends the user's quota.
+   */
+  async graphql(repository, document, variables = {}) {
+    const declared = KNOWN_QUERIES.get(document);
+    if (declared === void 0 || GRAPHQL_FORBIDDEN.test(document)) {
+      throw new ReadOnlyViolation("Review Voice is read-only; refused a GraphQL document that is not one of its known queries.");
+    }
+    for (const [key2, value] of Object.entries(variables)) {
+      const check = declared[key2];
+      if (check === void 0 || !check(value)) {
+        throw new ReadOnlyViolation(`Refused GraphQL variable ${key2}: not one this query declares, or not of its shape.`);
+      }
+    }
+    const [owner, name, ...rest] = repository.split("/");
+    if (owner === void 0 || name === void 0 || rest.length > 0 || owner.length === 0 || name.length === 0) {
+      throw new NotAllowlisted(`${repository} is not an owner/repo name.`);
+    }
+    this.assertAllowed(`/repos/${owner}/${name}`);
+    const response = await this.doFetch(graphqlUrl(this.baseUrl), {
+      method: "POST",
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: this.authorization(),
+        "content-type": "application/json",
+        "user-agent": "review-voice"
+      },
+      body: JSON.stringify({ query: document, variables: { ...variables, owner, name } })
+    });
+    if (!response.ok) {
+      throw new GitHubError(
+        `GitHub GraphQL returned ${response.status}: ${(await response.text()).slice(0, 200)}`,
+        response.status
+      );
+    }
+    const body = await response.json();
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      throw new GitHubError("GitHub GraphQL returned no data.", response.status);
+    }
+    if (Array.isArray(body.errors) && body.errors.length > 0) {
+      throw new GitHubError(
+        `GitHub GraphQL returned errors: ${body.errors.map((e) => e?.message ?? "unknown").join("; ").slice(0, 200)}`,
+        response.status
+      );
+    }
+    if (body.data === void 0 || body.data === null) {
+      throw new GitHubError("GitHub GraphQL returned no data.", response.status);
+    }
+    return body.data;
+  }
+  /**
+   * Open, non-draft pull requests from one GitHub search (docs/adr/0026).
+   *
+   * The only request this client sends outside a repository path. The query is
+   * built here from `source`, never from caller text, because a query is the
+   * easiest place to reach outside the allowlist by accident. Each result's
+   * repository is matched against the allowlist before it is returned; one
+   * outside it is only counted, so nothing further is ever read about it.
+   * Pages are numbered here rather than followed from a Link header, and stop
+   * at five.
+   */
+  async searchPullRequests(source) {
+    const q = encodeURIComponent(searchQuery(source));
+    const pullRequests = [];
+    let outsideAllowlist = 0;
+    let truncated = false;
+    let seen = 0;
+    for (let page = 1; page <= SEARCH_MAX_PAGES; page += 1) {
+      const { data } = await this.request(
+        `/search/issues?q=${q}&sort=created&order=asc&per_page=${SEARCH_PER_PAGE}&page=${page}`,
+        true
+      );
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const total = typeof data?.total_count === "number" ? data.total_count : 0;
+      if (data?.incomplete_results === true) truncated = true;
+      seen += items.length;
+      for (const item of items) {
+        const repository = repositoryOf(item?.["repository_url"]);
+        const number = item?.["number"];
+        if (repository === null || !this.allows(repository) || !Number.isInteger(number) || number <= 0) {
+          outsideAllowlist += 1;
+          continue;
+        }
+        pullRequests.push({ repository, number });
+      }
+      if (items.length < SEARCH_PER_PAGE || seen >= total) break;
+      if (page === SEARCH_MAX_PAGES) truncated = true;
+    }
+    return { pullRequests, outsideAllowlist, truncated };
+  }
+  /** Follows pagination up to `limit` items, so a huge repository cannot run away. */
+  async paginate(path, limit) {
+    const items = [];
+    let next = path;
+    while (next !== null && items.length < limit) {
+      const page = await this.get(next);
+      if (!Array.isArray(page.data)) break;
+      items.push(...page.data);
+      next = page.linkNext;
+    }
+    return items.slice(0, limit);
+  }
+  /**
+   * Pagination for endpoints that wrap each page as `{ total_count, <key>: [] }`
+   * rather than returning an array, such as check runs and combined statuses.
+   * `paginate` stops at the first page of those, because the page is not an
+   * array, which is how a pull request with more than 100 check runs read as
+   * having only its first 100.
+   */
+  async paginateWrapped(path, key2, limit) {
+    const items = [];
+    let next = path;
+    while (next !== null && items.length < limit) {
+      const page = await this.get(next);
+      const list2 = page.data?.[key2];
+      if (!Array.isArray(list2)) break;
+      items.push(...list2);
+      next = page.linkNext;
+    }
+    return items.slice(0, limit);
+  }
+};
 
 // plugins/review-voice/src/publish/ci.ts
 var MAX_ENTRIES = 1e3;
@@ -14694,8 +12516,724 @@ async function readCi(client, repository, sha, gates = [], now = Date.now(), rul
   }, rules);
 }
 
+// plugins/review-voice/src/diff/structure.ts
+import { execFileSync as execFileSync7 } from "node:child_process";
+import { readFileSync as readFileSync6 } from "node:fs";
+import { join as join7 } from "node:path";
+
+// plugins/review-voice/src/diff/removed-controls.ts
+import { basename as basename2, extname as extname2 } from "node:path";
+
+// plugins/review-voice/src/diff/type-escapes.ts
+import { extname } from "node:path";
+var MAX_PER_FILE = 20;
+var POSTFIX_BANG = /[\w$)\]]!(?=[.[)\],;:])/g;
+var TYPESCRIPT = {
+  quotes: "'\"`",
+  lineComment: "//",
+  blockComments: true,
+  rules: [
+    { kind: "any", in: "code", pattern: /:\s*any\b|\bas\s+any\b|<any>/g },
+    { kind: "double-cast", in: "code", pattern: /\bas\s+unknown\s+as\b/g },
+    { kind: "non-null", in: "code", pattern: POSTFIX_BANG },
+    { kind: "ts-ignore", in: "comment", pattern: /@ts-ignore\b/g },
+    { kind: "ts-expect-error", in: "comment", pattern: /@ts-expect-error\b/g },
+    {
+      kind: "lint-disable",
+      in: "comment",
+      pattern: /\beslint-disable(?:-next-line|-line)?(?![\w-])([^]*)/g,
+      // Names no rule (disables them all), or names one from the type-aware set.
+      accept: (match) => {
+        const rules = (match[1] ?? "").replace(/\*\/[^]*$/, "").split(/\s--\s/)[0].trim();
+        return rules === "" || rules.includes("@typescript-eslint/");
+      }
+    }
+  ]
+};
+var CSHARP = {
+  quotes: `'"`,
+  lineComment: "//",
+  blockComments: true,
+  rules: [
+    { kind: "null-forgiving", in: "code", pattern: POSTFIX_BANG },
+    { kind: "dynamic", in: "code", pattern: /\bdynamic\b/g },
+    { kind: "object-cast", in: "code", pattern: /\(object\)\s*[\w@$("']/g },
+    { kind: "nullable-disable", in: "code", pattern: /^\s*#\s*nullable\s+disable\b/g },
+    {
+      kind: "nullable-disable",
+      in: "code",
+      pattern: /^\s*#\s*pragma\s+warning\s+disable\b(.*)$/g,
+      accept: (match) => /\bCS8[67]\d\d\b|\bnullable\b/i.test(match[1] ?? "")
+    }
+  ]
+};
+var PYTHON = {
+  quotes: `'"`,
+  lineComment: "#",
+  blockComments: false,
+  skip: /^\s*(?:import\s|from\s+\S+\s+import\b)/,
+  rules: [
+    { kind: "type-ignore", in: "comment", pattern: /type:\s*ignore\b/g },
+    { kind: "cast", in: "code", pattern: /\bcast\(/g },
+    { kind: "any", in: "code", pattern: /\bAny\b/g }
+  ]
+};
+var LANGUAGES2 = {
+  ...Object.fromEntries([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, TYPESCRIPT])),
+  ".cs": CSHARP,
+  ".py": PYTHON,
+  ".pyi": PYTHON
+};
+function splitLine(text4, language3) {
+  if (language3.blockComments && text4.trimStart().startsWith("*")) return { code: "", comment: text4, raw: "" };
+  let code = "";
+  let raw = "";
+  let comment = "";
+  let quote2 = null;
+  for (let index = 0; index < text4.length; index += 1) {
+    const char = text4[index];
+    if (quote2 !== null) {
+      if (char === "\\") {
+        code += "  ";
+        raw += text4.slice(index, index + 2);
+        index += 1;
+      } else if (text4.startsWith(quote2, index)) {
+        code += quote2;
+        raw += quote2;
+        index += quote2.length - 1;
+        quote2 = null;
+      } else {
+        code += " ";
+        raw += char;
+      }
+    } else if (language3.quotes.includes(char)) {
+      quote2 = language3.tripleQuotes === true && text4.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
+      code += quote2;
+      raw += quote2;
+      index += quote2.length - 1;
+    } else if (text4.startsWith(language3.lineComment, index)) {
+      comment += text4.slice(index);
+      break;
+    } else if (language3.altLineComment !== void 0 && text4.startsWith(language3.altLineComment, index) && !text4.startsWith("#[", index)) {
+      comment += text4.slice(index);
+      break;
+    } else if (language3.blockComments && text4.startsWith("/*", index)) {
+      const end = text4.indexOf("*/", index + 2);
+      comment += `${text4.slice(index, end === -1 ? void 0 : end + 2)} `;
+      if (end === -1) break;
+      index = end + 1;
+    } else if (language3.regexLiterals === true && char === "/" && opensRegex(code)) {
+      const end = regexEnd(text4, index);
+      if (end === -1) {
+        code += char;
+        raw += char;
+      } else {
+        code += `/${" ".repeat(end - index - 1)}/`;
+        raw += text4.slice(index, end + 1);
+        index = end;
+      }
+    } else {
+      code += char;
+      raw += char;
+    }
+  }
+  return { code, comment, raw };
+}
+function opensRegex(before) {
+  const trimmed = before.trimEnd();
+  if (trimmed === "" || /[(,=:[!&|?{};+\-*%<>~^]$/.test(trimmed)) return true;
+  return /(?:^|[^\w$.])(?:return|typeof|case|in|of|delete|void|throw|new|instanceof|do|else)$/.test(trimmed);
+}
+function regexEnd(text4, start) {
+  let inClass = false;
+  for (let index = start + 1; index < text4.length; index += 1) {
+    const char = text4[index];
+    if (char === "\\") index += 1;
+    else if (inClass) inClass = char !== "]";
+    else if (char === "[") inClass = true;
+    else if (char === "/") return index;
+  }
+  return -1;
+}
+function kindsIn(text4, language3) {
+  const line3 = splitLine(text4, language3);
+  const kinds = [];
+  for (const rule of language3.rules) {
+    if (rule.in === "code" && language3.skip?.test(line3.code)) continue;
+    const source = line3[rule.in];
+    for (const match of source.matchAll(rule.pattern)) {
+      if (rule.accept === void 0 || rule.accept(match, line3)) kinds.push(rule.kind);
+    }
+  }
+  return kinds;
+}
+function findTypeEscapes(diff, paths) {
+  const found = [];
+  for (const hunk of countHunks(diff, new Set(paths))) {
+    const language3 = LANGUAGES2[extname(hunk.path).toLowerCase()];
+    if (language3 === void 0) continue;
+    for (const { line: line3, text: text4 } of hunk.added) {
+      for (const kind of kindsIn(text4, language3)) found.push({ path: hunk.path, line: line3, kind });
+    }
+  }
+  const byPathLineKind = (a, b) => {
+    if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+    if (a.line !== b.line) return a.line - b.line;
+    return a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0;
+  };
+  found.sort(byPathLineKind);
+  const perFile = /* @__PURE__ */ new Map();
+  return found.filter((escape) => {
+    const seen = perFile.get(escape.path) ?? 0;
+    perFile.set(escape.path, seen + 1);
+    return seen < MAX_PER_FILE;
+  });
+}
+
+// plugins/review-voice/src/diff/removed-controls.ts
+var MAX_PER_FILE2 = 20;
+var MAX_TEXT = 120;
+var MAX_SCANNED_LINE = 1e3;
+var GUARD_WORDS = [
+  "auth",
+  "authoriz",
+  "permission",
+  "role",
+  "scope",
+  "token",
+  "session",
+  "owner",
+  "admin",
+  "allow",
+  "deny",
+  "validate",
+  "verify",
+  "check",
+  "limit",
+  "quota",
+  "rate",
+  "throttle",
+  "sanitize",
+  "escape",
+  "csrf",
+  "origin"
+];
+var capitalised = (word) => word.charAt(0).toUpperCase() + word.slice(1);
+var GUARD_WORD = new RegExp(
+  `(?<![A-Za-z])(?:${GUARD_WORDS.join("|")}|${GUARD_WORDS.map(capitalised).join("|")}|${GUARD_WORDS.map((w) => w.toUpperCase()).join("|")})|(?<=[a-z0-9])(?:${GUARD_WORDS.map(capitalised).join("|")})`
+);
+function conditionAfter(line3, from) {
+  const code = line3.code.slice(from);
+  const open = /^\s*\(/.exec(code);
+  if (open === null) return line3.raw.slice(from, toBody(code, from, 0));
+  let depth = 0;
+  for (let index = open[0].length - 1; index < code.length; index += 1) {
+    if (code[index] === "(") depth += 1;
+    else if (code[index] === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        const continues = /^\s*(?:and|or|&&|\|\|)(?![\w$])/.test(code.slice(index + 1));
+        return line3.raw.slice(from, continues ? toBody(code, from, index + 1) : from + index + 1);
+      }
+    }
+  }
+  return line3.raw.slice(from);
+}
+function toBody(code, from, start) {
+  const body = /:(?=\s|$)|\{|\bthen\b|\bdo\b/.exec(code.slice(start));
+  return body === null ? void 0 : from + start + body.index;
+}
+var MIDDLEWARE_NAME = "(?:[Aa]uth|[Vv]erify|[Rr]equire[A-Z_]|[Cc]srf|CSRF|[Rr]ate_?[Ll]imit|RATE_?LIMIT)";
+var STATEMENT_WORD = /\b(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|raise|when|import|export|const|let|var|def|class|function)\b/;
+var ALLOWLIST_NAME = /allow|whitelist|permitted|roles|scopes|origins/i;
+var WHOLE_LINE = /^.*$/g;
+function isListElement(raw) {
+  let text4 = raw.trim();
+  if (text4.endsWith(",")) text4 = text4.slice(0, -1).trimEnd();
+  if (text4 === "") return false;
+  const quote2 = text4[0];
+  if ((quote2 === '"' || quote2 === "'" || quote2 === "`") && text4.length >= 2 && text4.endsWith(quote2) && !text4.slice(1, -1).includes(quote2)) {
+    return true;
+  }
+  if (/^[\w$.@*/-]+$/.test(text4)) return true;
+  const colon = text4.indexOf(":");
+  if (colon <= 0) return false;
+  const key2 = text4.slice(0, colon).trim();
+  const value = text4.slice(colon + 1).trim();
+  return /^["']?[\w$.-]+["']?$/.test(key2) && value !== "" && !value.includes(",");
+}
+var RULES = [
+  {
+    // Matched on code so a conditional named only in a string is not one; the
+    // words are read from the condition as written, so `if (role === 'admin')`
+    // counts for what it compares against. Not a parser: `if (isReady) check()`
+    // is read as a conditional on `isReady`, which has no such word, and passes.
+    kind: "guard",
+    in: "code",
+    // Declarations and assignments can name a variable guard without introducing a conditional.
+    pattern: /\b(?:if|elif|unless|guard|when|case)\b(?!\s*=)/g,
+    accept: (match, line3) => !/\b(?:const|let|var)\s+$/.test(line3.code.slice(0, match.index ?? 0)) && GUARD_WORD.test(conditionAfter(line3, (match.index ?? 0) + match[0].length))
+  },
+  {
+    // The keyword is read from the code view, so a `return` that merely sits in
+    // a string is not one; what follows it is read from the raw line, since the
+    // refusal is mostly a status or a message: `throw new Error('Forbidden')`
+    // keeps its word. Code and raw are the same length, so the index carries.
+    kind: "refusal",
+    in: "code",
+    pattern: /\b(?:throw|raise|return)\b/g,
+    accept: (match, line3) => /^.{0,160}?(?:\b40[13]\b|Forbidden|Unauthori[sz]ed|TooMany|Invalid|Denied)/.test(line3.raw.slice((match.index ?? 0) + match[0].length))
+  },
+  {
+    // An attribute or decorator that gates a handler. Code only, and anchored
+    // to the start of the line, so `'@Authorize'` in a string is not one.
+    kind: "decorator",
+    in: "code",
+    pattern: /^\s*[@[]\s*(?:[\w.]+\.)?(?:authori[sz]e\w*|require_?(?:role|auth|permission|login)\w*|login_required|permission_required|permission_classes|pre_?authorize|post_?authorize|roles?_?required|roles?_?allowed|secured|use_?guards|roles?(?=\s*\())\b/gi
+  },
+  {
+    // A registration that puts an access or abuse control in front of routes.
+    kind: "middleware",
+    in: "code",
+    pattern: new RegExp(`\\.use\\([^;]*?${MIDDLEWARE_NAME}`, "g")
+  },
+  {
+    kind: "middleware",
+    in: "code",
+    pattern: new RegExp(`\\b(?:router|app|routes?)\\.\\w+\\([^;]*?${MIDDLEWARE_NAME}`, "g")
+  },
+  {
+    // One element of a list, removed from a file or declaration whose name says
+    // it is an allowlist (the scanner checks the name). Read from the raw line
+    // for the element and the code for what disqualifies it, so a quoted
+    // `'for'` is an entry and a bare `for` is not.
+    kind: "allowlist-entry",
+    in: "raw",
+    pattern: WHOLE_LINE,
+    accept: (_match, line3) => isListElement(line3.raw) && !/[=(]/.test(line3.code) && !STATEMENT_WORD.test(line3.code)
+  }
+];
+function language(quotes, lineComment2, blockComments) {
+  return { rules: RULES, quotes, lineComment: lineComment2, blockComments };
+}
+var C_STYLE = language(`'"`, "//", true);
+var SCRIPT = { ...language("'\"`", "//", true), regexLiterals: true };
+var GO = language("'\"`", "//", true);
+var HASH = language(`'"`, "#", false);
+var PHP = { ...C_STYLE, altLineComment: "#" };
+var LANGUAGES3 = {
+  ...Object.fromEntries([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, SCRIPT])),
+  ...Object.fromEntries([".cs", ".java", ".kt"].map((ext) => [ext, C_STYLE])),
+  ".php": PHP,
+  ".go": GO,
+  ".py": HASH,
+  ".rb": HASH
+};
+var collapse = (text4) => text4.replace(/\s+/g, " ").trim();
+function kindsIn2(text4, lang, allowlisted) {
+  const line3 = splitLine(text4.slice(0, MAX_SCANNED_LINE), lang);
+  const kinds = /* @__PURE__ */ new Set();
+  for (const rule of lang.rules) {
+    if (rule.kind === "allowlist-entry" && !allowlisted) continue;
+    for (const match of line3[rule.in].matchAll(rule.pattern)) {
+      if (rule.accept === void 0 || rule.accept(match, line3)) {
+        kinds.add(rule.kind);
+        break;
+      }
+    }
+  }
+  return [...kinds];
+}
+var EVERY_PATH = { has: () => true };
+function findRemovedControls(diff, paths, deletedFiles = []) {
+  const wanted = new Set(paths);
+  const hunks = countHunks(diff, EVERY_PATH);
+  const added = /* @__PURE__ */ new Map();
+  const addedByFile = /* @__PURE__ */ new Map();
+  for (const hunk of hunks) {
+    const own = addedByFile.get(hunk.path) ?? /* @__PURE__ */ new Map();
+    addedByFile.set(hunk.path, own);
+    for (const line3 of hunk.added) {
+      const key2 = collapse(line3.text);
+      added.set(key2, (added.get(key2) ?? 0) + 1);
+      own.set(key2, (own.get(key2) ?? 0) + 1);
+    }
+  }
+  const spend = (pool, key2) => {
+    const left = pool.get(key2) ?? 0;
+    if (left === 0) return false;
+    pool.set(key2, left - 1);
+    return true;
+  };
+  const netted = (text4) => spend(added, collapse(text4));
+  const found = [];
+  const byPath = /* @__PURE__ */ new Map();
+  const entriesOf = (path) => {
+    const entries = byPath.get(path) ?? [];
+    byPath.set(path, entries);
+    return entries;
+  };
+  const movedWithinFile = /* @__PURE__ */ new Set();
+  for (const hunk of hunks) {
+    const own = addedByFile.get(hunk.path);
+    if (own === void 0) continue;
+    for (const removed of hunk.removed) {
+      const key2 = collapse(removed.text);
+      if (spend(own, key2)) {
+        spend(added, key2);
+        movedWithinFile.add(removed);
+      }
+    }
+  }
+  for (const hunk of hunks) {
+    const lang = wanted.has(hunk.path) ? LANGUAGES3[extname2(hunk.path).toLowerCase()] : void 0;
+    const named = ALLOWLIST_NAME.test(basename2(hunk.path));
+    const emptied = hunk.line === 0;
+    for (const removed of hunk.removed) {
+      if (movedWithinFile.has(removed) || netted(removed.text)) continue;
+      if (lang === void 0) continue;
+      const { line: line3, text: text4, scope } = removed;
+      const allowlisted = named || scope !== null && ALLOWLIST_NAME.test(scope);
+      for (const kind of kindsIn2(text4, lang, allowlisted)) {
+        const entry = { path: hunk.path, line: line3, kind, text: text4.trim().slice(0, MAX_TEXT) };
+        if (emptied) entry.deletedFile = true;
+        entriesOf(hunk.path).push(entry);
+      }
+    }
+  }
+  for (const entries of byPath.values()) {
+    entries.sort((a, b) => a.line - b.line);
+    found.push(...entries.slice(0, MAX_PER_FILE2));
+  }
+  for (const file2 of deletedFiles) {
+    const lang = LANGUAGES3[extname2(file2.path).toLowerCase()];
+    if (lang === void 0) continue;
+    const allowlisted = ALLOWLIST_NAME.test(basename2(file2.path));
+    let kept = 0;
+    for (const raw of file2.text.split("\n")) {
+      const text4 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+      if (netted(text4)) continue;
+      if (kept >= MAX_PER_FILE2) continue;
+      for (const kind of kindsIn2(text4, lang, allowlisted)) {
+        if (kept >= MAX_PER_FILE2) break;
+        found.push({ path: file2.path, line: 1, kind, text: text4.trim().slice(0, MAX_TEXT), deletedFile: true });
+        kept += 1;
+      }
+    }
+  }
+  return found.sort((a, b) => a.path === b.path ? a.line - b.line : a.path < b.path ? -1 : 1);
+}
+
+// plugins/review-voice/src/diff/risk-markers.ts
+import { basename as basename3, extname as extname3 } from "node:path";
+var MAX_PER_FILE3 = 20;
+var MAX_SCANNED_LINE2 = 1e3;
+var WORD_START = "(?<![A-Za-z])";
+var HUMP = "(?<=[a-z0-9])";
+var CONCURRENCY_WORDS = ["lock", "mutex", "semaphore"];
+var capitalised2 = (word) => word.charAt(0).toUpperCase() + word.slice(1);
+var CONCURRENCY_WORD = new RegExp(
+  `${WORD_START}(?:${[...CONCURRENCY_WORDS, ...CONCURRENCY_WORDS.map(capitalised2), ...CONCURRENCY_WORDS.map((w) => w.toUpperCase())].join("|")}|RW(?:Lock|Mutex))|${HUMP}(?:${CONCURRENCY_WORDS.map(capitalised2).join("|")})`,
+  "g"
+);
+var CODE_RULES = [
+  {
+    kind: "new-route",
+    in: "code",
+    pattern: /\bapp\.(?:get|post|put|patch|delete)\s*\(|\brouter\.\w|@(?:Get|Post|Put|Patch|Delete|Route)(?:Mapping)?\b|\[Http(?:Get|Post|Put|Delete)\b|@app\.route\b/g
+  },
+  {
+    kind: "lock-or-async",
+    in: "code",
+    pattern: CONCURRENCY_WORD
+  },
+  {
+    kind: "lock-or-async",
+    in: "code",
+    pattern: /\bInterlocked\b|\bsynchronized\b|\bMonitor\.|\bPromise\.all(?:Settled)?\b|\bTask\.WhenAll\b|\bgo\s+func\b|\bParallel\./g
+  },
+  {
+    kind: "unsafe",
+    in: "code",
+    pattern: /\bunsafe\b|\beval\s*\(|\bexec\s*\(|\bdangerouslySetInnerHTML\b|\bMarshal\.|\bpickle\.loads\b/g
+  },
+  {
+    // A loader that names SafeLoader on the same line is the safe form.
+    kind: "unsafe",
+    in: "code",
+    pattern: /\byaml\.load\s*\(/g,
+    accept: (_match, line3) => !/SafeLoader/.test(line3.code)
+  }
+];
+var URL_RULE = { kind: "new-route", in: "code", pattern: /(?<![\w.])path\s*\(/g };
+function buildsQuery(code, raw, quotes, triple, at2) {
+  let index = 0;
+  while (index < code.length) {
+    const char = code[index];
+    if (!quotes.includes(char)) {
+      index += 1;
+      continue;
+    }
+    const delimiter = triple && code.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
+    const open = index;
+    const close = code.indexOf(delimiter, open + delimiter.length);
+    const end = close === -1 ? code.length : close;
+    if (at2 > open && at2 < end) {
+      const inside = raw.slice(open + delimiter.length, end);
+      const prefix = code.slice(0, open);
+      const interpolated = /\$\{|%s/.test(inside) || /(?<![\w$])(?:rf|fr|f)$/i.test(prefix) && inside.includes("{");
+      const before = prefix.trimEnd();
+      const after = close === -1 ? "" : code.slice(end + delimiter.length).trimStart();
+      const joined = before.endsWith("+") || /^(?:\+|%(?!=)|\.format\s*\()/.test(after);
+      return interpolated || joined;
+    }
+    index = close === -1 ? code.length : close + delimiter.length;
+  }
+  return false;
+}
+function queryRule(quotes, triple) {
+  return {
+    kind: "string-built-query",
+    in: "raw",
+    pattern: /\b(?:SELECT|INSERT|UPDATE|DELETE)\b/g,
+    accept: (match, line3) => buildsQuery(line3.code, line3.raw, quotes, triple, match.index ?? 0)
+  };
+}
+function language2(quotes, lineComment2, blockComments, regexLiterals = false, tripleQuotes = false) {
+  return {
+    rules: [...CODE_RULES, queryRule(quotes, tripleQuotes)],
+    quotes,
+    lineComment: lineComment2,
+    blockComments,
+    ...regexLiterals ? { regexLiterals } : {},
+    ...tripleQuotes ? { tripleQuotes } : {}
+  };
+}
+var SCRIPT2 = language2("'\"`", "//", true, true);
+var C_STYLE2 = language2(`'"`, "//", true);
+var GO2 = language2("'\"`", "//", true);
+var PHP2 = { ...C_STYLE2, altLineComment: "#" };
+var HASH2 = language2(`'"`, "#", false);
+var PYTHON2 = language2(`'"`, "#", false, false, true);
+var LANGUAGES4 = {
+  ...Object.fromEntries([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, SCRIPT2])),
+  ...Object.fromEntries([".cs", ".java", ".kt"].map((ext) => [ext, C_STYLE2])),
+  ".php": PHP2,
+  ".go": GO2,
+  ".py": PYTHON2,
+  ".rb": HASH2
+};
+function kindsIn3(text4, lang, urls) {
+  const line3 = splitLine(text4.slice(0, MAX_SCANNED_LINE2), lang);
+  const kinds = /* @__PURE__ */ new Set();
+  for (const rule of urls ? [...lang.rules, URL_RULE] : lang.rules) {
+    if (kinds.has(rule.kind)) continue;
+    for (const match of line3[rule.in].matchAll(rule.pattern)) {
+      if (rule.accept === void 0 || rule.accept(match, line3)) {
+        kinds.add(rule.kind);
+        break;
+      }
+    }
+  }
+  return [...kinds];
+}
+function findRiskMarkers(diff, paths) {
+  const found = [];
+  for (const hunk of countHunks(diff, new Set(paths))) {
+    const lang = LANGUAGES4[extname3(hunk.path).toLowerCase()];
+    if (lang === void 0) continue;
+    const urls = /^urls?$/i.test(basename3(hunk.path, extname3(hunk.path)));
+    for (const { line: line3, text: text4 } of hunk.added) {
+      for (const kind of kindsIn3(text4, lang, urls)) found.push({ path: hunk.path, line: line3, kind });
+    }
+  }
+  found.sort((a, b) => {
+    if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+    if (a.line !== b.line) return a.line - b.line;
+    return a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0;
+  });
+  const perFile = /* @__PURE__ */ new Map();
+  return found.filter((marker) => {
+    const seen = perFile.get(marker.path) ?? 0;
+    perFile.set(marker.path, seen + 1);
+    return seen < MAX_PER_FILE3;
+  });
+}
+
+// plugins/review-voice/src/diff/structure.ts
+var DEFAULT_STRUCTURE = {
+  maxFileLines: 1e3,
+  maxAddedBranchesPerFunction: 3,
+  simplify: false
+};
+var MAX_UNMEASURED_LISTED = 20;
+function countLines(content) {
+  let lines2 = 0;
+  for (const byte of content) {
+    if (byte === 10) lines2 += 1;
+  }
+  return content.length > 0 && content[content.length - 1] !== 10 ? lines2 + 1 : lines2;
+}
+function startOf(root, diff) {
+  if (diff.scope?.kind === "incremental" || diff.scope?.kind === "interdiff") return diff.scope.since;
+  return attributeSource(root, diff);
+}
+function changeSides(root, diff) {
+  const base = startOf(root, diff);
+  switch (diff.mode) {
+    case "worktree":
+      return { base, head: { from: "worktree" } };
+    case "staged":
+      return { base, head: { from: "index" } };
+    case "base":
+      return { base, head: { from: "commit", commit: diff.head } };
+    case "pull-request":
+      return { base, head: diff.refs?.head.available === true ? { from: "commit", commit: diff.head } : null };
+  }
+}
+function readBlobs(root, specs) {
+  const blobs = new Map(specs.map((spec) => [spec, null]));
+  if (specs.length === 0) return blobs;
+  let out;
+  try {
+    out = execFileSync7("git", ["cat-file", "--batch"], {
+      cwd: root,
+      input: `${specs.join("\n")}
+`,
+      maxBuffer: 512 * 1024 * 1024,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+  } catch {
+    return blobs;
+  }
+  let offset = 0;
+  for (const spec of specs) {
+    const end = out.indexOf(10, offset);
+    if (end === -1) break;
+    const header = out.subarray(offset, end).toString("utf8");
+    offset = end + 1;
+    const match = /^[0-9a-f]+ (\w+) (\d+)$/.exec(header);
+    if (match === null) continue;
+    const size = Number(match[2]);
+    if (match[1] === "blob") blobs.set(spec, out.subarray(offset, offset + size));
+    offset += size + 1;
+  }
+  return blobs;
+}
+function measureLines(root, files2, paths, sides) {
+  const asked = new Set(paths);
+  const wanted = files2.filter((file2) => asked.has(file2.path) && !file2.path.includes("\n"));
+  const baseSpec = (file2) => sides.base === null || file2.status === "added" || (file2.previousPath ?? file2.path).includes("\n") ? null : `${sides.base}:${file2.previousPath ?? file2.path}`;
+  const headSpec = (file2) => {
+    if (sides.head === null || sides.head.from === "worktree") return null;
+    return sides.head.from === "index" ? `:${file2.path}` : `${sides.head.commit}:${file2.path}`;
+  };
+  const specs = wanted.flatMap((file2) => [baseSpec(file2), headSpec(file2)]).filter((spec) => spec !== null);
+  const blobs = readBlobs(root, [...new Set(specs)]);
+  const linesOf = (spec) => {
+    const blob = spec === null ? null : blobs.get(spec) ?? null;
+    return blob === null ? null : countLines(blob);
+  };
+  const fromWorktree = (path) => {
+    try {
+      return countLines(readFileSync6(join7(root, path)));
+    } catch {
+      return null;
+    }
+  };
+  const counts = /* @__PURE__ */ new Map();
+  for (const file2 of wanted) {
+    counts.set(file2.path, {
+      base: file2.status === "added" ? 0 : linesOf(baseSpec(file2)),
+      head: sides.head?.from === "worktree" ? fromWorktree(file2.path) : linesOf(headSpec(file2))
+    });
+  }
+  return counts;
+}
+function findBranchGrowth(diff, paths, threshold) {
+  const grown = /* @__PURE__ */ new Map();
+  for (const hunk of countHunks(diff, new Set(paths))) {
+    for (const branch of hunk.branches) {
+      if (branch.scope === null) continue;
+      const key2 = `${hunk.path}\0${branch.scope}`;
+      const entry = grown.get(key2) ?? { path: hunk.path, scope: branch.scope, net: 0, line: null };
+      entry.net += branch.removed ? -branch.decisionPoints : branch.decisionPoints;
+      if (!branch.removed) entry.line = Math.min(entry.line ?? branch.line, branch.line);
+      grown.set(key2, entry);
+    }
+  }
+  const byPathThenLine = (a, b) => {
+    if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+    return a.line - b.line;
+  };
+  return [...grown.values()].filter((entry) => entry.line !== null && entry.net >= threshold).map((entry) => ({ path: entry.path, function: entry.scope, addedDecisionPoints: entry.net, threshold, line: entry.line })).sort(byPathThenLine);
+}
+function findStructureSignals(diff, paths, counts, limits = DEFAULT_STRUCTURE, deletedFiles = []) {
+  const hunks = parseHunks(diff);
+  const threshold = limits.maxFileLines;
+  const sizeCrossings = [];
+  const unmeasured = [];
+  for (const path of [...paths].sort()) {
+    const lines2 = counts.get(path);
+    if (lines2 === void 0 || lines2.base === null || lines2.head === null) {
+      unmeasured.push(path);
+      continue;
+    }
+    if (lines2.base > threshold || lines2.head <= threshold) continue;
+    const added = [...hunks.get(path)?.added ?? []].sort((a, b) => a - b);
+    sizeCrossings.push({
+      path,
+      baseLines: lines2.base,
+      headLines: lines2.head,
+      threshold,
+      line: added.find((line3) => line3 > threshold) ?? added[0] ?? null
+    });
+  }
+  return {
+    sizeCrossings,
+    branchGrowth: findBranchGrowth(diff, paths, limits.maxAddedBranchesPerFunction),
+    typeEscapes: findTypeEscapes(diff, paths),
+    removedControls: findRemovedControls(diff, paths, deletedFiles),
+    riskMarkers: findRiskMarkers(diff, paths),
+    unmeasured: { count: unmeasured.length, paths: unmeasured.slice(0, MAX_UNMEASURED_LISTED) }
+  };
+}
+function readDeletedFiles(root, files2, deletedProduction, sides, mode) {
+  if (sides.base === null) return [];
+  const specs = /* @__PURE__ */ new Map();
+  for (const path of deletedProduction) {
+    const file2 = files2.find((entry) => entry.status === "deleted" && entry.path === path);
+    const source = file2?.previousPath ?? path;
+    const side = mode === "worktree" ? "" : sides.base;
+    if (!source.includes("\n")) specs.set(path, `${side}:${source}`);
+  }
+  const blobs = readBlobs(root, [...new Set(specs.values())]);
+  const read = [];
+  for (const [path, spec] of specs) {
+    const blob = blobs.get(spec) ?? null;
+    if (blob === null || blob.includes(0)) continue;
+    read.push({ path, text: blob.toString("utf8") });
+  }
+  return read;
+}
+function collectStructure(cwd, change, production, limits = DEFAULT_STRUCTURE, deletedProduction = []) {
+  const files2 = change.files ?? [];
+  const deleted = new Set(files2.filter((file2) => file2.status === "deleted").map((file2) => file2.path));
+  const paths = production.filter((path) => !deleted.has(path));
+  let counts = /* @__PURE__ */ new Map();
+  let deletedFiles = [];
+  try {
+    const root = repositoryRoot(cwd);
+    const sides = changeSides(root, change);
+    counts = measureLines(root, files2, paths, sides);
+    deletedFiles = readDeletedFiles(root, files2, deletedProduction, sides, change.mode);
+  } catch {
+  }
+  return findStructureSignals(change.diff, paths, counts, limits, deletedFiles);
+}
+
 // plugins/review-voice/src/publish/verdict.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 function eventFor(severities) {
   if (severities.some((severity) => severity === "blocking" || severity === "important")) return "REQUEST_CHANGES";
   if (severities.some((severity) => severity === "minor" || severity === "question")) return "COMMENT";
@@ -15252,10 +13790,10 @@ function renderPreview(input) {
 function commentSignature(comment) {
   const block = comment.body.lastIndexOf("\n\n```suggestion\n");
   const prose = block >= 0 && comment.body.endsWith("```") ? comment.body.slice(0, block) : comment.body;
-  return `${comment.path}:${comment.line}:${createHash3("sha256").update(prose).digest("hex").slice(0, 32)}`;
+  return `${comment.path}:${comment.line}:${createHash2("sha256").update(prose).digest("hex").slice(0, 32)}`;
 }
 function idempotencyKey(repository, pullNumber, payload) {
-  const digest = createHash3("sha256").update(JSON.stringify(payload)).digest("hex");
+  const digest = createHash2("sha256").update(JSON.stringify(payload)).digest("hex");
   return `${repository.toLowerCase()}#${pullNumber}@${payload.commit_id}:${digest}`;
 }
 
@@ -15844,7 +14382,7 @@ function readRetention(block, result) {
   read("audit_days", "auditDays");
 }
 function contentHash(text4) {
-  return createHash4("sha256").update(text4).digest("hex").slice(0, 16);
+  return createHash3("sha256").update(text4).digest("hex").slice(0, 16);
 }
 function layerFromPolicyFile(text4, source, fallbackKey) {
   const doc = asRecord2(parse(text4));
@@ -17097,6 +15635,113 @@ function classifyReviewer(input) {
   return "external";
 }
 
+// plugins/review-voice/src/redact/redact.ts
+import { createHash as createHash4 } from "node:crypto";
+
+// plugins/review-voice/src/redact/patterns.ts
+var SECRET_PATTERNS = [
+  // Key material is replaced whole: a PEM block's header is not the secret,
+  // but leaving it invites someone to reconstruct what was removed.
+  {
+    label: "PRIVATE_KEY",
+    pattern: /-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----/g
+  },
+  { label: "PEM_BLOCK", pattern: /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g },
+  { label: "GITHUB_TOKEN", pattern: /\b(gh[pousr]_[A-Za-z0-9]{16,255})\b/g, group: 1 },
+  { label: "GITHUB_TOKEN", pattern: /\b(github_pat_[A-Za-z0-9_]{20,})\b/g, group: 1 },
+  { label: "AWS_ACCESS_KEY", pattern: /\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b/g, group: 1 },
+  {
+    label: "AWS_SECRET_KEY",
+    pattern: /\b(?:aws_secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi,
+    group: 1
+  },
+  { label: "GOOGLE_API_KEY", pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g, group: 1 },
+  { label: "SLACK_TOKEN", pattern: /\b(xox[abposr]-[0-9A-Za-z-]{10,})\b/g, group: 1 },
+  { label: "STRIPE_KEY", pattern: /\b((?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,})\b/g, group: 1 },
+  { label: "NPM_TOKEN", pattern: /\b(npm_[A-Za-z0-9]{36})\b/g, group: 1 },
+  { label: "PYPI_TOKEN", pattern: /\b(pypi-[A-Za-z0-9_-]{16,})\b/g, group: 1 },
+  { label: "OPENAI_KEY", pattern: /\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b/g, group: 1 },
+  { label: "ANTHROPIC_KEY", pattern: /\b(sk-ant-[A-Za-z0-9_-]{20,})\b/g, group: 1 },
+  // JWTs: three base64url segments. The payload is often the sensitive part.
+  {
+    label: "JWT",
+    pattern: /\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g,
+    group: 1
+  },
+  // A connection string's credentials, keeping the scheme and host so the
+  // surrounding review comment still makes sense.
+  {
+    label: "DB_CREDENTIALS",
+    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi,
+    group: 3
+  },
+  {
+    label: "AUTHORIZATION_HEADER",
+    pattern: /\b(?:Authorization|Proxy-Authorization)\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12,})/gi,
+    group: 1
+  },
+  // Assignment-shaped secrets. Deliberately last: it is the broadest rule, and
+  // a more specific label above is more useful in an audit than "SECRET".
+  {
+    label: "SECRET_ASSIGNMENT",
+    pattern: /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["']([^"'\s]{8,})["']/gi,
+    group: 1
+  }
+];
+var PLACEHOLDERS = /* @__PURE__ */ new Set([
+  "xxxxxxxx",
+  "changeme",
+  "password",
+  "redacted",
+  "your_token_here",
+  "example",
+  "placeholder",
+  "dummy",
+  "notarealsecret",
+  "test",
+  "password123",
+  "<token>",
+  "secret",
+  "todo",
+  "fixme",
+  "null",
+  "undefined",
+  "none"
+]);
+
+// plugins/review-voice/src/redact/redact.ts
+var REDACTION_VERSION = "1";
+function hash(value) {
+  return createHash4("sha256").update(value).digest("hex").slice(0, 32);
+}
+function isPlaceholder(value) {
+  const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
+  if (PLACEHOLDERS.has(normalised)) return true;
+  return /^(.)\1{3,}$/.test(value);
+}
+function redact(input) {
+  const counts = {};
+  let text4 = input;
+  for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
+    pattern.lastIndex = 0;
+    text4 = text4.replace(pattern, (match, ...groups) => {
+      const captured = group === void 0 || group === 0 ? match : groups[group - 1];
+      if (captured === void 0 || captured.length === 0) return match;
+      if (isPlaceholder(captured)) return match;
+      counts[label2] = (counts[label2] ?? 0) + 1;
+      const replacement = `[REDACTED:${label2}]`;
+      return group === void 0 || group === 0 ? replacement : match.replace(captured, replacement);
+    });
+  }
+  return {
+    text: text4,
+    counts,
+    sourceHash: hash(input),
+    redactedHash: hash(text4),
+    version: REDACTION_VERSION
+  };
+}
+
 // plugins/review-voice/src/corpus/eligibility.ts
 var APPROVAL_PHRASES = /\b(lgtm|looks good(?: to me)?|ship it|approv(?:ed|ing|al)|sgtm|ack(?:nowledged)?|thanks|thank you|ty|nice work|nice one|great|\+1|done|no comments?|nothing from me|all good|fine by me)\b/gi;
 var DECORATION = /[\s.!?,;:\u2013\u2014-]|👍|🚀|✅|🎉|💯|🙏|😄/gu;
@@ -17795,10 +16440,456 @@ function scaledRepositoryShare(repositoryCount) {
   return Math.min(SHARE_CEILING, Math.max(SHARE_FLOOR, 2 / repositoryCount));
 }
 
+// plugins/review-voice/src/scoring/existence.ts
+import { execFileSync as execFileSync8 } from "node:child_process";
+var ASSERTS_ABSENCE = [
+  /\b(?:does|do)\s+not\s+exist\b/i,
+  /\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)\b/i,
+  /\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)\b/i,
+  /\bnever\s+(?:defined|declared|exported)\b/i,
+  /\bcannot\s+be\s+found\b/i,
+  /\bnowhere\s+in\s+the\s+(?:repo|repository|codebase)\b/i
+];
+var DETERMINER = /^(?:the|this|that|these|those|our|your|their|its|his|her|my|a|an)\s+/i;
+function withoutDeterminer(complement) {
+  let text4 = complement.trim().replace(/[`'"]/g, "");
+  for (let i = 0; i < 3; i += 1) text4 = text4.replace(DETERMINER, "");
+  return text4.trim();
+}
+var GENERIC_REPOSITORY = /^(?:entire\s+|whole\s+)?(?:mono)?(?:repo|repository|code\s?base|project|tree)\b/i;
+var NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
+var NAMED_UNIT_SUFFIX = /^(?:the\s+)?\S+\s+(?:repo|repository|service|package|library)\b/i;
+var ANOTHER_UNIT = /^(?:another|a\s+different|a\s+sibling|the\s+other)\s+(?:repo|repository|package|service)\b/i;
+var ABSENCE_WITH_COMPLEMENT = /\b(?:does|do)\s+not\s+exist|\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)|\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)|\bnever\s+(?:defined|declared|exported)|\bcannot\s+be\s+found/i;
+var LOCATIVE = /\b(?:in|from|within|under|inside|throughout|across)\s+([^.,;]+)/i;
+function namesThisRepository(complement, repository) {
+  if (repository === null) return false;
+  const candidates = [repository, repository.split("/").pop() ?? repository].map((name) => name.trim().toLowerCase()).filter((name) => name.length > 0);
+  const said = withoutDeterminer(complement).toLowerCase();
+  return candidates.some(
+    (name) => [name, `${name} repository`, `${name} repo`, `${name} monorepo`, `${name} codebase`].includes(said)
+  );
+}
+var PROPERTY_NOT_PLACE = /\b(?:ex|im)ported\b|\bnot\s+(?:public|exposed|re-?exported)\b/i;
+function absenceScope(text4, repository = null) {
+  if (PROPERTY_NOT_PLACE.test(text4)) return "bounded";
+  if (/\b(?:anywhere|nowhere)\b/i.test(text4)) return "repository";
+  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text4);
+  if (assertion === null) return "repository";
+  const after = text4.slice(assertion.index + assertion[0].length);
+  const locative = LOCATIVE.exec(after);
+  if (locative === null) return "repository";
+  const complement = (locative[1] ?? "").trim();
+  const bare = withoutDeterminer(complement);
+  if (GENERIC_REPOSITORY.test(bare)) return "repository";
+  if (namesThisRepository(complement, repository)) return "repository";
+  if (ANOTHER_UNIT.test(complement) || NAMED_UNIT.test(bare) || NAMED_UNIT_SUFFIX.test(bare)) {
+    return "elsewhere";
+  }
+  return "bounded";
+}
+function namedSymbols(text4) {
+  const found = /* @__PURE__ */ new Set();
+  for (const match of text4.matchAll(/`([^`]+)`/g)) {
+    const token = (match[1] ?? "").trim();
+    if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found.add(token);
+  }
+  for (const match of text4.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
+    if (match[1] !== void 0) found.add(match[1]);
+  }
+  for (const match of text4.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
+    if (match[1] !== void 0) found.add(match[1]);
+  }
+  for (const token of [...found]) {
+    const base = token.split("/").pop();
+    if (base !== void 0 && base !== token && base.length >= 4 && !base.startsWith("-")) found.add(base);
+  }
+  return [...found];
+}
+var gitGrep = (symbol, cwd, ref) => {
+  const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "-e", symbol] : ["grep", "--fixed-strings", "--quiet", "-e", symbol, ref];
+  try {
+    execFileSync8("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
+    return true;
+  } catch (error) {
+    if (error.status === 1) return false;
+    throw error;
+  }
+};
+var gitGrepPaths = (...search) => grepPaths(false, ...search);
+var gitGrepWordPaths = (...search) => grepPaths(true, ...search);
+var NOT_IDENTIFIER = "[^[:alnum:]_$]";
+function grepPaths(wholeIdentifier, ...[symbol, cwd, ref, timeoutMs]) {
+  const pattern = wholeIdentifier ? `(^|${NOT_IDENTIFIER})${symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(${NOT_IDENTIFIER}|$)` : symbol;
+  const args = [
+    "grep",
+    wholeIdentifier ? "--extended-regexp" : "--fixed-strings",
+    "--full-name",
+    "-l",
+    "-z",
+    "-e",
+    pattern,
+    ...ref === null ? [] : [ref]
+  ];
+  try {
+    const output = execFileSync8("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
+    const prefix = ref === null ? "" : `${ref}:`;
+    return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
+  } catch (error) {
+    if (error.status === 1) return [];
+    throw error;
+  }
+}
+var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
+  const [first, second] = patterns;
+  const args = ref === null ? ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second] : ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second, ref];
+  try {
+    const output = execFileSync8("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: Math.min(1e4, timeoutMs ?? 1e4),
+      maxBuffer: 32 * 1024 * 1024
+    });
+    const prefix = ref === null ? "" : `${ref}:`;
+    const lines2 = [];
+    for (const record3 of output.split("\n")) {
+      const [rawPath = "", number = "", ...rest] = record3.split("\0");
+      const line3 = Number(number);
+      const text4 = rest.join("\0");
+      if (!Number.isSafeInteger(line3) || line3 < 1) continue;
+      lines2.push({
+        path: prefix !== "" && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
+        line: line3,
+        text: text4
+      });
+    }
+    return lines2;
+  } catch (error) {
+    if (error.status === 1) return [];
+    throw error;
+  }
+};
+var gitTrackedPaths = (cwd, ref) => {
+  const args = ref === null ? ["ls-files", "-z", "--full-name", "--", ":/"] : ["ls-tree", "-r", "-z", "--name-only", "--full-tree", ref];
+  const output = execFileSync8("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 1e4,
+    maxBuffer: 64 * 1024 * 1024
+  });
+  return output.split("\0").filter((path) => path.length > 0);
+};
+var RESOURCE_PATHSPECS = [
+  ":(glob)**/*.resx",
+  ":(glob)**/*.resw",
+  ":(glob)**/*.po",
+  ":(glob)**/*.xlf",
+  ":(glob)**/*.xliff",
+  ":(glob)**/*.arb",
+  ":(glob)**/locales/**",
+  ":(glob)**/i18n/**"
+];
+var gitResourceSources = (cwd) => {
+  try {
+    const output = execFileSync8("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1e4,
+      maxBuffer: 16 * 1024 * 1024
+    });
+    return output.split("\0").filter((path) => path.length > 0);
+  } catch {
+    return [];
+  }
+};
+var GENERATED_ACCESSOR = [
+  /^R\.[a-z]+\.[a-z_]\w*$/,
+  /^(?:\w+\.)*\w*(?:Resources|Resource|Strings)\.[A-Z]\w*$/,
+  /^(?:S|AppLocalizations)\.of\([^)]*\)\.\w+$/,
+  /^(?:L10n|l10n)\.[A-Za-z_]\w*$/
+];
+var FILE_NAME = /\.(?:tsx?|jsx?|mjs|cjs|cs|py|go|rb|java|kt|rs|swift|dart|json|ya?ml|md|xml|resx|resw|po|xlf|xliff|arb)$/i;
+function isPath(symbol) {
+  return symbol.includes("/") || FILE_NAME.test(symbol);
+}
+var LOOSE_ABSENCE = [
+  /\b(?:does|do|did)\s*(?:not|n't)\s+exist|\bmissing\b|\babsent\b|\b(?:deleted|removed)\b|\bnot\s+(?:found|present)\b/i
+];
+var CLAUSE_BREAK = /[.;!?](?=\s|$)|\b(?:which|that|who|but|whereas|while)\b/gi;
+function tiedToAbsence(text4, symbols) {
+  const strict = tiedBy(ASSERTS_ABSENCE, text4, symbols);
+  return strict.size > 0 ? strict : tiedBy(LOOSE_ABSENCE, text4, symbols);
+}
+function tiedBy(phrases, text4, symbols) {
+  const masked = text4.replace(/`[^`]*`/g, (span) => `\`${"x".repeat(span.length - 2)}\``);
+  const starts = [0];
+  for (const match of masked.matchAll(CLAUSE_BREAK)) {
+    starts.push(match[0].length === 1 ? match.index + 1 : match.index);
+  }
+  starts.push(text4.length);
+  const occurrences = symbols.flatMap((symbol) => {
+    const at2 = [];
+    for (let index = text4.indexOf(symbol); index !== -1; index = text4.indexOf(symbol, index + 1)) {
+      if (text4[index - 1] !== "/") at2.push({ symbol, index });
+    }
+    return at2;
+  });
+  const tied = /* @__PURE__ */ new Set();
+  for (let i = 0; i + 1 < starts.length; i += 1) {
+    const start = starts[i] ?? 0;
+    const end = starts[i + 1] ?? text4.length;
+    const clause = masked.slice(start, end);
+    if (!phrases.some((phrase) => phrase.test(clause))) continue;
+    const inClause = occurrences.filter(({ index }) => index >= start && index < end);
+    if (inClause.length > 0) {
+      for (const { symbol } of inClause) tied.add(symbol);
+    } else if (/^\s*(?:which|that|who)\b/i.test(clause)) {
+      let antecedent;
+      for (const occurrence of occurrences) {
+        if (occurrence.index < start && (antecedent === void 0 || occurrence.index > antecedent.index)) {
+          antecedent = occurrence;
+        }
+      }
+      if (antecedent !== void 0) tied.add(antecedent.symbol);
+    }
+  }
+  return tied;
+}
+function generatedAccessor(symbol) {
+  return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
+}
+function checkAbsenceClaim(text4, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths) {
+  const searchedRefLabel = ref ?? "working tree";
+  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text4))) return null;
+  const scope = absenceScope(text4, repository);
+  if (scope === "bounded") return null;
+  if (scope === "elsewhere") {
+    return {
+      found: [],
+      checked: [],
+      // Not silence. An empty `found` with `inconclusive: false` is the shape
+      // that reads as corroboration, and this repository cannot speak for
+      // another one.
+      inconclusive: true,
+      searchedRef: searchedRefLabel
+    };
+  }
+  const stated = namedSymbols(text4).filter(
+    (symbol) => text4.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
+  );
+  const tied = tiedToAbsence(text4, stated);
+  const symbols = stated.filter((symbol) => !isPath(symbol) || tied.size === 0 || tied.has(symbol));
+  if (symbols.length === 0) return null;
+  const searchedRef = ref ?? "working tree";
+  const found = [];
+  const checked = [];
+  let paths = null;
+  for (const symbol of symbols.slice(0, 12)) {
+    try {
+      checked.push(symbol);
+      if (isPath(symbol)) {
+        paths ??= trackedPaths(cwd, ref);
+        const path = symbol.replace(/^\.?\//, "").replace(/\/$/, "");
+        const exists = path.includes("/") ? paths.some((tracked) => tracked === path || tracked.startsWith(`${path}/`)) : paths.some((tracked) => tracked === path || tracked.endsWith(`/${path}`));
+        if (exists) found.push(symbol);
+      } else if (search(symbol, cwd, ref)) {
+        found.push(symbol);
+      }
+    } catch {
+      return { found: [], checked, inconclusive: true, searchedRef };
+    }
+  }
+  if (found.length === 0) {
+    const accessor = checked.find(generatedAccessor);
+    const sources = accessor === void 0 ? resources(cwd) : [];
+    if (accessor !== void 0 || sources.length > 0) {
+      const why = accessor !== void 0 ? `\`${accessor}\` is shaped like a generated resource accessor` : `the repository tracks resource sources (${sources.slice(0, 3).join(", ")}${sources.length > 3 ? ", ..." : ""})`;
+      return {
+        found,
+        checked,
+        inconclusive: true,
+        searchedRef,
+        reason: `${why}, so the name may be generated at build time; finding it nowhere tracked does not show it is absent`
+      };
+    }
+  }
+  return { found, checked, inconclusive: false, searchedRef };
+}
+
+// plugins/review-voice/src/scoring/reach.ts
+function symbolsFromHunks(diff, changedPath) {
+  const wanted = changedPath === null ? null : normalisePath2(changedPath);
+  const found = /* @__PURE__ */ new Set();
+  let inFile = false;
+  for (const raw of diff.split(/\r?\n/)) {
+    if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
+      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
+      if (match?.[1] !== void 0) inFile = wanted === null || normalisePath2(match[1]) === wanted;
+      else if (raw.startsWith("diff --git ")) inFile = false;
+      continue;
+    }
+    if (!inFile) continue;
+    if (raw.startsWith("--- ")) continue;
+    if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
+    const text4 = raw.slice(1);
+    for (const m of text4.matchAll(
+      /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g
+    )) {
+      if (m[1] !== void 0) found.add(m[1]);
+    }
+  }
+  return [...found];
+}
+var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
+  /(?:^|\/)(?:eslint\.config\.[^/]+|\.eslintrc(?:\.[^/]+)?|biome\.json|\.stylelintrc(?:\.[^/]+)?|\.prettierrc(?:\.[^/]+)?)$/i,
+  /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/i,
+  /^(?:\.github\/workflows\/|\.gitlab-ci(?:\.yml)?$|\.circleci\/config\.yml$|azure-pipelines(?:\.[^/]+)?\.ya?ml$|Jenkinsfile$)/i,
+  /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|Pipfile\.lock|composer\.lock|go\.sum)$/i,
+  /^(?:package\.json|Makefile|GNUmakefile|justfile|Taskfile\.ya?ml|turbo\.json|nx\.json)$/i,
+  /^(?:scripts|tools|build|bin)\//i
+];
+function normalisePath2(path) {
+  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+}
+function directoryOf(path) {
+  const parts = normalisePath2(path).split("/");
+  parts.pop();
+  return parts.join("/");
+}
+function directoryCount(paths) {
+  return new Set([...paths].map(directoryOf)).size;
+}
+var PROSE_EXTENSIONS = /* @__PURE__ */ new Set(["md", "markdown", "mdx", "txt", "rst", "adoc"]);
+function isCode(path) {
+  const name = normalisePath2(path).split("/").pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  const extension = dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
+  if (PROSE_EXTENSIONS.has(extension)) return false;
+  return classify(normalisePath2(path)) === "source";
+}
+var NON_DISCRIMINATING_DIRECTORIES = 12;
+var IMPORT_LINE = [
+  /^import\s+(?:type\s+)?(?:[\w$*{}\s,]+\s+from\s+)?['"][^'"]+['"]\s*;?$/,
+  /^from\s+[\w.]+\s+import\s+[\w*,\s()]+$/,
+  /^import\s+[\w.]+(?:\s+as\s+\w+)?(?:\s*,\s*[\w.]+(?:\s+as\s+\w+)?)*$/,
+  /^import\s+(?:static\s+)?[\w.]+(?:\.\*)?;?$/
+];
+function isImportOnlyChange(diff, changedPath) {
+  const wanted = normalisePath2(changedPath);
+  let inFile = false;
+  let imports = 0;
+  for (const raw of diff.split(/\r?\n/)) {
+    if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
+      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
+      if (match?.[1] !== void 0) inFile = normalisePath2(match[1]) === wanted;
+      else if (raw.startsWith("diff --git ")) inFile = false;
+      continue;
+    }
+    if (!inFile || raw.startsWith("--- ")) continue;
+    if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
+    const text4 = raw.slice(1).trim();
+    if (text4 === "") continue;
+    if (!IMPORT_LINE.some((pattern) => pattern.test(text4))) return false;
+    imports += 1;
+  }
+  return imports > 0;
+}
+function withinSubtree(path, changedDirectory) {
+  if (changedDirectory === "") return false;
+  const normalised = normalisePath2(path);
+  return normalised === changedDirectory || normalised.startsWith(`${changedDirectory}/`);
+}
+function isRepositoryWideToolchainPath(path) {
+  const normalised = normalisePath2(path);
+  return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
+}
+function computeReach(text4, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
+  const searchedRef = ref ?? "working tree";
+  const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
+  const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
+  const source = ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
+  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text4)).slice(0, 12);
+  const searched = [];
+  const ignored = [];
+  const hits = /* @__PURE__ */ new Set();
+  let usedModuleFallback = false;
+  const normalisedChangedPath = normalisePath2(changedPath);
+  const changedDirectory = directoryOf(changedPath);
+  const result = (reach, inconclusive) => {
+    const counted2 = [...hits].filter(isCode).sort();
+    const outside = counted2.filter(
+      (path) => normalisePath2(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
+    );
+    return {
+      reach,
+      symbolSource: source,
+      moduleFallback: usedModuleFallback,
+      symbols: searched,
+      ignoredSymbols: [...ignored].sort(),
+      paths: [...hits].sort(),
+      countedPaths: counted2,
+      directoryCount: directoryCount(counted2),
+      outsideDirectoryCount: directoryCount(outside),
+      inconclusive,
+      searchedRef
+    };
+  };
+  if (symbols.length === 0) return result(null, false);
+  if (diff !== null && isImportOnlyChange(diff, changedPath)) return result(null, false);
+  for (const symbol of symbols) {
+    searched.push(symbol);
+    let found;
+    try {
+      found = search(symbol, cwd, ref);
+    } catch {
+      return result(null, true);
+    }
+    const code = found.filter(isCode);
+    if (source !== "diff" && !code.some((path) => normalisePath2(path) === normalisedChangedPath)) {
+      ignored.push(symbol);
+      continue;
+    }
+    if (directoryCount(code) > NON_DISCRIMINATING_DIRECTORIES) {
+      ignored.push(symbol);
+      continue;
+    }
+    for (const path of found) hits.add(path);
+  }
+  if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
+  let counted = [...hits].filter(isCode);
+  if (counted.length === 0 && source !== "claim") {
+    const moduleName = normalisePath2(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
+    if (moduleName !== void 0 && moduleName.length >= 4) {
+      searched.push(moduleName);
+      try {
+        for (const path of search(moduleName, cwd, ref)) hits.add(path);
+      } catch {
+        return result(null, true);
+      }
+      counted = [...hits].filter(isCode);
+      usedModuleFallback = counted.length > 0;
+    }
+  }
+  if (counted.length === 0) return result(null, false);
+  if (counted.every((path) => normalisePath2(path) === normalisedChangedPath)) {
+    return result("local", false);
+  }
+  const outsideDirectories = directoryCount(
+    counted.filter(
+      (path) => normalisePath2(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
+    )
+  );
+  if (outsideDirectories >= 2) return result("repository", false);
+  return result("component", false);
+}
+
 // plugins/review-voice/src/scoring/citation.ts
-import { execFileSync as execFileSync10 } from "node:child_process";
-function git4(args, cwd) {
-  return execFileSync10("git", args, {
+import { execFileSync as execFileSync9 } from "node:child_process";
+function git3(args, cwd) {
+  return execFileSync9("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -17824,7 +16915,7 @@ function checkCitation(candidatePath, cwd, ref, diff) {
   let tracked;
   try {
     const args = ref === null ? ["ls-files"] : ["ls-tree", "-r", "--name-only", ref];
-    tracked = git4(args, cwd).split("\n").filter((line3) => line3.length > 0);
+    tracked = git3(args, cwd).split("\n").filter((line3) => line3.length > 0);
   } catch {
     return { resolves: false, suggestion: null, inconclusive: true };
   }
@@ -18479,6 +17570,152 @@ function assertPayload(payload) {
   if (keys !== "body,comments,commit_id,event") {
     throw new WriteViolation(`Refused a review with unexpected fields: ${keys}.`);
   }
+}
+
+// plugins/review-voice/src/diff/thread.ts
+var MAX_COMMENTS = 300;
+function clean(body, author) {
+  if (body === void 0 || body.trim().length === 0) return null;
+  return { body: redact(body).text, author: author ?? "unknown" };
+}
+async function readThread(options) {
+  const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
+  const comments = [];
+  const pull = await client.get(
+    `/repos/${options.repository}/pulls/${options.pullNumber}`
+  );
+  const description = clean(pull.data.body ?? void 0, pull.data.user?.login);
+  if (description !== null) {
+    comments.push({ path: null, line: null, author: description.author, body: description.body, kind: "description" });
+  }
+  const inline = await client.paginate(
+    `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,
+    MAX_COMMENTS
+  );
+  const warnings = [];
+  let states = /* @__PURE__ */ new Map();
+  if (inline.length > 0) {
+    try {
+      states = await readThreadStates(client, options.repository, options.pullNumber);
+    } catch (error) {
+      warnings.push(
+        `Could not read which review threads are resolved (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing with the REST data, so no comment is marked resolved.`
+      );
+    }
+  }
+  for (const raw of inline) {
+    const kept = clean(raw.body, raw.user?.login);
+    if (kept === null) continue;
+    const state = typeof raw.id === "number" ? states.get(raw.id) : void 0;
+    const outdated = (raw.line ?? null) === null && (raw.original_line ?? null) !== null || state?.outdated === true;
+    comments.push({
+      path: raw.path ?? null,
+      line: raw.line ?? raw.original_line ?? null,
+      author: kept.author,
+      body: kept.body,
+      kind: "review-comment",
+      ...outdated ? { outdated: true } : {},
+      ...typeof raw.id === "number" ? { id: raw.id } : {},
+      ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
+      ...typeof raw.pull_request_review_id === "number" ? { reviewId: raw.pull_request_review_id } : {},
+      ...typeof raw.in_reply_to_id === "number" ? { inReplyTo: raw.in_reply_to_id } : {},
+      ...state?.resolved === true ? { resolved: true } : {},
+      ...state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {},
+      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
+    });
+  }
+  const reviews = await client.paginate(
+    `/repos/${options.repository}/pulls/${options.pullNumber}/reviews?per_page=100`,
+    MAX_COMMENTS
+  );
+  const threadReviews = [];
+  for (const raw of reviews) {
+    if (typeof raw.id === "number") {
+      threadReviews.push({
+        id: raw.id,
+        author: raw.user?.login ?? "unknown",
+        state: raw.state ?? "UNKNOWN",
+        ...typeof raw.submitted_at === "string" ? { submittedAt: raw.submitted_at } : {}
+      });
+    }
+    const kept = clean(raw.body, raw.user?.login);
+    if (kept === null) continue;
+    comments.push({
+      path: null,
+      line: null,
+      author: kept.author,
+      body: kept.body,
+      kind: "review-body",
+      ...typeof raw.submitted_at === "string" ? { createdAt: raw.submitted_at } : {},
+      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
+    });
+  }
+  if (threadReviews.some((review2) => review2.state === "DISMISSED")) {
+    try {
+      const events = await client.paginate(
+        `/repos/${options.repository}/issues/${options.pullNumber}/events?per_page=100`,
+        MAX_COMMENTS
+      );
+      for (const event of events) {
+        const dismissed = event.event === "review_dismissed" ? event.dismissed_review : null;
+        if (typeof dismissed?.review_id !== "number") continue;
+        const message = clean(dismissed.dismissal_message ?? void 0, void 0);
+        const review2 = threadReviews.find((candidate) => candidate.id === dismissed.review_id);
+        if (review2 !== void 0 && message !== null) review2.dismissalMessage = message.body;
+      }
+    } catch (error) {
+      warnings.push(
+        `Could not read why a review was dismissed (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing, so no dismissal message is recorded.`
+      );
+    }
+  }
+  const conversation = await client.paginate(
+    `/repos/${options.repository}/issues/${options.pullNumber}/comments?per_page=100`,
+    MAX_COMMENTS
+  );
+  for (const raw of conversation) {
+    const kept = clean(raw.body, raw.user?.login);
+    if (kept === null) continue;
+    comments.push({
+      path: null,
+      line: null,
+      author: kept.author,
+      body: kept.body,
+      kind: "conversation",
+      ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
+      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
+    });
+  }
+  return {
+    repository: options.repository,
+    pullNumber: options.pullNumber,
+    comments,
+    reviews: threadReviews,
+    truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
+    ...warnings.length > 0 ? { warnings } : {}
+  };
+}
+async function readThreadStates(client, repository, pullNumber) {
+  const states = /* @__PURE__ */ new Map();
+  let cursor = null;
+  for (let read = 0; read < MAX_COMMENTS; read += 100) {
+    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
+    const threads = data?.repository?.pullRequest?.reviewThreads;
+    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
+    for (const thread of threads.nodes) {
+      const state = {
+        resolved: thread?.isResolved === true,
+        outdated: thread?.isOutdated === true,
+        resolvedBy: typeof thread?.resolvedBy?.login === "string" ? thread.resolvedBy.login : null
+      };
+      for (const comment of thread?.comments?.nodes ?? []) {
+        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
+      }
+    }
+    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
+    cursor = threads.pageInfo.endCursor;
+  }
+  return states;
 }
 
 // plugins/review-voice/src/evaluate/metrics.ts
@@ -19564,7 +18801,7 @@ async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT
 }
 
 // plugins/review-voice/src/watch/workspace.ts
-import { execFileSync as execFileSync11 } from "node:child_process";
+import { execFileSync as execFileSync10 } from "node:child_process";
 import { existsSync as existsSync6, mkdirSync as mkdirSync3, readdirSync as readdirSync2, statSync, unlinkSync as unlinkSync2 } from "node:fs";
 import { dirname as dirname8, join as join11 } from "node:path";
 var NAME = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
@@ -19574,7 +18811,7 @@ function cloneDir(workspace, repository) {
   return join11(workspace, ...repository.split("/"));
 }
 var runQuietly = (command, args) => {
-  execFileSync11(command, args, { stdio: ["ignore", "ignore", "pipe"], timeout: 6e5 });
+  execFileSync10(command, args, { stdio: ["ignore", "ignore", "pipe"], timeout: 6e5 });
 };
 var STALE_LOCK_MS = 10 * 6e4;
 function removeStaleGitLocks(dir, now = Date.now()) {
@@ -21370,6 +20607,327 @@ import { execFileSync as execFileSync13 } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync10, rmSync as rmSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname9, isAbsolute as isAbsolute3, join as join14, resolve as resolve2, sep } from "node:path";
 
+// plugins/review-voice/src/diff/pull-request.ts
+import { execFileSync as execFileSync11 } from "node:child_process";
+var STATUS2 = {
+  added: "added",
+  modified: "modified",
+  removed: "deleted",
+  renamed: "renamed",
+  copied: "copied",
+  changed: "changed"
+};
+function toUnifiedDiff(file2) {
+  const previous = file2.previous_filename ?? file2.filename;
+  return [
+    `diff --git a/${previous} b/${file2.filename}`,
+    `--- a/${previous}`,
+    `+++ b/${file2.filename}`,
+    file2.patch ?? "",
+    ""
+  ].join("\n");
+}
+var GITHUB_MAX_FILES = 3e3;
+function git4(args, cwd, timeout = 6e4) {
+  return execFileSync11("git", args, {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout
+  });
+}
+function hasCommit(sha, cwd) {
+  try {
+    git4(["cat-file", "-e", `${sha}^{commit}`], cwd, 1e4);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function mergeBaseOf(base, head, cwd) {
+  try {
+    return git4(["merge-base", base, head], cwd, 1e4).trim() || null;
+  } catch {
+    return null;
+  }
+}
+function originRepository2(cwd) {
+  try {
+    const url = git4(["remote", "get-url", "origin"], cwd, 1e4).trim();
+    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+function ensureRefs(options) {
+  const check = () => ({
+    base: hasCommit(options.base, options.cwd),
+    head: hasCommit(options.head, options.cwd)
+  });
+  let present = check();
+  const result = (fetched, note) => ({
+    base: { sha: options.base, available: present.base },
+    head: { sha: options.head, available: present.head },
+    mergeBase: present.base && present.head ? mergeBaseOf(options.base, options.head, options.cwd) : null,
+    fetched,
+    note
+  });
+  if (present.base && present.head) return result(false, null);
+  const origin = originRepository2(options.cwd);
+  if (origin === null) {
+    return result(false, "No origin remote resolved, so the pull request commits were not fetched.");
+  }
+  if (origin.toLowerCase() !== options.repository.toLowerCase()) {
+    return result(
+      false,
+      `origin is ${origin} but the review is of ${options.repository}, so nothing was fetched. Fetching a pull request from an unrelated clone would supply commits from the wrong project.`
+    );
+  }
+  try {
+    git4(
+      [
+        "fetch",
+        "--no-tags",
+        "--quiet",
+        "origin",
+        `pull/${options.pullNumber}/head:refs/review-voice/pr/${options.pullNumber}/head`
+      ],
+      options.cwd
+    );
+  } catch {
+  }
+  present = check();
+  if (!present.base) {
+    try {
+      git4(["fetch", "--no-tags", "--quiet", "origin", options.base], options.cwd);
+    } catch {
+    }
+    present = check();
+  }
+  if (present.base && present.head) {
+    return result(true, null);
+  }
+  const missing = [!present.base ? "base" : null, !present.head ? "head" : null].filter(Boolean);
+  return result(
+    true,
+    `The ${missing.join(" and ")} commit could not be made available locally. Reading code at that ref will fail, so evidence from it is unavailable rather than absent.`
+  );
+}
+var SAME_AS_BASE_TIP = "identical to the base branch tip (already merged there)";
+function differingFromBaseTip(base, head, cwd) {
+  try {
+    const args = ["diff", "--no-ext-diff", "--no-relative", "--ignore-submodules=none", "--no-renames", "--name-only", "-z", base, head];
+    return new Set(git4(args, cwd).split("\0").filter(Boolean));
+  } catch {
+    return null;
+  }
+}
+function earlierReview(scope) {
+  return scope.priorReviewedAt === null ? `the review at ${scope.since.slice(0, 7)}` : `the review of ${scope.priorReviewedAt.slice(0, 10)}`;
+}
+function scopeNote(scope) {
+  switch (scope.kind) {
+    case "incremental":
+      return `Reviewed ${scope.commits} commit(s) since ${scope.since.slice(0, 7)}; earlier changes were covered by ${earlierReview(scope)}.`;
+    case "unchanged":
+      return `No change to this pull request's own diff since ${scope.since.slice(0, 7)}; ${earlierReview(scope)} still applies.`;
+    case "interdiff":
+      return `Reviewed changes to this pull request's own diff since ${scope.since.slice(0, 7)}; base-branch changes merged in were not reviewed${scope.detail === void 0 ? "" : `; ${scope.detail}`}.`;
+  }
+}
+function pathsWithHunks(diff) {
+  return new Set([...parseHunks(diff)].filter(([, file2]) => file2.ranges.length > 0).map(([path]) => path));
+}
+function fullScopeResult(result, pullNumber, scope) {
+  return { ...result, pullNumber, scope, scopeNote: null };
+}
+function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = (since, head, files2, root) => {
+  const args = ["diff", "--no-ext-diff", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", since, head, "--", ...topPathspecs(files2)];
+  try {
+    return execFileSync11("git", args, {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 6e4
+    });
+  } catch (error) {
+    throw new Error(gitFailure(args, error));
+  }
+}, interdiffPatch = null) {
+  if (scope.kind === "full") return fullScopeResult(result, pullNumber, scope);
+  const fallBack = (detail) => fullScopeResult(result, pullNumber, {
+    kind: "full",
+    cause: "compare-unavailable",
+    since: scope.since,
+    priorRunId: scope.priorRunId,
+    detail
+  });
+  let diff;
+  let included;
+  if (scope.kind === "unchanged") {
+    diff = "";
+    included = /* @__PURE__ */ new Set();
+  } else if (scope.kind === "interdiff") {
+    if (interdiffPatch === null) return fallBack("an interdiff scope came with no interdiff patch");
+    diff = interdiffPatch;
+    included = new Set(scope.files);
+  } else {
+    try {
+      diff = readIncrementalDiff(scope.since, result.head, scope.files, cwd);
+    } catch (error) {
+      return fallBack(`reading the incremental diff failed: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
+    }
+    included = new Set(scope.files);
+  }
+  const excludedBecause = `unchanged since the last review (${scope.since.slice(0, 7)})`;
+  const files2 = result.files.map((file2) => {
+    if (file2.reviewed && !included.has(file2.path)) return { ...file2, reviewed: false, excludedBecause };
+    if (scope.kind === "interdiff" && file2.status === "deleted" && included.has(file2.path)) {
+      const { excludedBecause: _skipped, ...rest } = file2;
+      return { ...rest, reviewed: true };
+    }
+    return file2;
+  });
+  const hunkPaths = pathsWithHunks(diff);
+  const reviewedFileCount = files2.filter((file2) => file2.reviewed).length;
+  return {
+    ...result,
+    pullNumber,
+    scope,
+    scopeNote: scopeNote(scope),
+    files: files2,
+    reviewedFileCount,
+    hunkFileCount: files2.filter((file2) => file2.reviewed && hunkPaths.has(file2.path)).length,
+    excludedFileCount: files2.length - reviewedFileCount,
+    diff
+  };
+}
+var WRONG_BASE_MIN_COMMITS = 5;
+var WRONG_BASE_MAJORITY = 0.5;
+async function detectWrongBase(client, repository, pull) {
+  try {
+    if (!Number.isInteger(pull.commits)) return null;
+    const { data: repo } = await client.get(`/repos/${repository}`);
+    const other = repo.default_branch;
+    if (typeof other !== "string" || other === "" || pull.base.ref === other || pull.head.ref === other) return null;
+    const { data: compare } = await client.get(
+      `/repos/${repository}/compare/${encodeURIComponent(other)}...${pull.head.sha}`
+    );
+    if (typeof compare.ahead_by !== "number") return null;
+    const alreadyOn = Math.max(0, pull.commits - compare.ahead_by);
+    if (alreadyOn < WRONG_BASE_MIN_COMMITS || alreadyOn <= pull.commits * WRONG_BASE_MAJORITY) return null;
+    return {
+      base: pull.base.ref,
+      otherBranch: other,
+      commits: pull.commits,
+      alreadyOn,
+      files: pull.changed_files,
+      note: `${alreadyOn} of the pull request's ${pull.commits} commits are already on ${other}, which suggests it was opened against ${pull.base.ref} by mistake (a branch cut from ${other}). Ask about the base before reviewing the whole patch, unless bringing ${other}'s commits into ${pull.base.ref} is the intent.`
+    };
+  } catch {
+    return null;
+  }
+}
+function squashedParent(files2, baseRef) {
+  if (files2 === 0) return null;
+  return {
+    files: files2,
+    note: `${files2} listed file(s) already match ${baseRef}'s tip (most likely a squash-merged parent branch, or a change that also landed on ${baseRef}); they are left out.`
+  };
+}
+async function acquirePullRequestDiff(options) {
+  const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
+  const { data: pull } = await client.get(
+    `/repos/${options.repository}/pulls/${options.pullNumber}`
+  );
+  const limit = options.maxFiles ?? GITHUB_MAX_FILES;
+  const rawFiles = await client.paginate(
+    `/repos/${options.repository}/pulls/${options.pullNumber}/files?per_page=100`,
+    limit
+  );
+  const truncated = rawFiles.length < pull.changed_files;
+  const cwd = options.cwd ?? process.cwd();
+  const headLocal = hasCommit(pull.head.sha, cwd);
+  const byName = new Map(rawFiles.map((file2) => [file2.filename, file2]));
+  const handEdited = findHandEdited(
+    rawFiles.filter((file2) => file2.status !== "removed" && file2.patch !== void 0).map((file2) => file2.filename),
+    (path) => {
+      if (headLocal) {
+        try {
+          return git4(["show", `${pull.head.sha}:${path}`], cwd);
+        } catch {
+          return null;
+        }
+      }
+      const added = (byName.get(path)?.patch ?? "").split("\n").filter((line3) => line3.startsWith("+")).map((line3) => line3.slice(1));
+      return added.join("\n");
+    }
+  );
+  const refs = ensureRefs({
+    repository: options.repository,
+    pullNumber: options.pullNumber,
+    base: pull.base.sha,
+    head: pull.head.sha,
+    cwd
+  });
+  const differing = refs.base.available && refs.head.available ? differingFromBaseTip(pull.base.sha, pull.head.sha, cwd) : null;
+  const sameAsBaseTip = (file2) => differing !== null && !differing.has(file2.filename) && (file2.previous_filename === void 0 || !differing.has(file2.previous_filename));
+  const files2 = rawFiles.map((file2) => {
+    const cls = classify(file2.filename);
+    const deleted = file2.status === "removed";
+    const suspected = handEdited.has(file2.filename);
+    const merged = sameAsBaseTip(file2);
+    const reviewed = !merged && !deleted && (suspected || isReviewable(file2.filename, options.includeGenerated)) && file2.patch !== void 0;
+    let excludedBecause;
+    if (!reviewed) {
+      if (merged) excludedBecause = SAME_AS_BASE_TIP;
+      else if (deleted) excludedBecause = "file deleted";
+      else if (file2.patch === void 0) excludedBecause = "no patch returned (binary or too large)";
+      else excludedBecause = `${cls} file`;
+    }
+    return {
+      path: file2.filename,
+      ...file2.previous_filename === void 0 ? {} : { previousPath: file2.previous_filename },
+      status: STATUS2[file2.status] ?? "changed",
+      class: cls,
+      language: languageOf(file2.filename),
+      additions: file2.additions ?? 0,
+      deletions: file2.deletions ?? 0,
+      reviewed,
+      ...suspected ? { handEditSuspected: true } : {},
+      ...excludedBecause === void 0 ? {} : { excludedBecause }
+    };
+  });
+  const diff = rawFiles.filter((file2) => files2.find((f) => f.path === file2.filename)?.reviewed === true).map(toUnifiedDiff).join("");
+  return {
+    repositoryRoot: options.repository,
+    mode: "pull-request",
+    base: pull.base.sha,
+    head: pull.head.sha,
+    title: pull.title,
+    files: files2,
+    reviewedFileCount: files2.filter((file2) => file2.reviewed).length,
+    // A pull request file with no patch is already excluded, so every reviewed
+    // file here carries a hunk by construction.
+    hunkFileCount: files2.filter((file2) => file2.reviewed).length,
+    excludedFileCount: files2.filter((file2) => !file2.reviewed).length,
+    diff,
+    totalChangedFiles: pull.changed_files,
+    additions: pull.additions,
+    deletions: pull.deletions,
+    truncated,
+    // Reviewing part of a change and presenting it as the whole is the one
+    // failure mode a reviewer cannot recover from, because nothing downstream
+    // can tell that anything is missing.
+    truncationNote: truncated ? `Only ${rawFiles.length} of ${pull.changed_files} changed files were read. This review covers part of the change.` : null,
+    refs,
+    suspectedWrongBase: await detectWrongBase(client, options.repository, pull),
+    squashedParentSuspected: squashedParent(files2.filter((file2) => file2.excludedBecause === SAME_AS_BASE_TIP).length, pull.base.ref)
+  };
+}
+
 // plugins/review-voice/src/intent.ts
 var INTENT_KINDS = ["goal", "non-goal", "deliberate", "claim", "qa"];
 var MAX_INTENT_STATEMENTS = 40;
@@ -21913,7 +21471,7 @@ function resolveConfig(run) {
   rmSync3(path, { force: true });
   let from = sha;
   let content = showAt(sha, CONFIG_PATH);
-  if (content === null && ref !== null && showAt(sha, "") === null && originRepository(process.cwd())?.toLowerCase() === run.options.repository.toLowerCase()) {
+  if (content === null && ref !== null && showAt(sha, "") === null && originRepository2(process.cwd())?.toLowerCase() === run.options.repository.toLowerCase()) {
     from = `refs/remotes/origin/${ref}`;
     content = showAt(from, CONFIG_PATH);
   }
@@ -24785,7 +24343,7 @@ function endsHunk(lines2, index) {
   if (line3.startsWith("@@ ") || line3.startsWith("diff --git ")) return true;
   return line3.startsWith("--- ") && (lines2[index + 1] ?? "").startsWith("+++ ");
 }
-function headerPath4(raw) {
+function headerPath3(raw) {
   const path = raw.split("	")[0];
   if (path === "/dev/null") return null;
   return path.startsWith("a/") || path.startsWith("b/") ? path.slice(2) : path;
@@ -24799,8 +24357,8 @@ function parsePatchFiles(normalised) {
     const line3 = withoutCarriageReturn(lines2[index]);
     if (line3.startsWith("--- ") && withoutCarriageReturn(lines2[index + 1] ?? "").startsWith("+++ ")) {
       current = {
-        oldPath: headerPath4(line3.slice(4)),
-        newPath: headerPath4(withoutCarriageReturn(lines2[index + 1]).slice(4)),
+        oldPath: headerPath3(line3.slice(4)),
+        newPath: headerPath3(withoutCarriageReturn(lines2[index + 1]).slice(4)),
         hunks: []
       };
       files2.push(current);
@@ -25446,48 +25004,9 @@ function worktreeCommand(argv) {
   return 0;
 }
 
-// plugins/review-voice/src/cli.ts
-async function threadCommand(argv) {
-  const pullNumber = Number(flag(argv, "--pr"));
-  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
-    console.error("--pr needs a pull request number.");
-    return 2;
-  }
-  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
-  if (repository === null) {
-    console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
-    return 2;
-  }
-  const result = await readThread({ repository, pullNumber, client: githubClient([repository]) });
-  for (const warning of result.warnings ?? []) console.error(`Warning: ${warning}`);
-  const out = flag(argv, "--out");
-  if (out === null) {
-    console.log(JSON.stringify(result, null, 2));
-    return 0;
-  }
-  try {
-    const path = resolveOutPath(out, "thread.json");
-    writeFileSync6(path, JSON.stringify(result, null, 2), "utf8");
-    console.log(
-      JSON.stringify(
-        {
-          path,
-          comments: result.comments.length,
-          truncated: result.truncated,
-          ...result.warnings === void 0 ? {} : { warnings: result.warnings }
-        },
-        null,
-        2
-      )
-    );
-    return 0;
-  } catch (error) {
-    console.error(
-      `Cannot write ${out}: expected a file path or a directory; ${error instanceof Error ? error.message : String(error)}`
-    );
-    return 2;
-  }
-}
+// plugins/review-voice/src/cli/diff.ts
+import { readFileSync as readFileSync20, writeFileSync as writeFileSync6, mkdirSync as mkdirSync10 } from "node:fs";
+import { join as join23 } from "node:path";
 async function pullRequestDiffCommand(argv) {
   const pullNumber = Number(flag(argv, "--pr"));
   if (!Number.isInteger(pullNumber) || pullNumber < 1) {
@@ -25685,6 +25204,515 @@ function diffCommand(argv) {
     throw error;
   }
 }
+function readFilesAndDiff(filesPath, diffPath) {
+  let manifest;
+  let diffText;
+  try {
+    const parsed2 = JSON.parse(readFileSync20(filesPath, "utf8"));
+    if (typeof parsed2 !== "object" || parsed2 === null || Array.isArray(parsed2)) throw new Error("not a JSON object");
+    manifest = parsed2;
+    diffText = readFileSync20(diffPath, "utf8");
+  } catch (error) {
+    console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  const files2 = manifest["files"];
+  if (!Array.isArray(files2) || !files2.every((file2) => typeof file2 === "object" && file2 !== null && typeof file2.path === "string")) {
+    console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
+    return null;
+  }
+  const generated = markedGenerated({ ...manifest, diff: diffText });
+  return { manifest, changed: files2, diffText, generated };
+}
+
+// plugins/review-voice/src/cli/thread.ts
+import { writeFileSync as writeFileSync7 } from "node:fs";
+async function threadCommand(argv) {
+  const pullNumber = Number(flag(argv, "--pr"));
+  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+    console.error("--pr needs a pull request number.");
+    return 2;
+  }
+  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
+  if (repository === null) {
+    console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
+    return 2;
+  }
+  const result = await readThread({ repository, pullNumber, client: githubClient([repository]) });
+  for (const warning of result.warnings ?? []) console.error(`Warning: ${warning}`);
+  const out = flag(argv, "--out");
+  if (out === null) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+  try {
+    const path = resolveOutPath(out, "thread.json");
+    writeFileSync7(path, JSON.stringify(result, null, 2), "utf8");
+    console.log(
+      JSON.stringify(
+        {
+          path,
+          comments: result.comments.length,
+          truncated: result.truncated,
+          ...result.warnings === void 0 ? {} : { warnings: result.warnings }
+        },
+        null,
+        2
+      )
+    );
+    return 0;
+  } catch (error) {
+    console.error(
+      `Cannot write ${out}: expected a file path or a directory; ${error instanceof Error ? error.message : String(error)}`
+    );
+    return 2;
+  }
+}
+
+// plugins/review-voice/src/cli/symbols.ts
+import { readFileSync as readFileSync21, writeFileSync as writeFileSync8 } from "node:fs";
+
+// plugins/review-voice/src/diff/declarations.ts
+var IDENTIFIER = "[A-Za-z_$][A-Za-z0-9_$]*";
+var PREFIX = "(?:(?:export|default|declare|public|private|protected|static|abstract|override|readonly)\\s+)*";
+var METHOD_PREFIX = "(?:(?:public|private|protected|internal|static|override|async|abstract|readonly|get|set)\\s+)*";
+var TYPE = "[A-Za-z_$][A-Za-z0-9_$]*(?:\\s*<[^>{}()]*>)?(?:\\s*\\[\\])?(?:\\?)?(?:\\s*\\.\\s*[A-Za-z_$][A-Za-z0-9_$]*)*";
+var TS_FUNCTION = new RegExp(`^\\s*${PREFIX}(?:async\\s+)?function\\s+(${IDENTIFIER})\\s*\\(`);
+var VARIABLE_FUNCTION = new RegExp(
+  `^\\s*${PREFIX}(?:const|let|var)\\s+(${IDENTIFIER})(?:\\s*:\\s*[^=]+)?\\s*=\\s*(?:async\\b|function\\b|\\(|${IDENTIFIER}\\s*=>)`
+);
+var PYTHON_FUNCTION = new RegExp(`^\\s*(?:async\\s+)?def\\s+(${IDENTIFIER})\\s*\\(`);
+var GO_FUNCTION = new RegExp(`^\\s*func\\s+(?:\\([^)]*\\)\\s+)?(${IDENTIFIER})\\s*\\(`);
+var RUST_FUNCTION = new RegExp(`^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?(?:async\\s+)?fn\\s+(${IDENTIFIER})\\s*\\(`);
+var MODIFIED_METHOD = new RegExp(
+  `^\\s*(?:(?:public|private|protected|internal|static|override|async|fun)\\s+)+(?:${TYPE})\\s+(${IDENTIFIER})(?:\\s*<[^>{}()]*>)?\\s*\\(`
+);
+var KOTLIN_FUNCTION = new RegExp(
+  `^\\s*(?:(?:public|private|protected|internal|override|async|static)\\s+)*fun\\s+(?:<[^>{}()]*>\\s+)?(?:${TYPE}\\s*\\.\\s*)?(${IDENTIFIER})(?:\\s*<[^>{}()]*>)?\\s*\\(`
+);
+var CLASS_METHOD = new RegExp(
+  `^\\s+${METHOD_PREFIX}(${IDENTIFIER})(?:\\s*<[^>{}()]*>)?\\s*\\([^)]*\\)\\s*(?::\\s*[^{}]+)?\\{`
+);
+var STATEMENT_KEYWORDS = /* @__PURE__ */ new Set([
+  "if",
+  "else",
+  "for",
+  "foreach",
+  "while",
+  "switch",
+  "case",
+  "catch",
+  "return",
+  "throw",
+  "try",
+  "finally",
+  "do",
+  "break",
+  "continue",
+  "await",
+  "when",
+  "with",
+  "match",
+  "loop",
+  "function",
+  "def",
+  "fn",
+  "class",
+  "interface",
+  "enum",
+  "new"
+]);
+var STOP_TOKENS = /* @__PURE__ */ new Set([
+  "to",
+  "from",
+  "get",
+  "set",
+  "is",
+  "has",
+  "do",
+  "make",
+  "create",
+  "build",
+  "new",
+  "the",
+  "a",
+  "an",
+  "of",
+  "for",
+  "by",
+  "with",
+  "on",
+  "in",
+  "at",
+  "as",
+  "and",
+  "or",
+  "util",
+  "utils",
+  "helper",
+  "helpers"
+]);
+function declarationName(text4) {
+  for (const pattern of [
+    TS_FUNCTION,
+    VARIABLE_FUNCTION,
+    PYTHON_FUNCTION,
+    GO_FUNCTION,
+    RUST_FUNCTION,
+    MODIFIED_METHOD,
+    KOTLIN_FUNCTION
+  ]) {
+    const match = pattern.exec(text4);
+    if (match?.[1] !== void 0) return match[1];
+  }
+  const method = CLASS_METHOD.exec(text4);
+  const name = method?.[1];
+  if (name === void 0 || STATEMENT_KEYWORDS.has(name.toLowerCase())) return null;
+  return name;
+}
+function declarationTokens(name) {
+  const words = name.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").replace(/([A-Za-z])([0-9])/g, "$1 $2").replace(/([0-9])([A-Za-z])/g, "$1 $2").split(/[_\-\s]+/).map((word) => word.toLowerCase()).filter((word) => word.length > 0 && !STOP_TOKENS.has(word));
+  return [...new Set(words)];
+}
+function declarationSearchTokens(name) {
+  const tokens = declarationTokens(name);
+  if (tokens.length < 2) return null;
+  const longest = tokens.map((token, index) => ({ token, index })).sort((left, right) => right.token.length - left.token.length || left.index - right.index).slice(0, 2);
+  const first = longest[0]?.token;
+  const second = longest[1]?.token;
+  return first === void 0 || second === void 0 ? null : [first, second];
+}
+function normalisePath3(path) {
+  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+}
+function headerPath4(raw) {
+  const field = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
+  const path = unquoteGitPath(field.trimEnd());
+  if (path === "/dev/null") return null;
+  return normalisePath3(path.replace(/^[ab]\//, ""));
+}
+function hunkHeader2(line3) {
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line3);
+  if (match === null) return null;
+  const oldLine = Number(match[1]);
+  const newLine = Number(match[3]);
+  const remainingOld = Number(match[2] ?? 1);
+  const remainingNew = Number(match[4] ?? 1);
+  if (![oldLine, newLine, remainingOld, remainingNew].every(Number.isSafeInteger)) return null;
+  return { oldLine, newLine, remainingOld, remainingNew };
+}
+function declarationsFromDiff(diff) {
+  const found = [];
+  let path = null;
+  let active = null;
+  const finishWhenCounted = () => {
+    if (active !== null && active.remainingOld <= 0 && active.remainingNew <= 0) active = null;
+  };
+  for (const raw of diff.split("\n")) {
+    const line3 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (active !== null) {
+      if (line3 === "\\ No newline at end of file") continue;
+      if (line3.startsWith("+")) {
+        const name = declarationName(line3.slice(1));
+        if (path !== null && name !== null) found.push({ path, name, line: active.newLine, added: true });
+        active.newLine += 1;
+        active.remainingNew -= 1;
+        finishWhenCounted();
+        continue;
+      }
+      if (line3.startsWith("-")) {
+        const name = declarationName(line3.slice(1));
+        if (path !== null && name !== null) found.push({ path, name, line: active.oldLine, added: false });
+        active.oldLine += 1;
+        active.remainingOld -= 1;
+        finishWhenCounted();
+        continue;
+      }
+      if (line3.startsWith(" ") || line3 === "" && active.remainingOld > 0 && active.remainingNew > 0) {
+        active.oldLine += 1;
+        active.newLine += 1;
+        active.remainingOld -= 1;
+        active.remainingNew -= 1;
+        finishWhenCounted();
+        continue;
+      }
+      active = null;
+    }
+    if (line3.startsWith("diff --git ")) {
+      path = null;
+      continue;
+    }
+    if (line3.startsWith("+++ ")) {
+      path = headerPath4(line3.slice(4));
+      continue;
+    }
+    const header = hunkHeader2(line3);
+    if (header !== null) active = header;
+  }
+  return found;
+}
+
+// plugins/review-voice/src/diff/symbols.ts
+var DEFAULT_MAX_MS = 6e4;
+var MAX_SYMBOLS_PER_FILE = 12;
+var MAX_REFERENCES_PER_SYMBOL = 8;
+var MAX_DECLARATIONS_PER_FILE = 8;
+var MAX_CALLERS_PER_DECLARATION = 8;
+var MAX_POSSIBLE_EXISTING = 3;
+function normalisePath4(path) {
+  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+}
+function directoryCount2(paths) {
+  return new Set([...paths].map((path) => normalisePath4(path).split("/").slice(0, -1).join("/"))).size;
+}
+function testPathMatcher(globs) {
+  const patterns = globs.map((glob) => globToRegExp(glob));
+  return (path) => patterns.some((pattern) => pattern.test(normalisePath4(path)));
+}
+function declarationsByPath(declarations) {
+  const addedNames = new Set(declarations.filter((declaration) => declaration.added).map((declaration) => declaration.name));
+  const removedNames = /* @__PURE__ */ new Map();
+  for (const declaration of declarations) {
+    if (declaration.added) continue;
+    const names = removedNames.get(declaration.path) ?? /* @__PURE__ */ new Set();
+    names.add(declaration.name);
+    removedNames.set(declaration.path, names);
+  }
+  const byPath = /* @__PURE__ */ new Map();
+  for (const declaration of declarations) {
+    if (!declaration.added || removedNames.get(declaration.path)?.has(declaration.name)) continue;
+    const searchTokens = declarationSearchTokens(declaration.name);
+    if (searchTokens === null) continue;
+    const candidates = byPath.get(declaration.path) ?? [];
+    candidates.push({
+      name: declaration.name,
+      line: declaration.line,
+      searchTokens,
+      tokens: declarationTokens(declaration.name)
+    });
+    byPath.set(declaration.path, candidates);
+  }
+  for (const [path, candidates] of byPath) {
+    candidates.sort((left, right) => left.line - right.line || left.name.localeCompare(right.name));
+    byPath.set(path, candidates.slice(0, MAX_DECLARATIONS_PER_FILE));
+  }
+  return { addedNames, byPath };
+}
+function possibleExisting(declaration, hits, addedNames, isTestPath) {
+  const matches = [];
+  for (const hit of hits) {
+    const path = normalisePath4(hit.path);
+    if (!isCode(path) || isTestPath(path)) continue;
+    const name = declarationName(hit.text);
+    if (name === null || addedNames.has(name)) continue;
+    const hitTokens = new Set(declarationTokens(name));
+    const overlap2 = declaration.tokens.filter((token) => hitTokens.has(token)).length;
+    const union = (/* @__PURE__ */ new Set([...declaration.tokens, ...hitTokens])).size;
+    const score2 = union === 0 ? 0 : overlap2 / union;
+    if (overlap2 >= 2 && score2 >= 0.5) matches.push({ path, line: hit.line, name, score: score2 });
+  }
+  return matches.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path) || left.line - right.line).slice(0, MAX_POSSIBLE_EXISTING).map(({ path, line: line3, name }) => ({ path, line: line3, name }));
+}
+function timeBudgetDeclaration(declaration) {
+  return {
+    name: declaration.name,
+    line: declaration.line,
+    possibleExisting: [],
+    inconclusive: true,
+    reason: "time-budget",
+    callersInconclusive: true
+  };
+}
+function unfinishedFile(path, declarations) {
+  const declared = declarations.map(timeBudgetDeclaration);
+  return {
+    file: {
+      path,
+      symbols: [],
+      ...declared.length === 0 ? {} : { declared },
+      inconclusive: true,
+      reason: "time-budget"
+    },
+    references: /* @__PURE__ */ new Set()
+  };
+}
+function pathsWithHunks2(diff) {
+  const paths = [];
+  const seen = /* @__PURE__ */ new Set();
+  let path = null;
+  let hasHunkLine = false;
+  const keepCurrent = () => {
+    if (path === null || !hasHunkLine) return;
+    const normalised = normalisePath4(path);
+    if (seen.has(normalised)) return;
+    seen.add(normalised);
+    paths.push(normalised);
+  };
+  for (const raw of diff.split(/\r?\n/)) {
+    if (raw.startsWith("diff --git ")) {
+      keepCurrent();
+      path = null;
+      hasHunkLine = false;
+      continue;
+    }
+    if (raw.startsWith("+++ ")) {
+      const match = /^\+\+\+ b\/(.+)$/.exec(raw);
+      path = match?.[1] === void 0 ? null : match[1];
+      continue;
+    }
+    if (path === null || raw.startsWith("--- ")) continue;
+    if (raw.startsWith("+") || raw.startsWith("-")) hasHunkLine = true;
+  }
+  keepCurrent();
+  return paths;
+}
+function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declarations, addedNames, head, headSearch, isTestPath) {
+  const allSymbols = symbolsFromHunks(diff, path);
+  const omitted = Math.max(0, allSymbols.length - MAX_SYMBOLS_PER_FILE);
+  const symbols = [];
+  const declared = [];
+  const references = /* @__PURE__ */ new Set();
+  const normalisedPath = normalisePath4(path);
+  let incomplete = false;
+  const file2 = (inconclusive, reason2) => ({
+    path,
+    symbols,
+    ...declared.length === 0 ? {} : { declared },
+    ...omitted === 0 ? {} : { moreSymbols: omitted },
+    ...inconclusive ? { inconclusive: true } : {},
+    ...reason2 === void 0 ? {} : { reason: reason2 }
+  });
+  for (const symbol of allSymbols.slice(0, MAX_SYMBOLS_PER_FILE)) {
+    if (remaining() <= 0) {
+      declared.push(...declarations.map(timeBudgetDeclaration));
+      return { file: file2(true, "time-budget"), references };
+    }
+    let found;
+    try {
+      found = search(symbol, cwd, ref, remaining());
+    } catch {
+      incomplete = true;
+      break;
+    }
+    const code = new Set(found.filter(isCode).map(normalisePath4));
+    if (directoryCount2(code) > NON_DISCRIMINATING_DIRECTORIES) {
+      symbols.push({ symbol, common: true });
+      continue;
+    }
+    const others = [...code].filter((candidate) => candidate !== normalisedPath).sort();
+    const paths = others.filter((candidate) => !isTestPath(candidate));
+    const tests = others.filter((candidate) => isTestPath(candidate));
+    for (const candidate of paths) references.add(candidate);
+    symbols.push({
+      symbol,
+      references: paths.slice(0, MAX_REFERENCES_PER_SYMBOL),
+      referenceCount: paths.length,
+      ...paths.length > MAX_REFERENCES_PER_SYMBOL ? { truncated: true } : {},
+      ...tests.length === 0 ? {} : {
+        testReferences: tests.slice(0, MAX_REFERENCES_PER_SYMBOL),
+        testReferenceCount: tests.length
+      }
+    });
+  }
+  let budgetEnded = false;
+  for (let index = 0; index < declarations.length; index += 1) {
+    if (remaining() <= 0) {
+      declared.push(...declarations.slice(index).map(timeBudgetDeclaration));
+      return { file: file2(true, "time-budget"), references };
+    }
+    const declaration = declarations[index];
+    try {
+      const hits = lineSearch(declaration.searchTokens, cwd, ref, remaining());
+      const entry = {
+        name: declaration.name,
+        line: declaration.line,
+        possibleExisting: possibleExisting(declaration, hits, addedNames, isTestPath)
+      };
+      declared.push(entry);
+      if (head === null) {
+        entry.callersInconclusive = true;
+      } else if (remaining() <= 0) {
+        entry.callersInconclusive = true;
+        budgetEnded = true;
+      } else {
+        try {
+          const callers = [
+            ...new Set(
+              headSearch(declaration.name, cwd, head, remaining()).filter(isCode).map(normalisePath4).filter((candidate) => candidate !== normalisedPath && !isTestPath(candidate))
+            )
+          ].sort();
+          entry.callers = callers.slice(0, MAX_CALLERS_PER_DECLARATION);
+          entry.callerCount = callers.length;
+        } catch {
+          incomplete = true;
+          entry.callersInconclusive = true;
+        }
+      }
+    } catch {
+      incomplete = true;
+      declared.push({
+        name: declaration.name,
+        line: declaration.line,
+        possibleExisting: [],
+        inconclusive: true,
+        callersInconclusive: true
+      });
+    }
+  }
+  return budgetEnded ? { file: file2(true, "time-budget"), references } : { file: file2(incomplete), references };
+}
+function collectSymbolContext(options) {
+  const search = options.search ?? gitGrepPaths;
+  const lineSearch = options.lineSearch ?? gitGrepLines;
+  const headSearch = options.headSearch ?? gitGrepWordPaths;
+  const head = options.head ?? null;
+  const isTestPath = testPathMatcher(options.testPaths ?? DEFAULT_TEST_PATHS);
+  const now = options.now ?? Date.now;
+  const maxMs = options.maxMs ?? DEFAULT_MAX_MS;
+  const started = now();
+  const remaining = () => maxMs - (now() - started);
+  const paths = pathsWithHunks2(options.diff);
+  const declarationContext = declarationsByPath(declarationsFromDiff(options.diff));
+  const records = paths.map((path) => {
+    const declarations = declarationContext.byPath.get(normalisePath4(path)) ?? [];
+    return remaining() <= 0 ? unfinishedFile(path, declarations) : reportFile(
+      options.diff,
+      path,
+      options.cwd,
+      options.ref,
+      search,
+      lineSearch,
+      remaining,
+      declarations,
+      declarationContext.addedNames,
+      head,
+      headSearch,
+      isTestPath
+    );
+  });
+  const changed = new Set(paths.map(normalisePath4));
+  const downstream = /* @__PURE__ */ new Set();
+  for (const record3 of records) {
+    for (const path of record3.references) {
+      if (!changed.has(normalisePath4(path))) downstream.add(path);
+    }
+  }
+  records.sort(
+    (a, b) => b.references.size - a.references.size || a.file.path.localeCompare(b.file.path)
+  );
+  return {
+    searchedRef: options.ref ?? "working tree",
+    files: records.map((record3) => record3.file),
+    downstreamFiles: downstream.size,
+    budget: {
+      maxMs,
+      elapsedMs: Math.max(0, now() - started),
+      exhausted: records.some((record3) => record3.file.reason === "time-budget")
+    }
+  };
+}
+
+// plugins/review-voice/src/cli/symbols.ts
 function symbolsCommand(argv) {
   const diffFile = flag(argv, "--diff-file");
   if (diffFile === null) {
@@ -25693,7 +25721,7 @@ function symbolsCommand(argv) {
   }
   let diff;
   try {
-    diff = readFileSync20(diffFile, "utf8");
+    diff = readFileSync21(diffFile, "utf8");
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -25736,7 +25764,7 @@ function symbolsCommand(argv) {
   }
   try {
     const path = resolveOutPath(out, "symbols.json");
-    writeFileSync6(path, JSON.stringify(result, null, 2), "utf8");
+    writeFileSync8(path, JSON.stringify(result, null, 2), "utf8");
     console.log(
       JSON.stringify(
         {
@@ -25758,6 +25786,8 @@ function symbolsCommand(argv) {
     return 2;
   }
 }
+
+// plugins/review-voice/src/cli.ts
 function namedRepositories(entries, command) {
   return entries.filter((entry) => {
     if (!entry.includes("*")) return true;
@@ -25941,26 +25971,6 @@ function planCommand(argv) {
   });
   console.log(JSON.stringify(plan, null, 2));
   return 0;
-}
-function readFilesAndDiff(filesPath, diffPath) {
-  let manifest;
-  let diffText;
-  try {
-    const parsed2 = JSON.parse(readFileSync20(filesPath, "utf8"));
-    if (typeof parsed2 !== "object" || parsed2 === null || Array.isArray(parsed2)) throw new Error("not a JSON object");
-    manifest = parsed2;
-    diffText = readFileSync20(diffPath, "utf8");
-  } catch (error) {
-    console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
-    return null;
-  }
-  const files2 = manifest["files"];
-  if (!Array.isArray(files2) || !files2.every((file2) => typeof file2 === "object" && file2 !== null && typeof file2.path === "string")) {
-    console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
-    return null;
-  }
-  const generated = markedGenerated({ ...manifest, diff: diffText });
-  return { manifest, changed: files2, diffText, generated };
 }
 function lanesCommand(argv) {
   const filesPath = flag(argv, "--files");
@@ -26302,7 +26312,7 @@ function scoreCommand(argv) {
   const verificationFlag = flag(argv, "--verification");
   if (verificationFlag !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync20(verificationFlag, "utf8"));
+      const parsed2 = JSON.parse(readFileSync22(verificationFlag, "utf8"));
       const list2 = verdictList(parsed2);
       const problem = verificationProblem(list2);
       if (problem !== null) {
@@ -26389,7 +26399,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      reachDiff = readFileSync20(path, "utf8");
+      reachDiff = readFileSync22(path, "utf8");
       anchorHunks = parseHunks(reachDiff);
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -26405,7 +26415,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      const parsed2 = JSON.parse(readFileSync20(path, "utf8"));
+      const parsed2 = JSON.parse(readFileSync22(path, "utf8"));
       thread = Array.isArray(parsed2) ? parsed2 : parsed2.comments ?? [];
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -26824,7 +26834,7 @@ function reconcileCommand(argv) {
   }
   let verifications;
   try {
-    verifications = verdictList(JSON.parse(readFileSync20(verificationFile, "utf8")));
+    verifications = verdictList(JSON.parse(readFileSync22(verificationFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read ${verificationFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -26840,7 +26850,7 @@ function reconcileCommand(argv) {
   }
   let secondPass2;
   try {
-    secondPass2 = parseSecondPass(JSON.parse(readFileSync20(secondPassFile, "utf8")));
+    secondPass2 = parseSecondPass(JSON.parse(readFileSync22(secondPassFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read the second pass from ${secondPassFile}: ${error.message}`);
     return 2;
@@ -26849,7 +26859,7 @@ function reconcileCommand(argv) {
   const tieBreaksFile = flag(argv, "--tie-breaks");
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync20(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync22(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -26937,7 +26947,7 @@ function recordCommand(argv) {
   let diff = "";
   if (diffFile !== null) {
     try {
-      diff = readFileSync20(diffFile, "utf8");
+      diff = readFileSync22(diffFile, "utf8");
     } catch {
       console.error(`Cannot read ${diffFile}.`);
       return 2;
@@ -26959,7 +26969,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed2 = JSON.parse(readFileSync20(bodyFindingsFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync22(bodyFindingsFile, "utf8"));
       const list2 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null && Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : null;
       if (list2 === null) throw new Error('expected an array or {"bodyFindings": [...]}');
       if (list2.length > 1) throw new Error("at most one body-only simplification is allowed per review");
@@ -26986,7 +26996,7 @@ function recordCommand(argv) {
   const knownPaths = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
-      const manifest = JSON.parse(readFileSync20(filesFile, "utf8"));
+      const manifest = JSON.parse(readFileSync22(filesFile, "utf8"));
       if (Array.isArray(manifest.files)) {
         for (const file2 of manifest.files) if (typeof file2?.path === "string") knownPaths.add(file2.path);
       }
@@ -27009,7 +27019,7 @@ function recordCommand(argv) {
   let candidates = [];
   if (candidatesFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync20(candidatesFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync22(candidatesFile, "utf8"));
       candidates = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
     } catch {
       console.error(`Cannot read candidates from ${candidatesFile}.`);
@@ -27021,7 +27031,7 @@ function recordCommand(argv) {
   let scoredPolicyVersions = null;
   if (scoresFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync20(scoresFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync22(scoresFile, "utf8"));
       scores = boundLists(Array.isArray(parsed2) ? parsed2 : parsed2.scores ?? []);
       scoredPolicyVersions = Array.isArray(parsed2) ? null : policyVersionRefs(parsed2.policyVersions);
     } catch {
@@ -27033,7 +27043,7 @@ function recordCommand(argv) {
   let verdicts = [];
   if (verdictsFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync20(verdictsFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync22(verdictsFile, "utf8"));
       verdicts = Array.isArray(parsed2) ? parsed2 : parsed2.verdicts ?? [];
     } catch {
       console.error(`Cannot read verdicts from ${verdictsFile}.`);
@@ -27044,7 +27054,7 @@ function recordCommand(argv) {
   let tieBreaks = [];
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync20(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync22(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -27054,7 +27064,7 @@ function recordCommand(argv) {
   let held = [];
   if (heldFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync20(heldFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync22(heldFile, "utf8"));
       const list2 = Array.isArray(parsed2) ? parsed2 : parsed2?.held;
       if (!Array.isArray(list2)) throw new Error('expected an array or {"held": [...]}');
       list2.forEach((entry, index) => {
@@ -27070,7 +27080,7 @@ function recordCommand(argv) {
             continue;
           }
           try {
-            const content = readFileSync20(entry.path, "utf8");
+            const content = readFileSync22(entry.path, "utf8");
             const lines2 = content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
             if (entry.line > lines2) console.error(`Held entry ${entry.path}:${entry.line} is past the end of the file (${lines2} lines).`);
           } catch {
@@ -27086,7 +27096,7 @@ function recordCommand(argv) {
   let stages = [];
   if (stagesFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync20(stagesFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync22(stagesFile, "utf8"));
       const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.stages ?? [];
       stages = (Array.isArray(list2) ? list2 : []).filter(
         (stage) => typeof stage === "object" && stage !== null && typeof stage.name === "string" && Number.isFinite(stage.seconds)
@@ -27107,8 +27117,8 @@ function recordCommand(argv) {
     }
     try {
       checks = recordedChecks(
-        JSON.parse(readFileSync20(evidenceFile, "utf8")),
-        JSON.parse(readFileSync20(symbolsFile, "utf8"))
+        JSON.parse(readFileSync22(evidenceFile, "utf8")),
+        JSON.parse(readFileSync22(symbolsFile, "utf8"))
       );
     } catch (error) {
       console.error(
@@ -27126,7 +27136,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed2 = JSON.parse(readFileSync20(followUpThreadFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync22(followUpThreadFile, "utf8"));
       const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.comments;
       if (!Array.isArray(list2)) throw new Error("comments is not a list");
       followUpThread = list2;
@@ -27144,7 +27154,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      rulings = parseFollowUpRulings(JSON.parse(readFileSync20(rulingsFile, "utf8")));
+      rulings = parseFollowUpRulings(JSON.parse(readFileSync22(rulingsFile, "utf8")));
     } catch (error) {
       const why = error instanceof FollowUpRulingError ? error.message : `cannot read it (${error.message})`;
       console.error(`Cannot read follow-up rulings from ${rulingsFile}: ${why}.`);
@@ -27189,7 +27199,7 @@ function recordCommand(argv) {
       const head = flag(argv, "--head");
       let marker = null;
       try {
-        const parsed2 = JSON.parse(readFileSync20(carryFile, "utf8"));
+        const parsed2 = JSON.parse(readFileSync22(carryFile, "utf8"));
         const refused = Array.isArray(parsed2["refused"]) ? parsed2["refused"].map((r) => String(r?.candidateId)) : null;
         const interdiff = parsed2["interdiff"];
         if (refused !== null && typeof parsed2["since"] === "string" && typeof parsed2["head"] === "string") {
@@ -27328,7 +27338,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   if (threadFile !== null) {
     let text4;
     try {
-      text4 = readFileSync20(threadFile, "utf8");
+      text4 = readFileSync22(threadFile, "utf8");
     } catch (error) {
       throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -27338,7 +27348,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   let noLongerChanged = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
-      const files2 = JSON.parse(readFileSync20(filesFile, "utf8"));
+      const files2 = JSON.parse(readFileSync22(filesFile, "utf8"));
       const listed = files2.scope?.noLongerChanged;
       noLongerChanged = new Set(Array.isArray(listed) ? listed.filter((path) => typeof path === "string") : []);
     } catch (error) {
@@ -27425,12 +27435,12 @@ function reanchorCommand(argv) {
     console.error("--path needs the file the finding belongs in.");
     return 2;
   }
-  const readJson2 = (path) => JSON.parse(readFileSync20(path, "utf8"));
+  const readJson2 = (path) => JSON.parse(readFileSync22(path, "utf8"));
   let scores;
   let hunks;
   try {
     scores = readJson2(scoresFile);
-    hunks = parseHunks(readFileSync20(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync22(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -27458,11 +27468,11 @@ function reanchorCommand(argv) {
   try {
     if (candidatesFile !== null) {
       staged.push([`${candidatesFile}.reanchor-${process.pid}`, candidatesFile]);
-      writeFileSync6(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
+      writeFileSync9(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
 `);
     }
     staged.push([`${scoresFile}.reanchor-${process.pid}`, scoresFile]);
-    writeFileSync6(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
+    writeFileSync9(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
 `);
     for (const [temporary, target] of staged) renameSync3(temporary, target);
   } catch (error) {
@@ -27492,7 +27502,7 @@ function challengeCommand(argv) {
       return 2;
     }
   }
-  const readJson2 = (path) => JSON.parse(readFileSync20(path, "utf8"));
+  const readJson2 = (path) => JSON.parse(readFileSync22(path, "utf8"));
   let scores;
   let candidates;
   try {
@@ -27518,7 +27528,7 @@ function challengeCommand(argv) {
   let verdicts;
   let hunks;
   try {
-    hunks = parseHunks(readFileSync20(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync22(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -27541,7 +27551,7 @@ function challengeCommand(argv) {
     process.stdout.write(body);
   } else {
     try {
-      writeFileSync6(outFile, body);
+      writeFileSync9(outFile, body);
     } catch (error) {
       console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -27578,8 +27588,8 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let manifest;
   let hunks;
   try {
-    manifest = JSON.parse(readFileSync20(join23(dir, "files.json"), "utf8"));
-    hunks = parseHunks(readFileSync20(join23(dir, "diff.patch"), "utf8"));
+    manifest = JSON.parse(readFileSync22(join24(dir, "files.json"), "utf8"));
+    hunks = parseHunks(readFileSync22(join24(dir, "diff.patch"), "utf8"));
   } catch (error) {
     return `Cannot read the interdiff in ${dir}: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -27594,7 +27604,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let candidates;
   let verification2;
   try {
-    const parsed2 = listIn(JSON.parse(readFileSync20(candidatesFile, "utf8")), ["candidates"]);
+    const parsed2 = listIn(JSON.parse(readFileSync22(candidatesFile, "utf8")), ["candidates"]);
     if (parsed2 === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidates = parsed2.list;
     const normalised = candidates.map((raw, index) => normaliseCandidate(raw, index));
@@ -27602,11 +27612,11 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
     const misplaced = normalised.filter((c) => !candidateAnchor(hunks, c).ok);
     if (misplaced.length > 0) {
       throw new Error(
-        `interdiff candidate(s) not on a changed line of ${join23(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
+        `interdiff candidate(s) not on a changed line of ${join24(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
       );
     }
     candidates = candidates.map((raw, index) => withId(raw, normalised[index].candidateId));
-    const parsedVerification = listIn(JSON.parse(readFileSync20(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync22(verificationFile, "utf8")), VERDICT_KEYS);
     verification2 = parsedVerification?.list ?? [];
     if (parsedVerification === null && candidates.length > 0) throw new Error(`${verificationFile} contains no verifications`);
     const problem = verificationProblem(verification2);
@@ -27619,7 +27629,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
 function partialDiffReason(diffFile) {
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync20(join23(dirname15(diffFile), "files.json"), "utf8"));
+    manifest = JSON.parse(readFileSync22(join24(dirname15(diffFile), "files.json"), "utf8"));
   } catch {
     return null;
   }
@@ -27651,24 +27661,24 @@ function carryCandidatesCommand(argv) {
   let hunks;
   let heldIn = null;
   try {
-    const parsedCandidates = listIn(JSON.parse(readFileSync20(candidatesFile, "utf8")), ["candidates"]);
+    const parsedCandidates = listIn(JSON.parse(readFileSync22(candidatesFile, "utf8")), ["candidates"]);
     if (parsedCandidates === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidatesIn = parsedCandidates;
     candidates = candidatesIn.list.map((raw, index) => normaliseCandidate(raw, index));
     assertUniqueCandidateIds(candidates);
-    const parsedVerification = listIn(JSON.parse(readFileSync20(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync22(verificationFile, "utf8")), VERDICT_KEYS);
     if (parsedVerification === null || parsedVerification.list.length === 0) {
       throw new Error(`${verificationFile} contains no verifications`);
     }
     verificationIn = parsedVerification;
     const problem = verificationProblem(verificationIn.list);
     if (problem !== null) throw new Error(`malformed verification - ${problem}`);
-    hunks = parseHunks(readFileSync20(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync22(diffFile, "utf8"));
     const partial = partialDiffReason(diffFile);
     if (partial !== null) throw new Error(partial);
     const heldFile = flag(argv, "--held");
     if (heldFile !== null) {
-      heldIn = listIn(JSON.parse(readFileSync20(heldFile, "utf8")), ["held"]);
+      heldIn = listIn(JSON.parse(readFileSync22(heldFile, "utf8")), ["held"]);
       if (heldIn === null) throw new Error(`${heldFile} is not an array or {"held": [...]}`);
       heldIn.list.forEach((entry, index) => {
         const heldError = heldProblem(entry);
@@ -27760,20 +27770,20 @@ function carryCandidatesCommand(argv) {
     ...heldIn === null ? {} : { held: { kept: heldKept.length, dropped: heldDropped } }
   };
   try {
-    mkdirSync10(outDir, { recursive: true });
-    writeFileSync6(
-      join23(outDir, "candidates.json"),
+    mkdirSync11(outDir, { recursive: true });
+    writeFileSync9(
+      join24(outDir, "candidates.json"),
       `${JSON.stringify(candidatesIn.rebuild([...carriedCandidates, ...interdiffCandidates]), null, 2)}
 `
     );
-    writeFileSync6(
-      join23(outDir, "verification.json"),
+    writeFileSync9(
+      join24(outDir, "verification.json"),
       `${JSON.stringify(verificationIn.rebuild([...carriedVerification, ...interdiffVerification]), null, 2)}
 `
     );
-    if (heldIn !== null) writeFileSync6(join23(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
+    if (heldIn !== null) writeFileSync9(join24(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
 `);
-    writeFileSync6(join23(outDir, "carry.json"), `${JSON.stringify(record3, null, 2)}
+    writeFileSync9(join24(outDir, "carry.json"), `${JSON.stringify(record3, null, 2)}
 `);
   } catch (error) {
     console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -27802,10 +27812,10 @@ function carryCandidatesCommand(argv) {
         carried: result.carried.length,
         refused,
         interdiffReviewed: interdiff !== null,
-        candidates: join23(outDir, "candidates.json"),
-        verification: join23(outDir, "verification.json"),
-        ...heldIn === null ? {} : { held: join23(outDir, "held.json") },
-        carry: join23(outDir, "carry.json")
+        candidates: join24(outDir, "candidates.json"),
+        verification: join24(outDir, "verification.json"),
+        ...heldIn === null ? {} : { held: join24(outDir, "held.json") },
+        carry: join24(outDir, "carry.json")
       },
       null,
       2
@@ -27986,7 +27996,7 @@ function checkVerificationCommand(argv) {
   let keptIds = null;
   if (candidatesFile !== null) {
     try {
-      keptIds = keptCandidateIds(JSON.parse(readFileSync20(candidatesFile, "utf8")));
+      keptIds = keptCandidateIds(JSON.parse(readFileSync22(candidatesFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -28037,7 +28047,7 @@ function checkSimplificationCommand(argv) {
   }
   let hunks;
   try {
-    hunks = parseHunks(readFileSync20(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync22(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -28069,7 +28079,7 @@ function checkSimplificationCommand(argv) {
   }
   let candidateDocument;
   try {
-    candidateDocument = JSON.parse(readFileSync20(candidateFile, "utf8"));
+    candidateDocument = JSON.parse(readFileSync22(candidateFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${candidateFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -28164,7 +28174,7 @@ function matchHeld(candidate, held) {
   return best === null ? null : { entry: best.entry, drop: false };
 }
 function readSignals(file2, root) {
-  const document = JSON.parse(readFileSync20(file2, "utf8"));
+  const document = JSON.parse(readFileSync22(file2, "utf8"));
   if (typeof document !== "object" || document === null || Array.isArray(document)) throw new Error("not a JSON object");
   const signals = document.signals;
   if (signals === void 0) return [];
@@ -28272,7 +28282,7 @@ function checkCandidatesCommand(argv) {
       }
       let ids;
       try {
-        const statements = JSON.parse(readFileSync20(intentFile, "utf8")).statements;
+        const statements = JSON.parse(readFileSync22(intentFile, "utf8")).statements;
         if (!Array.isArray(statements)) throw new Error("statements is not a list");
         ids = new Set(statements.map((statement) => statement?.id).filter((id) => typeof id === "string"));
       } catch (error) {
@@ -28303,7 +28313,7 @@ function checkCandidatesCommand(argv) {
     }
     let hunks;
     try {
-      hunks = parseHunks(readFileSync20(diffFile, "utf8"));
+      hunks = parseHunks(readFileSync22(diffFile, "utf8"));
     } catch (error) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -28378,7 +28388,7 @@ function checkCandidatesCommand(argv) {
         return 2;
       }
       try {
-        const parsed2 = JSON.parse(readFileSync20(threadFile, "utf8"));
+        const parsed2 = JSON.parse(readFileSync22(threadFile, "utf8"));
         thread = Array.isArray(parsed2) ? parsed2 : parsed2.comments ?? [];
         if (!Array.isArray(thread)) throw new Error("comments is not a list");
       } catch (error) {
@@ -28611,7 +28621,7 @@ async function agentCommand(argv) {
   }
   let schema4;
   try {
-    schema4 = JSON.parse(readFileSync20(schemaPath, "utf8"));
+    schema4 = JSON.parse(readFileSync22(schemaPath, "utf8"));
   } catch (error) {
     console.error(`Cannot read the schema ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -28763,7 +28773,7 @@ ${topLevelHelp()}`);
       } catch {
       }
       const dataDir = dataDirectory();
-      const review2 = spawnReview(fileURLToPath6(import.meta.url), { configPath: join23(dataDir, CONFIG_COPY) });
+      const review2 = spawnReview(fileURLToPath6(import.meta.url), { configPath: join24(dataDir, CONFIG_COPY) });
       return await watchCommand(argv.slice(1), {
         configSource: root === null ? null : configFile(root),
         loadSettings: (path) => loadConfig(root ?? process.cwd(), void 0, path),
