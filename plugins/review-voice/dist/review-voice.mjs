@@ -4750,7 +4750,8 @@ function ownDiffScope(options, prior, git5, ancestor, merged) {
     paths.all,
     !ancestor ? "history-rewritten" : merged ? "base-merged" : "base-sync-only",
     replayed.conflicts,
-    paths.withdrawn
+    paths.withdrawn,
+    priorMergeBase
   );
 }
 function pullRequestPaths(options, prior, git5, priorMergeBase, mergeBase) {
@@ -4799,17 +4800,111 @@ function narrowToResolution(own, resolution) {
   }
   return ownHunks.header + ownHunks.hunks.filter((hunk) => kept.has(hunk)).map((hunk) => hunk.text).join("");
 }
-function changedSince(own, delta) {
-  const ownHunks = sectionHunks(own);
+function hunkChanges(hunk) {
+  const [header, ...body] = hunk.text.split("\n");
+  const numbers = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(header);
+  let line3 = Number(numbers[1]) + (numbers[2] === "0" ? 1 : 0);
+  let headLine = Number(numbers[3]) + (numbers[4] === "0" ? 1 : 0);
+  const changes = [];
+  let change;
+  let side;
+  for (const text4 of body) {
+    if (text4.startsWith("-") || text4.startsWith("+")) {
+      if (change === void 0) {
+        change = { start: line3, headStart: headLine, removed: [], added: [] };
+        changes.push(change);
+      }
+      side = text4.startsWith("-") ? change.removed : change.added;
+      side.push(text4.slice(1));
+      if (text4.startsWith("-")) line3++;
+      else headLine++;
+    } else if (text4.startsWith("\\")) {
+      side?.push(text4);
+    } else {
+      change = void 0;
+      side = void 0;
+      if (text4.startsWith(" ")) {
+        line3++;
+        headLine++;
+      }
+    }
+  }
+  return changes;
+}
+function withoutInheritedRuns(hunk, isInherited) {
+  const runs = hunkChanges(hunk);
+  const [header, ...body] = hunk.text.split("\n");
+  const parsed2 = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(header);
+  const kept = [];
+  let index = -1;
+  let inRun = false;
+  let dropping = false;
+  let previousDropped = false;
+  for (const text4 of body) {
+    const edit2 = text4.startsWith("-") || text4.startsWith("+");
+    if (text4.startsWith("\\")) {
+      if (!previousDropped) kept.push(text4);
+      continue;
+    }
+    if (edit2 && !inRun) {
+      inRun = true;
+      index += 1;
+      dropping = isInherited(runs[index]);
+    } else if (!edit2) {
+      inRun = false;
+      dropping = false;
+    }
+    if (dropping && text4.startsWith("-")) {
+      previousDropped = true;
+      continue;
+    }
+    previousDropped = false;
+    kept.push(dropping ? ` ${text4.slice(1)}` : text4);
+  }
+  const oldCount = kept.filter((text4) => text4.startsWith(" ") || text4.startsWith("-")).length;
+  const newCount = kept.filter((text4) => text4.startsWith(" ") || text4.startsWith("+")).length;
+  return [`@@ -${parsed2[1]},${oldCount} +${parsed2[2]},${newCount} @@${parsed2[3]}`, ...kept].join("\n");
+}
+function withoutBaseChanges(delta, base, baseDelta) {
+  if (base === void 0 || baseDelta === void 0) return { text: delta, mixed: false };
   const changes = sectionHunks(delta);
-  if (ownHunks === null || changes === null) return null;
-  const kept = ownHunks.hunks.filter((hunk) => changes.hunks.some((change) => hunk.first <= change.last && change.first <= hunk.last));
-  return kept.length === 0 ? "" : ownHunks.header + kept.map((hunk) => hunk.text).join("");
+  const baseHunks = sectionHunks(base);
+  const movedBase = sectionHunks(baseDelta);
+  if (changes === null || baseHunks === null || movedBase === null || changes.hunks.length === 0 || baseHunks.hunks.length === 0 || movedBase.hunks.length === 0 || /^(?:old mode|new mode|new file mode|deleted file mode|rename |copy )/m.test(changes.header)) return null;
+  const key2 = (change, coordinate) => JSON.stringify([change[coordinate], change.removed, change.added]);
+  const meets = (left, right, coordinate) => {
+    const side = coordinate === "start" ? "removed" : "added";
+    return left[coordinate] <= right[coordinate] + right[side].length && right[coordinate] <= left[coordinate] + left[side].length;
+  };
+  const moved = movedBase.hunks.flatMap(hunkChanges);
+  const movedKeys = new Set(moved.map((change) => key2(change, "headStart")));
+  const compared = baseHunks.hunks.flatMap(hunkChanges);
+  const baseChanges = compared.filter((change) => movedKeys.has(key2(change, "headStart")));
+  const ambiguous = compared.filter((change) => !movedKeys.has(key2(change, "headStart")) && moved.some(
+    (other) => meets(change, other, "headStart") && !(change.headStart === other.headStart && change.removed.length === 1 && other.removed.length === 1 && change.added.length === 1 && other.added.length === 1 && change.added[0] === other.added[0])
+  ));
+  const baseKeys = new Set(baseChanges.map((change) => key2(change, "start")));
+  const isInherited = (edit2) => baseKeys.has(key2(edit2, "start"));
+  const kept = [];
+  let mixed = false;
+  for (const hunk of changes.hunks) {
+    const edits = hunkChanges(hunk);
+    const inherited = edits.filter(isInherited);
+    if (inherited.length === edits.length) continue;
+    const overlapsBase = edits.some(
+      (edit2) => !isInherited(edit2) && (ambiguous.some((other) => meets(edit2, other, "start")) || baseChanges.some(
+        (other) => meets(edit2, other, "start") && (other.added.length === 0 || other.added.some((line3) => edit2.added.includes(line3)))
+      ))
+    );
+    if (overlapsBase) mixed = true;
+    kept.push(inherited.length === 0 ? hunk.text : withoutInheritedRuns(hunk, isInherited));
+  }
+  return { text: kept.length === 0 ? "" : changes.header + kept.join(""), mixed };
 }
 function hasReplayMarkers(section) {
   return /^-<{7} /m.test(section) && /^->{7} /m.test(section);
 }
-function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedReason, conflicts = [], withdrawn = []) {
+function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedReason, conflicts = [], withdrawn = [], priorMergeBase = mergeBase) {
   const diffText = git5.diffText;
   const read = (left, list2) => list2.length === 0 ? "" : diffText(left, options.head, list2, options.cwd);
   const wanted = new Set(paths);
@@ -4817,25 +4912,28 @@ function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedRe
   const own = patchSections(read(mergeBase, conflicted));
   const resolutions = patchSections(read(from, [...own.keys()]));
   const sinceReview = patchSections(read(prior.headRef, [...own.keys()]));
+  const baseChanges = patchSections(own.size === 0 ? "" : diffText(prior.headRef, mergeBase, [...own.keys()], options.cwd));
+  const baseDelta = patchSections(own.size === 0 ? "" : diffText(priorMergeBase, mergeBase, [...own.keys()], options.cwd));
   const narrowed = [];
   const whole = [];
-  const resolved = [...own].flatMap(([path, section]) => {
+  const mixed = [];
+  const resolved = [];
+  for (const [path, section] of own) {
     const delta = sinceReview.get(path);
-    if (delta === void 0) return [];
-    const cut = narrowToResolution(section, resolutions.get(path));
-    if (cut === null) {
-      whole.push(path);
-      return [section];
-    }
-    const fresh = changedSince(cut, delta);
+    if (delta === void 0) continue;
+    const fresh = withoutBaseChanges(delta, baseChanges.get(path), baseDelta.get(path));
     if (fresh === null) {
-      narrowed.push(path);
-      return [cut];
+      return {
+        scope: full("compare-unavailable", prior, `read in full after a conflicting replay: the two-head diff of ${path} could not be read hunk by hunk`),
+        interdiffPatch: null
+      };
     }
-    if (fresh.length === 0) return [];
-    narrowed.push(path);
-    return [fresh];
-  });
+    if (fresh.text.length === 0) continue;
+    if (fresh.mixed) mixed.push(path);
+    else if (narrowToResolution(section, resolutions.get(path)) === null) whole.push(path);
+    else narrowed.push(path);
+    resolved.push(fresh.text);
+  }
   const rest = paths.filter((path) => !own.has(path));
   const leaked = [];
   const dropped = [];
@@ -4853,7 +4951,8 @@ function interdiffFrom(options, prior, git5, from, mergeBase, paths, unchangedRe
   const patch = [outside, ...resolved].filter((part) => part.length > 0).join("");
   const notes = [
     narrowed.length === 0 ? null : `narrowed to the merge resolution after a conflicting replay: ${narrowed.sort().join(", ")}`,
-    whole.length === 0 ? null : `read whole after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(", ")}`,
+    whole.length === 0 ? null : `read as the two-head diff minus base changes after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(", ")}`,
+    mixed.length === 0 ? null : `kept whole hunks where the base's and the author's edits could not be separated after a conflicting replay: ${mixed.sort().join(", ")}`,
     leaked.length === 0 ? null : `read as the pull request's own diff after a conflicting replay, so no conflict marker is shown: ${leaked.sort().join(", ")}`
   ].filter((note) => note !== null);
   const detail = notes.length === 0 ? {} : { detail: notes.join("; ") };

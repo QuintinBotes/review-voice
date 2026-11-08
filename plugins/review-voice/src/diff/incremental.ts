@@ -633,6 +633,7 @@ function ownDiffScope(
     !ancestor ? 'history-rewritten' : merged ? 'base-merged' : 'base-sync-only',
     replayed.conflicts,
     paths.withdrawn,
+    priorMergeBase,
   );
 }
 
@@ -711,7 +712,8 @@ function sectionHunks(section: string): { header: string; hunks: SpannedHunk[] }
  * kept when its lines, context included, meet any of them. Anything the
  * resolution did that meets no own-diff hunk - a conflict resolved by taking
  * the base's side, which leaves no own diff there - cannot be shown this way,
- * so the whole file is read instead, as before.
+ * so the scope note names the two-head fallback. This is only diagnostic:
+ * context overlap never selects the text emitted in the interdiff (#235).
  */
 export function narrowToResolution(own: string, resolution: string | undefined): string | null {
   if (resolution === undefined) return null;
@@ -729,16 +731,152 @@ export function narrowToResolution(own: string, resolution: string | undefined):
   return ownHunks.header + ownHunks.hunks.filter((hunk) => kept.has(hunk)).map((hunk) => hunk.text).join('');
 }
 
+interface HunkChange {
+  start: number;
+  headStart: number;
+  removed: string[];
+  added: string[];
+}
+
+/** Reads edit runs in the reviewed head's coordinates, without context lines. */
+function hunkChanges(hunk: SpannedHunk): HunkChange[] {
+  const [header, ...body] = hunk.text.split('\n');
+  const numbers = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(header!)!;
+  let line = Number(numbers[1]) + (numbers[2] === '0' ? 1 : 0);
+  let headLine = Number(numbers[3]) + (numbers[4] === '0' ? 1 : 0);
+  const changes: HunkChange[] = [];
+  let change: HunkChange | undefined;
+  let side: string[] | undefined;
+  for (const text of body) {
+    if (text.startsWith('-') || text.startsWith('+')) {
+      if (change === undefined) {
+        change = { start: line, headStart: headLine, removed: [], added: [] };
+        changes.push(change);
+      }
+      side = text.startsWith('-') ? change.removed : change.added;
+      side.push(text.slice(1));
+      if (text.startsWith('-')) line++;
+      else headLine++;
+    } else if (text.startsWith('\\')) {
+      side?.push(text);
+    } else {
+      change = undefined;
+      side = undefined;
+      if (text.startsWith(' ')) {
+        line++;
+        headLine++;
+      }
+    }
+  }
+  return changes;
+}
+
 /**
- * The hunks of `own` that meet a change in `delta`, both numbered by head
- * lines: an empty string when none does, null when either cannot be read.
+ * The hunk with its inherited edit runs taken out: a run the base also made
+ * reads as the context it now is, its removed lines gone and its added lines
+ * kept as unchanged ones, so what is left is the author's work alone. The
+ * header is recounted. Its old start keeps the reviewed head's numbering,
+ * which after the subtraction names no real file but which nothing reads; the
+ * new side stays the current head's, which anchors do read.
  */
-function changedSince(own: string, delta: string): string | null {
-  const ownHunks = sectionHunks(own);
+function withoutInheritedRuns(hunk: SpannedHunk, isInherited: (edit: HunkChange) => boolean): string {
+  const runs = hunkChanges(hunk);
+  const [header, ...body] = hunk.text.split('\n');
+  const parsed = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(header!)!;
+  const kept: string[] = [];
+  let index = -1;
+  let inRun = false;
+  let dropping = false;
+  let previousDropped = false;
+  for (const text of body) {
+    const edit = text.startsWith('-') || text.startsWith('+');
+    if (text.startsWith('\\')) {
+      // A no-newline marker belongs to the line before it and goes where that line went.
+      if (!previousDropped) kept.push(text);
+      continue;
+    }
+    if (edit && !inRun) {
+      inRun = true;
+      index += 1;
+      dropping = isInherited(runs[index]!);
+    } else if (!edit) {
+      inRun = false;
+      dropping = false;
+    }
+    if (dropping && text.startsWith('-')) {
+      previousDropped = true;
+      continue;
+    }
+    previousDropped = false;
+    kept.push(dropping ? ` ${text.slice(1)}` : text);
+  }
+  const oldCount = kept.filter((text) => text.startsWith(' ') || text.startsWith('-')).length;
+  const newCount = kept.filter((text) => text.startsWith(' ') || text.startsWith('+')).length;
+  return [`@@ -${parsed[1]},${oldCount} +${parsed[2]},${newCount} @@${parsed[3]}`, ...kept].join('\n');
+}
+
+/**
+ * Removes only edits also made by the base, comparing both from the reviewed
+ * head. Context overlap cannot prove that an edit came from the base (#235).
+ * An inherited run that shares a hunk with the author's edit is taken out of
+ * that hunk, so the hunk shows the author's work alone (#26). A hunk whose edit
+ * overlaps a base edit without matching it (the two sides rewrote the same
+ * lines) is kept whole and reported as `mixed`: the author wrote those lines
+ * while resolving, so the reviewer reads them. Null only when the diff cannot
+ * be read hunk by hunk.
+ */
+function withoutBaseChanges(delta: string, base: string | undefined, baseDelta: string | undefined): { text: string; mixed: boolean } | null {
+  if (base === undefined || baseDelta === undefined) return { text: delta, mixed: false };
   const changes = sectionHunks(delta);
-  if (ownHunks === null || changes === null) return null;
-  const kept = ownHunks.hunks.filter((hunk) => changes.hunks.some((change) => hunk.first <= change.last && change.first <= hunk.last));
-  return kept.length === 0 ? '' : ownHunks.header + kept.map((hunk) => hunk.text).join('');
+  const baseHunks = sectionHunks(base);
+  const movedBase = sectionHunks(baseDelta);
+  if (
+    changes === null || baseHunks === null || movedBase === null ||
+    changes.hunks.length === 0 || baseHunks.hunks.length === 0 || movedBase.hunks.length === 0 ||
+    /^(?:old mode|new mode|new file mode|deleted file mode|rename |copy )/m.test(changes.header)
+  ) return null;
+  const key = (change: HunkChange, coordinate: 'start' | 'headStart'): string =>
+    JSON.stringify([change[coordinate], change.removed, change.added]);
+  const meets = (left: HunkChange, right: HunkChange, coordinate: 'start' | 'headStart'): boolean => {
+    const side = coordinate === 'start' ? 'removed' : 'added';
+    return left[coordinate] <= right[coordinate] + right[side].length && right[coordinate] <= left[coordinate] + left[side].length;
+  };
+  // A comparison to the base also reverses PR edits that the base never made.
+  // Only edits present in the base's own history can be subtracted.
+  const moved = movedBase.hunks.flatMap(hunkChanges);
+  const movedKeys = new Set(moved.map((change) => key(change, 'headStart')));
+  const compared = baseHunks.hunks.flatMap(hunkChanges);
+  const baseChanges = compared.filter((change) => movedKeys.has(key(change, 'headStart')));
+  // A single replaced line with a different old value is the author's
+  // conflict resolution. Larger overlapping replacements remain ambiguous.
+  const ambiguous = compared.filter((change) => !movedKeys.has(key(change, 'headStart')) && moved.some((other) =>
+    meets(change, other, 'headStart') && !(
+      change.headStart === other.headStart && change.removed.length === 1 && other.removed.length === 1 &&
+      change.added.length === 1 && other.added.length === 1 && change.added[0] === other.added[0]
+    )
+  ));
+  const baseKeys = new Set(baseChanges.map((change) => key(change, 'start')));
+  const isInherited = (edit: HunkChange): boolean => baseKeys.has(key(edit, 'start'));
+  const kept: string[] = [];
+  let mixed = false;
+  for (const hunk of changes.hunks) {
+    const edits = hunkChanges(hunk);
+    const inherited = edits.filter(isInherited);
+    if (inherited.length === edits.length) continue;
+    // A base edit that overlaps the author's without matching it, or a shared
+    // edit inside a larger replacement, cannot be taken out line by line.
+    const overlapsBase = edits.some((edit) =>
+      !isInherited(edit) && (
+        ambiguous.some((other) => meets(edit, other, 'start')) ||
+        baseChanges.some((other) =>
+          meets(edit, other, 'start') && (other.added.length === 0 || other.added.some((line) => edit.added.includes(line))),
+        )
+      ),
+    );
+    if (overlapsBase) mixed = true;
+    kept.push(inherited.length === 0 ? hunk.text : withoutInheritedRuns(hunk, isInherited));
+  }
+  return { text: kept.length === 0 ? '' : changes.header + kept.join(''), mixed };
 }
 
 /**
@@ -754,15 +892,13 @@ function hasReplayMarkers(section: string): boolean {
  * new base - over the pull request's files only.
  *
  * A file whose replay conflicted has only markers to compare with, so it is
- * read as the pull request's own diff of it on the new base, cut to the hunks
- * the resolution touched; when those cannot be matched up, the whole of that
- * own diff, which shows the author's resolution and everything else the pull
- * request does there, and none of the base's changes. A cut file is then cut
- * again to the hunks that changed since the reviewed head, and a file the
- * same at both heads is left out, so a base merge that conflicted but left the
- * author's code as reviewed reads as unchanged. If that own diff is empty the
- * author resolved by dropping their change, and the marker diff is the only
- * place the withdrawal would show; but it shows it through the replay's
+ * read between the two heads with matching base edits removed. The own diff
+ * is only used to identify files and describe whether the resolution matched
+ * its hunks, never as replacement text for the actual changes since review.
+ * A file the same at both heads is left out, so a base merge that conflicted
+ * but left the author's code as reviewed reads as unchanged. If its own diff
+ * is empty the author resolved by dropping their change, and the marker diff
+ * is the only place the withdrawal would show; but it shows it through the replay's
  * conflict markers, so such a file is left out and listed instead (#73).
  */
 function interdiffFrom(
@@ -775,6 +911,7 @@ function interdiffFrom(
   unchangedReason: UnchangedReason,
   conflicts: string[] = [],
   withdrawn: string[] = [],
+  priorMergeBase: string = mergeBase,
 ): PlannedScope {
   const diffText = git.diffText as NonNullable<IncrementalGit['diffText']>;
   // No pathspec means the whole range to git: with no pull request files, the
@@ -787,34 +924,31 @@ function interdiffFrom(
   const conflicted = conflicts.filter((path) => wanted.has(path));
   const own = patchSections(read(mergeBase, conflicted));
   const resolutions = patchSections(read(from, [...own.keys()]));
-  // What each conflicted file changed since the reviewed head itself (#63). A
-  // file that is the same at both heads holds nothing the review did not
-  // read, however far the base moved under it, so it drops out. When the
-  // resolution matched up hunk by hunk, the author withdrew nothing - a
-  // withdrawal is a resolution hunk with no own hunk - so a change since the
-  // review that meets no own hunk is the base's, and an own hunk that meets
-  // no such change is code the review already read, moved at most: only the
-  // own hunks that changed since the review are kept, and none can mean none.
+  // Both comparisons start at the reviewed head, so identical edit runs at
+  // the same old lines are inherited from the base, even if context differs.
   const sinceReview = patchSections(read(prior.headRef, [...own.keys()]));
+  const baseChanges = patchSections(own.size === 0 ? '' : diffText(prior.headRef, mergeBase, [...own.keys()], options.cwd));
+  const baseDelta = patchSections(own.size === 0 ? '' : diffText(priorMergeBase, mergeBase, [...own.keys()], options.cwd));
   const narrowed: string[] = [];
   const whole: string[] = [];
-  const resolved = [...own].flatMap(([path, section]) => {
+  const mixed: string[] = [];
+  const resolved: string[] = [];
+  for (const [path, section] of own) {
     const delta = sinceReview.get(path);
-    if (delta === undefined) return [];
-    const cut = narrowToResolution(section, resolutions.get(path));
-    if (cut === null) {
-      whole.push(path);
-      return [section];
-    }
-    const fresh = changedSince(cut, delta);
+    if (delta === undefined) continue;
+    const fresh = withoutBaseChanges(delta, baseChanges.get(path), baseDelta.get(path));
     if (fresh === null) {
-      narrowed.push(path);
-      return [cut];
+      return {
+        scope: full('compare-unavailable', prior, `read in full after a conflicting replay: the two-head diff of ${path} could not be read hunk by hunk`),
+        interdiffPatch: null,
+      };
     }
-    if (fresh.length === 0) return [];
-    narrowed.push(path);
-    return [fresh];
-  });
+    if (fresh.text.length === 0) continue;
+    if (fresh.mixed) mixed.push(path);
+    else if (narrowToResolution(section, resolutions.get(path)) === null) whole.push(path);
+    else narrowed.push(path);
+    resolved.push(fresh.text);
+  }
   const rest = paths.filter((path) => !own.has(path));
   // A replay's conflict markers are never the author's lines, yet a file read
   // against a conflicted replay shows them as removed code, and an analyst
@@ -841,7 +975,10 @@ function interdiffFrom(
     narrowed.length === 0 ? null : `narrowed to the merge resolution after a conflicting replay: ${narrowed.sort().join(', ')}`,
     whole.length === 0
       ? null
-      : `read whole after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(', ')}`,
+      : `read as the two-head diff minus base changes after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(', ')}`,
+    mixed.length === 0
+      ? null
+      : `kept whole hunks where the base's and the author's edits could not be separated after a conflicting replay: ${mixed.sort().join(', ')}`,
     leaked.length === 0
       ? null
       : `read as the pull request's own diff after a conflicting replay, so no conflict marker is shown: ${leaked.sort().join(', ')}`,

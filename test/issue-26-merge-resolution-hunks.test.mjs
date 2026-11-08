@@ -3,9 +3,9 @@
  *
  * A conflicted file was read as the pull request's whole own diff of it, so a
  * one-line resolution in a long file re-read every hunk the earlier review
- * had covered. It is now cut to the hunks the resolution touched, and read
- * whole only when the resolution cannot be matched to hunks, which the scope
- * note says. A file the pull request no longer changes because the base made
+ * had covered. It now reads the two-head changes minus inherited base edits,
+ * and names the fallback when the resolution cannot be matched to hunks. A
+ * file the pull request no longer changes because the base made
  * the same change is listed rather than silently gone.
  */
 import { test } from 'node:test';
@@ -123,7 +123,7 @@ test('an edit made in a clean part of a conflicted file while resolving is kept'
   });
 });
 
-test('a resolution that cannot be matched to hunks reads the file whole, and the scope note says so', () => {
+test('a resolution that cannot be matched to hunks reads the two-head diff, and the scope note says so', () => {
   withPullRequest((repository) => {
     baseRewritesLine5(repository);
     // The base's side is taken at line 5: no own diff is left there, so that
@@ -133,8 +133,9 @@ test('a resolution that cannot be matched to hunks reads the file whole, and the
 
     const { scope, interdiffPatch } = plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
-    assert.match(interdiffPatch, /^\+a 300 by the author$/m);
-    assert.match(scope.detail, /read whole after a conflicting replay, as its resolution could not be matched to hunks: src\/a\.ts/);
+    assert.equal(interdiffPatch, repository.git('diff', repository.reviewed, 'HEAD', '--', 'src/a.ts'));
+    assert.doesNotMatch(interdiffPatch, /a 300/);
+    assert.match(scope.detail, /read as the two-head diff minus base changes after a conflicting replay, as its resolution could not be matched to hunks: src\/a\.ts/);
 
     const scoped = applyReviewScope(acquired(repository), 7, scope, repository.root, undefined, interdiffPatch);
     assert.match(scoped.scopeNote, /could not be matched to hunks: src\/a\.ts\.$/);
