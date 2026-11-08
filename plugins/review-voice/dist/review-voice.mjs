@@ -2863,18 +2863,20 @@ function splitLine(text4, language3) {
         code += "  ";
         raw += text4.slice(index, index + 2);
         index += 1;
-      } else if (char === quote2) {
+      } else if (text4.startsWith(quote2, index)) {
+        code += quote2;
+        raw += quote2;
+        index += quote2.length - 1;
         quote2 = null;
-        code += char;
-        raw += char;
       } else {
         code += " ";
         raw += char;
       }
     } else if (language3.quotes.includes(char)) {
-      quote2 = char;
-      code += char;
-      raw += char;
+      quote2 = language3.tripleQuotes === true && text4.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
+      code += quote2;
+      raw += quote2;
+      index += quote2.length - 1;
     } else if (text4.startsWith(language3.lineComment, index)) {
       comment += text4.slice(index);
       break;
@@ -3230,55 +3232,61 @@ var CODE_RULES = [
   }
 ];
 var URL_RULE = { kind: "new-route", in: "code", pattern: /(?<![\w.])path\s*\(/g };
-function buildsQuery(code, raw, quotes, at2) {
-  let open = -1;
-  let quote2 = "";
-  for (let index = 0; index <= code.length; index += 1) {
+function buildsQuery(code, raw, quotes, triple, at2) {
+  let index = 0;
+  while (index < code.length) {
     const char = code[index];
-    if (open === -1) {
-      if (char !== void 0 && quotes.includes(char)) {
-        open = index;
-        quote2 = char;
-      }
+    if (!quotes.includes(char)) {
+      index += 1;
       continue;
     }
-    const closed = char === quote2;
-    if (!closed && index < code.length) continue;
-    if (at2 > open && at2 < index) {
-      const inside = raw.slice(open + 1, index);
+    const delimiter = triple && code.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
+    const open = index;
+    const close = code.indexOf(delimiter, open + delimiter.length);
+    const end = close === -1 ? code.length : close;
+    if (at2 > open && at2 < end) {
+      const inside = raw.slice(open + delimiter.length, end);
       const prefix = code.slice(0, open);
       const interpolated = /\$\{|%s/.test(inside) || /(?<![\w$])(?:rf|fr|f)$/i.test(prefix) && inside.includes("{");
       const before = prefix.trimEnd();
-      const after = closed ? code.slice(index + 1).trimStart() : "";
+      const after = close === -1 ? "" : code.slice(end + delimiter.length).trimStart();
       const joined = before.endsWith("+") || /^(?:\+|%(?!=)|\.format\s*\()/.test(after);
       return interpolated || joined;
     }
-    open = -1;
+    index = close === -1 ? code.length : close + delimiter.length;
   }
   return false;
 }
-function queryRule(quotes) {
+function queryRule(quotes, triple) {
   return {
     kind: "string-built-query",
     in: "raw",
     pattern: /\b(?:SELECT|INSERT|UPDATE|DELETE)\b/g,
-    accept: (match, line3) => buildsQuery(line3.code, line3.raw, quotes, match.index ?? 0)
+    accept: (match, line3) => buildsQuery(line3.code, line3.raw, quotes, triple, match.index ?? 0)
   };
 }
-function language2(quotes, lineComment2, blockComments, regexLiterals = false) {
-  return { rules: [...CODE_RULES, queryRule(quotes)], quotes, lineComment: lineComment2, blockComments, ...regexLiterals ? { regexLiterals } : {} };
+function language2(quotes, lineComment2, blockComments, regexLiterals = false, tripleQuotes = false) {
+  return {
+    rules: [...CODE_RULES, queryRule(quotes, tripleQuotes)],
+    quotes,
+    lineComment: lineComment2,
+    blockComments,
+    ...regexLiterals ? { regexLiterals } : {},
+    ...tripleQuotes ? { tripleQuotes } : {}
+  };
 }
 var SCRIPT2 = language2("'\"`", "//", true, true);
 var C_STYLE2 = language2(`'"`, "//", true);
 var GO2 = language2("'\"`", "//", true);
 var PHP2 = { ...C_STYLE2, altLineComment: "#" };
 var HASH2 = language2(`'"`, "#", false);
+var PYTHON2 = language2(`'"`, "#", false, false, true);
 var LANGUAGES4 = {
   ...Object.fromEntries([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, SCRIPT2])),
   ...Object.fromEntries([".cs", ".java", ".kt"].map((ext) => [ext, C_STYLE2])),
   ".php": PHP2,
   ".go": GO2,
-  ".py": HASH2,
+  ".py": PYTHON2,
   ".rb": HASH2
 };
 function kindsIn3(text4, lang, urls) {
@@ -3708,9 +3716,9 @@ var SONNET = "sonnet";
 var OPUS = "opus";
 var THOROUGH_LINE_LIMIT = 150;
 function autoMode(input) {
-  if (!input.productionSourceChanged) return { mode: "fast", reason: "auto: no production source changed" };
-  if (input.complexity === "high") return { mode: "thorough", reason: "auto: complexity is high" };
   const removed = input.removedControls ?? 0;
+  if (!input.productionSourceChanged && removed === 0) return { mode: "fast", reason: "auto: no production source changed" };
+  if (input.complexity === "high") return { mode: "thorough", reason: "auto: complexity is high" };
   if (removed > 0) {
     return { mode: "thorough", reason: `auto: ${removed} control${removed === 1 ? " was" : "s were"} removed` };
   }
@@ -16390,7 +16398,7 @@ function signal(tool, kind, path, line3, claim, raw) {
   };
 }
 var TSC = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.*)$/;
-var PYTHON2 = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/;
+var PYTHON3 = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/;
 var DOTNET = /^\s*(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+([A-Z]+\d+):\s+(.*?)(?:\s+\[.*\])?$/;
 var ADAPTERS = [
   {
@@ -16410,7 +16418,7 @@ var ADAPTERS = [
   {
     name: "python",
     matches: (command) => /mypy|ruff|flake8|pylint|pytest/i.test(command),
-    parse: (output, tool) => output.split("\n").map((line3) => PYTHON2.exec(line3)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(
+    parse: (output, tool) => output.split("\n").map((line3) => PYTHON3.exec(line3)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(
       (match) => signal(tool, "lint_or_type_error", match[1], Number(match[2]), `${match[4]}: ${match[5]}`, match[0])
     )
   },

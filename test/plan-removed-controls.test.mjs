@@ -47,10 +47,11 @@ test('an explicit mode is not changed by a removal', () => {
   assert.equal(resolvePlan({ requested: 'thorough', ...SMALL, removedControls: 1 }).reason, 'mode set to thorough');
 });
 
-test('the rule sits after the no-production-source clause, so a change with none is still fast', () => {
+test('a removal counts even when no reviewed production source changed: the control may have left with a deleted file', () => {
   const plan = resolvePlan({ requested: 'auto', ...DOCS, removedControls: 2 });
-  assert.equal(plan.mode, 'fast');
-  assert.equal(plan.reason, 'auto: no production source changed');
+  assert.equal(plan.mode, 'thorough');
+  assert.equal(plan.reason, 'auto: 2 controls were removed');
+  assert.equal(resolvePlan({ requested: 'auto', ...DOCS }).mode, 'fast', 'with nothing removed the docs-only change stays fast');
 });
 
 test('high complexity still gives its own reason ahead of a removal', () => {
@@ -106,8 +107,8 @@ test('plan command: no structure block, a missing key, or a list that is not a l
   }
 });
 
-test('plan command: a removal in a docs-only change is still fast', () => {
+test('plan command: a removal beside a docs-only change is thorough, as when a guarded file was deleted', () => {
   const plan = planCli({ files: [file('docs/x.md')], complexity: { level: 'normal' }, structure: { removedControls: [control] } });
-  assert.equal(plan.mode, 'fast');
-  assert.equal(plan.reason, 'auto: no production source changed');
+  assert.equal(plan.mode, 'thorough');
+  assert.equal(plan.reason, 'auto: 1 control was removed');
 });

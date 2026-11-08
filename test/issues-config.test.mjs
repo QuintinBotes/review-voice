@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../plugins/review-voice/src/policy/load.ts';
+import { DIFF_LANE } from '../plugins/review-voice/src/review/lanes.ts';
 import { resolvePolicy } from '../plugins/review-voice/src/policy/schema.ts';
 import { compileProposals } from '../plugins/review-voice/src/policy/compile.ts';
 import { storeEvents, corpusCoverage } from '../plugins/review-voice/src/corpus/store.ts';
@@ -35,12 +36,14 @@ function withRepo(config, fn) {
 }
 
 // #197
-test('the shipped example config loads with no warnings', () => {
+test('the shipped example config loads with no extra lanes and no warnings', () => {
   const dir = mkdtempSync(join(tmpdir(), 'rv-example-'));
   try {
     mkdirSync(join(dir, '.review-voice'));
     execFileSync('cp', [example, join(dir, '.review-voice', 'config.yaml')]);
-    assert.deepEqual(loadConfig(dir).warnings, []);
+    const config = loadConfig(dir);
+    assert.deepEqual(config.lanes, [DIFF_LANE]);
+    assert.deepEqual(config.warnings, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

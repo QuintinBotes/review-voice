@@ -79,47 +79,54 @@ const URL_RULE: Rule<RiskMarkerKind> = { kind: 'new-route', in: 'code', pattern:
  * a `+`, `%` or `.format(` beside it, or a placeholder inside it. A keyword
  * outside every string, or in a string with neither, is plain text.
  */
-function buildsQuery(code: string, raw: string, quotes: string, at: number): boolean {
-  let open = -1;
-  let quote = '';
-  for (let index = 0; index <= code.length; index += 1) {
-    const char = code[index];
-    if (open === -1) {
-      if (char !== undefined && quotes.includes(char)) {
-        open = index;
-        quote = char;
-      }
+function buildsQuery(code: string, raw: string, quotes: string, triple: boolean, at: number): boolean {
+  let index = 0;
+  while (index < code.length) {
+    const char = code[index]!;
+    if (!quotes.includes(char)) {
+      index += 1;
       continue;
     }
-    const closed = char === quote;
-    if (!closed && index < code.length) continue;
-    // `index` is the closing quote, or the line end for a string that goes on.
-    if (at > open && at < index) {
-      const inside = raw.slice(open + 1, index);
+    // The delimiter the tokenizer opened with: three quotes stand for one when
+    // the language has triple quotes, and the code view kept them.
+    const delimiter = triple && code.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
+    const open = index;
+    const close = code.indexOf(delimiter, open + delimiter.length);
+    // `end` is the closing delimiter, or the line end for a string that goes on.
+    const end = close === -1 ? code.length : close;
+    if (at > open && at < end) {
+      const inside = raw.slice(open + delimiter.length, end);
       const prefix = code.slice(0, open);
       // An f-string interpolates only when it holds a placeholder.
       const interpolated = /\$\{|%s/.test(inside) || (/(?<![\w$])(?:rf|fr|f)$/i.test(prefix) && inside.includes('{'));
       const before = prefix.trimEnd();
-      const after = closed ? code.slice(index + 1).trimStart() : '';
+      const after = close === -1 ? '' : code.slice(end + delimiter.length).trimStart();
       const joined = before.endsWith('+') || /^(?:\+|%(?!=)|\.format\s*\()/.test(after);
       return interpolated || joined;
     }
-    open = -1;
+    index = close === -1 ? code.length : close + delimiter.length;
   }
   return false;
 }
 
-function queryRule(quotes: string): Rule<RiskMarkerKind> {
+function queryRule(quotes: string, triple: boolean): Rule<RiskMarkerKind> {
   return {
     kind: 'string-built-query',
     in: 'raw',
     pattern: /\b(?:SELECT|INSERT|UPDATE|DELETE)\b/g,
-    accept: (match, line) => buildsQuery(line.code, line.raw, quotes, match.index ?? 0),
+    accept: (match, line) => buildsQuery(line.code, line.raw, quotes, triple, match.index ?? 0),
   };
 }
 
-function language(quotes: string, lineComment: string, blockComments: boolean, regexLiterals = false): Language<RiskMarkerKind> {
-  return { rules: [...CODE_RULES, queryRule(quotes)], quotes, lineComment, blockComments, ...(regexLiterals ? { regexLiterals } : {}) };
+function language(quotes: string, lineComment: string, blockComments: boolean, regexLiterals = false, tripleQuotes = false): Language<RiskMarkerKind> {
+  return {
+    rules: [...CODE_RULES, queryRule(quotes, tripleQuotes)],
+    quotes,
+    lineComment,
+    blockComments,
+    ...(regexLiterals ? { regexLiterals } : {}),
+    ...(tripleQuotes ? { tripleQuotes } : {}),
+  };
 }
 
 const SCRIPT = language('\'"`', '//', true, true);
@@ -128,13 +135,16 @@ const GO = language('\'"`', '//', true);
 // PHP comments with `#` as well as `//`; `#[` opens an attribute.
 const PHP: Language<RiskMarkerKind> = { ...C_STYLE, altLineComment: '#' };
 const HASH = language('\'"', '#', false);
+// Python's triple quotes are one delimiter; a docstring or a query written in
+// one would otherwise read as code after its first quote.
+const PYTHON = language('\'"', '#', false, false, true);
 
 const LANGUAGES: Record<string, Language<RiskMarkerKind>> = {
   ...Object.fromEntries(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'].map((ext) => [ext, SCRIPT])),
   ...Object.fromEntries(['.cs', '.java', '.kt'].map((ext) => [ext, C_STYLE])),
   '.php': PHP,
   '.go': GO,
-  '.py': HASH,
+  '.py': PYTHON,
   '.rb': HASH,
 };
 

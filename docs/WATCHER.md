@@ -109,11 +109,12 @@ interface AgentSpec {
 interface AgentResult { ok: boolean; output: unknown; costUsd: number | null; seconds: number; error?: string }
 
 // A configured analyst lane.
+type LaneSignal = 'removed-controls' | 'risk-markers' | 'type-escapes' | 'branch-growth' | 'size-crossing';
 interface Lane {
   name: string;                        // 'diff' is built in and always on
   agent: string;                       // agent file stem, e.g. 'structure-analyst'
   prefix: string;                      // candidate_id prefix, e.g. 'st_'
-  when: { minChangedSourceLines?: number; paths?: string[]; excludeKinds?: ('test'|'docs'|'config'|'generated')[] };
+  when: { minChangedSourceLines?: number; paths?: string[]; excludeKinds?: ('test'|'docs'|'config'|'generated')[]; signals?: LaneSignal[] };
   severity: { cap?: Tier; escalate?: { to: Tier; requires: 'blocker_confirmed' } };
 }
 
@@ -171,6 +172,17 @@ review:
       prefix: st_
       when: { min_changed_source_lines: 40, exclude_kinds: [test, docs, config, generated] }
       severity: { cap: minor, escalate: { to: important, requires: blocker_confirmed } }
+    # Optional specialists, off by default. Uncomment to enable.
+    # - name: security
+    #   agent: security-analyst
+    #   prefix: sec_
+    #   when: { signals: [removed-controls, risk-markers], paths: ['src/**'] }
+    #   severity: { escalate: { to: blocking, requires: blocker_confirmed } }
+    # - name: concurrency
+    #   agent: concurrency-analyst
+    #   prefix: cc_
+    #   when: { signals: [risk-markers], min_changed_source_lines: 80 }
+    #   severity: { cap: important }
   challenge:
     enabled: true                    # ADR 0024; on in standard and thorough
   human_review:
@@ -205,6 +217,23 @@ watch:                               # ADR 0027
 writes:
   github_posting_enabled: false      # unchanged; still required to post
 ```
+
+`review.lanes` is opt-in. The structure lane above is an example, and the
+shipped configuration enables no extra lanes. A lane's `when.signals` accepts
+only `removed-controls`, `risk-markers`, `type-escapes`, `branch-growth` and
+`size-crossing`. An unknown signal drops that lane with a warning. With
+signals configured, a lane is eligible when any listed signal has an entry
+within its `paths` (any path if omitted), or when an explicitly set
+`min_changed_source_lines` is met. An absent minimum does not wake a signal
+lane. A missing `structure` block or signal list counts as no signal. Without
+`when.signals`, the line-count rule is unchanged, including an absent minimum
+meaning always eligible. Eligibility reasons name the clause that held.
+
+The shipped `security-analyst` (`sec_`) follows removed controls and risk
+markers through a cited guard search. `concurrency-analyst` (`cc_`) checks
+shared state, interleavings, lock order, cancellation and parallelism. Their
+commented examples above add no agent calls until enabled, and signals remain
+leads for an analyst to check.
 
 ## Commands
 
@@ -334,10 +363,12 @@ claim during the run. That is the same repeat rule `check-candidates` applies.
 | edit | sonnet | sonnet | sonnet |
 
 `auto` picks `fast` when no production source changed (documentation, tests,
-configuration or generated files only), `thorough` when complexity is `high` or
-more than 150 production lines changed, and `standard` otherwise. `fast` never
-posts anything above a nit without a challenge. A minor or above finding found
-in `fast` mode runs the challenge stage anyway.
+configuration or generated files only), `thorough` when complexity is `high`,
+a control was removed (`structure.removedControls` is nonempty), or more than
+150 production lines changed, and `standard` otherwise. A removed control
+changes models and stages, never the verdict. `fast` never posts anything above
+a nit without a challenge. A minor or above finding found in `fast` mode runs
+the challenge stage anyway.
 
 ## Outcomes and precision
 

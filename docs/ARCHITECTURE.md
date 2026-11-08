@@ -311,10 +311,10 @@ decision point is. By default it is evidence only; a repository can opt in
 with `review.human_review.structure.branch_growth` to make a nonempty
 `branchGrowth` list join the same ADR 0012 cap.
 
-Both switches default to false. Enabling one changes only an otherwise
-APPROVE verdict to COMMENT: it does not raise a maintainability tier, create a
-REQUEST_CHANGES event, add a new GitHub write, or put the structural reason in
-the posted review. The signal is named only in the existing local
+These switches and `removed_controls` below default to false. Enabling one
+changes only an otherwise APPROVE verdict to COMMENT. It does not raise a
+maintainability tier, create a REQUEST_CHANGES event, add a new GitHub write,
+or put the structural reason in the posted review. The signal is named only in the existing local
 `humanReviewNote` and decision data.
 
 The third is `typeEscapes`: `{ path, line, kind }` for each escape from the type
@@ -354,11 +354,27 @@ their entries use line 1 and `deletedFile: true`, as do the entries of a file
 emptied of every line, since neither has a surviving line to anchor on. Deleted
 files are skipped when the base side is unavailable or its blob cannot be read. Configured test paths and
 generated files are excluded by the same classification as other structural
-signals. The manifest and summary carry the same array. An entry is evidence
-only and does not change the verdict: the analyst must read the surrounding
-code and search the head for a re-established check, and the verifier must
-confirm its absence. A check found elsewhere yields no finding; an untraced
-consequence yields a question.
+signals. The manifest and summary carry the same array. By default an entry
+is evidence only. The analyst must read the surrounding code and search the
+head for a re-established check, and the verifier must confirm its absence.
+A check found elsewhere yields no finding; an untraced consequence yields a
+question. A repository may opt in with
+`review.human_review.structure.removed_controls: true` to make a nonempty
+`removedControls` list join the same approval cap as size crossings and branch
+growth. This holds an otherwise APPROVE at COMMENT with a local
+`humanReviewNote`, adds no finding or posted text, and defaults to false.
+
+The fifth is `riskMarkers`, always present as an array of `{ path, line, kind }`
+in the manifest and summary. It lists added production-source lines in four
+kinds, `new-route`, `lock-or-async`, `string-built-query` and `unsafe`.
+`diff/risk-markers.ts` scans lexically with no parser, sharing the quote and
+comment handling of `typeEscapes`. Route, lock and unsafe patterns inside a
+string or comment do not match. A query marker needs a SQL keyword in a quoted
+segment with concatenation or interpolation on the same line; a plain SQL
+string does not match. At most 20 entries per file are kept, earliest first,
+with head-side line numbers and no source text. Scanning is line by line,
+without tracking multiline strings or block comments. Every marker is a lead
+for an analyst to investigate, never a finding or a verdict by itself.
 
 `review.structure.simplify` defaults to `false`. When it is `true` (or a review
 is invoked with `--simplify`), the review command runs one additional analyst
@@ -611,12 +627,35 @@ A lane is a configured analyst: an agent file, an eligibility rule, a
 candidate id prefix and a severity rule (ADR 0023). The `diff` lane
 (`diff-analyst`, `cand_`) is built in and always runs; `review.lanes` adds
 others, such as the shipped `structure` lane (`structure-analyst`, `st_`).
-`lanes` prints which of them run on a change: a lane runs when its changed
-lines reach `min_changed_source_lines`. `productionChange` counts them: by
-default it leaves out tests, documentation, generated files and configuration
-(a kind only this count has, so the decision-point count is unchanged), a
-lane's `exclude_kinds` replaces that list, and its `paths` narrow it. Lane candidates are merged before
-`check-candidates`, which refuses a candidate whose `lane` is not configured or
+`lanes` prints eligibility and its reason for each lane. Without
+`when.signals`, a lane is eligible when its changed lines reach
+`min_changed_source_lines`, or always when the minimum is absent.
+`productionChange` counts them. By default it leaves out tests, documentation,
+generated files and configuration (a kind only this count has, so the
+decision-point count is unchanged). A lane's `exclude_kinds` replaces that
+list, and its `paths` narrow it.
+
+`when.signals` accepts a closed list of `removed-controls`, `risk-markers`,
+`type-escapes`, `branch-growth` and `size-crossing`, read from the corresponding
+arrays in the manifest's `structure` block. An unknown signal drops the lane
+with a warning. A lane with signals is eligible when any listed signal has an
+entry within its `paths` (all paths when omitted), or when an explicitly set
+line minimum is met. An absent minimum is not zero for a signal lane. A
+missing `structure` block or listed key counts as no signal, and the reason
+names whichever clause held.
+
+Two more analysts ship, both off by default. `security-analyst` uses `sec_`
+and categories `security`, `authorization`, `authentication` and
+`trust_boundary`. Its blocker classes are `removed-control`,
+`missing-object-authorization`, `string-built-query` and `fail-open-default`.
+`concurrency-analyst` uses `cc_` and category `concurrency`, with blocker
+classes `unguarded-read-decide-write`, `lock-order` and
+`missing-cancellation`. Their checklists require a cited search for the guard;
+the verifier defines and independently checks each class. The example config
+shows both as commented entries, leaving only the built-in diff lane active.
+
+Lane candidates are merged before `check-candidates`, which refuses a
+candidate whose `lane` is not configured or
 whose id lacks that lane's prefix. In `score` the lane rule runs last, on the
 tier already derived and bounded: `cap` only lowers it, and `escalate` raises
 it only when the verifier set `blocker_confirmed` and the traced-impact bar

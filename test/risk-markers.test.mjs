@@ -314,3 +314,15 @@ test('riskMarkers is always present, an empty array when nothing matches', (t) =
   assert.deepEqual(manifest.structure.riskMarkers, []);
   assert.deepEqual(summary.structure.riskMarkers, []);
 });
+
+// ---- Python's triple quotes are one delimiter --------------------------------
+
+test('a triple-quoted Python string is one string: queries built in one are markers, text in one is not code', () => {
+  assert.deepEqual(kinds(PY, 'cur.execute(f"""SELECT * FROM orders WHERE id = {order_id}""")'), ['string-built-query']);
+  assert.deepEqual(kinds(PY, 'query = """SELECT * FROM orders WHERE id = """ + str(order_id)'), ['string-built-query']);
+  assert.deepEqual(kinds(PY, 'query = """SELECT * FROM orders WHERE id = {}""".format(order_id)'), ['string-built-query']);
+  assert.deepEqual(kinds(PY, 'note = """An "eval(source)" example"""'), [], 'a call named inside a docstring is text');
+  assert.deepEqual(kinds(PY, 'query = """SELECT " + name + " FROM orders"""'), [], 'a plus inside the literal joins nothing');
+  assert.deepEqual(kinds(PY, "doc = '''SELECT is a keyword'''"), [], 'a plain triple-quoted literal is plain text');
+  assert.deepEqual(kinds(PY, 'empty = ""; eval(source)'), ['unsafe'], 'two quotes are still an empty string, not a triple');
+});
