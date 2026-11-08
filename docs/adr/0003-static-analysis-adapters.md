@@ -86,3 +86,22 @@ holds no untracked installs, so a check that needs `node_modules` or a
 virtual environment must install first or find its tool on PATH. The report
 records the directory the commands ran in as `cwd`, and `check-candidates`
 resolves a tool's absolute paths against it.
+
+2026-11-08, issue 279. Configured commands no longer inherit the reviewer's
+environment. Every `static_evidence` command, its `version` command and the
+`verification` command run with `PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR`,
+`CI` and `TERM` when set, and nothing else unless the configuration lists it
+by name under `static_evidence.env_passthrough` or
+`verification.env_passthrough`. So the author's code a command delegates to no
+longer receives the reviewer's tokens (`GITHUB_TOKEN`, `GH_TOKEN`,
+`ANTHROPIC_API_KEY`) or Review Voice's own `REVIEW_VOICE_*` variables, unless a
+repository lists them. A passed-through value of eight characters or more that a command prints, in a diagnostic, a version line or a verifier's reason, is replaced by `[redacted:NAME]` before the report is stored or handed to the agents. This is environment scrubbing, not filesystem isolation. The command still
+runs as the reviewer, so one that runs the author's code can still read any
+file the reviewer can, including credential files under `HOME` such as a
+registry's `.npmrc` or the GitHub CLI's hosts file. For that the defences are
+unchanged: list no command for a head you do not trust, keep
+`REVIEW_VOICE_NO_COMMANDS` on a watcher, and the confined runner S16 specifies. A command that needs a variable, such as a private registry's token, keeps
+working once the repository lists that variable; until then it runs without
+it. The lists are read from the same configuration as the commands, the base
+commit's for a pull request, so a pull request cannot widen what its own
+checks receive.

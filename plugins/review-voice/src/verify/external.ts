@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { commandEnvironment, maskPassthroughDeep } from '../evidence/run.ts';
 import type { DecisiveEvidence, FindingVerdict, RawVerdict, VerificationReport, Verdict } from './types.ts';
 
 export interface VerifiableFinding {
@@ -45,6 +46,8 @@ export interface VerifierConfig {
    * delete evidence.
    */
   dropThreshold?: number;
+  /** Variables the command gets beyond the minimal environment; see `commandEnvironment`. */
+  envPassthrough?: readonly string[];
 }
 
 const DEFAULT_TIMEOUT_SECONDS = 90;
@@ -176,11 +179,12 @@ export interface RunResult {
   failed: boolean;
 }
 
-export type Runner = (command: string, input: string, timeoutMs: number, cwd: string) => RunResult;
+export type Runner = (command: string, input: string, timeoutMs: number, cwd: string, env: NodeJS.ProcessEnv) => RunResult;
 
-const spawnRunner: Runner = (command, input, timeoutMs, cwd) => {
+const spawnRunner: Runner = (command, input, timeoutMs, cwd, env) => {
   const result = spawnSync(command, {
     cwd,
+    env,
     shell: true,
     encoding: 'utf8',
     input,
@@ -219,6 +223,9 @@ export function verifyFindings(
   const didNotRun: string[] = [];
 
   const runner = options.runner ?? spawnRunner;
+  // The same minimal environment as the static checks, because the command acts
+  // on the pull request's content, which has no claim on the reviewer's tokens.
+  const env = commandEnvironment(process.env, config.envPassthrough ?? []);
 
   for (const finding of findings) {
     const result = runner(
@@ -226,10 +233,15 @@ export function verifyFindings(
       JSON.stringify({ ...finding, context: options.context ?? null }),
       (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
       options.cwd,
+      env,
     );
 
     const unavailable = result.failed;
-    const raw = unavailable ? null : parseVerdict(`${result.stdout}\n${result.stderr}`);
+    // A verifier that quotes its own credential, in a reason or its evidence,
+    // must not carry it into the report. Masked after parsing, since a value
+    // the verifier JSON-escaped only matches once decoded.
+    const parsed = unavailable ? null : parseVerdict(`${result.stdout}\n${result.stderr}`);
+    const raw = parsed === null ? null : maskPassthroughDeep(parsed, process.env, config.envPassthrough ?? []);
 
     if (raw === null) {
       // A verifier that could not run has not confirmed anything, and must

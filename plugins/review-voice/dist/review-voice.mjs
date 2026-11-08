@@ -15769,6 +15769,20 @@ function parseLane(entry, taken) {
   }
   return { name, agent: agent2, prefix, when, severity };
 }
+var ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+function readEnvPassthrough(value, key2, result) {
+  if (value === void 0) return [];
+  if (!Array.isArray(value)) {
+    result.warnings.push(`${key2} must be a list of variable names; ignoring it.`);
+    return [];
+  }
+  const names = [];
+  for (const entry of value) {
+    if (typeof entry === "string" && ENV_NAME.test(entry)) names.push(entry);
+    else result.warnings.push(`${key2}: ${JSON.stringify(entry)} is not a variable name; skipping it.`);
+  }
+  return names;
+}
 function readLanes(value, result) {
   if (value === void 0) return;
   if (!Array.isArray(value)) {
@@ -16191,8 +16205,8 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
     queue: defaultQueueConfig(),
     watch: defaultWatchConfig(),
     retention: { ...DEFAULT_RETENTION },
-    staticEvidence: { enabled: false, commands: [] },
-    verification: { enabled: false, command: "", blockPresent: false },
+    staticEvidence: { enabled: false, commands: [], envPassthrough: [] },
+    verification: { enabled: false, command: "", envPassthrough: [], blockPresent: false },
     humanReview: {
       ...DEFAULT_HUMAN_REVIEW,
       sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths],
@@ -16240,6 +16254,11 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
         const staticEvidence = asRecord2(doc["static_evidence"]);
         if (staticEvidence !== null) {
           result.staticEvidence.enabled = staticEvidence["enabled"] === true;
+          result.staticEvidence.envPassthrough = readEnvPassthrough(
+            staticEvidence["env_passthrough"],
+            "static_evidence.env_passthrough",
+            result
+          );
           const commands = Array.isArray(staticEvidence["commands"]) ? staticEvidence["commands"] : [];
           for (const entry of commands) {
             const command = asRecord2(entry);
@@ -16290,6 +16309,7 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
             name: typeof verification2["name"] === "string" ? verification2["name"] : void 0,
             timeoutSeconds: positiveInt(verification2["timeout_seconds"]),
             dropThreshold: typeof verification2["drop_threshold"] === "number" ? verification2["drop_threshold"] : void 0,
+            envPassthrough: readEnvPassthrough(verification2["env_passthrough"], "verification.env_passthrough", result),
             blockPresent: true
           };
         }
@@ -16453,6 +16473,30 @@ function parseOutput(name, command, output) {
 var DEFAULT_TIMEOUT_SECONDS = 120;
 var MAX_VERSION_POINTS = 80;
 var SHELL_UNAVAILABLE_EXIT_CODES = [126, 127];
+var BASE_ENVIRONMENT = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CI", "TERM"];
+var MIN_MASKED_LENGTH = 8;
+function maskPassthrough(text4, source, passthrough) {
+  let masked = text4;
+  const values = passthrough.map((name) => [name, source[name]]).filter((entry) => typeof entry[1] === "string" && entry[1].length >= MIN_MASKED_LENGTH).sort((a, b) => b[1].length - a[1].length);
+  for (const [name, value] of values) masked = masked.split(value).join(`[redacted:${name}]`);
+  return masked;
+}
+function maskPassthroughDeep(value, source, passthrough) {
+  if (typeof value === "string") return maskPassthrough(value, source, passthrough);
+  if (Array.isArray(value)) return value.map((entry) => maskPassthroughDeep(entry, source, passthrough));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key2, entry]) => [key2, maskPassthroughDeep(entry, source, passthrough)]));
+  }
+  return value;
+}
+function commandEnvironment(source, passthrough) {
+  const env = {};
+  for (const name of [...BASE_ENVIRONMENT, ...passthrough]) {
+    const value = source[name];
+    if (typeof value === "string") env[name] = value;
+  }
+  return env;
+}
 function notRunReport(names, skipped) {
   return {
     enabled: false,
@@ -16473,12 +16517,13 @@ function collectEvidence(commands, options) {
     return notRunReport(commands.map((command) => command.name));
   }
   const spawn3 = options.spawn ?? spawnSync;
+  const env = commandEnvironment(process.env, options.envPassthrough ?? []);
   const outcomes = [];
   const didNotRun = [];
   for (const command of commands) {
     const startedAt = Date.now();
     const timeoutMs = (command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1e3;
-    const result = spawnInGroup(spawn3, command.run, options.cwd, timeoutMs);
+    const result = spawnInGroup(spawn3, command.run, options.cwd, timeoutMs, env);
     const durationMs = Date.now() - startedAt;
     if (result.error !== void 0) {
       const reason2 = result.error.code === "ETIMEDOUT" ? `timed out after ${command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS}s` : result.error.message;
@@ -16505,16 +16550,22 @@ function collectEvidence(commands, options) {
       didNotRun.push(command.name);
       continue;
     }
+    const mask = (text4) => maskPassthrough(text4, process.env, options.envPassthrough ?? []);
     const output = `${result.stdout ?? ""}
 ${result.stderr ?? ""}`;
-    const version = command.version === void 0 ? void 0 : readVersion(spawn3, command.version, options.cwd, timeoutMs);
+    const version = command.version === void 0 ? void 0 : readVersion(spawn3, command.version, options.cwd, timeoutMs, env, mask);
+    const signals = parseOutput(command.name, command.run, output).map((signal2) => ({
+      ...signal2,
+      claim: mask(signal2.claim),
+      evidence: signal2.evidence.map(mask)
+    }));
     outcomes.push({
       name: command.name,
       command: command.run,
       exitCode: result.status,
       durationMs,
       ...version === void 0 ? {} : { version },
-      signals: parseOutput(command.name, command.run, output)
+      signals
     });
   }
   return {
@@ -16524,14 +16575,15 @@ ${result.stderr ?? ""}`;
     didNotRun
   };
 }
-function readVersion(spawn3, run, cwd, timeout) {
-  const result = spawnInGroup(spawn3, run, cwd, timeout);
+function readVersion(spawn3, run, cwd, timeout, env, mask) {
+  const result = spawnInGroup(spawn3, run, cwd, timeout, env);
   if (result.error !== void 0 || result.status !== 0) return void 0;
-  return sanitisedVersion(String(result.stdout ?? ""));
+  return sanitisedVersion(mask(String(result.stdout ?? "")));
 }
-function spawnInGroup(spawn3, run, cwd, timeout) {
+function spawnInGroup(spawn3, run, cwd, timeout, env) {
   const options = {
     cwd,
+    env,
     shell: true,
     encoding: "utf8",
     timeout,
@@ -16614,9 +16666,10 @@ function parseVerdict(stdout) {
   }
   return null;
 }
-var spawnRunner = (command, input, timeoutMs, cwd) => {
+var spawnRunner = (command, input, timeoutMs, cwd, env) => {
   const result = spawnSync2(command, {
     cwd,
+    env,
     shell: true,
     encoding: "utf8",
     input,
@@ -16647,16 +16700,19 @@ function verifyFindings(findings, config2, options) {
   const verdicts = [];
   const didNotRun = [];
   const runner = options.runner ?? spawnRunner;
+  const env = commandEnvironment(process.env, config2.envPassthrough ?? []);
   for (const finding of findings) {
     const result = runner(
       config2.command,
       JSON.stringify({ ...finding, context: options.context ?? null }),
       (config2.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS2) * 1e3,
-      options.cwd
+      options.cwd,
+      env
     );
     const unavailable = result.failed;
-    const raw = unavailable ? null : parseVerdict(`${result.stdout}
+    const parsed2 = unavailable ? null : parseVerdict(`${result.stdout}
 ${result.stderr}`);
+    const raw = parsed2 === null ? null : maskPassthroughDeep(parsed2, process.env, config2.envPassthrough ?? []);
     if (raw === null) {
       didNotRun.push(name);
       verdicts.push({
@@ -23179,12 +23235,13 @@ var COMMAND_HELP = {
       "  Run the configured static checks and emit structured signals.",
       "  --cwd <dir>            Run the commands in <dir>; the driver passes the pull request's head worktree.",
       "                         The configuration still comes from this checkout or REVIEW_VOICE_CONFIG, never",
-      "                         from <dir>, and the commands run with this process's environment.",
+      "                         from <dir>. The commands get only PATH, HOME, LANG, LC_ALL, TMPDIR, CI and TERM",
+      "                         plus the names static_evidence.env_passthrough lists, nothing else from this process.",
       "",
       "Reads: nothing on stdin.",
       "Writes: JSON on stdout. Runs the commands configured under static_evidence.commands.",
       "  Each command may set version to a command whose first stdout line records the tool version,",
-      "  sanitised and capped at 80 code points. It uses the check's cwd, timeout and output cap;",
+      "  sanitised and capped at 80 code points. It uses the check's cwd, environment, timeout and output cap;",
       "  a failed version command records no version. REVIEW_VOICE_NO_COMMANDS=1 skips all commands,",
       "  listing their names in didNotRun with skipped: REVIEW_VOICE_NO_COMMANDS.",
       "  The report records the directory the commands ran in as cwd.",
@@ -23204,9 +23261,10 @@ var COMMAND_HELP = {
       "  --repository <name>    owner/repo, inferred from the git remote if absent",
       "  --cwd <dir>            Run the command in <dir>; the driver passes the pull request's head worktree.",
       "                         The configuration still comes from this checkout or REVIEW_VOICE_CONFIG, never",
-      "                         from <dir>, and the command runs with this process's environment.",
+      "                         from <dir>, and the command runs with the minimal environment described below.",
       "Reads: candidates JSON on stdin.",
-      "Writes: JSON report on stdout. Runs the configured verification command.",
+      "Writes: JSON report on stdout. Runs the configured verification command with the same minimal",
+      "  environment as evidence, plus the names verification.env_passthrough lists.",
       "Exit codes: 0 ok (a rejected finding is a result), 2 bad input or invocation, or --cwd is not a directory."
     )
   },
@@ -26053,7 +26111,8 @@ function evidenceCommand(argv) {
       "REVIEW_VOICE_NO_COMMANDS"
     ) : collectEvidence(config2.staticEvidence.commands, {
       cwd,
-      enabled: config2.staticEvidence.enabled
+      enabled: config2.staticEvidence.enabled,
+      envPassthrough: config2.staticEvidence.envPassthrough
     });
     const report = collected.enabled ? { ...collected, cwd } : collected;
     console.log(JSON.stringify(report, null, 2));
