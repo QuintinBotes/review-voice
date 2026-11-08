@@ -110,6 +110,39 @@ only for a lane with an escalate rule, and even then the tier rises only with
   flow, other callers share that flow, and they neither select nor need it.
 - `scattered-feature-checks`: every listed site exists and has the same check,
   and a search of the head finds no site the list missed.
+- `removed-control`: the removed check, limit or allowlist entry is in the
+  diff, the path it guarded is still served at the head, and your own search of
+  the head finds no replacement (a middleware, a wrapper, a base class, the
+  callee). A check re-established elsewhere, or a path that no longer exists,
+  is not this class.
+- `missing-object-authorization`: the handler reads or writes an object chosen
+  by the caller, and the handler and the middleware around it contain no
+  ownership or permission check on that object. Authenticating the caller is
+  not authorising the object. Reject it when the check lives in a layer you
+  can read and the candidate did not cite it.
+- `string-built-query`: a value that traces to a request, a file or stored data
+  is joined into the statement text, with no parameter binding or encoder
+  between. A constant, or a value from a fixed list in the same file, is not.
+- `fail-open-default`: the cited default is the value used when the setting is
+  missing, empty or malformed, and it disables or widens a protection. A
+  default that denies is not this class.
+- `unguarded-read-decide-write`: the read, the decision on what was read and
+  the write are all in the cited code, two callers can overlap, and your search
+  of the schema, migrations and statement finds no unique index, version
+  column, conditional update, suitable transaction or idempotency key.
+- `lock-order`: both orders are in the cited code, each acquisition is listed
+  as `path:line`, and a search of the head finds both orders on paths that can
+  run at the same time. One site, or an order inferred and not read, is not
+  this class.
+- `missing-cancellation`: the cited code sets a timeout, deadline or request
+  budget, the call that ignores it accepts a cancellation token or abort signal,
+  and none was passed on that path.
+
+For a lane with an escalate rule, `blocker_confirmed` for `removed-control`
+follows the same bar as every class: the tier rises only with `impact_traced`
+true and your confidence of at least 0.85. Set `impact_traced` only when you
+traced what the removed control let through to a caller; a removal whose
+consequence you could not trace stays at its tier.
 
 ## Opt-in simplification verification
 

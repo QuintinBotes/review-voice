@@ -33,6 +33,11 @@ export interface PlanInput {
   productionSourceChanged: boolean;
   productionLinesChanged: number;
   complexity: 'normal' | 'high';
+  /**
+   * Controls the change removes (`structure.removedControls`). Optional so a
+   * caller that does not measure it is read as none; `planCommand` always sets it.
+   */
+  removedControls?: number;
   secondPassConfigured: boolean;
 }
 
@@ -42,8 +47,16 @@ const OPUS = 'opus';
 export const THOROUGH_LINE_LIMIT = 150;
 
 function autoMode(input: PlanInput): { mode: Mode; reason: string } {
-  if (!input.productionSourceChanged) return { mode: 'fast', reason: 'auto: no production source changed' };
+  // A removed control is where a regression hides; it changes models and
+  // stages, never the verdict (docs/adr/0025). It is read before the fast
+  // rule: the file it was removed from may be a deleted one, which the
+  // production count never sees, since a deleted file is not a reviewed one.
+  const removed = input.removedControls ?? 0;
+  if (!input.productionSourceChanged && removed === 0) return { mode: 'fast', reason: 'auto: no production source changed' };
   if (input.complexity === 'high') return { mode: 'thorough', reason: 'auto: complexity is high' };
+  if (removed > 0) {
+    return { mode: 'thorough', reason: `auto: ${removed} control${removed === 1 ? ' was' : 's were'} removed` };
+  }
   if (input.productionLinesChanged > THOROUGH_LINE_LIMIT) {
     return {
       mode: 'thorough',

@@ -62,6 +62,12 @@ export interface Language<Kind extends string = TypeEscapeKind> {
    * `]`) it divides.
    */
   regexLiterals?: boolean;
+  /**
+   * Whether three quote characters in a row open one string (Python's triple
+   * quotes), closed by the same three. Without it each quote toggles on its
+   * own and the text after a triple quote reads as the wrong view.
+   */
+  tripleQuotes?: boolean;
   blockComments: boolean;
   /** Code lines that name a type without using it, e.g. an import. */
   skip?: RegExp;
@@ -146,6 +152,8 @@ export function splitLine<Kind extends string>(text: string, language: Language<
   let code = '';
   let raw = '';
   let comment = '';
+  // The open delimiter: one quote character, or three when the language has
+  // triple quotes and three stand together.
   let quote: string | null = null;
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index]!;
@@ -154,18 +162,20 @@ export function splitLine<Kind extends string>(text: string, language: Language<
         code += '  ';
         raw += text.slice(index, index + 2);
         index += 1;
-      } else if (char === quote) {
+      } else if (text.startsWith(quote, index)) {
+        code += quote;
+        raw += quote;
+        index += quote.length - 1;
         quote = null;
-        code += char;
-        raw += char;
       } else {
         code += ' ';
         raw += char;
       }
     } else if (language.quotes.includes(char)) {
-      quote = char;
-      code += char;
-      raw += char;
+      quote = language.tripleQuotes === true && text.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
+      code += quote;
+      raw += quote;
+      index += quote.length - 1;
     } else if (text.startsWith(language.lineComment, index)) {
       comment += text.slice(index);
       break;

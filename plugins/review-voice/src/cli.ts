@@ -1353,6 +1353,7 @@ function planCommand(argv: string[]): number {
     models: config?.costMode.models ?? {},
     ...change,
     complexity,
+    removedControls: structureEntries(manifest['structure'], 'removedControls'),
     secondPassConfigured: config?.verification.enabled ?? false,
   });
   console.log(JSON.stringify(plan, null, 2));
@@ -1399,9 +1400,17 @@ function lanesCommand(argv: string[]): number {
   const lanes = eligibleLanes(config?.lanes ?? [DIFF_LANE], input.changed, input.diffText, {
     humanReview: config?.humanReview,
     markedGenerated: input.generated,
+    structure: input.manifest['structure'],
   });
   console.log(JSON.stringify(lanes, null, 2));
   return 0;
+}
+
+/** Entries in one list of the manifest's `structure` block, which is untrusted JSON: 0 when the block or key is missing or not a list. */
+function structureEntries(structure: unknown, key: string): number {
+  if (typeof structure !== 'object' || structure === null) return 0;
+  const entries = (structure as Record<string, unknown>)[key];
+  return Array.isArray(entries) ? entries.length : 0;
 }
 
 function asLevel(value: unknown): 'normal' | 'high' {

@@ -14,6 +14,8 @@ export interface HumanReviewStructureConfig {
   fileLineCrossing: boolean;
   /** An existing declaration gaining `review.structure.max_added_branches_per_function` branches. */
   branchGrowth: boolean;
+  /** A change removing a control-like line (`structure.removedControls`), a lead the analyst follows. */
+  removedControls: boolean;
 }
 
 export interface HumanReviewConfig {
@@ -85,7 +87,7 @@ export const DEFAULT_HUMAN_REVIEW: HumanReviewConfig = {
   sensitiveExemptPaths: [],
   testPaths: DEFAULT_TEST_PATHS,
   generatedPaths: [],
-  structure: { fileLineCrossing: false, branchGrowth: false },
+  structure: { fileLineCrossing: false, branchGrowth: false, removedControls: false },
 };
 
 export interface ComplexityAssessment {
@@ -339,6 +341,7 @@ function config(partial: HumanReviewConfigInput | undefined): HumanReviewConfig 
     structure: {
       fileLineCrossing: partial?.structure?.fileLineCrossing ?? DEFAULT_HUMAN_REVIEW.structure.fileLineCrossing,
       branchGrowth: partial?.structure?.branchGrowth ?? DEFAULT_HUMAN_REVIEW.structure.branchGrowth,
+      removedControls: partial?.structure?.removedControls ?? DEFAULT_HUMAN_REVIEW.structure.removedControls,
     },
   };
 }
@@ -560,7 +563,7 @@ function listedStructure<T>(items: readonly T[], describe: (item: T) => string):
  */
 export function applyStructureHumanReviewCap(
   assessment: ComplexityAssessment,
-  signals: Pick<StructureSignals, 'sizeCrossings' | 'branchGrowth'>,
+  signals: Pick<StructureSignals, 'sizeCrossings' | 'branchGrowth' | 'removedControls'>,
   partial?: HumanReviewConfigInput,
 ): ComplexityAssessment {
   const enabled = config(partial).structure;
@@ -579,6 +582,14 @@ export function applyStructureHumanReviewCap(
       `branch-growth signal (structure.branchGrowth): ${listedStructure(
         signals.branchGrowth,
         (growth) => `${growth.path}:${growth.line} (${growth.function}; ${growth.addedDecisionPoints} added decision points; threshold ${growth.threshold})`,
+      )}`,
+    );
+  }
+  if (enabled.removedControls && signals.removedControls.length > 0) {
+    reasons.push(
+      `removed-control signal (structure.removedControls): ${listedStructure(
+        signals.removedControls,
+        (control) => `${control.path}:${control.line} (${control.kind})`,
       )}`,
     );
   }
