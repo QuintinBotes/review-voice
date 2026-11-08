@@ -58,3 +58,17 @@ imperfect sandboxes invite the risk they claim to remove.
 
 **No static evidence at all.** Rejected: it materially improves finding
 precision, which is the entire product.
+
+## Amendment - 2026-11-08
+
+A configured `static_evidence.commands[].version` command is configuration,
+so running it keeps "detection suggests, configuration enables". Review Voice
+does not infer a version command from a tool's name. The optional command runs
+with the check's working directory, timeout and output cap; its first stdout
+line is sanitised and capped at 80 code points. A failed version command
+records no version and does not change the check's signals or run status.
+
+A candidate that restates a tool's signal at the same path within two lines
+with overlapping wording is held as `restates-tool`. The held record keeps the
+candidate's anchor and claim, names the tool, and gives the signal's line and
+message as its reason, so `explain` can show why it was held.

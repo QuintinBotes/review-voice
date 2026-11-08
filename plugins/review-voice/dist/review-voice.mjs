@@ -2,7 +2,7 @@
 
 // plugins/review-voice/src/cli.ts
 import { readFileSync as readFileSync16, readSync, writeFileSync as writeFileSync5, mkdirSync as mkdirSync8, statSync as statSync4, lstatSync as lstatSync3, renameSync as renameSync2, rmSync as rmSync5, existsSync as existsSync12, realpathSync as realpathSync2 } from "node:fs";
-import { basename as basename3, dirname as dirname13, isAbsolute as isAbsolute4, join as join19, relative as relative3, resolve as resolve5, sep as sep4 } from "node:path";
+import { basename as basename3, dirname as dirname13, isAbsolute as isAbsolute4, join as join19, posix as posix3, relative as relative3, resolve as resolve5, sep as sep4 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 import { execFileSync as execFileSync15 } from "node:child_process";
 import { format } from "node:util";
@@ -13900,7 +13900,8 @@ var HELD_VERDICTS = [
   "policy-suppressed",
   "owner-declined",
   "challenge-refuted",
-  "challenge-partly"
+  "challenge-partly",
+  "restates-tool"
 ];
 function heldProblem(entry) {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "not an object";
@@ -15506,10 +15507,12 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
             const run = command["run"];
             if (typeof name !== "string" || typeof run !== "string") continue;
             const timeout = positiveInt(command["timeout_seconds"]);
+            const version = command["version"];
             result.staticEvidence.commands.push({
               name,
               run,
-              ...timeout === void 0 ? {} : { timeoutSeconds: timeout }
+              ...timeout === void 0 ? {} : { timeoutSeconds: timeout },
+              ...typeof version === "string" && version.trim() !== "" ? { version } : {}
             });
           }
         }
@@ -15707,21 +15710,34 @@ function parseOutput(name, command, output) {
 
 // plugins/review-voice/src/evidence/run.ts
 var DEFAULT_TIMEOUT_SECONDS = 120;
+var MAX_VERSION_POINTS = 80;
+var SHELL_UNAVAILABLE_EXIT_CODES = [126, 127];
+function notRunReport(names, skipped) {
+  return {
+    enabled: false,
+    signals: [],
+    commands: [],
+    didNotRun: [...names],
+    ...skipped === void 0 ? {} : { skipped }
+  };
+}
+function sanitisedVersion(stdout) {
+  const firstLine2 = stdout.split("\n")[0] ?? "";
+  const clean2 = firstLine2.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "").trim();
+  const capped = [...clean2].slice(0, MAX_VERSION_POINTS).join("").trim();
+  return capped === "" ? void 0 : capped;
+}
 function collectEvidence(commands, options) {
   if (!options.enabled || commands.length === 0) {
-    return { enabled: false, signals: [], commands: [], didNotRun: commands.map((command) => command.name) };
+    return notRunReport(commands.map((command) => command.name));
   }
+  const spawn3 = options.spawn ?? spawnSync;
   const outcomes = [];
   const didNotRun = [];
   for (const command of commands) {
     const startedAt = Date.now();
-    const result = spawnSync(command.run, {
-      cwd: options.cwd,
-      shell: true,
-      encoding: "utf8",
-      timeout: (command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1e3,
-      maxBuffer: 16 * 1024 * 1024
-    });
+    const timeoutMs = (command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1e3;
+    const result = spawnInGroup(spawn3, command.run, options.cwd, timeoutMs);
     const durationMs = Date.now() - startedAt;
     if (result.error !== void 0) {
       const reason2 = result.error.code === "ETIMEDOUT" ? `timed out after ${command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS}s` : result.error.message;
@@ -15736,13 +15752,27 @@ function collectEvidence(commands, options) {
       didNotRun.push(command.name);
       continue;
     }
+    if (result.status !== null && SHELL_UNAVAILABLE_EXIT_CODES.includes(result.status)) {
+      outcomes.push({
+        name: command.name,
+        command: command.run,
+        exitCode: result.status,
+        durationMs,
+        unavailable: `not found or not executable (exit ${result.status})`,
+        signals: []
+      });
+      didNotRun.push(command.name);
+      continue;
+    }
     const output = `${result.stdout ?? ""}
 ${result.stderr ?? ""}`;
+    const version = command.version === void 0 ? void 0 : readVersion(spawn3, command.version, options.cwd, timeoutMs);
     outcomes.push({
       name: command.name,
       command: command.run,
       exitCode: result.status,
       durationMs,
+      ...version === void 0 ? {} : { version },
       signals: parseOutput(command.name, command.run, output)
     });
   }
@@ -15752,6 +15782,30 @@ ${result.stderr ?? ""}`;
     commands: outcomes,
     didNotRun
   };
+}
+function readVersion(spawn3, run, cwd, timeout) {
+  const result = spawnInGroup(spawn3, run, cwd, timeout);
+  if (result.error !== void 0 || result.status !== 0) return void 0;
+  return sanitisedVersion(String(result.stdout ?? ""));
+}
+function spawnInGroup(spawn3, run, cwd, timeout) {
+  const options = {
+    cwd,
+    shell: true,
+    encoding: "utf8",
+    timeout,
+    killSignal: "SIGKILL",
+    maxBuffer: 16 * 1024 * 1024,
+    detached: true
+  };
+  const result = spawn3(run, options);
+  if (typeof result.pid === "number" && result.pid > 0) {
+    try {
+      process.kill(-result.pid, "SIGKILL");
+    } catch {
+    }
+  }
+  return result;
 }
 
 // plugins/review-voice/src/verify/external.ts
@@ -20515,7 +20569,15 @@ async function prep(run) {
   writeFileSync3(at(run, "context.json"), (await must(run, ["context"])).stdout);
   if (noCommands(run)) {
     run.notes.push("REVIEW_VOICE_NO_COMMANDS=1, so the static evidence commands were not run.");
-    writeJson(at(run, "evidence.json"), { enabled: false, signals: [], didNotRun: [], skipped: "REVIEW_VOICE_NO_COMMANDS" });
+    const context2 = readJson(at(run, "context.json"));
+    const configured = isRecord4(context2) && isRecord4(context2["staticEvidence"]) ? list(context2["staticEvidence"]["commands"]) : [];
+    writeJson(at(run, "evidence.json"), {
+      enabled: false,
+      signals: [],
+      commands: [],
+      didNotRun: configured.map((command) => command["name"]).filter((name) => typeof name === "string"),
+      skipped: "REVIEW_VOICE_NO_COMMANDS"
+    });
   } else {
     writeFileSync3(at(run, "evidence.json"), (await must(run, ["evidence"])).stdout);
   }
@@ -20690,6 +20752,8 @@ async function lanes(run) {
     at(run, "diff.patch"),
     "--thread",
     at(run, "thread.json"),
+    "--evidence",
+    at(run, "evidence.json"),
     ...typeof prior === "string" ? ["--held-from", prior, "--head", run.head] : [],
     ...run.intent ? ["--intent", at(run, "intent.json")] : []
   ];
@@ -20743,6 +20807,18 @@ async function lanes(run) {
       verdict: "repeat",
       source: "thread",
       reason: String(drop["reason"]),
+      candidateId: idOf3(drop),
+      ...typeof claim === "string" ? { text: claim } : {}
+    });
+  }
+  for (const drop of list(result["droppedAsTool"])) {
+    const claim = claims.get(idOf3(drop));
+    run.held.push({
+      path: String(drop["path"]),
+      line: Number(drop["line"]),
+      verdict: "restates-tool",
+      source: String(drop["tool"]),
+      reason: `line ${String(drop["signalLine"])}: ${String(drop["message"])}`,
       candidateId: idOf3(drop),
       ...typeof claim === "string" ? { text: claim } : {}
     });
@@ -22136,6 +22212,7 @@ var COMMAND_HELP = {
       "  --apply-patch-lines    Move a line that is a diff.patch line number to the new-file line it names",
       "                         (same file, added line); notes on stderr, and kept is listed on stdout",
       "  --thread <path>        Drop thread repeats; flag near ones for the verifier",
+      "  --evidence <path>      Drop static signal restatements into droppedAsTool; emits the full kept report",
       "  --owner <login>        Owner for --thread; default from config",
       "  --held-from <run-ids>  Drop or flag repeats of those runs' held findings; several",
       "                         run ids separated by commas, e.g. a stacked sibling's (needs --head)",
@@ -22228,7 +22305,11 @@ var COMMAND_HELP = {
       "  Run the configured static checks and emit structured signals. Takes no flags.",
       "",
       "Reads: nothing on stdin.",
-      "Writes: JSON on stdout. Runs the commands configured under static evidence.",
+      "Writes: JSON on stdout. Runs the commands configured under static_evidence.commands.",
+      "  Each command may set version to a command whose first stdout line records the tool version,",
+      "  sanitised and capped at 80 code points. It uses the check's cwd, timeout and output cap;",
+      "  a failed version command records no version. REVIEW_VOICE_NO_COMMANDS=1 skips all commands,",
+      "  listing their names in didNotRun with skipped: REVIEW_VOICE_NO_COMMANDS.",
       "Exit codes: 0 ok (a failing check is evidence, not an error), 2 not in a repository."
     )
   },
@@ -22661,6 +22742,7 @@ var COMMAND_HELP = {
       "  --tie-breaks <path>    reconcile's output, with the rulings it applied",
       '  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]',
       `                         or {"held": [...]}; verdict one of ${HELD_VERDICTS.join(", ")}`,
+      "                         restates-tool names the tool in source and its signal line and message in reason",
       "                         Warns on stderr, and still records, when a path is in neither --files nor --candidates",
       "  --body-findings <path> One verified simplification from check-simplification; requires --diff-file",
       "  --carried-from <run>   Validate findings carried by `carry` (needs --head; run in its clone)",
@@ -24870,6 +24952,17 @@ function verifyCommand(argv) {
   try {
     const root = repositoryRoot(process.cwd());
     const config2 = loadConfig(root);
+    if (process.env["REVIEW_VOICE_NO_COMMANDS"] === "1") {
+      const name = config2.verification.name ?? "external";
+      console.log(
+        JSON.stringify(
+          { enabled: false, verifier: null, verdicts: [], didNotRun: findings.length > 0 && config2.verification.enabled ? [name] : [], skipped: "REVIEW_VOICE_NO_COMMANDS" },
+          null,
+          2
+        )
+      );
+      return 0;
+    }
     const base = flag(argv, "--base");
     const head = flag(argv, "--head");
     const report = verifyFindings(findings, config2.verification, {
@@ -24967,7 +25060,10 @@ function evidenceCommand() {
   try {
     const root = repositoryRoot(process.cwd());
     const config2 = loadConfig(root);
-    const report = collectEvidence(config2.staticEvidence.commands, {
+    const report = process.env["REVIEW_VOICE_NO_COMMANDS"] === "1" ? notRunReport(
+      config2.staticEvidence.commands.map((command) => command.name),
+      "REVIEW_VOICE_NO_COMMANDS"
+    ) : collectEvidence(config2.staticEvidence.commands, {
       cwd: root,
       enabled: config2.staticEvidence.enabled
     });
@@ -26438,6 +26534,51 @@ function matchHeld(candidate, held) {
   }
   return best === null ? null : { entry: best.entry, drop: false };
 }
+function readSignals(file2, root) {
+  const document = JSON.parse(readFileSync16(file2, "utf8"));
+  if (typeof document !== "object" || document === null || Array.isArray(document)) throw new Error("not a JSON object");
+  const signals = document.signals;
+  if (signals === void 0) return [];
+  if (!Array.isArray(signals)) throw new Error("signals is not a list");
+  return signals.flatMap((entry) => {
+    const s = entry;
+    if (typeof s !== "object" || s === null || typeof s.path !== "string" || typeof s.line !== "number" || typeof s.claim !== "string") return [];
+    const spelled = s.path.split("\\").join("/");
+    const path = isAbsolute4(spelled) ? relative3(realExistingPath(root), realExistingPath(spelled)) : posix3.normalize(spelled).replace(/^\.\//, "");
+    if (path === "" || path === "." || path.startsWith("..") || isAbsolute4(path)) return [];
+    return [
+      {
+        kind: typeof s.kind === "string" ? s.kind : "",
+        path,
+        line: s.line,
+        claim: s.claim,
+        evidence: Array.isArray(s.evidence) ? s.evidence.filter((line3) => typeof line3 === "string") : [],
+        confidence: typeof s.confidence === "number" ? s.confidence : 0,
+        tool: typeof s.tool === "string" ? s.tool : ""
+      }
+    ];
+  });
+}
+var TOOL_RESTATEMENT_OVERLAP = 0.6;
+function matchSignal(candidate, signals) {
+  if (isSuppressionExempt(candidate.category)) return null;
+  const text4 = `${candidate.claim} ${candidate.failureMode}`;
+  const mine = significantWords(text4);
+  const path = posix3.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
+  for (const signal2 of signals) {
+    if (signal2.path !== path || signal2.line === null || Math.abs(signal2.line - candidate.line) > 2) continue;
+    const message = `${signal2.claim} ${signal2.evidence.join(" ")}`;
+    const diagnostic = message.replace(/\bDid you mean\b[\s\S]*$/i, "");
+    const named = [...diagnostic.matchAll(/['"`]([^'"`\s]+)['"`]/g)].map((match) => match[1]);
+    if (named.some((name) => !mentions(text4, name))) continue;
+    if (overlap(mine, significantWords(message)) >= TOOL_RESTATEMENT_OVERLAP) return signal2;
+  }
+  return null;
+}
+function mentions(text4, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^\\w$-])${escaped}(?![\\w$-])`).test(text4);
+}
 function configuredOwner() {
   try {
     return loadConfig(repositoryRoot(process.cwd())).ownerReviewer;
@@ -26588,7 +26729,7 @@ function checkCandidatesCommand(argv) {
       console.error("--held-from needs --head <sha>, the head being reviewed.");
       return 2;
     }
-    if (!argv.includes("--thread") && heldFrom === null && !applyPatchLines) {
+    if (!argv.includes("--thread") && !argv.includes("--evidence") && heldFrom === null && !applyPatchLines) {
       console.log(
         JSON.stringify({ valid: true, candidates: candidates.length, anchors: { checked: candidates.length }, ...extra }, null, 2)
       );
@@ -26610,6 +26751,25 @@ function checkCandidatesCommand(argv) {
         return 2;
       }
     }
+    let signals = [];
+    if (argv.includes("--evidence")) {
+      const evidenceFile = flag(argv, "--evidence");
+      if (evidenceFile === null) {
+        console.error("--evidence needs the evidence.json the evidence command wrote.");
+        return 2;
+      }
+      let signalRoot = process.cwd();
+      try {
+        signalRoot = repositoryRoot(process.cwd());
+      } catch {
+      }
+      try {
+        signals = readSignals(evidenceFile, signalRoot);
+      } catch (error) {
+        console.error(`Cannot read ${evidenceFile}: ${error instanceof Error ? error.message : String(error)}`);
+        return 2;
+      }
+    }
     const heldRuns = heldFrom === null ? [] : [...new Set(heldFrom.split(",").map((id) => id.trim()).filter((id) => id !== ""))];
     const held = headSha === null ? [] : heldRuns.flatMap((runId) => carriedHeldFindings(runId, headSha));
     const owner = argv.includes("--thread") ? (flag(argv, "--owner") ?? configuredOwner())?.toLowerCase() ?? null : null;
@@ -26619,6 +26779,7 @@ function checkCandidatesCommand(argv) {
     const kept = [];
     const droppedAsRepeat = [];
     const droppedAsHeld = [];
+    const droppedAsTool = [];
     candidates.forEach((candidate, index) => {
       const repeat = alreadySaidOnThread(candidate, droppable);
       if (repeat !== null) {
@@ -26630,6 +26791,18 @@ function checkCandidatesCommand(argv) {
           commentPath: repeat.path,
           commentLine: repeat.line,
           reason: `Already stated by ${repeat.author} on this pull request.`
+        });
+        return;
+      }
+      const restated = matchSignal(candidate, signals);
+      if (restated !== null) {
+        droppedAsTool.push({
+          candidateId: candidate.candidateId,
+          path: candidate.path,
+          line: candidate.line,
+          tool: restated.tool,
+          signalLine: restated.line,
+          message: restated.claim
         });
         return;
       }
@@ -26689,7 +26862,7 @@ function checkCandidatesCommand(argv) {
     });
     markSiblings(kept);
     console.log(
-      JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld, ...extra }, null, 2)
+      JSON.stringify({ valid: true, candidates: kept.length, kept, droppedAsRepeat, droppedAsHeld, droppedAsTool, ...extra }, null, 2)
     );
     return 0;
   } catch (error) {

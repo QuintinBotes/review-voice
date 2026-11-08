@@ -456,6 +456,14 @@ exit code is still evidence.
 A check that did not run is reported as such. The reviewer must never imply a
 check passed when it never executed.
 
+A candidate that restates a static signal at the same path within two lines
+with overlapping wording is held as `restates-tool`. Its held record keeps
+the candidate's anchor and claim and names the tool, signal line and message.
+The evidence report names what did not run in `didNotRun` and why, through a
+command's `unavailable` reason or the report's `skipped` reason when commands
+are disabled by the environment. An optional configured `version` command
+records the tool's sanitised first stdout line, capped at 80 code points.
+
 ### Severity is derived, not requested
 
 Ordering is severity-first, so an unstable tier moves a finding up and down the

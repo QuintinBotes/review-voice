@@ -111,6 +111,10 @@ export function partlyAddressedOf(value: unknown): PartlyAddressedFinding | unde
  * back (docs/adr/0032). Like `below-gate` it says nothing against the finding:
  * it is preference, so the owner can still post it and a later review never
  * treats it as a reason to drop the same candidate.
+ *
+ * `restates-tool` is a candidate that repeats a static-analysis signal at the
+ * same place (docs/adr/0003). It is not carried to the next head: the tool
+ * reports the defect again there, so nothing needs remembering.
  */
 export type HeldVerdict =
   | 'partly'
@@ -121,7 +125,8 @@ export type HeldVerdict =
   | 'policy-suppressed'
   | 'owner-declined'
   | 'challenge-refuted'
-  | 'challenge-partly';
+  | 'challenge-partly'
+  | 'restates-tool';
 
 export interface HeldFinding {
   path: string;
@@ -145,6 +150,7 @@ export const HELD_VERDICTS: readonly HeldVerdict[] = [
   'owner-declined',
   'challenge-refuted',
   'challenge-partly',
+  'restates-tool',
 ];
 
 /** Null when the entry is well formed, else what is wrong with it. */

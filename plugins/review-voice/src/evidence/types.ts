@@ -20,6 +20,11 @@ export interface CommandOutcome {
   durationMs: number;
   /** Set when the command could not run at all, as distinct from failing. */
   unavailable?: string;
+  /**
+   * The tool's own version line, recorded only when the configuration says how
+   * to ask for it (`version:`), so the audit record can name what ran.
+   */
+  version?: string;
   signals: EvidenceSignal[];
 }
 
@@ -37,4 +42,6 @@ export interface EvidenceReport {
    * it never executed.
    */
   didNotRun: string[];
+  /** Why no command ran at all, when an environment switch (not the config) stopped them. */
+  skipped?: string;
 }
