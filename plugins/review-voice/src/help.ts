@@ -221,6 +221,22 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       'Exit codes: 0 ok (a failing check is evidence, not an error), 2 not in a repository or --cwd is not a directory.',
     ),
   },
+  worktree: {
+    summary: "Check a pull request's head out for the evidence and verify steps",
+    body: lines(
+      'review-voice worktree add --dir <dir> --head <commit>',
+      'review-voice worktree remove --dir <dir>',
+      "  add checks <commit> out, detached, at <dir>/head with hooks, LFS filters, fsmonitor and",
+      '  submodule recursion off, replacing a worktree a stopped run left there. The slash command passes',
+      '  that path to evidence --cwd and verify --cwd, so the checks read the code under review.',
+      '  remove removes it, and is safe to run when nothing is there.',
+      '',
+      'Reads: nothing on stdin.',
+      'Writes: JSON on stdout: {path, head} for add, {path, removed} for remove.',
+      'Exit codes: 0 ok, 1 git could not add or remove the worktree, 2 bad invocation, not a repository,',
+      '  --dir is not a directory, or --head is not a commit in this clone.',
+    ),
+  },
   verify: {
     summary: 'Second-pass verification by a configured command',
     body: lines(
