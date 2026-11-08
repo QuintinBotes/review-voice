@@ -354,7 +354,9 @@ test('a check named to escape the block cannot', async (t) => {
   assert.equal(named, 3);
   assert.equal(closers, named + 1);
   assert.equal(body.trimEnd().endsWith(' -->'), true, 'the trailer comment is still the last thing in the body');
-  assert.equal((body.match(/-->/g) ?? []).length, 2, 'the reason text and the trailer each close a comment exactly once, both inside their own span');
+  // Counted by plain splits: a browser also ends a comment at `--!>`, so that form must not appear at all.
+  assert.equal(body.split('-->').length - 1, 2, 'the reason text and the trailer each close a comment exactly once, both inside their own span');
+  assert.equal(body.includes('--!>'), false, 'no other comment ending appears');
 });
 
 // A recorded finding the posting step withholds (here, one with no score) was
