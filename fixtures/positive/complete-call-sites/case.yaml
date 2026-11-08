@@ -8,3 +8,4 @@ expect:
   severity: nit
   category: observability
   path: src/loaders.ts
+  line: 4

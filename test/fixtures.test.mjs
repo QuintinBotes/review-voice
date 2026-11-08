@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { parseHunks } from '../plugins/review-voice/src/diff/hunks.ts';
+import { normalisePatch } from '../plugins/review-voice/src/evaluate/fixtures.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const fixtures = join(root, 'fixtures');
@@ -28,6 +30,46 @@ function files(dir) {
     else out.push(path);
   }
   return out;
+}
+
+/**
+ * Reads the keys the harness needs by line matching, as the rest of this file
+ * does, so the test needs no YAML parser. `path` and `line` are the two-space
+ * indented keys of `expect:`; `harness` is a top-level key.
+ */
+function readExpectation(text) {
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => /^expect:/.test(line));
+  const block = [];
+  for (const line of start === -1 ? [] : lines.slice(start + 1)) {
+    if (line !== '' && !/^\s/.test(line)) break;
+    block.push(line);
+  }
+  const key = (name) => block.map((line) => new RegExp(`^  ${name}:\\s*(\\S.*?)\\s*$`).exec(line)).find(Boolean)?.[1] ?? null;
+  const harness = /^harness:\s*(\S+)/m.exec(text)?.[1] ?? null;
+  return { path: key('path'), line: key('line'), harness };
+}
+
+/** What the fixture annotations must satisfy, as problems; an empty list is a pass. */
+function annotationProblems(group, expectation, patchText) {
+  const { path, line, harness } = expectation;
+  const problems = [];
+  if (line !== null && path === null) problems.push('has a line but no path');
+  if (line !== null && group !== 'positive') problems.push('is not a positive fixture but names a line');
+  if (group === 'positive') {
+    if (path !== null && line === null) problems.push('names a path but no line');
+    if (path === null && harness !== 'skip') problems.push('has no path and is not marked harness: skip');
+  }
+  if (path !== null && line !== null) {
+    if (!/^[1-9]\d*$/.test(line)) {
+      problems.push(`line ${line} is not a positive whole number`);
+    } else {
+      const added = parseHunks(normalisePatch(patchText)).get(path)?.added;
+      if (added === undefined) problems.push(`path ${path} is not in the patch`);
+      else if (!added.has(Number(line))) problems.push(`line ${line} is not an added line of ${path}`);
+    }
+  }
+  return problems;
 }
 
 test('every fixture has a case.yaml and a diff', () => {
@@ -110,4 +152,71 @@ test('injection fixtures place the attack where a reviewer would meet it', () =>
   assert.ok(vectors.some((v) => /\/\/.*(SYSTEM|Ignore previous)/i.test(v)), 'no source-comment vector');
   assert.ok(vectors.some((v) => /Reviewer configuration override/i.test(v)), 'no pull-request-text vector');
   assert.ok(vectors.some((v) => /error TS\d+|Static analysis:/i.test(v)), 'no fake-tool-output vector');
+});
+
+test('every positive names the added line of its causal path, or is marked harness: skip', () => {
+  let named = 0;
+  let skipped = 0;
+  for (const { group, name, dir } of cases()) {
+    const expectation = readExpectation(readFileSync(join(dir, 'case.yaml'), 'utf8'));
+    const problems = annotationProblems(group, expectation, readFileSync(join(dir, 'diff.patch'), 'utf8'));
+    assert.deepEqual(problems, [], `${group}/${name}: ${problems.join('; ')}`);
+    if (expectation.line !== null) named += 1;
+    if (expectation.harness === 'skip') skipped += 1;
+  }
+  assert.ok(named >= 19, `expected every positive with a path to name a line, found ${named}`);
+  assert.equal(skipped, 1, 'only simplification-dispatcher is outside the harness');
+});
+
+test('clean and absence fixtures never name a line', () => {
+  for (const { group, name, dir } of cases()) {
+    if (group === 'positive') continue;
+    const { line } = readExpectation(readFileSync(join(dir, 'case.yaml'), 'utf8'));
+    assert.equal(line, null, `${group}/${name} must not carry expect.line`);
+  }
+});
+
+test('simplification-dispatcher is the one positive outside the harness, with a reason', () => {
+  const text = readFileSync(join(fixtures, 'positive/simplification-dispatcher/case.yaml'), 'utf8');
+  assert.equal(readExpectation(text).harness, 'skip');
+  assert.match(text, /^harness_reason:\s*"[^"\n]+"$/m);
+});
+
+test('the annotation check rejects each way a line can be wrong', () => {
+  const patch = ['--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1,2 +1,3 @@', ' keep', '+added', ' tail', ''].join('\n');
+  const good = { path: 'src/a.ts', line: '2', harness: null };
+  assert.deepEqual(annotationProblems('positive', good, patch), []);
+
+  const missing = annotationProblems('positive', { ...good, line: null }, patch);
+  assert.match(missing.join(), /names a path but no line/);
+
+  const contextLine = annotationProblems('positive', { ...good, line: '1' }, patch);
+  assert.match(contextLine.join(), /line 1 is not an added line of src\/a\.ts/);
+
+  const beyond = annotationProblems('positive', { ...good, line: '9' }, patch);
+  assert.match(beyond.join(), /line 9 is not an added line/);
+
+  const wrongFile = annotationProblems('positive', { ...good, path: 'src/b.ts' }, patch);
+  assert.match(wrongFile.join(), /path src\/b\.ts is not in the patch/);
+
+  for (const group of ['negative', 'no-findings']) {
+    assert.match(annotationProblems(group, good, patch).join(), /is not a positive fixture but names a line/);
+  }
+
+  const unmarked = annotationProblems('positive', { path: null, line: null, harness: null }, patch);
+  assert.match(unmarked.join(), /has no path and is not marked harness: skip/);
+  assert.deepEqual(annotationProblems('positive', { path: null, line: null, harness: 'skip' }, patch), []);
+});
+
+test('the annotation check reads the normalised patch, not the raw file', () => {
+  // The header under-counts the new side, so reading it literally would end the
+  // hunk before the second added line; the recounted copy keeps it.
+  const patch = ['--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1,1 +1,2 @@', ' keep', '+one', '+two', ''].join('\n');
+  assert.deepEqual(annotationProblems('positive', { path: 'src/a.ts', line: '3', harness: null }, patch), []);
+});
+
+test('case.yaml keys are read from the expect block only', () => {
+  const text = 'name: x\nasserts: "a"\nharness: skip\nexpect:\n  path: a/b.ts\n  line: 12\n  category: c\n';
+  assert.deepEqual(readExpectation(text), { path: 'a/b.ts', line: '12', harness: 'skip' });
+  assert.deepEqual(readExpectation('name: x\nline: 5\nexpect:\n  findings: 1\n'), { path: null, line: null, harness: null });
 });

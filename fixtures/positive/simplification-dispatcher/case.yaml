@@ -6,6 +6,8 @@ asserts: >
   body-only maintainability restructuring that enumerates every disappearing
   parameter and branch, preserves behaviour through that dispatcher, and does
   not affect the verdict.
+harness: skip
+harness_reason: "The opt-in simplification pass is not a stage runReview drives, so the recall harness cannot score this fixture."
 expect:
   findings: 1
   verified: true

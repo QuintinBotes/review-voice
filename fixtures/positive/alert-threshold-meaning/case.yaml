@@ -6,4 +6,5 @@ expect:
   min_findings: 1
   severity: nit
   path: alerts/delivery.tf
+  line: 19
   category: observability

@@ -7,4 +7,5 @@ expect:
   min_findings: 1
   severity: minor
   path: test/contracts/SubmitOrderContractTests.cs
+  line: 3
   category: test_coverage

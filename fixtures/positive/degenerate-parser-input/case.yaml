@@ -6,4 +6,5 @@ expect:
   min_findings: 1
   severity: important
   path: src/scopes.ts
+  line: 13
   category: correctness
