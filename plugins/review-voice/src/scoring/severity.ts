@@ -188,6 +188,17 @@ const ALIASES: Record<string, string> = {
 };
 
 /**
+ * The category as the tables know it: trimmed, lower case, spaces and hyphens
+ * as underscores, and an alias resolved to its target. Anything that treats one
+ * category differently from another (a severity table, a carve-out) compares
+ * this form, so `authz` and `authorization` are the same word to all of them.
+ */
+export function canonicalCategory(category: string): string {
+  const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  return LEGACY_BY_CATEGORY[normalised] !== undefined ? normalised : (ALIASES[normalised] ?? normalised);
+}
+
+/**
  * How far derivation may move a finding from what the analyst asked for.
  *
  * Derivation exists because asking produced a different tier each time: the
@@ -315,8 +326,7 @@ export function deriveSeverity(
   }
 
   const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, '_');
-  const alias = ALIASES[normalised];
-  const resolved = LEGACY_BY_CATEGORY[normalised] !== undefined ? normalised : (alias ?? normalised);
+  const resolved = canonicalCategory(category);
 
   const legacy = LEGACY_BY_CATEGORY[resolved];
   if (legacy === undefined) {

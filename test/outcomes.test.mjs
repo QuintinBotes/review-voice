@@ -258,7 +258,7 @@ test('evaluate reports posted precision from strong outcomes only, and null with
     assert.equal(find(empty, 'posted_findings_tracked').value, null);
     assert.equal(find(empty, 'posted_fixed_rate').value, null);
     assert.equal(find(empty, 'posted_dismissed_rate').value, null);
-    assert.deepEqual(postedBreakdown(db), { bySeverity: {}, byLane: {} });
+    assert.deepEqual(postedBreakdown(db), { bySeverity: {}, byLane: {}, byRule: {} });
 
     postedRun(db);
     await check(db, fakeGitHub({ outdated: [104] }));

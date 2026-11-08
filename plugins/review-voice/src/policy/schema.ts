@@ -2,6 +2,18 @@ import { DEFAULT_LIMITS, SEVERITIES } from '../contract/limits.ts';
 
 export type ScopeType = 'global' | 'repository' | 'path' | 'language';
 
+/**
+ * One structured suppression: findings of a rule are held at scoring time
+ * (docs/adr/0032). `glob` narrows it to paths; null means everywhere.
+ */
+export interface Suppression {
+  ruleId: string;
+  glob: string | null;
+  reason: string | null;
+  /** The approved policy version it came from, so a held finding can name it. */
+  policyVersion: number | null;
+}
+
 export interface PolicyLayer {
   scope: { type: ScopeType; key: string };
   /** Where this layer came from, so `policy show` can answer "why". */
@@ -13,6 +25,7 @@ export interface PolicyLayer {
   maxTotalWords?: number;
   forbiddenPhrases?: string[];
   suppressedPatterns?: string[];
+  suppressions?: Suppression[];
   requiredChecks?: string[];
   priorities?: { category: string; weight: string }[];
 }
@@ -24,6 +37,7 @@ export interface ResolvedPolicy {
   noFindingsResponse: string;
   forbiddenPhrases: string[];
   suppressedPatterns: string[];
+  suppressions: Suppression[];
   requiredChecks: string[];
   priorities: { category: string; weight: string }[];
   /** Broadest to narrowest, as applied. */
@@ -45,6 +59,7 @@ export function resolvePolicy(layers: PolicyLayer[]): ResolvedPolicy {
     noFindingsResponse: DEFAULT_LIMITS.noFindingsResponse,
     forbiddenPhrases: [...DEFAULT_LIMITS.forbiddenPhrases],
     suppressedPatterns: [],
+    suppressions: [],
     requiredChecks: [],
     priorities: [],
     layers: [],
@@ -70,6 +85,7 @@ export function resolvePolicy(layers: PolicyLayer[]): ResolvedPolicy {
       if (!resolved.forbiddenPhrases.includes(phrase)) resolved.forbiddenPhrases.push(phrase);
     }
     resolved.suppressedPatterns.push(...(layer.suppressedPatterns ?? []));
+    resolved.suppressions.push(...(layer.suppressions ?? []));
     resolved.requiredChecks.push(...(layer.requiredChecks ?? []));
     for (const priority of layer.priorities ?? []) {
       const existing = resolved.priorities.findIndex((p) => p.category === priority.category);

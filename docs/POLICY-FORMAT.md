@@ -58,14 +58,52 @@ priorities:
 suppressed_patterns:
   - "Readable naming alternatives without a concrete failure mode."
 
+suppressions:
+  - rule_id: maintainability:diff
+    glob: null
+    reason: "owner dismissed 3 of 3 in October 2026"
+
 provenance:
   - rule: "Suppress naming-only comments unless they create a concrete ambiguity."
+    rule_id: maintainability:diff
+    category: maintainability
     evidence_event_ids: [evt_4f2a, evt_91bc, evt_c103]
     owner_signal_count: 7
     contradicting_signal_count: 0
     confidence: 0.91
     most_recent_evidence_at: 2026-09-07T00:00:00Z
 ```
+
+## Suppressions
+
+`suppressed_patterns` is prose for readers. `suppressions` is the structured
+form of the same rules, and it is what `score` applies (see
+[ADR 0032](adr/0032-approved-policies-are-enforced-at-scoring.md)). Each entry
+has three fields:
+
+- `rule_id` names the kind of finding the rule is about, in the form
+  `category:lane`, or `category:lane:blocker_class` when the findings claimed
+  a blocker class. The lane is `diff` for a finding with none. A suppression
+  matches a candidate only when their rule ids are exactly equal, so a rule
+  about one lane says nothing about the same category in another lane.
+- `glob` narrows the suppression to candidates whose path matches it. Null
+  means everywhere.
+- `reason` says why the owner's signals formed the rule, in the owner's terms.
+
+A matched candidate is held at scoring time with the reason
+`policy-suppressed:<rule_id>`, listed in `score` output under `suppressed`
+with the policy version that held it, and shown by `explain` under "Held
+back". A suppression is preference, not truth: it holds a finding rather than
+deleting it from the record, and the owner can still post it with
+`score --promote <candidate_id>`.
+
+A suppression can never reach a category that names a security breach or a
+trust boundary. The exempt categories are `security`, `authorization`,
+`authentication`, `data_integrity` and `trust_boundary`. Approval refuses a
+proposal whose suppression names one of them, and `score` ignores such an
+entry however it got into the store. This is the structural form of the
+warning in [ADR 0006](adr/0006-team-governance.md) that a suppression is one
+line away from "never mention authentication".
 
 ## Compiler limits
 

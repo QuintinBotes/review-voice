@@ -633,10 +633,12 @@ tier, or, for a verified finding whose reach is unknown, a higher one up to the
 tier the analyst requested (the command the legacy-tier hint names). It writes
 the explicit owner override into the severity reason, and the resulting scores
 must still drive `validate-output` and `record --scores`.
-When the owner asks to post a finding listed in `belowGate`, rerun `score` with
-`--promote <candidate_id>`. It accepts only a `belowGate` entry, which is a
-verified finding held by the score or confidence gate alone, and records
-`ownerPromotion` with the gate it was held by. Do not edit a score file by hand.
+When the owner asks to post a finding listed in `belowGate` or in
+`suppressed`, rerun `score` with `--promote <candidate_id>`. It accepts only a
+`belowGate` entry, which is a verified finding held by the score or confidence
+gate alone, or a `suppressed` entry, which is a verified finding an approved
+policy held back, and records `ownerPromotion` with the gate it was held by.
+Do not edit a score file by hand.
 
 A verified finding lands in `unverified` with `confidenceSource:
 "unverifiable-cap"` for one of two reasons, named in `unverifiableBecause`:
@@ -708,6 +710,13 @@ wording - does not trigger the cap; every other entry does.
 (`gate: score`) or only by the floor on the verifier's own confidence
 (`gate: confidence`). Keep it for step 6. They are never posted and are not part
 of the validated output.
+
+`suppressed` lists the verified candidates an approved policy held back, each
+with its `ruleId` and the `policyVersion` that held it. A suppression is
+preference, not truth, so the finding is held rather than deleted, and the
+owner can still post it with `--promote`. Keep it for step 6. Like `belowGate`,
+it is never posted and is not part of the validated output. Step 6 records each
+entry as held with the verdict `policy-suppressed`.
 
 `unverified` lists the candidates rejected only because the verifier listed
 blocking context it could not obtain in `required_context_missing`, each with
@@ -866,7 +875,11 @@ stray directory and another project's notes took the reviewed count from 11 to
   empty, print after it a line `Below the gate (not posted)` and then one line
   per entry: `[severity] path:line - claim`. They are verified but stopped by
   the score or confidence gate, are never posted, and are not part of the
-  validated output. When
+  validated output. When `suppressed` from step 4 is not empty, print after
+  that a line `Held by approved policy (not posted)` and then one line per
+  entry: `[severity] path:line - claim (rule <ruleId>, policy version
+  <policyVersion>)`. They are verified but held by an approved suppression,
+  are never posted, and are not part of the validated output. When
   `unverified` from step 4 is not empty, print after that a line
   `Unverified (not posted)` and then one line per entry:
   `[severity] path:line - claim (could not check: <required_context_missing>)`.
@@ -941,9 +954,11 @@ stray directory and another project's notes took the reviewed count from 11 to
   Pass every candidate that was held back rather than reported with
   `--held <file>` (an array of `{path, line, verdict, source, reason, text}`, verdict
   one of `partly`, `refuted`, `unverified`, `repeat`, `below-gate`,
-  `challenge-partly`, `challenge-refuted`; a path in neither `--files` nor `--candidates` is warned about on stderr and still recorded): the
+  `policy-suppressed`, `challenge-partly`, `challenge-refuted`; a path in neither `--files` nor `--candidates` is warned about on stderr and still recorded): the
   `droppedAsRepeat` from step 2 as `repeat`, any cross-check result of PARTLY or
   REFUTED, each `belowGate` entry from step 4 as `below-gate`, each
+  `suppressed` entry from step 4 as `policy-suppressed` with a reason naming
+  its rule id and policy version, each
   `unverified` entry from step 4 as `unverified`, and every `challengeHeld[]`
   entry from step 4b as it is. Give each
   entry `text`, the candidate's claim, so the next review can match on wording. Malformed

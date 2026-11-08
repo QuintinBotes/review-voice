@@ -41,6 +41,27 @@
         },
         "priorities": { "type": "array" },
         "suppressed_patterns": { "type": "array", "items": { "type": "string" } },
+        "suppressions": {
+          "type": "array",
+          "description": "Structured suppressions, keyed by rule id, that `score` applies to a matching verified finding (docs/adr/0032). The prose in suppressed_patterns stays for readers. A rule id whose category is security, authorization, authentication, data_integrity or trust_boundary is refused at approval and ignored at scoring.",
+          "items": {
+            "type": "object",
+            "required": ["rule_id"],
+            "additionalProperties": false,
+            "properties": {
+              "rule_id": {
+                "type": "string",
+                "description": "`category:lane` or `category:lane:blocker_class`; the lane is `diff` for a finding with none.",
+                "pattern": "^[^:\\s]+:[^:\\s]+(:[^\\s]+)?$"
+              },
+              "glob": {
+                "type": ["string", "null"],
+                "description": "Narrows the suppression to matching paths. Null means everywhere."
+              },
+              "reason": { "type": ["string", "null"], "description": "Why the owner's signals formed this rule." }
+            }
+          }
+        },
         "forbidden_phrases": { "type": "array", "items": { "type": "string" } },
         "required_checks": { "type": "array", "items": { "type": "string" } }
       }
@@ -55,6 +76,11 @@
         "additionalProperties": false,
         "properties": {
           "rule": { "type": "string" },
+          "rule_id": {
+            "type": "string",
+            "description": "What the rule is about: `category:lane[:blocker_class]` (docs/adr/0032)."
+          },
+          "category": { "type": "string", "description": "The finding category of the rule id." },
           "evidence_event_ids": { "type": "array", "items": { "type": "string" } },
           "owner_signal_count": { "type": "integer", "minimum": 0 },
           "contradicting_signal_count": { "type": "integer", "minimum": 0 },

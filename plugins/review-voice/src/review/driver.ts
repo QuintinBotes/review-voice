@@ -813,6 +813,19 @@ async function score(run: Run): Promise<void> {
     });
   };
   for (const entry of list(scores['belowGate'])) hold(entry, 'below-gate', 'score', `below the ${String(entry['gate'])} gate`);
+  // An approved suppression held these back, so the reason names the rule and
+  // the policy version that held it, which is what `explain` then shows under
+  // "Held back" (docs/adr/0032). Each appears here and not in `belowGate`, so
+  // it is held once.
+  for (const entry of list(scores['suppressed'])) {
+    const version = entry['policyVersion'];
+    hold(
+      entry,
+      'policy-suppressed',
+      'policy',
+      `held by approved policy${typeof version === 'number' ? ` version ${version}` : ''} (rule ${String(entry['ruleId'] ?? '')})`,
+    );
+  }
   for (const entry of list(scores['unverified'])) {
     const missing = Array.isArray(entry['requiredContextMissing']) ? entry['requiredContextMissing'].join('; ') : 'context';
     hold(entry, 'unverified', 'verifier', `could not check: ${missing}`);

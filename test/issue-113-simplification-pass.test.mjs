@@ -79,7 +79,14 @@ test('context exposes the resolved simplify setting to the review command', () =
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: directory });
     mkdirSync(join(directory, '.review-voice'));
     writeFileSync(join(directory, '.review-voice/config.yaml'), 'review:\n  structure:\n    simplify: true\n');
-    const context = JSON.parse(execFileSync(process.execPath, [bundle, 'context'], { cwd: directory, encoding: 'utf8' }));
+    // `context` opens the store to load approved policies; a fresh data directory keeps it off the developer's own.
+    const context = JSON.parse(
+      execFileSync(process.execPath, [bundle, 'context'], {
+        cwd: directory,
+        encoding: 'utf8',
+        env: { ...process.env, REVIEW_VOICE_DATA_DIR: join(directory, 'data') },
+      }),
+    );
     assert.equal(context.structure.simplify, true);
   } finally {
     rmSync(directory, { recursive: true, force: true });

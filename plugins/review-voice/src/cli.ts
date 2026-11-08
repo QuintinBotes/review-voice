@@ -157,12 +157,15 @@ import {
   type Verification,
   ownerRaiseCeiling,
   QUESTION_GAP_FLOOR,
+  matchingSuppression,
+  POLICY_SUPPRESSED_PREFIX,
 } from './scoring/score.ts';
 import { compileProposals } from './policy/compile.ts';
 import { proposePolicy, approvePolicy, rollbackTo, listPolicies } from './policy/versions.ts';
 import { computeMetrics, dismissedRateWarning, DEFAULT_WINDOW_DAYS, stageSeconds, windowStart } from './evaluate/metrics.ts';
 import { RECALL_CLASSES, readRecallResults, recallMetrics, type RecallClass, type RecallResults } from './evaluate/recall-results.ts';
 import { RecallUsageError, runRecall } from './evaluate/recall.ts';
+import { storedPolicyVersions, type PolicyVersionRef } from './store/runs.ts';
 import { checkOutcomes, postedBreakdown, postedStats } from './store/outcomes.ts';
 import { beginSyncRun, finishSyncRun, lastSync } from './sync/state.ts';
 import { loadWatermarks, saveWatermarks, type Watermark } from './sync/watermark.ts';
@@ -893,7 +896,15 @@ export function resolveOutPath(out: string, defaultName: string): string {
 function contextCommand(): number {
   try {
     const root = repositoryRoot(process.cwd());
-    const config = loadConfig(root);
+    // The store is read here, and closed again before anything is printed, so
+    // the policy shown includes the owner's approved suppressions (docs/adr/0032).
+    const db = openDatabase();
+    let config: ReturnType<typeof loadConfig>;
+    try {
+      config = loadConfig(root, undefined, undefined, db);
+    } finally {
+      db.close();
+    }
     const configPath = join(root, '.review-voice', 'config.yaml');
     const policy = resolvePolicy(config.layers);
     console.log(
@@ -1371,9 +1382,10 @@ function asLevel(value: unknown): 'normal' | 'high' {
   return typeof value === 'object' && value !== null && (value as { level?: unknown }).level === 'high' ? 'high' : 'normal';
 }
 
-function repositoryConfig(): ReturnType<typeof loadConfig> | null {
+/** `db` is passed only by a command that applies the owner's approved policies (docs/adr/0032). */
+function repositoryConfig(db?: Database): ReturnType<typeof loadConfig> | null {
   try {
-    return loadConfig(repositoryRoot(process.cwd()));
+    return loadConfig(repositoryRoot(process.cwd()), undefined, undefined, db);
   } catch {
     return null;
   }
@@ -1481,10 +1493,14 @@ function evaluateCommand(argv: string[]): number {
   try {
     const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
     if (argv.includes('--json')) {
-      const { bySeverity, byLane } = postedBreakdown(db);
+      const { bySeverity, byLane, byRule } = postedBreakdown(db);
       console.log(
         JSON.stringify(
-          { metrics, posted_breakdown: { by_severity: bySeverity, by_lane: byLane }, stage_seconds: stageSeconds(db) },
+          {
+            metrics,
+            posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule },
+            stage_seconds: stageSeconds(db),
+          },
           null,
           2,
         ),
@@ -1713,7 +1729,8 @@ function ownerSeverityOverrides(argv: string[], candidates: readonly Candidate[]
 
 /**
  * Reads repeatable `--promote candidate_id` owner decisions: post a verified
- * finding that the score or confidence gate alone held back.
+ * finding that the score or confidence gate alone held back, or one an
+ * approved suppression held back.
  */
 function ownerPromotions(argv: string[], candidates: readonly Candidate[]): Set<string> | string {
   const promotions = new Set<string>();
@@ -1732,9 +1749,9 @@ function ownerPromotions(argv: string[], candidates: readonly Candidate[]): Set<
 }
 
 /**
- * Applies one promotion. Only what `belowGate` would list qualifies: the
- * verifier confirmed it and one numeric gate, which is preference, stopped it.
- * Anything else was stopped by a check of the claim itself.
+ * Applies one promotion. Only what `belowGate` or `suppressed` would list
+ * qualifies: the verifier confirmed it and one gate, which is preference,
+ * stopped it. Anything else was stopped by a check of the claim itself.
  */
 function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null): string | null {
   const gate = gateOf(breakdown.rejectedBecause);
@@ -1749,6 +1766,15 @@ function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null
       );
     }
     breakdown.ownerPromotion = { gate: 'unverifiable', heldBecause: breakdown.rejectedBecause, ownerNote };
+    breakdown.eligible = true;
+    breakdown.rejectedBecause = null;
+    return null;
+  }
+  // A suppression holds only a candidate that was eligible when it applied, so
+  // lifting it restores that eligibility whatever the confidence source was: a
+  // question kept eligible under the unverifiable cap is still postable.
+  if (gate === 'policy') {
+    breakdown.ownerPromotion = { gate, heldBecause: breakdown.rejectedBecause!, ruleId: breakdown.rejectedBecause!.slice(POLICY_SUPPRESSED_PREFIX.length) };
     breakdown.eligible = true;
     breakdown.rejectedBecause = null;
     return null;
@@ -2032,6 +2058,15 @@ function scoreCommand(argv: string[]): number {
 
   const db = openDatabase();
   try {
+    // The store is passed so the loaded layers include the owner's approved
+    // policies, whose suppressions are applied below (docs/adr/0032). Without
+    // a repository there is no configuration and so nothing to suppress. The
+    // versions loaded go into the output, so `record` stores what this run was
+    // held to even if a policy changes between the two commands.
+    const loadedConfig = repositoryConfig(db);
+    const suppressions = loadedConfig?.suppressions ?? [];
+    const policyVersions = loadedConfig?.activePolicyVersions ?? [];
+    const suppressionByCandidate = new Map<string, NonNullable<ReturnType<typeof matchingSuppression>>>();
     const kept: Candidate[] = [];
     const results: (ScoreBreakdown & { precedents: Precedent[]; absenceCheck?: ExistenceCheck })[] = [];
     const followUps = new Map<string, NonNullable<ReturnType<typeof followUpOf>>>();
@@ -2060,6 +2095,21 @@ function scoreCommand(argv: string[]): number {
         if (problem !== null) {
           console.error(problem);
           return 2;
+        }
+      }
+
+      // An approved suppression holds a candidate the verifier's verdict left
+      // eligible, before the checks below run, so a failure in one of them is
+      // still appended to its reason and it is then no longer held by policy
+      // alone. A suppression is preference, not truth, so it never overwrites
+      // a rejection a check of the claim itself already made, and the owner
+      // can still post the finding with `--promote` (docs/adr/0032).
+      if (breakdown.eligible) {
+        const suppression = matchingSuppression(suppressions, candidate);
+        if (suppression !== null) {
+          breakdown.eligible = false;
+          breakdown.rejectedBecause = `${POLICY_SUPPRESSED_PREFIX}${suppression.ruleId}`;
+          suppressionByCandidate.set(candidate.candidateId, suppression);
         }
       }
 
@@ -2209,7 +2259,8 @@ function scoreCommand(argv: string[]): number {
           r.confidenceSource === 'verifier' &&
           !r.eligible &&
           Number.isFinite(r.finalScore) &&
-          gateOf(r.rejectedBecause) !== null,
+          gateOf(r.rejectedBecause) !== null &&
+          gateOf(r.rejectedBecause) !== 'policy',
       )
       .map((r) => {
         const gate = gateOf(r.rejectedBecause);
@@ -2227,6 +2278,25 @@ function scoreCommand(argv: string[]): number {
                 technicalConfidence: r.technicalConfidence,
                 threshold: r.severity.severity === 'question' ? QUESTION_GAP_FLOOR : thresholds.technicalConfidence,
               }),
+        });
+      });
+
+    // Held by an approved suppression alone, and listed here rather than in
+    // `belowGate` so the driver holds each one once, as `policy-suppressed`.
+    // Shown locally like `belowGate`, and never posted unless the owner
+    // promotes it: a suppression is preference, not truth (docs/adr/0032).
+    const suppressed = results
+      .filter((r) => !r.eligible && gateOf(r.rejectedBecause) === 'policy')
+      .map((r) => {
+        const suppression = suppressionByCandidate.get(r.candidateId);
+        return boundLists({
+          candidateId: r.candidateId,
+          ruleId: suppression?.ruleId ?? r.rejectedBecause!.slice(POLICY_SUPPRESSED_PREFIX.length),
+          path: r.path,
+          line: r.line,
+          severity: r.severity.severity,
+          claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? '',
+          policyVersion: suppression?.policyVersion ?? null,
         });
       });
 
@@ -2332,6 +2402,11 @@ function scoreCommand(argv: string[]): number {
               // Whether the verifier or a fallback set the confidence, without a join to `scores` (#220).
               confidenceSource: scored?.confidenceSource ?? null,
               category: c.category,
+              // The driver records these entries as the run's candidates, and
+              // a finding's rule id is derived from them: without the lane and
+              // the blocker class every recorded rule would read `:diff`.
+              lane: c.lane,
+              blockerClass: c.blockerClass,
               // What the editor writes from. It has no tools, so everything it
               // may state has to be here, and nothing it may not.
               claim: c.claim,
@@ -2359,8 +2434,10 @@ function scoreCommand(argv: string[]): number {
             };
           }),
           belowGate: belowGate.map(withSnakeCaseId),
+          suppressed: suppressed.map(withSnakeCaseId),
           unverified: unverified.map(withSnakeCaseId),
           absenceContradicted: absenceContradicted.map(withSnakeCaseId),
+          policyVersions,
         },
         null,
         2,
@@ -2374,17 +2451,18 @@ function scoreCommand(argv: string[]): number {
 
 /**
  * Whether a rejection came from one of the gates whose candidates are listed
- * locally - the unverifiable cap, the confidence floor or the final score -
- * and from nothing else yet.
+ * locally - the unverifiable cap, the confidence floor, the final score or an
+ * approved suppression - and from nothing else yet.
  */
 function locallyListable(rejectedBecause: string | null): boolean {
   if (rejectedBecause === null) return false;
   return rejectedBecause === UNVERIFIABLE_REJECTION || gateOf(rejectedBecause) !== null;
 }
 
-/** The numeric gate that alone stopped a candidate, or null. */
-function gateOf(rejectedBecause: string | null): 'score' | 'confidence' | null {
+/** The gate that alone stopped a candidate, or null. */
+function gateOf(rejectedBecause: string | null): 'score' | 'confidence' | 'policy' | null {
   if (rejectedBecause === null || rejectedBecause.includes(' Also: ')) return null;
+  if (rejectedBecause.startsWith(POLICY_SUPPRESSED_PREFIX)) return 'policy';
   if (rejectedBecause.startsWith('score ')) return 'score';
   if (rejectedBecause.startsWith('technical confidence ')) return 'confidence';
   return null;
@@ -2696,6 +2774,25 @@ function describeReviewScope(scope: ReviewScope | null): string | null {
   return describeScope(scope);
 }
 
+/**
+ * The approved policy versions a `score` output says it loaded, or null when
+ * the file carries none (one written before docs/adr/0032, or by hand). An
+ * entry that is not a version reference makes the whole list null, so a
+ * malformed file falls back to the rows active at record time rather than
+ * recording a reference nothing can resolve.
+ */
+function policyVersionRefs(value: unknown): PolicyVersionRef[] | null {
+  if (!Array.isArray(value)) return null;
+  const refs: PolicyVersionRef[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) return null;
+    const { scopeType, scopeKey, policyId, version } = entry as Record<string, unknown>;
+    if (typeof scopeType !== 'string' || typeof scopeKey !== 'string' || typeof policyId !== 'string' || typeof version !== 'number') return null;
+    refs.push({ scopeType, scopeKey, policyId, version });
+  }
+  return refs;
+}
+
 function recordCommand(argv: string[]): number {
   // An empty ref is a shell slip, not a choice: a run with no head can never be
   // compared with a later run on the same head, so it is refused, not stored (#236).
@@ -2865,12 +2962,16 @@ function recordCommand(argv: string[]): number {
 
   const scoresFile = flag(argv, '--scores');
   let scores: unknown = [];
+  // The policy versions `score` loaded, when its output names them: the run
+  // then records what it was held to, not whatever is active now.
+  let scoredPolicyVersions: PolicyVersionRef[] | null = null;
   if (scoresFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync(scoresFile, 'utf8')) as { scores?: unknown };
+      const parsed = JSON.parse(readFileSync(scoresFile, 'utf8')) as { scores?: unknown; policyVersions?: unknown };
       // Bounded again here: a scores file from before the cap, or one a caller
       // assembled, must not put every matching path into the stored run.
       scores = boundLists(Array.isArray(parsed) ? parsed : (parsed.scores ?? []));
+      scoredPolicyVersions = Array.isArray(parsed) ? null : policyVersionRefs(parsed.policyVersions);
     } catch {
       console.error(`Cannot read scores from ${scoresFile}.`);
       return 2;
@@ -3007,6 +3108,7 @@ function recordCommand(argv: string[]): number {
     let carried: { runId: string; findings: CarriedFinding[] } | undefined;
     let carry: CarryMarker | undefined;
     let carriedProvenance: RunProvenance | null = null;
+    let carriedVersions: PolicyVersionRef[] | null = null;
     const carriedFrom = flag(argv, '--carried-from');
     if (carriedFrom !== null) {
       const head = flag(argv, '--head');
@@ -3036,8 +3138,12 @@ function recordCommand(argv: string[]): number {
         // Nothing re-reviewed the carried findings, so the record keeps the
         // provenance of the run that produced them: a carry by the driver must
         // not turn an interactive review into an independent one. A source from
-        // before the column has none to keep, and the flags stand.
+        // before the column has none to keep, and the flags stand. The policy
+        // versions are read from the run's own column, which a run from before
+        // provenance existed still has, so a policy approved since is never
+        // attributed to findings it did not score.
         carriedProvenance = source?.provenance ?? null;
+        carriedVersions = storedPolicyVersions(db, carriedFrom);
       } catch (error) {
         console.error((error as Error).message);
         return 2;
@@ -3138,10 +3244,20 @@ function recordCommand(argv: string[]): number {
       ...(carry === undefined ? {} : { carry }),
       followUps,
       stages,
-      provenance:
-        carriedProvenance === null
+      provenance: {
+        ...(carriedProvenance === null
           ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode }
-          : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode },
+          : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode }),
+        // The versions this run was held to: the ones `score` loaded when there
+        // is a scores file; else the carried run's, since an unchanged scope is
+        // not rescored and a policy change since must not be attributed to it;
+        // else the rows active now.
+        ...(scoredPolicyVersions !== null
+          ? { policyVersions: scoredPolicyVersions }
+          : carriedVersions === null
+            ? {}
+            : { policyVersions: carriedVersions }),
+      },
     });
     // Local only: printed here and by `explain`, never part of what is posted.
     const warning = shallowPassWarning(stages, findings.length);
@@ -3988,6 +4104,7 @@ function explainCommand(argv: string[]): number {
         }
       }
       console.log(`  category          ${finding.category ?? 'not recorded'}`);
+      console.log(`  rule id           ${finding.ruleId ?? 'not recorded'}`);
       if (score?.technicalConfidence !== undefined) {
         console.log(`  technical         ${score.technicalConfidence.toFixed(2)}`);
       }
@@ -5026,7 +5143,11 @@ function statusCommand(): number {
     if (last !== null) {
       // The origin goes last so the count and ids keep their position.
       const origin = lastDetail?.provenance == null ? '' : `; ${describeOrigin(lastDetail.provenance)}`;
-      console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(', ') || 'none'}${origin}`);
+      console.log(
+        `last review      ${last.findings.length} finding(s): ${
+          last.findings.map((f) => (f.ruleId === undefined ? f.findingId : `${f.findingId} (${f.ruleId})`)).join(', ') || 'none'
+        }${origin}`,
+      );
       const recordedScope = describeReviewScope(lastDetail?.scope ?? null);
       if (recordedScope !== null) console.log(`last scope       ${recordedScope}`);
     }

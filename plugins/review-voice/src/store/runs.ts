@@ -1,7 +1,8 @@
 import { randomUUID, createHash } from 'node:crypto';
 import type { Database } from './db.ts';
 import { recordAudit } from './audit.ts';
-import { listPolicies } from '../policy/versions.ts';
+import { activePolicyVersions } from '../policy/versions.ts';
+import { ruleIdFor } from '../policy/rules.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
 import { parseComplexity, type ComplexityAssessment } from '../diff/complexity.ts';
@@ -41,6 +42,14 @@ export interface StoredFinding {
   partlyAddressed?: PartlyAddressedFinding | undefined;
   /** The lane of the candidate this finding came from; `diff` when none (docs/adr/0023). */
   lane?: string | undefined;
+  /** The candidate's claimed blocker class, when it claimed one. */
+  blockerClass?: string | undefined;
+  /**
+   * What kind of finding this is: `category:lane` or `category:lane:blocker_class`
+   * (docs/adr/0032). Absent when no candidate classified it, because a rule
+   * cannot be keyed on a category nothing recorded.
+   */
+  ruleId?: string | undefined;
 }
 
 export interface PartlyAddressedFinding {
@@ -97,6 +106,11 @@ export function partlyAddressedOf(value: unknown): PartlyAddressedFinding | unde
  * `challenge-refuted` and `challenge-partly` come from the independent
  * challenge (docs/adr/0024), and hold a later repeat back like `refuted` and
  * `partly`.
+ *
+ * `policy-suppressed` is a verified finding the owner's approved policy holds
+ * back (docs/adr/0032). Like `below-gate` it says nothing against the finding:
+ * it is preference, so the owner can still post it and a later review never
+ * treats it as a reason to drop the same candidate.
  */
 export type HeldVerdict =
   | 'partly'
@@ -104,6 +118,7 @@ export type HeldVerdict =
   | 'unverified'
   | 'repeat'
   | 'below-gate'
+  | 'policy-suppressed'
   | 'owner-declined'
   | 'challenge-refuted'
   | 'challenge-partly';
@@ -126,6 +141,7 @@ export const HELD_VERDICTS: readonly HeldVerdict[] = [
   'unverified',
   'repeat',
   'below-gate',
+  'policy-suppressed',
   'owner-declined',
   'challenge-refuted',
   'challenge-partly',
@@ -260,10 +276,31 @@ export function describeOrigin(provenance: Pick<RunProvenance, 'origin' | 'indep
   return `origin ${provenance.origin} (${provenance.independence})`;
 }
 
-function activePolicyVersions(db: Database): PolicyVersionRef[] {
-  return listPolicies(db)
-    .filter((policy) => policy.active)
-    .map((policy) => ({ scopeType: policy.scopeType, scopeKey: policy.scopeKey, policyId: policy.policyId, version: policy.version }));
+/**
+ * The approved policy versions a stored run was held to, from its own column,
+ * or null when the run is missing or the column is empty or will not parse.
+ * Read on its own rather than through the provenance, because a run recorded
+ * before provenance existed still has the column, and a carry of that run
+ * must keep those versions rather than take whatever is active now.
+ */
+export function storedPolicyVersions(db: Database, runId: string): PolicyVersionRef[] | null {
+  const row = db.prepare('SELECT active_policy_versions_json FROM review_runs WHERE review_run_id = ?').get(runId) as
+    | { active_policy_versions_json: string | null }
+    | undefined;
+  if (row === undefined || row.active_policy_versions_json === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(row.active_policy_versions_json);
+    if (!Array.isArray(parsed)) return null;
+    const versions: PolicyVersionRef[] = [];
+    for (const entry of parsed) {
+      const p = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+      if (typeof p['scopeType'] !== 'string' || typeof p['scopeKey'] !== 'string' || typeof p['policyId'] !== 'string' || typeof p['version'] !== 'number') return null;
+      versions.push({ scopeType: p['scopeType'], scopeKey: p['scopeKey'], policyId: p['policyId'], version: p['version'] });
+    }
+    return versions;
+  } catch {
+    return null;
+  }
 }
 
 const reportedProvenance = new Set<string>();
@@ -441,6 +478,12 @@ function attribute(
 const laneOf = (hint: CandidateHint | undefined): string =>
   typeof hint?.lane === 'string' && hint.lane.length > 0 ? hint.lane : 'diff';
 
+/** The blocker class a candidate claimed, as either spelling `score` accepts; undefined when none. */
+const blockerClassOf = (hint: CandidateHint | undefined): string | undefined => {
+  const claimed = hint?.blocker_class ?? hint?.blockerClass;
+  return typeof claimed === 'string' && claimed.length > 0 ? claimed : undefined;
+};
+
 /** The stored form of a candidate: its lane (default `diff`) and blocker class are always kept. */
 function storedCandidate(hint: CandidateHint): CandidateHint {
   const blocker = hint.blocker_class ?? hint.blockerClass;
@@ -458,6 +501,8 @@ function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
       const { hint, how } = attribute(anchor, hints, taken);
       if (hint !== undefined) taken.add(hint);
       const partly = partlyAddressedOf(hint?.possibleRepeatOf);
+      const blockerClass = blockerClassOf(hint);
+      const ruleId = ruleIdFor(hint?.category, laneOf(hint), blockerClass);
       return {
         findingId: `rv_${String(index + 1).padStart(2, '0')}`,
         severity: finding.severity!,
@@ -468,6 +513,9 @@ function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
         // guessing a category from the wording would invent evidence.
         category: hint?.category,
         lane: laneOf(hint),
+        ...(blockerClass === undefined ? {} : { blockerClass }),
+        // Null when there is no category: a finding nothing classified has no rule.
+        ...(ruleId === null ? {} : { ruleId }),
         // Stated so a disagreement between what the analyst cited and what
         // shipped is visible rather than showing up as a missing category.
         ...(how === 'exact' || how === 'none' ? {} : { attributedBy: how }),
@@ -501,8 +549,12 @@ export function recordRun(
     }
   }
 
-  // Read once so the two columns that name the policy cannot disagree.
-  const policyVersions = activePolicyVersions(db);
+  // Read once so the two columns that name the policy cannot disagree. The
+  // caller's snapshot, the versions `score` loaded, wins when it has one, so a
+  // policy approved or rolled back between scoring and recording cannot make
+  // the run say it was held to versions it was not; otherwise it is the same
+  // read `loadConfig` reports (docs/adr/0032).
+  const policyVersions = input.provenance?.policyVersions ?? activePolicyVersions(db);
   const provenance: RunProvenance | null =
     input.provenance === undefined
       ? null

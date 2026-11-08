@@ -1,4 +1,5 @@
 import type { Database } from '../store/db.ts';
+import { categoryOfRuleId, ruleIdFor } from './rules.ts';
 
 export interface RuleEvidence {
   keeps: number;
@@ -13,8 +14,10 @@ export interface RuleEvidence {
 export interface ProposedRule {
   scope: { type: 'global' | 'repository'; key: string };
   kind: 'suppress' | 'prioritise';
-  /** The finding category the rule is about. */
+  /** The finding category the rule is about, taken from `ruleId`. */
   category: string;
+  /** What the rule is about: `category:lane[:blocker_class]` (docs/adr/0032). */
+  ruleId: string;
   rule: string;
   evidence: RuleEvidence;
   confidence: number;
@@ -71,21 +74,34 @@ interface FeedbackRow {
 interface Labelled {
   row: FeedbackRow;
   category: string | null;
+  /** The finding's stored rule id, or the one derived from its category and lane. */
+  ruleId: string | null;
   severity: string | null;
   path: string;
 }
 
-/** Feedback on findings whose category was never recorded cannot be grouped. */
+/**
+ * Feedback on findings whose category was never recorded cannot be grouped.
+ * A finding recorded before rule ids existed has none stored, so its rule is
+ * derived from its category and lane; that is what the id would have been.
+ */
 function label(row: FeedbackRow): Labelled | null {
   try {
     const parsed = JSON.parse(row.output_json) as {
-      findings: { findingId: string; path: string; category?: string; severity?: string }[];
+      findings: { findingId: string; path: string; category?: string; severity?: string; lane?: string; ruleId?: string }[];
     };
     const finding = parsed.findings.find((f) => f.findingId === row.finding_id);
     if (finding === undefined) return null;
+    const category = typeof finding.category === 'string' && finding.category.length > 0 ? finding.category : null;
     return {
       row,
-      category: finding.category ?? null,
+      category,
+      ruleId:
+        category === null
+          ? null
+          : typeof finding.ruleId === 'string' && finding.ruleId.length > 0
+            ? finding.ruleId
+            : ruleIdFor(category, finding.lane),
       severity: finding.severity ?? null,
       path: finding.path,
     };
@@ -93,6 +109,9 @@ function label(row: FeedbackRow): Labelled | null {
     return null;
   }
 }
+
+/** A rule id contains colons and a kind never does, so a tab keeps the two apart. */
+const KEY_SEPARATOR = '\t';
 
 /**
  * Compiles explicit feedback into proposed policy rules.
@@ -111,9 +130,11 @@ export function compileProposals(db: Database): ProposedRule[] {
     )
     .all() as unknown as FeedbackRow[];
 
-  // Grouped by finding category, not by file path. "Suppress naming comments"
-  // is a rule; "suppress things like the ones in src/a.ts" is an observation
-  // about one directory that happens to be where you were working that week.
+  // Grouped by rule id (category, lane, blocker class), not by file path.
+  // "Suppress naming comments" is a rule; "suppress things like the ones in
+  // src/a.ts" is an observation about one directory that happens to be where
+  // you were working that week. Two lanes' findings of one category are two
+  // rules, because a dismissal of one says nothing about the other.
   const buckets = new Map<string, Labelled[]>();
 
   for (const row of rows) {
@@ -122,25 +143,26 @@ export function compileProposals(db: Database): ProposedRule[] {
 
     // Feedback recorded before categories were captured has nothing to group
     // on. It still counts toward precision; it just cannot become a rule.
-    if (labelled.category === null) continue;
+    if (labelled.category === null || labelled.ruleId === null) continue;
 
     const kind = row.action === 'never_flag' || row.action === 'dismiss' ? 'suppress' : 'prioritise';
-    const key = `${kind}:${labelled.category}`;
+    const key = `${kind}${KEY_SEPARATOR}${labelled.ruleId}`;
     buckets.set(key, [...(buckets.get(key) ?? []), labelled]);
   }
 
   const proposals: ProposedRule[] = [];
 
   for (const [key, group] of buckets) {
-    const [kind, category] = key.split(':') as ['suppress' | 'prioritise', string];
+    const [kind, ruleId] = key.split(KEY_SEPARATOR) as ['suppress' | 'prioritise', string];
+    const category = categoryOfRuleId(ruleId);
 
     const keeps = group.filter((g) => g.row.action === 'keep').length;
     const dismissals = group.filter((g) => g.row.action === 'dismiss' || g.row.action === 'never_flag').length;
     const rewrites = group.filter((g) => g.row.action === 'rewrite').length;
 
     // A contradicting signal is the owner having gone the other way on the
-    // same category - the one case where a rule should not form quietly.
-    const opposite = kind === 'suppress' ? `prioritise:${category}` : `suppress:${category}`;
+    // same rule - the one case where a rule should not form quietly.
+    const opposite = `${kind === 'suppress' ? 'prioritise' : 'suppress'}${KEY_SEPARATOR}${ruleId}`;
     const contradictingSignals = (buckets.get(opposite) ?? []).length;
 
     const evidence: RuleEvidence = {
@@ -163,6 +185,7 @@ export function compileProposals(db: Database): ProposedRule[] {
       scope: { type: 'global', key: 'owner' },
       kind,
       category,
+      ruleId,
       rule:
         kind === 'suppress'
           ? `Suppress ${category} findings${severities.length === 1 ? ` at ${severities[0]} severity` : ''} unless they name a concrete failure mode${reasons.length > 0 ? ` (stated reason: ${reasons[0]})` : ''}.`

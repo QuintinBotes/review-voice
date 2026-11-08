@@ -1,9 +1,12 @@
 import type { Precedent } from '../retrieval/retrieve.ts';
 import type { ReachCheck } from './reach.ts';
-import { deriveSeverity, type DerivedSeverity, type Severity } from './severity.ts';
+import { canonicalCategory, deriveSeverity, type DerivedSeverity, type Severity } from './severity.ts';
 import { ESCALATION_CONFIDENCE, verifierConfidence } from './confidence.ts';
 import { SEVERITIES } from '../contract/limits.ts';
 import { DIFF_LANE, type Lane } from '../review/lanes.ts';
+import { governsAny } from '../conventions/globs.ts';
+import type { Suppression } from '../policy/schema.ts';
+import { categoryOfRuleId, ruleIdFor } from '../policy/rules.ts';
 
 /**
  * A candidate as the schema publishes it. `schemas/candidate.schema.json` is
@@ -252,6 +255,72 @@ const FIXED_BOUNDARY_CATEGORIES: ReadonlySet<string> = new Set([
   'authorization',
   'authentication',
 ]);
+
+/**
+ * Categories no approved suppression may ever reach (docs/adr/0032).
+ *
+ * ADR 0006 warned that `suppressed_patterns` "is one line away from 'never
+ * mention authentication'". A suppression is preference, and these categories
+ * name a breach or a trust boundary, which is not a matter of preference.
+ * `trust_boundary` is here although `FIXED_BOUNDARY_CATEGORIES` omits it: it can
+ * name a non-security control boundary, but removed-control leads are filed
+ * under it and a suppression that silenced them would defeat that. The cost is
+ * one more category a suppression cannot reach. `approvePolicy` refuses a
+ * proposal that tries, and `score` ignores a row that got in another way.
+ */
+export const SUPPRESSION_EXEMPT_CATEGORIES: ReadonlySet<string> = new Set([
+  'security',
+  'authorization',
+  'authentication',
+  'data_integrity',
+  'trust_boundary',
+]);
+
+/**
+ * Whether a finding of this category can never be held by a suppression.
+ * Compared as the severity table knows the category, so an alias such as
+ * `authz` or a spelling such as `data-integrity` cannot get round it: a
+ * carve-out that `Security` or `authz` slipped past would be one in name only.
+ */
+export function isSuppressionExempt(category: string): boolean {
+  return SUPPRESSION_EXEMPT_CATEGORIES.has(canonicalCategory(category));
+}
+
+/**
+ * What `rejectedBecause` starts with when an approved suppression held a
+ * candidate; the rule id follows. `score` sets it, and `gateOf`, `locallyListable`
+ * and `applyOwnerPromotion` in the CLI read it back (docs/adr/0032).
+ */
+export const POLICY_SUPPRESSED_PREFIX = 'policy-suppressed:';
+
+/**
+ * The approved suppression that holds this candidate, or null (docs/adr/0032).
+ *
+ * It matches when the candidate's rule id is the suppression's rule id exactly
+ * and, when the suppression has a glob, the candidate's path matches it. A rule
+ * about `maintainability:diff` says nothing about the same category in another
+ * lane or under a blocker class, because that is how the signals were grouped.
+ *
+ * The carve-out is enforced here as well as at approval: a policies row that
+ * got in some other way, such as an edit to the store, still cannot silence a
+ * category that names a breach or a trust boundary.
+ */
+export function matchingSuppression(
+  suppressions: readonly Suppression[],
+  candidate: Pick<Candidate, 'category' | 'lane' | 'blockerClass' | 'path'>,
+): Suppression | null {
+  if (suppressions.length === 0 || isSuppressionExempt(candidate.category)) return null;
+  const ruleId = ruleIdFor(candidate.category, candidate.lane, candidate.blockerClass);
+  if (ruleId === null) return null;
+  return (
+    suppressions.find(
+      (suppression) =>
+        suppression.ruleId === ruleId &&
+        !isSuppressionExempt(categoryOfRuleId(suppression.ruleId)) &&
+        (suppression.glob === null || governsAny([suppression.glob], [candidate.path])),
+    ) ?? null
+  );
+}
 
 export { ESCALATION_CONFIDENCE, verifierConfidence };
 
@@ -510,8 +579,15 @@ export interface ScoreBreakdown {
   /**
    * Set by `score --promote`: the owner posted it past the gate that held it.
    * `unverifiable` needs `--allow-unverifiable` and carries the owner's note.
+   * `policy` is a finding an approved suppression held; `ruleId` names the rule
+   * (docs/adr/0032).
    */
-  ownerPromotion?: { gate: 'score' | 'confidence' | 'unverifiable'; heldBecause: string; ownerNote?: string };
+  ownerPromotion?: {
+    gate: 'score' | 'confidence' | 'unverifiable' | 'policy';
+    heldBecause: string;
+    ownerNote?: string;
+    ruleId?: string;
+  };
   /**
    * The precedent that already states this finding at this location, when one
    * exists. Reported so `explain` can name what the corpus already said.

@@ -23,7 +23,20 @@ function repoWith(files) {
 }
 
 function context(dir) {
-  return JSON.parse(execFileSync(process.execPath, [bundle, 'context'], { cwd: dir, encoding: 'utf8' }));
+  // `context` opens the store to load approved policies, so each call gets a
+  // fresh data directory and never the developer's own store.
+  const data = mkdtempSync(join(tmpdir(), 'rv-policy-data-'));
+  try {
+    return JSON.parse(
+      execFileSync(process.execPath, [bundle, 'context'], {
+        cwd: dir,
+        encoding: 'utf8',
+        env: { ...process.env, REVIEW_VOICE_DATA_DIR: data },
+      }),
+    );
+  } finally {
+    rmSync(data, { recursive: true, force: true });
+  }
 }
 
 test('with no config the baseline limits apply', () => {

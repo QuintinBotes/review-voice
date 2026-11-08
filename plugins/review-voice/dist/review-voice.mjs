@@ -3028,6 +3028,10 @@ var ALIASES = {
   bug: "correctness",
   logic: "correctness"
 };
+function canonicalCategory(category) {
+  const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return LEGACY_BY_CATEGORY[normalised] !== void 0 ? normalised : ALIASES[normalised] ?? normalised;
+}
 var MAX_TIER_MOVEMENT = 1;
 function boundToRequest(derived, requested, reach, reason2) {
   const asked = SEVERITIES.indexOf(requested);
@@ -3075,8 +3079,7 @@ function deriveSeverity(category, requested, reach = null) {
     };
   }
   const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
-  const alias = ALIASES[normalised];
-  const resolved = LEGACY_BY_CATEGORY[normalised] !== void 0 ? normalised : alias ?? normalised;
+  const resolved = canonicalCategory(category);
   const legacy = LEGACY_BY_CATEGORY[resolved];
   if (legacy === void 0) {
     return {
@@ -3279,6 +3282,53 @@ function eligibleLanes(lanes2, files2, diffText, options = {}) {
   });
 }
 
+// plugins/review-voice/src/policy/rules.ts
+var DEFAULT_LANE = "diff";
+function ruleIdFor(category, lane, blockerClass) {
+  if (typeof category !== "string" || category.trim().length === 0) return null;
+  const laneName = typeof lane === "string" && lane.length > 0 ? lane : DEFAULT_LANE;
+  const base = `${category}:${laneName}`;
+  return typeof blockerClass === "string" && blockerClass.length > 0 ? `${base}:${blockerClass}` : base;
+}
+function readSuppressions(value, policyVersion) {
+  const suppressions = [];
+  const warnings = [];
+  if (value === void 0 || value === null) return { suppressions, warnings };
+  if (!Array.isArray(value)) {
+    warnings.push("suppressions must be a list; ignoring it.");
+    return { suppressions, warnings };
+  }
+  for (const entry of value) {
+    const record3 = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry : null;
+    const ruleId = record3?.["rule_id"];
+    const glob = record3?.["glob"];
+    const reason2 = record3?.["reason"];
+    if (typeof ruleId !== "string" || ruleId.trim().length === 0) {
+      warnings.push("suppressions: skipped an entry with no rule_id.");
+      continue;
+    }
+    if (glob !== void 0 && glob !== null && (typeof glob !== "string" || glob.length === 0)) {
+      warnings.push(`suppressions: skipped ${ruleId}, whose glob is not text or null.`);
+      continue;
+    }
+    suppressions.push({
+      ruleId: ruleId.trim(),
+      glob: typeof glob === "string" ? glob : null,
+      reason: typeof reason2 === "string" ? reason2 : null,
+      policyVersion
+    });
+  }
+  return { suppressions, warnings };
+}
+function categoryOfRuleId(ruleId) {
+  const at2 = ruleId.indexOf(":");
+  return at2 === -1 ? ruleId : ruleId.slice(0, at2);
+}
+function ruleIdOfRule(rule) {
+  if (typeof rule.ruleId === "string" && rule.ruleId.trim().length > 0) return rule.ruleId.trim();
+  return ruleIdFor(rule.category, DEFAULT_LANE);
+}
+
 // plugins/review-voice/src/scoring/score.ts
 var STALE_CONSUMER = "stale-consumer";
 var DOCUMENTATION_PATH = /\.(?:md|rst|adoc)$/i;
@@ -3317,6 +3367,25 @@ var FIXED_BOUNDARY_CATEGORIES = /* @__PURE__ */ new Set([
   "authorization",
   "authentication"
 ]);
+var SUPPRESSION_EXEMPT_CATEGORIES = /* @__PURE__ */ new Set([
+  "security",
+  "authorization",
+  "authentication",
+  "data_integrity",
+  "trust_boundary"
+]);
+function isSuppressionExempt(category) {
+  return SUPPRESSION_EXEMPT_CATEGORIES.has(canonicalCategory(category));
+}
+var POLICY_SUPPRESSED_PREFIX = "policy-suppressed:";
+function matchingSuppression(suppressions, candidate) {
+  if (suppressions.length === 0 || isSuppressionExempt(candidate.category)) return null;
+  const ruleId = ruleIdFor(candidate.category, candidate.lane, candidate.blockerClass);
+  if (ruleId === null) return null;
+  return suppressions.find(
+    (suppression) => suppression.ruleId === ruleId && !isSuppressionExempt(categoryOfRuleId(suppression.ruleId)) && (suppression.glob === null || governsAny([suppression.glob], [candidate.path]))
+  ) ?? null;
+}
 var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
 function isInterrogativeClaim(claim) {
   const text4 = claim.trim();
@@ -6917,1045 +6986,6 @@ function recordAudit(db, action, subject, metadata = {}) {
 
 // plugins/review-voice/src/policy/versions.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
-function nextVersion(db, scopeType, scopeKey) {
-  const row = db.prepare("SELECT MAX(version) AS v FROM policies WHERE scope_type = ? AND scope_key = ?").get(scopeType, scopeKey);
-  return (row.v ?? 0) + 1;
-}
-function toYaml(rules, version, scopeKey) {
-  const lines2 = [
-    `policy_version: ${version}`,
-    "scope:",
-    "  type: global",
-    `  key: ${scopeKey}`,
-    "",
-    "suppressed_patterns:"
-  ];
-  const suppress = rules.filter((rule) => rule.kind === "suppress");
-  if (suppress.length === 0) lines2.push("  []");
-  for (const rule of suppress) lines2.push(`  - ${JSON.stringify(rule.rule)}`);
-  return `${lines2.join("\n")}
-`;
-}
-function proposePolicy(db, rules, scopeKey = "owner") {
-  const version = nextVersion(db, "global", scopeKey);
-  const policyId = randomUUID2();
-  const contentYaml = toYaml(rules, version, scopeKey);
-  const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
-  db.prepare(
-    `INSERT INTO policies (policy_id, scope_type, scope_key, version, content_yaml,
-                           active, generated_at, approved_at, provenance_json, evaluation_json)
-     VALUES (?, 'global', ?, ?, ?, 0, ?, NULL, ?, ?)`
-  ).run(policyId, scopeKey, version, contentYaml, generatedAt, JSON.stringify(rules), JSON.stringify({}));
-  recordAudit(db, "policy_proposed", { type: "policy", id: policyId }, { version, ruleCount: rules.length });
-  return {
-    policyId,
-    scopeType: "global",
-    scopeKey,
-    version,
-    contentYaml,
-    active: false,
-    generatedAt,
-    approvedAt: null,
-    provenance: rules
-  };
-}
-function approvePolicy(db, policyId) {
-  const row = db.prepare("SELECT policy_id, scope_key, version, provenance_json FROM policies WHERE policy_id = ?").get(policyId);
-  if (row === void 0) return { ok: false, error: `No policy ${policyId}.` };
-  const rules = JSON.parse(row.provenance_json);
-  const blocked = rules.filter((rule) => !rule.activatable);
-  if (blocked.length > 0) {
-    return {
-      ok: false,
-      error: `${blocked.length} rule(s) have not met the evidence bar: ${blocked.map((r) => r.blockedBecause).join("; ")}`
-    };
-  }
-  db.exec("BEGIN");
-  try {
-    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run("global", row.scope_key);
-    db.prepare("UPDATE policies SET active = 1, approved_at = ? WHERE policy_id = ?").run(
-      (/* @__PURE__ */ new Date()).toISOString(),
-      policyId
-    );
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-  recordAudit(db, "policy_approved", { type: "policy", id: policyId }, { version: row.version });
-  return { ok: true, policyId, version: row.version };
-}
-function rollbackTo(db, version, scopeKey = "owner") {
-  const row = db.prepare("SELECT policy_id FROM policies WHERE scope_type = ? AND scope_key = ? AND version = ? AND approved_at IS NOT NULL").get("global", scopeKey, version);
-  if (row === void 0) {
-    return { ok: false, error: `No approved policy at version ${version}.` };
-  }
-  db.exec("BEGIN");
-  try {
-    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run("global", scopeKey);
-    db.prepare("UPDATE policies SET active = 1 WHERE policy_id = ?").run(row.policy_id);
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-  recordAudit(db, "policy_rolled_back", { type: "policy", id: row.policy_id }, { version });
-  return { ok: true, policyId: row.policy_id, version };
-}
-function listPolicies(db, scopeKey = "owner") {
-  return db.prepare("SELECT * FROM policies WHERE scope_type = ? AND scope_key = ? ORDER BY version DESC").all("global", scopeKey).map((row) => ({
-    policyId: row["policy_id"],
-    scopeType: row["scope_type"],
-    scopeKey: row["scope_key"],
-    version: row["version"],
-    contentYaml: row["content_yaml"],
-    active: row["active"] === 1,
-    generatedAt: row["generated_at"],
-    approvedAt: row["approved_at"],
-    provenance: JSON.parse(row["provenance_json"])
-  }));
-}
-
-// plugins/review-voice/src/diff/carry.ts
-import { execFileSync as execFileSync8 } from "node:child_process";
-
-// plugins/review-voice/src/diff/reanchor.ts
-function candidateAnchor(hunks, candidate) {
-  return candidate.anchor === "stale-consumer" ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null) : classifyAnchor(hunks, candidate.path, candidate.line);
-}
-var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-var idOf = (entry) => entry["candidateId"] ?? entry["candidate_id"];
-function reanchorScores(scores, candidateId, target, hunks) {
-  if (!isRecord(scores) || !Array.isArray(scores["scores"])) {
-    return { ok: false, refused: "expected the JSON `RV score` printed, with a `scores` list" };
-  }
-  const entries = scores["scores"].filter(isRecord);
-  const entry = entries.find((e) => idOf(e) === candidateId);
-  if (entry === void 0) return { ok: false, refused: `no scored candidate ${candidateId}` };
-  if (entry["eligible"] !== true) {
-    const why = typeof entry["rejectedBecause"] === "string" ? ` (${entry["rejectedBecause"]})` : "";
-    return {
-      ok: false,
-      refused: `${candidateId} is not eligible${why}; re-anchoring keeps a score, it does not make one. Re-run the analyst and score.`
-    };
-  }
-  const eligible = Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord) : [];
-  const shipped = eligible.find((e) => idOf(e) === candidateId);
-  if (shipped?.["anchor"] === "stale-consumer" || entry["anchorCheck"]?.kind === "stale-consumer") {
-    return {
-      ok: false,
-      refused: `${candidateId} is a stale consumer on unchanged code, so a new line cannot be checked against the diff. Re-run the analyst.`
-    };
-  }
-  if (typeof entry["path"] !== "string" || !Number.isInteger(entry["line"])) {
-    return { ok: false, refused: `scored candidate ${candidateId} has no path and line` };
-  }
-  const from = { path: entry["path"], line: entry["line"] };
-  const check = classifyAnchor(hunks, target.path ?? from.path, target.line);
-  if (!check.ok) return { ok: false, refused: `${candidateId} ${reason(check)}` };
-  const to = { path: check.path, line: check.line };
-  const taken = entries.find(
-    (e) => idOf(e) !== candidateId && e["eligible"] === true && e["path"] === to.path && e["line"] === to.line
-  );
-  if (taken !== void 0) {
-    return { ok: false, refused: `${String(idOf(taken))} is already anchored at ${to.path}:${to.line}` };
-  }
-  const moved = (e) => idOf(e) === candidateId ? { ...e, path: to.path, line: to.line, reanchoredFrom: from, ..."anchorCheck" in e ? { anchorCheck: check } : {} } : e;
-  const updated = {
-    ...scores,
-    scores: scores["scores"].map((e) => isRecord(e) ? moved(e) : e),
-    ...Array.isArray(scores["eligible"]) ? { eligible: scores["eligible"].map((e) => isRecord(e) ? moved(e) : e) } : {}
-  };
-  return { ok: true, updated, from, to, anchorCheck: check };
-}
-function reanchorCandidates(parsed2, candidateId, to) {
-  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord(parsed2) && Array.isArray(parsed2["candidates"]) ? parsed2["candidates"] : null;
-  if (list2 === null) return null;
-  if (!list2.some((c) => isRecord(c) && idOf(c) === candidateId)) return null;
-  const rewritten = list2.map((c) => isRecord(c) && idOf(c) === candidateId ? { ...c, path: to.path, line: to.line } : c);
-  return Array.isArray(parsed2) ? rewritten : { ...parsed2, candidates: rewritten };
-}
-
-// plugins/review-voice/src/diff/carry.ts
-var SERIOUS_SEVERITIES = ["blocking", "important"];
-function seriousNotCarried(notCarried) {
-  return notCarried.filter((f) => f.severity !== void 0 && SERIOUS_SEVERITIES.includes(f.severity.toLowerCase()));
-}
-var NEIGHBOURHOOD = 2;
-function commitReadable(ref, cwd) {
-  try {
-    execFileSync8("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-function oldSideHunks(patch) {
-  const hunks = [];
-  for (const line3 of patch.split("\n")) {
-    const match = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line3);
-    if (match === null) continue;
-    hunks.push({
-      oldStart: Number(match[1]),
-      oldCount: match[2] === void 0 ? 1 : Number(match[2]),
-      newCount: match[3] === void 0 ? 1 : Number(match[3])
-    });
-  }
-  return hunks;
-}
-function remapLine(hunks, line3) {
-  const low = line3 - NEIGHBOURHOOD;
-  const high = line3 + NEIGHBOURHOOD;
-  let shift = 0;
-  for (const hunk of hunks) {
-    const first = hunk.oldStart;
-    const last = hunk.oldCount === 0 ? hunk.oldStart + 1 : hunk.oldStart + hunk.oldCount - 1;
-    if (last >= low && first <= high) return { reason: "anchor or its neighbours changed" };
-    if (last < low) shift += hunk.newCount - hunk.oldCount;
-  }
-  return { line: line3 + shift };
-}
-var CarryError = class extends Error {
-};
-function gitOut(args, cwd) {
-  try {
-    return execFileSync8("git", args, {
-      cwd,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-  } catch (error) {
-    throw new CarryError(`git ${args.join(" ")} failed: ${error.message}`);
-  }
-}
-function existsAt(ref, path, cwd) {
-  try {
-    execFileSync8("git", ["cat-file", "-e", `${ref}:${path}`], { cwd, stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-function followLine(previousHead, head, path, line3, cwd) {
-  if (!existsAt(head, path, cwd)) return { reason: "file deleted or renamed" };
-  const patch = gitOut(
-    ["diff", "--unified=0", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", previousHead, head, "--", ...topPathspecs([path])],
-    cwd
-  );
-  return remapLine(oldSideHunks(patch), line3);
-}
-function rewriteAnchor(text4, path, oldLine, line3) {
-  return text4.replace(`\`${path}:${oldLine}\``, `\`${path}:${line3}\``);
-}
-function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map(), noLongerChanged = /* @__PURE__ */ new Set()) {
-  for (const ref of [previousHead, head]) {
-    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
-  }
-  const carried = [];
-  const notCarried = [];
-  const heldBack = [];
-  const settled = [];
-  for (const finding of findings) {
-    const holdReason = hold.get(finding.findingId);
-    if (holdReason !== void 0) {
-      heldBack.push({
-        findingId: finding.findingId,
-        path: finding.path,
-        line: finding.line,
-        reason: holdReason,
-        ...finding.severity === void 0 ? {} : { severity: finding.severity }
-      });
-      continue;
-    }
-    if (noLongerChanged.has(finding.path)) {
-      settled.push({
-        findingId: finding.findingId,
-        path: finding.path,
-        line: finding.line,
-        reason: "file no longer changed by the pull request",
-        ...finding.severity === void 0 ? {} : { severity: finding.severity }
-      });
-      continue;
-    }
-    const moved = followLine(previousHead, head, finding.path, finding.line, cwd);
-    if ("reason" in moved) {
-      notCarried.push({
-        findingId: finding.findingId,
-        path: finding.path,
-        line: finding.line,
-        reason: moved.reason,
-        ...finding.severity === void 0 ? {} : { severity: finding.severity }
-      });
-      continue;
-    }
-    carried.push({
-      findingId: finding.findingId,
-      path: finding.path,
-      oldLine: finding.line,
-      line: moved.line,
-      text: rewriteAnchor(finding.text, finding.path, finding.line, moved.line)
-    });
-  }
-  const output = findings.length === settled.length ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join("\n\n");
-  return { carried, notCarried, heldBack, settled, output };
-}
-function findingBody(text4) {
-  const joined = text4.replace(/\s+/g, " ").trim();
-  const match = /^\[[a-z_]+\]\s+`[^`]+:\d+`\s*(.*)$/i.exec(joined);
-  return match === null ? joined : match[1] ?? "";
-}
-function matchCarried(recorded, carried) {
-  const matches = /* @__PURE__ */ new Map();
-  const mismatches = [];
-  const used = /* @__PURE__ */ new Set();
-  for (const finding of recorded) {
-    const body = findingBody(finding.text);
-    const source = carried.find(
-      (c) => !used.has(c.findingId) && c.path === finding.path && findingBody(c.text) === body
-    );
-    if (source === void 0) continue;
-    used.add(source.findingId);
-    if (source.line !== finding.line) {
-      mismatches.push(`${finding.findingId} (${finding.path}:${finding.line}) repeats ${source.findingId}, which carries to line ${source.line}`);
-      continue;
-    }
-    matches.set(finding.findingId, source.findingId);
-  }
-  return { matches, mismatches };
-}
-function changedFiles(previousHead, head, cwd) {
-  const out = gitOut(["diff", "--name-only", "--no-renames", "-z", previousHead, head], cwd);
-  return new Set(out.split("\0").filter((name) => name.length > 0));
-}
-function escapeRegExp2(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function namesFile2(text4, path) {
-  if (text4.includes(path)) return true;
-  const name = path.split("/").pop() ?? path;
-  return new RegExp(`(^|[^\\w./-])${escapeRegExp2(name)}($|[^\\w-])`).test(text4);
-}
-function carryCandidates(candidates, previousHead, head, hunks, cwd) {
-  for (const ref of [previousHead, head]) {
-    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
-  }
-  const changed = changedFiles(previousHead, head, cwd);
-  const carried = [];
-  const refused = [];
-  for (const candidate of candidates) {
-    const refuse = (reason2) => {
-      refused.push({ candidateId: candidate.candidateId, path: candidate.path, line: candidate.line, reason: reason2 });
-    };
-    if (changed.has(candidate.path)) {
-      refuse(`${candidate.path} changed between the two heads`);
-      continue;
-    }
-    const cause = candidate.anchor === "stale-consumer" ? candidate.causedBy ?? null : null;
-    if (cause !== null && changed.has(cause.path)) {
-      refuse(`the file of its cause, ${cause.path}, changed between the two heads`);
-      continue;
-    }
-    const named = [...changed].find((path) => (candidate.texts ?? []).some((text4) => namesFile2(text4, path)));
-    if (named !== void 0) {
-      refuse(`its claim, evidence or verification names ${named}, which changed between the two heads`);
-      continue;
-    }
-    const moved = followLine(previousHead, head, candidate.path, candidate.line, cwd);
-    if ("reason" in moved) {
-      refuse(`${candidate.path}:${candidate.line}: ${moved.reason}`);
-      continue;
-    }
-    let movedCause;
-    if (candidate.anchor === "stale-consumer") {
-      const from = candidate.causedBy ?? null;
-      if (from === null) {
-        refuse("a stale consumer with no caused_by");
-        continue;
-      }
-      const followed = followLine(previousHead, head, from.path, from.line, cwd);
-      if ("reason" in followed) {
-        refuse(`its cause ${from.path}:${from.line}: ${followed.reason}`);
-        continue;
-      }
-      movedCause = { path: from.path, oldLine: from.line, line: followed.line };
-    }
-    const check = candidateAnchor(hunks, {
-      path: candidate.path,
-      line: moved.line,
-      anchor: candidate.anchor,
-      causedBy: movedCause === void 0 ? candidate.causedBy : { path: movedCause.path, line: movedCause.line }
-    });
-    if (!check.ok) {
-      refuse(`at the new head it ${reason(check)}`);
-      continue;
-    }
-    carried.push({
-      candidateId: candidate.candidateId,
-      path: candidate.path,
-      oldLine: candidate.line,
-      line: moved.line,
-      ...movedCause === void 0 ? {} : { causedBy: movedCause }
-    });
-  }
-  return { carried, refused };
-}
-
-// plugins/review-voice/src/store/runs.ts
-function partlyAddressedOf(value) {
-  if (typeof value !== "object" || value === null) return void 0;
-  const v = value;
-  if (v["kind"] !== "own-comment" || v["status"] !== "partly-addressed") return void 0;
-  const strings = (list2) => Array.isArray(list2) && list2.length > 0 && list2.every((item) => typeof item === "string") ? list2 : null;
-  const remaining = strings(v["remaining"]);
-  const addressed = strings(v["addressed"]);
-  if (remaining === null || addressed === null) return void 0;
-  if (typeof v["author"] !== "string" || typeof v["path"] !== "string" || !Number.isInteger(v["line"])) return void 0;
-  return {
-    status: "partly-addressed",
-    prior: {
-      author: v["author"],
-      path: v["path"],
-      line: v["line"],
-      ...Number.isInteger(v["commentId"]) ? { commentId: v["commentId"] } : {}
-    },
-    remaining,
-    addressed
-  };
-}
-var HELD_VERDICTS = [
-  "partly",
-  "refuted",
-  "unverified",
-  "repeat",
-  "below-gate",
-  "owner-declined",
-  "challenge-refuted",
-  "challenge-partly"
-];
-function heldProblem(entry) {
-  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "not an object";
-  const e = entry;
-  if (typeof e["path"] !== "string" || e["path"].length === 0) return "path must be a non-empty string";
-  if (!Number.isInteger(e["line"]) || e["line"] < 1) return "line must be a positive integer";
-  if (!HELD_VERDICTS.includes(e["verdict"])) return `verdict must be one of ${HELD_VERDICTS.join(", ")}`;
-  for (const key2 of ["source", "reason"]) {
-    const value = e[key2];
-    if (typeof value !== "string" || value.trim().length === 0) return `${key2} must be a non-empty string`;
-  }
-  for (const key2 of ["severity", "candidateId", "text"]) {
-    if (e[key2] !== void 0 && typeof e[key2] !== "string") return `${key2} must be a string when present`;
-  }
-  return null;
-}
-function parseCarryMarker(value) {
-  if (typeof value !== "object" || value === null) return null;
-  const v = value;
-  if (typeof v["since"] !== "string" || typeof v["head"] !== "string") return null;
-  const refused = Array.isArray(v["refused"]) ? v["refused"].filter((id) => typeof id === "string") : [];
-  const interdiffReviewed = v["interdiffReviewed"] === true;
-  return {
-    since: v["since"],
-    head: v["head"],
-    interdiffReviewed,
-    refused,
-    // Recomputed rather than trusted, so a hand-edited row cannot claim cover.
-    covered: interdiffReviewed && refused.length === 0 && v["covered"] === true,
-    ...typeof v["inheritedFrom"] === "string" ? { inheritedFrom: v["inheritedFrom"] } : {}
-  };
-}
-var CarryMismatch = class extends Error {
-};
-var ORIGINS = ["driver", "interactive", "watch", "action"];
-var PROVENANCE_MODES = ["fast", "standard", "thorough"];
-function independenceOf(origin) {
-  return origin === "interactive" ? "not-independent" : "independent";
-}
-function describeProvenance(provenance) {
-  if (provenance === null) return "Provenance not recorded";
-  const policy = provenance.policyVersions.length === 0 ? "none" : provenance.policyVersions.map((p) => `${p.scopeType}/${p.scopeKey} v${p.version}`).join(", ");
-  return `Provenance ${describeOrigin(provenance)}, plugin ${provenance.pluginVersion}, claude ${provenance.claudeVersion ?? "unknown"}, mode ${provenance.mode ?? "unknown"}, policy ${policy}`;
-}
-function describeOrigin(provenance) {
-  return `origin ${provenance.origin} (${provenance.independence})`;
-}
-function activePolicyVersions(db) {
-  return listPolicies(db).filter((policy) => policy.active).map((policy) => ({ scopeType: policy.scopeType, scopeKey: policy.scopeKey, policyId: policy.policyId, version: policy.version }));
-}
-var reportedProvenance = /* @__PURE__ */ new Set();
-function storedProvenance(raw, reviewRunId) {
-  if (typeof raw !== "string") return null;
-  const malformed = () => {
-    if (!reportedProvenance.has(reviewRunId)) {
-      reportedProvenance.add(reviewRunId);
-      console.error(`The provenance recorded for run ${reviewRunId} is malformed; reading it as not recorded.`);
-    }
-    return null;
-  };
-  let value;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    return malformed();
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return malformed();
-  const v = value;
-  const origin = ORIGINS.find((known) => known === v["origin"]);
-  const mode = v["mode"] === null ? null : PROVENANCE_MODES.find((known) => known === v["mode"]) ?? void 0;
-  const policies = v["policyVersions"];
-  if (origin === void 0 || mode === void 0 || typeof v["pluginVersion"] !== "string" || !(v["claudeVersion"] === null || typeof v["claudeVersion"] === "string") || !Array.isArray(policies)) {
-    return malformed();
-  }
-  const policyVersions = [];
-  for (const entry of policies) {
-    const p = typeof entry === "object" && entry !== null ? entry : {};
-    if (typeof p["scopeType"] !== "string" || typeof p["scopeKey"] !== "string" || typeof p["policyId"] !== "string" || typeof p["version"] !== "number") {
-      return malformed();
-    }
-    policyVersions.push({ scopeType: p["scopeType"], scopeKey: p["scopeKey"], policyId: p["policyId"], version: p["version"] });
-  }
-  return {
-    origin,
-    // Recomputed, never read back, so a hand-edited row cannot claim independence.
-    independence: independenceOf(origin),
-    pluginVersion: v["pluginVersion"],
-    claudeVersion: v["claudeVersion"],
-    mode,
-    policyVersions
-  };
-}
-var basename = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
-function attribute(finding, hints, taken) {
-  const free = hints.filter((hint) => !taken.has(hint));
-  const exact = free.find((hint) => hint.path === finding.path && hint.line === finding.line);
-  if (exact !== void 0) return { hint: exact, how: "exact" };
-  const sameFile = free.filter(
-    (hint) => basename(hint.path) === basename(finding.path) && hint.line === finding.line
-  );
-  if (sameFile.length === 1) return { hint: sameFile[0], how: "basename" };
-  const sameLine = free.filter((hint) => hint.line === finding.line);
-  if (sameLine.length === 1) return { hint: sameLine[0], how: "line" };
-  return { hint: void 0, how: "none" };
-}
-var laneOf = (hint) => typeof hint?.lane === "string" && hint.lane.length > 0 ? hint.lane : "diff";
-function storedCandidate(hint) {
-  const blocker = hint.blocker_class ?? hint.blockerClass;
-  const { blockerClass: _camel, ...rest } = hint;
-  return { ...rest, lane: laneOf(hint), ...blocker === void 0 ? {} : { blocker_class: blocker } };
-}
-function assignIds(output, hints) {
-  const taken = /* @__PURE__ */ new Set();
-  return splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null).map((finding, index) => {
-    const anchor = { path: finding.path, line: finding.line ?? 0 };
-    const { hint, how } = attribute(anchor, hints, taken);
-    if (hint !== void 0) taken.add(hint);
-    const partly = partlyAddressedOf(hint?.possibleRepeatOf);
-    return {
-      findingId: `rv_${String(index + 1).padStart(2, "0")}`,
-      severity: finding.severity,
-      path: anchor.path,
-      line: anchor.line,
-      text: finding.raw,
-      // Absent when a review ran without candidates to hand. Null is honest;
-      // guessing a category from the wording would invent evidence.
-      category: hint?.category,
-      lane: laneOf(hint),
-      // Stated so a disagreement between what the analyst cited and what
-      // shipped is visible rather than showing up as a missing category.
-      ...how === "exact" || how === "none" ? {} : { attributedBy: how },
-      ...how === "none" && hints.length > 0 ? { unattributed: true } : {},
-      ...partly === void 0 ? {} : { partlyAddressed: partly }
-    };
-  });
-}
-function hashDiff(diff) {
-  return createHash3("sha256").update(diff).digest("hex").slice(0, 32);
-}
-function recordRun(db, input) {
-  if ((input.bodyFindings?.length ?? 0) > 1) {
-    throw new Error("A review may record at most one body-only simplification finding.");
-  }
-  const reviewRunId = randomUUID3();
-  const findings = assignIds(input.output, input.candidates ?? []);
-  if (input.carried !== void 0) {
-    const { matches, mismatches } = matchCarried(findings, input.carried.findings);
-    if (mismatches.length > 0) throw new CarryMismatch(mismatches.join("\n"));
-    for (const finding of findings) {
-      const from = matches.get(finding.findingId);
-      if (from !== void 0) finding.carriedFrom = { runId: input.carried.runId, findingId: from };
-    }
-  }
-  const policyVersions = activePolicyVersions(db);
-  const provenance = input.provenance === void 0 ? null : {
-    origin: input.provenance.origin,
-    independence: independenceOf(input.provenance.origin),
-    pluginVersion: input.provenance.pluginVersion,
-    claudeVersion: input.provenance.claudeVersion,
-    mode: input.provenance.mode,
-    policyVersions
-  };
-  db.exec("SAVEPOINT record_run");
-  try {
-    db.prepare(
-      `INSERT INTO review_runs (
-         review_run_id, repository, base_ref, head_ref, diff_hash,
-         active_policy_versions_json, retrieved_precedents_json,
-         candidates_json, output_json, created_at, stages_json,
-         pull_number, scope_json, complexity_json, provenance_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      reviewRunId,
-      input.repository,
-      input.baseRef,
-      input.headRef,
-      hashDiff(input.diff),
-      JSON.stringify(policyVersions),
-      JSON.stringify(input.precedents ?? []),
-      JSON.stringify((input.candidates ?? []).map(storedCandidate)),
-      JSON.stringify({
-        output: input.output,
-        findings,
-        scores: input.scores ?? [],
-        verdicts: input.verdicts ?? [],
-        tieBreaks: input.tieBreaks ?? [],
-        held: input.held ?? [],
-        ...input.bodyFindings === void 0 || input.bodyFindings.length === 0 ? {} : { bodyFindings: input.bodyFindings },
-        ...input.carry === void 0 ? {} : { carry: input.carry },
-        ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps }
-      }),
-      (/* @__PURE__ */ new Date()).toISOString(),
-      JSON.stringify(input.stages ?? []),
-      input.pullNumber ?? null,
-      input.scope === void 0 ? null : JSON.stringify(input.scope),
-      input.complexity === void 0 || input.complexity === null ? null : JSON.stringify(input.complexity),
-      provenance === null ? null : JSON.stringify(provenance)
-    );
-    recordAudit(db, "review_run_recorded", { type: "review_run", id: reviewRunId }, {
-      repository: input.repository,
-      findingCount: findings.length,
-      ...provenance === null ? {} : { origin: provenance.origin }
-    });
-    db.exec("RELEASE record_run");
-  } catch (error) {
-    db.exec("ROLLBACK TO record_run");
-    db.exec("RELEASE record_run");
-    throw error;
-  }
-  return { reviewRunId, findings, provenance };
-}
-function storedComplexity(raw) {
-  if (typeof raw !== "string") return null;
-  try {
-    return parseComplexity(JSON.parse(raw));
-  } catch {
-    return null;
-  }
-}
-function storedScope(raw) {
-  if (typeof raw !== "string") return null;
-  try {
-    return parseReviewScope(JSON.parse(raw));
-  } catch {
-    return null;
-  }
-}
-function declineHeld(db, reviewRunId, at2, reason2) {
-  const row = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(reviewRunId);
-  if (row === void 0) return { ok: false, error: `No recorded run ${reviewRunId}.` };
-  const parsed2 = JSON.parse(row.output_json);
-  const held = Array.isArray(parsed2.held) ? parsed2.held : [];
-  const matching = held.filter((entry) => entry.path === at2.path && entry.line === at2.line);
-  if (matching.length === 0) {
-    const anchors = held.map((entry) => `${entry.path}:${entry.line}`);
-    return {
-      ok: false,
-      error: `No held finding at ${at2.path}:${at2.line} in run ${reviewRunId}. ${anchors.length === 0 ? "It holds none." : `Held: ${anchors.join(", ")}.`}`
-    };
-  }
-  for (const entry of matching) {
-    entry.verdict = "owner-declined";
-    entry.source = "owner";
-    entry.reason = reason2;
-  }
-  db.prepare("UPDATE review_runs SET output_json = ? WHERE review_run_id = ?").run(JSON.stringify(parsed2), reviewRunId);
-  recordAudit(db, "held_declined", { type: "review_run", id: reviewRunId }, { path: at2.path, line: at2.line });
-  return { ok: true, declined: matching.length };
-}
-function runDetail(db, reviewRunId) {
-  const row = reviewRunId === void 0 ? db.prepare("SELECT * FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get() : db.prepare("SELECT * FROM review_runs WHERE review_run_id = ?").get(reviewRunId);
-  if (row === void 0) return null;
-  const parsed2 = JSON.parse(row["output_json"]);
-  return {
-    reviewRunId: row["review_run_id"],
-    repository: row["repository"],
-    pullNumber: Number.isInteger(row["pull_number"]) ? row["pull_number"] : null,
-    scope: storedScope(row["scope_json"]),
-    complexity: storedComplexity(row["complexity_json"]),
-    provenance: storedProvenance(row["provenance_json"], row["review_run_id"]),
-    headRef: typeof row["head_ref"] === "string" ? row["head_ref"] : null,
-    createdAt: row["created_at"],
-    output: parsed2.output,
-    findings: parsed2.findings,
-    scores: parsed2.scores ?? [],
-    verdicts: parsed2.verdicts ?? [],
-    tieBreaks: Array.isArray(parsed2.tieBreaks) ? parsed2.tieBreaks : [],
-    held: Array.isArray(parsed2.held) ? parsed2.held : [],
-    carry: parseCarryMarker(parsed2.carry),
-    followUps: Array.isArray(parsed2.followUps) ? parsed2.followUps : [],
-    bodyFindings: Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : [],
-    // Older rows predate the column, so absence is normal rather than an error.
-    stages: (() => {
-      const raw = row["stages_json"];
-      if (typeof raw !== "string") return [];
-      try {
-        const parsedStages = JSON.parse(raw);
-        return Array.isArray(parsedStages) ? parsedStages : [];
-      } catch {
-        return [];
-      }
-    })(),
-    precedents: JSON.parse(row["retrieved_precedents_json"])
-  };
-}
-function latestRunForPull(db, repository, pullNumber) {
-  const row = db.prepare(
-    `SELECT review_run_id, head_ref, created_at
-       FROM review_runs
-       WHERE LOWER(repository) = LOWER(?)
-         AND pull_number = ?
-         AND head_ref IS NOT NULL
-       ORDER BY created_at DESC, rowid DESC
-       LIMIT 1`
-  ).get(repository, pullNumber);
-  if (row === void 0) return null;
-  return {
-    reviewRunId: row.review_run_id,
-    headRef: row.head_ref,
-    createdAt: row.created_at
-  };
-}
-function recordedRunsForPull(db, repository, pullNumber, limit = 10) {
-  const rows = db.prepare(
-    `SELECT review_run_id, head_ref, created_at
-       FROM review_runs
-       WHERE LOWER(repository) = LOWER(?)
-         AND pull_number = ?
-         AND head_ref IS NOT NULL
-       ORDER BY created_at DESC, rowid DESC
-       LIMIT ?`
-  ).all(repository, pullNumber, limit);
-  return rows.map((row) => ({ runId: row.review_run_id, head: row.head_ref, createdAt: row.created_at }));
-}
-function latestRun(db) {
-  const row = db.prepare("SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get();
-  if (row === void 0) return null;
-  const parsed2 = JSON.parse(row.output_json);
-  return { reviewRunId: row.review_run_id, findings: parsed2.findings };
-}
-
-// plugins/review-voice/src/diff/held.ts
-var QUOTE_LIMIT = 200;
-function parseThreadFile(text4, file2, run) {
-  let parsed2;
-  try {
-    const raw = JSON.parse(text4);
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw) || !Array.isArray(raw["comments"])) {
-      throw new Error("expected the thread.json that `RV thread` wrote");
-    }
-    parsed2 = raw;
-  } catch (error) {
-    throw new CarryError(`Cannot read ${file2}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const sameRepository = typeof parsed2["repository"] === "string" && run.repository !== null && parsed2["repository"].toLowerCase() === run.repository.toLowerCase();
-  if (!sameRepository || run.pullNumber === null || parsed2["pullNumber"] !== run.pullNumber) {
-    throw new CarryError(
-      `${file2} is the thread of ${String(parsed2["repository"])}#${String(parsed2["pullNumber"])}, not of this run's pull request (${run.repository ?? "no repository"}#${run.pullNumber ?? "?"}). Pass the thread.json that \`RV thread\` wrote for it.`
-    );
-  }
-  return {
-    repository: parsed2["repository"],
-    pullNumber: parsed2["pullNumber"],
-    comments: parsed2["comments"],
-    reviews: Array.isArray(parsed2["reviews"]) ? parsed2["reviews"] : []
-  };
-}
-function postedReviewIds(db, runId) {
-  const attempts = db.prepare(`SELECT audit_id FROM audit_events WHERE action = 'review_post_attempted' AND json_extract(metadata_json, '$.run') = ?`).all(runId);
-  const ids = new Set(attempts.map((row) => row.audit_id));
-  if (ids.size === 0) return [];
-  const sent = db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent'`).all();
-  const reviewIds = [];
-  for (const row of sent) {
-    const meta = JSON.parse(row.metadata_json);
-    const id = Number(meta.reviewId);
-    if (typeof meta.attempt === "string" && ids.has(meta.attempt) && Number.isInteger(id)) reviewIds.push(id);
-  }
-  return reviewIds;
-}
-function quote(text4) {
-  const flat = text4.replace(/\s+/g, " ").trim();
-  return `"${flat.length > QUOTE_LIMIT ? `${flat.slice(0, QUOTE_LIMIT)}...` : flat}"`;
-}
-function postedComment2(finding, thread, run, reviewIds) {
-  const parsed2 = parseFinding(finding.text, 1);
-  if (parsed2.severity === null || parsed2.prose.length === 0) return null;
-  const opening = `**${parsed2.severity}** - `;
-  const prose = significantWords(parsed2.prose);
-  const recordedAt = Date.parse(run.createdAt);
-  for (const comment of thread) {
-    if (comment.kind !== "review-comment" || comment.inReplyTo !== void 0) continue;
-    if (comment.path !== finding.path || !comment.body.startsWith(opening)) continue;
-    if (reviewIds.length > 0) {
-      if (comment.reviewId === void 0 || !reviewIds.includes(comment.reviewId)) continue;
-    } else {
-      const written = typeof comment.createdAt === "string" ? Date.parse(comment.createdAt) : Number.NaN;
-      if (Number.isNaN(written) || Number.isNaN(recordedAt) || written <= recordedAt) continue;
-    }
-    if (overlap(prose, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
-  }
-  return null;
-}
-function heldBackFindings(findings, thread, run, reviewIds) {
-  const dismissed = new Map(thread.reviews.filter((review2) => review2.state === "DISMISSED").map((review2) => [review2.id, review2]));
-  const held = /* @__PURE__ */ new Map();
-  for (const finding of findings) {
-    const comment = postedComment2(finding, thread.comments, run, reviewIds);
-    const review2 = (comment?.reviewId !== void 0 ? dismissed.get(comment.reviewId) : void 0) ?? reviewIds.map((id) => dismissed.get(id)).find((candidate) => candidate !== void 0);
-    const resolved = comment?.resolved === true;
-    if (!resolved && review2 === void 0) continue;
-    const parts = [];
-    if (resolved) parts.push(`its thread was resolved${comment?.resolvedBy === void 0 ? "" : ` by ${comment.resolvedBy}`}`);
-    if (review2 !== void 0) {
-      parts.push(`the review was dismissed${review2.dismissalMessage === void 0 ? "" : `: ${quote(review2.dismissalMessage)}`}`);
-    }
-    const replies = comment?.id === void 0 ? [] : thread.comments.filter((c) => c.inReplyTo === comment.id);
-    const last = replies.reduce(
-      (latest, reply) => latest === void 0 || (reply.createdAt ?? "") >= (latest.createdAt ?? "") ? reply : latest,
-      void 0
-    );
-    if (last !== void 0) parts.push(`${last.author} replied: ${quote(last.body)}`);
-    held.set(finding.findingId, parts.join("; "));
-  }
-  return held;
-}
-
-// plugins/review-voice/src/diff/prior.ts
-import { execFileSync as execFileSync9 } from "node:child_process";
-function git3(args, cwd) {
-  return execFileSync9("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
-}
-function resolveCommit(ref, cwd) {
-  try {
-    return git3(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd).trim() || null;
-  } catch {
-    return null;
-  }
-}
-function originRepository2(cwd) {
-  try {
-    const url = git3(["remote", "get-url", "origin"], cwd).trim();
-    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
-  } catch {
-    return null;
-  }
-}
-function resolveSince(since, repository, cwd) {
-  const present = resolveCommit(since, cwd);
-  if (present !== null) return present;
-  if (!/^[0-9a-f]{7,64}$/i.test(since)) return null;
-  if (originRepository2(cwd)?.toLowerCase() !== repository.toLowerCase()) return null;
-  try {
-    git3(["fetch", "--no-tags", "--quiet", "origin", since], cwd);
-  } catch {
-    return null;
-  }
-  return resolveCommit(since, cwd);
-}
-function fetchPriorHead(sha, repository, cwd) {
-  if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha)) return "it is not a full commit id, so it was not fetched";
-  const origin = originRepository2(cwd);
-  if (origin === null) return "no origin remote on GitHub resolved, so it was not fetched";
-  if (origin.toLowerCase() !== repository.toLowerCase()) {
-    return `origin is ${origin}, not ${repository}, so it was not fetched`;
-  }
-  const args = ["fetch", "--no-tags", "--quiet", "origin", sha];
-  try {
-    execFileSync9("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
-    return null;
-  } catch (error) {
-    return gitFailure(args, error);
-  }
-}
-async function latestOwnReview(client, repository, pullNumber) {
-  try {
-    const { data: viewer } = await client.get("/user");
-    const login = viewer.login?.toLowerCase();
-    if (login === void 0) return null;
-    const reviews = await client.paginate(
-      `/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`,
-      1e3
-    );
-    const own = reviews.filter((review2) => review2.user?.login?.toLowerCase() === login).filter((review2) => typeof review2.commit_id === "string" && review2.commit_id.length > 0).filter(
-      (review2) => review2.state === "APPROVED" || review2.state === "CHANGES_REQUESTED" || review2.state === "COMMENTED" && (review2.body ?? "").trim().length > 0
-    ).sort((a, b) => (a.submitted_at ?? "").localeCompare(b.submitted_at ?? ""));
-    const latest = own.at(-1);
-    return latest === void 0 ? null : { head: latest.commit_id, submittedAt: latest.submitted_at ?? null };
-  } catch {
-    return null;
-  }
-}
-function missingRunIdNote(source, head, pull, recorded) {
-  if (source === "github-review") {
-    return "the previous head came from your GitHub review, which has no run id";
-  }
-  if (recorded.length === 0) {
-    return `no run is recorded for ${pull}; a run recorded without --repository or --files cannot be matched`;
-  }
-  const heads = recorded.slice(0, 5).map((run) => run.head.slice(0, 7)).join(", ");
-  return `--since ${head.slice(0, 7)} matches no recorded run of ${pull}; ${recorded.length} run${recorded.length === 1 ? " is" : "s are"} recorded for it, at head${recorded.length === 1 ? "" : "s"} ${heads}`;
-}
-async function resolvePrior(options) {
-  const pull = options.pull ?? "this pull request";
-  const resolution = (source, head, runId) => ({
-    source,
-    head,
-    runId,
-    ...source !== null && head !== null && runId === null ? { runIdNote: missingRunIdNote(source, head, pull, options.recorded) } : {},
-    recordedRuns: options.recorded.slice(0, 10)
-  });
-  if (options.since !== null) {
-    const match = options.recorded.find((run) => run.head === options.since);
-    return {
-      prior: { reviewRunId: match?.runId ?? null, headRef: options.since, createdAt: match?.createdAt ?? null },
-      resolution: resolution("flag", options.since, match?.runId ?? null)
-    };
-  }
-  const latest = options.recorded[0];
-  if (latest !== void 0) {
-    return {
-      prior: { reviewRunId: latest.runId, headRef: latest.head, createdAt: latest.createdAt },
-      resolution: resolution("recorded", latest.head, latest.runId)
-    };
-  }
-  const own = await options.ownReview();
-  if (own !== null) {
-    return {
-      prior: { reviewRunId: null, headRef: own.head, createdAt: own.submittedAt },
-      resolution: resolution("github-review", own.head, null)
-    };
-  }
-  return { prior: null, resolution: resolution(null, null, null) };
-}
-
-// plugins/review-voice/src/store/feedback.ts
-import { randomUUID as randomUUID4 } from "node:crypto";
-var FEEDBACK_ACTIONS = [
-  "keep",
-  "dismiss",
-  "rewrite",
-  "raise_severity",
-  "lower_severity",
-  "repo_specific",
-  "never_flag"
-];
-function normaliseAction(input) {
-  const candidate = input.trim().toLowerCase().replace(/-/g, "_");
-  return FEEDBACK_ACTIONS.includes(candidate) ? candidate : null;
-}
-function recordFeedback(db, input) {
-  const [left, right] = input.findingRef.includes(":") ? input.findingRef.split(":", 2) : [null, input.findingRef];
-  let reviewRunId;
-  let known;
-  if (left === null) {
-    const run = latestRun(db);
-    if (run === null) return { ok: false, error: "No review has been recorded yet." };
-    reviewRunId = run.reviewRunId;
-    known = run.findings.map((finding) => finding.findingId);
-  } else {
-    const row = db.prepare("SELECT review_run_id, output_json FROM review_runs WHERE review_run_id = ?").get(left);
-    if (row === void 0) return { ok: false, error: `No review run ${left}.` };
-    reviewRunId = row.review_run_id;
-    known = JSON.parse(row.output_json).findings.map(
-      (finding) => finding.findingId
-    );
-  }
-  const findingId = right.trim();
-  if (!known.includes(findingId)) {
-    return {
-      ok: false,
-      error: `No finding ${findingId} in that review. Available: ${known.join(", ") || "none"}.`
-    };
-  }
-  if (input.action === "rewrite" && (input.replacementText ?? "").trim().length === 0) {
-    return { ok: false, error: "A rewrite needs the replacement text." };
-  }
-  const feedbackId = randomUUID4();
-  db.prepare(
-    `INSERT INTO feedback (feedback_id, review_run_id, finding_id, action, replacement_text, reason, actor, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (review_run_id, finding_id, action) DO UPDATE SET
-       replacement_text = excluded.replacement_text,
-       reason = excluded.reason,
-       created_at = excluded.created_at`
-  ).run(
-    feedbackId,
-    reviewRunId,
-    findingId,
-    input.action,
-    input.replacementText ?? null,
-    input.reason ?? null,
-    input.actor,
-    (/* @__PURE__ */ new Date()).toISOString()
-  );
-  recordAudit(db, "feedback_recorded", { type: "finding", id: findingId }, {
-    reviewRunId,
-    action: input.action
-  });
-  return { ok: true, feedbackId, reviewRunId, findingId };
-}
-function unlabelledFindings(db) {
-  const runs = db.prepare("SELECT review_run_id, output_json FROM review_runs").all();
-  const labelled = new Set(
-    db.prepare("SELECT review_run_id, finding_id FROM feedback").all().map((row) => `${row.review_run_id}:${row.finding_id}`)
-  );
-  let unlabelled = 0;
-  for (const run of runs) {
-    let findings = [];
-    try {
-      findings = JSON.parse(run.output_json ?? "{}").findings ?? [];
-    } catch {
-      continue;
-    }
-    for (const finding of findings) {
-      if (finding.findingId === void 0) continue;
-      if (!labelled.has(`${run.review_run_id}:${finding.findingId}`)) unlabelled += 1;
-    }
-  }
-  return unlabelled;
-}
-function feedbackTotals(db) {
-  const rows = db.prepare("SELECT action, COUNT(*) AS n FROM feedback GROUP BY action").all();
-  const by = Object.fromEntries(rows.map((row) => [row.action, row.n]));
-  const kept = by["keep"] ?? 0;
-  const rewritten = by["rewrite"] ?? 0;
-  const dismissed = by["dismiss"] ?? 0;
-  const other = rows.reduce((sum, row) => sum + row.n, 0) - kept - rewritten - dismissed;
-  const labelled = kept + rewritten + dismissed;
-  return {
-    kept,
-    rewritten,
-    dismissed,
-    other,
-    ownerPrecision: labelled === 0 ? null : (kept + rewritten) / labelled
-  };
-}
-
-// plugins/review-voice/src/policy/load.ts
-import { readFileSync as readFileSync7, existsSync as existsSync5 } from "node:fs";
-import { createHash as createHash4 } from "node:crypto";
-import { dirname as dirname7, isAbsolute as isAbsolute2, join as join9 } from "node:path";
-import { homedir as homedir2 } from "node:os";
-import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
@@ -14227,6 +13257,1127 @@ function parse(src, reviver, options) {
   return doc.toJS(Object.assign({ reviver: _reviver }, options));
 }
 
+// plugins/review-voice/src/policy/versions.ts
+function nextVersion(db, scopeType, scopeKey) {
+  const row = db.prepare("SELECT MAX(version) AS v FROM policies WHERE scope_type = ? AND scope_key = ?").get(scopeType, scopeKey);
+  return (row.v ?? 0) + 1;
+}
+function suppressionReason(rule) {
+  const { dismissals, keeps, rewrites, mostRecentAt } = rule.evidence;
+  const signals = dismissals + keeps + rewrites;
+  const when = mostRecentAt === null ? Number.NaN : Date.parse(mostRecentAt);
+  const month = Number.isNaN(when) ? "" : ` in ${new Date(when).toLocaleString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" })}`;
+  return `owner dismissed ${dismissals} of ${signals}${month}`;
+}
+function toYaml(rules, version, scopeKey) {
+  const lines2 = [
+    `policy_version: ${version}`,
+    "scope:",
+    "  type: global",
+    `  key: ${scopeKey}`,
+    "",
+    "suppressed_patterns:"
+  ];
+  const suppress = rules.filter((rule) => rule.kind === "suppress");
+  if (suppress.length === 0) lines2.push("  []");
+  for (const rule of suppress) lines2.push(`  - ${JSON.stringify(rule.rule)}`);
+  const keyed = suppress.flatMap((rule) => {
+    const ruleId = ruleIdOfRule(rule);
+    return ruleId === null ? [] : [{ rule, ruleId }];
+  });
+  lines2.push("", "suppressions:");
+  if (keyed.length === 0) lines2.push("  []");
+  for (const { rule, ruleId } of keyed) {
+    lines2.push(
+      `  - rule_id: ${JSON.stringify(ruleId)}`,
+      // S07 fills path globs; null means everywhere.
+      "    glob: null",
+      `    reason: ${JSON.stringify(suppressionReason(rule))}`
+    );
+  }
+  return `${lines2.join("\n")}
+`;
+}
+function suppressedRuleIds(contentYaml, rules) {
+  const ids = /* @__PURE__ */ new Set();
+  for (const rule of rules) {
+    const ruleId = rule.kind === "suppress" ? ruleIdOfRule(rule) : null;
+    if (ruleId !== null) ids.add(ruleId);
+  }
+  try {
+    const doc = parse(contentYaml);
+    for (const suppression of readSuppressions(doc?.suppressions, null).suppressions) ids.add(suppression.ruleId);
+  } catch {
+  }
+  return [...ids];
+}
+function activePolicyRows(db) {
+  return db.prepare(
+    `SELECT policy_id, scope_type, scope_key, version, content_yaml FROM policies
+         WHERE scope_type = 'global' AND scope_key = 'owner' AND active = 1 ORDER BY version DESC`
+  ).all().map((row) => ({
+    policyId: row["policy_id"],
+    scopeType: row["scope_type"],
+    scopeKey: row["scope_key"],
+    version: row["version"],
+    contentYaml: row["content_yaml"]
+  }));
+}
+function activePolicyVersions(db) {
+  return activePolicyRows(db).map(({ scopeType, scopeKey, policyId, version }) => ({ scopeType, scopeKey, policyId, version }));
+}
+function proposePolicy(db, rules, scopeKey = "owner") {
+  const version = nextVersion(db, "global", scopeKey);
+  const policyId = randomUUID2();
+  const contentYaml = toYaml(rules, version, scopeKey);
+  const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
+  db.prepare(
+    `INSERT INTO policies (policy_id, scope_type, scope_key, version, content_yaml,
+                           active, generated_at, approved_at, provenance_json, evaluation_json)
+     VALUES (?, 'global', ?, ?, ?, 0, ?, NULL, ?, ?)`
+  ).run(policyId, scopeKey, version, contentYaml, generatedAt, JSON.stringify(rules), JSON.stringify({}));
+  recordAudit(db, "policy_proposed", { type: "policy", id: policyId }, { version, ruleCount: rules.length });
+  return {
+    policyId,
+    scopeType: "global",
+    scopeKey,
+    version,
+    contentYaml,
+    active: false,
+    generatedAt,
+    approvedAt: null,
+    provenance: rules
+  };
+}
+function approvePolicy(db, policyId) {
+  const row = db.prepare("SELECT policy_id, scope_key, version, provenance_json, content_yaml FROM policies WHERE policy_id = ?").get(policyId);
+  if (row === void 0) return { ok: false, error: `No policy ${policyId}.` };
+  const rules = JSON.parse(row.provenance_json);
+  const exempt = suppressedRuleIds(row.content_yaml, rules).filter((ruleId) => isSuppressionExempt(categoryOfRuleId(ruleId)));
+  if (exempt.length > 0) {
+    return {
+      ok: false,
+      error: `a suppression may not reach ${[...SUPPRESSION_EXEMPT_CATEGORIES].join(", ")}, and this proposal suppresses ${exempt.join(", ")}. Nothing was approved.`
+    };
+  }
+  const blocked = rules.filter((rule) => !rule.activatable);
+  if (blocked.length > 0) {
+    return {
+      ok: false,
+      error: `${blocked.length} rule(s) have not met the evidence bar: ${blocked.map((r) => r.blockedBecause).join("; ")}`
+    };
+  }
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run("global", row.scope_key);
+    db.prepare("UPDATE policies SET active = 1, approved_at = ? WHERE policy_id = ?").run(
+      (/* @__PURE__ */ new Date()).toISOString(),
+      policyId
+    );
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  recordAudit(db, "policy_approved", { type: "policy", id: policyId }, { version: row.version });
+  return { ok: true, policyId, version: row.version };
+}
+function rollbackTo(db, version, scopeKey = "owner") {
+  const row = db.prepare("SELECT policy_id FROM policies WHERE scope_type = ? AND scope_key = ? AND version = ? AND approved_at IS NOT NULL").get("global", scopeKey, version);
+  if (row === void 0) {
+    return { ok: false, error: `No approved policy at version ${version}.` };
+  }
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE policies SET active = 0 WHERE scope_type = ? AND scope_key = ?").run("global", scopeKey);
+    db.prepare("UPDATE policies SET active = 1 WHERE policy_id = ?").run(row.policy_id);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  recordAudit(db, "policy_rolled_back", { type: "policy", id: row.policy_id }, { version });
+  return { ok: true, policyId: row.policy_id, version };
+}
+function listPolicies(db, scopeKey = "owner") {
+  return db.prepare("SELECT * FROM policies WHERE scope_type = ? AND scope_key = ? ORDER BY version DESC").all("global", scopeKey).map((row) => ({
+    policyId: row["policy_id"],
+    scopeType: row["scope_type"],
+    scopeKey: row["scope_key"],
+    version: row["version"],
+    contentYaml: row["content_yaml"],
+    active: row["active"] === 1,
+    generatedAt: row["generated_at"],
+    approvedAt: row["approved_at"],
+    provenance: JSON.parse(row["provenance_json"])
+  }));
+}
+
+// plugins/review-voice/src/diff/carry.ts
+import { execFileSync as execFileSync8 } from "node:child_process";
+
+// plugins/review-voice/src/diff/reanchor.ts
+function candidateAnchor(hunks, candidate) {
+  return candidate.anchor === "stale-consumer" ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null) : classifyAnchor(hunks, candidate.path, candidate.line);
+}
+var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var idOf = (entry) => entry["candidateId"] ?? entry["candidate_id"];
+function reanchorScores(scores, candidateId, target, hunks) {
+  if (!isRecord(scores) || !Array.isArray(scores["scores"])) {
+    return { ok: false, refused: "expected the JSON `RV score` printed, with a `scores` list" };
+  }
+  const entries = scores["scores"].filter(isRecord);
+  const entry = entries.find((e) => idOf(e) === candidateId);
+  if (entry === void 0) return { ok: false, refused: `no scored candidate ${candidateId}` };
+  if (entry["eligible"] !== true) {
+    const why = typeof entry["rejectedBecause"] === "string" ? ` (${entry["rejectedBecause"]})` : "";
+    return {
+      ok: false,
+      refused: `${candidateId} is not eligible${why}; re-anchoring keeps a score, it does not make one. Re-run the analyst and score.`
+    };
+  }
+  const eligible = Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord) : [];
+  const shipped = eligible.find((e) => idOf(e) === candidateId);
+  if (shipped?.["anchor"] === "stale-consumer" || entry["anchorCheck"]?.kind === "stale-consumer") {
+    return {
+      ok: false,
+      refused: `${candidateId} is a stale consumer on unchanged code, so a new line cannot be checked against the diff. Re-run the analyst.`
+    };
+  }
+  if (typeof entry["path"] !== "string" || !Number.isInteger(entry["line"])) {
+    return { ok: false, refused: `scored candidate ${candidateId} has no path and line` };
+  }
+  const from = { path: entry["path"], line: entry["line"] };
+  const check = classifyAnchor(hunks, target.path ?? from.path, target.line);
+  if (!check.ok) return { ok: false, refused: `${candidateId} ${reason(check)}` };
+  const to = { path: check.path, line: check.line };
+  const taken = entries.find(
+    (e) => idOf(e) !== candidateId && e["eligible"] === true && e["path"] === to.path && e["line"] === to.line
+  );
+  if (taken !== void 0) {
+    return { ok: false, refused: `${String(idOf(taken))} is already anchored at ${to.path}:${to.line}` };
+  }
+  const moved = (e) => idOf(e) === candidateId ? { ...e, path: to.path, line: to.line, reanchoredFrom: from, ..."anchorCheck" in e ? { anchorCheck: check } : {} } : e;
+  const updated = {
+    ...scores,
+    scores: scores["scores"].map((e) => isRecord(e) ? moved(e) : e),
+    ...Array.isArray(scores["eligible"]) ? { eligible: scores["eligible"].map((e) => isRecord(e) ? moved(e) : e) } : {}
+  };
+  return { ok: true, updated, from, to, anchorCheck: check };
+}
+function reanchorCandidates(parsed2, candidateId, to) {
+  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord(parsed2) && Array.isArray(parsed2["candidates"]) ? parsed2["candidates"] : null;
+  if (list2 === null) return null;
+  if (!list2.some((c) => isRecord(c) && idOf(c) === candidateId)) return null;
+  const rewritten = list2.map((c) => isRecord(c) && idOf(c) === candidateId ? { ...c, path: to.path, line: to.line } : c);
+  return Array.isArray(parsed2) ? rewritten : { ...parsed2, candidates: rewritten };
+}
+
+// plugins/review-voice/src/diff/carry.ts
+var SERIOUS_SEVERITIES = ["blocking", "important"];
+function seriousNotCarried(notCarried) {
+  return notCarried.filter((f) => f.severity !== void 0 && SERIOUS_SEVERITIES.includes(f.severity.toLowerCase()));
+}
+var NEIGHBOURHOOD = 2;
+function commitReadable(ref, cwd) {
+  try {
+    execFileSync8("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function oldSideHunks(patch) {
+  const hunks = [];
+  for (const line3 of patch.split("\n")) {
+    const match = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line3);
+    if (match === null) continue;
+    hunks.push({
+      oldStart: Number(match[1]),
+      oldCount: match[2] === void 0 ? 1 : Number(match[2]),
+      newCount: match[3] === void 0 ? 1 : Number(match[3])
+    });
+  }
+  return hunks;
+}
+function remapLine(hunks, line3) {
+  const low = line3 - NEIGHBOURHOOD;
+  const high = line3 + NEIGHBOURHOOD;
+  let shift = 0;
+  for (const hunk of hunks) {
+    const first = hunk.oldStart;
+    const last = hunk.oldCount === 0 ? hunk.oldStart + 1 : hunk.oldStart + hunk.oldCount - 1;
+    if (last >= low && first <= high) return { reason: "anchor or its neighbours changed" };
+    if (last < low) shift += hunk.newCount - hunk.oldCount;
+  }
+  return { line: line3 + shift };
+}
+var CarryError = class extends Error {
+};
+function gitOut(args, cwd) {
+  try {
+    return execFileSync8("git", args, {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    throw new CarryError(`git ${args.join(" ")} failed: ${error.message}`);
+  }
+}
+function existsAt(ref, path, cwd) {
+  try {
+    execFileSync8("git", ["cat-file", "-e", `${ref}:${path}`], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function followLine(previousHead, head, path, line3, cwd) {
+  if (!existsAt(head, path, cwd)) return { reason: "file deleted or renamed" };
+  const patch = gitOut(
+    ["diff", "--unified=0", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", previousHead, head, "--", ...topPathspecs([path])],
+    cwd
+  );
+  return remapLine(oldSideHunks(patch), line3);
+}
+function rewriteAnchor(text4, path, oldLine, line3) {
+  return text4.replace(`\`${path}:${oldLine}\``, `\`${path}:${line3}\``);
+}
+function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map(), noLongerChanged = /* @__PURE__ */ new Set()) {
+  for (const ref of [previousHead, head]) {
+    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
+  }
+  const carried = [];
+  const notCarried = [];
+  const heldBack = [];
+  const settled = [];
+  for (const finding of findings) {
+    const holdReason = hold.get(finding.findingId);
+    if (holdReason !== void 0) {
+      heldBack.push({
+        findingId: finding.findingId,
+        path: finding.path,
+        line: finding.line,
+        reason: holdReason,
+        ...finding.severity === void 0 ? {} : { severity: finding.severity }
+      });
+      continue;
+    }
+    if (noLongerChanged.has(finding.path)) {
+      settled.push({
+        findingId: finding.findingId,
+        path: finding.path,
+        line: finding.line,
+        reason: "file no longer changed by the pull request",
+        ...finding.severity === void 0 ? {} : { severity: finding.severity }
+      });
+      continue;
+    }
+    const moved = followLine(previousHead, head, finding.path, finding.line, cwd);
+    if ("reason" in moved) {
+      notCarried.push({
+        findingId: finding.findingId,
+        path: finding.path,
+        line: finding.line,
+        reason: moved.reason,
+        ...finding.severity === void 0 ? {} : { severity: finding.severity }
+      });
+      continue;
+    }
+    carried.push({
+      findingId: finding.findingId,
+      path: finding.path,
+      oldLine: finding.line,
+      line: moved.line,
+      text: rewriteAnchor(finding.text, finding.path, finding.line, moved.line)
+    });
+  }
+  const output = findings.length === settled.length ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join("\n\n");
+  return { carried, notCarried, heldBack, settled, output };
+}
+function findingBody(text4) {
+  const joined = text4.replace(/\s+/g, " ").trim();
+  const match = /^\[[a-z_]+\]\s+`[^`]+:\d+`\s*(.*)$/i.exec(joined);
+  return match === null ? joined : match[1] ?? "";
+}
+function matchCarried(recorded, carried) {
+  const matches = /* @__PURE__ */ new Map();
+  const mismatches = [];
+  const used = /* @__PURE__ */ new Set();
+  for (const finding of recorded) {
+    const body = findingBody(finding.text);
+    const source = carried.find(
+      (c) => !used.has(c.findingId) && c.path === finding.path && findingBody(c.text) === body
+    );
+    if (source === void 0) continue;
+    used.add(source.findingId);
+    if (source.line !== finding.line) {
+      mismatches.push(`${finding.findingId} (${finding.path}:${finding.line}) repeats ${source.findingId}, which carries to line ${source.line}`);
+      continue;
+    }
+    matches.set(finding.findingId, source.findingId);
+  }
+  return { matches, mismatches };
+}
+function changedFiles(previousHead, head, cwd) {
+  const out = gitOut(["diff", "--name-only", "--no-renames", "-z", previousHead, head], cwd);
+  return new Set(out.split("\0").filter((name) => name.length > 0));
+}
+function escapeRegExp2(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function namesFile2(text4, path) {
+  if (text4.includes(path)) return true;
+  const name = path.split("/").pop() ?? path;
+  return new RegExp(`(^|[^\\w./-])${escapeRegExp2(name)}($|[^\\w-])`).test(text4);
+}
+function carryCandidates(candidates, previousHead, head, hunks, cwd) {
+  for (const ref of [previousHead, head]) {
+    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
+  }
+  const changed = changedFiles(previousHead, head, cwd);
+  const carried = [];
+  const refused = [];
+  for (const candidate of candidates) {
+    const refuse = (reason2) => {
+      refused.push({ candidateId: candidate.candidateId, path: candidate.path, line: candidate.line, reason: reason2 });
+    };
+    if (changed.has(candidate.path)) {
+      refuse(`${candidate.path} changed between the two heads`);
+      continue;
+    }
+    const cause = candidate.anchor === "stale-consumer" ? candidate.causedBy ?? null : null;
+    if (cause !== null && changed.has(cause.path)) {
+      refuse(`the file of its cause, ${cause.path}, changed between the two heads`);
+      continue;
+    }
+    const named = [...changed].find((path) => (candidate.texts ?? []).some((text4) => namesFile2(text4, path)));
+    if (named !== void 0) {
+      refuse(`its claim, evidence or verification names ${named}, which changed between the two heads`);
+      continue;
+    }
+    const moved = followLine(previousHead, head, candidate.path, candidate.line, cwd);
+    if ("reason" in moved) {
+      refuse(`${candidate.path}:${candidate.line}: ${moved.reason}`);
+      continue;
+    }
+    let movedCause;
+    if (candidate.anchor === "stale-consumer") {
+      const from = candidate.causedBy ?? null;
+      if (from === null) {
+        refuse("a stale consumer with no caused_by");
+        continue;
+      }
+      const followed = followLine(previousHead, head, from.path, from.line, cwd);
+      if ("reason" in followed) {
+        refuse(`its cause ${from.path}:${from.line}: ${followed.reason}`);
+        continue;
+      }
+      movedCause = { path: from.path, oldLine: from.line, line: followed.line };
+    }
+    const check = candidateAnchor(hunks, {
+      path: candidate.path,
+      line: moved.line,
+      anchor: candidate.anchor,
+      causedBy: movedCause === void 0 ? candidate.causedBy : { path: movedCause.path, line: movedCause.line }
+    });
+    if (!check.ok) {
+      refuse(`at the new head it ${reason(check)}`);
+      continue;
+    }
+    carried.push({
+      candidateId: candidate.candidateId,
+      path: candidate.path,
+      oldLine: candidate.line,
+      line: moved.line,
+      ...movedCause === void 0 ? {} : { causedBy: movedCause }
+    });
+  }
+  return { carried, refused };
+}
+
+// plugins/review-voice/src/store/runs.ts
+function partlyAddressedOf(value) {
+  if (typeof value !== "object" || value === null) return void 0;
+  const v = value;
+  if (v["kind"] !== "own-comment" || v["status"] !== "partly-addressed") return void 0;
+  const strings = (list2) => Array.isArray(list2) && list2.length > 0 && list2.every((item) => typeof item === "string") ? list2 : null;
+  const remaining = strings(v["remaining"]);
+  const addressed = strings(v["addressed"]);
+  if (remaining === null || addressed === null) return void 0;
+  if (typeof v["author"] !== "string" || typeof v["path"] !== "string" || !Number.isInteger(v["line"])) return void 0;
+  return {
+    status: "partly-addressed",
+    prior: {
+      author: v["author"],
+      path: v["path"],
+      line: v["line"],
+      ...Number.isInteger(v["commentId"]) ? { commentId: v["commentId"] } : {}
+    },
+    remaining,
+    addressed
+  };
+}
+var HELD_VERDICTS = [
+  "partly",
+  "refuted",
+  "unverified",
+  "repeat",
+  "below-gate",
+  "policy-suppressed",
+  "owner-declined",
+  "challenge-refuted",
+  "challenge-partly"
+];
+function heldProblem(entry) {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "not an object";
+  const e = entry;
+  if (typeof e["path"] !== "string" || e["path"].length === 0) return "path must be a non-empty string";
+  if (!Number.isInteger(e["line"]) || e["line"] < 1) return "line must be a positive integer";
+  if (!HELD_VERDICTS.includes(e["verdict"])) return `verdict must be one of ${HELD_VERDICTS.join(", ")}`;
+  for (const key2 of ["source", "reason"]) {
+    const value = e[key2];
+    if (typeof value !== "string" || value.trim().length === 0) return `${key2} must be a non-empty string`;
+  }
+  for (const key2 of ["severity", "candidateId", "text"]) {
+    if (e[key2] !== void 0 && typeof e[key2] !== "string") return `${key2} must be a string when present`;
+  }
+  return null;
+}
+function parseCarryMarker(value) {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value;
+  if (typeof v["since"] !== "string" || typeof v["head"] !== "string") return null;
+  const refused = Array.isArray(v["refused"]) ? v["refused"].filter((id) => typeof id === "string") : [];
+  const interdiffReviewed = v["interdiffReviewed"] === true;
+  return {
+    since: v["since"],
+    head: v["head"],
+    interdiffReviewed,
+    refused,
+    // Recomputed rather than trusted, so a hand-edited row cannot claim cover.
+    covered: interdiffReviewed && refused.length === 0 && v["covered"] === true,
+    ...typeof v["inheritedFrom"] === "string" ? { inheritedFrom: v["inheritedFrom"] } : {}
+  };
+}
+var CarryMismatch = class extends Error {
+};
+var ORIGINS = ["driver", "interactive", "watch", "action"];
+var PROVENANCE_MODES = ["fast", "standard", "thorough"];
+function independenceOf(origin) {
+  return origin === "interactive" ? "not-independent" : "independent";
+}
+function describeProvenance(provenance) {
+  if (provenance === null) return "Provenance not recorded";
+  const policy = provenance.policyVersions.length === 0 ? "none" : provenance.policyVersions.map((p) => `${p.scopeType}/${p.scopeKey} v${p.version}`).join(", ");
+  return `Provenance ${describeOrigin(provenance)}, plugin ${provenance.pluginVersion}, claude ${provenance.claudeVersion ?? "unknown"}, mode ${provenance.mode ?? "unknown"}, policy ${policy}`;
+}
+function describeOrigin(provenance) {
+  return `origin ${provenance.origin} (${provenance.independence})`;
+}
+function storedPolicyVersions(db, runId) {
+  const row = db.prepare("SELECT active_policy_versions_json FROM review_runs WHERE review_run_id = ?").get(runId);
+  if (row === void 0 || row.active_policy_versions_json === null) return null;
+  try {
+    const parsed2 = JSON.parse(row.active_policy_versions_json);
+    if (!Array.isArray(parsed2)) return null;
+    const versions = [];
+    for (const entry of parsed2) {
+      const p = typeof entry === "object" && entry !== null ? entry : {};
+      if (typeof p["scopeType"] !== "string" || typeof p["scopeKey"] !== "string" || typeof p["policyId"] !== "string" || typeof p["version"] !== "number") return null;
+      versions.push({ scopeType: p["scopeType"], scopeKey: p["scopeKey"], policyId: p["policyId"], version: p["version"] });
+    }
+    return versions;
+  } catch {
+    return null;
+  }
+}
+var reportedProvenance = /* @__PURE__ */ new Set();
+function storedProvenance(raw, reviewRunId) {
+  if (typeof raw !== "string") return null;
+  const malformed = () => {
+    if (!reportedProvenance.has(reviewRunId)) {
+      reportedProvenance.add(reviewRunId);
+      console.error(`The provenance recorded for run ${reviewRunId} is malformed; reading it as not recorded.`);
+    }
+    return null;
+  };
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return malformed();
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return malformed();
+  const v = value;
+  const origin = ORIGINS.find((known) => known === v["origin"]);
+  const mode = v["mode"] === null ? null : PROVENANCE_MODES.find((known) => known === v["mode"]) ?? void 0;
+  const policies = v["policyVersions"];
+  if (origin === void 0 || mode === void 0 || typeof v["pluginVersion"] !== "string" || !(v["claudeVersion"] === null || typeof v["claudeVersion"] === "string") || !Array.isArray(policies)) {
+    return malformed();
+  }
+  const policyVersions = [];
+  for (const entry of policies) {
+    const p = typeof entry === "object" && entry !== null ? entry : {};
+    if (typeof p["scopeType"] !== "string" || typeof p["scopeKey"] !== "string" || typeof p["policyId"] !== "string" || typeof p["version"] !== "number") {
+      return malformed();
+    }
+    policyVersions.push({ scopeType: p["scopeType"], scopeKey: p["scopeKey"], policyId: p["policyId"], version: p["version"] });
+  }
+  return {
+    origin,
+    // Recomputed, never read back, so a hand-edited row cannot claim independence.
+    independence: independenceOf(origin),
+    pluginVersion: v["pluginVersion"],
+    claudeVersion: v["claudeVersion"],
+    mode,
+    policyVersions
+  };
+}
+var basename = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
+function attribute(finding, hints, taken) {
+  const free = hints.filter((hint) => !taken.has(hint));
+  const exact = free.find((hint) => hint.path === finding.path && hint.line === finding.line);
+  if (exact !== void 0) return { hint: exact, how: "exact" };
+  const sameFile = free.filter(
+    (hint) => basename(hint.path) === basename(finding.path) && hint.line === finding.line
+  );
+  if (sameFile.length === 1) return { hint: sameFile[0], how: "basename" };
+  const sameLine = free.filter((hint) => hint.line === finding.line);
+  if (sameLine.length === 1) return { hint: sameLine[0], how: "line" };
+  return { hint: void 0, how: "none" };
+}
+var laneOf = (hint) => typeof hint?.lane === "string" && hint.lane.length > 0 ? hint.lane : "diff";
+var blockerClassOf = (hint) => {
+  const claimed = hint?.blocker_class ?? hint?.blockerClass;
+  return typeof claimed === "string" && claimed.length > 0 ? claimed : void 0;
+};
+function storedCandidate(hint) {
+  const blocker = hint.blocker_class ?? hint.blockerClass;
+  const { blockerClass: _camel, ...rest } = hint;
+  return { ...rest, lane: laneOf(hint), ...blocker === void 0 ? {} : { blocker_class: blocker } };
+}
+function assignIds(output, hints) {
+  const taken = /* @__PURE__ */ new Set();
+  return splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null).map((finding, index) => {
+    const anchor = { path: finding.path, line: finding.line ?? 0 };
+    const { hint, how } = attribute(anchor, hints, taken);
+    if (hint !== void 0) taken.add(hint);
+    const partly = partlyAddressedOf(hint?.possibleRepeatOf);
+    const blockerClass = blockerClassOf(hint);
+    const ruleId = ruleIdFor(hint?.category, laneOf(hint), blockerClass);
+    return {
+      findingId: `rv_${String(index + 1).padStart(2, "0")}`,
+      severity: finding.severity,
+      path: anchor.path,
+      line: anchor.line,
+      text: finding.raw,
+      // Absent when a review ran without candidates to hand. Null is honest;
+      // guessing a category from the wording would invent evidence.
+      category: hint?.category,
+      lane: laneOf(hint),
+      ...blockerClass === void 0 ? {} : { blockerClass },
+      // Null when there is no category: a finding nothing classified has no rule.
+      ...ruleId === null ? {} : { ruleId },
+      // Stated so a disagreement between what the analyst cited and what
+      // shipped is visible rather than showing up as a missing category.
+      ...how === "exact" || how === "none" ? {} : { attributedBy: how },
+      ...how === "none" && hints.length > 0 ? { unattributed: true } : {},
+      ...partly === void 0 ? {} : { partlyAddressed: partly }
+    };
+  });
+}
+function hashDiff(diff) {
+  return createHash3("sha256").update(diff).digest("hex").slice(0, 32);
+}
+function recordRun(db, input) {
+  if ((input.bodyFindings?.length ?? 0) > 1) {
+    throw new Error("A review may record at most one body-only simplification finding.");
+  }
+  const reviewRunId = randomUUID3();
+  const findings = assignIds(input.output, input.candidates ?? []);
+  if (input.carried !== void 0) {
+    const { matches, mismatches } = matchCarried(findings, input.carried.findings);
+    if (mismatches.length > 0) throw new CarryMismatch(mismatches.join("\n"));
+    for (const finding of findings) {
+      const from = matches.get(finding.findingId);
+      if (from !== void 0) finding.carriedFrom = { runId: input.carried.runId, findingId: from };
+    }
+  }
+  const policyVersions = input.provenance?.policyVersions ?? activePolicyVersions(db);
+  const provenance = input.provenance === void 0 ? null : {
+    origin: input.provenance.origin,
+    independence: independenceOf(input.provenance.origin),
+    pluginVersion: input.provenance.pluginVersion,
+    claudeVersion: input.provenance.claudeVersion,
+    mode: input.provenance.mode,
+    policyVersions
+  };
+  db.exec("SAVEPOINT record_run");
+  try {
+    db.prepare(
+      `INSERT INTO review_runs (
+         review_run_id, repository, base_ref, head_ref, diff_hash,
+         active_policy_versions_json, retrieved_precedents_json,
+         candidates_json, output_json, created_at, stages_json,
+         pull_number, scope_json, complexity_json, provenance_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      reviewRunId,
+      input.repository,
+      input.baseRef,
+      input.headRef,
+      hashDiff(input.diff),
+      JSON.stringify(policyVersions),
+      JSON.stringify(input.precedents ?? []),
+      JSON.stringify((input.candidates ?? []).map(storedCandidate)),
+      JSON.stringify({
+        output: input.output,
+        findings,
+        scores: input.scores ?? [],
+        verdicts: input.verdicts ?? [],
+        tieBreaks: input.tieBreaks ?? [],
+        held: input.held ?? [],
+        ...input.bodyFindings === void 0 || input.bodyFindings.length === 0 ? {} : { bodyFindings: input.bodyFindings },
+        ...input.carry === void 0 ? {} : { carry: input.carry },
+        ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps }
+      }),
+      (/* @__PURE__ */ new Date()).toISOString(),
+      JSON.stringify(input.stages ?? []),
+      input.pullNumber ?? null,
+      input.scope === void 0 ? null : JSON.stringify(input.scope),
+      input.complexity === void 0 || input.complexity === null ? null : JSON.stringify(input.complexity),
+      provenance === null ? null : JSON.stringify(provenance)
+    );
+    recordAudit(db, "review_run_recorded", { type: "review_run", id: reviewRunId }, {
+      repository: input.repository,
+      findingCount: findings.length,
+      ...provenance === null ? {} : { origin: provenance.origin }
+    });
+    db.exec("RELEASE record_run");
+  } catch (error) {
+    db.exec("ROLLBACK TO record_run");
+    db.exec("RELEASE record_run");
+    throw error;
+  }
+  return { reviewRunId, findings, provenance };
+}
+function storedComplexity(raw) {
+  if (typeof raw !== "string") return null;
+  try {
+    return parseComplexity(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+function storedScope(raw) {
+  if (typeof raw !== "string") return null;
+  try {
+    return parseReviewScope(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+function declineHeld(db, reviewRunId, at2, reason2) {
+  const row = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(reviewRunId);
+  if (row === void 0) return { ok: false, error: `No recorded run ${reviewRunId}.` };
+  const parsed2 = JSON.parse(row.output_json);
+  const held = Array.isArray(parsed2.held) ? parsed2.held : [];
+  const matching = held.filter((entry) => entry.path === at2.path && entry.line === at2.line);
+  if (matching.length === 0) {
+    const anchors = held.map((entry) => `${entry.path}:${entry.line}`);
+    return {
+      ok: false,
+      error: `No held finding at ${at2.path}:${at2.line} in run ${reviewRunId}. ${anchors.length === 0 ? "It holds none." : `Held: ${anchors.join(", ")}.`}`
+    };
+  }
+  for (const entry of matching) {
+    entry.verdict = "owner-declined";
+    entry.source = "owner";
+    entry.reason = reason2;
+  }
+  db.prepare("UPDATE review_runs SET output_json = ? WHERE review_run_id = ?").run(JSON.stringify(parsed2), reviewRunId);
+  recordAudit(db, "held_declined", { type: "review_run", id: reviewRunId }, { path: at2.path, line: at2.line });
+  return { ok: true, declined: matching.length };
+}
+function runDetail(db, reviewRunId) {
+  const row = reviewRunId === void 0 ? db.prepare("SELECT * FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get() : db.prepare("SELECT * FROM review_runs WHERE review_run_id = ?").get(reviewRunId);
+  if (row === void 0) return null;
+  const parsed2 = JSON.parse(row["output_json"]);
+  return {
+    reviewRunId: row["review_run_id"],
+    repository: row["repository"],
+    pullNumber: Number.isInteger(row["pull_number"]) ? row["pull_number"] : null,
+    scope: storedScope(row["scope_json"]),
+    complexity: storedComplexity(row["complexity_json"]),
+    provenance: storedProvenance(row["provenance_json"], row["review_run_id"]),
+    headRef: typeof row["head_ref"] === "string" ? row["head_ref"] : null,
+    createdAt: row["created_at"],
+    output: parsed2.output,
+    findings: parsed2.findings,
+    scores: parsed2.scores ?? [],
+    verdicts: parsed2.verdicts ?? [],
+    tieBreaks: Array.isArray(parsed2.tieBreaks) ? parsed2.tieBreaks : [],
+    held: Array.isArray(parsed2.held) ? parsed2.held : [],
+    carry: parseCarryMarker(parsed2.carry),
+    followUps: Array.isArray(parsed2.followUps) ? parsed2.followUps : [],
+    bodyFindings: Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : [],
+    // Older rows predate the column, so absence is normal rather than an error.
+    stages: (() => {
+      const raw = row["stages_json"];
+      if (typeof raw !== "string") return [];
+      try {
+        const parsedStages = JSON.parse(raw);
+        return Array.isArray(parsedStages) ? parsedStages : [];
+      } catch {
+        return [];
+      }
+    })(),
+    precedents: JSON.parse(row["retrieved_precedents_json"])
+  };
+}
+function latestRunForPull(db, repository, pullNumber) {
+  const row = db.prepare(
+    `SELECT review_run_id, head_ref, created_at
+       FROM review_runs
+       WHERE LOWER(repository) = LOWER(?)
+         AND pull_number = ?
+         AND head_ref IS NOT NULL
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`
+  ).get(repository, pullNumber);
+  if (row === void 0) return null;
+  return {
+    reviewRunId: row.review_run_id,
+    headRef: row.head_ref,
+    createdAt: row.created_at
+  };
+}
+function recordedRunsForPull(db, repository, pullNumber, limit = 10) {
+  const rows = db.prepare(
+    `SELECT review_run_id, head_ref, created_at
+       FROM review_runs
+       WHERE LOWER(repository) = LOWER(?)
+         AND pull_number = ?
+         AND head_ref IS NOT NULL
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT ?`
+  ).all(repository, pullNumber, limit);
+  return rows.map((row) => ({ runId: row.review_run_id, head: row.head_ref, createdAt: row.created_at }));
+}
+function latestRun(db) {
+  const row = db.prepare("SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get();
+  if (row === void 0) return null;
+  const parsed2 = JSON.parse(row.output_json);
+  return { reviewRunId: row.review_run_id, findings: parsed2.findings };
+}
+
+// plugins/review-voice/src/diff/held.ts
+var QUOTE_LIMIT = 200;
+function parseThreadFile(text4, file2, run) {
+  let parsed2;
+  try {
+    const raw = JSON.parse(text4);
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw) || !Array.isArray(raw["comments"])) {
+      throw new Error("expected the thread.json that `RV thread` wrote");
+    }
+    parsed2 = raw;
+  } catch (error) {
+    throw new CarryError(`Cannot read ${file2}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const sameRepository = typeof parsed2["repository"] === "string" && run.repository !== null && parsed2["repository"].toLowerCase() === run.repository.toLowerCase();
+  if (!sameRepository || run.pullNumber === null || parsed2["pullNumber"] !== run.pullNumber) {
+    throw new CarryError(
+      `${file2} is the thread of ${String(parsed2["repository"])}#${String(parsed2["pullNumber"])}, not of this run's pull request (${run.repository ?? "no repository"}#${run.pullNumber ?? "?"}). Pass the thread.json that \`RV thread\` wrote for it.`
+    );
+  }
+  return {
+    repository: parsed2["repository"],
+    pullNumber: parsed2["pullNumber"],
+    comments: parsed2["comments"],
+    reviews: Array.isArray(parsed2["reviews"]) ? parsed2["reviews"] : []
+  };
+}
+function postedReviewIds(db, runId) {
+  const attempts = db.prepare(`SELECT audit_id FROM audit_events WHERE action = 'review_post_attempted' AND json_extract(metadata_json, '$.run') = ?`).all(runId);
+  const ids = new Set(attempts.map((row) => row.audit_id));
+  if (ids.size === 0) return [];
+  const sent = db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent'`).all();
+  const reviewIds = [];
+  for (const row of sent) {
+    const meta = JSON.parse(row.metadata_json);
+    const id = Number(meta.reviewId);
+    if (typeof meta.attempt === "string" && ids.has(meta.attempt) && Number.isInteger(id)) reviewIds.push(id);
+  }
+  return reviewIds;
+}
+function quote(text4) {
+  const flat = text4.replace(/\s+/g, " ").trim();
+  return `"${flat.length > QUOTE_LIMIT ? `${flat.slice(0, QUOTE_LIMIT)}...` : flat}"`;
+}
+function postedComment2(finding, thread, run, reviewIds) {
+  const parsed2 = parseFinding(finding.text, 1);
+  if (parsed2.severity === null || parsed2.prose.length === 0) return null;
+  const opening = `**${parsed2.severity}** - `;
+  const prose = significantWords(parsed2.prose);
+  const recordedAt = Date.parse(run.createdAt);
+  for (const comment of thread) {
+    if (comment.kind !== "review-comment" || comment.inReplyTo !== void 0) continue;
+    if (comment.path !== finding.path || !comment.body.startsWith(opening)) continue;
+    if (reviewIds.length > 0) {
+      if (comment.reviewId === void 0 || !reviewIds.includes(comment.reviewId)) continue;
+    } else {
+      const written = typeof comment.createdAt === "string" ? Date.parse(comment.createdAt) : Number.NaN;
+      if (Number.isNaN(written) || Number.isNaN(recordedAt) || written <= recordedAt) continue;
+    }
+    if (overlap(prose, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
+  }
+  return null;
+}
+function heldBackFindings(findings, thread, run, reviewIds) {
+  const dismissed = new Map(thread.reviews.filter((review2) => review2.state === "DISMISSED").map((review2) => [review2.id, review2]));
+  const held = /* @__PURE__ */ new Map();
+  for (const finding of findings) {
+    const comment = postedComment2(finding, thread.comments, run, reviewIds);
+    const review2 = (comment?.reviewId !== void 0 ? dismissed.get(comment.reviewId) : void 0) ?? reviewIds.map((id) => dismissed.get(id)).find((candidate) => candidate !== void 0);
+    const resolved = comment?.resolved === true;
+    if (!resolved && review2 === void 0) continue;
+    const parts = [];
+    if (resolved) parts.push(`its thread was resolved${comment?.resolvedBy === void 0 ? "" : ` by ${comment.resolvedBy}`}`);
+    if (review2 !== void 0) {
+      parts.push(`the review was dismissed${review2.dismissalMessage === void 0 ? "" : `: ${quote(review2.dismissalMessage)}`}`);
+    }
+    const replies = comment?.id === void 0 ? [] : thread.comments.filter((c) => c.inReplyTo === comment.id);
+    const last = replies.reduce(
+      (latest, reply) => latest === void 0 || (reply.createdAt ?? "") >= (latest.createdAt ?? "") ? reply : latest,
+      void 0
+    );
+    if (last !== void 0) parts.push(`${last.author} replied: ${quote(last.body)}`);
+    held.set(finding.findingId, parts.join("; "));
+  }
+  return held;
+}
+
+// plugins/review-voice/src/diff/prior.ts
+import { execFileSync as execFileSync9 } from "node:child_process";
+function git3(args, cwd) {
+  return execFileSync9("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
+}
+function resolveCommit(ref, cwd) {
+  try {
+    return git3(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd).trim() || null;
+  } catch {
+    return null;
+  }
+}
+function originRepository2(cwd) {
+  try {
+    const url = git3(["remote", "get-url", "origin"], cwd).trim();
+    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+function resolveSince(since, repository, cwd) {
+  const present = resolveCommit(since, cwd);
+  if (present !== null) return present;
+  if (!/^[0-9a-f]{7,64}$/i.test(since)) return null;
+  if (originRepository2(cwd)?.toLowerCase() !== repository.toLowerCase()) return null;
+  try {
+    git3(["fetch", "--no-tags", "--quiet", "origin", since], cwd);
+  } catch {
+    return null;
+  }
+  return resolveCommit(since, cwd);
+}
+function fetchPriorHead(sha, repository, cwd) {
+  if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha)) return "it is not a full commit id, so it was not fetched";
+  const origin = originRepository2(cwd);
+  if (origin === null) return "no origin remote on GitHub resolved, so it was not fetched";
+  if (origin.toLowerCase() !== repository.toLowerCase()) {
+    return `origin is ${origin}, not ${repository}, so it was not fetched`;
+  }
+  const args = ["fetch", "--no-tags", "--quiet", "origin", sha];
+  try {
+    execFileSync9("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
+    return null;
+  } catch (error) {
+    return gitFailure(args, error);
+  }
+}
+async function latestOwnReview(client, repository, pullNumber) {
+  try {
+    const { data: viewer } = await client.get("/user");
+    const login = viewer.login?.toLowerCase();
+    if (login === void 0) return null;
+    const reviews = await client.paginate(
+      `/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`,
+      1e3
+    );
+    const own = reviews.filter((review2) => review2.user?.login?.toLowerCase() === login).filter((review2) => typeof review2.commit_id === "string" && review2.commit_id.length > 0).filter(
+      (review2) => review2.state === "APPROVED" || review2.state === "CHANGES_REQUESTED" || review2.state === "COMMENTED" && (review2.body ?? "").trim().length > 0
+    ).sort((a, b) => (a.submitted_at ?? "").localeCompare(b.submitted_at ?? ""));
+    const latest = own.at(-1);
+    return latest === void 0 ? null : { head: latest.commit_id, submittedAt: latest.submitted_at ?? null };
+  } catch {
+    return null;
+  }
+}
+function missingRunIdNote(source, head, pull, recorded) {
+  if (source === "github-review") {
+    return "the previous head came from your GitHub review, which has no run id";
+  }
+  if (recorded.length === 0) {
+    return `no run is recorded for ${pull}; a run recorded without --repository or --files cannot be matched`;
+  }
+  const heads = recorded.slice(0, 5).map((run) => run.head.slice(0, 7)).join(", ");
+  return `--since ${head.slice(0, 7)} matches no recorded run of ${pull}; ${recorded.length} run${recorded.length === 1 ? " is" : "s are"} recorded for it, at head${recorded.length === 1 ? "" : "s"} ${heads}`;
+}
+async function resolvePrior(options) {
+  const pull = options.pull ?? "this pull request";
+  const resolution = (source, head, runId) => ({
+    source,
+    head,
+    runId,
+    ...source !== null && head !== null && runId === null ? { runIdNote: missingRunIdNote(source, head, pull, options.recorded) } : {},
+    recordedRuns: options.recorded.slice(0, 10)
+  });
+  if (options.since !== null) {
+    const match = options.recorded.find((run) => run.head === options.since);
+    return {
+      prior: { reviewRunId: match?.runId ?? null, headRef: options.since, createdAt: match?.createdAt ?? null },
+      resolution: resolution("flag", options.since, match?.runId ?? null)
+    };
+  }
+  const latest = options.recorded[0];
+  if (latest !== void 0) {
+    return {
+      prior: { reviewRunId: latest.runId, headRef: latest.head, createdAt: latest.createdAt },
+      resolution: resolution("recorded", latest.head, latest.runId)
+    };
+  }
+  const own = await options.ownReview();
+  if (own !== null) {
+    return {
+      prior: { reviewRunId: null, headRef: own.head, createdAt: own.submittedAt },
+      resolution: resolution("github-review", own.head, null)
+    };
+  }
+  return { prior: null, resolution: resolution(null, null, null) };
+}
+
+// plugins/review-voice/src/store/feedback.ts
+import { randomUUID as randomUUID4 } from "node:crypto";
+var FEEDBACK_ACTIONS = [
+  "keep",
+  "dismiss",
+  "rewrite",
+  "raise_severity",
+  "lower_severity",
+  "repo_specific",
+  "never_flag"
+];
+function normaliseAction(input) {
+  const candidate = input.trim().toLowerCase().replace(/-/g, "_");
+  return FEEDBACK_ACTIONS.includes(candidate) ? candidate : null;
+}
+function recordFeedback(db, input) {
+  const [left, right] = input.findingRef.includes(":") ? input.findingRef.split(":", 2) : [null, input.findingRef];
+  let reviewRunId;
+  let known;
+  if (left === null) {
+    const run = latestRun(db);
+    if (run === null) return { ok: false, error: "No review has been recorded yet." };
+    reviewRunId = run.reviewRunId;
+    known = run.findings.map((finding) => finding.findingId);
+  } else {
+    const row = db.prepare("SELECT review_run_id, output_json FROM review_runs WHERE review_run_id = ?").get(left);
+    if (row === void 0) return { ok: false, error: `No review run ${left}.` };
+    reviewRunId = row.review_run_id;
+    known = JSON.parse(row.output_json).findings.map(
+      (finding) => finding.findingId
+    );
+  }
+  const findingId = right.trim();
+  if (!known.includes(findingId)) {
+    return {
+      ok: false,
+      error: `No finding ${findingId} in that review. Available: ${known.join(", ") || "none"}.`
+    };
+  }
+  if (input.action === "rewrite" && (input.replacementText ?? "").trim().length === 0) {
+    return { ok: false, error: "A rewrite needs the replacement text." };
+  }
+  const feedbackId = randomUUID4();
+  db.prepare(
+    `INSERT INTO feedback (feedback_id, review_run_id, finding_id, action, replacement_text, reason, actor, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (review_run_id, finding_id, action) DO UPDATE SET
+       replacement_text = excluded.replacement_text,
+       reason = excluded.reason,
+       created_at = excluded.created_at`
+  ).run(
+    feedbackId,
+    reviewRunId,
+    findingId,
+    input.action,
+    input.replacementText ?? null,
+    input.reason ?? null,
+    input.actor,
+    (/* @__PURE__ */ new Date()).toISOString()
+  );
+  recordAudit(db, "feedback_recorded", { type: "finding", id: findingId }, {
+    reviewRunId,
+    action: input.action
+  });
+  return { ok: true, feedbackId, reviewRunId, findingId };
+}
+function unlabelledFindings(db) {
+  const runs = db.prepare("SELECT review_run_id, output_json FROM review_runs").all();
+  const labelled = new Set(
+    db.prepare("SELECT review_run_id, finding_id FROM feedback").all().map((row) => `${row.review_run_id}:${row.finding_id}`)
+  );
+  let unlabelled = 0;
+  for (const run of runs) {
+    let findings = [];
+    try {
+      findings = JSON.parse(run.output_json ?? "{}").findings ?? [];
+    } catch {
+      continue;
+    }
+    for (const finding of findings) {
+      if (finding.findingId === void 0) continue;
+      if (!labelled.has(`${run.review_run_id}:${finding.findingId}`)) unlabelled += 1;
+    }
+  }
+  return unlabelled;
+}
+function feedbackTotals(db) {
+  const rows = db.prepare("SELECT action, COUNT(*) AS n FROM feedback GROUP BY action").all();
+  const by = Object.fromEntries(rows.map((row) => [row.action, row.n]));
+  const kept = by["keep"] ?? 0;
+  const rewritten = by["rewrite"] ?? 0;
+  const dismissed = by["dismiss"] ?? 0;
+  const other = rows.reduce((sum, row) => sum + row.n, 0) - kept - rewritten - dismissed;
+  const labelled = kept + rewritten + dismissed;
+  return {
+    kept,
+    rewritten,
+    dismissed,
+    other,
+    ownerPrecision: labelled === 0 ? null : (kept + rewritten) / labelled
+  };
+}
+
+// plugins/review-voice/src/policy/load.ts
+import { readFileSync as readFileSync7, existsSync as existsSync5 } from "node:fs";
+import { createHash as createHash4 } from "node:crypto";
+import { dirname as dirname7, isAbsolute as isAbsolute2, join as join9 } from "node:path";
+import { homedir as homedir2 } from "node:os";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
+
 // plugins/review-voice/src/publish/ci.ts
 var MAX_ENTRIES = 1e3;
 var IGNORED_CONCLUSIONS = /* @__PURE__ */ new Set(["stale", "skipped", "neutral"]);
@@ -15007,6 +15158,33 @@ function layerFromPolicyFile(text4, source, fallbackKey) {
     priorities
   };
 }
+function approvedPolicyLayers(db, warnings) {
+  const layers = [];
+  const versions = [];
+  for (const row of activePolicyRows(db)) {
+    versions.push({ scopeType: row.scopeType, scopeKey: row.scopeKey, policyId: row.policyId, version: row.version });
+    const label2 = `approved policy version ${row.version}`;
+    try {
+      const doc = asRecord(parse(row.contentYaml));
+      if (doc === null) {
+        warnings.push(`${label2} is empty; ignoring it.`);
+        continue;
+      }
+      const read = readSuppressions(doc["suppressions"], row.version);
+      for (const warning of read.warnings) warnings.push(`${label2}: ${warning}`);
+      layers.push({
+        scope: { type: "global", key: row.scopeKey },
+        source: `${label2} (policies table)`,
+        requiresApproval: false,
+        suppressedPatterns: asStringArray(doc["suppressed_patterns"]),
+        suppressions: read.suppressions
+      });
+    } catch (error) {
+      warnings.push(`${label2} could not be parsed: ${String(error)}`);
+    }
+  }
+  return { layers, versions };
+}
 function pluginRoot2() {
   let dir = dirname7(fileURLToPath4(import.meta.url));
   while (!existsSync5(join9(dir, ".claude-plugin", "plugin.json")) && dirname7(dir) !== dir) dir = dirname7(dir);
@@ -15082,7 +15260,7 @@ function configFile(repositoryRoot2, warnings = []) {
   }
   return join9(repositoryRoot2, ".review-voice", "config.yaml");
 }
-function loadConfig(repositoryRoot2, baselinePath, path) {
+function loadConfig(repositoryRoot2, baselinePath, path, db) {
   const result = {
     ownerReviewer: null,
     reviewers: [],
@@ -15109,6 +15287,8 @@ function loadConfig(repositoryRoot2, baselinePath, path) {
     lanes: [DIFF_LANE],
     thresholds: {},
     layers: [],
+    suppressions: [],
+    activePolicyVersions: [],
     unapproved: [],
     warnings: []
   };
@@ -15212,8 +15392,14 @@ function loadConfig(repositoryRoot2, baselinePath, path) {
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }
   }
+  const approved = db === void 0 ? null : approvedPolicyLayers(db, result.warnings);
+  if (approved !== null) {
+    result.layers.unshift(...approved.layers);
+    result.activePolicyVersions = approved.versions;
+  }
   const baseline = loadBaselineLayer(result.ownerReviewer, baselinePath);
   if (baseline !== null) result.layers.unshift(baseline);
+  result.suppressions = result.layers.flatMap((layer) => layer.suppressions ?? []);
   const policyPath = join9(repositoryRoot2, ".review-voice", "policy.yaml");
   if (existsSync5(policyPath)) {
     try {
@@ -15238,6 +15424,7 @@ function resolvePolicy(layers) {
     noFindingsResponse: DEFAULT_LIMITS.noFindingsResponse,
     forbiddenPhrases: [...DEFAULT_LIMITS.forbiddenPhrases],
     suppressedPatterns: [],
+    suppressions: [],
     requiredChecks: [],
     priorities: [],
     layers: []
@@ -15256,6 +15443,7 @@ function resolvePolicy(layers) {
       if (!resolved.forbiddenPhrases.includes(phrase)) resolved.forbiddenPhrases.push(phrase);
     }
     resolved.suppressedPatterns.push(...layer.suppressedPatterns ?? []);
+    resolved.suppressions.push(...layer.suppressions ?? []);
     resolved.requiredChecks.push(...layer.requiredChecks ?? []);
     for (const priority of layer.priorities ?? []) {
       const existing = resolved.priorities.findIndex((p) => p.category === priority.category);
@@ -16465,7 +16653,7 @@ function postedStats(db, { since } = {}) {
 function postedBreakdown(db) {
   const rows = db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all();
   const findings = /* @__PURE__ */ new Map();
-  const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map() };
+  const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map(), rule: /* @__PURE__ */ new Map() };
   for (const row of rows) {
     let known = findings.get(row.review_run_id);
     if (known === void 0) {
@@ -16475,20 +16663,23 @@ function postedBreakdown(db) {
       try {
         const parsed2 = JSON.parse(stored?.output_json ?? "{}");
         for (const finding of parsed2.findings ?? []) {
+          const lane = typeof finding["lane"] === "string" ? finding["lane"] : "diff";
           known.set(String(finding["findingId"]), {
             severity: typeof finding["severity"] === "string" ? finding["severity"] : "unknown",
-            lane: typeof finding["lane"] === "string" ? finding["lane"] : "diff"
+            lane,
+            rule: typeof finding["ruleId"] === "string" && finding["ruleId"].length > 0 ? finding["ruleId"] : ruleIdFor(typeof finding["category"] === "string" ? finding["category"] : null, lane) ?? "unknown"
           });
         }
       } catch {
       }
     }
-    const info = known.get(row.finding_id) ?? { severity: "unknown", lane: "diff" };
+    const info = known.get(row.finding_id) ?? { severity: "unknown", lane: "diff", rule: "unknown" };
     groups.severity.set(info.severity, [...groups.severity.get(info.severity) ?? [], row]);
     groups.lane.set(info.lane, [...groups.lane.get(info.lane) ?? [], row]);
+    groups.rule.set(info.rule, [...groups.rule.get(info.rule) ?? [], row]);
   }
   const collect = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list2]) => [key2, statsOf(list2)]));
-  return { bySeverity: collect(groups.severity), byLane: collect(groups.lane) };
+  return { bySeverity: collect(groups.severity), byLane: collect(groups.lane), byRule: collect(groups.rule) };
 }
 
 // plugins/review-voice/src/corpus/collect.ts
@@ -19596,9 +19787,11 @@ function label(row) {
     const parsed2 = JSON.parse(row.output_json);
     const finding = parsed2.findings.find((f) => f.findingId === row.finding_id);
     if (finding === void 0) return null;
+    const category = typeof finding.category === "string" && finding.category.length > 0 ? finding.category : null;
     return {
       row,
-      category: finding.category ?? null,
+      category,
+      ruleId: category === null ? null : typeof finding.ruleId === "string" && finding.ruleId.length > 0 ? finding.ruleId : ruleIdFor(category, finding.lane),
       severity: finding.severity ?? null,
       path: finding.path
     };
@@ -19606,6 +19799,7 @@ function label(row) {
     return null;
   }
 }
+var KEY_SEPARATOR = "	";
 function compileProposals(db) {
   const rows = db.prepare(
     `SELECT f.action, f.actor, f.finding_id, f.review_run_id, f.reason, f.created_at, r.output_json
@@ -19617,18 +19811,19 @@ function compileProposals(db) {
   for (const row of rows) {
     const labelled = label(row);
     if (labelled === null) continue;
-    if (labelled.category === null) continue;
+    if (labelled.category === null || labelled.ruleId === null) continue;
     const kind = row.action === "never_flag" || row.action === "dismiss" ? "suppress" : "prioritise";
-    const key2 = `${kind}:${labelled.category}`;
+    const key2 = `${kind}${KEY_SEPARATOR}${labelled.ruleId}`;
     buckets.set(key2, [...buckets.get(key2) ?? [], labelled]);
   }
   const proposals = [];
   for (const [key2, group] of buckets) {
-    const [kind, category] = key2.split(":");
+    const [kind, ruleId] = key2.split(KEY_SEPARATOR);
+    const category = categoryOfRuleId(ruleId);
     const keeps = group.filter((g) => g.row.action === "keep").length;
     const dismissals = group.filter((g) => g.row.action === "dismiss" || g.row.action === "never_flag").length;
     const rewrites = group.filter((g) => g.row.action === "rewrite").length;
-    const opposite = kind === "suppress" ? `prioritise:${category}` : `suppress:${category}`;
+    const opposite = `${kind === "suppress" ? "prioritise" : "suppress"}${KEY_SEPARATOR}${ruleId}`;
     const contradictingSignals = (buckets.get(opposite) ?? []).length;
     const evidence = {
       keeps,
@@ -19648,6 +19843,7 @@ function compileProposals(db) {
       scope: { type: "global", key: "owner" },
       kind,
       category,
+      ruleId,
       rule: kind === "suppress" ? `Suppress ${category} findings${severities.length === 1 ? ` at ${severities[0]} severity` : ""} unless they name a concrete failure mode${reasons.length > 0 ? ` (stated reason: ${reasons[0]})` : ""}.` : `Treat ${category} as high priority; findings in this category are consistently kept.`,
       evidence,
       confidence: confidenceFrom(evidence),
@@ -20558,6 +20754,15 @@ async function score(run) {
     });
   };
   for (const entry of list(scores["belowGate"])) hold(entry, "below-gate", "score", `below the ${String(entry["gate"])} gate`);
+  for (const entry of list(scores["suppressed"])) {
+    const version = entry["policyVersion"];
+    hold(
+      entry,
+      "policy-suppressed",
+      "policy",
+      `held by approved policy${typeof version === "number" ? ` version ${version}` : ""} (rule ${String(entry["ruleId"] ?? "")})`
+    );
+  }
   for (const entry of list(scores["unverified"])) {
     const missing = Array.isArray(entry["requiredContextMissing"]) ? entry["requiredContextMissing"].join("; ") : "context";
     hold(entry, "unverified", "verifier", `could not check: ${missing}`);
@@ -22070,14 +22275,16 @@ var COMMAND_HELP = {
       "  --diff-file <path>        Diff for reach and anchor checks",
       "  --min-score <n>           Final score gate (default 0.68)",
       "  --severity <id>=<tier>    Owner downgrade, or a raise up to the requested tier when reach is unknown (repeatable)",
-      "  --promote <id>            Owner posts a belowGate finding past its gate (repeatable)",
+      "  --promote <id>            Owner posts a belowGate or suppressed[] finding past its gate (repeatable)",
       "  --allow-unverifiable      With --promote: also lift the unverifiable cap; needs --owner-note",
       "  --owner-note <text>       Why the owner posts an unverifiable finding; recorded with it",
       "  --repository <name>       Prefer precedents from this repository",
       "  --owner <login>           Owner whose precedents count; default from config",
       "Reads: candidates JSON on stdin; review.lanes from .review-voice/config.yaml, whose",
       "  severity rule (cap, escalate on blocker_confirmed) applies after the tier is derived.",
-      "Writes: JSON scores on stdout, each entry with its lane. Every entry names its candidate as candidate_id,",
+      "Writes: JSON scores on stdout, each entry with its lane. A verified candidate an approved",
+      "  suppression held is listed in suppressed[] with its ruleId and policyVersion, and",
+      "  --promote posts it past that policy. Every entry names its candidate as candidate_id,",
       "  like candidates and verification; candidateId is still written beside it",
       "  but is deprecated.",
       "Exit codes: 0 ok, 2 malformed candidates or bad invocation."
@@ -22560,7 +22767,9 @@ var COMMAND_HELP = {
       "  --run <run-id>         The run to explain; default the latest",
       "  --json                 Emit the detail as JSON",
       "Reads: nothing on stdin; the local store.",
-      "Writes: text (or JSON) on stdout.",
+      "Writes: text (or JSON) on stdout. Each finding shows its rule id, and a finding from",
+      "  score suppressed[] appears under Held back as policy-suppressed, with the rule id",
+      "  and policy version that held it; score --promote posts such a finding.",
       "Exit codes: 0 ok."
     )
   },
@@ -23186,7 +23395,13 @@ function resolveOutPath(out, defaultName) {
 function contextCommand() {
   try {
     const root = repositoryRoot(process.cwd());
-    const config2 = loadConfig(root);
+    const db = openDatabase();
+    let config2;
+    try {
+      config2 = loadConfig(root, void 0, void 0, db);
+    } finally {
+      db.close();
+    }
     const configPath = join19(root, ".review-voice", "config.yaml");
     const policy = resolvePolicy(config2.layers);
     console.log(
@@ -23569,9 +23784,9 @@ function lanesCommand(argv) {
 function asLevel(value) {
   return typeof value === "object" && value !== null && value.level === "high" ? "high" : "normal";
 }
-function repositoryConfig() {
+function repositoryConfig(db) {
   try {
-    return loadConfig(repositoryRoot(process.cwd()));
+    return loadConfig(repositoryRoot(process.cwd()), void 0, void 0, db);
   } catch {
     return null;
   }
@@ -23660,10 +23875,14 @@ function evaluateCommand(argv) {
   try {
     const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
     if (argv.includes("--json")) {
-      const { bySeverity, byLane } = postedBreakdown(db);
+      const { bySeverity, byLane, byRule } = postedBreakdown(db);
       console.log(
         JSON.stringify(
-          { metrics, posted_breakdown: { by_severity: bySeverity, by_lane: byLane }, stage_seconds: stageSeconds(db) },
+          {
+            metrics,
+            posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule },
+            stage_seconds: stageSeconds(db)
+          },
           null,
           2
         )
@@ -23853,6 +24072,12 @@ function applyOwnerPromotion(breakdown, ownerNote) {
       return `--promote ${breakdown.candidateId}: it is capped as unverifiable (${breakdown.unverifiableBecause}). Pass --allow-unverifiable with --owner-note "<why>" to post it on the owner's decision.`;
     }
     breakdown.ownerPromotion = { gate: "unverifiable", heldBecause: breakdown.rejectedBecause, ownerNote };
+    breakdown.eligible = true;
+    breakdown.rejectedBecause = null;
+    return null;
+  }
+  if (gate === "policy") {
+    breakdown.ownerPromotion = { gate, heldBecause: breakdown.rejectedBecause, ruleId: breakdown.rejectedBecause.slice(POLICY_SUPPRESSED_PREFIX.length) };
     breakdown.eligible = true;
     breakdown.rejectedBecause = null;
     return null;
@@ -24067,6 +24292,10 @@ function scoreCommand(argv) {
   const lanes2 = repositoryConfig()?.lanes ?? [DIFF_LANE];
   const db = openDatabase();
   try {
+    const loadedConfig = repositoryConfig(db);
+    const suppressions = loadedConfig?.suppressions ?? [];
+    const policyVersions = loadedConfig?.activePolicyVersions ?? [];
+    const suppressionByCandidate = /* @__PURE__ */ new Map();
     const kept = [];
     const results = [];
     const followUps = /* @__PURE__ */ new Map();
@@ -24092,6 +24321,14 @@ function scoreCommand(argv) {
         if (problem !== null) {
           console.error(problem);
           return 2;
+        }
+      }
+      if (breakdown.eligible) {
+        const suppression = matchingSuppression(suppressions, candidate);
+        if (suppression !== null) {
+          breakdown.eligible = false;
+          breakdown.rejectedBecause = `${POLICY_SUPPRESSED_PREFIX}${suppression.ruleId}`;
+          suppressionByCandidate.set(candidate.candidateId, suppression);
         }
       }
       let absence = null;
@@ -24174,7 +24411,7 @@ function scoreCommand(argv) {
     }
     applyQuestionCap(results);
     const belowGate = results.filter(
-      (r) => r.confidenceSource === "verifier" && !r.eligible && Number.isFinite(r.finalScore) && gateOf(r.rejectedBecause) !== null
+      (r) => r.confidenceSource === "verifier" && !r.eligible && Number.isFinite(r.finalScore) && gateOf(r.rejectedBecause) !== null && gateOf(r.rejectedBecause) !== "policy"
     ).map((r) => {
       const gate = gateOf(r.rejectedBecause);
       return boundLists({
@@ -24189,6 +24426,18 @@ function scoreCommand(argv) {
           technicalConfidence: r.technicalConfidence,
           threshold: r.severity.severity === "question" ? QUESTION_GAP_FLOOR : thresholds.technicalConfidence
         }
+      });
+    });
+    const suppressed = results.filter((r) => !r.eligible && gateOf(r.rejectedBecause) === "policy").map((r) => {
+      const suppression = suppressionByCandidate.get(r.candidateId);
+      return boundLists({
+        candidateId: r.candidateId,
+        ruleId: suppression?.ruleId ?? r.rejectedBecause.slice(POLICY_SUPPRESSED_PREFIX.length),
+        path: r.path,
+        line: r.line,
+        severity: r.severity.severity,
+        claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? "",
+        policyVersion: suppression?.policyVersion ?? null
       });
     });
     const unverified = results.filter((r) => r.confidenceSource === "unverifiable-cap" && r.rejectedBecause === UNVERIFIABLE_REJECTION).flatMap((r) => {
@@ -24272,6 +24521,11 @@ function scoreCommand(argv) {
               // Whether the verifier or a fallback set the confidence, without a join to `scores` (#220).
               confidenceSource: scored?.confidenceSource ?? null,
               category: c.category,
+              // The driver records these entries as the run's candidates, and
+              // a finding's rule id is derived from them: without the lane and
+              // the blocker class every recorded rule would read `:diff`.
+              lane: c.lane,
+              blockerClass: c.blockerClass,
               // What the editor writes from. It has no tools, so everything it
               // may state has to be here, and nothing it may not.
               claim: c.claim,
@@ -24297,8 +24551,10 @@ function scoreCommand(argv) {
             };
           }),
           belowGate: belowGate.map(withSnakeCaseId),
+          suppressed: suppressed.map(withSnakeCaseId),
           unverified: unverified.map(withSnakeCaseId),
-          absenceContradicted: absenceContradicted.map(withSnakeCaseId)
+          absenceContradicted: absenceContradicted.map(withSnakeCaseId),
+          policyVersions
         },
         null,
         2
@@ -24315,6 +24571,7 @@ function locallyListable(rejectedBecause) {
 }
 function gateOf(rejectedBecause) {
   if (rejectedBecause === null || rejectedBecause.includes(" Also: ")) return null;
+  if (rejectedBecause.startsWith(POLICY_SUPPRESSED_PREFIX)) return "policy";
   if (rejectedBecause.startsWith("score ")) return "score";
   if (rejectedBecause.startsWith("technical confidence ")) return "confidence";
   return null;
@@ -24586,6 +24843,17 @@ function reviewScopeFromManifest(value) {
 function describeReviewScope(scope) {
   return describeScope(scope);
 }
+function policyVersionRefs(value) {
+  if (!Array.isArray(value)) return null;
+  const refs = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) return null;
+    const { scopeType, scopeKey, policyId, version } = entry;
+    if (typeof scopeType !== "string" || typeof scopeKey !== "string" || typeof policyId !== "string" || typeof version !== "number") return null;
+    refs.push({ scopeType, scopeKey, policyId, version });
+  }
+  return refs;
+}
 function recordCommand(argv) {
   for (const name of ["--base", "--head"]) {
     if (argv.includes(name) && (flag(argv, name) ?? "") === "") {
@@ -24713,10 +24981,12 @@ function recordCommand(argv) {
   }
   const scoresFile = flag(argv, "--scores");
   let scores = [];
+  let scoredPolicyVersions = null;
   if (scoresFile !== null) {
     try {
       const parsed2 = JSON.parse(readFileSync16(scoresFile, "utf8"));
       scores = boundLists(Array.isArray(parsed2) ? parsed2 : parsed2.scores ?? []);
+      scoredPolicyVersions = Array.isArray(parsed2) ? null : policyVersionRefs(parsed2.policyVersions);
     } catch {
       console.error(`Cannot read scores from ${scoresFile}.`);
       return 2;
@@ -24829,6 +25099,7 @@ function recordCommand(argv) {
     let carried;
     let carry2;
     let carriedProvenance = null;
+    let carriedVersions = null;
     const carriedFrom = flag(argv, "--carried-from");
     if (carriedFrom !== null) {
       const head = flag(argv, "--head");
@@ -24850,6 +25121,7 @@ function recordCommand(argv) {
         const prior = source?.carry ?? null;
         if (prior !== null && !prior.covered) carry2 = { ...prior, inheritedFrom: prior.inheritedFrom ?? carriedFrom };
         carriedProvenance = source?.provenance ?? null;
+        carriedVersions = storedPolicyVersions(db, carriedFrom);
       } catch (error) {
         console.error(error.message);
         return 2;
@@ -24929,7 +25201,14 @@ function recordCommand(argv) {
       ...carry2 === void 0 ? {} : { carry: carry2 },
       followUps,
       stages,
-      provenance: carriedProvenance === null ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode } : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode }
+      provenance: {
+        ...carriedProvenance === null ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode } : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode },
+        // The versions this run was held to: the ones `score` loaded when there
+        // is a scores file; else the carried run's, since an unchanged scope is
+        // not rescored and a policy change since must not be attributed to it;
+        // else the rows active now.
+        ...scoredPolicyVersions !== null ? { policyVersions: scoredPolicyVersions } : carriedVersions === null ? {} : { policyVersions: carriedVersions }
+      }
     });
     const warning = shallowPassWarning(stages, findings.length);
     console.log(
@@ -25586,6 +25865,7 @@ function explainCommand(argv) {
         }
       }
       console.log(`  category          ${finding.category ?? "not recorded"}`);
+      console.log(`  rule id           ${finding.ruleId ?? "not recorded"}`);
       if (score2?.technicalConfidence !== void 0) {
         console.log(`  technical         ${score2.technicalConfidence.toFixed(2)}`);
       }
@@ -26324,7 +26604,9 @@ function statusCommand() {
     if (dismissalWarning !== null) console.log(dismissalWarning);
     if (last !== null) {
       const origin = lastDetail?.provenance == null ? "" : `; ${describeOrigin(lastDetail.provenance)}`;
-      console.log(`last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.findingId).join(", ") || "none"}${origin}`);
+      console.log(
+        `last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.ruleId === void 0 ? f.findingId : `${f.findingId} (${f.ruleId})`).join(", ") || "none"}${origin}`
+      );
       const recordedScope = describeReviewScope(lastDetail?.scope ?? null);
       if (recordedScope !== null) console.log(`last scope       ${recordedScope}`);
     }
