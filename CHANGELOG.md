@@ -5,6 +5,250 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.0] - 2026-11-08
+
+### Security
+
+- `review --pr` no longer reads `.review-voice/config.yaml` from the checked-out
+  head, which the pull request's author controls. It resolves one configuration
+  for the whole run: `--config <path>`, else an absolute `REVIEW_VOICE_CONFIG`,
+  else the file at the pull request's base commit (copied into the run
+  directory, mode 0600), else the built-in defaults. The base-branch fallback
+  for a clone without the base commit reads `refs/remotes/origin/<branch>`
+  and only when `origin` is the repository under review. `.review-voice/**`
+  and `.github/workflows/**` stay sensitive whatever `sensitive_paths` says.
+  The report records the source and notes a head that changed the config.
+  (#269)
+
+- The GitHub Action's `config` input no longer copies a file over the
+  checkout, which under the `pull_request` event is the pull request's own
+  copy. A repository-relative path is read from the pull request's base commit
+  and passed as `--config`; the base lacking the file runs the defaults with a
+  summary note, a missing base commit stops the step, and any spelling that is
+  not a plain relative path stops it too, so no link or alias can reach the
+  head's copy. A file outside the repository is set through an absolute
+  `REVIEW_VOICE_CONFIG` in the job's `env`. (#278, closes #243)
+
+- A review that could not run on a change that removed a control is
+  `failed_closed`, whatever the change's size. (#292, closes #265)
+
+- A pull-request review reads its conventions (`CLAUDE.md`, `AGENTS.md`, skills
+  and rules) from the base commit, through `conventions --ref`, never from the
+  checkout, which in the GitHub Action is the pull request's own head; with no
+  readable base it reads none and says so. (#294, closes #275)
+
+- Configured commands (static checks, their version commands and the
+  second-pass verifier) run with a minimal environment, `PATH`, `HOME`,
+  `LANG`, `LC_ALL`, `TMPDIR`, `CI` and `TERM`, plus the names a repository
+  lists under `static_evidence.env_passthrough` or
+  `verification.env_passthrough`, so the author's code a command runs no longer
+  receives `GITHUB_TOKEN`, `ANTHROPIC_API_KEY` or `REVIEW_VOICE_*`. It is
+  environment scrubbing, not filesystem isolation. A verifier that
+  authenticates with an API key variable must now list it. (#295, closes
+  #279)
+
+### Added
+
+- `review --config <path>` names the configuration file for a whole run. (#269)
+
+- `verdict.never_approve: true` turns every APPROVE into COMMENT, leaving
+  approval to a person; REQUEST_CHANGES and the needs-rerun hold are unchanged,
+  pending CI never makes such a head wait, and the watcher settles a CI recheck
+  queued before the setting was turned on. (#245)
+
+- Every recorded run can carry its provenance: the origin (`driver`,
+  `interactive`, `watch` or `action`), an independence label derived from it,
+  the plugin and Claude Code versions, the cost mode and the active approved
+  policy rows. `record` takes `--origin`, `--claude-version` and `--mode`,
+  `review` takes `--origin`, `watch` passes its own, and `explain`, `status`
+  and the review report print a `Provenance` line. Each stage's timing gains
+  the token count its agent calls reported. (#246)
+
+- A review that cannot complete now says so with a shape: `failure.mode` is
+  `failed_open` or `failed_closed` by the change's assessed risk (unknown risk
+  fails closed), the report prints the facts it established, one
+  `review_failed` audit event is written and no run is recorded. The watcher
+  records `failed-open` and `failed-closed` heads, caps them like other
+  failures and lists them with `queue --settled`. (#256)
+
+- A `retention` block (`runs_days` 30, `audit_days` 180; `0` or `null`
+  disables) is enforced by each `watch` pass and by `purge --runs
+  [--before <date>]`: run directories by age, with failed runs kept twice as
+  long, and audit events except the posting records, which stay until purged.
+  `purge` refuses an option it does not know, a missing or impossible date,
+  and a runs directory that is a symbolic link; without a date it keeps a run
+  directory changed in the last ten minutes, so a running review survives.
+  `PRIVACY.md` now describes `runs/`, `clones/` and both retentions. (#256)
+
+- Every positive fixture names the added line of its causal change
+  (`expect.line`), and `src/evaluate/fixtures.ts` builds a fixture into a
+  two-commit git repository from its patch, with hunk headers recounted and
+  the pre-image reconstructed from context, so a review can be run against
+  the fixture suite. (#257)
+
+- `review-voice recall --fixtures <dir>` runs every scored fixture through the
+  review pipeline against a local stand-in for GitHub, in a temporary data
+  directory with repository commands switched off, and writes `results.json`
+  with key-bug recall, causal-line hit and clean silence; `evaluate --recall
+  <file>` reports the three as goals. A fixture marked `harness: skip` and a run
+  that failed are counted and kept out of every denominator. (#258)
+
+- `evaluate` reports p95 review seconds, median and p95 review cost over
+  costed runs, the challenge hold rate from `scores[]`, and the posted fixed
+  and dismissed rates over a rolling window (`--since <Nd>`, 30 days by
+  default), each with its basis; `evaluate --json` adds a `stage_seconds` map.
+  `status` warns when more than 20% of at least ten strong outcomes in the
+  window are dismissals. (#259)
+
+- An approved policy now does something. Every recorded finding carries a
+  rule id (`category:lane[:blocker_class]`), proposals compile by rule id and
+  write a structured `suppressions` list, approved policies load as layers
+  when a store is given, and `score` holds a matching verified candidate as
+  `policy-suppressed`, listed in `suppressed[]` with its rule and policy
+  version, held once by the driver, shown by `explain`, and still postable
+  with `--promote`. A suppression can never reach `security`,
+  `authorization`, `authentication`, `data_integrity` or `trust_boundary`,
+  under any spelling, and a run records the policy versions `score` loaded.
+  `evaluate --json` adds `posted_breakdown.by_rule`. (#260)
+
+- A strong dismissal on the pull request is calibration evidence. The
+  deciding login is recorded, the owner's own reject reply counts even on a
+  review posted under the owner's credential, and `calibrate` proposes one
+  suppression per rule scoped to the directory its dismissals share
+  (`path:<dir>/**`), stored as one policy row per scope with its own
+  versions; `policy show` and `policy rollback` take `--scope`. A teammate's
+  dismissals are evidence but can neither activate nor veto a rule, a
+  dismissal counts once however it was recorded, and a rule that cannot be
+  approved is listed under `blocked[]` instead of joining a row. (#261)
+
+- A candidate that restates a static-analysis signal (same file, within two
+  lines, echoing the tool's message and the names it quotes) is held as
+  `restates-tool` instead of posted twice, visibly in `explain`. The evidence
+  report names every configured check that did not run and why: a command
+  the shell cannot find or run is `unavailable`, and under
+  `REVIEW_VOICE_NO_COMMANDS` every command is listed with `skipped`, from
+  the driver, `evidence` and `verify` alike. A check may name a `version`
+  command whose sanitised first line is recorded. Every configured command
+  runs in its own process group, reaped when it returns, with a timeout it
+  cannot trap. (#263)
+
+- With `verdict.scope_block: true`, a posted review ends with a collapsed
+  block, built from the recorded run alone, that names the head, scope and
+  mode, the origin and independence, the stages, the static checks that ran
+  or did not, the symbol files not finished, and counts of the claims not
+  posted by reason, followed by the same facts as JSON in an HTML comment.
+  `record` stores what the checks did through `--evidence` and `--symbols`;
+  `explain` prints it. The block sits outside the idempotency key, carries
+  only counts of held claims, never the human-review note or a carry reason,
+  and names models only with `verdict.scope_block_models: true`. (#264)
+
+- `files.json` carries `structure.removedControls`: the control-like lines
+  a change removed from production source, each a lexical lead of one of five
+  kinds (a guard whose condition names an authorisation, validation or limit
+  word; a throw, raise or return naming a refusal; an access-control decorator;
+  a middleware registration naming a control; one element of an allowlist),
+  anchored on the new-side line it stood before, with a removed line that is
+  added back anywhere in the diff netted out as a move. A production file the
+  change deletes is read from the base and scanned too. The analyst treats an
+  entry as a lead that needs the head searched for a re-established check, and
+  the verifier confirms the control is absent before verifying such a claim.
+  (#266)
+
+- The changed-symbol context tells production hits from test hits using the
+  configured `test_paths`: `references`, `referenceCount` and
+  `downstreamFiles` count production code only, and `testReferences` names
+  the tests that mention a symbol, so the analyst knows which tests to read
+  for the adequacy check. `symbols --head <ref>` records each new
+  declaration's `callers` and `callerCount` at the head, matched as whole
+  identifiers, or `callersInconclusive` when there is no head, the budget
+  ends or the search fails; the driver passes the head when the clone has it,
+  and a declaration with one caller is a lead for one maintainability nit.
+  (#267)
+
+- The configured static checks run in the pull request's head worktree, the
+  tree the analysts read, while the configuration that names them still comes
+  from the base commit: `evidence --cwd <dir>` moves only where the commands
+  spawn, the report records that directory, and `check-candidates` resolves
+  a tool's absolute paths against it. Before this the checks ran in the
+  caller's checkout, usually the base, so a diagnostic the head introduced was
+  never there to hold a candidate. A configured command now runs on the
+  author's files with the reviewer's environment, as ADR 0003 always said it
+  would; owners who list commands should read its amended paragraph. (#268)
+
+- A lane can be eligible because the change shows a risk signal, not only
+  because it is long: `when.signals` names any of `removed-controls`,
+  `risk-markers`, `type-escapes`, `branch-growth` and `size-crossing`, and the
+  lane wakes when a listed signal has an entry within its `paths` or an
+  explicitly set line minimum holds. `files.json` carries
+  `structure.riskMarkers`, the added lines of four lexical kinds (`new-route`,
+  `lock-or-async`, `string-built-query`, `unsafe`). Two specialist analysts
+  ship off by default, `security-analyst` (`sec_`) and `concurrency-analyst`
+  (`cc_`), with their checklists and blocker classes, shown as commented
+  entries in the example configuration; the verifier defines the classes.
+  `plan` picks `thorough` in `auto` mode when a control was removed, and
+  `human_review.structure.removed_controls: true` holds approval when one
+  was. (#270)
+
+- The GitHub Action is ready for the GitHub Marketplace, with a description,
+  an author and branding, and a README section that is what the listing
+  shows. It gains `fail-open` (default `false`): a `failed_open` review passes
+  the job, a `failed_closed` one never does, and a report that does not parse
+  strictly never passes. Reviews it runs are recorded with the origin
+  `action`. The Claude Code default moves to 2.1.319. (#278, closes #271 and
+  #272)
+
+- `check-candidates --files` and `score --files` accept a finding about a file
+  the change deletes, which cites a line of the base copy and posts in the
+  review body since the file has no new side. (#292)
+
+- `verify --cwd <dir>` runs the second-pass command in another directory, with
+  the diff path and both refs resolved where it was invoked; the driver runs
+  the second pass in the pull request's head worktree, so it judges the code
+  under review rather than the caller's checkout. (#294, closes #275)
+
+### Fixed
+
+- A second-pass verifier that answers without reading the finding on its
+  stdin is no longer reported as did-not-run. It could exit before the
+  finding was written, and the failed write (EPIPE) threw its verdict away.
+  (#297)
+
+- After a conflicting replay, a conflicted file's interdiff is the diff between
+  the reviewed head and the current head with the base's own edits taken out,
+  matched by content and position rather than by context overlap, so an
+  already reviewed hunk is never re-emitted and a new hunk is never dropped.
+  An inherited edit that shares a hunk with the author's is removed from that
+  hunk; an edit both sides made to the same lines is kept whole and named in
+  the scope note. (#253, closes #235)
+
+- `record` refuses an empty `--base` or `--head`, and a flag with no value,
+  with exit 2 instead of storing a run with no head. (#248, closes #236)
+
+- `check-intent` keeps a QA quote that starts with a task-list marker
+  (`[ ] ...`), which it used to drop as not occurring in the description.
+  (#249, closes #237)
+
+- The watcher's lock waits out a port that is busy for a moment before
+  calling it foreign, so two watchers racing for a port an unrelated
+  connection briefly holds no longer both give up. (#252, closes #250)
+
+- Every patch the review reads is taken with three context lines explicitly,
+  so hunk boundaries no longer follow the user's `diff.context`. (#254, closes #251)
+
+- A change that only deletes a guarded file is reviewed: the slash command no
+  longer stops at an empty reviewed set when `structure.removedControls` lists
+  entries, the driver passes the manifest to `check-candidates` and `score`,
+  and a verified finding about the deleted control requests changes instead of
+  failing the run at the lanes stage. (#292, closes #265)
+
+### Changed
+
+- A `Recall` workflow runs the fixture recall weekly and on demand with the
+  repository's API key, writing the figures to the job summary. (#280, closes
+  #273)
+- In the driver tests, a repository's configuration is committed at the base
+  commit rather than written into the working tree. (#269)
+
 ## [1.21.1] - 2026-11-03
 
 ### Fixed
