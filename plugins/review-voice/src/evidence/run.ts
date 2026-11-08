@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncOptions } from 'node:child_process';
 import { parseOutput } from './parsers.ts';
 import type { CommandOutcome, EvidenceReport } from './types.ts';
 
@@ -77,13 +77,7 @@ export function collectEvidence(
     // Run through a shell because users write shell commands, but with the
     // command string coming only from their own config file - never from the
     // diff, and never interpolated with repository content.
-    const result = spawn(command.run, {
-      cwd: options.cwd,
-      shell: true,
-      encoding: 'utf8',
-      timeout: timeoutMs,
-      maxBuffer: 16 * 1024 * 1024,
-    });
+    const result = spawnInGroup(spawn, command.run, options.cwd, timeoutMs);
 
     const durationMs = Date.now() - startedAt;
 
@@ -145,7 +139,37 @@ export function collectEvidence(
  * a check that ran into one that did not.
  */
 function readVersion(spawn: typeof spawnSync, run: string, cwd: string, timeout: number): string | undefined {
-  const result = spawn(run, { cwd, shell: true, encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024 });
+  const result = spawnInGroup(spawn, run, cwd, timeout);
   if (result.error !== undefined || result.status !== 0) return undefined;
   return sanitisedVersion(String(result.stdout ?? ''));
+}
+
+/**
+ * Runs a configured command in a process group of its own and, once it has
+ * returned, kills whatever is left of the group. The shell itself has exited
+ * by then (or was killed at the timeout or the output cap), so what the kill
+ * reaches is anything the command started in the background, which would
+ * otherwise outlive the review whether the check passed, failed or timed out.
+ * The kill signal is one the command cannot trap, so a check that ignored a
+ * polite one cannot hold the review either.
+ */
+function spawnInGroup(spawn: typeof spawnSync, run: string, cwd: string, timeout: number): ReturnType<typeof spawnSync> {
+  const options: SpawnSyncOptions & { detached: boolean } = {
+    cwd,
+    shell: true,
+    encoding: 'utf8',
+    timeout,
+    killSignal: 'SIGKILL',
+    maxBuffer: 16 * 1024 * 1024,
+    detached: true,
+  };
+  const result = spawn(run, options);
+  if (typeof result.pid === 'number' && result.pid > 0) {
+    try {
+      process.kill(-result.pid, 'SIGKILL');
+    } catch {
+      // Nothing was left in the group, which is the usual case.
+    }
+  }
+  return result;
 }

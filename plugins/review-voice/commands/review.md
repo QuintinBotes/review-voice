@@ -339,6 +339,16 @@ is a correct and common answer.
 **Check the shape and anchors before going further:** pipe the output into
 `RV check-candidates --diff-file <tmpdir>/diff.patch`.
 
+When step 1c wrote `evidence.json`, add `--evidence <tmpdir>/evidence.json`.
+This flag alone selects the full report with `kept`, `droppedAsRepeat`,
+`droppedAsHeld` and `droppedAsTool`, including empty lists. A candidate at the
+same path within two lines of a signal with overlapping wording goes into
+`droppedAsTool` with `candidateId`, `path`, `line`, `tool`, `signalLine` and
+`message`. Send only `kept` to step 3. Keep each tool drop for step 6 as
+`restates-tool`, with the candidate's own path and line, `source: <tool>`,
+`reason: line <signalLine>: <message>`, `candidateId` and `text` set to its
+claim. An unreadable evidence file exits 2; fix the path before continuing.
+
 If it exits 2, **relaunch the analyst once with the schema restated, and do not
 translate its output by hand.** Two real runs returned `title`,
 `location` and `suggestion` instead of the schema. Rewriting that yourself
@@ -954,8 +964,9 @@ stray directory and another project's notes took the reviewed count from 11 to
   Pass every candidate that was held back rather than reported with
   `--held <file>` (an array of `{path, line, verdict, source, reason, text}`, verdict
   one of `partly`, `refuted`, `unverified`, `repeat`, `below-gate`,
-  `policy-suppressed`, `challenge-partly`, `challenge-refuted`; a path in neither `--files` nor `--candidates` is warned about on stderr and still recorded): the
-  `droppedAsRepeat` from step 2 as `repeat`, any cross-check result of PARTLY or
+  `policy-suppressed`, `restates-tool`, `challenge-partly`, `challenge-refuted`; a path in neither `--files` nor `--candidates` is warned about on stderr and still recorded): the
+  `droppedAsRepeat` from step 2 as `repeat`, each `droppedAsTool` entry as
+  `restates-tool` with the fields from step 2, any cross-check result of PARTLY or
   REFUTED, each `belowGate` entry from step 4 as `below-gate`, each
   `suppressed` entry from step 4 as `policy-suppressed` with a reason naming
   its rule id and policy version, each

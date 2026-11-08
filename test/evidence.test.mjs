@@ -117,17 +117,26 @@ test('warnings are not evidence of a defect', () => {
   }
 });
 
-test('a missing tool is reported as not run, never as passing', () => {
-  const dir = repoWith({ enabled: true, commands: [{ name: 'absent', run: 'definitely-not-a-real-binary-xyz' }] });
+test('AC-4: exits 126 and 127 are unavailable and listed as not run', () => {
+  const dir = repoWith({ enabled: true, commands: [
+    { name: 'not-executable', run: 'exit 126' },
+    { name: 'absent', run: 'definitely-not-a-real-binary-xyz' },
+  ] });
+  const data = mkdtempSync(join(tmpdir(), 'rv-s08-unavailable-data-'));
   try {
-    const report = evidence(dir);
-    const [command] = report.commands;
-    // A non-zero exit from a missing shell command is still a run; what must
-    // never happen is the reviewer implying the check succeeded.
-    assert.notEqual(command.exitCode, 0);
-    assert.equal(command.signals.length, 0);
+    const report = JSON.parse(execFileSync(process.execPath, [bundle, 'evidence'], {
+      cwd: dir, encoding: 'utf8', env: { ...process.env, REVIEW_VOICE_DATA_DIR: data, REVIEW_VOICE_NO_COMMANDS: '0' },
+    }));
+    // These shell exits mean the check never ran, so its real exit code must not imply a completed check.
+    assert.deepEqual(report.commands.map((command) => command.exitCode), [126, 127]);
+    for (const command of report.commands) {
+      assert.equal(command.unavailable, `not found or not executable (exit ${command.exitCode})`);
+      assert.deepEqual(command.signals, []);
+    }
+    assert.deepEqual(report.didNotRun, ['not-executable', 'absent']);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+    rmSync(data, { recursive: true, force: true });
   }
 });
 

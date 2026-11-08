@@ -180,6 +180,8 @@ static_evidence:
   #   - name: typecheck
   #     run: npm run typecheck
   #     timeout_seconds: 120
+  #     # An optional version command records which tool ran without guessing how to ask it.
+  #     version: tsc --version
 
 verification:
   # An optional second pass over each surviving finding, run by a command you

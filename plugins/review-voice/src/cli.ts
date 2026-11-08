@@ -8,7 +8,7 @@
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
 import { readFileSync, readSync, writeFileSync, mkdirSync, statSync, lstatSync, renameSync, rmSync, existsSync, realpathSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { format } from 'node:util';
@@ -158,6 +158,7 @@ import {
   type Verification,
   ownerRaiseCeiling,
   QUESTION_GAP_FLOOR,
+  isSuppressionExempt,
   matchingSuppression,
   POLICY_SUPPRESSED_PREFIX,
 } from './scoring/score.ts';
@@ -2688,6 +2689,20 @@ function verifyCommand(argv: string[]): number {
   try {
     const root = repositoryRoot(process.cwd());
     const config = loadConfig(root);
+    // The same switch the driver and `evidence` honour: with it set, no
+    // configured repository command runs, however the caller got here. The
+    // report has the shape of a disabled verifier and says why.
+    if (process.env['REVIEW_VOICE_NO_COMMANDS'] === '1') {
+      const name = config.verification.name ?? 'external';
+      console.log(
+        JSON.stringify(
+          { enabled: false, verifier: null, verdicts: [], didNotRun: findings.length > 0 && config.verification.enabled ? [name] : [], skipped: 'REVIEW_VOICE_NO_COMMANDS' },
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
     // The command is told what change it is judging. Without this it ran
     // against whatever the working tree happened to be.
     const base = flag(argv, '--base');
@@ -4786,7 +4801,7 @@ function matchHeld(candidate: Candidate, held: CarriedHeld[]): { entry: CarriedH
  * on (no path, no line, no wording) are left out rather than guessed at; a file
  * that cannot be read as an object at all throws, so the caller can say so.
  */
-function readSignals(file: string): EvidenceSignal[] {
+function readSignals(file: string, root: string): EvidenceSignal[] {
   const document = JSON.parse(readFileSync(file, 'utf8')) as unknown;
   if (typeof document !== 'object' || document === null || Array.isArray(document)) throw new Error('not a JSON object');
   const signals = (document as { signals?: unknown }).signals;
@@ -4795,10 +4810,17 @@ function readSignals(file: string): EvidenceSignal[] {
   return signals.flatMap((entry): EvidenceSignal[] => {
     const s = entry as Partial<EvidenceSignal> | null;
     if (typeof s !== 'object' || s === null || typeof s.path !== 'string' || typeof s.line !== 'number' || typeof s.claim !== 'string') return [];
+    // Some tools print absolute paths; a candidate names a repository-relative
+    // one. The two must compare as the same file, through whatever links sit
+    // above them, and a path outside the repository names nothing a candidate
+    // could be about.
+    const spelled = s.path.split('\\').join('/');
+    const path = isAbsolute(spelled) ? relative(realExistingPath(root), realExistingPath(spelled)) : posix.normalize(spelled).replace(/^\.\//, '');
+    if (path === '' || path === '.' || path.startsWith('..') || isAbsolute(path)) return [];
     return [
       {
         kind: typeof s.kind === 'string' ? s.kind : '',
-        path: s.path,
+        path,
         line: s.line,
         claim: s.claim,
         evidence: Array.isArray(s.evidence) ? s.evidence.filter((line): line is string => typeof line === 'string') : [],
@@ -4815,13 +4837,48 @@ function readSignals(file: string): EvidenceSignal[] {
  * evidence, so a model comment repeating it adds noise. A signal with no path
  * says nothing about where, so it matches nothing.
  */
+/**
+ * The wording overlap at which a candidate is read as restating a tool's
+ * signal. Higher than the bar for a repeat of a prior finding: a tool's message
+ * is short and names the symbol and its type, so an unrelated claim about the
+ * same symbol at the same line ("Order total uses wrong units" against
+ * "Property 'total' does not exist on type 'Order'") shares two words in five
+ * with it. An analyst echoing the tool shares most of them.
+ */
+const TOOL_RESTATEMENT_OVERLAP = 0.6;
+
 function matchSignal(candidate: Candidate, signals: EvidenceSignal[]): EvidenceSignal | null {
-  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  // Wording overlap is a heuristic, and a type error can share its words with
+  // a claim about a breach at the same line ("password", "User"). The
+  // categories that name a breach or a trust boundary are never held on a
+  // heuristic (docs/adr/0032); the verifier decides them.
+  if (isSuppressionExempt(candidate.category)) return null;
+  const text = `${candidate.claim} ${candidate.failureMode}`;
+  const mine = significantWords(text);
+  // The anchor checks accept `./src/a.ts`, so the comparison must too.
+  const path = posix.normalize(candidate.path.split('\\').join('/')).replace(/^\.\//, '');
   for (const signal of signals) {
-    if (signal.path !== candidate.path || signal.line === null || Math.abs(signal.line - candidate.line) > 2) continue;
-    if (overlap(mine, significantWords(`${signal.claim} ${signal.evidence.join(' ')}`)) >= DUPLICATE_OVERLAP) return signal;
+    if (signal.path !== path || signal.line === null || Math.abs(signal.line - candidate.line) > 2) continue;
+    const message = `${signal.claim} ${signal.evidence.join(' ')}`;
+    // The words that carry a tool message's identity are the names it quotes
+    // (`'qty'`, `'Item'`, `'en-GB'`), which are often too short for
+    // `significantWords` to keep, so two messages about different members of
+    // one type would otherwise read as the same. Every name the diagnostic
+    // quotes must appear in the candidate's own words, as spelled, before the
+    // wording overlap is consulted. A suggested fix ("Did you mean 'x'?") names
+    // a replacement, not the defect, so its names are not required.
+    const diagnostic = message.replace(/\bDid you mean\b[\s\S]*$/i, '');
+    const named = [...diagnostic.matchAll(/['"`]([^'"`\s]+)['"`]/g)].map((match) => match[1] as string);
+    if (named.some((name) => !mentions(text, name))) continue;
+    if (overlap(mine, significantWords(message)) >= TOOL_RESTATEMENT_OVERLAP) return signal;
   }
   return null;
+}
+
+/** Whether `text` names `name` as a whole word, in the same case. */
+function mentions(text: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^\\w$-])${escaped}(?![\\w$-])`).test(text);
 }
 
 /** The configured owner reviewer, or null outside a configured repository. */
@@ -5066,8 +5123,16 @@ function checkCandidatesCommand(argv: string[]): number {
         console.error('--evidence needs the evidence.json the evidence command wrote.');
         return 2;
       }
+      // Absolute signal paths are made relative to the repository the command
+      // runs in, or to the working directory when it is not one.
+      let signalRoot = process.cwd();
       try {
-        signals = readSignals(evidenceFile);
+        signalRoot = repositoryRoot(process.cwd());
+      } catch {
+        // Not a repository; the working directory stands.
+      }
+      try {
+        signals = readSignals(evidenceFile, signalRoot);
       } catch (error) {
         console.error(`Cannot read ${evidenceFile}: ${error instanceof Error ? error.message : String(error)}`);
         return 2;
