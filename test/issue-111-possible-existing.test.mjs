@@ -106,6 +106,7 @@ test('possible existing declarations use the Jaccard threshold and best-first or
         { path: 'src/z.ts', line: 4, name: 'snakeCase' },
         { path: 'src/a.ts', line: 2, name: 'parseSnakeCase' },
       ],
+      callersInconclusive: true,
     },
   ]);
 });
@@ -164,11 +165,12 @@ test('a failed line search marks only its declaration inconclusive', () => {
   const file = changedFile(report);
   assert.equal(file.inconclusive, true);
   assert.deepEqual(file.declared, [
-    { name: 'toSnakeCase', line: 1, possibleExisting: [], inconclusive: true },
+    { name: 'toSnakeCase', line: 1, possibleExisting: [], inconclusive: true, callersInconclusive: true },
     {
       name: 'toKebabCase',
       line: 2,
       possibleExisting: [{ path: 'src/strings.ts', line: 7, name: 'kebabCase' }],
+      callersInconclusive: true,
     },
   ]);
 });
@@ -238,6 +240,7 @@ test('the bundled symbols command finds a helper at the reviewed ref', () => {
         name: 'toSnakeCase',
         line: 1,
         possibleExisting: [{ path: 'src/strings.ts', line: 1, name: 'snakeCase' }],
+        callersInconclusive: true,
       },
     ]);
   } finally {

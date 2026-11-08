@@ -25,6 +25,7 @@ import { acquireDiff, attributeSource, GitError, linguistGeneratedPaths, type Ch
 import {
   applyStructureHumanReviewCap,
   assessComplexity,
+  DEFAULT_TEST_PATHS,
   deletedProductionPaths,
   humanReviewNote,
   parseComplexity,
@@ -827,6 +828,17 @@ function symbolsCommand(argv: string[]): number {
     return 2;
   }
 
+  const headIndex = argv.indexOf('--head');
+  const head = flag(argv, '--head');
+  if (headIndex !== -1 && head === null) {
+    console.error('--head needs a git ref, for example: --head HEAD');
+    return 2;
+  }
+  if (head !== null && !refExists(head, process.cwd())) {
+    console.error(`--head ${head} does not resolve in this repository. Fetch it before collecting symbol context.`);
+    return 2;
+  }
+
   let maxMs = DEFAULT_MAX_MS;
   if (argv.includes('--max-ms')) {
     const wanted = flag(argv, '--max-ms');
@@ -837,7 +849,10 @@ function symbolsCommand(argv: string[]): number {
     }
   }
 
-  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, maxMs });
+  // The same configured test paths the size signals use, so a repository that
+  // names its tests differently gets the same split here.
+  const testPaths = repositoryConfig()?.humanReview.testPaths ?? DEFAULT_TEST_PATHS;
+  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, maxMs });
   const out = flag(argv, '--out');
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));

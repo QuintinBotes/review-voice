@@ -22,11 +22,16 @@ import {
 /** A bounded list of code paths that literally mention one changed symbol. */
 export interface SymbolReferences {
   symbol: string;
+  /** Production code only: test hits are reported apart, in `testReferences`. */
   references: string[];
   /** The full number of paths behind `references`, before its display cap. */
   referenceCount: number;
   /** Present only when the displayed paths are a strict prefix of the hits. */
   truncated?: true;
+  /** Tests that mention the symbol, to read for the test-adequacy check. Present only when a test path matched. */
+  testReferences?: string[];
+  /** The full number of paths behind `testReferences`, before the same display cap. */
+  testReferenceCount?: number;
 }
 
 /** A name too widespread for its literal matches to describe this change. */
@@ -47,6 +52,16 @@ export interface NewDeclaration {
   /** The search failed or the budget ended, so no match is not a conclusion. */
   inconclusive?: true;
   reason?: 'time-budget';
+  /**
+   * Code paths at the head that literally mention this name, apart from the
+   * declaring file and tests. Lexical hits, not call-graph facts. Absent
+   * whenever `callersInconclusive` is set.
+   */
+  callers?: string[];
+  /** The full number of paths behind `callers`, before its display cap. */
+  callerCount?: number;
+  /** Callers are unknown: no head was given, the budget ended or the search failed. Zero callers is not this. */
+  callersInconclusive?: true;
 }
 
 export interface SymbolContextFile {
@@ -74,7 +89,7 @@ export interface SymbolContextReport {
   /** The tree which answered the literal searches. */
   searchedRef: string;
   files: SymbolContextFile[];
-  /** Untouched code paths that reference at least one reported changed symbol. */
+  /** Untouched production code paths that reference at least one reported changed symbol; tests are not counted. */
   downstreamFiles: number;
   budget: SymbolBudget;
 }
@@ -87,6 +102,12 @@ export interface CollectSymbolContextOptions {
   search?: PathSearcher;
   /** Injectable for the bounded same-line search for possible existing helpers. */
   lineSearch?: LineSearcher;
+  /** The committed head to search for callers of new declarations; null leaves them inconclusive. */
+  head?: string | null;
+  /** Injectable caller search at the head, apart from `search` which answers at `ref`. */
+  headSearch?: PathSearcher;
+  /** Globs that mark a hit as a test; the default is the repository default test paths. */
+  testPaths?: readonly string[];
   /** Time budget for the whole collection, enforced between and within searches. */
   maxMs?: number;
   /** Injectable clock, so a budget needs no real waiting to test. */
@@ -98,8 +119,9 @@ export const DEFAULT_MAX_MS = 60_000;
 const MAX_SYMBOLS_PER_FILE = 12;
 const MAX_REFERENCES_PER_SYMBOL = 8;
 const MAX_DECLARATIONS_PER_FILE = 8;
+const MAX_CALLERS_PER_DECLARATION = 8;
 const MAX_POSSIBLE_EXISTING = 3;
-const TEST_PATHS = DEFAULT_TEST_PATHS.map((glob) => globToRegExp(glob));
+type PathPredicate = (path: string) => boolean;
 
 interface DeclarationCandidate {
   name: string;
@@ -116,8 +138,10 @@ function directoryCount(paths: Iterable<string>): number {
   return new Set([...paths].map((path) => normalisePath(path).split('/').slice(0, -1).join('/'))).size;
 }
 
-function isTestPath(path: string): boolean {
-  return TEST_PATHS.some((pattern) => pattern.test(normalisePath(path)));
+/** Built once per collection from the repository's configured `test_paths`. */
+function testPathMatcher(globs: readonly string[]): PathPredicate {
+  const patterns = globs.map((glob) => globToRegExp(glob));
+  return (path) => patterns.some((pattern) => pattern.test(normalisePath(path)));
 }
 
 function declarationsByPath(declarations: LexicalDeclaration[]): {
@@ -159,6 +183,7 @@ function possibleExisting(
   declaration: DeclarationCandidate,
   hits: ReturnType<LineSearcher>,
   addedNames: Set<string>,
+  isTestPath: PathPredicate,
 ): NewDeclaration['possibleExisting'] {
   const matches: { path: string; line: number; name: string; score: number }[] = [];
   for (const hit of hits) {
@@ -186,6 +211,7 @@ function timeBudgetDeclaration(declaration: DeclarationCandidate): NewDeclaratio
     possibleExisting: [],
     inconclusive: true,
     reason: 'time-budget',
+    callersInconclusive: true,
   };
 }
 
@@ -264,6 +290,9 @@ function reportFile(
   remaining: () => number,
   declarations: readonly DeclarationCandidate[],
   addedNames: Set<string>,
+  head: string | null,
+  headSearch: PathSearcher,
+  isTestPath: PathPredicate,
 ): { file: SymbolContextFile; references: Set<string> } {
   const allSymbols = symbolsFromHunks(diff, path);
   const omitted = Math.max(0, allSymbols.length - MAX_SYMBOLS_PER_FILE);
@@ -311,16 +340,30 @@ function reportFile(
       continue;
     }
 
-    const paths = [...code].filter((candidate) => candidate !== normalisedPath).sort();
+    // Split after the commonness check, which still counts every code path:
+    // a word spread over many directories is no more specific for being
+    // found mostly in tests.
+    const others = [...code].filter((candidate) => candidate !== normalisedPath).sort();
+    const paths = others.filter((candidate) => !isTestPath(candidate));
+    const tests = others.filter((candidate) => isTestPath(candidate));
     for (const candidate of paths) references.add(candidate);
     symbols.push({
       symbol,
       references: paths.slice(0, MAX_REFERENCES_PER_SYMBOL),
       referenceCount: paths.length,
       ...(paths.length > MAX_REFERENCES_PER_SYMBOL ? { truncated: true } : {}),
+      ...(tests.length === 0
+        ? {}
+        : {
+            testReferences: tests.slice(0, MAX_REFERENCES_PER_SYMBOL),
+            testReferenceCount: tests.length,
+          }),
     });
   }
 
+  // Set when the budget ran out during a caller search, after the entry was
+  // already recorded: the file is then unfinished for want of time too.
+  let budgetEnded = false;
   for (let index = 0; index < declarations.length; index += 1) {
     if (remaining() <= 0) {
       declared.push(...declarations.slice(index).map(timeBudgetDeclaration));
@@ -330,11 +373,36 @@ function reportFile(
     const declaration = declarations[index]!;
     try {
       const hits = lineSearch(declaration.searchTokens, cwd, ref, remaining());
-      declared.push({
+      const entry: NewDeclaration = {
         name: declaration.name,
         line: declaration.line,
-        possibleExisting: possibleExisting(declaration, hits, addedNames),
-      });
+        possibleExisting: possibleExisting(declaration, hits, addedNames, isTestPath),
+      };
+      declared.push(entry);
+      if (head === null) {
+        entry.callersInconclusive = true;
+      } else if (remaining() <= 0) {
+        entry.callersInconclusive = true;
+        budgetEnded = true;
+      } else {
+        try {
+          // Searched at the head: a new name has no hits at the base by definition.
+          const callers = [
+            ...new Set(
+              headSearch(declaration.name, cwd, head, remaining())
+                .filter(isCode)
+                .map(normalisePath)
+                .filter((candidate) => candidate !== normalisedPath && !isTestPath(candidate)),
+            ),
+          ].sort();
+          entry.callers = callers.slice(0, MAX_CALLERS_PER_DECLARATION);
+          entry.callerCount = callers.length;
+        } catch {
+          // Unknown, not zero: a failed search must not read as "no callers".
+          incomplete = true;
+          entry.callersInconclusive = true;
+        }
+      }
     } catch {
       // A failed declaration query leaves that one unknown. Continuing gives
       // later, independent declarations a chance to remain useful context.
@@ -344,11 +412,12 @@ function reportFile(
         line: declaration.line,
         possibleExisting: [],
         inconclusive: true,
+        callersInconclusive: true,
       });
     }
   }
 
-  return { file: file(incomplete), references };
+  return budgetEnded ? { file: file(true, 'time-budget'), references } : { file: file(incomplete), references };
 }
 
 /**
@@ -362,6 +431,9 @@ function reportFile(
 export function collectSymbolContext(options: CollectSymbolContextOptions): SymbolContextReport {
   const search = options.search ?? gitGrepPaths;
   const lineSearch = options.lineSearch ?? gitGrepLines;
+  const headSearch = options.headSearch ?? gitGrepPaths;
+  const head = options.head ?? null;
+  const isTestPath = testPathMatcher(options.testPaths ?? DEFAULT_TEST_PATHS);
   const now = options.now ?? Date.now;
   const maxMs = options.maxMs ?? DEFAULT_MAX_MS;
   const started = now();
@@ -384,6 +456,9 @@ export function collectSymbolContext(options: CollectSymbolContextOptions): Symb
         remaining,
         declarations,
         declarationContext.addedNames,
+        head,
+        headSearch,
+        isTestPath,
       );
   });
   const changed = new Set(paths.map(normalisePath));

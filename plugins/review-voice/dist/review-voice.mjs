@@ -6864,16 +6864,17 @@ var DEFAULT_MAX_MS = 6e4;
 var MAX_SYMBOLS_PER_FILE = 12;
 var MAX_REFERENCES_PER_SYMBOL = 8;
 var MAX_DECLARATIONS_PER_FILE = 8;
+var MAX_CALLERS_PER_DECLARATION = 8;
 var MAX_POSSIBLE_EXISTING = 3;
-var TEST_PATHS = DEFAULT_TEST_PATHS.map((glob) => globToRegExp(glob));
 function normalisePath4(path) {
   return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
 }
 function directoryCount2(paths) {
   return new Set([...paths].map((path) => normalisePath4(path).split("/").slice(0, -1).join("/"))).size;
 }
-function isTestPath(path) {
-  return TEST_PATHS.some((pattern) => pattern.test(normalisePath4(path)));
+function testPathMatcher(globs) {
+  const patterns = globs.map((glob) => globToRegExp(glob));
+  return (path) => patterns.some((pattern) => pattern.test(normalisePath4(path)));
 }
 function declarationsByPath(declarations) {
   const addedNames = new Set(declarations.filter((declaration) => declaration.added).map((declaration) => declaration.name));
@@ -6904,7 +6905,7 @@ function declarationsByPath(declarations) {
   }
   return { addedNames, byPath };
 }
-function possibleExisting(declaration, hits, addedNames) {
+function possibleExisting(declaration, hits, addedNames, isTestPath) {
   const matches = [];
   for (const hit of hits) {
     const path = normalisePath4(hit.path);
@@ -6925,7 +6926,8 @@ function timeBudgetDeclaration(declaration) {
     line: declaration.line,
     possibleExisting: [],
     inconclusive: true,
-    reason: "time-budget"
+    reason: "time-budget",
+    callersInconclusive: true
   };
 }
 function unfinishedFile(path, declarations) {
@@ -6971,7 +6973,7 @@ function pathsWithHunks2(diff) {
   keepCurrent();
   return paths;
 }
-function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declarations, addedNames) {
+function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declarations, addedNames, head, headSearch, isTestPath) {
   const allSymbols = symbolsFromHunks(diff, path);
   const omitted = Math.max(0, allSymbols.length - MAX_SYMBOLS_PER_FILE);
   const symbols = [];
@@ -7004,15 +7006,22 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
       symbols.push({ symbol, common: true });
       continue;
     }
-    const paths = [...code].filter((candidate) => candidate !== normalisedPath).sort();
+    const others = [...code].filter((candidate) => candidate !== normalisedPath).sort();
+    const paths = others.filter((candidate) => !isTestPath(candidate));
+    const tests = others.filter((candidate) => isTestPath(candidate));
     for (const candidate of paths) references.add(candidate);
     symbols.push({
       symbol,
       references: paths.slice(0, MAX_REFERENCES_PER_SYMBOL),
       referenceCount: paths.length,
-      ...paths.length > MAX_REFERENCES_PER_SYMBOL ? { truncated: true } : {}
+      ...paths.length > MAX_REFERENCES_PER_SYMBOL ? { truncated: true } : {},
+      ...tests.length === 0 ? {} : {
+        testReferences: tests.slice(0, MAX_REFERENCES_PER_SYMBOL),
+        testReferenceCount: tests.length
+      }
     });
   }
+  let budgetEnded = false;
   for (let index = 0; index < declarations.length; index += 1) {
     if (remaining() <= 0) {
       declared.push(...declarations.slice(index).map(timeBudgetDeclaration));
@@ -7021,26 +7030,50 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
     const declaration = declarations[index];
     try {
       const hits = lineSearch(declaration.searchTokens, cwd, ref, remaining());
-      declared.push({
+      const entry = {
         name: declaration.name,
         line: declaration.line,
-        possibleExisting: possibleExisting(declaration, hits, addedNames)
-      });
+        possibleExisting: possibleExisting(declaration, hits, addedNames, isTestPath)
+      };
+      declared.push(entry);
+      if (head === null) {
+        entry.callersInconclusive = true;
+      } else if (remaining() <= 0) {
+        entry.callersInconclusive = true;
+        budgetEnded = true;
+      } else {
+        try {
+          const callers = [
+            ...new Set(
+              headSearch(declaration.name, cwd, head, remaining()).filter(isCode).map(normalisePath4).filter((candidate) => candidate !== normalisedPath && !isTestPath(candidate))
+            )
+          ].sort();
+          entry.callers = callers.slice(0, MAX_CALLERS_PER_DECLARATION);
+          entry.callerCount = callers.length;
+        } catch {
+          incomplete = true;
+          entry.callersInconclusive = true;
+        }
+      }
     } catch {
       incomplete = true;
       declared.push({
         name: declaration.name,
         line: declaration.line,
         possibleExisting: [],
-        inconclusive: true
+        inconclusive: true,
+        callersInconclusive: true
       });
     }
   }
-  return { file: file2(incomplete), references };
+  return budgetEnded ? { file: file2(true, "time-budget"), references } : { file: file2(incomplete), references };
 }
 function collectSymbolContext(options) {
   const search = options.search ?? gitGrepPaths;
   const lineSearch = options.lineSearch ?? gitGrepLines;
+  const headSearch = options.headSearch ?? gitGrepPaths;
+  const head = options.head ?? null;
+  const isTestPath = testPathMatcher(options.testPaths ?? DEFAULT_TEST_PATHS);
   const now = options.now ?? Date.now;
   const maxMs = options.maxMs ?? DEFAULT_MAX_MS;
   const started = now();
@@ -7058,7 +7091,10 @@ function collectSymbolContext(options) {
       lineSearch,
       remaining,
       declarations,
-      declarationContext.addedNames
+      declarationContext.addedNames,
+      head,
+      headSearch,
+      isTestPath
     );
   });
   const changed = new Set(paths.map(normalisePath4));
@@ -21079,7 +21115,16 @@ async function prep(run) {
     writeFileSync3(at(run, "evidence.json"), (await must(run, ["evidence"])).stdout);
   }
   writeFileSync3(at(run, "conventions.json"), (await must(run, ["conventions", "--files", at(run, "files.json")])).stdout);
-  await must(run, ["symbols", "--diff-file", at(run, "diff.patch"), ...run.base === null ? [] : ["--base", run.base], "--out", at(run, "symbols.json")]);
+  const headReadable = isRecord4(refs["head"]) && refs["head"]["available"] === true;
+  await must(run, [
+    "symbols",
+    "--diff-file",
+    at(run, "diff.patch"),
+    ...run.base === null ? [] : ["--base", run.base],
+    ...headReadable ? ["--head", run.head] : [],
+    "--out",
+    at(run, "symbols.json")
+  ]);
   const followUps = (await must(run, ["follow-ups", ...pr])).stdout;
   writeFileSync3(at(run, "follow-ups.json"), followUps);
   run.followUps = list(parsed(followUps)["followUps"]).length > 0;
@@ -22652,6 +22697,8 @@ var COMMAND_HELP = {
       "  --diff-file <path>     Unified diff whose changed symbols to inspect (required)",
       "  --base <ref>           Search this committed tree, not the working tree",
       "                         (on --pr: refs.mergeBase)",
+      "  --head <ref>           Search this committed tree for callers of new declarations;",
+      "                         without it their callers are inconclusive (on --pr: the head sha)",
       "  --max-ms <n>           Time budget; unfinished files are inconclusive (default 60000)",
       "  --out <path>           Write <path> or <dir>/symbols.json instead of stdout",
       "Reads: nothing on stdin.",
@@ -24035,6 +24082,16 @@ function symbolsCommand(argv) {
     console.error(`--base ${base} does not resolve in this repository. Fetch it before collecting symbol context.`);
     return 2;
   }
+  const headIndex = argv.indexOf("--head");
+  const head = flag(argv, "--head");
+  if (headIndex !== -1 && head === null) {
+    console.error("--head needs a git ref, for example: --head HEAD");
+    return 2;
+  }
+  if (head !== null && !refExists(head, process.cwd())) {
+    console.error(`--head ${head} does not resolve in this repository. Fetch it before collecting symbol context.`);
+    return 2;
+  }
   let maxMs = DEFAULT_MAX_MS;
   if (argv.includes("--max-ms")) {
     const wanted = flag(argv, "--max-ms");
@@ -24044,7 +24101,8 @@ function symbolsCommand(argv) {
       return 2;
     }
   }
-  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, maxMs });
+  const testPaths = repositoryConfig()?.humanReview.testPaths ?? DEFAULT_TEST_PATHS;
+  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, maxMs });
   const out = flag(argv, "--out");
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
