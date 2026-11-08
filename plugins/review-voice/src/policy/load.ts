@@ -76,7 +76,7 @@ export interface LoadedConfig {
   structure: StructureConfig;
   /** `review.mode` and `review.models` (docs/adr/0025). */
   costMode: { mode: RequestedMode; models: ModelOverrides };
-  /** `verdict:` and `review.human_review.cap_approval`; see docs/adr/0028. */
+  /** `verdict:`, `review.human_review.cap_approval` and `review.suggestions`; see docs/adr/0028 and 0033. */
   verdictPolicy: VerdictPolicy;
   /** `review.lanes` after the built-in diff lane, which is always first (docs/adr/0023). */
   lanes: Lane[];
@@ -929,6 +929,11 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
           readCostMode(review, result);
           readThresholds(review, result);
           readLanes(review['lanes'], result);
+          // On the verdict policy, as cap_approval is, so verdict, post and the
+          // watcher read it without plumbing of their own (docs/adr/0033).
+          const suggestions = review['suggestions'];
+          if (typeof suggestions === 'boolean') result.verdictPolicy.suggestions = suggestions;
+          else if (suggestions !== undefined) result.warnings.push('review.suggestions must be true or false; using false.');
           result.layers.push({
             scope: { type: 'repository', key: repositoryRoot },
             source: '.review-voice/config.yaml',

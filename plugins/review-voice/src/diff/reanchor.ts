@@ -107,6 +107,14 @@ export function reanchorCandidates(
   const list = Array.isArray(parsed) ? parsed : isRecord(parsed) && Array.isArray(parsed['candidates']) ? parsed['candidates'] : null;
   if (list === null) return null;
   if (!list.some((c) => isRecord(c) && idOf(c) === candidateId)) return null;
-  const rewritten = list.map((c) => (isRecord(c) && idOf(c) === candidateId ? { ...c, path: to.path, line: to.line } : c));
+  const rewritten = list.map((c) => {
+    if (!(isRecord(c) && idOf(c) === candidateId)) return c;
+    // A suggested patch was checked against the lines it was written for, so
+    // a candidate that moves leaves it behind rather than carrying it to
+    // lines nobody checked it against (docs/adr/0033).
+    const moved = c['path'] !== to.path || c['line'] !== to.line;
+    const { suggested_patch: _patch, ...rest } = c;
+    return { ...(moved ? rest : c), path: to.path, line: to.line };
+  });
   return Array.isArray(parsed) ? rewritten : { ...(parsed as Record<string, unknown>), candidates: rewritten };
 }

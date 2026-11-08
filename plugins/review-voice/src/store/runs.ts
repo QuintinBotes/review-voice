@@ -10,6 +10,7 @@ import { matchCarried, type CarriedFinding } from '../diff/carry.ts';
 import type { TieBreak } from '../verify/reconcile.ts';
 import type { FollowUpState } from './follow-ups.ts';
 import type { VerifiedSimplification } from '../simplification.ts';
+import { suggestedPatchOf, type SuggestedPatch } from '../scoring/score.ts';
 
 export interface StoredFinding {
   findingId: string;
@@ -50,6 +51,17 @@ export interface StoredFinding {
    * cannot be keyed on a category nothing recorded.
    */
   ruleId?: string | undefined;
+  /**
+   * The candidate's replacement for the lines ending at its anchor. Kept as
+   * the candidate gave it even when the finding was moved since, so posting can
+   * withhold the block and say why (docs/adr/0033).
+   */
+  suggestedPatch?: SuggestedPatch | undefined;
+  /**
+   * Where the patch was written and by which candidate: a block posts only on
+   * that file, from that candidate's own verified fix (docs/adr/0033).
+   */
+  suggestedPatchSource?: { path: string; candidateId: string | null } | undefined;
 }
 
 export interface PartlyAddressedFinding {
@@ -218,6 +230,10 @@ export interface CandidateHint {
   blockerClass?: unknown;
   /** As `score` hands it on; read with `partlyAddressedOf`. */
   possibleRepeatOf?: unknown;
+  /** As `score` hands it on; read with `suggestedPatchOf`. */
+  suggested_patch?: unknown;
+  /** The candidate this hint was scored as, so a patch is tied to its own verified fix. */
+  candidate_id?: unknown;
 }
 
 export const ORIGINS = ['driver', 'interactive', 'watch', 'action'] as const;
@@ -616,6 +632,12 @@ function storedCandidate(hint: CandidateHint): CandidateHint {
   return { ...rest, lane: laneOf(hint), ...(blocker === undefined ? {} : { blocker_class: blocker }) };
 }
 
+/** Where a patch was checked: the path `score` put inside it, else the candidate's own. */
+function patchPath(hint: CandidateHint): string {
+  const inside = (hint.suggested_patch as { path?: unknown } | null | undefined)?.path;
+  return typeof inside === 'string' ? inside : hint.path;
+}
+
 function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
   const taken = new Set<CandidateHint>();
   return splitFindings(output)
@@ -626,6 +648,8 @@ function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
       const { hint, how } = attribute(anchor, hints, taken);
       if (hint !== undefined) taken.add(hint);
       const partly = partlyAddressedOf(hint?.possibleRepeatOf);
+      // A malformed one is not stored: nothing could render it.
+      const patch = suggestedPatchOf(hint?.suggested_patch);
       const blockerClass = blockerClassOf(hint);
       const ruleId = ruleIdFor(hint?.category, laneOf(hint), blockerClass);
       return {
@@ -646,6 +670,9 @@ function assignIds(output: string, hints: CandidateHint[]): StoredFinding[] {
         ...(how === 'exact' || how === 'none' ? {} : { attributedBy: how }),
         ...(how === 'none' && hints.length > 0 ? { unattributed: true } : {}),
         ...(partly === undefined ? {} : { partlyAddressed: partly }),
+        ...(patch === null || hint === undefined
+          ? {}
+          : { suggestedPatch: patch, suggestedPatchSource: { path: patchPath(hint), candidateId: typeof hint.candidate_id === 'string' ? hint.candidate_id : null } }),
       };
     });
 }

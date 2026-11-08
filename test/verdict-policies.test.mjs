@@ -751,6 +751,7 @@ test('config: each setting is read', () => {
       '  scope_block: true',
       '  scope_block_models: true',
       'review:',
+      '  suggestions: true',
       '  human_review:',
       '    cap_approval: false',
       '',
@@ -766,6 +767,7 @@ test('config: each setting is read', () => {
     neverApprove: false,
     scopeBlock: true,
     scopeBlockModels: true,
+    suggestions: true,
   });
   assert.deepEqual(config.warnings, []);
 });
@@ -782,13 +784,14 @@ test('config: an invalid value warns and keeps that setting\'s default', () => {
       '  scope_block: sometimes',
       '  scope_block_models: 3',
       'review:',
+      '  suggestions: maybe',
       '  human_review:',
       '    cap_approval: no-thanks',
       '',
     ].join('\n'),
   );
   assert.deepEqual(config.verdictPolicy, { ...DEFAULT_VERDICT_POLICY, ciRed: 'annotate' });
-  assert.equal(config.warnings.length, 7);
+  assert.equal(config.warnings.length, 8);
   assert.ok(config.warnings.some((w) => w.startsWith('verdict.ci_pending must be one of wait, proceed')));
   assert.ok(config.warnings.some((w) => w.startsWith('review.human_review.cap_approval must be true or false')));
   assert.deepEqual(configFrom('verdict: annotate\n').warnings, ['verdict must be a mapping; using the defaults.']);

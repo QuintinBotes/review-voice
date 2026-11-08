@@ -13,6 +13,8 @@ export interface HunkRange {
  */
 export interface FileHunks {
   added: Set<number>;
+  /** Each added line's text without the leading `+`, so a suggested patch's `original` can be checked. */
+  addedText: Map<number, string>;
   context: Set<number>;
   deletionSites: Set<number>;
   ranges: HunkRange[];
@@ -72,6 +74,7 @@ export function normalisePath(path: string): string {
 function blankFileHunks(): FileHunks {
   return {
     added: new Set<number>(),
+    addedText: new Map<number, string>(),
     context: new Set<number>(),
     deletionSites: new Set<number>(),
     ranges: [],
@@ -236,6 +239,7 @@ export function parseHunks(diff: string): Map<string, FileHunks> {
       if (line.startsWith('+')) {
         settleDeletion(active, active.nextRightLine);
         active.file.added.add(active.nextRightLine);
+        active.file.addedText.set(active.nextRightLine, line.slice(1));
         active.file.patchLines.set(patchLine, active.nextRightLine);
         active.lastRightLine = active.nextRightLine;
         active.nextRightLine += 1;
@@ -338,6 +342,35 @@ export function classifyAnchor(hunks: Map<string, FileHunks>, path: string, line
     patchLine,
     beyondHunks: file.ranges.length > 0 && file.ranges.every((range) => line > range.end),
   };
+}
+
+/**
+ * Why a suggested patch's range is not the lines it claims to replace, or null
+ * when every line from `start_line` to `end_line` is an added line of `path`
+ * and their text, joined by newlines, is `original`. A suggestion replaces only
+ * code this change wrote, and a transcription slip is caught here, before the
+ * verifier judges a replacement for lines that do not exist.
+ */
+export function suggestedPatchMismatch(
+  hunks: Map<string, FileHunks>,
+  path: string,
+  patch: { start_line: number; end_line: number; original: string },
+): string | null {
+  const literal = path.replace(/^\.\/+/, '');
+  const file = hunks.get(literal) ?? hunks.get(normalisePath(path));
+  if (file === undefined) return `suggested_patch is on ${path}, which has no added lines in the diff`;
+  const text: string[] = [];
+  for (let line = patch.start_line; line <= patch.end_line; line += 1) {
+    const added = file.addedText.get(line);
+    if (added === undefined) {
+      return `suggested_patch covers ${path}:${line}, which is not an added line; a suggestion replaces only lines this change added`;
+    }
+    text.push(added);
+  }
+  if (text.join('\n') !== patch.original) {
+    return `suggested_patch original is not the text the diff adds at ${path}:${patch.start_line}-${patch.end_line}; copy those lines exactly`;
+  }
+  return null;
 }
 
 /**

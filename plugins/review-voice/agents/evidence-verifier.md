@@ -464,6 +464,17 @@ handles the named failure but breaks a served path is refuted. The fix verdict
 does not feed `verified` or `technical_confidence`; it only decides what repair
 text may render.
 
+When the candidate carries a `suggested_patch`, the fix verdict judges that
+exact replacement, not the prose: it may post as a block the author commits in
+one click. Read the lines from `start_line` to `end_line` with `replacement` in
+place of `original`. Return `verified` only when that replacement, applied to
+those lines and to nothing else, removes the failure and breaks no served path,
+and when it compiles in context as far as reading shows: every name it uses
+exists there, the brackets and the indentation fit the lines around it, and no
+other edit (an import, a declaration, a caller) is needed for it to work. A
+replacement that needs anything beyond those lines is `partial` at best, even
+when the prose fix is sound.
+
 For every candidate, return these fields in addition to the defect fields:
 
 | Field | Type | Meaning |

@@ -867,6 +867,10 @@ carries what the editor writes from - `claim`, `failureMode`, `evidence`, the
 derived `severity` - and a `fix` object. It returns the rendered review and
 nothing else.
 
+Leave out `suggested_patch` when an entry carries one: it is code, the editor
+never writes code, and the CLI renders the suggestion block itself at post
+time.
+
 `fix` holds only what may be stated: `render` is `fix` or `direction` with the
 text to state, or `none` with no text. An entry marked `impactDisputed` had its
 wider impact disputed in step 3c with no tie-break upholding it; the editor

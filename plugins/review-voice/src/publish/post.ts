@@ -6,7 +6,15 @@ import { AuthError } from '../github/auth.ts';
 import { GitHubError, NotAllowlisted, type GitHubClient } from '../github/client.ts';
 import { REVIEW_EVENTS, WriteViolation, type ReviewWriter } from '../github/writer.ts';
 import { readThread } from '../diff/thread.ts';
-import { alreadySaidOnThread, citedLocations, normaliseCandidate, type Candidate, type RawCandidate } from '../scoring/score.ts';
+import {
+  alreadySaidOnThread,
+  citedLocations,
+  normaliseCandidate,
+  suggestedPatchOf,
+  type Candidate,
+  type RawCandidate,
+  type SuggestedPatch,
+} from '../scoring/score.ts';
 import { readCi, type CiRules, type CiState, type GateCheck } from './ci.ts';
 import { evaluatePostingGate, type GateResult } from './gate.ts';
 import {
@@ -30,8 +38,10 @@ import {
   type ReviewFinding,
   type ReviewPayload,
   type VerdictPolicy,
+  type WithheldSuggestion,
   wouldHaveSummary,
 } from './verdict.ts';
+import { fileAtRef, linesAt, unixLines } from './suggestion.ts';
 
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
@@ -106,6 +116,8 @@ export interface VerdictOutput {
   /** Repository, pull request, head and a hash of the full review; null when nothing would be sent. */
   key: string | null;
   preview: string | null;
+  /** With `review.suggestions`, the suggestion blocks left out of their comments, and why (docs/adr/0033). */
+  withheldSuggestions: WithheldSuggestion[];
 }
 
 function normalise(text: string): string {
@@ -148,6 +160,7 @@ function refusal(head: string, reason: string): { exitCode: number; output: Verd
       alreadyInline: 0,
       key: null,
       preview: null,
+      withheldSuggestions: [],
     },
   };
 }
@@ -346,6 +359,79 @@ function sentInline(db: Database, repository: string, pullNumber: number, head: 
 }
 
 /**
+ * The suggestion blocks that may post, by inline finding, and those withheld
+ * (docs/adr/0033). A block posts only where the backing score verified the
+ * fix, the finding still sits on the line the patch ends at, and the head's
+ * lines still read the patch's `original`. Anything else keeps the prose and
+ * says why. The patch comes from the recorded finding, never from candidates.
+ */
+async function checkedSuggestions(
+  options: VerdictOptions,
+  run: RunDetail,
+  planned: PlannedFindings,
+  head: string,
+): Promise<{ suggestions: Map<ReviewFinding, SuggestedPatch>; withheld: WithheldSuggestion[] }> {
+  const suggestions = new Map<ReviewFinding, SuggestedPatch>();
+  const withheld: WithheldSuggestion[] = [];
+  const files = new Map<string, Promise<string | null>>();
+  for (const finding of planned.inline) {
+    const stored = run.findings.find((candidate) => candidate.findingId === finding.findingId);
+    if (stored?.suggestedPatch === undefined) continue;
+    const path = finding.path as string;
+    const withhold = (reason: string): void => {
+      withheld.push({ findingId: finding.findingId, path, line: finding.line as number, reason });
+    };
+    const patch = suggestedPatchOf(stored.suggestedPatch);
+    if (patch === null) {
+      withhold('the recorded patch is malformed');
+      continue;
+    }
+    if (unixLines(patch.replacement) === unixLines(patch.original)) {
+      withhold('the replacement does not change the lines');
+      continue;
+    }
+    const backing = planned.fixVerified.get(finding);
+    if (backing === undefined) {
+      withhold('the fix was not verified');
+      continue;
+    }
+    // The challenge step and `reanchor` move a confirmed finding to a corrected
+    // line, or another file; the patch range does not move with it.
+    const source = stored.suggestedPatchSource;
+    if (source === undefined || source.path !== path) {
+      withhold(`anchor moved: the patch was written for ${source?.path ?? 'another location'}`);
+      continue;
+    }
+    // Two candidates at one location: the block must come from the candidate
+    // whose own fix the verifier verified, in this run.
+    if (backing.runId !== run.reviewRunId || source.candidateId === null || backing.candidateId !== source.candidateId) {
+      withhold('the verified fix belongs to another candidate');
+      continue;
+    }
+    if (patch.end_line !== stored.line) {
+      withhold(`anchor moved: the finding is on line ${stored.line} and the patch ends on line ${patch.end_line}`);
+      continue;
+    }
+    let file = files.get(path);
+    if (file === undefined) {
+      file = fileAtRef(options.client, options.repository, path, head);
+      files.set(path, file);
+    }
+    const text = await file;
+    if (text === null) {
+      withhold('the file could not be read at the head');
+      continue;
+    }
+    if (linesAt(text, patch.start_line, patch.end_line - patch.start_line + 1) !== unixLines(patch.original)) {
+      withhold('the lines at the head are not the patch original');
+      continue;
+    }
+    suggestions.set(finding, patch);
+  }
+  return { suggestions, withheld };
+}
+
+/**
  * Computes the verdict, read-only (`RV verdict`, and the first half of `RV post`).
  *
  * Head and CI are read live, never taken from an earlier preview.
@@ -409,12 +495,16 @@ export async function computeVerdict(
   let preview: string | null = null;
   let key: string | null = null;
   let alreadyInline = 0;
+  let withheldSuggestions: WithheldSuggestion[] = [];
   if (decision.action === 'post' && decision.event !== null) {
+    const checked = policy.suggestions ? await checkedSuggestions(options, run, planned, head) : null;
+    withheldSuggestions = checked?.withheld ?? [];
     const full = buildPayload({
       head,
       event: decision.event,
       planned,
       bodyFindings: run.bodyFindings,
+      ...(checked === null ? {} : { suggestions: checked.suggestions }),
       // One plain summary line whichever cap applies: CI first, then a held
       // finding or an uncovered carry, then complexity. None of them names
       // human review or the carry in the posted body.
@@ -446,6 +536,7 @@ export async function computeVerdict(
       payload,
       held: planned.held,
       alreadyInline,
+      withheldSuggestions,
     });
   }
 
@@ -474,6 +565,7 @@ export async function computeVerdict(
       alreadyInline,
       key,
       preview,
+      withheldSuggestions,
     },
   };
 }
@@ -534,7 +626,10 @@ function recordedCandidates(db: Database, runId: string): Candidate[] {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((entry, index) => {
     try {
-      return [normaliseCandidate(entry as RawCandidate, index)];
+      // Only the claim is compared here. A re-anchored candidate's patch no
+      // longer ends at its line, which must not cost it the comparison.
+      const { suggested_patch: _patch, ...rest } = entry as RawCandidate;
+      return [normaliseCandidate(rest, index)];
     } catch {
       return [];
     }
@@ -831,6 +926,7 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
           payload,
           held: verdict.held,
           alreadyInline: verdict.alreadyInline,
+          withheldSuggestions: verdict.withheldSuggestions,
         }),
       };
     }

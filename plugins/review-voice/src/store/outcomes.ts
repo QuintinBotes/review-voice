@@ -1,6 +1,7 @@
 import type { Database } from './db.ts';
 import { GitHubClient, REVIEW_THREADS_QUERY } from '../github/client.ts';
-import { overlap, significantWords } from '../scoring/score.ts';
+import { overlap, significantWords, suggestedPatchOf } from '../scoring/score.ts';
+import { fileAtRef, suggestionApplied } from '../publish/suggestion.ts';
 import { ruleIdFor } from '../policy/rules.ts';
 import { runDetail, type StoredFinding } from './runs.ts';
 
@@ -475,6 +476,34 @@ async function decide(
   const changed = (await linesChanged(options, context, run, comment, finding)) ?? (state?.outdated === true ? true : null);
   const resolved = state === null ? null : state.resolved;
   const agreed = latest?.stance === 'acknowledge';
+
+  // The suggested replacement now stands where it was offered: the author
+  // took it, which is as strong as a reply. An empty one is a deletion, and no
+  // remaining text can show that, so it is left to the rules below, as is a
+  // file that cannot be read (docs/adr/0033).
+  // Only a block that was actually posted can have been applied: the comment
+  // as GitHub holds it is the evidence, read with both heads around the range.
+  const patch = suggestedPatchOf(finding.suggestedPatch);
+  const offered = (comment.body ?? '').includes('\n```suggestion\n');
+  // Not gated on `changed`: an insertion at the range's edge is not a change to
+  // its lines, and the reading of both heads is the proof on its own.
+  if (
+    offered &&
+    patch !== null &&
+    patch.replacement !== '' &&
+    patch.replacement !== patch.original &&
+    context.currentHead !== null &&
+    run.headRef !== null &&
+    !sameHead(run.headRef, context.currentHead)
+  ) {
+    const [reviewed, current] = await Promise.all([
+      fileAtRef(options.client, run.repository, finding.path, run.headRef),
+      fileAtRef(options.client, run.repository, finding.path, context.currentHead),
+    ]);
+    if (reviewed !== null && current !== null && suggestionApplied(reviewed, current, patch)) {
+      return { outcome: 'fixed', strength: 'strong', evidence: 'suggestion applied', decidedBy: null };
+    }
+  }
 
   if (changed === true && (resolved === true || agreed)) {
     return {
