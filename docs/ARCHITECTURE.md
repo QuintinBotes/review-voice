@@ -106,10 +106,17 @@ Only failing candidates go back to their lane to re-anchor. A failed intent
 call carries on without intent, an unsettled dispute stays unsettled, and a
 challenger that fails holds its finding.
 
-Before the first agent, the driver adds a detached worktree of the head under
-the run directory as the agents' working directory, with hooks, LFS filters,
-fsmonitor and submodule recursion turned off so the checkout runs no code
-from the pull request. It writes the base version of each changed file to
+Before the static checks when a configured command is about to run, else
+before the first agent, the driver adds a detached worktree of the head under the run directory
+as the agents' working directory, with hooks, LFS filters, fsmonitor and
+submodule recursion turned off so the checkout runs no code from the pull
+request. The `evidence` command runs the configured checks in that worktree
+(`--cwd`), so the signals describe the tree the analysts read rather than the
+caller's checkout, while the configuration that names the commands still comes
+from the base commit as the trusted-configuration section describes. A
+configured command therefore runs on the pull request's files with the
+reviewer's environment, which is what ADR 0003 accepts when an owner lists a
+command and what `watch.run_repository_commands` keeps opt-in. It writes the base version of each changed file to
 `base/` and its recent history to `history/<URI-encoded path>.txt`, since
 agents get no shell; a write that would clash with another path is skipped
 with a note. The worktree is removed on every exit. While a review runs, the

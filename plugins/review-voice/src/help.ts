@@ -200,8 +200,11 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   evidence: {
     summary: 'Run the configured static checks and emit structured signals',
     body: lines(
-      'review-voice evidence',
-      '  Run the configured static checks and emit structured signals. Takes no flags.',
+      'review-voice evidence [--cwd <dir>]',
+      '  Run the configured static checks and emit structured signals.',
+      '  --cwd <dir>            Run the commands in <dir>; the driver passes the pull request\'s head worktree.',
+      '                         The configuration still comes from this checkout or REVIEW_VOICE_CONFIG, never',
+      '                         from <dir>, and the commands run with this process\'s environment.',
       '',
       'Reads: nothing on stdin.',
       'Writes: JSON on stdout. Runs the commands configured under static_evidence.commands.',
@@ -209,7 +212,8 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  sanitised and capped at 80 code points. It uses the check\'s cwd, timeout and output cap;',
       '  a failed version command records no version. REVIEW_VOICE_NO_COMMANDS=1 skips all commands,',
       '  listing their names in didNotRun with skipped: REVIEW_VOICE_NO_COMMANDS.',
-      'Exit codes: 0 ok (a failing check is evidence, not an error), 2 not in a repository.',
+      '  The report records the directory the commands ran in as cwd.',
+      'Exit codes: 0 ok (a failing check is evidence, not an error), 2 not in a repository or --cwd is not a directory.',
     ),
   },
   verify: {

@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -621,6 +621,7 @@ test('the second pass writes its first reconcile to disk, and the challenge stag
   const { report } = await review(t, repo, fakes(t, fullRun()), fakeGitHub(repo));
   assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
   assert.ok(existsSync(join(repo.dir, 'verify-ran')), 'the second pass ran');
+  assert.equal(existsSync(join(repo.dir, 'evidence-ran')), false, 'the static check ran in the head worktree, which the run removed (issue 262)');
   const reconciled = JSON.parse(readFileSync(join(report.runDir, 'reconcile.json'), 'utf8'));
   assert.ok(Array.isArray(reconciled.candidates) && Array.isArray(reconciled.disputes));
   const stages = JSON.parse(readFileSync(join(report.runDir, 'stages.json'), 'utf8'));
@@ -1290,4 +1291,93 @@ test('S03 AC-4: reportText lists ran, failed and did-not-run checks, and omits C
   assert.match(withChecks, /^Needs a human reviewer: A person should review this\.$/m);
   assert.doesNotMatch(reportText({ ...base, failure: failure(null) }), /^Checks:/m);
   assert.match(reportText({ ...base, failure: failure({ ran: [], failed: [], didNotRun: [] }) }), /^Checks: none recorded$/m);
+});
+
+// ---------------------------------------------------------------- static evidence runs on the head (issue 262)
+
+/** A base whose configured check prints a committed log, so what it reports says which tree it ran in. */
+const HEAD_CHECK_CONFIG = {
+  [CONFIG_FILE]: ['static_evidence:', '  enabled: true', '  commands:', "    - { name: typecheck, run: 'awk 1 typecheck.log' }", ''].join('\n'),
+  'typecheck.log': 'src/app.ts(1,1): error TS1000: base tree\n',
+};
+const HEAD_LOG = 'src/app.ts(3,1): error TS2362: head multiplies by qty\n';
+
+test('issue 262: the configured checks run on the head, whatever the caller has checked out', async (t) => {
+  for (const onHead of [false, true]) {
+    const repo = repository(t, { 'src/app.ts': APP_HEAD, 'typecheck.log': HEAD_LOG }, HEAD_CHECK_CONFIG);
+    if (onHead) checkoutHead(repo);
+    const { report } = await review(t, repo, fakes(t, NO_FINDING_RUN), fakeGitHub(repo));
+    assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+    const evidence = JSON.parse(readFileSync(join(report.runDir, 'evidence.json'), 'utf8'));
+    assert.deepEqual(evidence.signals.map((signal) => [signal.path, signal.line]), [['src/app.ts', 3]], `with the ${onHead ? 'head' : 'base'} checked out`);
+    assert.match(evidence.signals[0].claim, /head multiplies by qty/);
+    assert.equal(evidence.cwd, join(report.runDir, 'head'));
+    assert.ok(readFileSync(join(report.runDir, 'commands.log'), 'utf8').includes(`$ review-voice evidence --cwd ${join(report.runDir, 'head')}`));
+    assertWorktreeGone(repo, report);
+  }
+});
+
+test('issue 262: a head that ships its own configuration and a clone hook decides what the checks read, never what runs', async (t) => {
+  const planted = ['static_evidence:', '  enabled: true', '  commands:', "    - { name: planted, run: 'touch planted-ran' }", ''].join('\n');
+  const repo = repository(t, { 'src/app.ts': APP_HEAD, 'typecheck.log': HEAD_LOG, [CONFIG_FILE]: planted }, HEAD_CHECK_CONFIG);
+  const hooks = mkdtempSync(join(tmpdir(), 'rv-driver-hooks-'));
+  t.after(() => rmSync(hooks, { recursive: true, force: true }));
+  const hookMarker = join(hooks, 'ran');
+  writeFileSync(join(hooks, 'post-checkout'), `#!/bin/sh\ntouch '${hookMarker}'\n`, { mode: 0o755 });
+  execFileSync('git', ['config', 'core.hooksPath', hooks], { cwd: repo.dir });
+  const { report } = await review(t, repo, fakes(t, NO_FINDING_RUN), fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  const evidence = JSON.parse(readFileSync(join(report.runDir, 'evidence.json'), 'utf8'));
+  assert.deepEqual(evidence.commands.map((command) => command.name), ['typecheck'], 'the base names the commands');
+  assert.deepEqual(evidence.signals.map((signal) => signal.line), [3], 'and they read the head');
+  assert.equal(existsSync(hookMarker), false, 'the checkout ran no hook');
+  assert.equal(existsSync(join(repo.dir, 'planted-ran')), false);
+  assert.equal(report.configSource.kind, 'base');
+  assert.ok(report.notes.includes(changedNote(repo.base)), JSON.stringify(report.notes));
+});
+
+test('issue 262: a worktree left by a killed run is replaced, not a stop for the next run into the same directory', async (t) => {
+  // Killed after the checkout, the worktree is registered and populated; killed
+  // during it, git's initialisation lock is still on it.
+  for (const lock of [[], ['--lock']]) {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD, 'typecheck.log': HEAD_LOG }, HEAD_CHECK_CONFIG);
+  const github = fakeGitHub(repo);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-stale-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const first = await reviewIn(repo, fakes(t, NO_FINDING_RUN), github, data);
+  assert.equal(first.exitCode, 0, `${first.error} ${JSON.stringify(first.notes)}`);
+  const stale = join(first.runDir, 'head');
+  execFileSync('git', ['worktree', 'add', '--detach', ...lock, stale, repo.head], { cwd: repo.dir });
+  writeFileSync(join(stale, 'left-behind'), '');
+  // A retry into the same directory, as a watcher or a person re-running with --out does.
+  const second = await reviewIn(repo, fakes(t, NO_FINDING_RUN), github, data, { out: first.runDir });
+  assert.equal(second.exitCode, 0, `${second.error} ${JSON.stringify(second.notes)}`);
+  assert.equal(second.runDir, first.runDir);
+  const evidence = JSON.parse(readFileSync(join(second.runDir, 'evidence.json'), 'utf8'));
+  assert.deepEqual(evidence.signals.map((signal) => signal.line), [3], `the checks still ran on the head (${lock.length ? 'locked' : 'unlocked'} leftover)`);
+  assertWorktreeGone(repo, second);
+  }
+});
+
+test('issue 262: a link planted where the head worktree goes is unlinked, and what it points at is left alone', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD, 'typecheck.log': HEAD_LOG }, HEAD_CHECK_CONFIG);
+  const github = fakeGitHub(repo);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-link-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const first = await reviewIn(repo, fakes(t, NO_FINDING_RUN), github, data);
+  assert.equal(first.exitCode, 0, `${first.error} ${JSON.stringify(first.notes)}`);
+  // Another worktree of the same clone, locked, holding uncommitted work.
+  const other = join(mkdtempSync(join(tmpdir(), 'rv-driver-other-')), 'wt');
+  // The clone's own cleanup takes the registration with it; only the directory is left to remove.
+  t.after(() => rmSync(dirname(other), { recursive: true, force: true }));
+  execFileSync('git', ['worktree', 'add', '--detach', '--lock', other, repo.head], { cwd: repo.dir });
+  writeFileSync(join(other, 'uncommitted'), 'keep');
+  symlinkSync(other, join(first.runDir, 'head'));
+  const second = await reviewIn(repo, fakes(t, NO_FINDING_RUN), github, data, { out: first.runDir });
+  assert.equal(second.exitCode, 0, `${second.error} ${JSON.stringify(second.notes)}`);
+  assert.equal(readFileSync(join(other, 'uncommitted'), 'utf8'), 'keep', 'the other worktree kept its files');
+  const list = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: repo.dir, encoding: 'utf8' });
+  assert.ok(list.includes(`worktree ${realpathSync(other)}`) || list.includes(`worktree ${other}`), 'and its registration');
+  assert.match(list, /^locked/m, 'and its lock');
+  assertWorktreeGone(repo, second);
 });

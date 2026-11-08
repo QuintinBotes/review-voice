@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync16, readSync, writeFileSync as writeFileSync5, mkdirSync as mkdirSync8, statSync as statSync4, lstatSync as lstatSync3, renameSync as renameSync2, rmSync as rmSync5, existsSync as existsSync12, realpathSync as realpathSync2 } from "node:fs";
+import { readFileSync as readFileSync16, readSync, writeFileSync as writeFileSync5, mkdirSync as mkdirSync8, statSync as statSync4, lstatSync as lstatSync4, renameSync as renameSync2, rmSync as rmSync5, existsSync as existsSync12, realpathSync as realpathSync2 } from "node:fs";
 import { basename as basename4, dirname as dirname13, isAbsolute as isAbsolute4, join as join19, posix as posix3, relative as relative3, resolve as resolve5, sep as sep4 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 import { execFileSync as execFileSync15 } from "node:child_process";
@@ -20721,7 +20721,7 @@ import { join as join18, resolve as resolve4 } from "node:path";
 
 // plugins/review-voice/src/review/driver.ts
 import { execFileSync as execFileSync12 } from "node:child_process";
-import { appendFileSync, copyFileSync, existsSync as existsSync9, mkdirSync as mkdirSync5, readFileSync as readFileSync13, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync as existsSync9, lstatSync as lstatSync2, mkdirSync as mkdirSync5, readFileSync as readFileSync13, rmSync as rmSync2, unlinkSync as unlinkSync4, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname11, isAbsolute as isAbsolute3, join as join16, resolve as resolve2, sep as sep2 } from "node:path";
 
 // plugins/review-voice/src/review/prompts.ts
@@ -21125,7 +21125,11 @@ async function prep(run) {
       skipped: "REVIEW_VOICE_NO_COMMANDS"
     });
   } else {
-    writeFileSync3(at(run, "evidence.json"), (await must(run, ["evidence"])).stdout);
+    const context2 = readJson(at(run, "context.json"));
+    const staticEvidence = isRecord4(context2) && isRecord4(context2["staticEvidence"]) ? context2["staticEvidence"] : {};
+    const willRun = staticEvidence["enabled"] === true && list(staticEvidence["commands"]).length > 0;
+    const where = willRun ? ["--cwd", prepareWorkspace(run)] : [];
+    writeFileSync3(at(run, "evidence.json"), (await must(run, ["evidence", ...where])).stdout);
   }
   writeFileSync3(at(run, "conventions.json"), (await must(run, ["conventions", "--files", at(run, "files.json")])).stdout);
   const headReadable = isRecord4(refs["head"]) && refs["head"]["available"] === true;
@@ -21204,9 +21208,24 @@ function prepareWorkspace(run) {
   }
   const git6 = (args) => execFileSync12("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
   const headDir = at(run, "head");
-  git6(["worktree", "add", "--detach", headDir, run.head]);
-  run.headDir = headDir;
-  run.cleanup.push(() => removeWorktree(run, headDir));
+  if (run.headDir === null) {
+    const stale = lstatSync2(headDir, { throwIfNoEntry: false });
+    if (stale?.isSymbolicLink()) {
+      unlinkSync4(headDir);
+    } else {
+      for (const args of [["worktree", "unlock", headDir], ["worktree", "remove", "--force", "--force", headDir]]) {
+        try {
+          git6(args);
+        } catch {
+        }
+      }
+      if (stale !== void 0) rmSync2(headDir, { recursive: true, force: true });
+    }
+    git6(["worktree", "prune"]);
+    git6(["worktree", "add", "--detach", headDir, run.head]);
+    run.headDir = headDir;
+    run.cleanup.push(() => removeWorktree(run, headDir));
+  }
   const manifest = readJson(at(run, "files.json"));
   const changed = list(isRecord4(manifest) ? manifest["files"] : []).filter((f) => f["reviewed"] === true && typeof f["path"] === "string");
   const baseRoot = at(run, "base");
@@ -21241,6 +21260,7 @@ function prepareWorkspace(run) {
       run.notes.push(`No base copy for ${path}: it conflicts with another path (${error.code ?? "error"}).`);
     }
   }
+  return headDir;
 }
 function removeWorktree(run, headDir) {
   try {
@@ -21944,7 +21964,7 @@ function reportText(report) {
 import { execFileSync as execFileSync13 } from "node:child_process";
 import {
   existsSync as existsSync10,
-  lstatSync as lstatSync2,
+  lstatSync as lstatSync3,
   mkdirSync as mkdirSync6,
   mkdtempSync,
   readdirSync as readdirSync4,
@@ -22153,7 +22173,7 @@ function contextFiles(dir, label2, prefix = "") {
   const out = [];
   for (const entry of readdirSync4(join17(dir, prefix), { withFileTypes: true })) {
     const path = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
-    const stat = lstatSync2(join17(dir, path));
+    const stat = lstatSync3(join17(dir, path));
     if (stat.isSymbolicLink()) throw new Error(`${label2}: context/${path} is a symbolic link`);
     if (stat.isDirectory()) out.push(...contextFiles(dir, label2, path));
     else if (stat.isFile()) out.push(confinedPath(path, label2));
@@ -22243,7 +22263,7 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
   const configPath = join17(fixtureDir, "config.yaml");
   let config2 = DEFAULT_CONFIG;
   if (existsSync10(configPath)) {
-    if (!lstatSync2(configPath).isFile()) throw new Error(`${label2}: config.yaml is not a regular file`);
+    if (!lstatSync3(configPath).isFile()) throw new Error(`${label2}: config.yaml is not a regular file`);
     config2 = readFileSync14(configPath, "utf8");
   }
   writeInside(targetDir, ".review-voice/config.yaml", config2, label2);
@@ -22862,8 +22882,11 @@ var COMMAND_HELP = {
   evidence: {
     summary: "Run the configured static checks and emit structured signals",
     body: lines(
-      "review-voice evidence",
-      "  Run the configured static checks and emit structured signals. Takes no flags.",
+      "review-voice evidence [--cwd <dir>]",
+      "  Run the configured static checks and emit structured signals.",
+      "  --cwd <dir>            Run the commands in <dir>; the driver passes the pull request's head worktree.",
+      "                         The configuration still comes from this checkout or REVIEW_VOICE_CONFIG, never",
+      "                         from <dir>, and the commands run with this process's environment.",
       "",
       "Reads: nothing on stdin.",
       "Writes: JSON on stdout. Runs the commands configured under static_evidence.commands.",
@@ -22871,7 +22894,8 @@ var COMMAND_HELP = {
       "  sanitised and capped at 80 code points. It uses the check's cwd, timeout and output cap;",
       "  a failed version command records no version. REVIEW_VOICE_NO_COMMANDS=1 skips all commands,",
       "  listing their names in didNotRun with skipped: REVIEW_VOICE_NO_COMMANDS.",
-      "Exit codes: 0 ok (a failing check is evidence, not an error), 2 not in a repository."
+      "  The report records the directory the commands ran in as cwd.",
+      "Exit codes: 0 ok (a failing check is evidence, not an error), 2 not in a repository or --cwd is not a directory."
     )
   },
   verify: {
@@ -25639,17 +25663,28 @@ function reconcileCommand(argv) {
     throw error;
   }
 }
-function evidenceCommand() {
+function evidenceCommand(argv) {
+  const cwdFlag = flag(argv, "--cwd");
+  if (argv.includes("--cwd") && cwdFlag === null) {
+    console.error("--cwd needs a directory.");
+    return 2;
+  }
+  if (cwdFlag !== null && statSync4(resolve5(cwdFlag), { throwIfNoEntry: false })?.isDirectory() !== true) {
+    console.error(`--cwd ${cwdFlag} is not a directory.`);
+    return 2;
+  }
   try {
     const root = repositoryRoot(process.cwd());
     const config2 = loadConfig(root);
-    const report = process.env["REVIEW_VOICE_NO_COMMANDS"] === "1" ? notRunReport(
+    const cwd = cwdFlag === null ? root : resolve5(cwdFlag);
+    const collected = process.env["REVIEW_VOICE_NO_COMMANDS"] === "1" ? notRunReport(
       config2.staticEvidence.commands.map((command) => command.name),
       "REVIEW_VOICE_NO_COMMANDS"
     ) : collectEvidence(config2.staticEvidence.commands, {
-      cwd: root,
+      cwd,
       enabled: config2.staticEvidence.enabled
     });
+    const report = collected.enabled ? { ...collected, cwd } : collected;
     console.log(JSON.stringify(report, null, 2));
     return 0;
   } catch (error) {
@@ -27145,11 +27180,13 @@ function readSignals(file2, root) {
   const signals = document.signals;
   if (signals === void 0) return [];
   if (!Array.isArray(signals)) throw new Error("signals is not a list");
+  const ranIn = document.cwd;
+  const signalRoot = typeof ranIn === "string" && ranIn !== "" ? ranIn : root;
   return signals.flatMap((entry) => {
     const s = entry;
     if (typeof s !== "object" || s === null || typeof s.path !== "string" || typeof s.line !== "number" || typeof s.claim !== "string") return [];
     const spelled = s.path.split("\\").join("/");
-    const path = isAbsolute4(spelled) ? relative3(realExistingPath(root), realExistingPath(spelled)) : posix3.normalize(spelled).replace(/^\.\//, "");
+    const path = isAbsolute4(spelled) ? relative3(realExistingPath(signalRoot), realExistingPath(spelled)) : posix3.normalize(spelled).replace(/^\.\//, "");
     if (path === "" || path === "." || path.startsWith("..") || isAbsolute4(path)) return [];
     return [
       {
@@ -27757,7 +27794,7 @@ ${topLevelHelp()}`);
     case "conventions":
       return conventionsCommand(argv.slice(1));
     case "evidence":
-      return evidenceCommand();
+      return evidenceCommand(argv.slice(1));
     case "reconcile":
       return reconcileCommand(argv.slice(1));
     case "verify":
@@ -27944,7 +27981,7 @@ async function recallCommand(argv) {
   const out = resolve5(flag(argv, "--out") ?? "results.json");
   let linked = false;
   try {
-    linked = lstatSync3(out).isSymbolicLink();
+    linked = lstatSync4(out).isSymbolicLink();
   } catch {
   }
   if (linked) {

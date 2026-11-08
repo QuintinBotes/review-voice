@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { claudeBin } from '../agents/claude-cli.ts';
 import { ownSignals, readAgentTools, runAgent, stopAll, type AgentResult } from '../agents/runner.ts';
@@ -454,7 +454,19 @@ async function prep(run: Run): Promise<void> {
       skipped: 'REVIEW_VOICE_NO_COMMANDS',
     });
   } else {
-    writeFileSync(at(run, 'evidence.json'), (await must(run, ['evidence'])).stdout);
+    // The checks read the tree under review, as the analysts do; the caller's
+    // checkout is usually the base (issue 262). The commands themselves come
+    // from REVIEW_VOICE_CONFIG, which resolveConfig set before any stage ran,
+    // so the head decides what the checks read, never what runs. The worktree
+    // is built here only when a command will run, so a head missing from the
+    // clone stops here; otherwise it waits for the first agent as before. A
+    // run that later carries an earlier one pays for the worktree too, since
+    // the checks must read the head whether or not the review is new.
+    const context = readJson(at(run, 'context.json'));
+    const staticEvidence = isRecord(context) && isRecord(context['staticEvidence']) ? context['staticEvidence'] : {};
+    const willRun = staticEvidence['enabled'] === true && list(staticEvidence['commands']).length > 0;
+    const where = willRun ? ['--cwd', prepareWorkspace(run)] : [];
+    writeFileSync(at(run, 'evidence.json'), (await must(run, ['evidence', ...where])).stdout);
   }
   writeFileSync(at(run, 'conventions.json'), (await must(run, ['conventions', '--files', at(run, 'files.json')])).stdout);
   // New declarations are searched for callers at the head, which exists only
@@ -534,8 +546,14 @@ export function historyName(path: string): string {
   return `${encodeURIComponent(path)}.txt`;
 }
 
-/** The agents' working tree and the history they cannot ask git for. */
-function prepareWorkspace(run: Run): void {
+/**
+ * The agents' working tree and the history they cannot ask git for. Called by
+ * prep when a configured command is about to run, so the checks read the head,
+ * else before the first agent; a full re-run after a failed carry calls it
+ * again, and the worktree is then kept while the base copies and history are
+ * rebuilt. Returns the worktree's path.
+ */
+function prepareWorkspace(run: Run): string {
   const refs = isRecord(run.summary['refs']) ? run.summary['refs'] : {};
   if (!(isRecord(refs['head']) && refs['head']['available'] === true)) {
     throw new Stop(2, `The head ${run.head} is not in this clone. Fetch it and run again.`);
@@ -543,9 +561,35 @@ function prepareWorkspace(run: Run): void {
   const git = (args: string[]): Buffer =>
     execFileSync('git', [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
   const headDir = at(run, 'head');
-  git(['worktree', 'add', '--detach', headDir, run.head]);
-  run.headDir = headDir;
-  run.cleanup.push(() => removeWorktree(run, headDir));
+  if (run.headDir === null) {
+    // A run killed outright (SIGKILL after a watcher's grace period, say, while
+    // a configured command held the process) ran no cleanup, so a re-run into
+    // the same directory finds its worktree still there. It is this run's to
+    // replace: the directory is the run's own, and the stale checkout is of a
+    // head this run reads afresh. Git locks a worktree while it initialises
+    // it, so a run killed during the checkout leaves a locked one, which
+    // remove refuses and prune keeps; it is unlocked first. Either command
+    // fails when there is nothing registered, which is the usual case. A
+    // symbolic link at the path would make git act on wherever it points, so
+    // a link is unlinked, never followed.
+    const stale = lstatSync(headDir, { throwIfNoEntry: false });
+    if (stale?.isSymbolicLink()) {
+      unlinkSync(headDir);
+    } else {
+      for (const args of [['worktree', 'unlock', headDir], ['worktree', 'remove', '--force', '--force', headDir]]) {
+        try {
+          git(args);
+        } catch {
+          // Nothing registered at the path, or not locked: nothing to undo.
+        }
+      }
+      if (stale !== undefined) rmSync(headDir, { recursive: true, force: true });
+    }
+    git(['worktree', 'prune']);
+    git(['worktree', 'add', '--detach', headDir, run.head]);
+    run.headDir = headDir;
+    run.cleanup.push(() => removeWorktree(run, headDir));
+  }
 
   const manifest = readJson(at(run, 'files.json'));
   const changed = list(isRecord(manifest) ? manifest['files'] : []).filter((f) => f['reviewed'] === true && typeof f['path'] === 'string');
@@ -583,6 +627,7 @@ function prepareWorkspace(run: Run): void {
       run.notes.push(`No base copy for ${path}: it conflicts with another path (${(error as NodeJS.ErrnoException).code ?? 'error'}).`);
     }
   }
+  return headDir;
 }
 
 function removeWorktree(run: Run, headDir: string): void {

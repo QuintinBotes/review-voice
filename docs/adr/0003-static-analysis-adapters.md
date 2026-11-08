@@ -72,3 +72,17 @@ A candidate that restates a tool's signal at the same path within two lines
 with overlapping wording is held as `restates-tool`. The held record keeps the
 candidate's anchor and claim, names the tool, and gives the signal's line and
 message as its reason, so `explain` can show why it was held.
+
+Configured commands run in the pull request's head worktree (`evidence
+--cwd`) while the configuration is read as ADR 0031 decides, from the base
+commit. The head controls every file a command reads and the text it prints,
+so a command that delegates to the tree, such as a project's own typecheck
+script, runs the author's code with the reviewer's environment and
+credentials; that is the exposure an owner accepts by listing a command, and
+`REVIEW_VOICE_NO_COMMANDS` is the switch that keeps a watcher from it. The
+head cannot change which commands run, their timeouts, their working
+directory, their environment or the recorded tool name. A fresh worktree
+holds no untracked installs, so a check that needs `node_modules` or a
+virtual environment must install first or find its tool on PATH. The report
+records the directory the commands ran in as `cwd`, and `check-candidates`
+resolves a tool's absolute paths against it.
