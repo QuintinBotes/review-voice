@@ -85,7 +85,7 @@ function context(run: RunFiles, extra: string[] = []): string[] {
     file(run, 'symbols.json', 'changed-symbol context; an inconclusive file is not a report of zero consumers'),
     file(run, 'thread.json', 'what is already said on the pull request; a point made there is not a new one'),
     ...(run.intent ? [file(run, 'intent.json', 'what the description states, checked against it')] : []),
-    `- ${join(run.dir, 'base')}/: each changed file as it was at the merge base (an added file has none)`,
+    `- ${join(run.dir, 'base')}/: each changed or deleted file as it was at the merge base (an added file has none)`,
     `- ${join(run.dir, 'history')}/: the last commits that touched each changed file, one file per path named <URI-encoded path>.txt`,
   ];
 }

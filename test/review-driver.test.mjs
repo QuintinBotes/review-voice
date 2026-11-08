@@ -1381,3 +1381,85 @@ test('issue 262: a link planted where the head worktree goes is unlinked, and wh
   assert.match(list, /^locked/m, 'and its lock');
   assertWorktreeGone(repo, second);
 });
+
+// ---------------------------------------------------------------- issue 265
+
+const GUARD = ['export function requireAdmin(user) {', '  if (!user.isAdmin) throw new Error(\'Forbidden\');', '}', ''].join('\n');
+
+/** A pull request that only deletes a production file holding a guard: no file is left to review. */
+function deletionOnly(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-driver-delete-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Test');
+  git('config', 'commit.gpgsign', 'false');
+  mkdirSync(join(dir, 'src'));
+  writeFileSync(join(dir, 'src/app.ts'), APP_BASE);
+  writeFileSync(join(dir, 'src/guard.ts'), GUARD);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'base');
+  const base = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', '-b', 'feature');
+  git('rm', '-q', 'src/guard.ts');
+  git('commit', '-q', '-m', 'head');
+  const head = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', 'main');
+  const patch = git('diff', base, head, '--', 'src/guard.ts');
+  return { dir, base, head, files: [{ filename: 'src/guard.ts', status: 'removed', additions: 0, deletions: 3, changes: 3, patch: patch.slice(patch.indexOf('@@')) }] };
+}
+
+test('issue 265: a change that only deletes a guarded file still reaches the analyst with the removed control as a lead', async (t) => {
+  const repo = deletionOnly(t);
+  const fakeDir = fakes(t, NO_FINDING_RUN);
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  const manifest = JSON.parse(readFileSync(join(report.runDir, 'files.json'), 'utf8'));
+  assert.deepEqual(manifest.structure.removedControls.map((entry) => [entry.path, entry.kind, entry.deletedFile]), [['src/guard.ts', 'guard', true], ['src/guard.ts', 'refusal', true]]);
+  assert.equal(report.plan.mode, 'thorough', 'a removed control picks thorough even with nothing left to review');
+  const analyst = callsOf(fakeDir, 'diff-analyst');
+  assert.equal(analyst.length >= 1, true, 'the analyst ran');
+  assert.match(analyst[0].prompt, /files\.json/, 'and was handed the manifest whose structure block holds the lead');
+});
+
+/** One verified finding about the deleted guard, through every stage, at the tier scoring derives for it. */
+function deletedGuardRun() {
+  const candidate = {
+    candidate_id: 'cand_001', path: 'src/guard.ts', line: 2, category: 'authorization', severity: 'important',
+    claim: 'Deleting requireAdmin removes the only admin check, so any user can reach the admin actions.',
+    failure_mode: 'Non-admin users call admin-only actions.',
+    evidence: ['src/guard.ts:2 at the base threw Forbidden for non-admin users; no other check exists at the head.'],
+    technical_confidence: 0.9,
+  };
+  return {
+    'diff-analyst': [{ candidates: [candidate] }],
+    'evidence-verifier': [{ verifications: [{ candidate_id: 'cand_001', verified: true, evidence_quality: 'high', technical_confidence: 0.95, reason: 'No other admin check at the head.' }] }],
+    challenger: [{ verdicts: [{ candidate_id: 'cand_001', verdict: 'confirmed', line_ok: true, decisive_evidence: ['src/guard.ts:2'], reason: '' }] }],
+    // Authorization at local reach derives blocking, whatever the analyst asked for.
+    'concise-editor': [{ text: '[blocking] `src/guard.ts:2` - Deleting requireAdmin removes the only admin check. Any user reaches admin actions. Restore the check.' }],
+  };
+}
+
+test('issue 265: a verified finding about a deleted guard requests changes, in the review body since the file has no new side', async (t) => {
+  const repo = deletionOnly(t);
+  const { report } = await review(t, repo, fakes(t, deletedGuardRun()), fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.verdict.event, 'REQUEST_CHANGES');
+  assert.deepEqual(report.findings.map((finding) => [finding.path, finding.line, finding.severity]), [['src/guard.ts', 2, 'blocking']]);
+  const verdict = JSON.parse(readFileSync(join(report.runDir, 'verdict.json'), 'utf8'));
+  assert.deepEqual(verdict.payload.comments, [], 'no inline comment GitHub would refuse');
+  assert.match(verdict.payload.body, /\[blocking\] `src\/guard\.ts:2` - Deleting requireAdmin removes the only admin check\./);
+  const scored = JSON.parse(readFileSync(join(report.runDir, 'scores.json'), 'utf8')).scores;
+  assert.deepEqual(scored.map((score) => [score.eligible, score.deletedFile]), [[true, true]]);
+  assert.equal(readFileSync(join(report.runDir, 'base/src/guard.ts'), 'utf8'), GUARD, 'the agents, which have no shell, get the base copy of the deleted file');
+});
+
+test('issue 265: a review that cannot run on a change that removed a control fails closed', async (t) => {
+  const repo = deletionOnly(t);
+  const { report } = await review(t, repo, fakes(t, { 'diff-analyst': [new Error('model refused'), new Error('model refused again')] }), fakeGitHub(repo));
+  assert.equal(report.exitCode, 7);
+  assert.equal(report.failure.mode, 'failed_closed', 'a deleted check must never pass the job on a fail-open setting');
+  assert.equal(report.failure.risk, 'high');
+  assert.deepEqual(report.failure.reasons, ['the change removed 2 controls']);
+});

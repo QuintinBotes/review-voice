@@ -99,6 +99,13 @@ check is re-established. When the search finds the check elsewhere, there is
 no finding. When it finds nothing and the consequence cannot be traced, file
 a `question`.
 
+An entry with `deletedFile: true` comes from a file the change deletes, so the
+diff has none of its lines. Read its base copy (the `base/` directory the
+prompt names, or `git show <base>:<path>` where you have git), find the
+entry's `text` there, and anchor a candidate at that base line in the deleted
+file's path. It has no new-side line, so it posts in the review body
+rather than inline. A change that only deletes files still gets this review.
+
 Use this structural lens only for a concrete consequence. For the patterns
 below use `maintainability`, except independent serialized awaits, which are
 `performance`; state the consequence with "and so", prefer one structural

@@ -71,13 +71,18 @@ export function extractAnchors(
     if (finding.severity === null || finding.path === null || finding.line === null) continue;
     index += 1;
     const findingId = `rv_${String(index).padStart(2, '0')}`;
-    const stale = scoresAtLocation(scores, finding.path, finding.line).some(isStaleConsumer);
+    const here = scoresAtLocation(scores, finding.path, finding.line);
+    const stale = here.some(isStaleConsumer);
+    // A finding about a file the change deletes has no new side, with or without a diff to check (#265).
+    const deletedFile = here.some((score) => score.deletedFile === true);
     const check = hunks === null ? null : classifyAnchor(hunks, finding.path, finding.line);
     const reason = stale
       ? 'stale-consumer'
-      : check !== null && (check.kind === 'outside-hunk' || check.kind === 'file-not-in-diff')
-        ? check.kind
-        : null;
+      : deletedFile
+        ? 'file-not-in-diff'
+        : check !== null && (check.kind === 'outside-hunk' || check.kind === 'file-not-in-diff')
+          ? check.kind
+          : null;
     if (reason !== null) {
       unanchored.push({ findingId, severity: finding.severity, path: finding.path, line: finding.line, body: finding.raw, reason });
       continue;

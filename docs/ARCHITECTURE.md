@@ -364,6 +364,20 @@ question. A repository may opt in with
 growth. This holds an otherwise APPROVE at COMMENT with a local
 `humanReviewNote`, adds no finding or posted text, and defaults to false.
 
+A change that only deletes a guarded file has no reviewed file, so its patch
+is empty, yet its `deletedFile` entries are leads like any other (#265). The
+review still runs: the slash command stops early only when nothing was reviewed
+and `removedControls` is empty, and the driver never stops early.
+Given `--base` and `--head`, `check-candidates` and `score` accept a candidate on
+a file the change deletes, asked of git rather than of any manifest: the file
+is at the base and absent at the head, it is a path a review reads, and the
+cited line is one its base copy has. The score carries `deletedFile: true`,
+the posting plan and `anchors` put such a finding in the review body, since
+the file has no new side for an inline comment, and the driver writes the
+deleted file's base copy into `base/` for its agents, which have no shell. A nonempty `removedControls` also makes the change high risk for the
+failure mode, so a review that could not run on it is `failed_closed` and a
+`fail-open` setting cannot pass it.
+
 The fifth is `riskMarkers`, always present as an array of `{ path, line, kind }`
 in the manifest and summary. It lists added production-source lines in four
 kinds, `new-route`, `lock-or-async`, `string-built-query` and `unsafe`.

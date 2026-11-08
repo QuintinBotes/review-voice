@@ -65,7 +65,7 @@ interface ActiveHunk {
   remainingRight: number;
 }
 
-function normalisePath(path: string): string {
+export function normalisePath(path: string): string {
   return path.replaceAll('\\', '/').replace(/^\.\/+/, '');
 }
 
