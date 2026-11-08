@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync22, writeFileSync as writeFileSync9, mkdirSync as mkdirSync11, statSync as statSync8, renameSync as renameSync3, rmSync as rmSync8 } from "node:fs";
-import { dirname as dirname15, isAbsolute as isAbsolute5, join as join24, posix as posix3, relative as relative4, resolve as resolve8 } from "node:path";
+import { readFileSync as readFileSync28, writeFileSync as writeFileSync11, mkdirSync as mkdirSync11 } from "node:fs";
+import { dirname as dirname16, isAbsolute as isAbsolute5, join as join24, posix as posix3, relative as relative4 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { execFileSync as execFileSync19 } from "node:child_process";
+import { execFileSync as execFileSync20 } from "node:child_process";
 import { format } from "node:util";
 
 // plugins/review-voice/src/warnings.ts
@@ -94,415 +94,6 @@ function runDoctor() {
     checkBinary("gh", ["--version"]),
     checkClaude()
   ];
-}
-
-// plugins/review-voice/src/agents/claude-cli.ts
-import { spawn } from "node:child_process";
-
-// plugins/review-voice/src/agents/tools.ts
-import { existsSync, readFileSync as readFileSync2 } from "node:fs";
-import { dirname as dirname2, join as join2 } from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-var RUNNER_TOOLS = ["Read", "Grep", "Glob"];
-var HOST_ONLY_TOOLS = ["Bash(git:*)"];
-var AgentSpecError = class extends Error {
-};
-function pluginRoot() {
-  const here = dirname2(fileURLToPath2(import.meta.url));
-  for (let dir = here; ; dir = dirname2(dir)) {
-    if (existsSync(join2(dir, ".claude-plugin", "plugin.json"))) return dir;
-    if (dirname2(dir) === dir) return join2(here, "..");
-  }
-}
-function agentsDir() {
-  return join2(pluginRoot(), "agents");
-}
-function schemasDir() {
-  return join2(pluginRoot(), "schemas");
-}
-function checkAgentName(name) {
-  if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new AgentSpecError(`Unknown agent: ${name} (not an agent name)`);
-}
-function agentFile(name) {
-  checkAgentName(name);
-  const path = join2(agentsDir(), `${name}.md`);
-  if (!existsSync(path)) throw new AgentSpecError(`Unknown agent: ${name} (no ${name}.md in ${agentsDir()})`);
-  return path;
-}
-function readAgentTools(name) {
-  return parseAgentTools(readFileSync2(agentFile(name), "utf8"), `${name}.md`);
-}
-function parseAgentTools(text4, label2) {
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text4)?.[1];
-  if (frontmatter === void 0) throw new AgentSpecError(`${label2} has no frontmatter`);
-  const line3 = /^tools:[ \t]*(.*)$((?:\r?\n[ \t]*-[^\n]*)*)/m.exec(frontmatter);
-  if (line3 === null) throw new AgentSpecError(`${label2} declares no tools: line`);
-  const inline = line3[1].trim();
-  const items = inline === "" ? line3[2].split("\n").map((item) => item.replace(/^[ \t]*-/, "")) : inline.replace(/^\[(.*)\]$/, "$1").split(",");
-  return items.map((tool) => tool.trim().replace(/^["']|["']$/g, "")).filter((tool) => tool !== "");
-}
-function runnerTools(declared) {
-  const tools = [];
-  for (const tool of declared) {
-    if (HOST_ONLY_TOOLS.includes(tool)) continue;
-    if (!RUNNER_TOOLS.includes(tool)) {
-      throw new AgentSpecError(`Tool ${tool} is not allowed: the runner grants only ${RUNNER_TOOLS.join(", ")}`);
-    }
-    if (!tools.includes(tool)) tools.push(tool);
-  }
-  return tools;
-}
-
-// plugins/review-voice/src/agents/types.ts
-var DEFAULT_AGENT_TIMEOUT_MS = 6e5;
-var MAX_AGENT_TIMEOUT_MS = 36e5;
-var DEFAULT_AGENT_PARALLELISM = 4;
-
-// plugins/review-voice/src/agents/claude-cli.ts
-var ERROR_CHARS = 500;
-var MAX_STDOUT_BYTES = 32 * 1024 * 1024;
-var MAX_STDERR_BYTES = 64 * 1024;
-function childEnv(env) {
-  return Object.fromEntries(
-    Object.entries(env).filter(
-      ([key2]) => key2 !== "GITHUB_TOKEN" && key2 !== "GH_TOKEN" && !key2.startsWith("REVIEW_VOICE_")
-    )
-  );
-}
-function agentTimeoutMs(spec) {
-  return Math.min(spec.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS);
-}
-var live = /* @__PURE__ */ new Set();
-var signalsOwned = false;
-function stopAll() {
-  for (const child of live) killTree(child);
-}
-function ownSignals(owned) {
-  signalsOwned = owned;
-}
-function onSignal(signal2) {
-  stopAll();
-  process.exit(signal2 === "SIGINT" ? 130 : 143);
-}
-function track(child) {
-  if (live.size === 0 && !signalsOwned) {
-    process.on("SIGINT", onSignal);
-    process.on("SIGTERM", onSignal);
-  }
-  live.add(child);
-}
-function untrack(child) {
-  if (!live.delete(child) || live.size > 0) return;
-  process.off("SIGINT", onSignal);
-  process.off("SIGTERM", onSignal);
-}
-var WATCHDOG = `
-const { spawn } = require('node:child_process');
-const parent = process.ppid;
-const [bin, ...args] = process.argv.slice(1);
-const child = spawn(bin, args, { stdio: 'inherit' });
-const poll = setInterval(() => {
-  if (process.ppid === parent) return;
-  try { process.kill(-process.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); process.exit(1); }
-}, 2000);
-child.on('error', (error) => {
-  process.stderr.write('could not start ' + bin + ': ' + error.message);
-  process.exit(127);
-});
-child.on('exit', (code, signal) => {
-  clearInterval(poll);
-  if (signal) process.kill(process.pid, signal);
-  process.exitCode = code ?? 1;
-});
-`;
-function claudeBin(env) {
-  return env["REVIEW_VOICE_CLAUDE_BIN"] || "claude";
-}
-var isCount = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
-function tokensOf(usage) {
-  if (usage === null || typeof usage !== "object") return void 0;
-  const { input_tokens: input, output_tokens: output } = usage;
-  return isCount(input) && isCount(output) ? input + output : void 0;
-}
-function claudeArguments(spec, addDirs, env) {
-  const tools = spec.tools.join(",");
-  return [
-    "-p",
-    "--restricted",
-    // Ignores CLAUDE.md, skills, commands and agents planted in the checkout.
-    "--safe-mode",
-    "--strict-mcp-config",
-    "--no-session-persistence",
-    // Bare mode skips OAuth and keychain reads, which only an API key replaces.
-    ...env["ANTHROPIC_API_KEY"] ? ["--bare"] : [],
-    "--system-prompt-file",
-    agentFile(spec.name),
-    "--model",
-    spec.model,
-    // An empty value is how claude disables every built-in tool; leaving the
-    // flag out would grant the default set.
-    "--tools",
-    tools,
-    ...tools === "" ? [] : ["--allowedTools", tools],
-    ...addDirs.flatMap((dir) => ["--add-dir", dir]),
-    "--json-schema",
-    JSON.stringify(spec.schema),
-    "--output-format",
-    "json"
-  ];
-}
-function firstChars(text4) {
-  return text4.trim().slice(0, ERROR_CHARS);
-}
-function interpretEnvelope(stdout, stderr, code) {
-  let envelope = null;
-  try {
-    const parsed2 = JSON.parse(stdout);
-    if (parsed2 !== null && typeof parsed2 === "object" && !Array.isArray(parsed2)) envelope = parsed2;
-  } catch {
-    envelope = null;
-  }
-  const costUsd = typeof envelope?.total_cost_usd === "number" ? envelope.total_cost_usd : null;
-  const tokens = tokensOf(envelope?.usage);
-  const counted = tokens === void 0 ? {} : { tokens };
-  if (code === 0 && envelope !== null && envelope.is_error === false && envelope.structured_output !== void 0) {
-    return { ok: true, output: envelope.structured_output, costUsd, ...counted };
-  }
-  const result = typeof envelope?.result === "string" ? envelope.result : "";
-  const detail = firstChars(result) || firstChars(stderr) || firstChars(stdout) || (code === 0 ? "claude returned no structured output" : `claude exited with code ${code}`);
-  return { ok: false, output: null, costUsd, ...counted, error: detail };
-}
-function runClaudeCli(spec, prompt, cwd, addDirs, env) {
-  const args = claudeArguments(spec, addDirs, env);
-  const timeoutMs = agentTimeoutMs(spec);
-  const bin = claudeBin(env);
-  return new Promise((resolve9) => {
-    const child = spawn(process.execPath, ["-e", WATCHDOG, "--", bin, ...args], {
-      cwd,
-      env: childEnv(env),
-      detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    track(child);
-    const stdout = [];
-    const stderr = [];
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    let stopped = null;
-    let settled = false;
-    const finish = (result) => {
-      untrack(child);
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve9(result);
-    };
-    const stop = (reason2) => {
-      stopped ??= reason2;
-      killTree(child);
-    };
-    const timer = setTimeout(() => stop("timeout"), timeoutMs);
-    child.stdout?.on("data", (chunk) => {
-      stdoutBytes += chunk.length;
-      if (stdoutBytes > MAX_STDOUT_BYTES) stop("output too large");
-      else stdout.push(chunk);
-    });
-    child.stderr?.on("data", (chunk) => {
-      if (stderrBytes < MAX_STDERR_BYTES) stderr.push(chunk);
-      stderrBytes += chunk.length;
-    });
-    child.on("error", (error) => {
-      finish({ ok: false, output: null, costUsd: null, error: `could not start ${bin}: ${error.message}` });
-    });
-    child.on("close", (code) => {
-      if (stopped !== null) {
-        finish({ ok: false, output: null, costUsd: null, error: stopped });
-        return;
-      }
-      finish(
-        interpretEnvelope(
-          Buffer.concat(stdout).toString("utf8"),
-          Buffer.concat(stderr).toString("utf8"),
-          code
-        )
-      );
-    });
-    if (child.stdin) {
-      child.stdin.on("error", () => {
-      });
-      child.stdin.end(prompt);
-    }
-  });
-}
-function killTree(child) {
-  if (child.pid === void 0) return;
-  try {
-    if (process.platform === "win32") child.kill("SIGKILL");
-    else process.kill(-child.pid, "SIGKILL");
-  } catch {
-    child.kill("SIGKILL");
-  }
-}
-
-// plugins/review-voice/src/agents/fake.ts
-import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync3, writeFileSync } from "node:fs";
-import { join as join3 } from "node:path";
-function runFake(spec, prompt, dir, cwd = "", addDirs = []) {
-  checkAgentName(spec.name);
-  const calls = join3(dir, ".calls");
-  mkdirSync(calls, { recursive: true });
-  const counter = join3(calls, `${spec.name}.count`);
-  const n = (existsSync2(counter) ? Number(readFileSync3(counter, "utf8").trim()) || 0 : 0) + 1;
-  writeFileSync(counter, `${n}
-`);
-  writeFileSync(join3(calls, `${spec.name}.${n}.prompt.txt`), prompt);
-  writeFileSync(
-    join3(calls, `${spec.name}.${n}.spec.json`),
-    `${JSON.stringify({ name: spec.name, model: spec.model, tools: spec.tools, timeoutMs: spec.timeoutMs ?? null, cwd, addDirs }, null, 2)}
-`
-  );
-  const numbered = join3(dir, `${spec.name}.${n}.json`);
-  const fallback = join3(dir, `${spec.name}.json`);
-  const path = existsSync2(numbered) ? numbered : fallback;
-  if (!existsSync2(path)) {
-    return { ok: false, output: null, costUsd: null, error: `no fake output: neither ${numbered} nor ${fallback} exists` };
-  }
-  let parsed2;
-  try {
-    parsed2 = JSON.parse(readFileSync3(path, "utf8"));
-  } catch (error) {
-    return { ok: false, output: null, costUsd: null, error: `${path} is not JSON: ${error.message}` };
-  }
-  const record3 = parsed2 !== null && typeof parsed2 === "object" ? parsed2 : {};
-  if (typeof record3["error"] === "string") return { ok: false, output: null, costUsd: null, error: record3["error"] };
-  if ("output" in record3) {
-    const tokens = record3["tokens"];
-    return {
-      ok: true,
-      output: record3["output"],
-      costUsd: null,
-      ...typeof tokens === "number" && Number.isFinite(tokens) && tokens >= 0 ? { tokens } : {}
-    };
-  }
-  return { ok: false, output: null, costUsd: null, error: `${path} has neither "output" nor "error"` };
-}
-
-// plugins/review-voice/src/agents/schema.ts
-import { readFileSync as readFileSync4 } from "node:fs";
-import { dirname as dirname3, isAbsolute, relative, resolve } from "node:path";
-function schemaForRunner(schema4, baseDir) {
-  const base = resolve(baseDir);
-  const prepared = prepare(schema4, { baseDir: base, dir: base, document: schema4, inlined: false, stack: [] });
-  return prepared;
-}
-function prepare(node, ctx) {
-  if (Array.isArray(node)) return node.map((item) => prepare(item, ctx));
-  if (node === null || typeof node !== "object") return node;
-  const rest = {};
-  for (const [key2, value] of Object.entries(node)) {
-    if (key2 === "$schema" || key2 === "$id" || key2 === "$ref") continue;
-    Object.defineProperty(rest, key2, { value: prepare(value, ctx), enumerable: true, writable: true, configurable: true });
-  }
-  const ref = node["$ref"];
-  if (ref === void 0) return rest;
-  if (typeof ref !== "string") throw new AgentSpecError("A schema $ref must be a string");
-  if (ref.startsWith("#")) {
-    checkInternalRef(ref, ctx);
-    return { $ref: ref, ...rest };
-  }
-  const target = resolveFileRef(ref, ctx);
-  if (target === null || typeof target !== "object" || Array.isArray(target)) {
-    throw new AgentSpecError(`Schema $ref ${ref} does not point at a schema object`);
-  }
-  return { ...target, ...rest };
-}
-function checkInternalRef(ref, ctx) {
-  if (ctx.inlined) {
-    throw new AgentSpecError(`Schema $ref ${ref} sits in a referenced file and cannot be kept once it is inlined`);
-  }
-  const match = /^#\/(\$defs|definitions)\/[^/]+$/.exec(ref);
-  if (match === null || pointer(ctx.document, ref.slice(1)) === void 0) {
-    throw new AgentSpecError(`Schema $ref ${ref} must point into this schema's $defs or definitions`);
-  }
-}
-function resolveFileRef(ref, ctx) {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith("//") || isAbsolute(ref)) {
-    throw new AgentSpecError(`Schema $ref ${ref} is absolute; only a relative file is allowed`);
-  }
-  const hash2 = ref.indexOf("#");
-  const file2 = resolve(ctx.dir, hash2 === -1 ? ref : ref.slice(0, hash2));
-  const fragment = hash2 === -1 ? "" : ref.slice(hash2 + 1);
-  const fromBase = relative(ctx.baseDir, file2);
-  if (fromBase.startsWith("..") || isAbsolute(fromBase)) {
-    throw new AgentSpecError(`Schema $ref ${ref} leaves ${ctx.baseDir}`);
-  }
-  const key2 = `${file2}#${fragment}`;
-  if (ctx.stack.includes(key2)) throw new AgentSpecError(`Schema $ref ${ref} is part of a cycle`);
-  let document;
-  try {
-    document = JSON.parse(readFileSync4(file2, "utf8"));
-  } catch (error) {
-    throw new AgentSpecError(`Schema $ref ${ref} cannot be read: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const target = fragment === "" ? document : fragment.startsWith("/") ? pointer(document, fragment) : void 0;
-  if (target === void 0) throw new AgentSpecError(`Schema $ref ${ref} has a fragment that does not resolve`);
-  return prepare(target, {
-    baseDir: ctx.baseDir,
-    dir: dirname3(file2),
-    document,
-    inlined: true,
-    stack: [...ctx.stack, key2]
-  });
-}
-function pointer(document, path) {
-  let node = document;
-  for (const raw of path.split("/").slice(1)) {
-    let step;
-    try {
-      step = decodeURIComponent(raw).replace(/~1/g, "/").replace(/~0/g, "~");
-    } catch {
-      return void 0;
-    }
-    if (node === null || typeof node !== "object" || !Object.hasOwn(node, step)) return void 0;
-    node = node[step];
-  }
-  return node;
-}
-
-// plugins/review-voice/src/agents/runner.ts
-var RUNNER_PREAMBLE = `Tools available: ${RUNNER_TOOLS.join(", ")}. Shell and git are not available in this run. The working directory is the pull request head; base versions of changed files, when provided, are under the directories named in the prompt.`;
-function elapsed(started) {
-  return Math.round((performance.now() - started) / 10) / 100;
-}
-async function runAgent(spec, prompt, cwd, addDirs = [], env = process.env) {
-  const started = performance.now();
-  try {
-    const granted = { ...spec, tools: runnerTools(spec.tools) };
-    const sent = `${RUNNER_PREAMBLE}
-
-${prompt}`;
-    const fakeDir = env["REVIEW_VOICE_FAKE_AGENTS"];
-    if (fakeDir) return { ...runFake(granted, sent, fakeDir, cwd, addDirs), seconds: elapsed(started) };
-    if (env["REVIEW_VOICE_AGENT_RUNNER"] === "fake") {
-      return {
-        ok: false,
-        output: null,
-        costUsd: null,
-        seconds: elapsed(started),
-        error: "REVIEW_VOICE_AGENT_RUNNER=fake needs REVIEW_VOICE_FAKE_AGENTS=<dir>"
-      };
-    }
-    const prepared = { ...granted, schema: schemaForRunner(spec.schema, spec.schemaDir ?? schemasDir()) };
-    return { ...await runClaudeCli(prepared, sent, cwd, addDirs, env), seconds: elapsed(started) };
-  } catch (error) {
-    return {
-      ok: false,
-      output: null,
-      costUsd: null,
-      seconds: elapsed(started),
-      error: error instanceof Error ? error.message : String(error)
-    };
-  }
 }
 
 // plugins/review-voice/src/contract/limits.ts
@@ -747,8 +338,8 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
 
 // plugins/review-voice/src/diff/acquire.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
-import { readFileSync as readFileSync5 } from "node:fs";
-import { join as join4 } from "node:path";
+import { readFileSync as readFileSync2 } from "node:fs";
+import { join as join2 } from "node:path";
 
 // plugins/review-voice/src/diff/classify.ts
 var LOCKFILES = /* @__PURE__ */ new Set([
@@ -1108,7 +699,7 @@ function acquireDiff(options) {
   }
   const readHead3 = (path) => {
     try {
-      if (mode === "worktree") return readFileSync5(join4(root, path), "utf8");
+      if (mode === "worktree") return readFileSync2(join2(root, path), "utf8");
       return git(["show", mode === "staged" ? `:${path}` : `HEAD:${path}`], root);
     } catch {
       return null;
@@ -1915,7 +1506,7 @@ function humanReviewNote(assessment) {
   if (assessment === null || assessment.level !== "high") return null;
   return `Needs a human reviewer: ${assessment.reasons.join("; ")}.${exemptedClause(assessment.sensitiveExempted)}${notCounted(assessment.excluded)} Review Voice will not approve this change; this is not posted to the pull request.`;
 }
-var isCount2 = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0;
+var isCount = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0;
 var isStrings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
 function parseExcluded(value) {
   if (value === void 0) return { ...NOTHING_EXCLUDED };
@@ -1924,7 +1515,7 @@ function parseExcluded(value) {
   const read = (key2) => {
     const count3 = e[key2];
     if (count3 === void 0) return 0;
-    return isCount2(count3) ? count3 : null;
+    return isCount(count3) ? count3 : null;
   };
   const parsed2 = { ...NOTHING_EXCLUDED };
   for (const key2 of Object.keys(NOTHING_EXCLUDED)) {
@@ -1950,11 +1541,11 @@ function parseComplexity(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const v = value;
   if (v["level"] !== "normal" && v["level"] !== "high") return null;
-  if (!isStrings(v["reasons"]) || !isCount2(v["decisionPoints"]) || !isStrings(v["sensitivePaths"])) return null;
+  if (!isStrings(v["reasons"]) || !isCount(v["decisionPoints"]) || !isStrings(v["sensitivePaths"])) return null;
   let densestHunk = null;
   if (v["densestHunk"] !== null) {
     const h = v["densestHunk"];
-    if (typeof h !== "object" || h === null || typeof h["path"] !== "string" || !isCount2(h["line"]) || !isCount2(h["decisionPoints"])) {
+    if (typeof h !== "object" || h === null || typeof h["path"] !== "string" || !isCount(h["line"]) || !isCount(h["decisionPoints"])) {
       return null;
     }
     densestHunk = { path: h["path"], line: h["line"], decisionPoints: h["decisionPoints"] };
@@ -1966,7 +1557,7 @@ function parseComplexity(value) {
   const excluded = parseExcluded(v["excluded"]);
   if (excluded === null) return null;
   const l = v["limits"];
-  if (typeof l !== "object" || l === null || !isCount2(l["maxDecisionPoints"]) || !isCount2(l["maxHunkDecisionPoints"]) || !isStrings(l["sensitivePaths"])) {
+  if (typeof l !== "object" || l === null || !isCount(l["maxDecisionPoints"]) || !isCount(l["maxHunkDecisionPoints"]) || !isStrings(l["sensitivePaths"])) {
     return null;
   }
   const optionalGlobs = (key2) => {
@@ -2883,9 +2474,9 @@ function verifierConfidence(technicalConfidence, evidenceQuality2) {
 import { posix } from "node:path";
 
 // plugins/review-voice/src/review/lanes.ts
-import { existsSync as existsSync3 } from "node:fs";
-import { dirname as dirname4, join as join5 } from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
+import { existsSync } from "node:fs";
+import { dirname as dirname2, join as join3 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // plugins/review-voice/src/review/plan.ts
 var MODES = ["fast", "standard", "thorough", "auto"];
@@ -3011,18 +2602,18 @@ function laneNamed(lanes2, name) {
   return lanes2.find((lane) => lane.name === (name ?? DIFF_LANE.name));
 }
 function agentsDirectory() {
-  let dir = dirname4(fileURLToPath3(import.meta.url));
+  let dir = dirname2(fileURLToPath2(import.meta.url));
   for (let depth = 0; depth < 4; depth += 1) {
-    const candidate = join5(dir, "agents");
-    if (existsSync3(join5(candidate, `${DIFF_LANE.agent}.md`))) return candidate;
-    dir = dirname4(dir);
+    const candidate = join3(dir, "agents");
+    if (existsSync(join3(candidate, `${DIFF_LANE.agent}.md`))) return candidate;
+    dir = dirname2(dir);
   }
   return null;
 }
 function agentExists(name) {
   if (!/^[a-z][a-z0-9-]*$/.test(name)) return false;
   const dir = agentsDirectory();
-  return dir !== null && existsSync3(join5(dir, `${name}.md`));
+  return dir !== null && existsSync(join3(dir, `${name}.md`));
 }
 function signalCount(structure, signal2, paths) {
   if (typeof structure !== "object" || structure === null) return 0;
@@ -3993,31 +3584,31 @@ function settleFollowUps(open, evidence) {
 
 // plugins/review-voice/src/store/db.ts
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync as mkdirSync2, chmodSync } from "node:fs";
-import { dirname as dirname5 } from "node:path";
+import { mkdirSync, chmodSync } from "node:fs";
+import { dirname as dirname3 } from "node:path";
 
 // plugins/review-voice/src/store/paths.ts
 import { homedir } from "node:os";
-import { join as join6 } from "node:path";
+import { join as join4 } from "node:path";
 function dataDirectory(env = process.env) {
   const override = env["REVIEW_VOICE_DATA_DIR"];
   if (override !== void 0 && override.length > 0) return override;
   const home = homedir();
   switch (process.platform) {
     case "darwin":
-      return join6(home, "Library", "Application Support", "review-voice");
+      return join4(home, "Library", "Application Support", "review-voice");
     case "win32": {
       const appData = env["APPDATA"];
-      return appData !== void 0 && appData.length > 0 ? join6(appData, "review-voice") : join6(home, "AppData", "Roaming", "review-voice");
+      return appData !== void 0 && appData.length > 0 ? join4(appData, "review-voice") : join4(home, "AppData", "Roaming", "review-voice");
     }
     default: {
       const xdg = env["XDG_DATA_HOME"];
-      return xdg !== void 0 && xdg.length > 0 ? join6(xdg, "review-voice") : join6(home, ".local", "share", "review-voice");
+      return xdg !== void 0 && xdg.length > 0 ? join4(xdg, "review-voice") : join4(home, ".local", "share", "review-voice");
     }
   }
 }
 function databasePath(env) {
-  return join6(dataDirectory(env), "review-voice.db");
+  return join4(dataDirectory(env), "review-voice.db");
 }
 
 // plugins/review-voice/src/store/db.ts
@@ -4292,8 +3883,8 @@ function migrate(db) {
   }
 }
 function openDatabase(path = databasePath()) {
-  const directory = dirname5(path);
-  mkdirSync2(directory, { recursive: true, mode: 448 });
+  const directory = dirname3(path);
+  mkdirSync(directory, { recursive: true, mode: 448 });
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
@@ -11853,115 +11444,12 @@ async function resolvePrior(options) {
   return { prior: null, resolution: resolution(null, null, null) };
 }
 
-// plugins/review-voice/src/store/feedback.ts
-import { randomUUID as randomUUID4 } from "node:crypto";
-var FEEDBACK_ACTIONS = [
-  "keep",
-  "dismiss",
-  "rewrite",
-  "raise_severity",
-  "lower_severity",
-  "repo_specific",
-  "never_flag"
-];
-function normaliseAction(input) {
-  const candidate = input.trim().toLowerCase().replace(/-/g, "_");
-  return FEEDBACK_ACTIONS.includes(candidate) ? candidate : null;
-}
-function recordFeedback(db, input) {
-  const [left, right] = input.findingRef.includes(":") ? input.findingRef.split(":", 2) : [null, input.findingRef];
-  let reviewRunId;
-  let known;
-  if (left === null) {
-    const run = latestRun(db);
-    if (run === null) return { ok: false, error: "No review has been recorded yet." };
-    reviewRunId = run.reviewRunId;
-    known = run.findings.map((finding) => finding.findingId);
-  } else {
-    const row = db.prepare("SELECT review_run_id, output_json FROM review_runs WHERE review_run_id = ?").get(left);
-    if (row === void 0) return { ok: false, error: `No review run ${left}.` };
-    reviewRunId = row.review_run_id;
-    known = JSON.parse(row.output_json).findings.map(
-      (finding) => finding.findingId
-    );
-  }
-  const findingId = right.trim();
-  if (!known.includes(findingId)) {
-    return {
-      ok: false,
-      error: `No finding ${findingId} in that review. Available: ${known.join(", ") || "none"}.`
-    };
-  }
-  if (input.action === "rewrite" && (input.replacementText ?? "").trim().length === 0) {
-    return { ok: false, error: "A rewrite needs the replacement text." };
-  }
-  const feedbackId = randomUUID4();
-  db.prepare(
-    `INSERT INTO feedback (feedback_id, review_run_id, finding_id, action, replacement_text, reason, actor, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (review_run_id, finding_id, action) DO UPDATE SET
-       replacement_text = excluded.replacement_text,
-       reason = excluded.reason,
-       created_at = excluded.created_at`
-  ).run(
-    feedbackId,
-    reviewRunId,
-    findingId,
-    input.action,
-    input.replacementText ?? null,
-    input.reason ?? null,
-    input.actor,
-    (/* @__PURE__ */ new Date()).toISOString()
-  );
-  recordAudit(db, "feedback_recorded", { type: "finding", id: findingId }, {
-    reviewRunId,
-    action: input.action
-  });
-  return { ok: true, feedbackId, reviewRunId, findingId };
-}
-function unlabelledFindings(db) {
-  const runs = db.prepare("SELECT review_run_id, output_json FROM review_runs").all();
-  const labelled = new Set(
-    db.prepare("SELECT review_run_id, finding_id FROM feedback").all().map((row) => `${row.review_run_id}:${row.finding_id}`)
-  );
-  let unlabelled = 0;
-  for (const run of runs) {
-    let findings = [];
-    try {
-      findings = JSON.parse(run.output_json ?? "{}").findings ?? [];
-    } catch {
-      continue;
-    }
-    for (const finding of findings) {
-      if (finding.findingId === void 0) continue;
-      if (!labelled.has(`${run.review_run_id}:${finding.findingId}`)) unlabelled += 1;
-    }
-  }
-  return unlabelled;
-}
-function feedbackTotals(db) {
-  const rows = db.prepare("SELECT action, COUNT(*) AS n FROM feedback GROUP BY action").all();
-  const by = Object.fromEntries(rows.map((row) => [row.action, row.n]));
-  const kept = by["keep"] ?? 0;
-  const rewritten = by["rewrite"] ?? 0;
-  const dismissed = by["dismiss"] ?? 0;
-  const other = rows.reduce((sum, row) => sum + row.n, 0) - kept - rewritten - dismissed;
-  const labelled = kept + rewritten + dismissed;
-  return {
-    kept,
-    rewritten,
-    dismissed,
-    other,
-    ownerPrecision: labelled === 0 ? null : (kept + rewritten) / labelled
-  };
-}
-
 // plugins/review-voice/src/policy/load.ts
-import { readFileSync as readFileSync7, existsSync as existsSync5 } from "node:fs";
+import { readFileSync as readFileSync4, existsSync as existsSync3 } from "node:fs";
 import { createHash as createHash3 } from "node:crypto";
-import { dirname as dirname7, isAbsolute as isAbsolute2, join as join9 } from "node:path";
+import { dirname as dirname5, isAbsolute, join as join7 } from "node:path";
 import { homedir as homedir2 } from "node:os";
-import { fileURLToPath as fileURLToPath4 } from "node:url";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // plugins/review-voice/src/github/auth.ts
 import { execFileSync as execFileSync6 } from "node:child_process";
@@ -12084,7 +11572,7 @@ var GitHubClient = class {
     }
     this.baseUrl = options.baseUrl ?? "https://api.github.com";
     this.doFetch = options.fetchImpl ?? fetch;
-    this.sleep = options.sleep ?? ((ms) => new Promise((resolve9) => setTimeout(resolve9, ms)));
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve10) => setTimeout(resolve10, ms)));
     this.token = options.token ?? null;
   }
   authorization() {
@@ -12518,8 +12006,8 @@ async function readCi(client, repository, sha, gates = [], now = Date.now(), rul
 
 // plugins/review-voice/src/diff/structure.ts
 import { execFileSync as execFileSync7 } from "node:child_process";
-import { readFileSync as readFileSync6 } from "node:fs";
-import { join as join7 } from "node:path";
+import { readFileSync as readFileSync3 } from "node:fs";
+import { join as join5 } from "node:path";
 
 // plugins/review-voice/src/diff/removed-controls.ts
 import { basename as basename2, extname as extname2 } from "node:path";
@@ -13136,7 +12624,7 @@ function measureLines(root, files2, paths, sides) {
   };
   const fromWorktree = (path) => {
     try {
-      return countLines(readFileSync6(join7(root, path)));
+      return countLines(readFileSync3(join5(root, path)));
     } catch {
       return null;
     }
@@ -13836,14 +13324,14 @@ function formatDuration(ms) {
 }
 
 // plugins/review-voice/src/store/retention.ts
-import { existsSync as existsSync4, lstatSync, readdirSync, rmSync } from "node:fs";
-import { dirname as dirname6, join as join8 } from "node:path";
+import { existsSync as existsSync2, lstatSync, readdirSync, rmSync } from "node:fs";
+import { dirname as dirname4, join as join6 } from "node:path";
 var DEFAULT_RETENTION = { runsDays: 30, auditDays: 180 };
 var DAY_MS = 864e5;
 var enabled = (days) => typeof days === "number" && Number.isFinite(days) && days > 0;
 function runsParent(dataDir) {
-  const path = join8(dataDir, "runs");
-  if (!existsSync4(path)) return null;
+  const path = join6(dataDir, "runs");
+  if (!existsSync2(path)) return null;
   const stat = lstatSync(path);
   if (stat.isSymbolicLink()) throw new Error(`${path} is a symbolic link; retention does not follow it, so nothing was removed.`);
   return { path, dev: stat.dev, ino: stat.ino };
@@ -13853,7 +13341,7 @@ function runEntries(dataDir) {
   if (parent === null) return [];
   const entries = [];
   for (const name of readdirSync(parent.path).sort()) {
-    const path = join8(parent.path, name);
+    const path = join6(parent.path, name);
     const stat = lstatSync(path);
     if (stat.isDirectory()) entries.push({ path, mtimeMs: stat.mtimeMs });
   }
@@ -13891,7 +13379,7 @@ function removeRunDirectories(dataDir, before, listed = previewRunDirectories(da
   const parent = runsParent(dataDir);
   if (parent === null) return { count: 0, paths: [], refreshed: 0 };
   return remove(
-    listed.filter((path) => dirname6(path) === parent.path),
+    listed.filter((path) => dirname4(path) === parent.path),
     olderThan(before),
     parent
   );
@@ -13899,7 +13387,7 @@ function removeRunDirectories(dataDir, before, listed = previewRunDirectories(da
 function expiredRunDirectories(dataDir, days, now) {
   if (!enabled(days)) return [];
   return runEntries(dataDir).filter((entry) => {
-    const limit = existsSync4(join8(entry.path, "verdict.json")) ? days : days * 2;
+    const limit = existsSync2(join6(entry.path, "verdict.json")) ? days : days * 2;
     return entry.mtimeMs < now.getTime() - limit * DAY_MS;
   }).map((entry) => entry.path);
 }
@@ -13918,7 +13406,7 @@ function applyRetention(dataDir, db, config2, now = /* @__PURE__ */ new Date()) 
   const stillExpired = (path, mtimeMs) => {
     const days = config2.runsDays;
     if (!enabled(days)) return false;
-    const limit = existsSync4(join8(path, "verdict.json")) ? days : days * 2;
+    const limit = existsSync2(join6(path, "verdict.json")) ? days : days * 2;
     return mtimeMs < now.getTime() - limit * DAY_MS;
   };
   const parent = runsParent(dataDir);
@@ -14331,7 +13819,7 @@ function readWatch(block, result) {
   if (workspace !== void 0) {
     if (typeof workspace === "string" && workspace.trim().length > 0) {
       const path = workspace.trim();
-      result.watch.workspace = path === "~" || path.startsWith("~/") ? join9(homedir2(), path.slice(1)) : path;
+      result.watch.workspace = path === "~" || path.startsWith("~/") ? join7(homedir2(), path.slice(1)) : path;
     } else {
       result.warnings.push("watch.workspace must be a directory path; using <data directory>/clones.");
     }
@@ -14439,15 +13927,15 @@ function approvedPolicyLayers(db, warnings) {
   }
   return { layers, versions };
 }
-function pluginRoot2() {
-  let dir = dirname7(fileURLToPath4(import.meta.url));
-  while (!existsSync5(join9(dir, ".claude-plugin", "plugin.json")) && dirname7(dir) !== dir) dir = dirname7(dir);
+function pluginRoot() {
+  let dir = dirname5(fileURLToPath3(import.meta.url));
+  while (!existsSync3(join7(dir, ".claude-plugin", "plugin.json")) && dirname5(dir) !== dir) dir = dirname5(dir);
   return dir;
 }
-function loadBaselineLayer(owner, path = join9(pluginRoot2(), "policies", "baseline-global.yaml")) {
-  if (!existsSync5(path)) return null;
+function loadBaselineLayer(owner, path = join7(pluginRoot(), "policies", "baseline-global.yaml")) {
+  if (!existsSync3(path)) return null;
   try {
-    const doc = asRecord2(parse(readFileSync7(path, "utf8")));
+    const doc = asRecord2(parse(readFileSync4(path, "utf8")));
     if (doc === null) return null;
     const voice = asRecord2(doc["voice"]);
     const maxFindings = positiveInt(voice?.["max_findings"]);
@@ -14509,10 +13997,10 @@ function readReviewers(identity2, result) {
 function configFile(repositoryRoot2, warnings = []) {
   const override = process.env["REVIEW_VOICE_CONFIG"];
   if (override !== void 0 && override.length > 0) {
-    if (isAbsolute2(override)) return override;
+    if (isAbsolute(override)) return override;
     warnings.push(`REVIEW_VOICE_CONFIG must be an absolute path; reading .review-voice/config.yaml instead.`);
   }
-  return join9(repositoryRoot2, ".review-voice", "config.yaml");
+  return join7(repositoryRoot2, ".review-voice", "config.yaml");
 }
 function loadConfig(repositoryRoot2, baselinePath, path, db) {
   const result = {
@@ -14547,9 +14035,9 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
     warnings: []
   };
   const configPath = path ?? configFile(repositoryRoot2, result.warnings);
-  if (existsSync5(configPath)) {
+  if (existsSync3(configPath)) {
     try {
-      const doc = asRecord2(parse(readFileSync7(configPath, "utf8")));
+      const doc = asRecord2(parse(readFileSync4(configPath, "utf8")));
       if (doc !== null) {
         for (const key2 of Object.keys(doc)) {
           if (!KNOWN_TOP_LEVEL.includes(key2)) result.warnings.push(`${key2} is not a setting Review Voice reads; ignoring it.`);
@@ -14665,10 +14153,10 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
   const baseline = loadBaselineLayer(result.ownerReviewer, baselinePath);
   if (baseline !== null) result.layers.unshift(baseline);
   result.suppressions = result.layers.flatMap((layer) => layer.suppressions ?? []);
-  const policyPath = join9(repositoryRoot2, ".review-voice", "policy.yaml");
-  if (existsSync5(policyPath)) {
+  const policyPath = join7(repositoryRoot2, ".review-voice", "policy.yaml");
+  if (existsSync3(policyPath)) {
     try {
-      const text4 = readFileSync7(policyPath, "utf8");
+      const text4 = readFileSync4(policyPath, "utf8");
       const layer = layerFromPolicyFile(text4, ".review-voice/policy.yaml", repositoryRoot2);
       if (layer !== null) {
         result.unapproved.push({ source: ".review-voice/policy.yaml", contentHash: contentHash(text4) });
@@ -14886,7 +14374,7 @@ function stopCommandsOnSignal() {
   };
 }
 function spawnCommand(command, options) {
-  return new Promise((resolve9) => {
+  return new Promise((resolve10) => {
     const child = spawnChild(command, { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, stdio: "pipe" });
     const pid = child.pid;
     if (pid !== void 0) runningGroups.add(pid);
@@ -14917,7 +14405,7 @@ function spawnCommand(command, options) {
         killGroup(pid, "SIGKILL");
         runningGroups.delete(pid);
       }
-      resolve9({
+      resolve10({
         status,
         stdout: Buffer.concat(chunks.stdout).toString(options.encoding),
         stderr: Buffer.concat(chunks.stderr).toString(options.encoding),
@@ -14934,179 +14422,6 @@ function spawnCommand(command, options) {
   });
 }
 
-// plugins/review-voice/src/verify/external.ts
-var DEFAULT_TIMEOUT_SECONDS2 = 90;
-var DEFAULT_DROP_THRESHOLD = 0.8;
-var HOW_TO_ENABLE = "Add a `verification:` block to .review-voice/config.yaml with `enabled: true` and a `command` that runs a different model on the candidates JSON from stdin (optional: name, timeout_seconds, drop_threshold). See templates/config.example.yaml.";
-var TIERS = ["blocking", "important", "minor", "nit", "question"];
-function downgrade(severity) {
-  if (severity === "question") return "question";
-  const index = TIERS.indexOf(severity);
-  if (index === -1 || index >= TIERS.length - 2) return "nit";
-  return TIERS[index + 1] ?? "nit";
-}
-var MAX_DECISIVE_EVIDENCE = 10;
-function decisiveEvidence(raw) {
-  const list2 = raw.decisive_evidence ?? raw.decisiveEvidence;
-  if (!Array.isArray(list2)) return [];
-  return list2.filter((entry) => {
-    const e = typeof entry === "object" && entry !== null ? entry : {};
-    return typeof e["path"] === "string" && e["path"].length > 0 && Number.isInteger(e["line"]) && e["line"] > 0 && typeof e["why"] === "string" && e["why"].trim().length > 0;
-  }).slice(0, MAX_DECISIVE_EVIDENCE).map((entry) => ({ path: entry.path, line: entry.line, why: entry.why }));
-}
-function jsonCandidates(text4) {
-  const found = [];
-  let depth = 0;
-  let start = -1;
-  let inString = false;
-  let escaped = false;
-  for (let i = 0; i < text4.length; i += 1) {
-    const ch = text4[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (ch === "\\") escaped = true;
-      else if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') inString = true;
-    else if (ch === "{") {
-      if (depth === 0) start = i;
-      depth += 1;
-    } else if (ch === "}") {
-      depth -= 1;
-      if (depth === 0 && start !== -1) {
-        found.push(text4.slice(start, i + 1));
-        start = -1;
-      } else if (depth < 0) {
-        depth = 0;
-      }
-    }
-  }
-  return found;
-}
-var VERDICTS = ["confirmed", "rejected", "uncertain"];
-function parseVerdict(stdout) {
-  for (const candidate of jsonCandidates(stdout).reverse()) {
-    try {
-      const parsed2 = JSON.parse(candidate);
-      if (typeof parsed2.verdict !== "string") continue;
-      const label2 = parsed2.verdict.toLowerCase();
-      return VERDICTS.includes(label2) ? { ...parsed2, verdict: label2 } : null;
-    } catch {
-      continue;
-    }
-  }
-  return null;
-}
-var spawnRunner = async (command, input, timeoutMs, cwd, env) => {
-  const result = await spawnCommand(command, {
-    cwd,
-    env,
-    shell: true,
-    encoding: "utf8",
-    input,
-    timeout: timeoutMs,
-    killSignal: "SIGKILL",
-    maxBuffer: 8 * 1024 * 1024,
-    detached: true
-  });
-  return {
-    stdout: result.stdout,
-    stderr: result.stderr,
-    // An EPIPE on the input write (a command that answered without reading it,
-    // #297) never reaches here: spawnCommand ignores errors on stdin. Only a
-    // command that never ran, or was killed (no exit status), is a failure.
-    failed: result.error !== void 0 || result.status === null
-  };
-};
-async function verifyFindings(findings, config2, options) {
-  const name = config2.name ?? "external";
-  if (!config2.enabled || config2.command.trim().length === 0) {
-    return {
-      enabled: false,
-      verifier: null,
-      verdicts: [],
-      didNotRun: findings.length > 0 ? [name] : [],
-      howToEnable: HOW_TO_ENABLE
-    };
-  }
-  if (findings.length === 0) {
-    return { enabled: false, verifier: null, verdicts: [], didNotRun: [] };
-  }
-  const dropThreshold = config2.dropThreshold ?? DEFAULT_DROP_THRESHOLD;
-  const verdicts = [];
-  const didNotRun = [];
-  const runner = options.runner ?? spawnRunner;
-  const env = commandEnvironment(process.env, config2.envPassthrough ?? []);
-  for (const finding of findings) {
-    const result = await runner(
-      config2.command,
-      JSON.stringify({ ...finding, context: options.context ?? null }),
-      (config2.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS2) * 1e3,
-      options.cwd,
-      env
-    );
-    const unavailable = result.failed;
-    const parsed2 = unavailable ? null : parseVerdict(`${result.stdout}
-${result.stderr}`);
-    const raw = parsed2 === null ? null : maskPassthroughDeep(parsed2, process.env, config2.envPassthrough ?? []);
-    if (raw === null) {
-      didNotRun.push(name);
-      verdicts.push({
-        candidateId: finding.candidateId,
-        path: finding.path,
-        line: finding.line,
-        verdict: "uncertain",
-        confidence: 0,
-        reason: unavailable ? "verifier did not run" : "verifier produced no parseable verdict",
-        outcome: "unverified",
-        originalSeverity: finding.severity,
-        finalSeverity: finding.severity,
-        verifier: name
-      });
-      continue;
-    }
-    const verdict2 = raw.verdict;
-    const confidence = typeof raw.confidence === "number" ? Math.min(1, Math.max(0, raw.confidence)) : 0.5;
-    const reason2 = typeof raw.reason === "string" ? raw.reason : "";
-    const decisive = decisiveEvidence(raw);
-    let outcome = "kept";
-    let finalSeverity = finding.severity;
-    let proposedSeverity;
-    if (verdict2 === "rejected") {
-      if (confidence >= dropThreshold) {
-        outcome = "dropped";
-      } else {
-        outcome = "downgraded";
-        finalSeverity = downgrade(finding.severity);
-      }
-    } else if (verdict2 === "uncertain") {
-      outcome = "downgraded";
-      finalSeverity = downgrade(finding.severity);
-    } else if (raw.suggested_severity !== void 0 && TIERS.includes(raw.suggested_severity) && TIERS.indexOf(raw.suggested_severity) > TIERS.indexOf(finding.severity)) {
-      outcome = "downgraded";
-      finalSeverity = raw.suggested_severity;
-    } else if (raw.suggested_severity !== void 0 && raw.suggested_severity !== "question" && TIERS.includes(raw.suggested_severity) && TIERS.indexOf(finding.severity) !== -1 && TIERS.indexOf(raw.suggested_severity) < TIERS.indexOf(finding.severity) && decisive.length > 0 && reason2.trim().length > 0) {
-      proposedSeverity = raw.suggested_severity;
-    }
-    verdicts.push({
-      candidateId: finding.candidateId,
-      path: finding.path,
-      line: finding.line,
-      verdict: verdict2,
-      confidence,
-      reason: reason2,
-      outcome,
-      originalSeverity: finding.severity,
-      finalSeverity,
-      verifier: name,
-      ...decisive.length > 0 ? { decisiveEvidence: decisive } : {},
-      ...proposedSeverity === void 0 ? {} : { proposedSeverity }
-    });
-  }
-  return { enabled: true, verifier: name, verdicts, didNotRun: [...new Set(didNotRun)] };
-}
-
 // plugins/review-voice/src/verify/reconcile.ts
 var DISPUTE_CONFIDENCE = ESCALATION_CONFIDENCE;
 var ReconcileInputError = class extends Error {
@@ -15116,7 +14431,7 @@ function candidateIdOf(raw) {
   return typeof id === "string" && id.length > 0 ? id : null;
 }
 var OUTCOMES = ["kept", "downgraded", "dropped", "unverified"];
-var VERDICTS2 = ["confirmed", "rejected", "uncertain"];
+var VERDICTS = ["confirmed", "rejected", "uncertain"];
 var OUTCOME_VERDICT = {
   kept: "confirmed",
   dropped: "rejected",
@@ -15184,8 +14499,8 @@ function parseSecondPass(parsed2) {
     if (e["outcome"] === "downgraded" && (typeof e["finalSeverity"] !== "string" || e["finalSeverity"] === "")) {
       throw new ReconcileInputError(`${who}: a downgraded verdict needs finalSeverity`);
     }
-    if (!VERDICTS2.includes(e["verdict"])) {
-      throw new ReconcileInputError(`${who}: verdict must be one of ${VERDICTS2.join(", ")}`);
+    if (!VERDICTS.includes(e["verdict"])) {
+      throw new ReconcileInputError(`${who}: verdict must be one of ${VERDICTS.join(", ")}`);
     }
     const problem = contradiction(e);
     if (problem !== null) throw new ReconcileInputError(`${who}: ${problem}`);
@@ -15394,285 +14709,6 @@ function reconcile(candidates, verifications, secondPass2, tieBreaks) {
     return { ...rest, applied: rulings.has(tieBreak2.candidateId), ...raised === void 0 ? {} : { raised } };
   });
   return { candidates: out, disputes, applied, tieBreaks: marked, notes };
-}
-
-// plugins/review-voice/src/verify/challenge.ts
-var CHALLENGE_VERDICTS = ["confirmed", "partly", "refuted"];
-var isRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-var idOf2 = (entry) => {
-  const id = entry["candidateId"] ?? entry["candidate_id"];
-  return typeof id === "string" ? id : null;
-};
-var text2 = (value) => typeof value === "string" && value.trim().length > 0 ? value : null;
-function eligibleFindings(scores) {
-  return isRecord2(scores) && Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord2) : [];
-}
-function candidatesById(parsed2) {
-  const key2 = isRecord2(parsed2) ? ["candidates", "kept"].find((k) => Array.isArray(parsed2[k])) : void 0;
-  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord2(parsed2) && key2 !== void 0 ? parsed2[key2] : [];
-  const out = /* @__PURE__ */ new Map();
-  for (const entry of list2) {
-    if (!isRecord2(entry)) continue;
-    const id = idOf2(entry);
-    if (id !== null) out.set(id, entry);
-  }
-  return out;
-}
-function intentStatements(parsed2) {
-  const list2 = isRecord2(parsed2) && Array.isArray(parsed2["statements"]) ? parsed2["statements"] : Array.isArray(parsed2) ? parsed2 : [];
-  return list2.filter((s) => isRecord2(s) && typeof s["id"] === "string");
-}
-function challengePrompt(finding, candidate, statements, diffFile) {
-  const pick = (snake, camel) => text2(candidate?.[snake]) ?? text2(candidate?.[camel]) ?? text2(finding[snake]) ?? text2(finding[camel]);
-  const id = idOf2(finding) ?? (candidate === void 0 ? null : idOf2(candidate)) ?? "unknown";
-  const path = text2(finding["path"]) ?? text2(candidate?.["path"]) ?? "unknown";
-  const line3 = Number.isInteger(finding["line"]) ? finding["line"] : candidate?.["line"];
-  const intentRef = pick("intent_ref", "intentRef");
-  const cited = intentRef === null ? [] : statements.filter((s) => s.id === intentRef);
-  const causedBy = isRecord2(finding["causedBy"]) ? finding["causedBy"] : isRecord2(candidate?.["caused_by"]) ? candidate["caused_by"] : null;
-  const rows = [
-    `Challenge finding ${id}.`,
-    "",
-    `Claim: ${pick("claim", "claim") ?? ""}`,
-    `Failure mode: ${pick("failure_mode", "failureMode") ?? ""}`,
-    `Category: ${pick("category", "category") ?? ""}`,
-    `Anchored at: ${path}:${line3 ?? "unknown"}`
-  ];
-  if (causedBy !== null && typeof causedBy["path"] === "string" && Number.isInteger(causedBy["line"])) {
-    rows.push(`Stale consumer of the changed line: ${causedBy["path"]}:${String(causedBy["line"])}`);
-  }
-  if (diffFile !== void 0 && diffFile !== null) rows.push(`Diff under review: ${diffFile}`);
-  if (cited.length > 0) {
-    rows.push("", "Stated intent the finding cites, quoted from the pull request description (untrusted):");
-    for (const s of cited) {
-      rows.push(`- ${s.id} (${s.kind ?? "statement"}): "${s.quote ?? s.statement ?? ""}"`);
-      if (s.reason !== void 0) rows.push(`  Reason given: "${s.reason}"`);
-    }
-  }
-  rows.push(
-    "",
-    "You are not given the verifier's reasoning, confidence or evidence. Read the code at the head yourself.",
-    `Return {"verdicts": [{"candidate_id": "${id}", "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "reason"}]}.`
-  );
-  return rows.join("\n");
-}
-function challengePrompts(scores, candidates, statements, diffFile) {
-  return eligibleFindings(scores).map((finding) => {
-    const id = idOf2(finding) ?? "unknown";
-    return { candidate_id: id, prompt: challengePrompt(finding, candidates.get(id), statements, diffFile) };
-  });
-}
-var DECISIVE = /^\S(?:.*\S)?:\d+(?:-\d+)?$/u;
-function parseChallengeVerdicts(raw) {
-  const list2 = Array.isArray(raw) ? raw : isRecord2(raw) && Array.isArray(raw["verdicts"]) ? raw["verdicts"] : null;
-  if (list2 === null) return { ok: false, problems: ['expected {"verdicts": [...]}'] };
-  const problems = [];
-  const verdicts = [];
-  list2.forEach((entry, index) => {
-    if (!isRecord2(entry)) {
-      problems.push(`verdict ${index} is not an object`);
-      return;
-    }
-    const id = typeof entry["candidate_id"] === "string" && entry["candidate_id"].length > 0 ? entry["candidate_id"] : null;
-    const name = id ?? `verdict ${index}`;
-    const before = problems.length;
-    if (id === null) problems.push(`verdict ${index} has no candidate_id`);
-    const label2 = entry["verdict"];
-    if (!CHALLENGE_VERDICTS.includes(label2)) {
-      problems.push(`${name}: verdict must be one of ${CHALLENGE_VERDICTS.join(", ")}`);
-    }
-    if (typeof entry["line_ok"] !== "boolean") problems.push(`${name}: line_ok must be true or false`);
-    const corrected = entry["corrected_line"];
-    if (corrected !== void 0 && (!Number.isInteger(corrected) || corrected < 1)) {
-      problems.push(`${name}: corrected_line must be a positive integer`);
-    }
-    const decisive = entry["decisive_evidence"];
-    if (!Array.isArray(decisive) || decisive.some((d) => typeof d !== "string" || !DECISIVE.test(d.trim()))) {
-      problems.push(`${name}: decisive_evidence must be a list of "path:line" references`);
-    }
-    if (typeof entry["reason"] !== "string") problems.push(`${name}: reason must be a string`);
-    if (problems.length > before) return;
-    const lineOk = entry["line_ok"];
-    const reason2 = entry["reason"].trim();
-    const evidence = decisive.map((d) => d.trim());
-    if (label2 === "confirmed" && evidence.length === 0) {
-      problems.push(`${name}: confirmed names no decisive_evidence`);
-    }
-    if (label2 === "confirmed" && !lineOk && corrected === void 0) {
-      problems.push(`${name}: confirmed with line_ok false has no corrected_line`);
-    }
-    if (lineOk && corrected !== void 0) problems.push(`${name}: line_ok true contradicts corrected_line`);
-    if (label2 !== "confirmed" && reason2.length === 0) problems.push(`${name}: ${String(label2)} gives no reason`);
-    verdicts.push({
-      candidate_id: id,
-      verdict: label2,
-      line_ok: lineOk,
-      ...corrected === void 0 ? {} : { corrected_line: corrected },
-      decisive_evidence: evidence,
-      reason: reason2
-    });
-  });
-  return problems.length > 0 ? { ok: false, problems } : { ok: true, verdicts };
-}
-function applyChallenge(scores, candidates, rawVerdicts, hunks) {
-  if (!isRecord2(scores) || !Array.isArray(scores["scores"]) || !Array.isArray(scores["eligible"])) {
-    return { ok: false, problems: ["expected the JSON `RV score` printed, with `scores` and `eligible` lists"] };
-  }
-  const parsed2 = parseChallengeVerdicts(rawVerdicts);
-  if (!parsed2.ok) return parsed2;
-  const eligible = eligibleFindings(scores);
-  const eligibleIds = eligible.map(idOf2).filter((id) => id !== null);
-  const problems = [];
-  const byId = /* @__PURE__ */ new Map();
-  for (const verdict2 of parsed2.verdicts) {
-    if (byId.has(verdict2.candidate_id)) problems.push(`${verdict2.candidate_id}: more than one verdict`);
-    byId.set(verdict2.candidate_id, verdict2);
-  }
-  const missing = eligibleIds.filter((id) => !byId.has(id));
-  if (missing.length > 0) problems.push(`no verdict for eligible ${missing.join(", ")}`);
-  const unknown = [...byId.keys()].filter((id) => !eligibleIds.includes(id));
-  if (unknown.length > 0) problems.push(`verdict for ${unknown.join(", ")}, which is not eligible`);
-  for (const finding of eligible) {
-    const id = idOf2(finding);
-    const verdict2 = id === null ? void 0 : byId.get(id);
-    if (verdict2?.corrected_line !== void 0 && verdict2.corrected_line === finding["line"]) {
-      problems.push(`${String(id)}: corrected_line ${verdict2.corrected_line} is the line it is already anchored on`);
-    }
-  }
-  if (problems.length > 0) return { ok: false, problems };
-  const summary = { confirmed: [], held: [], moved: [] };
-  const held = [];
-  const holdReasons = /* @__PURE__ */ new Map();
-  const hold = (finding, id, verdict2, reason2) => {
-    holdReasons.set(id, { verdict: verdict2, reason: reason2 });
-    summary.held.push({ candidate_id: id, verdict: verdict2, reason: reason2 });
-    const candidate = candidates.get(id);
-    const claim = text2(candidate?.["claim"]) ?? text2(finding["claim"]);
-    const severity = text2(finding["severity"]);
-    held.push({
-      path: String(finding["path"]),
-      line: finding["line"],
-      verdict: verdict2,
-      source: "challenge",
-      reason: reason2,
-      ...severity === null ? {} : { severity },
-      candidateId: id,
-      ...claim === null ? {} : { text: claim }
-    });
-  };
-  const verdictOf = (entry) => {
-    const id = idOf2(entry);
-    const verdict2 = id === null ? void 0 : byId.get(id);
-    if (verdict2 === void 0) return entry;
-    const { candidate_id: _id, ...rest } = verdict2;
-    const heldAs = holdReasons.get(id);
-    return heldAs === void 0 ? { ...entry, challenge: rest } : { ...entry, challenge: rest, eligible: false, rejectedBecause: `${heldAs.verdict}: ${heldAs.reason}` };
-  };
-  for (const finding of eligible) {
-    const id = idOf2(finding);
-    const verdict2 = byId.get(id);
-    if (verdict2.verdict === "partly") hold(finding, id, "challenge-partly", verdict2.reason);
-    else if (verdict2.verdict === "refuted") hold(finding, id, "challenge-refuted", verdict2.reason);
-  }
-  let document = {
-    ...scores,
-    scores: scores["scores"].map((e) => isRecord2(e) ? verdictOf(e) : e),
-    eligible: eligible.filter((e) => !holdReasons.has(idOf2(e)))
-  };
-  for (const finding of eligible) {
-    const id = idOf2(finding);
-    const verdict2 = byId.get(id);
-    if (verdict2.verdict !== "confirmed") continue;
-    if (verdict2.corrected_line === void 0) {
-      summary.confirmed.push(id);
-      continue;
-    }
-    const moved = reanchorScores(document, id, { path: null, line: verdict2.corrected_line }, hunks);
-    if (moved.ok) {
-      document = moved.updated;
-      summary.confirmed.push(id);
-      summary.moved.push({ candidate_id: id, from: moved.from, to: moved.to });
-      continue;
-    }
-    const reason2 = `corrected line refused: ${moved.refused}`;
-    hold(finding, id, "challenge-partly", reason2);
-    const heldAs = { eligible: false, rejectedBecause: `challenge-partly: ${reason2}` };
-    document = {
-      ...document,
-      scores: document["scores"].map((e) => isRecord2(e) && idOf2(e) === id ? { ...e, ...heldAs } : e),
-      eligible: document["eligible"].filter((e) => !(isRecord2(e) && idOf2(e) === id))
-    };
-  }
-  const order = new Map(eligibleIds.map((id, index) => [id, index]));
-  const rank2 = (id) => order.get(id ?? "") ?? 0;
-  held.sort((a, b) => rank2(a.candidateId) - rank2(b.candidateId));
-  summary.held.sort((a, b) => rank2(a.candidate_id) - rank2(b.candidate_id));
-  return { ok: true, document: { ...document, challengeHeld: held, challenge: summary }, summary };
-}
-
-// plugins/review-voice/src/corpus/select.ts
-function selectEvents(events, options) {
-  const discoveredEligible = events.length;
-  const cap = Math.max(1, Math.floor(options.target * options.maxRepositoryShare));
-  const sorted = [...events].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const perRepository = {};
-  const selected = [];
-  const deferred = [];
-  const ownerEvents = sorted.filter((event) => event.role === "owner");
-  for (const event of ownerEvents) {
-    perRepository[event.repository] = (perRepository[event.repository] ?? 0) + 1;
-    selected.push(event);
-  }
-  for (const event of sorted) {
-    if (event.role === "owner") continue;
-    if (selected.length >= options.target) break;
-    const count3 = perRepository[event.repository] ?? 0;
-    if (count3 >= cap) {
-      deferred.push(event);
-      continue;
-    }
-    perRepository[event.repository] = count3 + 1;
-    selected.push(event);
-  }
-  const hardCap = Math.max(cap, Math.floor(options.target * Math.min(1, options.maxRepositoryShare * 1.5)));
-  const overRepresented = /* @__PURE__ */ new Set();
-  for (const event of deferred) {
-    if (selected.length >= options.target) break;
-    const count3 = perRepository[event.repository] ?? 0;
-    if (count3 >= hardCap) continue;
-    if (count3 >= cap) overRepresented.add(event.repository);
-    perRepository[event.repository] = count3 + 1;
-    selected.push(event);
-  }
-  const shortfall = Math.max(0, options.target - selected.length);
-  const exhausted = selected.length >= discoveredEligible;
-  return {
-    selected,
-    targetEvents: options.target,
-    ownerEvents: ownerEvents.length,
-    discoveredEligible,
-    importedEvents: selected.length,
-    shortfall,
-    // Claiming a full scan when the history ran out would misrepresent how
-    // much the policy actually rests on - and so would blaming an exhausted
-    // corpus when the real limit was diversity.
-    shortfallReason: shortfall === 0 ? null : exhausted ? "Accessible review corpus exhausted" : "Repository diversity limit reached; one repository would otherwise dominate the corpus",
-    perRepository,
-    overRepresented: [...overRepresented]
-  };
-}
-var PER_REPOSITORY_TARGET = 60;
-var TARGET_FLOOR = 250;
-var TARGET_CEILING = 1500;
-function scaledTarget(repositoryCount) {
-  const scaled = PER_REPOSITORY_TARGET * Math.max(1, repositoryCount);
-  return Math.min(TARGET_CEILING, Math.max(TARGET_FLOOR, scaled));
-}
-var SHARE_CEILING = 0.5;
-var SHARE_FLOOR = 0.15;
-function scaledRepositoryShare(repositoryCount) {
-  if (repositoryCount <= 1) return 1;
-  return Math.min(SHARE_CEILING, Math.max(SHARE_FLOOR, 2 / repositoryCount));
 }
 
 // plugins/review-voice/src/scoring/existence.ts
@@ -16163,168 +15199,6 @@ function checkCitation(candidatePath, cwd, ref, diff) {
   return { resolves: false, suggestion: sameName ?? null, inconclusive: false };
 }
 
-// plugins/review-voice/src/sync/state.ts
-import { randomUUID as randomUUID5 } from "node:crypto";
-function beginSyncRun(db, repositories) {
-  const id = randomUUID5();
-  db.prepare(
-    "INSERT INTO sync_runs (sync_run_id, started_at, finished_at, repositories_json, stats_json, imported) VALUES (?, ?, NULL, ?, ?, 0)"
-  ).run(id, (/* @__PURE__ */ new Date()).toISOString(), JSON.stringify(repositories), JSON.stringify({}));
-  return id;
-}
-function finishSyncRun(db, id, stats, imported) {
-  db.prepare("UPDATE sync_runs SET finished_at = ?, stats_json = ?, imported = ? WHERE sync_run_id = ?").run(
-    (/* @__PURE__ */ new Date()).toISOString(),
-    JSON.stringify(stats),
-    imported,
-    id
-  );
-}
-var ASSUME_STILL_RUNNING_MINUTES = 30;
-function unfinishedSyncRuns(db, now = /* @__PURE__ */ new Date()) {
-  const cutoff = new Date(now.getTime() - ASSUME_STILL_RUNNING_MINUTES * 6e4).toISOString();
-  return db.prepare(
-    `SELECT * FROM sync_runs
-         WHERE finished_at IS NULL
-           AND started_at < ?
-           -- A sync that completed afterwards did the work this one abandoned,
-           -- so the dangling row is history rather than an outstanding task.
-           -- Reporting it beside "last sync 07:46, 250 imported" told the user
-           -- to run a sync they had already run four times.
-           AND NOT EXISTS (
-             SELECT 1 FROM sync_runs later
-             WHERE later.finished_at IS NOT NULL AND later.finished_at > sync_runs.started_at
-           )
-         ORDER BY started_at DESC`
-  ).all(cutoff).map((row) => ({
-    syncRunId: row["sync_run_id"],
-    startedAt: row["started_at"],
-    finishedAt: null,
-    repositories: JSON.parse(row["repositories_json"]),
-    imported: row["imported"]
-  }));
-}
-function lastSync(db) {
-  const row = db.prepare("SELECT * FROM sync_runs WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1").get();
-  if (row === void 0) return null;
-  return {
-    syncRunId: row["sync_run_id"],
-    startedAt: row["started_at"],
-    finishedAt: row["finished_at"],
-    repositories: JSON.parse(row["repositories_json"]),
-    imported: row["imported"]
-  };
-}
-
-// plugins/review-voice/src/corpus/store.ts
-function storeEvents(db, events) {
-  const insert = db.prepare(
-    `INSERT INTO review_events (
-       event_id, source, repository, pull_number, pull_request_url, comment_id,
-       reviewer_login, reviewer_role, created_at, body_redacted, content_key,
-       file_path, line_start, diff_hunk_redacted, outcome_status,
-       outcome_certainty, redaction_version, redaction_counts_json, created_db_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (content_key) DO NOTHING`
-  );
-  const updateOutcome = db.prepare(
-    `UPDATE review_events SET outcome_status = ?, outcome_certainty = ? WHERE content_key = ?`
-  );
-  let inserted = 0;
-  db.exec("BEGIN");
-  try {
-    for (const event of events) {
-      const result = insert.run(
-        event.eventId,
-        event.source,
-        event.repository,
-        event.pullNumber,
-        event.pullRequestUrl,
-        event.commentId,
-        event.reviewerLogin,
-        event.role,
-        event.createdAt,
-        event.bodyRedacted,
-        event.contentKey,
-        event.filePath ?? null,
-        event.lineStart ?? null,
-        event.diffHunkRedacted ?? null,
-        // Unknown is the honest default and carries a middling weight rather than zero.
-        event.outcome?.status ?? "unknown",
-        event.outcome?.certainty ?? "weak",
-        event.redactionVersion,
-        JSON.stringify(event.redactionCounts),
-        (/* @__PURE__ */ new Date()).toISOString()
-      );
-      if (result.changes > 0) inserted += 1;
-      else if (event.outcome !== void 0 && event.outcome.status !== "unknown") {
-        updateOutcome.run(event.outcome.status, event.outcome.certainty, event.contentKey);
-      }
-    }
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-  const redactionTotals = {};
-  for (const event of events) {
-    for (const [label2, count3] of Object.entries(event.redactionCounts)) {
-      redactionTotals[label2] = (redactionTotals[label2] ?? 0) + count3;
-    }
-  }
-  recordAudit(db, "corpus_ingested", null, {
-    offered: events.length,
-    inserted,
-    redactions: redactionTotals
-  });
-  return { inserted, alreadyPresent: events.length - inserted };
-}
-function corpusCoverage(db, options = {}) {
-  const total = db.prepare("SELECT COUNT(*) AS n FROM review_events").get().n;
-  const byRepository = Object.fromEntries(
-    db.prepare("SELECT repository, COUNT(*) AS n FROM review_events GROUP BY repository").all().map((row) => [row.repository, row.n])
-  );
-  const byRole = Object.fromEntries(
-    db.prepare("SELECT reviewer_role, COUNT(*) AS n FROM review_events GROUP BY reviewer_role").all().map((row) => [row.reviewer_role, row.n])
-  );
-  const range = db.prepare("SELECT MIN(created_at) AS oldest, MAX(created_at) AS newest FROM review_events").get();
-  const warnings = [];
-  const anchored = db.prepare("SELECT COUNT(*) AS n FROM review_events WHERE reviewer_role = 'owner' AND file_path IS NOT NULL").get().n;
-  const ownerTotal = byRole["owner"] ?? 0;
-  if (ownerTotal > 0 && anchored * 2 < ownerTotal) {
-    warnings.push(
-      `${ownerTotal - anchored} of ${ownerTotal} owner events have no file anchor. Unanchored summaries match any candidate, so with the owner weighting applied they surface for every finding regardless of topic. Sync more repositories, or expect weak precedent.`
-    );
-  }
-  for (const run of unfinishedSyncRuns(db, options.now ?? /* @__PURE__ */ new Date())) {
-    warnings.push(
-      `A sync started ${run.startedAt} and never recorded a finish. It covered ${run.repositories.join(", ") || "no repositories"}, and anything it read was not stored. Run sync again.`
-    );
-  }
-  for (const repository of options.allowlist ?? []) {
-    if ((byRepository[repository] ?? 0) === 0) {
-      warnings.push(`${repository} is allowlisted but contributed no events. Check it has review history you can read.`);
-    }
-  }
-  const share = options.maxRepositoryShare;
-  if (share !== void 0 && total > 0) {
-    for (const [repository, count3] of Object.entries(byRepository)) {
-      if (count3 / total > share) {
-        warnings.push(
-          `${repository} is ${Math.round(count3 / total * 100)}% of the corpus, above the configured ${Math.round(share * 100)}% share. Policy compiled from it will mostly describe that repository.`
-        );
-      }
-    }
-  }
-  const ownerAuthored = options.ownerReviewer === void 0 || options.ownerReviewer === null ? byRole["owner"] ?? 0 : db.prepare("SELECT COUNT(*) AS n FROM review_events WHERE LOWER(reviewer_login) = LOWER(?)").get(options.ownerReviewer).n;
-  if (total > 0 && ownerAuthored === 0) {
-    warnings.push(
-      "No events authored by the owner reviewer. Policy rules need at least one owner signal, so nothing in this corpus can activate a rule. Check identity.owner_reviewer matches your GitHub login."
-    );
-  }
-  return { total, byRepository, byRole, oldest: range.oldest, newest: range.newest, warnings };
-}
-
 // plugins/review-voice/src/store/watch.ts
 var isFailure2 = (status) => status === "failed" || status === "failed-open" || status === "failed-closed";
 var fromRow = (row) => ({
@@ -16668,8 +15542,8 @@ async function queueCommand(argv, deps) {
 }
 
 // plugins/review-voice/src/watch/command.ts
-import { closeSync, constants, fsyncSync, mkdirSync as mkdirSync4, openSync, readFileSync as readFileSync9, renameSync, unlinkSync as unlinkSync3, writeSync } from "node:fs";
-import { join as join12 } from "node:path";
+import { closeSync, constants, fsyncSync, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync6, renameSync, unlinkSync as unlinkSync3, writeSync } from "node:fs";
+import { join as join10 } from "node:path";
 
 // plugins/review-voice/src/github/writer.ts
 var WriteViolation = class extends Error {
@@ -18437,9 +17311,9 @@ async function postReview(options) {
 
 // plugins/review-voice/src/watch/lock.ts
 import { createHash as createHash5 } from "node:crypto";
-import { readFileSync as readFileSync8, realpathSync, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { readFileSync as readFileSync5, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { connect, createServer } from "node:net";
-import { join as join10 } from "node:path";
+import { join as join8 } from "node:path";
 var PROBE_MS = 1500;
 function lockPort(dataDir) {
   let path = dataDir;
@@ -18452,13 +17326,13 @@ function lockPort(dataDir) {
 var answer = (dataDir) => `review-voice-watch ${process.pid} ${dataDir}
 `;
 function probe(port) {
-  return new Promise((resolve9) => {
+  return new Promise((resolve10) => {
     const socket = connect({ host: "127.0.0.1", port });
     let text4 = "";
     const done = (pid) => {
       clearTimeout(timer);
       socket.destroy();
-      resolve9(pid);
+      resolve10(pid);
     };
     const timer = setTimeout(() => done(null), PROBE_MS);
     socket.setEncoding("utf8");
@@ -18483,22 +17357,22 @@ async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT
       socket.once("data", () => socket.end(answer(dataDir)));
     });
     const listening = server;
-    const failure = await new Promise((resolve9) => {
-      listening.once("error", (error) => resolve9(error));
-      listening.listen({ host: "127.0.0.1", port, exclusive: true }, () => resolve9(null));
+    const failure = await new Promise((resolve10) => {
+      listening.once("error", (error) => resolve10(error));
+      listening.listen({ host: "127.0.0.1", port, exclusive: true }, () => resolve10(null));
     });
     if (failure === null) break;
     if (failure.code !== "EADDRINUSE") throw failure;
     const holder = await probe(port);
     if (holder !== null) return { holder };
     if (attempt >= patience.tries) return { foreign: port };
-    await new Promise((resolve9) => setTimeout(resolve9, patience.waitMs));
+    await new Promise((resolve10) => setTimeout(resolve10, patience.waitMs));
   }
   server.unref();
-  const display = join10(dataDir, "watch.lock");
+  const display = join8(dataDir, "watch.lock");
   const mine = String(process.pid);
   try {
-    writeFileSync2(display, mine, { mode: 384 });
+    writeFileSync(display, mine, { mode: 384 });
   } catch {
   }
   let released = false;
@@ -18508,7 +17382,7 @@ async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT
       released = true;
       server.close();
       try {
-        if (readFileSync8(display, "utf8") === mine) unlinkSync(display);
+        if (readFileSync5(display, "utf8") === mine) unlinkSync(display);
       } catch {
       }
     }
@@ -18517,21 +17391,21 @@ async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT
 
 // plugins/review-voice/src/watch/workspace.ts
 import { execFileSync as execFileSync10 } from "node:child_process";
-import { existsSync as existsSync6, mkdirSync as mkdirSync3, readdirSync as readdirSync2, statSync, unlinkSync as unlinkSync2 } from "node:fs";
-import { dirname as dirname8, join as join11 } from "node:path";
+import { existsSync as existsSync4, mkdirSync as mkdirSync2, readdirSync as readdirSync2, statSync, unlinkSync as unlinkSync2 } from "node:fs";
+import { dirname as dirname6, join as join9 } from "node:path";
 var NAME = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
 function cloneDir(workspace, repository) {
   const repo = repository.split("/")[1];
   if (!NAME.test(repository) || repo === "." || repo === "..") throw new Error(`${repository} is not an owner/repo name`);
-  return join11(workspace, ...repository.split("/"));
+  return join9(workspace, ...repository.split("/"));
 }
 var runQuietly = (command, args) => {
   execFileSync10(command, args, { stdio: ["ignore", "ignore", "pipe"], timeout: 6e5 });
 };
 var STALE_LOCK_MS = 10 * 6e4;
 function removeStaleGitLocks(dir, now = Date.now()) {
-  const git6 = join11(dir, ".git");
-  const candidates = ["packed-refs.lock", "shallow.lock", "index.lock"].map((name) => join11(git6, name));
+  const git6 = join9(dir, ".git");
+  const candidates = ["packed-refs.lock", "shallow.lock", "index.lock"].map((name) => join9(git6, name));
   const walk = (folder) => {
     let entries;
     try {
@@ -18540,12 +17414,12 @@ function removeStaleGitLocks(dir, now = Date.now()) {
       return;
     }
     for (const entry of entries) {
-      const path = join11(folder, entry.name);
+      const path = join9(folder, entry.name);
       if (entry.isDirectory()) walk(path);
       else if (entry.name.endsWith(".lock")) candidates.push(path);
     }
   };
-  walk(join11(git6, "refs"));
+  walk(join9(git6, "refs"));
   const removed = [];
   for (const path of candidates) {
     try {
@@ -18559,8 +17433,8 @@ function removeStaleGitLocks(dir, now = Date.now()) {
 }
 function gitPrepareClone(run = runQuietly) {
   return (repository, pull, dir) => {
-    if (!existsSync6(join11(dir, ".git"))) {
-      mkdirSync3(dirname8(dir), { recursive: true });
+    if (!existsSync4(join9(dir, ".git"))) {
+      mkdirSync2(dirname6(dir), { recursive: true });
       try {
         run("gh", ["repo", "clone", repository, dir, "--", "--filter=blob:none"]);
       } catch (error) {
@@ -18577,7 +17451,7 @@ function gitPrepareClone(run = runQuietly) {
 // plugins/review-voice/src/watch/command.ts
 var CONFIG_COPY = "watch-config.yaml";
 function writeCopy(source, copy) {
-  const text4 = readFileSync9(source);
+  const text4 = readFileSync6(source);
   const temp = `${copy}.tmp-${process.pid}`;
   try {
     unlinkSync3(temp);
@@ -18635,7 +17509,7 @@ async function watchCommand(argv, deps) {
     deps.err("Posting is off: set writes.github_posting_enabled in .review-voice/config.yaml, or watch without --post.");
     return 2;
   }
-  mkdirSync4(deps.dataDir, { recursive: true, mode: 448 });
+  mkdirSync3(deps.dataDir, { recursive: true, mode: 448 });
   const lock = await acquireLock(deps.dataDir, initial.watch.lockPort ?? lockPort(deps.dataDir));
   if ("holder" in lock) {
     deps.err(`Another watcher is running on ${deps.dataDir} (pid ${lock.holder}).`);
@@ -18656,7 +17530,7 @@ async function watchCommand(argv, deps) {
   };
   process.once("SIGINT", onSignal2);
   process.once("SIGTERM", onSignal2);
-  const copy = join12(deps.dataDir, CONFIG_COPY);
+  const copy = join10(deps.dataDir, CONFIG_COPY);
   const refresh = () => {
     writeCopy(source, copy);
     const settings = deps.loadSettings(copy);
@@ -18687,7 +17561,7 @@ async function watchCommand(argv, deps) {
             },
             post,
             mode,
-            workspace: settings.watch.workspace ?? join12(deps.dataDir, "clones")
+            workspace: settings.watch.workspace ?? join10(deps.dataDir, "clones")
           },
           argv.includes("--json")
         );
@@ -18877,7 +17751,7 @@ async function followOutcomes(client, db, deps, ownerReviewer) {
 }
 
 // plugins/review-voice/src/watch/review.ts
-import { execFile, spawn as spawn2 } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 var EVENTS = ["APPROVE", "COMMENT", "REQUEST_CHANGES"];
 var EXIT_DETAIL = {
   2: "review refused",
@@ -18928,7 +17802,7 @@ function killGroup2(pid, signal2) {
 function spawnReview(bundle, options) {
   const graceMs = options.graceMs ?? 1e4;
   const live2 = /* @__PURE__ */ new Map();
-  const review2 = ({ repository, pull, clone, post, mode, expectHead, timeoutMs, runRepositoryCommands }) => new Promise((resolve9) => {
+  const review2 = ({ repository, pull, clone, post, mode, expectHead, timeoutMs, runRepositoryCommands }) => new Promise((resolve10) => {
     const args = [bundle, "review", "--pr", String(pull), "--repository", repository, "--json", "--expect-head", expectHead, "--origin", "watch"];
     if (post) args.push("--post", "--recheck-thread");
     if (mode !== void 0) args.push("--mode", mode);
@@ -18936,7 +17810,7 @@ function spawnReview(bundle, options) {
     if (options.configPath !== null) env["REVIEW_VOICE_CONFIG"] = options.configPath;
     if (runRepositoryCommands) delete env["REVIEW_VOICE_NO_COMMANDS"];
     else env["REVIEW_VOICE_NO_COMMANDS"] = "1";
-    const child = spawn2(process.execPath, args, { cwd: clone, env, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, args, { cwd: clone, env, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     const pid = child.pid;
     let stdout = "";
     let stderr = "";
@@ -18962,10 +17836,10 @@ function spawnReview(bundle, options) {
       if (pid !== void 0) live2.delete(pid);
       markDone();
       if (timedOut) {
-        resolve9({ exitCode: 124, runId: null, event: null, reviewUrl: null, detail: `review timed out after ${formatDuration(timeoutMs)}` });
+        resolve10({ exitCode: 124, runId: null, event: null, reviewUrl: null, detail: `review timed out after ${formatDuration(timeoutMs)}` });
       } else {
         const why = stderr.length > 0 ? stderr : exitSignal !== null ? `killed by ${exitSignal}` : spawnError;
-        resolve9(reviewResult(exitCode ?? 1, stdout, why));
+        resolve10(reviewResult(exitCode ?? 1, stdout, why));
       }
     };
     const terminate = () => {
@@ -19243,6 +18117,109 @@ function shallowPassWarning(stages, findingCount) {
   if (analyst.diffLines < SHALLOW_MIN_DIFF_LINES) return null;
   if (analyst.toolCalls * SHALLOW_LINES_PER_CALL >= analyst.diffLines) return null;
   return `The analyst made ${analyst.toolCalls} tool call(s) on ${analyst.diffLines} changed lines and found nothing. That is a shallow pass for this size; consider re-running it, on a stronger model if need be, before trusting a clean result.`;
+}
+
+// plugins/review-voice/src/store/feedback.ts
+import { randomUUID as randomUUID4 } from "node:crypto";
+var FEEDBACK_ACTIONS = [
+  "keep",
+  "dismiss",
+  "rewrite",
+  "raise_severity",
+  "lower_severity",
+  "repo_specific",
+  "never_flag"
+];
+function normaliseAction(input) {
+  const candidate = input.trim().toLowerCase().replace(/-/g, "_");
+  return FEEDBACK_ACTIONS.includes(candidate) ? candidate : null;
+}
+function recordFeedback(db, input) {
+  const [left, right] = input.findingRef.includes(":") ? input.findingRef.split(":", 2) : [null, input.findingRef];
+  let reviewRunId;
+  let known;
+  if (left === null) {
+    const run = latestRun(db);
+    if (run === null) return { ok: false, error: "No review has been recorded yet." };
+    reviewRunId = run.reviewRunId;
+    known = run.findings.map((finding) => finding.findingId);
+  } else {
+    const row = db.prepare("SELECT review_run_id, output_json FROM review_runs WHERE review_run_id = ?").get(left);
+    if (row === void 0) return { ok: false, error: `No review run ${left}.` };
+    reviewRunId = row.review_run_id;
+    known = JSON.parse(row.output_json).findings.map(
+      (finding) => finding.findingId
+    );
+  }
+  const findingId = right.trim();
+  if (!known.includes(findingId)) {
+    return {
+      ok: false,
+      error: `No finding ${findingId} in that review. Available: ${known.join(", ") || "none"}.`
+    };
+  }
+  if (input.action === "rewrite" && (input.replacementText ?? "").trim().length === 0) {
+    return { ok: false, error: "A rewrite needs the replacement text." };
+  }
+  const feedbackId = randomUUID4();
+  db.prepare(
+    `INSERT INTO feedback (feedback_id, review_run_id, finding_id, action, replacement_text, reason, actor, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (review_run_id, finding_id, action) DO UPDATE SET
+       replacement_text = excluded.replacement_text,
+       reason = excluded.reason,
+       created_at = excluded.created_at`
+  ).run(
+    feedbackId,
+    reviewRunId,
+    findingId,
+    input.action,
+    input.replacementText ?? null,
+    input.reason ?? null,
+    input.actor,
+    (/* @__PURE__ */ new Date()).toISOString()
+  );
+  recordAudit(db, "feedback_recorded", { type: "finding", id: findingId }, {
+    reviewRunId,
+    action: input.action
+  });
+  return { ok: true, feedbackId, reviewRunId, findingId };
+}
+function unlabelledFindings(db) {
+  const runs = db.prepare("SELECT review_run_id, output_json FROM review_runs").all();
+  const labelled = new Set(
+    db.prepare("SELECT review_run_id, finding_id FROM feedback").all().map((row) => `${row.review_run_id}:${row.finding_id}`)
+  );
+  let unlabelled = 0;
+  for (const run of runs) {
+    let findings = [];
+    try {
+      findings = JSON.parse(run.output_json ?? "{}").findings ?? [];
+    } catch {
+      continue;
+    }
+    for (const finding of findings) {
+      if (finding.findingId === void 0) continue;
+      if (!labelled.has(`${run.review_run_id}:${finding.findingId}`)) unlabelled += 1;
+    }
+  }
+  return unlabelled;
+}
+function feedbackTotals(db) {
+  const rows = db.prepare("SELECT action, COUNT(*) AS n FROM feedback GROUP BY action").all();
+  const by = Object.fromEntries(rows.map((row) => [row.action, row.n]));
+  const kept = by["keep"] ?? 0;
+  const rewritten = by["rewrite"] ?? 0;
+  const dismissed = by["dismiss"] ?? 0;
+  const other = rows.reduce((sum, row) => sum + row.n, 0) - kept - rewritten - dismissed;
+  const labelled = kept + rewritten + dismissed;
+  return {
+    kept,
+    rewritten,
+    dismissed,
+    other,
+    ownerPrecision: labelled === 0 ? null : (kept + rewritten) / labelled
+  };
 }
 
 // plugins/review-voice/src/help.ts
@@ -20282,6 +19259,415 @@ import { execFileSync as execFileSync13 } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync10, rmSync as rmSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname9, isAbsolute as isAbsolute3, join as join14, resolve as resolve2, sep } from "node:path";
 
+// plugins/review-voice/src/agents/claude-cli.ts
+import { spawn as spawn2 } from "node:child_process";
+
+// plugins/review-voice/src/agents/tools.ts
+import { existsSync as existsSync5, readFileSync as readFileSync7 } from "node:fs";
+import { dirname as dirname7, join as join11 } from "node:path";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
+var RUNNER_TOOLS = ["Read", "Grep", "Glob"];
+var HOST_ONLY_TOOLS = ["Bash(git:*)"];
+var AgentSpecError = class extends Error {
+};
+function pluginRoot2() {
+  const here = dirname7(fileURLToPath4(import.meta.url));
+  for (let dir = here; ; dir = dirname7(dir)) {
+    if (existsSync5(join11(dir, ".claude-plugin", "plugin.json"))) return dir;
+    if (dirname7(dir) === dir) return join11(here, "..");
+  }
+}
+function agentsDir() {
+  return join11(pluginRoot2(), "agents");
+}
+function schemasDir() {
+  return join11(pluginRoot2(), "schemas");
+}
+function checkAgentName(name) {
+  if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new AgentSpecError(`Unknown agent: ${name} (not an agent name)`);
+}
+function agentFile(name) {
+  checkAgentName(name);
+  const path = join11(agentsDir(), `${name}.md`);
+  if (!existsSync5(path)) throw new AgentSpecError(`Unknown agent: ${name} (no ${name}.md in ${agentsDir()})`);
+  return path;
+}
+function readAgentTools(name) {
+  return parseAgentTools(readFileSync7(agentFile(name), "utf8"), `${name}.md`);
+}
+function parseAgentTools(text4, label2) {
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text4)?.[1];
+  if (frontmatter === void 0) throw new AgentSpecError(`${label2} has no frontmatter`);
+  const line3 = /^tools:[ \t]*(.*)$((?:\r?\n[ \t]*-[^\n]*)*)/m.exec(frontmatter);
+  if (line3 === null) throw new AgentSpecError(`${label2} declares no tools: line`);
+  const inline = line3[1].trim();
+  const items = inline === "" ? line3[2].split("\n").map((item) => item.replace(/^[ \t]*-/, "")) : inline.replace(/^\[(.*)\]$/, "$1").split(",");
+  return items.map((tool) => tool.trim().replace(/^["']|["']$/g, "")).filter((tool) => tool !== "");
+}
+function runnerTools(declared) {
+  const tools = [];
+  for (const tool of declared) {
+    if (HOST_ONLY_TOOLS.includes(tool)) continue;
+    if (!RUNNER_TOOLS.includes(tool)) {
+      throw new AgentSpecError(`Tool ${tool} is not allowed: the runner grants only ${RUNNER_TOOLS.join(", ")}`);
+    }
+    if (!tools.includes(tool)) tools.push(tool);
+  }
+  return tools;
+}
+
+// plugins/review-voice/src/agents/types.ts
+var DEFAULT_AGENT_TIMEOUT_MS = 6e5;
+var MAX_AGENT_TIMEOUT_MS = 36e5;
+var DEFAULT_AGENT_PARALLELISM = 4;
+
+// plugins/review-voice/src/agents/claude-cli.ts
+var ERROR_CHARS = 500;
+var MAX_STDOUT_BYTES = 32 * 1024 * 1024;
+var MAX_STDERR_BYTES = 64 * 1024;
+function childEnv(env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(
+      ([key2]) => key2 !== "GITHUB_TOKEN" && key2 !== "GH_TOKEN" && !key2.startsWith("REVIEW_VOICE_")
+    )
+  );
+}
+function agentTimeoutMs(spec) {
+  return Math.min(spec.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS);
+}
+var live = /* @__PURE__ */ new Set();
+var signalsOwned = false;
+function stopAll() {
+  for (const child of live) killTree(child);
+}
+function ownSignals(owned) {
+  signalsOwned = owned;
+}
+function onSignal(signal2) {
+  stopAll();
+  process.exit(signal2 === "SIGINT" ? 130 : 143);
+}
+function track(child) {
+  if (live.size === 0 && !signalsOwned) {
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
+  }
+  live.add(child);
+}
+function untrack(child) {
+  if (!live.delete(child) || live.size > 0) return;
+  process.off("SIGINT", onSignal);
+  process.off("SIGTERM", onSignal);
+}
+var WATCHDOG = `
+const { spawn } = require('node:child_process');
+const parent = process.ppid;
+const [bin, ...args] = process.argv.slice(1);
+const child = spawn(bin, args, { stdio: 'inherit' });
+const poll = setInterval(() => {
+  if (process.ppid === parent) return;
+  try { process.kill(-process.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); process.exit(1); }
+}, 2000);
+child.on('error', (error) => {
+  process.stderr.write('could not start ' + bin + ': ' + error.message);
+  process.exit(127);
+});
+child.on('exit', (code, signal) => {
+  clearInterval(poll);
+  if (signal) process.kill(process.pid, signal);
+  process.exitCode = code ?? 1;
+});
+`;
+function claudeBin(env) {
+  return env["REVIEW_VOICE_CLAUDE_BIN"] || "claude";
+}
+var isCount2 = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+function tokensOf(usage) {
+  if (usage === null || typeof usage !== "object") return void 0;
+  const { input_tokens: input, output_tokens: output } = usage;
+  return isCount2(input) && isCount2(output) ? input + output : void 0;
+}
+function claudeArguments(spec, addDirs, env) {
+  const tools = spec.tools.join(",");
+  return [
+    "-p",
+    "--restricted",
+    // Ignores CLAUDE.md, skills, commands and agents planted in the checkout.
+    "--safe-mode",
+    "--strict-mcp-config",
+    "--no-session-persistence",
+    // Bare mode skips OAuth and keychain reads, which only an API key replaces.
+    ...env["ANTHROPIC_API_KEY"] ? ["--bare"] : [],
+    "--system-prompt-file",
+    agentFile(spec.name),
+    "--model",
+    spec.model,
+    // An empty value is how claude disables every built-in tool; leaving the
+    // flag out would grant the default set.
+    "--tools",
+    tools,
+    ...tools === "" ? [] : ["--allowedTools", tools],
+    ...addDirs.flatMap((dir) => ["--add-dir", dir]),
+    "--json-schema",
+    JSON.stringify(spec.schema),
+    "--output-format",
+    "json"
+  ];
+}
+function firstChars(text4) {
+  return text4.trim().slice(0, ERROR_CHARS);
+}
+function interpretEnvelope(stdout, stderr, code) {
+  let envelope = null;
+  try {
+    const parsed2 = JSON.parse(stdout);
+    if (parsed2 !== null && typeof parsed2 === "object" && !Array.isArray(parsed2)) envelope = parsed2;
+  } catch {
+    envelope = null;
+  }
+  const costUsd = typeof envelope?.total_cost_usd === "number" ? envelope.total_cost_usd : null;
+  const tokens = tokensOf(envelope?.usage);
+  const counted = tokens === void 0 ? {} : { tokens };
+  if (code === 0 && envelope !== null && envelope.is_error === false && envelope.structured_output !== void 0) {
+    return { ok: true, output: envelope.structured_output, costUsd, ...counted };
+  }
+  const result = typeof envelope?.result === "string" ? envelope.result : "";
+  const detail = firstChars(result) || firstChars(stderr) || firstChars(stdout) || (code === 0 ? "claude returned no structured output" : `claude exited with code ${code}`);
+  return { ok: false, output: null, costUsd, ...counted, error: detail };
+}
+function runClaudeCli(spec, prompt, cwd, addDirs, env) {
+  const args = claudeArguments(spec, addDirs, env);
+  const timeoutMs = agentTimeoutMs(spec);
+  const bin = claudeBin(env);
+  return new Promise((resolve10) => {
+    const child = spawn2(process.execPath, ["-e", WATCHDOG, "--", bin, ...args], {
+      cwd,
+      env: childEnv(env),
+      detached: process.platform !== "win32",
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    track(child);
+    const stdout = [];
+    const stderr = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stopped = null;
+    let settled = false;
+    const finish = (result) => {
+      untrack(child);
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve10(result);
+    };
+    const stop = (reason2) => {
+      stopped ??= reason2;
+      killTree(child);
+    };
+    const timer = setTimeout(() => stop("timeout"), timeoutMs);
+    child.stdout?.on("data", (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > MAX_STDOUT_BYTES) stop("output too large");
+      else stdout.push(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      if (stderrBytes < MAX_STDERR_BYTES) stderr.push(chunk);
+      stderrBytes += chunk.length;
+    });
+    child.on("error", (error) => {
+      finish({ ok: false, output: null, costUsd: null, error: `could not start ${bin}: ${error.message}` });
+    });
+    child.on("close", (code) => {
+      if (stopped !== null) {
+        finish({ ok: false, output: null, costUsd: null, error: stopped });
+        return;
+      }
+      finish(
+        interpretEnvelope(
+          Buffer.concat(stdout).toString("utf8"),
+          Buffer.concat(stderr).toString("utf8"),
+          code
+        )
+      );
+    });
+    if (child.stdin) {
+      child.stdin.on("error", () => {
+      });
+      child.stdin.end(prompt);
+    }
+  });
+}
+function killTree(child) {
+  if (child.pid === void 0) return;
+  try {
+    if (process.platform === "win32") child.kill("SIGKILL");
+    else process.kill(-child.pid, "SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
+  }
+}
+
+// plugins/review-voice/src/agents/fake.ts
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync8, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join12 } from "node:path";
+function runFake(spec, prompt, dir, cwd = "", addDirs = []) {
+  checkAgentName(spec.name);
+  const calls = join12(dir, ".calls");
+  mkdirSync4(calls, { recursive: true });
+  const counter = join12(calls, `${spec.name}.count`);
+  const n = (existsSync6(counter) ? Number(readFileSync8(counter, "utf8").trim()) || 0 : 0) + 1;
+  writeFileSync2(counter, `${n}
+`);
+  writeFileSync2(join12(calls, `${spec.name}.${n}.prompt.txt`), prompt);
+  writeFileSync2(
+    join12(calls, `${spec.name}.${n}.spec.json`),
+    `${JSON.stringify({ name: spec.name, model: spec.model, tools: spec.tools, timeoutMs: spec.timeoutMs ?? null, cwd, addDirs }, null, 2)}
+`
+  );
+  const numbered = join12(dir, `${spec.name}.${n}.json`);
+  const fallback = join12(dir, `${spec.name}.json`);
+  const path = existsSync6(numbered) ? numbered : fallback;
+  if (!existsSync6(path)) {
+    return { ok: false, output: null, costUsd: null, error: `no fake output: neither ${numbered} nor ${fallback} exists` };
+  }
+  let parsed2;
+  try {
+    parsed2 = JSON.parse(readFileSync8(path, "utf8"));
+  } catch (error) {
+    return { ok: false, output: null, costUsd: null, error: `${path} is not JSON: ${error.message}` };
+  }
+  const record3 = parsed2 !== null && typeof parsed2 === "object" ? parsed2 : {};
+  if (typeof record3["error"] === "string") return { ok: false, output: null, costUsd: null, error: record3["error"] };
+  if ("output" in record3) {
+    const tokens = record3["tokens"];
+    return {
+      ok: true,
+      output: record3["output"],
+      costUsd: null,
+      ...typeof tokens === "number" && Number.isFinite(tokens) && tokens >= 0 ? { tokens } : {}
+    };
+  }
+  return { ok: false, output: null, costUsd: null, error: `${path} has neither "output" nor "error"` };
+}
+
+// plugins/review-voice/src/agents/schema.ts
+import { readFileSync as readFileSync9 } from "node:fs";
+import { dirname as dirname8, isAbsolute as isAbsolute2, relative, resolve } from "node:path";
+function schemaForRunner(schema4, baseDir) {
+  const base = resolve(baseDir);
+  const prepared = prepare(schema4, { baseDir: base, dir: base, document: schema4, inlined: false, stack: [] });
+  return prepared;
+}
+function prepare(node, ctx) {
+  if (Array.isArray(node)) return node.map((item) => prepare(item, ctx));
+  if (node === null || typeof node !== "object") return node;
+  const rest = {};
+  for (const [key2, value] of Object.entries(node)) {
+    if (key2 === "$schema" || key2 === "$id" || key2 === "$ref") continue;
+    Object.defineProperty(rest, key2, { value: prepare(value, ctx), enumerable: true, writable: true, configurable: true });
+  }
+  const ref = node["$ref"];
+  if (ref === void 0) return rest;
+  if (typeof ref !== "string") throw new AgentSpecError("A schema $ref must be a string");
+  if (ref.startsWith("#")) {
+    checkInternalRef(ref, ctx);
+    return { $ref: ref, ...rest };
+  }
+  const target = resolveFileRef(ref, ctx);
+  if (target === null || typeof target !== "object" || Array.isArray(target)) {
+    throw new AgentSpecError(`Schema $ref ${ref} does not point at a schema object`);
+  }
+  return { ...target, ...rest };
+}
+function checkInternalRef(ref, ctx) {
+  if (ctx.inlined) {
+    throw new AgentSpecError(`Schema $ref ${ref} sits in a referenced file and cannot be kept once it is inlined`);
+  }
+  const match = /^#\/(\$defs|definitions)\/[^/]+$/.exec(ref);
+  if (match === null || pointer(ctx.document, ref.slice(1)) === void 0) {
+    throw new AgentSpecError(`Schema $ref ${ref} must point into this schema's $defs or definitions`);
+  }
+}
+function resolveFileRef(ref, ctx) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith("//") || isAbsolute2(ref)) {
+    throw new AgentSpecError(`Schema $ref ${ref} is absolute; only a relative file is allowed`);
+  }
+  const hash2 = ref.indexOf("#");
+  const file2 = resolve(ctx.dir, hash2 === -1 ? ref : ref.slice(0, hash2));
+  const fragment = hash2 === -1 ? "" : ref.slice(hash2 + 1);
+  const fromBase = relative(ctx.baseDir, file2);
+  if (fromBase.startsWith("..") || isAbsolute2(fromBase)) {
+    throw new AgentSpecError(`Schema $ref ${ref} leaves ${ctx.baseDir}`);
+  }
+  const key2 = `${file2}#${fragment}`;
+  if (ctx.stack.includes(key2)) throw new AgentSpecError(`Schema $ref ${ref} is part of a cycle`);
+  let document;
+  try {
+    document = JSON.parse(readFileSync9(file2, "utf8"));
+  } catch (error) {
+    throw new AgentSpecError(`Schema $ref ${ref} cannot be read: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const target = fragment === "" ? document : fragment.startsWith("/") ? pointer(document, fragment) : void 0;
+  if (target === void 0) throw new AgentSpecError(`Schema $ref ${ref} has a fragment that does not resolve`);
+  return prepare(target, {
+    baseDir: ctx.baseDir,
+    dir: dirname8(file2),
+    document,
+    inlined: true,
+    stack: [...ctx.stack, key2]
+  });
+}
+function pointer(document, path) {
+  let node = document;
+  for (const raw of path.split("/").slice(1)) {
+    let step;
+    try {
+      step = decodeURIComponent(raw).replace(/~1/g, "/").replace(/~0/g, "~");
+    } catch {
+      return void 0;
+    }
+    if (node === null || typeof node !== "object" || !Object.hasOwn(node, step)) return void 0;
+    node = node[step];
+  }
+  return node;
+}
+
+// plugins/review-voice/src/agents/runner.ts
+var RUNNER_PREAMBLE = `Tools available: ${RUNNER_TOOLS.join(", ")}. Shell and git are not available in this run. The working directory is the pull request head; base versions of changed files, when provided, are under the directories named in the prompt.`;
+function elapsed(started) {
+  return Math.round((performance.now() - started) / 10) / 100;
+}
+async function runAgent(spec, prompt, cwd, addDirs = [], env = process.env) {
+  const started = performance.now();
+  try {
+    const granted = { ...spec, tools: runnerTools(spec.tools) };
+    const sent = `${RUNNER_PREAMBLE}
+
+${prompt}`;
+    const fakeDir = env["REVIEW_VOICE_FAKE_AGENTS"];
+    if (fakeDir) return { ...runFake(granted, sent, fakeDir, cwd, addDirs), seconds: elapsed(started) };
+    if (env["REVIEW_VOICE_AGENT_RUNNER"] === "fake") {
+      return {
+        ok: false,
+        output: null,
+        costUsd: null,
+        seconds: elapsed(started),
+        error: "REVIEW_VOICE_AGENT_RUNNER=fake needs REVIEW_VOICE_FAKE_AGENTS=<dir>"
+      };
+    }
+    const prepared = { ...granted, schema: schemaForRunner(spec.schema, spec.schemaDir ?? schemasDir()) };
+    return { ...await runClaudeCli(prepared, sent, cwd, addDirs, env), seconds: elapsed(started) };
+  } catch (error) {
+    return {
+      ok: false,
+      output: null,
+      costUsd: null,
+      seconds: elapsed(started),
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 // plugins/review-voice/src/diff/pull-request.ts
 import { execFileSync as execFileSync11 } from "node:child_process";
 var STATUS2 = {
@@ -20720,7 +20106,7 @@ function excerptOf(value, sentences, name, id, notes) {
   notes.push(`Widened ${name.split(".").pop()} of ${id} to its whole sentence`);
   return { value: widened, problem: null };
 }
-function text3(value, name, max = MAX_TEXT2) {
+function text2(value, name, max = MAX_TEXT2) {
   if (typeof value !== "string" || value.trim().length === 0) return { value: null, problem: `${name} must be non-empty text` };
   if (value.length > max) return { value: null, problem: `${name} must be at most ${max} characters` };
   return { value: value.trim(), problem: null };
@@ -20746,9 +20132,9 @@ function statementOf(rawEntry, at2, sentences, removed) {
   if (!INTENT_KINDS.includes(kind)) {
     return { value: null, problem: `${at2}.kind must be one of ${INTENT_KINDS.join(", ")}` };
   }
-  const statement = text3(entry["statement"], `${at2}.statement`);
+  const statement = text2(entry["statement"], `${at2}.statement`);
   if (statement.problem !== null) return { value: null, problem: statement.problem };
-  const rawQuote = text3(entry["quote"], `${at2}.quote`, MAX_QUOTE);
+  const rawQuote = text2(entry["quote"], `${at2}.quote`, MAX_QUOTE);
   if (rawQuote.problem !== null) return { value: null, problem: rawQuote.problem };
   const answered = answeredHeading(rawQuote.value, sentences);
   const quote2 = answered === null ? excerptOf(rawQuote.value, sentences, `${at2}.quote`, id, removed) : rawQuote;
@@ -20762,7 +20148,7 @@ function statementOf(rawEntry, at2, sentences, removed) {
   }
   let reason2;
   if (kind === "deliberate") {
-    const parsed2 = text3(entry["reason"], `${at2}.reason`, MAX_QUOTE);
+    const parsed2 = text2(entry["reason"], `${at2}.reason`, MAX_QUOTE);
     if (parsed2.problem !== null) return { value: null, problem: `${parsed2.problem} on a deliberate statement` };
     const excerpt = excerptOf(parsed2.value, sentences, `${at2}.reason`, id, removed);
     if (excerpt.problem !== null) return { value: null, problem: excerpt.problem };
@@ -20813,6 +20199,220 @@ function parseIntent(value, description) {
   if (twice !== void 0) return refuse(`id ${twice} is used by two statements`, dropped);
   if (raw.length > 0 && statements.length === 0) return refuse("no statement survives validation", dropped);
   return { value: { statements }, problem: null, dropped, removed };
+}
+
+// plugins/review-voice/src/verify/challenge.ts
+var CHALLENGE_VERDICTS = ["confirmed", "partly", "refuted"];
+var isRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var idOf2 = (entry) => {
+  const id = entry["candidateId"] ?? entry["candidate_id"];
+  return typeof id === "string" ? id : null;
+};
+var text3 = (value) => typeof value === "string" && value.trim().length > 0 ? value : null;
+function eligibleFindings(scores) {
+  return isRecord2(scores) && Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord2) : [];
+}
+function candidatesById(parsed2) {
+  const key2 = isRecord2(parsed2) ? ["candidates", "kept"].find((k) => Array.isArray(parsed2[k])) : void 0;
+  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord2(parsed2) && key2 !== void 0 ? parsed2[key2] : [];
+  const out = /* @__PURE__ */ new Map();
+  for (const entry of list2) {
+    if (!isRecord2(entry)) continue;
+    const id = idOf2(entry);
+    if (id !== null) out.set(id, entry);
+  }
+  return out;
+}
+function intentStatements(parsed2) {
+  const list2 = isRecord2(parsed2) && Array.isArray(parsed2["statements"]) ? parsed2["statements"] : Array.isArray(parsed2) ? parsed2 : [];
+  return list2.filter((s) => isRecord2(s) && typeof s["id"] === "string");
+}
+function challengePrompt(finding, candidate, statements, diffFile) {
+  const pick = (snake, camel) => text3(candidate?.[snake]) ?? text3(candidate?.[camel]) ?? text3(finding[snake]) ?? text3(finding[camel]);
+  const id = idOf2(finding) ?? (candidate === void 0 ? null : idOf2(candidate)) ?? "unknown";
+  const path = text3(finding["path"]) ?? text3(candidate?.["path"]) ?? "unknown";
+  const line3 = Number.isInteger(finding["line"]) ? finding["line"] : candidate?.["line"];
+  const intentRef = pick("intent_ref", "intentRef");
+  const cited = intentRef === null ? [] : statements.filter((s) => s.id === intentRef);
+  const causedBy = isRecord2(finding["causedBy"]) ? finding["causedBy"] : isRecord2(candidate?.["caused_by"]) ? candidate["caused_by"] : null;
+  const rows = [
+    `Challenge finding ${id}.`,
+    "",
+    `Claim: ${pick("claim", "claim") ?? ""}`,
+    `Failure mode: ${pick("failure_mode", "failureMode") ?? ""}`,
+    `Category: ${pick("category", "category") ?? ""}`,
+    `Anchored at: ${path}:${line3 ?? "unknown"}`
+  ];
+  if (causedBy !== null && typeof causedBy["path"] === "string" && Number.isInteger(causedBy["line"])) {
+    rows.push(`Stale consumer of the changed line: ${causedBy["path"]}:${String(causedBy["line"])}`);
+  }
+  if (diffFile !== void 0 && diffFile !== null) rows.push(`Diff under review: ${diffFile}`);
+  if (cited.length > 0) {
+    rows.push("", "Stated intent the finding cites, quoted from the pull request description (untrusted):");
+    for (const s of cited) {
+      rows.push(`- ${s.id} (${s.kind ?? "statement"}): "${s.quote ?? s.statement ?? ""}"`);
+      if (s.reason !== void 0) rows.push(`  Reason given: "${s.reason}"`);
+    }
+  }
+  rows.push(
+    "",
+    "You are not given the verifier's reasoning, confidence or evidence. Read the code at the head yourself.",
+    `Return {"verdicts": [{"candidate_id": "${id}", "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "reason"}]}.`
+  );
+  return rows.join("\n");
+}
+function challengePrompts(scores, candidates, statements, diffFile) {
+  return eligibleFindings(scores).map((finding) => {
+    const id = idOf2(finding) ?? "unknown";
+    return { candidate_id: id, prompt: challengePrompt(finding, candidates.get(id), statements, diffFile) };
+  });
+}
+var DECISIVE = /^\S(?:.*\S)?:\d+(?:-\d+)?$/u;
+function parseChallengeVerdicts(raw) {
+  const list2 = Array.isArray(raw) ? raw : isRecord2(raw) && Array.isArray(raw["verdicts"]) ? raw["verdicts"] : null;
+  if (list2 === null) return { ok: false, problems: ['expected {"verdicts": [...]}'] };
+  const problems = [];
+  const verdicts = [];
+  list2.forEach((entry, index) => {
+    if (!isRecord2(entry)) {
+      problems.push(`verdict ${index} is not an object`);
+      return;
+    }
+    const id = typeof entry["candidate_id"] === "string" && entry["candidate_id"].length > 0 ? entry["candidate_id"] : null;
+    const name = id ?? `verdict ${index}`;
+    const before = problems.length;
+    if (id === null) problems.push(`verdict ${index} has no candidate_id`);
+    const label2 = entry["verdict"];
+    if (!CHALLENGE_VERDICTS.includes(label2)) {
+      problems.push(`${name}: verdict must be one of ${CHALLENGE_VERDICTS.join(", ")}`);
+    }
+    if (typeof entry["line_ok"] !== "boolean") problems.push(`${name}: line_ok must be true or false`);
+    const corrected = entry["corrected_line"];
+    if (corrected !== void 0 && (!Number.isInteger(corrected) || corrected < 1)) {
+      problems.push(`${name}: corrected_line must be a positive integer`);
+    }
+    const decisive = entry["decisive_evidence"];
+    if (!Array.isArray(decisive) || decisive.some((d) => typeof d !== "string" || !DECISIVE.test(d.trim()))) {
+      problems.push(`${name}: decisive_evidence must be a list of "path:line" references`);
+    }
+    if (typeof entry["reason"] !== "string") problems.push(`${name}: reason must be a string`);
+    if (problems.length > before) return;
+    const lineOk = entry["line_ok"];
+    const reason2 = entry["reason"].trim();
+    const evidence = decisive.map((d) => d.trim());
+    if (label2 === "confirmed" && evidence.length === 0) {
+      problems.push(`${name}: confirmed names no decisive_evidence`);
+    }
+    if (label2 === "confirmed" && !lineOk && corrected === void 0) {
+      problems.push(`${name}: confirmed with line_ok false has no corrected_line`);
+    }
+    if (lineOk && corrected !== void 0) problems.push(`${name}: line_ok true contradicts corrected_line`);
+    if (label2 !== "confirmed" && reason2.length === 0) problems.push(`${name}: ${String(label2)} gives no reason`);
+    verdicts.push({
+      candidate_id: id,
+      verdict: label2,
+      line_ok: lineOk,
+      ...corrected === void 0 ? {} : { corrected_line: corrected },
+      decisive_evidence: evidence,
+      reason: reason2
+    });
+  });
+  return problems.length > 0 ? { ok: false, problems } : { ok: true, verdicts };
+}
+function applyChallenge(scores, candidates, rawVerdicts, hunks) {
+  if (!isRecord2(scores) || !Array.isArray(scores["scores"]) || !Array.isArray(scores["eligible"])) {
+    return { ok: false, problems: ["expected the JSON `RV score` printed, with `scores` and `eligible` lists"] };
+  }
+  const parsed2 = parseChallengeVerdicts(rawVerdicts);
+  if (!parsed2.ok) return parsed2;
+  const eligible = eligibleFindings(scores);
+  const eligibleIds = eligible.map(idOf2).filter((id) => id !== null);
+  const problems = [];
+  const byId = /* @__PURE__ */ new Map();
+  for (const verdict2 of parsed2.verdicts) {
+    if (byId.has(verdict2.candidate_id)) problems.push(`${verdict2.candidate_id}: more than one verdict`);
+    byId.set(verdict2.candidate_id, verdict2);
+  }
+  const missing = eligibleIds.filter((id) => !byId.has(id));
+  if (missing.length > 0) problems.push(`no verdict for eligible ${missing.join(", ")}`);
+  const unknown = [...byId.keys()].filter((id) => !eligibleIds.includes(id));
+  if (unknown.length > 0) problems.push(`verdict for ${unknown.join(", ")}, which is not eligible`);
+  for (const finding of eligible) {
+    const id = idOf2(finding);
+    const verdict2 = id === null ? void 0 : byId.get(id);
+    if (verdict2?.corrected_line !== void 0 && verdict2.corrected_line === finding["line"]) {
+      problems.push(`${String(id)}: corrected_line ${verdict2.corrected_line} is the line it is already anchored on`);
+    }
+  }
+  if (problems.length > 0) return { ok: false, problems };
+  const summary = { confirmed: [], held: [], moved: [] };
+  const held = [];
+  const holdReasons = /* @__PURE__ */ new Map();
+  const hold = (finding, id, verdict2, reason2) => {
+    holdReasons.set(id, { verdict: verdict2, reason: reason2 });
+    summary.held.push({ candidate_id: id, verdict: verdict2, reason: reason2 });
+    const candidate = candidates.get(id);
+    const claim = text3(candidate?.["claim"]) ?? text3(finding["claim"]);
+    const severity = text3(finding["severity"]);
+    held.push({
+      path: String(finding["path"]),
+      line: finding["line"],
+      verdict: verdict2,
+      source: "challenge",
+      reason: reason2,
+      ...severity === null ? {} : { severity },
+      candidateId: id,
+      ...claim === null ? {} : { text: claim }
+    });
+  };
+  const verdictOf = (entry) => {
+    const id = idOf2(entry);
+    const verdict2 = id === null ? void 0 : byId.get(id);
+    if (verdict2 === void 0) return entry;
+    const { candidate_id: _id, ...rest } = verdict2;
+    const heldAs = holdReasons.get(id);
+    return heldAs === void 0 ? { ...entry, challenge: rest } : { ...entry, challenge: rest, eligible: false, rejectedBecause: `${heldAs.verdict}: ${heldAs.reason}` };
+  };
+  for (const finding of eligible) {
+    const id = idOf2(finding);
+    const verdict2 = byId.get(id);
+    if (verdict2.verdict === "partly") hold(finding, id, "challenge-partly", verdict2.reason);
+    else if (verdict2.verdict === "refuted") hold(finding, id, "challenge-refuted", verdict2.reason);
+  }
+  let document = {
+    ...scores,
+    scores: scores["scores"].map((e) => isRecord2(e) ? verdictOf(e) : e),
+    eligible: eligible.filter((e) => !holdReasons.has(idOf2(e)))
+  };
+  for (const finding of eligible) {
+    const id = idOf2(finding);
+    const verdict2 = byId.get(id);
+    if (verdict2.verdict !== "confirmed") continue;
+    if (verdict2.corrected_line === void 0) {
+      summary.confirmed.push(id);
+      continue;
+    }
+    const moved = reanchorScores(document, id, { path: null, line: verdict2.corrected_line }, hunks);
+    if (moved.ok) {
+      document = moved.updated;
+      summary.confirmed.push(id);
+      summary.moved.push({ candidate_id: id, from: moved.from, to: moved.to });
+      continue;
+    }
+    const reason2 = `corrected line refused: ${moved.refused}`;
+    hold(finding, id, "challenge-partly", reason2);
+    const heldAs = { eligible: false, rejectedBecause: `challenge-partly: ${reason2}` };
+    document = {
+      ...document,
+      scores: document["scores"].map((e) => isRecord2(e) && idOf2(e) === id ? { ...e, ...heldAs } : e),
+      eligible: document["eligible"].filter((e) => !(isRecord2(e) && idOf2(e) === id))
+    };
+  }
+  const order = new Map(eligibleIds.map((id, index) => [id, index]));
+  const rank2 = (id) => order.get(id ?? "") ?? 0;
+  held.sort((a, b) => rank2(a.candidateId) - rank2(b.candidateId));
+  summary.held.sort((a, b) => rank2(a.candidate_id) - rank2(b.candidate_id));
+  return { ok: true, document: { ...document, challengeHeld: held, challenge: summary }, summary };
 }
 
 // plugins/review-voice/src/review/prompts.ts
@@ -25871,6 +25471,233 @@ async function collectRepository(client, options, stats) {
   return { events, watermarks };
 }
 
+// plugins/review-voice/src/corpus/select.ts
+function selectEvents(events, options) {
+  const discoveredEligible = events.length;
+  const cap = Math.max(1, Math.floor(options.target * options.maxRepositoryShare));
+  const sorted = [...events].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const perRepository = {};
+  const selected = [];
+  const deferred = [];
+  const ownerEvents = sorted.filter((event) => event.role === "owner");
+  for (const event of ownerEvents) {
+    perRepository[event.repository] = (perRepository[event.repository] ?? 0) + 1;
+    selected.push(event);
+  }
+  for (const event of sorted) {
+    if (event.role === "owner") continue;
+    if (selected.length >= options.target) break;
+    const count3 = perRepository[event.repository] ?? 0;
+    if (count3 >= cap) {
+      deferred.push(event);
+      continue;
+    }
+    perRepository[event.repository] = count3 + 1;
+    selected.push(event);
+  }
+  const hardCap = Math.max(cap, Math.floor(options.target * Math.min(1, options.maxRepositoryShare * 1.5)));
+  const overRepresented = /* @__PURE__ */ new Set();
+  for (const event of deferred) {
+    if (selected.length >= options.target) break;
+    const count3 = perRepository[event.repository] ?? 0;
+    if (count3 >= hardCap) continue;
+    if (count3 >= cap) overRepresented.add(event.repository);
+    perRepository[event.repository] = count3 + 1;
+    selected.push(event);
+  }
+  const shortfall = Math.max(0, options.target - selected.length);
+  const exhausted = selected.length >= discoveredEligible;
+  return {
+    selected,
+    targetEvents: options.target,
+    ownerEvents: ownerEvents.length,
+    discoveredEligible,
+    importedEvents: selected.length,
+    shortfall,
+    // Claiming a full scan when the history ran out would misrepresent how
+    // much the policy actually rests on - and so would blaming an exhausted
+    // corpus when the real limit was diversity.
+    shortfallReason: shortfall === 0 ? null : exhausted ? "Accessible review corpus exhausted" : "Repository diversity limit reached; one repository would otherwise dominate the corpus",
+    perRepository,
+    overRepresented: [...overRepresented]
+  };
+}
+var PER_REPOSITORY_TARGET = 60;
+var TARGET_FLOOR = 250;
+var TARGET_CEILING = 1500;
+function scaledTarget(repositoryCount) {
+  const scaled = PER_REPOSITORY_TARGET * Math.max(1, repositoryCount);
+  return Math.min(TARGET_CEILING, Math.max(TARGET_FLOOR, scaled));
+}
+var SHARE_CEILING = 0.5;
+var SHARE_FLOOR = 0.15;
+function scaledRepositoryShare(repositoryCount) {
+  if (repositoryCount <= 1) return 1;
+  return Math.min(SHARE_CEILING, Math.max(SHARE_FLOOR, 2 / repositoryCount));
+}
+
+// plugins/review-voice/src/sync/state.ts
+import { randomUUID as randomUUID5 } from "node:crypto";
+function beginSyncRun(db, repositories) {
+  const id = randomUUID5();
+  db.prepare(
+    "INSERT INTO sync_runs (sync_run_id, started_at, finished_at, repositories_json, stats_json, imported) VALUES (?, ?, NULL, ?, ?, 0)"
+  ).run(id, (/* @__PURE__ */ new Date()).toISOString(), JSON.stringify(repositories), JSON.stringify({}));
+  return id;
+}
+function finishSyncRun(db, id, stats, imported) {
+  db.prepare("UPDATE sync_runs SET finished_at = ?, stats_json = ?, imported = ? WHERE sync_run_id = ?").run(
+    (/* @__PURE__ */ new Date()).toISOString(),
+    JSON.stringify(stats),
+    imported,
+    id
+  );
+}
+var ASSUME_STILL_RUNNING_MINUTES = 30;
+function unfinishedSyncRuns(db, now = /* @__PURE__ */ new Date()) {
+  const cutoff = new Date(now.getTime() - ASSUME_STILL_RUNNING_MINUTES * 6e4).toISOString();
+  return db.prepare(
+    `SELECT * FROM sync_runs
+         WHERE finished_at IS NULL
+           AND started_at < ?
+           -- A sync that completed afterwards did the work this one abandoned,
+           -- so the dangling row is history rather than an outstanding task.
+           -- Reporting it beside "last sync 07:46, 250 imported" told the user
+           -- to run a sync they had already run four times.
+           AND NOT EXISTS (
+             SELECT 1 FROM sync_runs later
+             WHERE later.finished_at IS NOT NULL AND later.finished_at > sync_runs.started_at
+           )
+         ORDER BY started_at DESC`
+  ).all(cutoff).map((row) => ({
+    syncRunId: row["sync_run_id"],
+    startedAt: row["started_at"],
+    finishedAt: null,
+    repositories: JSON.parse(row["repositories_json"]),
+    imported: row["imported"]
+  }));
+}
+function lastSync(db) {
+  const row = db.prepare("SELECT * FROM sync_runs WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1").get();
+  if (row === void 0) return null;
+  return {
+    syncRunId: row["sync_run_id"],
+    startedAt: row["started_at"],
+    finishedAt: row["finished_at"],
+    repositories: JSON.parse(row["repositories_json"]),
+    imported: row["imported"]
+  };
+}
+
+// plugins/review-voice/src/corpus/store.ts
+function storeEvents(db, events) {
+  const insert = db.prepare(
+    `INSERT INTO review_events (
+       event_id, source, repository, pull_number, pull_request_url, comment_id,
+       reviewer_login, reviewer_role, created_at, body_redacted, content_key,
+       file_path, line_start, diff_hunk_redacted, outcome_status,
+       outcome_certainty, redaction_version, redaction_counts_json, created_db_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (content_key) DO NOTHING`
+  );
+  const updateOutcome = db.prepare(
+    `UPDATE review_events SET outcome_status = ?, outcome_certainty = ? WHERE content_key = ?`
+  );
+  let inserted = 0;
+  db.exec("BEGIN");
+  try {
+    for (const event of events) {
+      const result = insert.run(
+        event.eventId,
+        event.source,
+        event.repository,
+        event.pullNumber,
+        event.pullRequestUrl,
+        event.commentId,
+        event.reviewerLogin,
+        event.role,
+        event.createdAt,
+        event.bodyRedacted,
+        event.contentKey,
+        event.filePath ?? null,
+        event.lineStart ?? null,
+        event.diffHunkRedacted ?? null,
+        // Unknown is the honest default and carries a middling weight rather than zero.
+        event.outcome?.status ?? "unknown",
+        event.outcome?.certainty ?? "weak",
+        event.redactionVersion,
+        JSON.stringify(event.redactionCounts),
+        (/* @__PURE__ */ new Date()).toISOString()
+      );
+      if (result.changes > 0) inserted += 1;
+      else if (event.outcome !== void 0 && event.outcome.status !== "unknown") {
+        updateOutcome.run(event.outcome.status, event.outcome.certainty, event.contentKey);
+      }
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  const redactionTotals = {};
+  for (const event of events) {
+    for (const [label2, count3] of Object.entries(event.redactionCounts)) {
+      redactionTotals[label2] = (redactionTotals[label2] ?? 0) + count3;
+    }
+  }
+  recordAudit(db, "corpus_ingested", null, {
+    offered: events.length,
+    inserted,
+    redactions: redactionTotals
+  });
+  return { inserted, alreadyPresent: events.length - inserted };
+}
+function corpusCoverage(db, options = {}) {
+  const total = db.prepare("SELECT COUNT(*) AS n FROM review_events").get().n;
+  const byRepository = Object.fromEntries(
+    db.prepare("SELECT repository, COUNT(*) AS n FROM review_events GROUP BY repository").all().map((row) => [row.repository, row.n])
+  );
+  const byRole = Object.fromEntries(
+    db.prepare("SELECT reviewer_role, COUNT(*) AS n FROM review_events GROUP BY reviewer_role").all().map((row) => [row.reviewer_role, row.n])
+  );
+  const range = db.prepare("SELECT MIN(created_at) AS oldest, MAX(created_at) AS newest FROM review_events").get();
+  const warnings = [];
+  const anchored = db.prepare("SELECT COUNT(*) AS n FROM review_events WHERE reviewer_role = 'owner' AND file_path IS NOT NULL").get().n;
+  const ownerTotal = byRole["owner"] ?? 0;
+  if (ownerTotal > 0 && anchored * 2 < ownerTotal) {
+    warnings.push(
+      `${ownerTotal - anchored} of ${ownerTotal} owner events have no file anchor. Unanchored summaries match any candidate, so with the owner weighting applied they surface for every finding regardless of topic. Sync more repositories, or expect weak precedent.`
+    );
+  }
+  for (const run of unfinishedSyncRuns(db, options.now ?? /* @__PURE__ */ new Date())) {
+    warnings.push(
+      `A sync started ${run.startedAt} and never recorded a finish. It covered ${run.repositories.join(", ") || "no repositories"}, and anything it read was not stored. Run sync again.`
+    );
+  }
+  for (const repository of options.allowlist ?? []) {
+    if ((byRepository[repository] ?? 0) === 0) {
+      warnings.push(`${repository} is allowlisted but contributed no events. Check it has review history you can read.`);
+    }
+  }
+  const share = options.maxRepositoryShare;
+  if (share !== void 0 && total > 0) {
+    for (const [repository, count3] of Object.entries(byRepository)) {
+      if (count3 / total > share) {
+        warnings.push(
+          `${repository} is ${Math.round(count3 / total * 100)}% of the corpus, above the configured ${Math.round(share * 100)}% share. Policy compiled from it will mostly describe that repository.`
+        );
+      }
+    }
+  }
+  const ownerAuthored = options.ownerReviewer === void 0 || options.ownerReviewer === null ? byRole["owner"] ?? 0 : db.prepare("SELECT COUNT(*) AS n FROM review_events WHERE LOWER(reviewer_login) = LOWER(?)").get(options.ownerReviewer).n;
+  if (total > 0 && ownerAuthored === 0) {
+    warnings.push(
+      "No events authored by the owner reviewer. Policy rules need at least one owner signal, so nothing in this corpus can activate a rule. Check identity.owner_reviewer matches your GitHub login."
+    );
+  }
+  return { total, byRepository, byRole, oldest: range.oldest, newest: range.newest, warnings };
+}
+
 // plugins/review-voice/src/sync/window.ts
 var QUICK_TARGET = 50;
 var QUICK_SINCE = "90d";
@@ -26131,6 +25958,933 @@ async function outcomesCommand(argv) {
   }
 }
 
+// plugins/review-voice/src/cli/check-verification.ts
+import { readFileSync as readFileSync22 } from "node:fs";
+function keptCandidateIds(value) {
+  const record3 = value;
+  const list2 = Array.isArray(value) ? value : Array.isArray(record3?.kept) ? record3.kept : Array.isArray(record3?.candidates) ? record3.candidates : [];
+  return list2.map((entry) => entry?.candidate_id).filter((id) => typeof id === "string");
+}
+function checkVerificationCommand(argv) {
+  const candidatesFile = flag(argv, "--candidates");
+  let keptIds = null;
+  if (candidatesFile !== null) {
+    try {
+      keptIds = keptCandidateIds(JSON.parse(readFileSync22(candidatesFile, "utf8")));
+    } catch (error) {
+      console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
+  let parsed2;
+  try {
+    parsed2 = JSON.parse(readStdin());
+  } catch {
+    console.error("Expected the evidence-verifier output as JSON on stdin.");
+    return 2;
+  }
+  const list2 = verdictList(parsed2);
+  if (list2.length === 0) {
+    console.error(
+      `No verifications found. Expected an array, or an object with one of: ${VERDICT_KEYS.join(", ")}, each entry carrying candidate_id.`
+    );
+    return 2;
+  }
+  const problem = verificationProblem(list2);
+  if (problem !== null) {
+    console.error(`Malformed verification - ${problem}`);
+    console.error("Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.");
+    return 2;
+  }
+  if (keptIds !== null) {
+    const verified = new Set(list2.map((entry) => entry.candidate_id));
+    const missing = keptIds.filter((id) => !verified.has(id));
+    if (missing.length > 0) {
+      for (const id of missing) console.error(`No verification for kept candidate ${id}.`);
+      console.error("Re-run the evidence-verifier for the missing candidates.");
+      return 2;
+    }
+  }
+  console.log(JSON.stringify({ valid: true, verifications: list2.length }, null, 2));
+  return 0;
+}
+
+// plugins/review-voice/src/cli/check-simplification.ts
+import { readFileSync as readFileSync23 } from "node:fs";
+function checkSimplificationCommand(argv) {
+  const diffFile = flag(argv, "--diff-file");
+  if (diffFile === null) {
+    console.error("--diff-file needs the patch the simplification pass reviewed.");
+    return 2;
+  }
+  const candidateFile = flag(argv, "--candidate");
+  if (argv.includes("--candidate") && candidateFile === null) {
+    console.error("--candidate needs the checked analyst output.");
+    return 2;
+  }
+  let hunks;
+  try {
+    hunks = parseHunks(readFileSync23(diffFile, "utf8"));
+  } catch (error) {
+    console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  let document;
+  try {
+    document = JSON.parse(readStdin());
+  } catch {
+    console.error("Expected simplification JSON on stdin.");
+    return 2;
+  }
+  if (candidateFile === null) {
+    const candidate2 = parseSimplificationCandidate(document);
+    if (candidate2.problem !== null) {
+      console.error(`Malformed simplification candidate - ${candidate2.problem}.`);
+      console.error("Re-run the analyst with the simplification schema restated. Do not hand-translate its output.");
+      return 2;
+    }
+    if (candidate2.value !== null) {
+      const problem = simplificationDiffProblem(candidate2.value, hunks);
+      if (problem !== null) {
+        console.error(`Invalid simplification candidate - ${problem}.`);
+        console.error("Re-run the analyst with the changed locations from the patch. Do not hand-translate its output.");
+        return 2;
+      }
+    }
+    console.log(JSON.stringify({ simplification: candidate2.value }, null, 2));
+    return 0;
+  }
+  let candidateDocument;
+  try {
+    candidateDocument = JSON.parse(readFileSync23(candidateFile, "utf8"));
+  } catch (error) {
+    console.error(`Cannot read ${candidateFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const candidate = parseSimplificationCandidate(candidateDocument);
+  if (candidate.problem !== null || candidate.value === null) {
+    console.error(
+      `Cannot verify ${candidateFile}: ${candidate.problem ?? "it contains no simplification candidate"}.`
+    );
+    return 2;
+  }
+  const candidateProblem = simplificationDiffProblem(candidate.value, hunks);
+  if (candidateProblem !== null) {
+    console.error(`Cannot verify ${candidateFile}: ${candidateProblem}.`);
+    return 2;
+  }
+  const verification2 = parseSimplificationVerification(document, candidate.value);
+  if (verification2.problem !== null || verification2.value === null) {
+    console.error(`Malformed simplification verification - ${verification2.problem ?? "missing verification"}.`);
+    console.error("Re-run the verifier with the simplification schema restated. Do not hand-translate its output.");
+    return 2;
+  }
+  const bodyFindings = verification2.value.verified ? [
+    {
+      candidate: candidate.value,
+      verification: {
+        verified: verification2.value.verified,
+        elements: verification2.value.elements.map((element2) => ({
+          path: element2.path,
+          line: element2.line,
+          exists_in_diff: element2.existsInDiff
+        })),
+        behavior_preserved: verification2.value.behaviorPreserved,
+        removes_concepts: verification2.value.removesConcepts,
+        reason: verification2.value.reason
+      }
+    }
+  ] : [];
+  console.log(JSON.stringify({ bodyFindings }, null, 2));
+  return 0;
+}
+
+// plugins/review-voice/src/cli/verify.ts
+import { statSync as statSync8 } from "node:fs";
+import { resolve as resolve8 } from "node:path";
+import { execFileSync as execFileSync19 } from "node:child_process";
+
+// plugins/review-voice/src/verify/external.ts
+var DEFAULT_TIMEOUT_SECONDS2 = 90;
+var DEFAULT_DROP_THRESHOLD = 0.8;
+var HOW_TO_ENABLE = "Add a `verification:` block to .review-voice/config.yaml with `enabled: true` and a `command` that runs a different model on the candidates JSON from stdin (optional: name, timeout_seconds, drop_threshold). See templates/config.example.yaml.";
+var TIERS = ["blocking", "important", "minor", "nit", "question"];
+function downgrade(severity) {
+  if (severity === "question") return "question";
+  const index = TIERS.indexOf(severity);
+  if (index === -1 || index >= TIERS.length - 2) return "nit";
+  return TIERS[index + 1] ?? "nit";
+}
+var MAX_DECISIVE_EVIDENCE = 10;
+function decisiveEvidence(raw) {
+  const list2 = raw.decisive_evidence ?? raw.decisiveEvidence;
+  if (!Array.isArray(list2)) return [];
+  return list2.filter((entry) => {
+    const e = typeof entry === "object" && entry !== null ? entry : {};
+    return typeof e["path"] === "string" && e["path"].length > 0 && Number.isInteger(e["line"]) && e["line"] > 0 && typeof e["why"] === "string" && e["why"].trim().length > 0;
+  }).slice(0, MAX_DECISIVE_EVIDENCE).map((entry) => ({ path: entry.path, line: entry.line, why: entry.why }));
+}
+function jsonCandidates(text4) {
+  const found = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text4.length; i += 1) {
+    const ch = text4[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0 && start !== -1) {
+        found.push(text4.slice(start, i + 1));
+        start = -1;
+      } else if (depth < 0) {
+        depth = 0;
+      }
+    }
+  }
+  return found;
+}
+var VERDICTS2 = ["confirmed", "rejected", "uncertain"];
+function parseVerdict(stdout) {
+  for (const candidate of jsonCandidates(stdout).reverse()) {
+    try {
+      const parsed2 = JSON.parse(candidate);
+      if (typeof parsed2.verdict !== "string") continue;
+      const label2 = parsed2.verdict.toLowerCase();
+      return VERDICTS2.includes(label2) ? { ...parsed2, verdict: label2 } : null;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+var spawnRunner = async (command, input, timeoutMs, cwd, env) => {
+  const result = await spawnCommand(command, {
+    cwd,
+    env,
+    shell: true,
+    encoding: "utf8",
+    input,
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
+    maxBuffer: 8 * 1024 * 1024,
+    detached: true
+  });
+  return {
+    stdout: result.stdout,
+    stderr: result.stderr,
+    // An EPIPE on the input write (a command that answered without reading it,
+    // #297) never reaches here: spawnCommand ignores errors on stdin. Only a
+    // command that never ran, or was killed (no exit status), is a failure.
+    failed: result.error !== void 0 || result.status === null
+  };
+};
+async function verifyFindings(findings, config2, options) {
+  const name = config2.name ?? "external";
+  if (!config2.enabled || config2.command.trim().length === 0) {
+    return {
+      enabled: false,
+      verifier: null,
+      verdicts: [],
+      didNotRun: findings.length > 0 ? [name] : [],
+      howToEnable: HOW_TO_ENABLE
+    };
+  }
+  if (findings.length === 0) {
+    return { enabled: false, verifier: null, verdicts: [], didNotRun: [] };
+  }
+  const dropThreshold = config2.dropThreshold ?? DEFAULT_DROP_THRESHOLD;
+  const verdicts = [];
+  const didNotRun = [];
+  const runner = options.runner ?? spawnRunner;
+  const env = commandEnvironment(process.env, config2.envPassthrough ?? []);
+  for (const finding of findings) {
+    const result = await runner(
+      config2.command,
+      JSON.stringify({ ...finding, context: options.context ?? null }),
+      (config2.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS2) * 1e3,
+      options.cwd,
+      env
+    );
+    const unavailable = result.failed;
+    const parsed2 = unavailable ? null : parseVerdict(`${result.stdout}
+${result.stderr}`);
+    const raw = parsed2 === null ? null : maskPassthroughDeep(parsed2, process.env, config2.envPassthrough ?? []);
+    if (raw === null) {
+      didNotRun.push(name);
+      verdicts.push({
+        candidateId: finding.candidateId,
+        path: finding.path,
+        line: finding.line,
+        verdict: "uncertain",
+        confidence: 0,
+        reason: unavailable ? "verifier did not run" : "verifier produced no parseable verdict",
+        outcome: "unverified",
+        originalSeverity: finding.severity,
+        finalSeverity: finding.severity,
+        verifier: name
+      });
+      continue;
+    }
+    const verdict2 = raw.verdict;
+    const confidence = typeof raw.confidence === "number" ? Math.min(1, Math.max(0, raw.confidence)) : 0.5;
+    const reason2 = typeof raw.reason === "string" ? raw.reason : "";
+    const decisive = decisiveEvidence(raw);
+    let outcome = "kept";
+    let finalSeverity = finding.severity;
+    let proposedSeverity;
+    if (verdict2 === "rejected") {
+      if (confidence >= dropThreshold) {
+        outcome = "dropped";
+      } else {
+        outcome = "downgraded";
+        finalSeverity = downgrade(finding.severity);
+      }
+    } else if (verdict2 === "uncertain") {
+      outcome = "downgraded";
+      finalSeverity = downgrade(finding.severity);
+    } else if (raw.suggested_severity !== void 0 && TIERS.includes(raw.suggested_severity) && TIERS.indexOf(raw.suggested_severity) > TIERS.indexOf(finding.severity)) {
+      outcome = "downgraded";
+      finalSeverity = raw.suggested_severity;
+    } else if (raw.suggested_severity !== void 0 && raw.suggested_severity !== "question" && TIERS.includes(raw.suggested_severity) && TIERS.indexOf(finding.severity) !== -1 && TIERS.indexOf(raw.suggested_severity) < TIERS.indexOf(finding.severity) && decisive.length > 0 && reason2.trim().length > 0) {
+      proposedSeverity = raw.suggested_severity;
+    }
+    verdicts.push({
+      candidateId: finding.candidateId,
+      path: finding.path,
+      line: finding.line,
+      verdict: verdict2,
+      confidence,
+      reason: reason2,
+      outcome,
+      originalSeverity: finding.severity,
+      finalSeverity,
+      verifier: name,
+      ...decisive.length > 0 ? { decisiveEvidence: decisive } : {},
+      ...proposedSeverity === void 0 ? {} : { proposedSeverity }
+    });
+  }
+  return { enabled: true, verifier: name, verdicts, didNotRun: [...new Set(didNotRun)] };
+}
+
+// plugins/review-voice/src/cli/verify.ts
+async function verifyCommand(argv) {
+  const cwdFlag = flag(argv, "--cwd");
+  if (argv.includes("--cwd") && cwdFlag === null) {
+    console.error("--cwd needs a directory.");
+    return 2;
+  }
+  if (cwdFlag !== null && statSync8(resolve8(cwdFlag), { throwIfNoEntry: false })?.isDirectory() !== true) {
+    console.error(`--cwd ${cwdFlag} is not a directory.`);
+    return 2;
+  }
+  let findings;
+  try {
+    const parsed2 = JSON.parse(readStdin());
+    findings = (Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? []).map((finding) => {
+      const raw = finding;
+      return {
+        ...raw,
+        candidateId: raw.candidateId ?? (typeof raw.candidate_id === "string" ? raw.candidate_id : raw.candidateId),
+        failureMode: raw.failureMode ?? (typeof raw.failure_mode === "string" ? raw.failure_mode : raw.failureMode)
+      };
+    });
+  } catch {
+    console.error('Expected {"candidates": [...]} on stdin.');
+    return 2;
+  }
+  try {
+    const root = repositoryRoot(process.cwd());
+    const config2 = loadConfig(root);
+    if (process.env["REVIEW_VOICE_NO_COMMANDS"] === "1") {
+      const name = config2.verification.name ?? "external";
+      console.log(
+        JSON.stringify(
+          { enabled: false, verifier: null, verdicts: [], didNotRun: findings.length > 0 && config2.verification.enabled ? [name] : [], skipped: "REVIEW_VOICE_NO_COMMANDS" },
+          null,
+          2
+        )
+      );
+      return 0;
+    }
+    const commitOf = (ref) => {
+      if (ref === null) return null;
+      try {
+        return execFileSync19("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      } catch {
+        console.error(`${ref} does not resolve to a commit here, so the verification command is not told about it.`);
+        return null;
+      }
+    };
+    const base = commitOf(flag(argv, "--base"));
+    const head = commitOf(flag(argv, "--head"));
+    const report = await verifyFindings(findings, config2.verification, {
+      cwd: cwdFlag === null ? root : resolve8(cwdFlag),
+      context: {
+        repository: flag(argv, "--repository") ?? inferRepository(root),
+        // Resolved here, where the caller named it: with --cwd the command runs
+        // elsewhere, and a relative path would be read against that directory.
+        diffPath: flag(argv, "--diff-file") === null ? null : resolve8(flag(argv, "--diff-file")),
+        // Only when the caller says they are readable. A ref that is not there
+        // is worse than no ref: a command told to read it fails in a way it may
+        // mistake for evidence.
+        base,
+        head
+      }
+    });
+    console.log(JSON.stringify(report, null, 2));
+    return 0;
+  } catch (error) {
+    if (error instanceof GitError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+}
+
+// plugins/review-voice/src/cli/reconcile.ts
+import { readFileSync as readFileSync24 } from "node:fs";
+function reconcileCommand(argv) {
+  let candidates;
+  try {
+    const parsed2 = JSON.parse(readStdin());
+    const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.candidates;
+    if (!Array.isArray(list2)) throw new Error("no candidates");
+    candidates = list2;
+  } catch {
+    console.error('Expected {"candidates": [...]} on stdin, as they were before the second pass.');
+    return 2;
+  }
+  const verificationFile = flag(argv, "--verification");
+  const secondPassFile = flag(argv, "--second-pass");
+  if (verificationFile === null || secondPassFile === null) {
+    console.error("reconcile needs --verification <file> (step 3) and --second-pass <file> (the verify report).");
+    return 2;
+  }
+  let verifications;
+  try {
+    verifications = verdictList(JSON.parse(readFileSync24(verificationFile, "utf8")));
+  } catch (error) {
+    console.error(`Cannot read ${verificationFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const problem = verificationProblem(verifications);
+  if (problem !== null) {
+    console.error(`Malformed verification - ${problem}`);
+    return 2;
+  }
+  if (verifications.length === 0) {
+    console.error(`${verificationFile} contained no verifications, so no dispute could be detected.`);
+    return 2;
+  }
+  let secondPass2;
+  try {
+    secondPass2 = parseSecondPass(JSON.parse(readFileSync24(secondPassFile, "utf8")));
+  } catch (error) {
+    console.error(`Cannot read the second pass from ${secondPassFile}: ${error.message}`);
+    return 2;
+  }
+  let tieBreaks = null;
+  const tieBreaksFile = flag(argv, "--tie-breaks");
+  if (tieBreaksFile !== null) {
+    try {
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync24(tieBreaksFile, "utf8")));
+    } catch (error) {
+      console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
+      return 2;
+    }
+  }
+  try {
+    const result = reconcile(candidates, verifications, secondPass2, tieBreaks);
+    for (const note of result.notes) console.error(note);
+    console.log(
+      JSON.stringify(
+        { candidates: result.candidates, disputes: result.disputes, applied: result.applied, tieBreaks: result.tieBreaks },
+        null,
+        2
+      )
+    );
+    return 0;
+  } catch (error) {
+    if (error instanceof ReconcileInputError) {
+      console.error(`Cannot reconcile: ${error.message}`);
+      return 2;
+    }
+    throw error;
+  }
+}
+
+// plugins/review-voice/src/cli/challenge.ts
+import { readFileSync as readFileSync25, writeFileSync as writeFileSync9 } from "node:fs";
+function challengeCommand(argv) {
+  const scoresFile = flag(argv, "--scores");
+  const candidatesFile = flag(argv, "--candidates");
+  const emit = argv.includes("--emit-prompts");
+  const diffFile = flag(argv, "--diff-file");
+  const intentFile = flag(argv, "--intent");
+  const outFile = flag(argv, "--out");
+  if (scoresFile === null || candidatesFile === null || !emit && diffFile === null) {
+    console.error(
+      "Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--diff-file <patch>] --emit-prompts\n       challenge --scores <file> --candidates <file> --diff-file <patch> [--out <file>] < verdicts.json"
+    );
+    return 2;
+  }
+  for (const name of ["--intent", "--diff-file", "--out"]) {
+    if (argv.includes(name) && flag(argv, name) === null) {
+      console.error(`${name} needs a file path.`);
+      return 2;
+    }
+  }
+  const readJson2 = (path) => JSON.parse(readFileSync25(path, "utf8"));
+  let scores;
+  let candidates;
+  try {
+    scores = readJson2(scoresFile);
+    candidates = candidatesById(readJson2(candidatesFile));
+  } catch (error) {
+    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  if (emit) {
+    let statements = [];
+    if (intentFile !== null) {
+      try {
+        statements = intentStatements(readJson2(intentFile));
+      } catch (error) {
+        console.error(`Cannot read ${intentFile}: ${error instanceof Error ? error.message : String(error)}`);
+        return 2;
+      }
+    }
+    console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile) }, null, 2));
+    return 0;
+  }
+  let verdicts;
+  let hunks;
+  try {
+    hunks = parseHunks(readFileSync25(diffFile, "utf8"));
+  } catch (error) {
+    console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  try {
+    verdicts = JSON.parse(readStdin());
+  } catch {
+    console.error("Cannot parse the challenger verdicts on stdin as JSON.");
+    return 2;
+  }
+  const result = applyChallenge(scores, candidates, verdicts, hunks);
+  if (!result.ok) {
+    console.error("Challenge refused:");
+    for (const problem of result.problems) console.error(`  ${problem}`);
+    return 2;
+  }
+  const body = `${JSON.stringify(result.document, null, 2)}
+`;
+  if (outFile === null) {
+    process.stdout.write(body);
+  } else {
+    try {
+      writeFileSync9(outFile, body);
+    } catch (error) {
+      console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    const { confirmed, held, moved } = result.summary;
+    console.log(JSON.stringify({ out: outFile, confirmed, held, moved }, null, 2));
+  }
+  return 0;
+}
+
+// plugins/review-voice/src/cli/reanchor.ts
+import { readFileSync as readFileSync26, writeFileSync as writeFileSync10, renameSync as renameSync3, rmSync as rmSync8 } from "node:fs";
+function reanchorCommand(argv) {
+  const candidateId = flag(argv, "--candidate");
+  const line3 = Number(flag(argv, "--line"));
+  const scoresFile = flag(argv, "--scores");
+  const diffFile = flag(argv, "--diff-file");
+  if (candidateId === null || !Number.isInteger(line3) || line3 < 1 || scoresFile === null || diffFile === null) {
+    console.error("Usage: reanchor --candidate <id> --line <n> [--path <p>] --scores <file> --diff-file <patch> [--candidates <file>]");
+    return 2;
+  }
+  if (argv.includes("--path") && flag(argv, "--path") === null) {
+    console.error("--path needs the file the finding belongs in.");
+    return 2;
+  }
+  const readJson2 = (path) => JSON.parse(readFileSync26(path, "utf8"));
+  let scores;
+  let hunks;
+  try {
+    scores = readJson2(scoresFile);
+    hunks = parseHunks(readFileSync26(diffFile, "utf8"));
+  } catch (error) {
+    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const result = reanchorScores(scores, candidateId, { path: flag(argv, "--path"), line: line3 }, hunks);
+  if (!result.ok) {
+    console.error(`Not re-anchored: ${result.refused}`);
+    return 1;
+  }
+  const candidatesFile = flag(argv, "--candidates");
+  let candidates = null;
+  if (candidatesFile !== null) {
+    try {
+      candidates = reanchorCandidates(readJson2(candidatesFile), candidateId, result.to);
+    } catch (error) {
+      console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    if (candidates === null) {
+      console.error(`${candidatesFile} has no candidate ${candidateId}; nothing was re-anchored.`);
+      return 2;
+    }
+  }
+  const staged = [];
+  try {
+    if (candidatesFile !== null) {
+      staged.push([`${candidatesFile}.reanchor-${process.pid}`, candidatesFile]);
+      writeFileSync10(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
+`);
+    }
+    staged.push([`${scoresFile}.reanchor-${process.pid}`, scoresFile]);
+    writeFileSync10(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
+`);
+    for (const [temporary, target] of staged) renameSync3(temporary, target);
+  } catch (error) {
+    for (const [temporary] of staged) rmSync8(temporary, { force: true });
+    console.error(`Cannot write: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  console.log(JSON.stringify({ candidateId, from: result.from, to: result.to, anchorCheck: result.anchorCheck }, null, 2));
+  return 0;
+}
+
+// plugins/review-voice/src/cli/agent.ts
+import { readFileSync as readFileSync27, statSync as statSync9 } from "node:fs";
+import { dirname as dirname15, resolve as resolve9 } from "node:path";
+async function agentCommand(argv) {
+  const name = flag(argv, "--name");
+  const model = flag(argv, "--model");
+  const schemaPath = flag(argv, "--schema");
+  if (name === null || model === null || schemaPath === null) {
+    console.error("agent needs --name <agent>, --model <model> and --schema <file.json>.");
+    return 2;
+  }
+  let tools;
+  try {
+    tools = readAgentTools(name);
+    runnerTools(tools);
+  } catch (error) {
+    if (error instanceof AgentSpecError) {
+      console.error(error.message);
+      return 2;
+    }
+    throw error;
+  }
+  let schema4;
+  try {
+    schema4 = JSON.parse(readFileSync27(schemaPath, "utf8"));
+  } catch (error) {
+    console.error(`Cannot read the schema ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  if (schema4 === null || typeof schema4 !== "object" || Array.isArray(schema4)) {
+    console.error(`The schema ${schemaPath} must be a JSON object.`);
+    return 2;
+  }
+  const schemaDir = dirname15(resolve9(schemaPath));
+  try {
+    schemaForRunner(schema4, schemaDir);
+  } catch (error) {
+    if (error instanceof AgentSpecError) {
+      console.error(`The schema ${schemaPath} cannot be given to an agent: ${error.message}`);
+      return 2;
+    }
+    throw error;
+  }
+  const cwd = flag(argv, "--cwd") ?? process.cwd();
+  let isDirectory = false;
+  try {
+    isDirectory = statSync9(cwd).isDirectory();
+  } catch {
+    isDirectory = false;
+  }
+  if (!isDirectory) {
+    console.error(`--cwd ${cwd} is not a directory.`);
+    return 2;
+  }
+  const timeout = numericFlag(argv, "--timeout", 0);
+  if (timeout === null || argv.includes("--timeout") && timeout === 0 || timeout > 3600) {
+    console.error("--timeout takes a whole number of seconds from 1 to 3600.");
+    return 2;
+  }
+  const prompt = readStdin();
+  const result = await runAgent(
+    { name, model, tools, schema: schema4, schemaDir, ...timeout > 0 ? { timeoutMs: timeout * 1e3 } : {} },
+    prompt,
+    cwd
+  );
+  console.log(JSON.stringify(result, null, 2));
+  return result.ok ? 0 : 1;
+}
+
+// plugins/review-voice/src/cli/explain.ts
+function reviewScopeFromManifest(value) {
+  return parseReviewScope(value) ?? void 0;
+}
+function describeReviewScope(scope) {
+  return describeScope(scope);
+}
+function explainCommand(argv) {
+  const db = openDatabase();
+  try {
+    const detail = runDetail(db, flag(argv, "--run") ?? void 0);
+    if (detail === null) {
+      console.log("No review has been recorded yet.");
+      return 0;
+    }
+    const wanted = argv.find((arg) => /^rv_\d+$/.test(arg));
+    const verdicts = Array.isArray(detail.verdicts) ? detail.verdicts : [];
+    const scores = Array.isArray(detail.scores) ? detail.scores : [];
+    if (argv.includes("--json")) {
+      console.log(JSON.stringify(detail, null, 2));
+      return 0;
+    }
+    console.log(`Review ${detail.reviewRunId}`);
+    console.log(`Recorded ${detail.createdAt}${detail.repository === null ? "" : ` for ${detail.repository}`}`);
+    if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
+    const recordedScope = describeReviewScope(detail.scope);
+    if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
+    console.log(describeProvenance(detail.provenance));
+    console.log(describeChecks(detail.checks));
+    for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
+    const shallow = shallowPassWarning(detail.stages, detail.findings.length);
+    if (shallow !== null) console.log(`Warning ${shallow}`);
+    if (detail.complexity !== null) {
+      console.log(
+        detail.complexity.level === "high" ? `Complexity high - ${detail.complexity.reasons.join("; ")}` : "Complexity normal"
+      );
+    }
+    console.log("");
+    const history = detail.repository !== null && detail.pullNumber !== null ? followUpHistory(db, detail.repository, detail.pullNumber) : null;
+    const shown = wanted === void 0 ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
+    if (shown.length === 0 && wanted === void 0 && detail.bodyFindings.length === 0) {
+      console.log("No findings were recorded.");
+      console.log("");
+    } else if (shown.length === 0 && wanted !== void 0) {
+      console.log(`No finding ${wanted}. Available: ${detail.findings.map((f) => f.findingId).join(", ") || "none"}.`);
+      return 1;
+    }
+    for (const finding of shown) {
+      const score2 = scores.find((s) => s.path === finding.path && s.line === finding.line);
+      console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
+      if (finding.carriedFrom !== void 0) {
+        console.log(`  carried from      ${finding.carriedFrom.findingId} of run ${finding.carriedFrom.runId}`);
+      }
+      if (finding.partlyAddressed !== void 0) {
+        const { prior, remaining, addressed } = finding.partlyAddressed;
+        console.log(
+          `  partly addressed  ${prior.author} at ${prior.path}:${prior.line}; ${remaining.length} of ${remaining.length + addressed.length} still open: ${remaining.join("; ")}`
+        );
+        const later2 = history?.get(`${detail.reviewRunId}:${finding.findingId}`);
+        if (later2?.state?.status === "resolved") {
+          console.log(`  follow-up         resolved in run ${later2.stateRunId} - ${later2.state.reason}`);
+        } else if (later2?.state?.status === "open") {
+          console.log(`  follow-up         open as of run ${later2.stateRunId}: ${later2.state.remaining.join("; ")}`);
+        } else {
+          console.log("  follow-up         open");
+        }
+      }
+      console.log(`  category          ${finding.category ?? "not recorded"}`);
+      console.log(`  rule id           ${finding.ruleId ?? "not recorded"}`);
+      if (score2?.technicalConfidence !== void 0) {
+        console.log(`  technical         ${score2.technicalConfidence.toFixed(2)}`);
+      }
+      if (score2?.finalScore !== void 0) {
+        console.log(`  final score       ${score2.finalScore.toFixed(2)}`);
+      }
+      if (score2?.novelty !== void 0) {
+        console.log(`  novelty           ${score2.novelty.toFixed(2)}`);
+      }
+      const precedentIds = score2?.precedentIds ?? (score2?.precedents ?? []).flatMap((p) => typeof p.eventId === "string" ? [p.eventId] : []);
+      if (precedentIds.length > 0) {
+        console.log(`  precedents        ${precedentIds.join(", ")}`);
+      }
+      if (score2?.duplicateOfPrecedent != null) {
+        console.log(`  already stated in ${score2.duplicateOfPrecedent}`);
+      }
+      if (score2?.fix !== void 0) {
+        const fix = score2.fix;
+        const confidence = typeof fix.confidence === "number" && Number.isFinite(fix.confidence) ? fix.confidence.toFixed(2) : "unrecorded";
+        if (fix.render === "fix") {
+          console.log(`  fix  verified ${confidence}`);
+        } else if (fix.render === "direction") {
+          console.log(`  fix  direction (partial ${confidence})`);
+        } else {
+          const proposed = typeof fix.suggested === "string" && fix.suggested.trim().length > 0;
+          if (!proposed) {
+            console.log("  fix  none proposed");
+          } else {
+            console.log(`  fix  withheld (${fix.verdict ?? "not verified"}): ${fix.reason ?? "no reason recorded"}`);
+          }
+        }
+      }
+      if (score2 === void 0) {
+        console.log("  scoring           not recorded for this review");
+      }
+      const verdict2 = verdicts.find((v) => v.path === finding.path && v.line === finding.line);
+      if (verdict2 !== void 0) {
+        console.log(
+          `  verified          ${verdict2.verdict} (${verdict2.confidence.toFixed(2)}) by ${verdict2.verifier}` + (verdict2.outcome === "kept" ? "" : ` - ${verdict2.outcome}`)
+        );
+        if (verdict2.reason.length > 0) console.log(`                    ${verdict2.reason}`);
+        const ruling = detail.tieBreaks.find((t) => t.candidateId === verdict2.candidateId);
+        if (ruling !== void 0) {
+          console.log(
+            `  tie-break         ${ruling.upheld ? "upheld" : "not upheld"}${ruling.applied === false ? " (not applied)" : ""}${ruling.raised === void 0 ? "" : ` (raised to ${ruling.raised})`} - ${ruling.reason}`
+          );
+        }
+      }
+      console.log("");
+    }
+    if (detail.bodyFindings.length > 0 && wanted === void 0) {
+      console.log(`Body-only simplifications (${detail.bodyFindings.length}):`);
+      for (const finding of detail.bodyFindings) {
+        const { candidate } = finding;
+        console.log(`  ${candidate.claim}`);
+        console.log(
+          `  removes           ${candidate.removes.map((element2) => `${element2.path}:${element2.line} (${element2.element})`).join("; ")}`
+        );
+        console.log(
+          `  uses              ${candidate.abstraction.path}:${candidate.abstraction.line} (${candidate.abstraction.name})`
+        );
+        console.log("  verdict           never affects the verdict");
+      }
+      console.log("");
+    }
+    if (detail.followUps.length > 0 && wanted === void 0) {
+      console.log(`Follow-ups from earlier runs (${detail.followUps.length}):`);
+      for (const f of detail.followUps) {
+        console.log(`  [${f.status}] ${f.findingId} of run ${f.runId}  ${f.path}:${f.line} - ${f.reason}`);
+        if (f.status === "open") console.log(`      still open: ${f.remaining.join("; ")}`);
+      }
+      console.log("");
+    }
+    if (detail.held.length > 0 && wanted === void 0) {
+      console.log(`Held back (${detail.held.length}):`);
+      for (const h of detail.held) console.log(`  [${h.verdict}] ${h.path}:${h.line}  ${h.source} - ${h.reason}`);
+      console.log("");
+    }
+    const dropped = verdicts.filter(
+      (v) => v.outcome === "dropped" && !detail.tieBreaks.some(
+        (t) => t.upheld && t.applied !== false && v.candidateId !== void 0 && t.candidateId === v.candidateId
+      )
+    );
+    if (dropped.length > 0 && wanted === void 0) {
+      console.log(`Suppressed by verification (${dropped.length}):`);
+      for (const v of dropped) {
+        console.log(`  [${v.originalSeverity}] ${v.path}:${v.line}  ${v.verifier} @ ${v.confidence.toFixed(2)}`);
+        if (v.reason.length > 0) console.log(`      ${v.reason}`);
+        const ruling = detail.tieBreaks.find((t) => v.candidateId !== void 0 && t.candidateId === v.candidateId);
+        if (ruling !== void 0) {
+          const state = ruling.applied === false ? `${ruling.upheld ? "upheld" : "not upheld"} but not applied` : "not upheld";
+          console.log(`      tie-break ${state} - ${ruling.reason}`);
+        }
+      }
+      console.log("");
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+// plugins/review-voice/src/cli/status.ts
+function distinctReviewers(db) {
+  return db.prepare("SELECT COUNT(DISTINCT reviewer_login) AS n FROM review_events").get().n;
+}
+function statusCommand() {
+  const db = openDatabase();
+  try {
+    let allowlist = [];
+    let maxRepositoryShare;
+    let ownerReviewer = null;
+    try {
+      const config2 = loadConfig(repositoryRoot(process.cwd()));
+      ownerReviewer = config2.ownerReviewer;
+      allowlist = namedRepositories(config2.allowlist, "status");
+      maxRepositoryShare = scaledRepositoryShare(allowlist.length);
+    } catch {
+    }
+    const coverage = corpusCoverage(db, { allowlist, ownerReviewer, ...maxRepositoryShare === void 0 ? {} : { maxRepositoryShare } });
+    const runs = db.prepare("SELECT COUNT(*) AS n FROM review_runs").get().n;
+    const audits = db.prepare("SELECT COUNT(*) AS n FROM audit_events").get().n;
+    const totals = feedbackTotals(db);
+    const last = latestRun(db);
+    const lastDetail = runDetail(db);
+    console.log(`data directory   ${dataDirectory()}`);
+    console.log(`database         ${databasePath()}`);
+    console.log(`review runs      ${runs}`);
+    console.log(`audit events     ${audits}`);
+    console.log(
+      `feedback         ${totals.kept} kept, ${totals.rewritten} rewritten, ${totals.dismissed} dismissed` + (totals.other > 0 ? `, ${totals.other} other` : "")
+    );
+    const unlabelled = unlabelledFindings(db);
+    console.log(
+      `owner precision  ${totals.ownerPrecision === null ? "not yet measurable (no explicit feedback)" : `${(totals.ownerPrecision * 100).toFixed(0)}% of labelled findings`}`
+    );
+    if (unlabelled > 0) {
+      console.log(
+        `unlabelled       ${unlabelled} finding(s). Precision cannot be measured until these carry a verdict: /review-voice:feedback <id> keep|dismiss|rewrite`
+      );
+    }
+    const recent = postedStats(db, { since: windowStart(DEFAULT_WINDOW_DAYS) });
+    const dismissalWarning = dismissedRateWarning({
+      dismissed: recent.dismissed,
+      strong: recent.fixed + recent.dismissed,
+      windowDays: DEFAULT_WINDOW_DAYS
+    });
+    if (dismissalWarning !== null) console.log(dismissalWarning);
+    if (last !== null) {
+      const origin = lastDetail?.provenance == null ? "" : `; ${describeOrigin(lastDetail.provenance)}`;
+      console.log(
+        `last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.ruleId === void 0 ? f.findingId : `${f.findingId} (${f.ruleId})`).join(", ") || "none"}${origin}`
+      );
+      const recordedScope = describeReviewScope(lastDetail?.scope ?? null);
+      if (recordedScope !== null) console.log(`last scope       ${recordedScope}`);
+    }
+    const sync = lastSync(db);
+    console.log(
+      `last sync        ${sync === null ? "never completed" : `${sync.finishedAt ?? sync.startedAt}, ${sync.imported} imported from ${sync.repositories.length} repository/ies`}`
+    );
+    console.log(
+      coverage.total === 0 ? "Corpus: baseline voice in use (no synced history)" : `Corpus: ${coverage.total} events from ${distinctReviewers(db)} reviewer(s)`
+    );
+    console.log(
+      `corpus           ${coverage.total} event(s)` + (coverage.total === 0 ? "" : ` - ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(", ")}`)
+    );
+    for (const [repository, n] of Object.entries(coverage.byRepository)) {
+      console.log(`  ${repository.padEnd(45)} ${n}`);
+    }
+    for (const warning of coverage.warnings) console.log(`  warning        ${warning}`);
+    for (const line3 of watchSummary(db)) console.log(line3);
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 // plugins/review-voice/src/cli.ts
 function withSnakeCaseId(entry) {
   if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
@@ -26149,7 +26903,7 @@ function deletedFileCheck(argv) {
   const head = flag(argv, "--head");
   const cwd = process.cwd();
   if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
-  const git6 = (args) => execFileSync19("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync20("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
   let deleted;
   const deletions = () => {
     if (deleted !== void 0) return deleted;
@@ -26320,7 +27074,7 @@ function scoreCommand(argv) {
   const verificationFlag = flag(argv, "--verification");
   if (verificationFlag !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync22(verificationFlag, "utf8"));
+      const parsed2 = JSON.parse(readFileSync28(verificationFlag, "utf8"));
       const list2 = verdictList(parsed2);
       const problem = verificationProblem(list2);
       if (problem !== null) {
@@ -26407,7 +27161,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      reachDiff = readFileSync22(path, "utf8");
+      reachDiff = readFileSync28(path, "utf8");
       anchorHunks = parseHunks(reachDiff);
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -26423,7 +27177,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      const parsed2 = JSON.parse(readFileSync22(path, "utf8"));
+      const parsed2 = JSON.parse(readFileSync28(path, "utf8"));
       thread = Array.isArray(parsed2) ? parsed2 : parsed2.comments ?? [];
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -26749,155 +27503,6 @@ function gateOf(rejectedBecause) {
   if (rejectedBecause.startsWith("technical confidence ")) return "confidence";
   return null;
 }
-async function verifyCommand(argv) {
-  const cwdFlag = flag(argv, "--cwd");
-  if (argv.includes("--cwd") && cwdFlag === null) {
-    console.error("--cwd needs a directory.");
-    return 2;
-  }
-  if (cwdFlag !== null && statSync8(resolve8(cwdFlag), { throwIfNoEntry: false })?.isDirectory() !== true) {
-    console.error(`--cwd ${cwdFlag} is not a directory.`);
-    return 2;
-  }
-  let findings;
-  try {
-    const parsed2 = JSON.parse(readStdin());
-    findings = (Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? []).map((finding) => {
-      const raw = finding;
-      return {
-        ...raw,
-        candidateId: raw.candidateId ?? (typeof raw.candidate_id === "string" ? raw.candidate_id : raw.candidateId),
-        failureMode: raw.failureMode ?? (typeof raw.failure_mode === "string" ? raw.failure_mode : raw.failureMode)
-      };
-    });
-  } catch {
-    console.error('Expected {"candidates": [...]} on stdin.');
-    return 2;
-  }
-  try {
-    const root = repositoryRoot(process.cwd());
-    const config2 = loadConfig(root);
-    if (process.env["REVIEW_VOICE_NO_COMMANDS"] === "1") {
-      const name = config2.verification.name ?? "external";
-      console.log(
-        JSON.stringify(
-          { enabled: false, verifier: null, verdicts: [], didNotRun: findings.length > 0 && config2.verification.enabled ? [name] : [], skipped: "REVIEW_VOICE_NO_COMMANDS" },
-          null,
-          2
-        )
-      );
-      return 0;
-    }
-    const commitOf = (ref) => {
-      if (ref === null) return null;
-      try {
-        return execFileSync19("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-      } catch {
-        console.error(`${ref} does not resolve to a commit here, so the verification command is not told about it.`);
-        return null;
-      }
-    };
-    const base = commitOf(flag(argv, "--base"));
-    const head = commitOf(flag(argv, "--head"));
-    const report = await verifyFindings(findings, config2.verification, {
-      cwd: cwdFlag === null ? root : resolve8(cwdFlag),
-      context: {
-        repository: flag(argv, "--repository") ?? inferRepository(root),
-        // Resolved here, where the caller named it: with --cwd the command runs
-        // elsewhere, and a relative path would be read against that directory.
-        diffPath: flag(argv, "--diff-file") === null ? null : resolve8(flag(argv, "--diff-file")),
-        // Only when the caller says they are readable. A ref that is not there
-        // is worse than no ref: a command told to read it fails in a way it may
-        // mistake for evidence.
-        base,
-        head
-      }
-    });
-    console.log(JSON.stringify(report, null, 2));
-    return 0;
-  } catch (error) {
-    if (error instanceof GitError) {
-      console.error(error.message);
-      return 2;
-    }
-    throw error;
-  }
-}
-function reconcileCommand(argv) {
-  let candidates;
-  try {
-    const parsed2 = JSON.parse(readStdin());
-    const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.candidates;
-    if (!Array.isArray(list2)) throw new Error("no candidates");
-    candidates = list2;
-  } catch {
-    console.error('Expected {"candidates": [...]} on stdin, as they were before the second pass.');
-    return 2;
-  }
-  const verificationFile = flag(argv, "--verification");
-  const secondPassFile = flag(argv, "--second-pass");
-  if (verificationFile === null || secondPassFile === null) {
-    console.error("reconcile needs --verification <file> (step 3) and --second-pass <file> (the verify report).");
-    return 2;
-  }
-  let verifications;
-  try {
-    verifications = verdictList(JSON.parse(readFileSync22(verificationFile, "utf8")));
-  } catch (error) {
-    console.error(`Cannot read ${verificationFile}: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  const problem = verificationProblem(verifications);
-  if (problem !== null) {
-    console.error(`Malformed verification - ${problem}`);
-    return 2;
-  }
-  if (verifications.length === 0) {
-    console.error(`${verificationFile} contained no verifications, so no dispute could be detected.`);
-    return 2;
-  }
-  let secondPass2;
-  try {
-    secondPass2 = parseSecondPass(JSON.parse(readFileSync22(secondPassFile, "utf8")));
-  } catch (error) {
-    console.error(`Cannot read the second pass from ${secondPassFile}: ${error.message}`);
-    return 2;
-  }
-  let tieBreaks = null;
-  const tieBreaksFile = flag(argv, "--tie-breaks");
-  if (tieBreaksFile !== null) {
-    try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync22(tieBreaksFile, "utf8")));
-    } catch (error) {
-      console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
-      return 2;
-    }
-  }
-  try {
-    const result = reconcile(candidates, verifications, secondPass2, tieBreaks);
-    for (const note of result.notes) console.error(note);
-    console.log(
-      JSON.stringify(
-        { candidates: result.candidates, disputes: result.disputes, applied: result.applied, tieBreaks: result.tieBreaks },
-        null,
-        2
-      )
-    );
-    return 0;
-  } catch (error) {
-    if (error instanceof ReconcileInputError) {
-      console.error(`Cannot reconcile: ${error.message}`);
-      return 2;
-    }
-    throw error;
-  }
-}
-function reviewScopeFromManifest(value) {
-  return parseReviewScope(value) ?? void 0;
-}
-function describeReviewScope(scope) {
-  return describeScope(scope);
-}
 function policyVersionRefs(value) {
   if (!Array.isArray(value)) return null;
   const refs = [];
@@ -26955,7 +27560,7 @@ function recordCommand(argv) {
   let diff = "";
   if (diffFile !== null) {
     try {
-      diff = readFileSync22(diffFile, "utf8");
+      diff = readFileSync28(diffFile, "utf8");
     } catch {
       console.error(`Cannot read ${diffFile}.`);
       return 2;
@@ -26977,7 +27582,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed2 = JSON.parse(readFileSync22(bodyFindingsFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync28(bodyFindingsFile, "utf8"));
       const list2 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null && Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : null;
       if (list2 === null) throw new Error('expected an array or {"bodyFindings": [...]}');
       if (list2.length > 1) throw new Error("at most one body-only simplification is allowed per review");
@@ -27004,7 +27609,7 @@ function recordCommand(argv) {
   const knownPaths = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
-      const manifest = JSON.parse(readFileSync22(filesFile, "utf8"));
+      const manifest = JSON.parse(readFileSync28(filesFile, "utf8"));
       if (Array.isArray(manifest.files)) {
         for (const file2 of manifest.files) if (typeof file2?.path === "string") knownPaths.add(file2.path);
       }
@@ -27027,7 +27632,7 @@ function recordCommand(argv) {
   let candidates = [];
   if (candidatesFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync22(candidatesFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync28(candidatesFile, "utf8"));
       candidates = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
     } catch {
       console.error(`Cannot read candidates from ${candidatesFile}.`);
@@ -27039,7 +27644,7 @@ function recordCommand(argv) {
   let scoredPolicyVersions = null;
   if (scoresFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync22(scoresFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync28(scoresFile, "utf8"));
       scores = boundLists(Array.isArray(parsed2) ? parsed2 : parsed2.scores ?? []);
       scoredPolicyVersions = Array.isArray(parsed2) ? null : policyVersionRefs(parsed2.policyVersions);
     } catch {
@@ -27051,7 +27656,7 @@ function recordCommand(argv) {
   let verdicts = [];
   if (verdictsFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync22(verdictsFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync28(verdictsFile, "utf8"));
       verdicts = Array.isArray(parsed2) ? parsed2 : parsed2.verdicts ?? [];
     } catch {
       console.error(`Cannot read verdicts from ${verdictsFile}.`);
@@ -27062,7 +27667,7 @@ function recordCommand(argv) {
   let tieBreaks = [];
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync22(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync28(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -27072,7 +27677,7 @@ function recordCommand(argv) {
   let held = [];
   if (heldFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync22(heldFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync28(heldFile, "utf8"));
       const list2 = Array.isArray(parsed2) ? parsed2 : parsed2?.held;
       if (!Array.isArray(list2)) throw new Error('expected an array or {"held": [...]}');
       list2.forEach((entry, index) => {
@@ -27088,7 +27693,7 @@ function recordCommand(argv) {
             continue;
           }
           try {
-            const content = readFileSync22(entry.path, "utf8");
+            const content = readFileSync28(entry.path, "utf8");
             const lines2 = content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
             if (entry.line > lines2) console.error(`Held entry ${entry.path}:${entry.line} is past the end of the file (${lines2} lines).`);
           } catch {
@@ -27104,7 +27709,7 @@ function recordCommand(argv) {
   let stages = [];
   if (stagesFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync22(stagesFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync28(stagesFile, "utf8"));
       const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.stages ?? [];
       stages = (Array.isArray(list2) ? list2 : []).filter(
         (stage) => typeof stage === "object" && stage !== null && typeof stage.name === "string" && Number.isFinite(stage.seconds)
@@ -27125,8 +27730,8 @@ function recordCommand(argv) {
     }
     try {
       checks = recordedChecks(
-        JSON.parse(readFileSync22(evidenceFile, "utf8")),
-        JSON.parse(readFileSync22(symbolsFile, "utf8"))
+        JSON.parse(readFileSync28(evidenceFile, "utf8")),
+        JSON.parse(readFileSync28(symbolsFile, "utf8"))
       );
     } catch (error) {
       console.error(
@@ -27144,7 +27749,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed2 = JSON.parse(readFileSync22(followUpThreadFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync28(followUpThreadFile, "utf8"));
       const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.comments;
       if (!Array.isArray(list2)) throw new Error("comments is not a list");
       followUpThread = list2;
@@ -27162,7 +27767,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      rulings = parseFollowUpRulings(JSON.parse(readFileSync22(rulingsFile, "utf8")));
+      rulings = parseFollowUpRulings(JSON.parse(readFileSync28(rulingsFile, "utf8")));
     } catch (error) {
       const why = error instanceof FollowUpRulingError ? error.message : `cannot read it (${error.message})`;
       console.error(`Cannot read follow-up rulings from ${rulingsFile}: ${why}.`);
@@ -27207,7 +27812,7 @@ function recordCommand(argv) {
       const head = flag(argv, "--head");
       let marker = null;
       try {
-        const parsed2 = JSON.parse(readFileSync22(carryFile, "utf8"));
+        const parsed2 = JSON.parse(readFileSync28(carryFile, "utf8"));
         const refused = Array.isArray(parsed2["refused"]) ? parsed2["refused"].map((r) => String(r?.candidateId)) : null;
         const interdiff = parsed2["interdiff"];
         if (refused !== null && typeof parsed2["since"] === "string" && typeof parsed2["head"] === "string") {
@@ -27346,7 +27951,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   if (threadFile !== null) {
     let text4;
     try {
-      text4 = readFileSync22(threadFile, "utf8");
+      text4 = readFileSync28(threadFile, "utf8");
     } catch (error) {
       throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -27356,7 +27961,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   let noLongerChanged = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
-      const files2 = JSON.parse(readFileSync22(filesFile, "utf8"));
+      const files2 = JSON.parse(readFileSync28(filesFile, "utf8"));
       const listed = files2.scope?.noLongerChanged;
       noLongerChanged = new Set(Array.isArray(listed) ? listed.filter((path) => typeof path === "string") : []);
     } catch (error) {
@@ -27430,145 +28035,6 @@ function carryCommand(argv) {
     db.close();
   }
 }
-function reanchorCommand(argv) {
-  const candidateId = flag(argv, "--candidate");
-  const line3 = Number(flag(argv, "--line"));
-  const scoresFile = flag(argv, "--scores");
-  const diffFile = flag(argv, "--diff-file");
-  if (candidateId === null || !Number.isInteger(line3) || line3 < 1 || scoresFile === null || diffFile === null) {
-    console.error("Usage: reanchor --candidate <id> --line <n> [--path <p>] --scores <file> --diff-file <patch> [--candidates <file>]");
-    return 2;
-  }
-  if (argv.includes("--path") && flag(argv, "--path") === null) {
-    console.error("--path needs the file the finding belongs in.");
-    return 2;
-  }
-  const readJson2 = (path) => JSON.parse(readFileSync22(path, "utf8"));
-  let scores;
-  let hunks;
-  try {
-    scores = readJson2(scoresFile);
-    hunks = parseHunks(readFileSync22(diffFile, "utf8"));
-  } catch (error) {
-    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  const result = reanchorScores(scores, candidateId, { path: flag(argv, "--path"), line: line3 }, hunks);
-  if (!result.ok) {
-    console.error(`Not re-anchored: ${result.refused}`);
-    return 1;
-  }
-  const candidatesFile = flag(argv, "--candidates");
-  let candidates = null;
-  if (candidatesFile !== null) {
-    try {
-      candidates = reanchorCandidates(readJson2(candidatesFile), candidateId, result.to);
-    } catch (error) {
-      console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
-      return 2;
-    }
-    if (candidates === null) {
-      console.error(`${candidatesFile} has no candidate ${candidateId}; nothing was re-anchored.`);
-      return 2;
-    }
-  }
-  const staged = [];
-  try {
-    if (candidatesFile !== null) {
-      staged.push([`${candidatesFile}.reanchor-${process.pid}`, candidatesFile]);
-      writeFileSync9(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
-`);
-    }
-    staged.push([`${scoresFile}.reanchor-${process.pid}`, scoresFile]);
-    writeFileSync9(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
-`);
-    for (const [temporary, target] of staged) renameSync3(temporary, target);
-  } catch (error) {
-    for (const [temporary] of staged) rmSync8(temporary, { force: true });
-    console.error(`Cannot write: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  console.log(JSON.stringify({ candidateId, from: result.from, to: result.to, anchorCheck: result.anchorCheck }, null, 2));
-  return 0;
-}
-function challengeCommand(argv) {
-  const scoresFile = flag(argv, "--scores");
-  const candidatesFile = flag(argv, "--candidates");
-  const emit = argv.includes("--emit-prompts");
-  const diffFile = flag(argv, "--diff-file");
-  const intentFile = flag(argv, "--intent");
-  const outFile = flag(argv, "--out");
-  if (scoresFile === null || candidatesFile === null || !emit && diffFile === null) {
-    console.error(
-      "Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--diff-file <patch>] --emit-prompts\n       challenge --scores <file> --candidates <file> --diff-file <patch> [--out <file>] < verdicts.json"
-    );
-    return 2;
-  }
-  for (const name of ["--intent", "--diff-file", "--out"]) {
-    if (argv.includes(name) && flag(argv, name) === null) {
-      console.error(`${name} needs a file path.`);
-      return 2;
-    }
-  }
-  const readJson2 = (path) => JSON.parse(readFileSync22(path, "utf8"));
-  let scores;
-  let candidates;
-  try {
-    scores = readJson2(scoresFile);
-    candidates = candidatesById(readJson2(candidatesFile));
-  } catch (error) {
-    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  if (emit) {
-    let statements = [];
-    if (intentFile !== null) {
-      try {
-        statements = intentStatements(readJson2(intentFile));
-      } catch (error) {
-        console.error(`Cannot read ${intentFile}: ${error instanceof Error ? error.message : String(error)}`);
-        return 2;
-      }
-    }
-    console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile) }, null, 2));
-    return 0;
-  }
-  let verdicts;
-  let hunks;
-  try {
-    hunks = parseHunks(readFileSync22(diffFile, "utf8"));
-  } catch (error) {
-    console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  try {
-    verdicts = JSON.parse(readStdin());
-  } catch {
-    console.error("Cannot parse the challenger verdicts on stdin as JSON.");
-    return 2;
-  }
-  const result = applyChallenge(scores, candidates, verdicts, hunks);
-  if (!result.ok) {
-    console.error("Challenge refused:");
-    for (const problem of result.problems) console.error(`  ${problem}`);
-    return 2;
-  }
-  const body = `${JSON.stringify(result.document, null, 2)}
-`;
-  if (outFile === null) {
-    process.stdout.write(body);
-  } else {
-    try {
-      writeFileSync9(outFile, body);
-    } catch (error) {
-      console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
-      return 2;
-    }
-    const { confirmed, held, moved } = result.summary;
-    console.log(JSON.stringify({ out: outFile, confirmed, held, moved }, null, 2));
-  }
-  return 0;
-}
 function listIn(parsed2, keys) {
   if (Array.isArray(parsed2)) return { list: parsed2, rebuild: (list2) => list2 };
   if (typeof parsed2 !== "object" || parsed2 === null) return null;
@@ -27596,8 +28062,8 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let manifest;
   let hunks;
   try {
-    manifest = JSON.parse(readFileSync22(join24(dir, "files.json"), "utf8"));
-    hunks = parseHunks(readFileSync22(join24(dir, "diff.patch"), "utf8"));
+    manifest = JSON.parse(readFileSync28(join24(dir, "files.json"), "utf8"));
+    hunks = parseHunks(readFileSync28(join24(dir, "diff.patch"), "utf8"));
   } catch (error) {
     return `Cannot read the interdiff in ${dir}: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -27612,7 +28078,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let candidates;
   let verification2;
   try {
-    const parsed2 = listIn(JSON.parse(readFileSync22(candidatesFile, "utf8")), ["candidates"]);
+    const parsed2 = listIn(JSON.parse(readFileSync28(candidatesFile, "utf8")), ["candidates"]);
     if (parsed2 === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidates = parsed2.list;
     const normalised = candidates.map((raw, index) => normaliseCandidate(raw, index));
@@ -27624,7 +28090,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
       );
     }
     candidates = candidates.map((raw, index) => withId(raw, normalised[index].candidateId));
-    const parsedVerification = listIn(JSON.parse(readFileSync22(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync28(verificationFile, "utf8")), VERDICT_KEYS);
     verification2 = parsedVerification?.list ?? [];
     if (parsedVerification === null && candidates.length > 0) throw new Error(`${verificationFile} contains no verifications`);
     const problem = verificationProblem(verification2);
@@ -27637,7 +28103,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
 function partialDiffReason(diffFile) {
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync22(join24(dirname15(diffFile), "files.json"), "utf8"));
+    manifest = JSON.parse(readFileSync28(join24(dirname16(diffFile), "files.json"), "utf8"));
   } catch {
     return null;
   }
@@ -27669,24 +28135,24 @@ function carryCandidatesCommand(argv) {
   let hunks;
   let heldIn = null;
   try {
-    const parsedCandidates = listIn(JSON.parse(readFileSync22(candidatesFile, "utf8")), ["candidates"]);
+    const parsedCandidates = listIn(JSON.parse(readFileSync28(candidatesFile, "utf8")), ["candidates"]);
     if (parsedCandidates === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidatesIn = parsedCandidates;
     candidates = candidatesIn.list.map((raw, index) => normaliseCandidate(raw, index));
     assertUniqueCandidateIds(candidates);
-    const parsedVerification = listIn(JSON.parse(readFileSync22(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync28(verificationFile, "utf8")), VERDICT_KEYS);
     if (parsedVerification === null || parsedVerification.list.length === 0) {
       throw new Error(`${verificationFile} contains no verifications`);
     }
     verificationIn = parsedVerification;
     const problem = verificationProblem(verificationIn.list);
     if (problem !== null) throw new Error(`malformed verification - ${problem}`);
-    hunks = parseHunks(readFileSync22(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync28(diffFile, "utf8"));
     const partial = partialDiffReason(diffFile);
     if (partial !== null) throw new Error(partial);
     const heldFile = flag(argv, "--held");
     if (heldFile !== null) {
-      heldIn = listIn(JSON.parse(readFileSync22(heldFile, "utf8")), ["held"]);
+      heldIn = listIn(JSON.parse(readFileSync28(heldFile, "utf8")), ["held"]);
       if (heldIn === null) throw new Error(`${heldFile} is not an array or {"held": [...]}`);
       heldIn.list.forEach((entry, index) => {
         const heldError = heldProblem(entry);
@@ -27779,19 +28245,19 @@ function carryCandidatesCommand(argv) {
   };
   try {
     mkdirSync11(outDir, { recursive: true });
-    writeFileSync9(
+    writeFileSync11(
       join24(outDir, "candidates.json"),
       `${JSON.stringify(candidatesIn.rebuild([...carriedCandidates, ...interdiffCandidates]), null, 2)}
 `
     );
-    writeFileSync9(
+    writeFileSync11(
       join24(outDir, "verification.json"),
       `${JSON.stringify(verificationIn.rebuild([...carriedVerification, ...interdiffVerification]), null, 2)}
 `
     );
-    if (heldIn !== null) writeFileSync9(join24(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
+    if (heldIn !== null) writeFileSync11(join24(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
 `);
-    writeFileSync9(join24(outDir, "carry.json"), `${JSON.stringify(record3, null, 2)}
+    writeFileSync11(join24(outDir, "carry.json"), `${JSON.stringify(record3, null, 2)}
 `);
   } catch (error) {
     console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -27830,304 +28296,6 @@ function carryCandidatesCommand(argv) {
     )
   );
   return refused.length === 0 ? 0 : 1;
-}
-function explainCommand(argv) {
-  const db = openDatabase();
-  try {
-    const detail = runDetail(db, flag(argv, "--run") ?? void 0);
-    if (detail === null) {
-      console.log("No review has been recorded yet.");
-      return 0;
-    }
-    const wanted = argv.find((arg) => /^rv_\d+$/.test(arg));
-    const verdicts = Array.isArray(detail.verdicts) ? detail.verdicts : [];
-    const scores = Array.isArray(detail.scores) ? detail.scores : [];
-    if (argv.includes("--json")) {
-      console.log(JSON.stringify(detail, null, 2));
-      return 0;
-    }
-    console.log(`Review ${detail.reviewRunId}`);
-    console.log(`Recorded ${detail.createdAt}${detail.repository === null ? "" : ` for ${detail.repository}`}`);
-    if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
-    const recordedScope = describeReviewScope(detail.scope);
-    if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
-    console.log(describeProvenance(detail.provenance));
-    console.log(describeChecks(detail.checks));
-    for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
-    const shallow = shallowPassWarning(detail.stages, detail.findings.length);
-    if (shallow !== null) console.log(`Warning ${shallow}`);
-    if (detail.complexity !== null) {
-      console.log(
-        detail.complexity.level === "high" ? `Complexity high - ${detail.complexity.reasons.join("; ")}` : "Complexity normal"
-      );
-    }
-    console.log("");
-    const history = detail.repository !== null && detail.pullNumber !== null ? followUpHistory(db, detail.repository, detail.pullNumber) : null;
-    const shown = wanted === void 0 ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
-    if (shown.length === 0 && wanted === void 0 && detail.bodyFindings.length === 0) {
-      console.log("No findings were recorded.");
-      console.log("");
-    } else if (shown.length === 0 && wanted !== void 0) {
-      console.log(`No finding ${wanted}. Available: ${detail.findings.map((f) => f.findingId).join(", ") || "none"}.`);
-      return 1;
-    }
-    for (const finding of shown) {
-      const score2 = scores.find((s) => s.path === finding.path && s.line === finding.line);
-      console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
-      if (finding.carriedFrom !== void 0) {
-        console.log(`  carried from      ${finding.carriedFrom.findingId} of run ${finding.carriedFrom.runId}`);
-      }
-      if (finding.partlyAddressed !== void 0) {
-        const { prior, remaining, addressed } = finding.partlyAddressed;
-        console.log(
-          `  partly addressed  ${prior.author} at ${prior.path}:${prior.line}; ${remaining.length} of ${remaining.length + addressed.length} still open: ${remaining.join("; ")}`
-        );
-        const later2 = history?.get(`${detail.reviewRunId}:${finding.findingId}`);
-        if (later2?.state?.status === "resolved") {
-          console.log(`  follow-up         resolved in run ${later2.stateRunId} - ${later2.state.reason}`);
-        } else if (later2?.state?.status === "open") {
-          console.log(`  follow-up         open as of run ${later2.stateRunId}: ${later2.state.remaining.join("; ")}`);
-        } else {
-          console.log("  follow-up         open");
-        }
-      }
-      console.log(`  category          ${finding.category ?? "not recorded"}`);
-      console.log(`  rule id           ${finding.ruleId ?? "not recorded"}`);
-      if (score2?.technicalConfidence !== void 0) {
-        console.log(`  technical         ${score2.technicalConfidence.toFixed(2)}`);
-      }
-      if (score2?.finalScore !== void 0) {
-        console.log(`  final score       ${score2.finalScore.toFixed(2)}`);
-      }
-      if (score2?.novelty !== void 0) {
-        console.log(`  novelty           ${score2.novelty.toFixed(2)}`);
-      }
-      const precedentIds = score2?.precedentIds ?? (score2?.precedents ?? []).flatMap((p) => typeof p.eventId === "string" ? [p.eventId] : []);
-      if (precedentIds.length > 0) {
-        console.log(`  precedents        ${precedentIds.join(", ")}`);
-      }
-      if (score2?.duplicateOfPrecedent != null) {
-        console.log(`  already stated in ${score2.duplicateOfPrecedent}`);
-      }
-      if (score2?.fix !== void 0) {
-        const fix = score2.fix;
-        const confidence = typeof fix.confidence === "number" && Number.isFinite(fix.confidence) ? fix.confidence.toFixed(2) : "unrecorded";
-        if (fix.render === "fix") {
-          console.log(`  fix  verified ${confidence}`);
-        } else if (fix.render === "direction") {
-          console.log(`  fix  direction (partial ${confidence})`);
-        } else {
-          const proposed = typeof fix.suggested === "string" && fix.suggested.trim().length > 0;
-          if (!proposed) {
-            console.log("  fix  none proposed");
-          } else {
-            console.log(`  fix  withheld (${fix.verdict ?? "not verified"}): ${fix.reason ?? "no reason recorded"}`);
-          }
-        }
-      }
-      if (score2 === void 0) {
-        console.log("  scoring           not recorded for this review");
-      }
-      const verdict2 = verdicts.find((v) => v.path === finding.path && v.line === finding.line);
-      if (verdict2 !== void 0) {
-        console.log(
-          `  verified          ${verdict2.verdict} (${verdict2.confidence.toFixed(2)}) by ${verdict2.verifier}` + (verdict2.outcome === "kept" ? "" : ` - ${verdict2.outcome}`)
-        );
-        if (verdict2.reason.length > 0) console.log(`                    ${verdict2.reason}`);
-        const ruling = detail.tieBreaks.find((t) => t.candidateId === verdict2.candidateId);
-        if (ruling !== void 0) {
-          console.log(
-            `  tie-break         ${ruling.upheld ? "upheld" : "not upheld"}${ruling.applied === false ? " (not applied)" : ""}${ruling.raised === void 0 ? "" : ` (raised to ${ruling.raised})`} - ${ruling.reason}`
-          );
-        }
-      }
-      console.log("");
-    }
-    if (detail.bodyFindings.length > 0 && wanted === void 0) {
-      console.log(`Body-only simplifications (${detail.bodyFindings.length}):`);
-      for (const finding of detail.bodyFindings) {
-        const { candidate } = finding;
-        console.log(`  ${candidate.claim}`);
-        console.log(
-          `  removes           ${candidate.removes.map((element2) => `${element2.path}:${element2.line} (${element2.element})`).join("; ")}`
-        );
-        console.log(
-          `  uses              ${candidate.abstraction.path}:${candidate.abstraction.line} (${candidate.abstraction.name})`
-        );
-        console.log("  verdict           never affects the verdict");
-      }
-      console.log("");
-    }
-    if (detail.followUps.length > 0 && wanted === void 0) {
-      console.log(`Follow-ups from earlier runs (${detail.followUps.length}):`);
-      for (const f of detail.followUps) {
-        console.log(`  [${f.status}] ${f.findingId} of run ${f.runId}  ${f.path}:${f.line} - ${f.reason}`);
-        if (f.status === "open") console.log(`      still open: ${f.remaining.join("; ")}`);
-      }
-      console.log("");
-    }
-    if (detail.held.length > 0 && wanted === void 0) {
-      console.log(`Held back (${detail.held.length}):`);
-      for (const h of detail.held) console.log(`  [${h.verdict}] ${h.path}:${h.line}  ${h.source} - ${h.reason}`);
-      console.log("");
-    }
-    const dropped = verdicts.filter(
-      (v) => v.outcome === "dropped" && !detail.tieBreaks.some(
-        (t) => t.upheld && t.applied !== false && v.candidateId !== void 0 && t.candidateId === v.candidateId
-      )
-    );
-    if (dropped.length > 0 && wanted === void 0) {
-      console.log(`Suppressed by verification (${dropped.length}):`);
-      for (const v of dropped) {
-        console.log(`  [${v.originalSeverity}] ${v.path}:${v.line}  ${v.verifier} @ ${v.confidence.toFixed(2)}`);
-        if (v.reason.length > 0) console.log(`      ${v.reason}`);
-        const ruling = detail.tieBreaks.find((t) => v.candidateId !== void 0 && t.candidateId === v.candidateId);
-        if (ruling !== void 0) {
-          const state = ruling.applied === false ? `${ruling.upheld ? "upheld" : "not upheld"} but not applied` : "not upheld";
-          console.log(`      tie-break ${state} - ${ruling.reason}`);
-        }
-      }
-      console.log("");
-    }
-    return 0;
-  } finally {
-    db.close();
-  }
-}
-function keptCandidateIds(value) {
-  const record3 = value;
-  const list2 = Array.isArray(value) ? value : Array.isArray(record3?.kept) ? record3.kept : Array.isArray(record3?.candidates) ? record3.candidates : [];
-  return list2.map((entry) => entry?.candidate_id).filter((id) => typeof id === "string");
-}
-function checkVerificationCommand(argv) {
-  const candidatesFile = flag(argv, "--candidates");
-  let keptIds = null;
-  if (candidatesFile !== null) {
-    try {
-      keptIds = keptCandidateIds(JSON.parse(readFileSync22(candidatesFile, "utf8")));
-    } catch (error) {
-      console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
-      return 2;
-    }
-  }
-  let parsed2;
-  try {
-    parsed2 = JSON.parse(readStdin());
-  } catch {
-    console.error("Expected the evidence-verifier output as JSON on stdin.");
-    return 2;
-  }
-  const list2 = verdictList(parsed2);
-  if (list2.length === 0) {
-    console.error(
-      `No verifications found. Expected an array, or an object with one of: ${VERDICT_KEYS.join(", ")}, each entry carrying candidate_id.`
-    );
-    return 2;
-  }
-  const problem = verificationProblem(list2);
-  if (problem !== null) {
-    console.error(`Malformed verification - ${problem}`);
-    console.error("Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.");
-    return 2;
-  }
-  if (keptIds !== null) {
-    const verified = new Set(list2.map((entry) => entry.candidate_id));
-    const missing = keptIds.filter((id) => !verified.has(id));
-    if (missing.length > 0) {
-      for (const id of missing) console.error(`No verification for kept candidate ${id}.`);
-      console.error("Re-run the evidence-verifier for the missing candidates.");
-      return 2;
-    }
-  }
-  console.log(JSON.stringify({ valid: true, verifications: list2.length }, null, 2));
-  return 0;
-}
-function checkSimplificationCommand(argv) {
-  const diffFile = flag(argv, "--diff-file");
-  if (diffFile === null) {
-    console.error("--diff-file needs the patch the simplification pass reviewed.");
-    return 2;
-  }
-  const candidateFile = flag(argv, "--candidate");
-  if (argv.includes("--candidate") && candidateFile === null) {
-    console.error("--candidate needs the checked analyst output.");
-    return 2;
-  }
-  let hunks;
-  try {
-    hunks = parseHunks(readFileSync22(diffFile, "utf8"));
-  } catch (error) {
-    console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  let document;
-  try {
-    document = JSON.parse(readStdin());
-  } catch {
-    console.error("Expected simplification JSON on stdin.");
-    return 2;
-  }
-  if (candidateFile === null) {
-    const candidate2 = parseSimplificationCandidate(document);
-    if (candidate2.problem !== null) {
-      console.error(`Malformed simplification candidate - ${candidate2.problem}.`);
-      console.error("Re-run the analyst with the simplification schema restated. Do not hand-translate its output.");
-      return 2;
-    }
-    if (candidate2.value !== null) {
-      const problem = simplificationDiffProblem(candidate2.value, hunks);
-      if (problem !== null) {
-        console.error(`Invalid simplification candidate - ${problem}.`);
-        console.error("Re-run the analyst with the changed locations from the patch. Do not hand-translate its output.");
-        return 2;
-      }
-    }
-    console.log(JSON.stringify({ simplification: candidate2.value }, null, 2));
-    return 0;
-  }
-  let candidateDocument;
-  try {
-    candidateDocument = JSON.parse(readFileSync22(candidateFile, "utf8"));
-  } catch (error) {
-    console.error(`Cannot read ${candidateFile}: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  const candidate = parseSimplificationCandidate(candidateDocument);
-  if (candidate.problem !== null || candidate.value === null) {
-    console.error(
-      `Cannot verify ${candidateFile}: ${candidate.problem ?? "it contains no simplification candidate"}.`
-    );
-    return 2;
-  }
-  const candidateProblem = simplificationDiffProblem(candidate.value, hunks);
-  if (candidateProblem !== null) {
-    console.error(`Cannot verify ${candidateFile}: ${candidateProblem}.`);
-    return 2;
-  }
-  const verification2 = parseSimplificationVerification(document, candidate.value);
-  if (verification2.problem !== null || verification2.value === null) {
-    console.error(`Malformed simplification verification - ${verification2.problem ?? "missing verification"}.`);
-    console.error("Re-run the verifier with the simplification schema restated. Do not hand-translate its output.");
-    return 2;
-  }
-  const bodyFindings = verification2.value.verified ? [
-    {
-      candidate: candidate.value,
-      verification: {
-        verified: verification2.value.verified,
-        elements: verification2.value.elements.map((element2) => ({
-          path: element2.path,
-          line: element2.line,
-          exists_in_diff: element2.existsInDiff
-        })),
-        behavior_preserved: verification2.value.behaviorPreserved,
-        removes_concepts: verification2.value.removesConcepts,
-        reason: verification2.value.reason
-      }
-    }
-  ] : [];
-  console.log(JSON.stringify({ bodyFindings }, null, 2));
-  return 0;
 }
 function carriedHeldFindings(runId, head) {
   const db = openDatabase();
@@ -28182,7 +28350,7 @@ function matchHeld(candidate, held) {
   return best === null ? null : { entry: best.entry, drop: false };
 }
 function readSignals(file2, root) {
-  const document = JSON.parse(readFileSync22(file2, "utf8"));
+  const document = JSON.parse(readFileSync28(file2, "utf8"));
   if (typeof document !== "object" || document === null || Array.isArray(document)) throw new Error("not a JSON object");
   const signals = document.signals;
   if (signals === void 0) return [];
@@ -28290,7 +28458,7 @@ function checkCandidatesCommand(argv) {
       }
       let ids;
       try {
-        const statements = JSON.parse(readFileSync22(intentFile, "utf8")).statements;
+        const statements = JSON.parse(readFileSync28(intentFile, "utf8")).statements;
         if (!Array.isArray(statements)) throw new Error("statements is not a list");
         ids = new Set(statements.map((statement) => statement?.id).filter((id) => typeof id === "string"));
       } catch (error) {
@@ -28321,7 +28489,7 @@ function checkCandidatesCommand(argv) {
     }
     let hunks;
     try {
-      hunks = parseHunks(readFileSync22(diffFile, "utf8"));
+      hunks = parseHunks(readFileSync28(diffFile, "utf8"));
     } catch (error) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -28396,7 +28564,7 @@ function checkCandidatesCommand(argv) {
         return 2;
       }
       try {
-        const parsed2 = JSON.parse(readFileSync22(threadFile, "utf8"));
+        const parsed2 = JSON.parse(readFileSync28(threadFile, "utf8"));
         thread = Array.isArray(parsed2) ? parsed2 : parsed2.comments ?? [];
         if (!Array.isArray(thread)) throw new Error("comments is not a list");
       } catch (error) {
@@ -28527,79 +28695,6 @@ function checkCandidatesCommand(argv) {
     throw error;
   }
 }
-function distinctReviewers(db) {
-  return db.prepare("SELECT COUNT(DISTINCT reviewer_login) AS n FROM review_events").get().n;
-}
-function statusCommand() {
-  const db = openDatabase();
-  try {
-    let allowlist = [];
-    let maxRepositoryShare;
-    let ownerReviewer = null;
-    try {
-      const config2 = loadConfig(repositoryRoot(process.cwd()));
-      ownerReviewer = config2.ownerReviewer;
-      allowlist = namedRepositories(config2.allowlist, "status");
-      maxRepositoryShare = scaledRepositoryShare(allowlist.length);
-    } catch {
-    }
-    const coverage = corpusCoverage(db, { allowlist, ownerReviewer, ...maxRepositoryShare === void 0 ? {} : { maxRepositoryShare } });
-    const runs = db.prepare("SELECT COUNT(*) AS n FROM review_runs").get().n;
-    const audits = db.prepare("SELECT COUNT(*) AS n FROM audit_events").get().n;
-    const totals = feedbackTotals(db);
-    const last = latestRun(db);
-    const lastDetail = runDetail(db);
-    console.log(`data directory   ${dataDirectory()}`);
-    console.log(`database         ${databasePath()}`);
-    console.log(`review runs      ${runs}`);
-    console.log(`audit events     ${audits}`);
-    console.log(
-      `feedback         ${totals.kept} kept, ${totals.rewritten} rewritten, ${totals.dismissed} dismissed` + (totals.other > 0 ? `, ${totals.other} other` : "")
-    );
-    const unlabelled = unlabelledFindings(db);
-    console.log(
-      `owner precision  ${totals.ownerPrecision === null ? "not yet measurable (no explicit feedback)" : `${(totals.ownerPrecision * 100).toFixed(0)}% of labelled findings`}`
-    );
-    if (unlabelled > 0) {
-      console.log(
-        `unlabelled       ${unlabelled} finding(s). Precision cannot be measured until these carry a verdict: /review-voice:feedback <id> keep|dismiss|rewrite`
-      );
-    }
-    const recent = postedStats(db, { since: windowStart(DEFAULT_WINDOW_DAYS) });
-    const dismissalWarning = dismissedRateWarning({
-      dismissed: recent.dismissed,
-      strong: recent.fixed + recent.dismissed,
-      windowDays: DEFAULT_WINDOW_DAYS
-    });
-    if (dismissalWarning !== null) console.log(dismissalWarning);
-    if (last !== null) {
-      const origin = lastDetail?.provenance == null ? "" : `; ${describeOrigin(lastDetail.provenance)}`;
-      console.log(
-        `last review      ${last.findings.length} finding(s): ${last.findings.map((f) => f.ruleId === void 0 ? f.findingId : `${f.findingId} (${f.ruleId})`).join(", ") || "none"}${origin}`
-      );
-      const recordedScope = describeReviewScope(lastDetail?.scope ?? null);
-      if (recordedScope !== null) console.log(`last scope       ${recordedScope}`);
-    }
-    const sync = lastSync(db);
-    console.log(
-      `last sync        ${sync === null ? "never completed" : `${sync.finishedAt ?? sync.startedAt}, ${sync.imported} imported from ${sync.repositories.length} repository/ies`}`
-    );
-    console.log(
-      coverage.total === 0 ? "Corpus: baseline voice in use (no synced history)" : `Corpus: ${coverage.total} events from ${distinctReviewers(db)} reviewer(s)`
-    );
-    console.log(
-      `corpus           ${coverage.total} event(s)` + (coverage.total === 0 ? "" : ` - ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(", ")}`)
-    );
-    for (const [repository, n] of Object.entries(coverage.byRepository)) {
-      console.log(`  ${repository.padEnd(45)} ${n}`);
-    }
-    for (const warning of coverage.warnings) console.log(`  warning        ${warning}`);
-    for (const line3 of watchSummary(db)) console.log(line3);
-    return 0;
-  } finally {
-    db.close();
-  }
-}
 async function main(argv) {
   const exit = await dispatch(argv);
   const command = argv[0];
@@ -28607,71 +28702,6 @@ async function main(argv) {
     console.error(`Run "review-voice ${command} --help" for its flags.`);
   }
   return exit;
-}
-async function agentCommand(argv) {
-  const name = flag(argv, "--name");
-  const model = flag(argv, "--model");
-  const schemaPath = flag(argv, "--schema");
-  if (name === null || model === null || schemaPath === null) {
-    console.error("agent needs --name <agent>, --model <model> and --schema <file.json>.");
-    return 2;
-  }
-  let tools;
-  try {
-    tools = readAgentTools(name);
-    runnerTools(tools);
-  } catch (error) {
-    if (error instanceof AgentSpecError) {
-      console.error(error.message);
-      return 2;
-    }
-    throw error;
-  }
-  let schema4;
-  try {
-    schema4 = JSON.parse(readFileSync22(schemaPath, "utf8"));
-  } catch (error) {
-    console.error(`Cannot read the schema ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  if (schema4 === null || typeof schema4 !== "object" || Array.isArray(schema4)) {
-    console.error(`The schema ${schemaPath} must be a JSON object.`);
-    return 2;
-  }
-  const schemaDir = dirname15(resolve8(schemaPath));
-  try {
-    schemaForRunner(schema4, schemaDir);
-  } catch (error) {
-    if (error instanceof AgentSpecError) {
-      console.error(`The schema ${schemaPath} cannot be given to an agent: ${error.message}`);
-      return 2;
-    }
-    throw error;
-  }
-  const cwd = flag(argv, "--cwd") ?? process.cwd();
-  let isDirectory = false;
-  try {
-    isDirectory = statSync8(cwd).isDirectory();
-  } catch {
-    isDirectory = false;
-  }
-  if (!isDirectory) {
-    console.error(`--cwd ${cwd} is not a directory.`);
-    return 2;
-  }
-  const timeout = numericFlag(argv, "--timeout", 0);
-  if (timeout === null || argv.includes("--timeout") && timeout === 0 || timeout > 3600) {
-    console.error("--timeout takes a whole number of seconds from 1 to 3600.");
-    return 2;
-  }
-  const prompt = readStdin();
-  const result = await runAgent(
-    { name, model, tools, schema: schema4, schemaDir, ...timeout > 0 ? { timeoutMs: timeout * 1e3 } : {} },
-    prompt,
-    cwd
-  );
-  console.log(JSON.stringify(result, null, 2));
-  return result.ok ? 0 : 1;
 }
 async function whileStoppable(run) {
   if (inProcessState() !== null) return run();
@@ -28794,7 +28824,7 @@ ${topLevelHelp()}`);
         stopReview: review2.stop,
         prepareClone: gitPrepareClone(),
         now: () => /* @__PURE__ */ new Date(),
-        sleep: (ms) => new Promise((resolve9) => setTimeout(resolve9, ms)),
+        sleep: (ms) => new Promise((resolve10) => setTimeout(resolve10, ms)),
         out: (text4) => console.log(text4),
         err: (text4) => console.error(text4)
       });

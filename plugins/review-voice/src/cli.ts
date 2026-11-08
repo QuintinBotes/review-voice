@@ -7,8 +7,8 @@
  * (candidate generation, verification, wording) live in the plugin's agents.
  * See docs/ARCHITECTURE.md for why the line is drawn there.
  */
-import { readFileSync, writeFileSync, mkdirSync, statSync, renameSync, rmSync } from 'node:fs';
-import { dirname, isAbsolute, join, posix, relative, resolve } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname, isAbsolute, join, posix, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
@@ -16,7 +16,6 @@ import { format } from 'node:util';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
 import { pluginVersion } from './version.ts';
 import { OPTIONAL_CHECKS, runDoctor } from './doctor.ts';
-import { AgentSpecError, readAgentTools, runAgent, runnerTools, schemaForRunner } from './agents/runner.ts';
 import { validateOutput } from './contract/validate.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
 import { DEFAULT_LIMITS, SEVERITY_ORDER, type Severity } from './contract/limits.ts';
@@ -26,14 +25,11 @@ import {
   type ComplexityAssessment,
 } from './diff/complexity.ts';
 import {
-  parseSimplificationCandidate,
-  parseSimplificationVerification,
   parseVerifiedSimplification,
-  simplificationDiffProblem,
   type VerifiedSimplification,
 } from './simplification.ts';
 import { isReviewable } from './diff/classify.ts';
-import { describeScope, parseReviewScope, type ReviewScope } from './diff/incremental.ts';
+import { parseReviewScope, type ReviewScope } from './diff/incremental.ts';
 import {
   classifyAnchor,
   classifyStaleConsumer,
@@ -47,7 +43,6 @@ import {
 } from './diff/hunks.ts';
 import type { ThreadComment } from './diff/thread.ts';
 import {
-  followUpHistory,
   FollowUpRulingError,
   openFollowUps,
   parseFollowUpRulings,
@@ -55,11 +50,10 @@ import {
   type FollowUpRuling,
   type FollowUpState,
 } from './store/follow-ups.ts';
-import { openDatabase, type Database } from './store/db.ts';
-import { databasePath, dataDirectory } from './store/paths.ts';
+import { openDatabase } from './store/db.ts';
+import { dataDirectory } from './store/paths.ts';
 import {
   recordRun,
-  latestRun,
   runDetail,
   heldProblem,
   type CarryMarker,
@@ -71,40 +65,28 @@ import {
   type RecordedChecks,
   ORIGINS,
   PROVENANCE_MODES,
-  describeChecks,
-  describeOrigin,
-  describeProvenance,
   recordedChecks,
 } from './store/runs.ts';
 import { heldBackFindings, parseThreadFile, postedReviewIds } from './diff/held.ts';
 import { carryCandidates, carryFindings, CarryError, commitReadable, followLine, seriousNotCarried, type CarriedFinding } from './diff/carry.ts';
 import { MODES } from './review/plan.ts';
 import { DIFF_LANE, laneNamed } from './review/lanes.ts';
-import { candidateAnchor, reanchorCandidates, reanchorScores } from './diff/reanchor.ts';
+import { candidateAnchor } from './diff/reanchor.ts';
 import { resolveCommit } from './diff/prior.ts';
-import {
-  feedbackTotals,
-  unlabelledFindings,
-} from './store/feedback.ts';
 import { configFile, loadConfig } from './policy/load.ts';
 import { repositoryRoot } from './diff/acquire.ts';
 import { stopCommandsOnSignal } from './evidence/run.ts';
 import type { EvidenceSignal } from './evidence/types.ts';
-import { verifyFindings, type VerifiableFinding } from './verify/external.ts';
-import { parseSecondPass, parseTieBreaks, reconcile, ReconcileInputError, type TieBreak } from './verify/reconcile.ts';
-import { applyChallenge, candidatesById, challengePrompts, intentStatements } from './verify/challenge.ts';
+import { parseTieBreaks, type TieBreak } from './verify/reconcile.ts';
 import { GitHubClient, NotAllowlisted, ReadOnlyViolation } from './github/client.ts';
 import { AuthError } from './github/auth.ts';
-import { scaledRepositoryShare } from './corpus/select.ts';
 import { checkAbsenceClaim, type ExistenceCheck } from './scoring/existence.ts';
 import { computeReach } from './scoring/reach.ts';
 import { checkCitation } from './scoring/citation.ts';
-import { corpusCoverage } from './corpus/store.ts';
 import { queueCommand } from './queue/command.ts';
 import { CONFIG_COPY, watchCommand } from './watch/command.ts';
 import { spawnReview } from './watch/review.ts';
 import { gitPrepareClone } from './watch/workspace.ts';
-import { watchSummary } from './store/watch.ts';
 import { retrievePrecedents, type Precedent } from './retrieval/retrieve.ts';
 import {
   scoreCandidate,
@@ -140,12 +122,9 @@ import {
   matchingSuppression,
   POLICY_SUPPRESSED_PREFIX,
 } from './scoring/score.ts';
-import { dismissedRateWarning, DEFAULT_WINDOW_DAYS, windowStart } from './evaluate/metrics.ts';
 import { storedPolicyVersions, type PolicyVersionRef } from './store/runs.ts';
-import { postedStats } from './store/outcomes.ts';
-import { lastSync } from './sync/state.ts';
 import { ReviewWriter, WriteViolation } from './github/writer.ts';
-import { cleanStages, describeStage, shallowPassWarning } from './store/effort.ts';
+import { cleanStages, shallowPassWarning } from './store/effort.ts';
 import { recordAudit } from './store/audit.ts';
 import { commandHelp, topLevelHelp } from './help.ts';
 import { runReview, reportText } from './review/driver.ts';
@@ -192,8 +171,17 @@ import { threadCommand } from './cli/thread.ts';
 import { symbolsCommand } from './cli/symbols.ts';
 import { planCommand, lanesCommand } from './cli/plan.ts';
 import { verdictCommand, postCommand } from './cli/verdict.ts';
-import { namedRepositories, consentPlanCommand, syncCommand } from './cli/sync.ts';
+import { consentPlanCommand, syncCommand } from './cli/sync.ts';
 import { outcomesCommand } from './cli/outcomes.ts';
+import { checkVerificationCommand } from './cli/check-verification.ts';
+import { checkSimplificationCommand } from './cli/check-simplification.ts';
+import { verifyCommand } from './cli/verify.ts';
+import { reconcileCommand } from './cli/reconcile.ts';
+import { challengeCommand } from './cli/challenge.ts';
+import { reanchorCommand } from './cli/reanchor.ts';
+import { agentCommand } from './cli/agent.ts';
+import { statusCommand } from './cli/status.ts';
+import { reviewScopeFromManifest, explainCommand } from './cli/explain.ts';
 export { diffSummary, emitDiff } from './cli/diff.ts';
 export { resolveOutPath, verificationProblem } from './cli/shared.ts';
 
@@ -1082,188 +1070,6 @@ function gateOf(rejectedBecause: string | null): 'score' | 'confidence' | 'polic
   return null;
 }
 
-async function verifyCommand(argv: string[]): Promise<number> {
-  // As with `evidence`, the configuration names the command and comes from
-  // this checkout or REVIEW_VOICE_CONFIG, and --cwd is only where it runs, so
-  // the second pass judges findings about the head against the head (issue 275).
-  const cwdFlag = flag(argv, '--cwd');
-  if (argv.includes('--cwd') && cwdFlag === null) {
-    console.error('--cwd needs a directory.');
-    return 2;
-  }
-  if (cwdFlag !== null && statSync(resolve(cwdFlag), { throwIfNoEntry: false })?.isDirectory() !== true) {
-    console.error(`--cwd ${cwdFlag} is not a directory.`);
-    return 2;
-  }
-  let findings: VerifiableFinding[];
-  try {
-    const parsed = JSON.parse(readStdin()) as { candidates?: VerifiableFinding[] } | VerifiableFinding[];
-    // The analyst writes `candidate_id`. Without the camelCase id each verdict
-    // was keyed by location only, and `reconcile` needs the id to apply it.
-    findings = (Array.isArray(parsed) ? parsed : (parsed.candidates ?? [])).map((finding) => {
-      const raw = finding as VerifiableFinding & { candidate_id?: unknown; failure_mode?: unknown };
-      return {
-        ...raw,
-        candidateId: raw.candidateId ?? (typeof raw.candidate_id === 'string' ? raw.candidate_id : raw.candidateId),
-        failureMode: raw.failureMode ?? (typeof raw.failure_mode === 'string' ? raw.failure_mode : raw.failureMode),
-      };
-    });
-  } catch {
-    console.error('Expected {"candidates": [...]} on stdin.');
-    return 2;
-  }
-
-  try {
-    const root = repositoryRoot(process.cwd());
-    const config = loadConfig(root);
-    // The same switch the driver and `evidence` honour: with it set, no
-    // configured repository command runs, however the caller got here. The
-    // report has the shape of a disabled verifier and says why.
-    if (process.env['REVIEW_VOICE_NO_COMMANDS'] === '1') {
-      const name = config.verification.name ?? 'external';
-      console.log(
-        JSON.stringify(
-          { enabled: false, verifier: null, verdicts: [], didNotRun: findings.length > 0 && config.verification.enabled ? [name] : [], skipped: 'REVIEW_VOICE_NO_COMMANDS' },
-          null,
-          2,
-        ),
-      );
-      return 0;
-    }
-    // The command is told what change it is judging. Without this it ran
-    // against whatever the working tree happened to be.
-    // Resolved to commits here, where the caller named them: with --cwd the
-    // command runs in another worktree, where a ref such as HEAD names another
-    // commit. A ref that does not resolve is not readable, so it is not passed.
-    const commitOf = (ref: string | null): string | null => {
-      if (ref === null) return null;
-      try {
-        return execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-      } catch {
-        console.error(`${ref} does not resolve to a commit here, so the verification command is not told about it.`);
-        return null;
-      }
-    };
-    const base = commitOf(flag(argv, '--base'));
-    const head = commitOf(flag(argv, '--head'));
-    const report = await verifyFindings(findings, config.verification, {
-      cwd: cwdFlag === null ? root : resolve(cwdFlag),
-      context: {
-        repository: flag(argv, '--repository') ?? inferRepository(root),
-        // Resolved here, where the caller named it: with --cwd the command runs
-        // elsewhere, and a relative path would be read against that directory.
-        diffPath: flag(argv, '--diff-file') === null ? null : resolve(flag(argv, '--diff-file') as string),
-        // Only when the caller says they are readable. A ref that is not there
-        // is worse than no ref: a command told to read it fails in a way it may
-        // mistake for evidence.
-        base,
-        head,
-      },
-    });
-    console.log(JSON.stringify(report, null, 2));
-    // A verifier rejecting findings is a result, not a command failure.
-    return 0;
-  } catch (error) {
-    if (error instanceof GitError) {
-      console.error(error.message);
-      return 2;
-    }
-    throw error;
-  }
-}
-
-/**
- * Applies the second pass to the candidates, settling disputes by tie-break.
- *
- * Replaces applying each verdict by hand. A candidate is disputed when the
- * evidence-verifier traced its impact at 0.85 or more and the second pass
- * downgraded or dropped it; without a tie-break for it the second pass stands,
- * exactly as before, and `disputes` says what a tie-break would settle.
- */
-function reconcileCommand(argv: string[]): number {
-  let candidates: Record<string, unknown>[];
-  try {
-    const parsed = JSON.parse(readStdin()) as { candidates?: unknown } | unknown[];
-    const list = Array.isArray(parsed) ? parsed : (parsed as { candidates?: unknown }).candidates;
-    if (!Array.isArray(list)) throw new Error('no candidates');
-    candidates = list as Record<string, unknown>[];
-  } catch {
-    console.error('Expected {"candidates": [...]} on stdin, as they were before the second pass.');
-    return 2;
-  }
-
-  const verificationFile = flag(argv, '--verification');
-  const secondPassFile = flag(argv, '--second-pass');
-  if (verificationFile === null || secondPassFile === null) {
-    console.error('reconcile needs --verification <file> (step 3) and --second-pass <file> (the verify report).');
-    return 2;
-  }
-
-  let verifications: Record<string, unknown>[];
-  try {
-    verifications = verdictList(JSON.parse(readFileSync(verificationFile, 'utf8')) as unknown);
-  } catch (error) {
-    console.error(`Cannot read ${verificationFile}: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  const problem = verificationProblem(verifications);
-  if (problem !== null) {
-    console.error(`Malformed verification - ${problem}`);
-    return 2;
-  }
-  // Read as "nothing was traced" it would make every dispute disappear.
-  if (verifications.length === 0) {
-    console.error(`${verificationFile} contained no verifications, so no dispute could be detected.`);
-    return 2;
-  }
-
-  let secondPass: ReturnType<typeof parseSecondPass>;
-  try {
-    secondPass = parseSecondPass(JSON.parse(readFileSync(secondPassFile, 'utf8')) as unknown);
-  } catch (error) {
-    console.error(`Cannot read the second pass from ${secondPassFile}: ${(error as Error).message}`);
-    return 2;
-  }
-
-  let tieBreaks: TieBreak[] | null = null;
-  const tieBreaksFile = flag(argv, '--tie-breaks');
-  if (tieBreaksFile !== null) {
-    try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync(tieBreaksFile, 'utf8')) as unknown);
-    } catch (error) {
-      console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${(error as Error).message}`);
-      return 2;
-    }
-  }
-
-  try {
-    const result = reconcile(candidates, verifications, secondPass, tieBreaks);
-    for (const note of result.notes) console.error(note);
-    console.log(
-      JSON.stringify(
-        { candidates: result.candidates, disputes: result.disputes, applied: result.applied, tieBreaks: result.tieBreaks },
-        null,
-        2,
-      ),
-    );
-    return 0;
-  } catch (error) {
-    if (error instanceof ReconcileInputError) {
-      console.error(`Cannot reconcile: ${error.message}`);
-      return 2;
-    }
-    throw error;
-  }
-}
-
-function reviewScopeFromManifest(value: unknown): ReviewScope | undefined {
-  return parseReviewScope(value) ?? undefined;
-}
-
-function describeReviewScope(scope: ReviewScope | null): string | null {
-  return describeScope(scope);
-}
-
 /**
  * The approved policy versions a `score` output says it loaded, or null when
  * the file carries none (one written before docs/adr/0032, or by hand). An
@@ -1959,169 +1765,6 @@ function carryCommand(argv: string[]): number {
   }
 }
 
-/**
- * Moves one scored candidate to a corrected changed line, keeping its
- * verification and score. A finding anchored a line off otherwise goes back
- * through the analyst, the anchor check and scoring for a claim that did not
- * change. Exit 1 is a refusal, with the reason on stderr.
- */
-function reanchorCommand(argv: string[]): number {
-  const candidateId = flag(argv, '--candidate');
-  const line = Number(flag(argv, '--line'));
-  const scoresFile = flag(argv, '--scores');
-  const diffFile = flag(argv, '--diff-file');
-  if (candidateId === null || !Number.isInteger(line) || line < 1 || scoresFile === null || diffFile === null) {
-    console.error('Usage: reanchor --candidate <id> --line <n> [--path <p>] --scores <file> --diff-file <patch> [--candidates <file>]');
-    return 2;
-  }
-  if (argv.includes('--path') && flag(argv, '--path') === null) {
-    console.error('--path needs the file the finding belongs in.');
-    return 2;
-  }
-
-  const readJson = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8'));
-  let scores: unknown;
-  let hunks: Map<string, FileHunks>;
-  try {
-    scores = readJson(scoresFile);
-    hunks = parseHunks(readFileSync(diffFile, 'utf8'));
-  } catch (error) {
-    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-
-  const result = reanchorScores(scores, candidateId, { path: flag(argv, '--path'), line }, hunks);
-  if (!result.ok) {
-    console.error(`Not re-anchored: ${result.refused}`);
-    return 1;
-  }
-
-  // Every file is checked before either is written, so a refusal leaves both
-  // as they were.
-  const candidatesFile = flag(argv, '--candidates');
-  let candidates: unknown = null;
-  if (candidatesFile !== null) {
-    try {
-      candidates = reanchorCandidates(readJson(candidatesFile), candidateId, result.to);
-    } catch (error) {
-      console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
-      return 2;
-    }
-    if (candidates === null) {
-      console.error(`${candidatesFile} has no candidate ${candidateId}; nothing was re-anchored.`);
-      return 2;
-    }
-  }
-
-  // Both written beside their targets first and then renamed, candidates
-  // first, so a failure part way leaves no half-written file and never a
-  // score that moved without its candidate.
-  const staged: [string, string][] = [];
-  try {
-    if (candidatesFile !== null) {
-      staged.push([`${candidatesFile}.reanchor-${process.pid}`, candidatesFile]);
-      writeFileSync(staged[staged.length - 1]![0], `${JSON.stringify(candidates, null, 2)}\n`);
-    }
-    staged.push([`${scoresFile}.reanchor-${process.pid}`, scoresFile]);
-    writeFileSync(staged[staged.length - 1]![0], `${JSON.stringify(result.updated, null, 2)}\n`);
-    for (const [temporary, target] of staged) renameSync(temporary, target);
-  } catch (error) {
-    for (const [temporary] of staged) rmSync(temporary, { force: true });
-    console.error(`Cannot write: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  console.log(JSON.stringify({ candidateId, from: result.from, to: result.to, anchorCheck: result.anchorCheck }, null, 2));
-  return 0;
-}
-
-/**
- * The independent challenge (docs/adr/0024): `--emit-prompts` builds one
- * challenger prompt per eligible finding; otherwise the challenger verdicts on
- * stdin are checked and applied to the score document.
- */
-function challengeCommand(argv: string[]): number {
-  const scoresFile = flag(argv, '--scores');
-  const candidatesFile = flag(argv, '--candidates');
-  const emit = argv.includes('--emit-prompts');
-  const diffFile = flag(argv, '--diff-file');
-  const intentFile = flag(argv, '--intent');
-  const outFile = flag(argv, '--out');
-  if (scoresFile === null || candidatesFile === null || (!emit && diffFile === null)) {
-    console.error(
-      'Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--diff-file <patch>] --emit-prompts\n' +
-        '       challenge --scores <file> --candidates <file> --diff-file <patch> [--out <file>] < verdicts.json',
-    );
-    return 2;
-  }
-  for (const name of ['--intent', '--diff-file', '--out']) {
-    if (argv.includes(name) && flag(argv, name) === null) {
-      console.error(`${name} needs a file path.`);
-      return 2;
-    }
-  }
-
-  const readJson = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8'));
-  let scores: unknown;
-  let candidates: ReturnType<typeof candidatesById>;
-  try {
-    scores = readJson(scoresFile);
-    candidates = candidatesById(readJson(candidatesFile));
-  } catch (error) {
-    console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-
-  if (emit) {
-    let statements: ReturnType<typeof intentStatements> = [];
-    if (intentFile !== null) {
-      try {
-        statements = intentStatements(readJson(intentFile));
-      } catch (error) {
-        console.error(`Cannot read ${intentFile}: ${error instanceof Error ? error.message : String(error)}`);
-        return 2;
-      }
-    }
-    console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile) }, null, 2));
-    return 0;
-  }
-
-  let verdicts: unknown;
-  let hunks: Map<string, FileHunks>;
-  try {
-    hunks = parseHunks(readFileSync(diffFile!, 'utf8'));
-  } catch (error) {
-    console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  try {
-    verdicts = JSON.parse(readStdin());
-  } catch {
-    console.error('Cannot parse the challenger verdicts on stdin as JSON.');
-    return 2;
-  }
-
-  const result = applyChallenge(scores, candidates, verdicts, hunks);
-  if (!result.ok) {
-    console.error('Challenge refused:');
-    for (const problem of result.problems) console.error(`  ${problem}`);
-    return 2;
-  }
-  const body = `${JSON.stringify(result.document, null, 2)}\n`;
-  if (outFile === null) {
-    process.stdout.write(body);
-  } else {
-    try {
-      writeFileSync(outFile, body);
-    } catch (error) {
-      console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
-      return 2;
-    }
-    const { confirmed, held, moved } = result.summary;
-    console.log(JSON.stringify({ out: outFile, confirmed, held, moved }, null, 2));
-  }
-  return 0;
-}
-
 /** The list inside a JSON input, and how to put a filtered one back in its place. */
 function listIn(parsed: unknown, keys: readonly string[]): { list: Record<string, unknown>[]; rebuild: (list: unknown[]) => unknown } | null {
   if (Array.isArray(parsed)) return { list: parsed as Record<string, unknown>[], rebuild: (list) => list };
@@ -2455,423 +2098,6 @@ function carryCandidatesCommand(argv: string[]): number {
     ),
   );
   return refused.length === 0 ? 0 : 1;
-}
-
-function explainCommand(argv: string[]): number {
-  const db = openDatabase();
-  try {
-    const detail = runDetail(db, flag(argv, '--run') ?? undefined);
-    if (detail === null) {
-      console.log('No review has been recorded yet.');
-      return 0;
-    }
-
-    const wanted = argv.find((arg) => /^rv_\d+$/.test(arg));
-    const verdicts = (Array.isArray(detail.verdicts) ? detail.verdicts : []) as {
-      candidateId?: string;
-      path: string;
-      line: number;
-      verdict: string;
-      confidence: number;
-      reason: string;
-      outcome: string;
-      originalSeverity: string;
-      verifier: string;
-    }[];
-    const scores = (Array.isArray(detail.scores) ? detail.scores : []) as {
-      candidateId?: string;
-      path?: string;
-      line?: number;
-      technicalConfidence?: number;
-      finalScore?: number;
-      eligible?: boolean;
-      novelty?: number;
-      rejectedBecause?: string | null;
-      duplicateOfPrecedent?: string | null;
-      precedentIds?: string[];
-      precedents?: { eventId?: string }[];
-      fix?: {
-        suggested?: string | null;
-        verdict?: 'verified' | 'partial' | 'refuted' | 'absent' | null;
-        confidence?: number | null;
-        direction?: string | null;
-        render?: 'fix' | 'direction' | 'none';
-        reason?: string;
-      };
-    }[];
-
-    if (argv.includes('--json')) {
-      console.log(JSON.stringify(detail, null, 2));
-      return 0;
-    }
-
-    console.log(`Review ${detail.reviewRunId}`);
-    console.log(`Recorded ${detail.createdAt}${detail.repository === null ? '' : ` for ${detail.repository}`}`);
-    if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
-    const recordedScope = describeReviewScope(detail.scope);
-    if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
-    console.log(describeProvenance(detail.provenance));
-    console.log(describeChecks(detail.checks));
-    for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
-    const shallow = shallowPassWarning(detail.stages, detail.findings.length);
-    if (shallow !== null) console.log(`Warning ${shallow}`);
-    if (detail.complexity !== null) {
-      console.log(
-        detail.complexity.level === 'high'
-          ? `Complexity high - ${detail.complexity.reasons.join('; ')}`
-          : 'Complexity normal',
-      );
-    }
-    console.log('');
-
-    const history =
-      detail.repository !== null && detail.pullNumber !== null
-        ? followUpHistory(db, detail.repository, detail.pullNumber)
-        : null;
-    const shown = wanted === undefined ? detail.findings : detail.findings.filter((f) => f.findingId === wanted);
-    // A run that posted nothing can still have held findings - below-gate
-    // ones especially - and they are the only account of what it found.
-    if (shown.length === 0 && wanted === undefined && detail.bodyFindings.length === 0) {
-      console.log('No findings were recorded.');
-      console.log('');
-    } else if (shown.length === 0 && wanted !== undefined) {
-      console.log(`No finding ${wanted}. Available: ${detail.findings.map((f) => f.findingId).join(', ') || 'none'}.`);
-      return 1;
-    }
-
-    for (const finding of shown) {
-      // Matched by location. An earlier version matched on a predicate that
-      // never discriminated, so every finding showed the first finding's
-      // numbers - worse than showing none, in the command whose whole purpose
-      // is auditability.
-      const score = scores.find((s) => s.path === finding.path && s.line === finding.line);
-      console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
-      if (finding.carriedFrom !== undefined) {
-        console.log(`  carried from      ${finding.carriedFrom.findingId} of run ${finding.carriedFrom.runId}`);
-      }
-      if (finding.partlyAddressed !== undefined) {
-        const { prior, remaining, addressed } = finding.partlyAddressed;
-        console.log(
-          `  partly addressed  ${prior.author} at ${prior.path}:${prior.line}; ` +
-            `${remaining.length} of ${remaining.length + addressed.length} still open: ${remaining.join('; ')}`,
-        );
-        // The state as later runs of the pull request found it; local only.
-        const later = history?.get(`${detail.reviewRunId}:${finding.findingId}`);
-        if (later?.state?.status === 'resolved') {
-          console.log(`  follow-up         resolved in run ${later.stateRunId} - ${later.state.reason}`);
-        } else if (later?.state?.status === 'open') {
-          console.log(`  follow-up         open as of run ${later.stateRunId}: ${later.state.remaining.join('; ')}`);
-        } else {
-          console.log('  follow-up         open');
-        }
-      }
-      console.log(`  category          ${finding.category ?? 'not recorded'}`);
-      console.log(`  rule id           ${finding.ruleId ?? 'not recorded'}`);
-      if (score?.technicalConfidence !== undefined) {
-        console.log(`  technical         ${score.technicalConfidence.toFixed(2)}`);
-      }
-      if (score?.finalScore !== undefined) {
-        console.log(`  final score       ${score.finalScore.toFixed(2)}`);
-      }
-      if (score?.novelty !== undefined) {
-        console.log(`  novelty           ${score.novelty.toFixed(2)}`);
-      }
-      // Stored scores no longer carry `precedentIds`; the ids ride on `precedents`.
-      const precedentIds =
-        score?.precedentIds ??
-        (score?.precedents ?? []).flatMap((p) => (typeof p.eventId === 'string' ? [p.eventId] : []));
-      if (precedentIds.length > 0) {
-        console.log(`  precedents        ${precedentIds.join(', ')}`);
-      }
-      if (score?.duplicateOfPrecedent != null) {
-        console.log(`  already stated in ${score.duplicateOfPrecedent}`);
-      }
-      if (score?.fix !== undefined) {
-        const fix = score.fix;
-        const confidence =
-          typeof fix.confidence === 'number' && Number.isFinite(fix.confidence)
-            ? fix.confidence.toFixed(2)
-            : 'unrecorded';
-        if (fix.render === 'fix') {
-          console.log(`  fix  verified ${confidence}`);
-        } else if (fix.render === 'direction') {
-          console.log(`  fix  direction (partial ${confidence})`);
-        } else {
-          const proposed = typeof fix.suggested === 'string' && fix.suggested.trim().length > 0;
-          if (!proposed) {
-            console.log('  fix  none proposed');
-          } else {
-            console.log(`  fix  withheld (${fix.verdict ?? 'not verified'}): ${fix.reason ?? 'no reason recorded'}`);
-          }
-        }
-      }
-      // Saying "no data" beats inventing a rationale after the fact.
-      if (score === undefined) {
-        console.log('  scoring           not recorded for this review');
-      }
-
-      const verdict = verdicts.find((v) => v.path === finding.path && v.line === finding.line);
-      if (verdict !== undefined) {
-        console.log(
-          `  verified          ${verdict.verdict} (${verdict.confidence.toFixed(2)}) by ${verdict.verifier}` +
-            (verdict.outcome === 'kept' ? '' : ` - ${verdict.outcome}`),
-        );
-        if (verdict.reason.length > 0) console.log(`                    ${verdict.reason}`);
-        const ruling = detail.tieBreaks.find((t) => t.candidateId === verdict.candidateId);
-        if (ruling !== undefined) {
-          console.log(
-            `  tie-break         ${ruling.upheld ? 'upheld' : 'not upheld'}` +
-              `${ruling.applied === false ? ' (not applied)' : ''}` +
-              `${ruling.raised === undefined ? '' : ` (raised to ${ruling.raised})`} - ${ruling.reason}`,
-          );
-        }
-      }
-      console.log('');
-    }
-
-    if (detail.bodyFindings.length > 0 && wanted === undefined) {
-      console.log(`Body-only simplifications (${detail.bodyFindings.length}):`);
-      for (const finding of detail.bodyFindings) {
-        const { candidate } = finding;
-        console.log(`  ${candidate.claim}`);
-        console.log(
-          `  removes           ${candidate.removes
-            .map((element) => `${element.path}:${element.line} (${element.element})`)
-            .join('; ')}`,
-        );
-        console.log(
-          `  uses              ${candidate.abstraction.path}:${candidate.abstraction.line} ` +
-            `(${candidate.abstraction.name})`,
-        );
-        console.log('  verdict           never affects the verdict');
-      }
-      console.log('');
-    }
-
-    // Earlier runs' partly-addressed follow-ups, as this run found them.
-    if (detail.followUps.length > 0 && wanted === undefined) {
-      console.log(`Follow-ups from earlier runs (${detail.followUps.length}):`);
-      for (const f of detail.followUps) {
-        console.log(`  [${f.status}] ${f.findingId} of run ${f.runId}  ${f.path}:${f.line} - ${f.reason}`);
-        if (f.status === 'open') console.log(`      still open: ${f.remaining.join('; ')}`);
-      }
-      console.log('');
-    }
-
-    // Held-back candidates, unlike the suppressed ones below, include repeats of
-    // an existing comment and cross-check results that no verifier produced.
-    if (detail.held.length > 0 && wanted === undefined) {
-      console.log(`Held back (${detail.held.length}):`);
-      for (const h of detail.held) console.log(`  [${h.verdict}] ${h.path}:${h.line}  ${h.source} - ${h.reason}`);
-      console.log('');
-    }
-
-    // Findings the verifier removed leave no other trace. Showing them is what
-    // makes a bad verifier visible rather than indistinguishable from a clean
-    // diff.
-    // A drop an upheld tie-break overturned was not a suppression. A ruling
-    // reconcile marked not applied overturned nothing: it was on a candidate
-    // nobody disputed, and hiding the drop on its account would hide a real
-    // suppression. A ruling with no mark, as runs recorded before reconcile
-    // marked them have, reads as it always did.
-    const dropped = verdicts.filter(
-      (v) =>
-        v.outcome === 'dropped' &&
-        !detail.tieBreaks.some(
-          (t) => t.upheld && t.applied !== false && v.candidateId !== undefined && t.candidateId === v.candidateId,
-        ),
-    );
-    if (dropped.length > 0 && wanted === undefined) {
-      console.log(`Suppressed by verification (${dropped.length}):`);
-      for (const v of dropped) {
-        console.log(`  [${v.originalSeverity}] ${v.path}:${v.line}  ${v.verifier} @ ${v.confidence.toFixed(2)}`);
-        if (v.reason.length > 0) console.log(`      ${v.reason}`);
-        const ruling = detail.tieBreaks.find((t) => v.candidateId !== undefined && t.candidateId === v.candidateId);
-        if (ruling !== undefined) {
-          const state =
-            ruling.applied === false ? `${ruling.upheld ? 'upheld' : 'not upheld'} but not applied` : 'not upheld';
-          console.log(`      tie-break ${state} - ${ruling.reason}`);
-        }
-      }
-      console.log('');
-    }
-
-    return 0;
-  } finally {
-    db.close();
-  }
-}
-
-/**
- * Checks evidence-verifier output against the verification schema, straight
- * after the verifier runs.
- *
- * `score` runs the same checks, but it is the stage after verification. A
- * verifier that wrote `evidence_quality: "strong"` was refused there with
- * every earlier stage already spent, and relaunching it then meant a cold
- * start. Failing here costs one re-run of one agent while its context is warm.
- */
-/** Candidate ids from check-candidates output ({kept}), {candidates}, or a bare array. */
-function keptCandidateIds(value: unknown): string[] {
-  const record = value as { kept?: unknown; candidates?: unknown } | null;
-  const list = Array.isArray(value) ? value : Array.isArray(record?.kept) ? record.kept : Array.isArray(record?.candidates) ? record.candidates : [];
-  return list
-    .map((entry) => (entry as { candidate_id?: unknown } | null)?.candidate_id)
-    .filter((id): id is string => typeof id === 'string');
-}
-
-function checkVerificationCommand(argv: string[]): number {
-  const candidatesFile = flag(argv, '--candidates');
-  let keptIds: string[] | null = null;
-  if (candidatesFile !== null) {
-    try {
-      keptIds = keptCandidateIds(JSON.parse(readFileSync(candidatesFile, 'utf8')) as unknown);
-    } catch (error) {
-      console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
-      return 2;
-    }
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readStdin()) as unknown;
-  } catch {
-    console.error('Expected the evidence-verifier output as JSON on stdin.');
-    return 2;
-  }
-  const list = verdictList(parsed);
-  if (list.length === 0) {
-    console.error(
-      `No verifications found. Expected an array, or an object with one of: ${VERDICT_KEYS.join(', ')}, ` +
-        'each entry carrying candidate_id.',
-    );
-    return 2;
-  }
-  const problem = verificationProblem(list);
-  if (problem !== null) {
-    console.error(`Malformed verification - ${problem}`);
-    console.error('Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.');
-    return 2;
-  }
-  // A kept candidate the verifier skipped would otherwise score on the analyst's own
-  // confidence and read as weighed and held (#165).
-  if (keptIds !== null) {
-    const verified = new Set(list.map((entry) => (entry as { candidate_id?: unknown }).candidate_id));
-    const missing = keptIds.filter((id) => !verified.has(id));
-    if (missing.length > 0) {
-      for (const id of missing) console.error(`No verification for kept candidate ${id}.`);
-      console.error('Re-run the evidence-verifier for the missing candidates.');
-      return 2;
-    }
-  }
-  console.log(JSON.stringify({ valid: true, verifications: list.length }, null, 2));
-  return 0;
-}
-
-/**
- * Validates the two short-lived documents of the opt-in simplification pass.
- *
- * Without --candidate this checks the analyst's one optional candidate. With
- * it, stdin is the evidence-verifier's response and the command emits the
- * separately persisted, body-only result. Keeping this outside the ordinary
- * candidate schema prevents it from becoming an inline comment or affecting a
- * verdict by accident.
- */
-function checkSimplificationCommand(argv: string[]): number {
-  const diffFile = flag(argv, '--diff-file');
-  if (diffFile === null) {
-    console.error('--diff-file needs the patch the simplification pass reviewed.');
-    return 2;
-  }
-  const candidateFile = flag(argv, '--candidate');
-  if (argv.includes('--candidate') && candidateFile === null) {
-    console.error('--candidate needs the checked analyst output.');
-    return 2;
-  }
-
-  let hunks: Map<string, FileHunks>;
-  try {
-    hunks = parseHunks(readFileSync(diffFile, 'utf8'));
-  } catch (error) {
-    console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-
-  let document: unknown;
-  try {
-    document = JSON.parse(readStdin()) as unknown;
-  } catch {
-    console.error('Expected simplification JSON on stdin.');
-    return 2;
-  }
-
-  if (candidateFile === null) {
-    const candidate = parseSimplificationCandidate(document);
-    if (candidate.problem !== null) {
-      console.error(`Malformed simplification candidate - ${candidate.problem}.`);
-      console.error('Re-run the analyst with the simplification schema restated. Do not hand-translate its output.');
-      return 2;
-    }
-    if (candidate.value !== null) {
-      const problem = simplificationDiffProblem(candidate.value, hunks);
-      if (problem !== null) {
-        console.error(`Invalid simplification candidate - ${problem}.`);
-        console.error('Re-run the analyst with the changed locations from the patch. Do not hand-translate its output.');
-        return 2;
-      }
-    }
-    console.log(JSON.stringify({ simplification: candidate.value }, null, 2));
-    return 0;
-  }
-
-  let candidateDocument: unknown;
-  try {
-    candidateDocument = JSON.parse(readFileSync(candidateFile, 'utf8')) as unknown;
-  } catch (error) {
-    console.error(`Cannot read ${candidateFile}: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  const candidate = parseSimplificationCandidate(candidateDocument);
-  if (candidate.problem !== null || candidate.value === null) {
-    console.error(
-      `Cannot verify ${candidateFile}: ${candidate.problem ?? 'it contains no simplification candidate'}.`,
-    );
-    return 2;
-  }
-  const candidateProblem = simplificationDiffProblem(candidate.value, hunks);
-  if (candidateProblem !== null) {
-    console.error(`Cannot verify ${candidateFile}: ${candidateProblem}.`);
-    return 2;
-  }
-
-  const verification = parseSimplificationVerification(document, candidate.value);
-  if (verification.problem !== null || verification.value === null) {
-    console.error(`Malformed simplification verification - ${verification.problem ?? 'missing verification'}.`);
-    console.error('Re-run the verifier with the simplification schema restated. Do not hand-translate its output.');
-    return 2;
-  }
-  // Keep the checker output in the verifier's wire format. `record` parses it
-  // back to the internal camel-case representation before persistence, so this
-  // handoff remains as strict as the verifier response it checked.
-  const bodyFindings = verification.value.verified
-    ? [
-        {
-          candidate: candidate.value,
-          verification: {
-            verified: verification.value.verified,
-            elements: verification.value.elements.map((element) => ({
-              path: element.path,
-              line: element.line,
-              exists_in_diff: element.existsInDiff,
-            })),
-            behavior_preserved: verification.value.behaviorPreserved,
-            removes_concepts: verification.value.removesConcepts,
-            reason: verification.value.reason,
-          },
-        },
-      ]
-    : [];
-  console.log(JSON.stringify({ bodyFindings }, null, 2));
-  return 0;
 }
 
 /** A held finding of an earlier run, at its line in the head now being reviewed. */
@@ -3481,108 +2707,6 @@ function checkCandidatesCommand(argv: string[]): number {
   }
 }
 
-function distinctReviewers(db: Database): number {
-  return (db.prepare('SELECT COUNT(DISTINCT reviewer_login) AS n FROM review_events').get() as { n: number }).n;
-}
-
-function statusCommand(): number {
-  const db = openDatabase();
-  try {
-    // Health warnings need the allowlist, which only the repository config
-    // knows. Outside a repository the counts still work.
-    let allowlist: string[] = [];
-    let maxRepositoryShare: number | undefined;
-    let ownerReviewer: string | null = null;
-    try {
-      const config = loadConfig(repositoryRoot(process.cwd()));
-      ownerReviewer = config.ownerReviewer;
-      allowlist = namedRepositories(config.allowlist, 'status');
-      maxRepositoryShare = scaledRepositoryShare(allowlist.length);
-    } catch {
-      // Not in a repository; report counts without allowlist warnings.
-    }
-    const coverage = corpusCoverage(db, { allowlist, ownerReviewer, ...(maxRepositoryShare === undefined ? {} : { maxRepositoryShare }) });
-    const runs = (db.prepare('SELECT COUNT(*) AS n FROM review_runs').get() as { n: number }).n;
-    const audits = (db.prepare('SELECT COUNT(*) AS n FROM audit_events').get() as { n: number }).n;
-    const totals = feedbackTotals(db);
-    const last = latestRun(db);
-    const lastDetail = runDetail(db);
-
-    console.log(`data directory   ${dataDirectory()}`);
-    console.log(`database         ${databasePath()}`);
-    console.log(`review runs      ${runs}`);
-    console.log(`audit events     ${audits}`);
-    console.log(
-      `feedback         ${totals.kept} kept, ${totals.rewritten} rewritten, ${totals.dismissed} dismissed` +
-        (totals.other > 0 ? `, ${totals.other} other` : ''),
-    );
-    const unlabelled = unlabelledFindings(db);
-    console.log(
-      `owner precision  ${
-        totals.ownerPrecision === null
-          ? 'not yet measurable (no explicit feedback)'
-          : `${(totals.ownerPrecision * 100).toFixed(0)}% of labelled findings`
-      }`,
-    );
-    if (unlabelled > 0) {
-      // Said plainly, because the gate this tool rests on is computed from
-      // labels and nothing else, and after a full test programme none existed.
-      console.log(
-        `unlabelled       ${unlabelled} finding(s). Precision cannot be measured until these carry ` +
-          'a verdict: /review-voice:feedback <id> keep|dismiss|rewrite',
-      );
-    }
-    // A rising dismissed rate is the earliest sign the reviewer has drifted. It
-    // is judged over the default window because `status` takes no flags, and
-    // nothing is printed when the sample is too small or the rate is fine.
-    const recent = postedStats(db, { since: windowStart(DEFAULT_WINDOW_DAYS) });
-    const dismissalWarning = dismissedRateWarning({
-      dismissed: recent.dismissed,
-      strong: recent.fixed + recent.dismissed,
-      windowDays: DEFAULT_WINDOW_DAYS,
-    });
-    if (dismissalWarning !== null) console.log(dismissalWarning);
-    if (last !== null) {
-      // The origin goes last so the count and ids keep their position.
-      const origin = lastDetail?.provenance == null ? '' : `; ${describeOrigin(lastDetail.provenance)}`;
-      console.log(
-        `last review      ${last.findings.length} finding(s): ${
-          last.findings.map((f) => (f.ruleId === undefined ? f.findingId : `${f.findingId} (${f.ruleId})`)).join(', ') || 'none'
-        }${origin}`,
-      );
-      const recordedScope = describeReviewScope(lastDetail?.scope ?? null);
-      if (recordedScope !== null) console.log(`last scope       ${recordedScope}`);
-    }
-    const sync = lastSync(db);
-    console.log(
-      `last sync        ${
-        sync === null
-          ? 'never completed'
-          : `${sync.finishedAt ?? sync.startedAt}, ${sync.imported} imported from ${sync.repositories.length} repository/ies`
-      }`,
-    );
-    console.log(
-      coverage.total === 0
-        ? 'Corpus: baseline voice in use (no synced history)'
-        : `Corpus: ${coverage.total} events from ${distinctReviewers(db)} reviewer(s)`,
-    );
-    console.log(
-      `corpus           ${coverage.total} event(s)` +
-        (coverage.total === 0
-          ? ''
-          : ` - ${Object.entries(coverage.byRole).map(([role, n]) => `${n} ${role}`).join(', ')}`),
-    );
-    for (const [repository, n] of Object.entries(coverage.byRepository)) {
-      console.log(`  ${repository.padEnd(45)} ${n}`);
-    }
-    for (const warning of coverage.warnings) console.log(`  warning        ${warning}`);
-    for (const line of watchSummary(db)) console.log(line);
-    return 0;
-  } finally {
-    db.close();
-  }
-}
-
 async function main(argv: string[]): Promise<number> {
   const exit = await dispatch(argv);
   const command = argv[0];
@@ -3591,79 +2715,6 @@ async function main(argv: string[]): Promise<number> {
     console.error(`Run "review-voice ${command} --help" for its flags.`);
   }
   return exit;
-}
-
-/**
- * Runs one agent through the runner (docs/adr/0021): the prompt on stdin, the
- * AgentResult as JSON on stdout. Tools come from the agent file, never a flag,
- * and the runner narrows them to read-only file tools.
- */
-async function agentCommand(argv: string[]): Promise<number> {
-  const name = flag(argv, '--name');
-  const model = flag(argv, '--model');
-  const schemaPath = flag(argv, '--schema');
-  if (name === null || model === null || schemaPath === null) {
-    console.error('agent needs --name <agent>, --model <model> and --schema <file.json>.');
-    return 2;
-  }
-  let tools: string[];
-  try {
-    tools = readAgentTools(name);
-    runnerTools(tools);
-  } catch (error) {
-    if (error instanceof AgentSpecError) {
-      console.error(error.message);
-      return 2;
-    }
-    throw error;
-  }
-  let schema: unknown;
-  try {
-    schema = JSON.parse(readFileSync(schemaPath, 'utf8')) as unknown;
-  } catch (error) {
-    console.error(`Cannot read the schema ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
-  }
-  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) {
-    console.error(`The schema ${schemaPath} must be a JSON object.`);
-    return 2;
-  }
-  // Relative $refs resolve next to the schema file, as they would for a validator.
-  const schemaDir = dirname(resolve(schemaPath));
-  try {
-    schemaForRunner(schema, schemaDir);
-  } catch (error) {
-    if (error instanceof AgentSpecError) {
-      console.error(`The schema ${schemaPath} cannot be given to an agent: ${error.message}`);
-      return 2;
-    }
-    throw error;
-  }
-  const cwd = flag(argv, '--cwd') ?? process.cwd();
-  let isDirectory = false;
-  try {
-    isDirectory = statSync(cwd).isDirectory();
-  } catch {
-    isDirectory = false;
-  }
-  if (!isDirectory) {
-    console.error(`--cwd ${cwd} is not a directory.`);
-    return 2;
-  }
-  const timeout = numericFlag(argv, '--timeout', 0);
-  if (timeout === null || (argv.includes('--timeout') && timeout === 0) || timeout > 3600) {
-    console.error('--timeout takes a whole number of seconds from 1 to 3600.');
-    return 2;
-  }
-
-  const prompt = readStdin();
-  const result = await runAgent(
-    { name, model, tools, schema, schemaDir, ...(timeout > 0 ? { timeoutMs: timeout * 1000 } : {}) },
-    prompt,
-    cwd,
-  );
-  console.log(JSON.stringify(result, null, 2));
-  return result.ok ? 0 : 1;
 }
 
 /**
