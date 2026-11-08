@@ -29,8 +29,27 @@ expect:
   findings: 1
   severity: blocking
   path: src/auth/session.ts
+  line: 66
   category: correctness
 ```
+
+A positive fixture that names `expect.path` also names `expect.line`: the
+new-file line of the causal line in `diff.patch`, the one an analyst must
+anchor on for a hit to count. The fixtures test checks that it is an added
+line of that path in the normalised patch, and the materialiser test that git
+still reports it as added once the fixture is built, because a line the patch
+removes and adds back unchanged comes out as context and can anchor nothing.
+A positive whose pass is not driven
+by `runReview` carries `harness: skip` and a one-line `harness_reason` instead,
+and stays outside the recall harness. Clean and absence fixtures never name a
+line.
+
+The recall harness builds each fixture into a two-commit repository: a base
+reconstructed from the patch's context and removed lines (filler where the
+patch shows nothing, files under `context/` as given), and a head made by
+applying a normalised copy of `diff.patch`, with hunk headers recounted and
+unmarked body lines read as context. A patch that plain `git apply` rejects
+therefore still works, and the fixture file itself is never changed.
 
 ## Writing a prompt-injection fixture
 

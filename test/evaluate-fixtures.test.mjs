@@ -604,6 +604,23 @@ test('git reports exactly the lines the normalised patch adds and removes, at th
   assert.deepEqual([...new Set(withDropped)].sort(), [...readding].sort());
 });
 
+test('every positive anchors on a line git reports as added once the fixture is built, not only on one the patch adds', (t) => {
+  // A line the patch removes and adds back unchanged comes out of git as context;
+  // check-candidates refuses an anchor there, so such a fixture could never score.
+  let checked = 0;
+  for (const { group, name, dir } of all) {
+    if (group !== 'positive') continue;
+    const { path, line } = expectation(dir);
+    if (path === null || line === null) continue;
+    const target = join(scratch(t), 'repo');
+    const result = materializeFixture(dir, target);
+    const added = parseHunks(materialisedDiff(target, result)).get(path)?.added ?? new Set();
+    assert.ok(added.has(Number(line)), `${group}/${name}: expect.line ${path}:${line} is not an added line of the diff git reports (${[...added].sort((a, b) => a - b).join(',')})`);
+    checked += 1;
+  }
+  assert.ok(checked >= 19, `expected every positive with a path to be checked, found ${checked}`);
+});
+
 test('a line git pairs with a removed line is found from what git reported', () => {
   // What git reports for transaction-ordering: line 62 of the base is replaced
   // by new lines 62 and 63, and two more lines are added at 65 and 66.
