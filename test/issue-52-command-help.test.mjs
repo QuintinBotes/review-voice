@@ -26,6 +26,8 @@ const COMMANDS = [...top.stdout.split('\n\n')[1].matchAll(/^ {2}([a-z][a-z-]*)\s
 test('the top-level list names every dispatched command', () => {
   const source = readFileSync(join(plugin, 'src/cli.ts'), 'utf8');
   const dispatched = [...source.matchAll(/^ {4}case '([a-z][a-z-]*)':/gm)].map((m) => m[1]);
+  // S12 keeps the switch in cli.ts at this shape; finding none means it moved or changed shape.
+  assert.ok(dispatched.length > 0, 'cli.ts has no dispatch case at four spaces');
   for (const name of dispatched) {
     if (name === 'help') continue;
     assert.ok(COMMANDS.includes(name), `${name} is dispatched but missing from the command list`);
