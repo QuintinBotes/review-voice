@@ -77,10 +77,13 @@ import {
   type HeldFinding,
   type StageTiming,
   type RunProvenance,
+  type RecordedChecks,
   ORIGINS,
   PROVENANCE_MODES,
+  describeChecks,
   describeOrigin,
   describeProvenance,
+  recordedChecks,
 } from './store/runs.ts';
 import { heldBackFindings, parseThreadFile, postedReviewIds } from './diff/held.ts';
 import { carryCandidates, carryFindings, CarryError, commitReadable, followLine, seriousNotCarried, type CarriedFinding } from './diff/carry.ts';
@@ -3140,6 +3143,30 @@ function recordCommand(argv: string[]): number {
     }
   }
 
+  // The two reports are summarised together or not at all: a summary built from
+  // one of them would say "no static checks" or "every symbol file finished" for
+  // a report nobody supplied, and the review scope block would then claim it.
+  const evidenceFile = flag(argv, '--evidence');
+  const symbolsFile = flag(argv, '--symbols');
+  let checks: RecordedChecks | undefined;
+  if (argv.includes('--evidence') || argv.includes('--symbols')) {
+    if (evidenceFile === null || symbolsFile === null) {
+      console.error('--evidence and --symbols go together: pass the evidence.json and the symbols.json of this review.');
+      return 2;
+    }
+    try {
+      checks = recordedChecks(
+        JSON.parse(readFileSync(evidenceFile, 'utf8')) as unknown,
+        JSON.parse(readFileSync(symbolsFile, 'utf8')) as unknown,
+      );
+    } catch (error) {
+      console.error(
+        `Cannot read the checks from ${evidenceFile} and ${symbolsFile}: ${error instanceof Error ? error.message : String(error)}.`,
+      );
+      return 2;
+    }
+  }
+
   // What settles an earlier run's partly-addressed follow-up: its comment
   // thread resolved on the thread this run read, or the verifier's ruling.
   const followUpThreadFile = flag(argv, '--thread');
@@ -3322,6 +3349,7 @@ function recordCommand(argv: string[]): number {
       ...(carry === undefined ? {} : { carry }),
       followUps,
       stages,
+      ...(checks === undefined ? {} : { checks }),
       provenance: {
         ...(carriedProvenance === null
           ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode }
@@ -4128,6 +4156,7 @@ function explainCommand(argv: string[]): number {
     const recordedScope = describeReviewScope(detail.scope);
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
     console.log(describeProvenance(detail.provenance));
+    console.log(describeChecks(detail.checks));
     for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
     const shallow = shallowPassWarning(detail.stages, detail.findings.length);
     if (shallow !== null) console.log(`Warning ${shallow}`);

@@ -995,6 +995,12 @@ async function record(run: Run, extra: string[]): Promise<void> {
       at(run, 'held.json'),
       '--stages',
       at(run, 'stages.json'),
+      // Both reports are written in prep, even when the commands were switched
+      // off, so the record says what ran and what did not; passed only when both
+      // are there, as `record` refuses one without the other.
+      ...(existsSync(at(run, 'evidence.json')) && existsSync(at(run, 'symbols.json'))
+        ? ['--evidence', at(run, 'evidence.json'), '--symbols', at(run, 'symbols.json')]
+        : []),
       '--origin',
       run.options.origin ?? 'driver',
       ...(run.plan?.mode === undefined ? [] : ['--mode', run.plan.mode]),

@@ -1092,6 +1092,19 @@ Check names are flattened to inline code so no markdown or mention renders.
 `decide()` takes the settings as a `VerdictPolicy`; the head guard, the
 writer's single endpoint and the idempotency key are not settings.
 
+**Review scope.** `verdict.scope_block` (default `false`) appends a collapsed
+Review scope block and an HTML comment containing JSON from the recorded run:
+head, scope, cost mode, origin and independence, stages, static checks that ran
+or did not run, unfinished symbol searches and held-claim counts. Missing
+facts read `not recorded`. ADR 0016's lists stay local; only their counts post.
+The human-review note, would-have verdict, stale request for changes and carry
+reasons stay local too. `verdict.scope_block_models` (default `false`) adds
+model ids beside the stages. The block follows the findings, after the
+idempotency key is taken and before CI annotations, so toggling it keeps the
+same key and annotation replacement still works. `verdict`, `post` and the
+watcher share the payload and preview through `computeVerdict`; the existing
+review write carries the block (ADR 0028).
+
 **Carry.** With `carry_approval_on_unchanged`, a run whose scope is `unchanged`
 and that maps to a clean approval looks for the owner's latest deciding review.
 If it is an approval of the commit the scope is unchanged since, the action is

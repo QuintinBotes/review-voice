@@ -73,3 +73,20 @@ CI never makes such a head wait. `verdict --recheck` under it refuses with
 exit 2, because there is no approval to re-check. A head queued for a CI
 recheck before the policy was turned on is settled by the watcher under the
 new policy, not retried as a failure.
+
+## Amendment - 2026-11-08
+
+`verdict.scope_block` (default `false`) appends a collapsed Review scope block
+and an HTML comment containing JSON to the review body. It uses the recorded
+run to show the reviewed head, scope, cost mode, origin and independence,
+stages, static checks, unfinished symbol searches and held-claim counts.
+Missing facts read `not recorded`. ADR 0016's `unverified` and `belowGate`
+lists stay local; only their counts post. The human-review note, would-have
+verdict, stale request for changes and carry reasons also stay local.
+
+`verdict.scope_block_models` (default `false`) includes model ids beside the
+stages when the block is enabled. Both settings are opt-in. The block is
+appended after the idempotency key is taken and before CI annotations, so
+`verdict`, `post` and the watcher share the same preview, a CI annotation can
+still be replaced, and toggling the block cannot make the same review a
+second post. The existing review write carries it; no GitHub write is added.

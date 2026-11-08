@@ -19,7 +19,9 @@ import {
   planFindings,
   renderPreview,
   replaceAnnotations,
+  scopeBlock,
   withAnnotations,
+  withScopeBlock,
   verdictPolicy,
   type Action,
   type HeldBack,
@@ -436,7 +438,8 @@ export async function computeVerdict(
     const sent = sentInline(options.db, options.repository, options.pullNumber, head);
     const comments = full.comments.filter((comment) => !sent.has(commentSignature(comment)));
     alreadyInline = full.comments.length - comments.length;
-    payload = { ...full, body: withAnnotations(full.body, decision.annotations), comments };
+    const body = policy.scopeBlock ? withScopeBlock(full.body, scopeBlock(run, planned, policy)) : full.body;
+    payload = { ...full, body: withAnnotations(body, decision.annotations), comments };
     preview = renderPreview({
       repository: options.repository,
       pullNumber: options.pullNumber,
