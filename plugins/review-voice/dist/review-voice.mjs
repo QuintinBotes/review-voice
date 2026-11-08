@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { readFileSync as readFileSync30 } from "node:fs";
+import { readFileSync as readFileSync31 } from "node:fs";
 import { isAbsolute as isAbsolute5, join as join25, posix as posix3, relative as relative4 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { execFileSync as execFileSync20 } from "node:child_process";
 import { format } from "node:util";
 
 // plugins/review-voice/src/warnings.ts
@@ -14076,494 +14075,6 @@ function spawnCommand(command, options) {
   });
 }
 
-// plugins/review-voice/src/scoring/existence.ts
-import { execFileSync as execFileSync7 } from "node:child_process";
-var ASSERTS_ABSENCE = [
-  /\b(?:does|do)\s+not\s+exist\b/i,
-  /\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)\b/i,
-  /\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)\b/i,
-  /\bnever\s+(?:defined|declared|exported)\b/i,
-  /\bcannot\s+be\s+found\b/i,
-  /\bnowhere\s+in\s+the\s+(?:repo|repository|codebase)\b/i
-];
-var DETERMINER = /^(?:the|this|that|these|those|our|your|their|its|his|her|my|a|an)\s+/i;
-function withoutDeterminer(complement) {
-  let text4 = complement.trim().replace(/[`'"]/g, "");
-  for (let i = 0; i < 3; i += 1) text4 = text4.replace(DETERMINER, "");
-  return text4.trim();
-}
-var GENERIC_REPOSITORY = /^(?:entire\s+|whole\s+)?(?:mono)?(?:repo|repository|code\s?base|project|tree)\b/i;
-var NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
-var NAMED_UNIT_SUFFIX = /^(?:the\s+)?\S+\s+(?:repo|repository|service|package|library)\b/i;
-var ANOTHER_UNIT = /^(?:another|a\s+different|a\s+sibling|the\s+other)\s+(?:repo|repository|package|service)\b/i;
-var ABSENCE_WITH_COMPLEMENT = /\b(?:does|do)\s+not\s+exist|\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)|\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)|\bnever\s+(?:defined|declared|exported)|\bcannot\s+be\s+found/i;
-var LOCATIVE = /\b(?:in|from|within|under|inside|throughout|across)\s+([^.,;]+)/i;
-function namesThisRepository(complement, repository) {
-  if (repository === null) return false;
-  const candidates = [repository, repository.split("/").pop() ?? repository].map((name) => name.trim().toLowerCase()).filter((name) => name.length > 0);
-  const said = withoutDeterminer(complement).toLowerCase();
-  return candidates.some(
-    (name) => [name, `${name} repository`, `${name} repo`, `${name} monorepo`, `${name} codebase`].includes(said)
-  );
-}
-var PROPERTY_NOT_PLACE = /\b(?:ex|im)ported\b|\bnot\s+(?:public|exposed|re-?exported)\b/i;
-function absenceScope(text4, repository = null) {
-  if (PROPERTY_NOT_PLACE.test(text4)) return "bounded";
-  if (/\b(?:anywhere|nowhere)\b/i.test(text4)) return "repository";
-  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text4);
-  if (assertion === null) return "repository";
-  const after = text4.slice(assertion.index + assertion[0].length);
-  const locative = LOCATIVE.exec(after);
-  if (locative === null) return "repository";
-  const complement = (locative[1] ?? "").trim();
-  const bare = withoutDeterminer(complement);
-  if (GENERIC_REPOSITORY.test(bare)) return "repository";
-  if (namesThisRepository(complement, repository)) return "repository";
-  if (ANOTHER_UNIT.test(complement) || NAMED_UNIT.test(bare) || NAMED_UNIT_SUFFIX.test(bare)) {
-    return "elsewhere";
-  }
-  return "bounded";
-}
-function namedSymbols(text4) {
-  const found = /* @__PURE__ */ new Set();
-  for (const match of text4.matchAll(/`([^`]+)`/g)) {
-    const token = (match[1] ?? "").trim();
-    if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found.add(token);
-  }
-  for (const match of text4.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
-    if (match[1] !== void 0) found.add(match[1]);
-  }
-  for (const match of text4.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
-    if (match[1] !== void 0) found.add(match[1]);
-  }
-  for (const token of [...found]) {
-    const base = token.split("/").pop();
-    if (base !== void 0 && base !== token && base.length >= 4 && !base.startsWith("-")) found.add(base);
-  }
-  return [...found];
-}
-var gitGrep = (symbol, cwd, ref) => {
-  const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "-e", symbol] : ["grep", "--fixed-strings", "--quiet", "-e", symbol, ref];
-  try {
-    execFileSync7("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
-    return true;
-  } catch (error) {
-    if (error.status === 1) return false;
-    throw error;
-  }
-};
-var gitGrepPaths = (...search) => grepPaths(false, ...search);
-var gitGrepWordPaths = (...search) => grepPaths(true, ...search);
-var NOT_IDENTIFIER = "[^[:alnum:]_$]";
-function grepPaths(wholeIdentifier, ...[symbol, cwd, ref, timeoutMs]) {
-  const pattern = wholeIdentifier ? `(^|${NOT_IDENTIFIER})${symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(${NOT_IDENTIFIER}|$)` : symbol;
-  const args = [
-    "grep",
-    wholeIdentifier ? "--extended-regexp" : "--fixed-strings",
-    "--full-name",
-    "-l",
-    "-z",
-    "-e",
-    pattern,
-    ...ref === null ? [] : [ref]
-  ];
-  try {
-    const output = execFileSync7("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
-    const prefix = ref === null ? "" : `${ref}:`;
-    return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
-  } catch (error) {
-    if (error.status === 1) return [];
-    throw error;
-  }
-}
-var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
-  const [first, second] = patterns;
-  const args = ref === null ? ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second] : ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second, ref];
-  try {
-    const output = execFileSync7("git", args, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: Math.min(1e4, timeoutMs ?? 1e4),
-      maxBuffer: 32 * 1024 * 1024
-    });
-    const prefix = ref === null ? "" : `${ref}:`;
-    const lines2 = [];
-    for (const record3 of output.split("\n")) {
-      const [rawPath = "", number = "", ...rest] = record3.split("\0");
-      const line3 = Number(number);
-      const text4 = rest.join("\0");
-      if (!Number.isSafeInteger(line3) || line3 < 1) continue;
-      lines2.push({
-        path: prefix !== "" && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
-        line: line3,
-        text: text4
-      });
-    }
-    return lines2;
-  } catch (error) {
-    if (error.status === 1) return [];
-    throw error;
-  }
-};
-var gitTrackedPaths = (cwd, ref) => {
-  const args = ref === null ? ["ls-files", "-z", "--full-name", "--", ":/"] : ["ls-tree", "-r", "-z", "--name-only", "--full-tree", ref];
-  const output = execFileSync7("git", args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 1e4,
-    maxBuffer: 64 * 1024 * 1024
-  });
-  return output.split("\0").filter((path) => path.length > 0);
-};
-var RESOURCE_PATHSPECS = [
-  ":(glob)**/*.resx",
-  ":(glob)**/*.resw",
-  ":(glob)**/*.po",
-  ":(glob)**/*.xlf",
-  ":(glob)**/*.xliff",
-  ":(glob)**/*.arb",
-  ":(glob)**/locales/**",
-  ":(glob)**/i18n/**"
-];
-var gitResourceSources = (cwd) => {
-  try {
-    const output = execFileSync7("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 1e4,
-      maxBuffer: 16 * 1024 * 1024
-    });
-    return output.split("\0").filter((path) => path.length > 0);
-  } catch {
-    return [];
-  }
-};
-var GENERATED_ACCESSOR = [
-  /^R\.[a-z]+\.[a-z_]\w*$/,
-  /^(?:\w+\.)*\w*(?:Resources|Resource|Strings)\.[A-Z]\w*$/,
-  /^(?:S|AppLocalizations)\.of\([^)]*\)\.\w+$/,
-  /^(?:L10n|l10n)\.[A-Za-z_]\w*$/
-];
-var FILE_NAME = /\.(?:tsx?|jsx?|mjs|cjs|cs|py|go|rb|java|kt|rs|swift|dart|json|ya?ml|md|xml|resx|resw|po|xlf|xliff|arb)$/i;
-function isPath(symbol) {
-  return symbol.includes("/") || FILE_NAME.test(symbol);
-}
-var LOOSE_ABSENCE = [
-  /\b(?:does|do|did)\s*(?:not|n't)\s+exist|\bmissing\b|\babsent\b|\b(?:deleted|removed)\b|\bnot\s+(?:found|present)\b/i
-];
-var CLAUSE_BREAK = /[.;!?](?=\s|$)|\b(?:which|that|who|but|whereas|while)\b/gi;
-function tiedToAbsence(text4, symbols) {
-  const strict = tiedBy(ASSERTS_ABSENCE, text4, symbols);
-  return strict.size > 0 ? strict : tiedBy(LOOSE_ABSENCE, text4, symbols);
-}
-function tiedBy(phrases, text4, symbols) {
-  const masked = text4.replace(/`[^`]*`/g, (span) => `\`${"x".repeat(span.length - 2)}\``);
-  const starts = [0];
-  for (const match of masked.matchAll(CLAUSE_BREAK)) {
-    starts.push(match[0].length === 1 ? match.index + 1 : match.index);
-  }
-  starts.push(text4.length);
-  const occurrences = symbols.flatMap((symbol) => {
-    const at2 = [];
-    for (let index = text4.indexOf(symbol); index !== -1; index = text4.indexOf(symbol, index + 1)) {
-      if (text4[index - 1] !== "/") at2.push({ symbol, index });
-    }
-    return at2;
-  });
-  const tied = /* @__PURE__ */ new Set();
-  for (let i = 0; i + 1 < starts.length; i += 1) {
-    const start = starts[i] ?? 0;
-    const end = starts[i + 1] ?? text4.length;
-    const clause = masked.slice(start, end);
-    if (!phrases.some((phrase) => phrase.test(clause))) continue;
-    const inClause = occurrences.filter(({ index }) => index >= start && index < end);
-    if (inClause.length > 0) {
-      for (const { symbol } of inClause) tied.add(symbol);
-    } else if (/^\s*(?:which|that|who)\b/i.test(clause)) {
-      let antecedent;
-      for (const occurrence of occurrences) {
-        if (occurrence.index < start && (antecedent === void 0 || occurrence.index > antecedent.index)) {
-          antecedent = occurrence;
-        }
-      }
-      if (antecedent !== void 0) tied.add(antecedent.symbol);
-    }
-  }
-  return tied;
-}
-function generatedAccessor(symbol) {
-  return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
-}
-function checkAbsenceClaim(text4, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths) {
-  const searchedRefLabel = ref ?? "working tree";
-  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text4))) return null;
-  const scope = absenceScope(text4, repository);
-  if (scope === "bounded") return null;
-  if (scope === "elsewhere") {
-    return {
-      found: [],
-      checked: [],
-      // Not silence. An empty `found` with `inconclusive: false` is the shape
-      // that reads as corroboration, and this repository cannot speak for
-      // another one.
-      inconclusive: true,
-      searchedRef: searchedRefLabel
-    };
-  }
-  const stated = namedSymbols(text4).filter(
-    (symbol) => text4.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
-  );
-  const tied = tiedToAbsence(text4, stated);
-  const symbols = stated.filter((symbol) => !isPath(symbol) || tied.size === 0 || tied.has(symbol));
-  if (symbols.length === 0) return null;
-  const searchedRef = ref ?? "working tree";
-  const found = [];
-  const checked = [];
-  let paths = null;
-  for (const symbol of symbols.slice(0, 12)) {
-    try {
-      checked.push(symbol);
-      if (isPath(symbol)) {
-        paths ??= trackedPaths(cwd, ref);
-        const path = symbol.replace(/^\.?\//, "").replace(/\/$/, "");
-        const exists = path.includes("/") ? paths.some((tracked) => tracked === path || tracked.startsWith(`${path}/`)) : paths.some((tracked) => tracked === path || tracked.endsWith(`/${path}`));
-        if (exists) found.push(symbol);
-      } else if (search(symbol, cwd, ref)) {
-        found.push(symbol);
-      }
-    } catch {
-      return { found: [], checked, inconclusive: true, searchedRef };
-    }
-  }
-  if (found.length === 0) {
-    const accessor = checked.find(generatedAccessor);
-    const sources = accessor === void 0 ? resources(cwd) : [];
-    if (accessor !== void 0 || sources.length > 0) {
-      const why = accessor !== void 0 ? `\`${accessor}\` is shaped like a generated resource accessor` : `the repository tracks resource sources (${sources.slice(0, 3).join(", ")}${sources.length > 3 ? ", ..." : ""})`;
-      return {
-        found,
-        checked,
-        inconclusive: true,
-        searchedRef,
-        reason: `${why}, so the name may be generated at build time; finding it nowhere tracked does not show it is absent`
-      };
-    }
-  }
-  return { found, checked, inconclusive: false, searchedRef };
-}
-
-// plugins/review-voice/src/scoring/reach.ts
-function symbolsFromHunks(diff, changedPath) {
-  const wanted = changedPath === null ? null : normalisePath2(changedPath);
-  const found = /* @__PURE__ */ new Set();
-  let inFile = false;
-  for (const raw of diff.split(/\r?\n/)) {
-    if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
-      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
-      if (match?.[1] !== void 0) inFile = wanted === null || normalisePath2(match[1]) === wanted;
-      else if (raw.startsWith("diff --git ")) inFile = false;
-      continue;
-    }
-    if (!inFile) continue;
-    if (raw.startsWith("--- ")) continue;
-    if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
-    const text4 = raw.slice(1);
-    for (const m of text4.matchAll(
-      /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g
-    )) {
-      if (m[1] !== void 0) found.add(m[1]);
-    }
-  }
-  return [...found];
-}
-var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
-  /(?:^|\/)(?:eslint\.config\.[^/]+|\.eslintrc(?:\.[^/]+)?|biome\.json|\.stylelintrc(?:\.[^/]+)?|\.prettierrc(?:\.[^/]+)?)$/i,
-  /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/i,
-  /^(?:\.github\/workflows\/|\.gitlab-ci(?:\.yml)?$|\.circleci\/config\.yml$|azure-pipelines(?:\.[^/]+)?\.ya?ml$|Jenkinsfile$)/i,
-  /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|Pipfile\.lock|composer\.lock|go\.sum)$/i,
-  /^(?:package\.json|Makefile|GNUmakefile|justfile|Taskfile\.ya?ml|turbo\.json|nx\.json)$/i,
-  /^(?:scripts|tools|build|bin)\//i
-];
-function normalisePath2(path) {
-  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
-}
-function directoryOf(path) {
-  const parts = normalisePath2(path).split("/");
-  parts.pop();
-  return parts.join("/");
-}
-function directoryCount(paths) {
-  return new Set([...paths].map(directoryOf)).size;
-}
-var PROSE_EXTENSIONS = /* @__PURE__ */ new Set(["md", "markdown", "mdx", "txt", "rst", "adoc"]);
-function isCode(path) {
-  const name = normalisePath2(path).split("/").pop() ?? "";
-  const dot = name.lastIndexOf(".");
-  const extension = dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
-  if (PROSE_EXTENSIONS.has(extension)) return false;
-  return classify(normalisePath2(path)) === "source";
-}
-var NON_DISCRIMINATING_DIRECTORIES = 12;
-var IMPORT_LINE = [
-  /^import\s+(?:type\s+)?(?:[\w$*{}\s,]+\s+from\s+)?['"][^'"]+['"]\s*;?$/,
-  /^from\s+[\w.]+\s+import\s+[\w*,\s()]+$/,
-  /^import\s+[\w.]+(?:\s+as\s+\w+)?(?:\s*,\s*[\w.]+(?:\s+as\s+\w+)?)*$/,
-  /^import\s+(?:static\s+)?[\w.]+(?:\.\*)?;?$/
-];
-function isImportOnlyChange(diff, changedPath) {
-  const wanted = normalisePath2(changedPath);
-  let inFile = false;
-  let imports = 0;
-  for (const raw of diff.split(/\r?\n/)) {
-    if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
-      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
-      if (match?.[1] !== void 0) inFile = normalisePath2(match[1]) === wanted;
-      else if (raw.startsWith("diff --git ")) inFile = false;
-      continue;
-    }
-    if (!inFile || raw.startsWith("--- ")) continue;
-    if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
-    const text4 = raw.slice(1).trim();
-    if (text4 === "") continue;
-    if (!IMPORT_LINE.some((pattern) => pattern.test(text4))) return false;
-    imports += 1;
-  }
-  return imports > 0;
-}
-function withinSubtree(path, changedDirectory) {
-  if (changedDirectory === "") return false;
-  const normalised = normalisePath2(path);
-  return normalised === changedDirectory || normalised.startsWith(`${changedDirectory}/`);
-}
-function isRepositoryWideToolchainPath(path) {
-  const normalised = normalisePath2(path);
-  return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
-}
-function computeReach(text4, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
-  const searchedRef = ref ?? "working tree";
-  const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
-  const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
-  const source = ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
-  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text4)).slice(0, 12);
-  const searched = [];
-  const ignored = [];
-  const hits = /* @__PURE__ */ new Set();
-  let usedModuleFallback = false;
-  const normalisedChangedPath = normalisePath2(changedPath);
-  const changedDirectory = directoryOf(changedPath);
-  const result = (reach, inconclusive) => {
-    const counted2 = [...hits].filter(isCode).sort();
-    const outside = counted2.filter(
-      (path) => normalisePath2(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
-    );
-    return {
-      reach,
-      symbolSource: source,
-      moduleFallback: usedModuleFallback,
-      symbols: searched,
-      ignoredSymbols: [...ignored].sort(),
-      paths: [...hits].sort(),
-      countedPaths: counted2,
-      directoryCount: directoryCount(counted2),
-      outsideDirectoryCount: directoryCount(outside),
-      inconclusive,
-      searchedRef
-    };
-  };
-  if (symbols.length === 0) return result(null, false);
-  if (diff !== null && isImportOnlyChange(diff, changedPath)) return result(null, false);
-  for (const symbol of symbols) {
-    searched.push(symbol);
-    let found;
-    try {
-      found = search(symbol, cwd, ref);
-    } catch {
-      return result(null, true);
-    }
-    const code = found.filter(isCode);
-    if (source !== "diff" && !code.some((path) => normalisePath2(path) === normalisedChangedPath)) {
-      ignored.push(symbol);
-      continue;
-    }
-    if (directoryCount(code) > NON_DISCRIMINATING_DIRECTORIES) {
-      ignored.push(symbol);
-      continue;
-    }
-    for (const path of found) hits.add(path);
-  }
-  if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
-  let counted = [...hits].filter(isCode);
-  if (counted.length === 0 && source !== "claim") {
-    const moduleName = normalisePath2(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
-    if (moduleName !== void 0 && moduleName.length >= 4) {
-      searched.push(moduleName);
-      try {
-        for (const path of search(moduleName, cwd, ref)) hits.add(path);
-      } catch {
-        return result(null, true);
-      }
-      counted = [...hits].filter(isCode);
-      usedModuleFallback = counted.length > 0;
-    }
-  }
-  if (counted.length === 0) return result(null, false);
-  if (counted.every((path) => normalisePath2(path) === normalisedChangedPath)) {
-    return result("local", false);
-  }
-  const outsideDirectories = directoryCount(
-    counted.filter(
-      (path) => normalisePath2(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
-    )
-  );
-  if (outsideDirectories >= 2) return result("repository", false);
-  return result("component", false);
-}
-
-// plugins/review-voice/src/scoring/citation.ts
-import { execFileSync as execFileSync8 } from "node:child_process";
-function git2(args, cwd) {
-  return execFileSync8("git", args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 1e4
-  });
-}
-function normalise(path) {
-  return path.replaceAll("\\", "/").replace(/^\.\/+/, "");
-}
-function pathsInDiff(diff) {
-  const paths = /* @__PURE__ */ new Set();
-  for (const match of diff.matchAll(/^\+\+\+ [ab]\/(.+)$/gm)) {
-    if (match[1] !== void 0 && match[1] !== "/dev/null") paths.add(normalise(match[1]));
-  }
-  return paths;
-}
-function checkCitation(candidatePath, cwd, ref, diff) {
-  const wanted = normalise(candidatePath);
-  if (wanted.length === 0) return { resolves: false, suggestion: null, inconclusive: false };
-  if (diff !== null && pathsInDiff(diff).has(wanted)) {
-    return { resolves: true, suggestion: null, inconclusive: false };
-  }
-  let tracked;
-  try {
-    const args = ref === null ? ["ls-files"] : ["ls-tree", "-r", "--name-only", ref];
-    tracked = git2(args, cwd).split("\n").filter((line3) => line3.length > 0);
-  } catch {
-    return { resolves: false, suggestion: null, inconclusive: true };
-  }
-  if (tracked.includes(wanted)) return { resolves: true, suggestion: null, inconclusive: false };
-  const lowered = wanted.toLowerCase();
-  const nearest = tracked.find((path) => path.toLowerCase() === lowered);
-  if (nearest !== void 0) return { resolves: false, suggestion: nearest, inconclusive: false };
-  const base = wanted.split("/").pop();
-  const sameName = base === void 0 ? void 0 : tracked.find((path) => path.split("/").pop() === base);
-  return { resolves: false, suggestion: sameName ?? null, inconclusive: false };
-}
-
 // plugins/review-voice/src/store/watch.ts
 var isFailure2 = (status) => status === "failed" || status === "failed-open" || status === "failed-closed";
 var fromRow = (row) => ({
@@ -16098,7 +15609,7 @@ function evaluatePostingGate(db, configEnabled) {
 
 // plugins/review-voice/src/publish/post.ts
 var SHA2 = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-function normalise2(text4) {
+function normalise(text4) {
   return text4.replace(/\r\n/g, "\n").trim();
 }
 function subjectId(repository, pullNumber) {
@@ -16240,7 +15751,7 @@ function recordedRun(options, head) {
   if (recordedHead === null || !(recordedHead === head || recordedHead.length >= 7 && head.startsWith(recordedHead))) {
     return `run ${runId} reviewed ${recordedHead ?? "no recorded head"}, not ${head}`;
   }
-  if (normalise2(run.output) !== normalise2(options.review)) {
+  if (normalise(run.output) !== normalise(options.review)) {
     return `the review on stdin is not the review recorded as run ${runId}`;
   }
   return run;
@@ -16755,7 +16266,7 @@ async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT
 }
 
 // plugins/review-voice/src/watch/workspace.ts
-import { execFileSync as execFileSync9 } from "node:child_process";
+import { execFileSync as execFileSync7 } from "node:child_process";
 import { existsSync as existsSync4, mkdirSync as mkdirSync2, readdirSync as readdirSync2, statSync, unlinkSync as unlinkSync2 } from "node:fs";
 import { dirname as dirname6, join as join9 } from "node:path";
 var NAME = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
@@ -16765,7 +16276,7 @@ function cloneDir(workspace, repository) {
   return join9(workspace, ...repository.split("/"));
 }
 var runQuietly = (command, args) => {
-  execFileSync9(command, args, { stdio: ["ignore", "ignore", "pipe"], timeout: 6e5 });
+  execFileSync7(command, args, { stdio: ["ignore", "ignore", "pipe"], timeout: 6e5 });
 };
 var STALE_LOCK_MS = 10 * 6e4;
 function removeStaleGitLocks(dir, now = Date.now()) {
@@ -17245,191 +16756,6 @@ function spawnReview(bundle, options) {
       await Promise.all(running.map((entry) => entry.done));
     }
   });
-}
-
-// plugins/review-voice/src/retrieval/weights.ts
-function baseWeight(role, outcome) {
-  if (role === "bot") return 0;
-  if (role === "owner") {
-    switch (outcome) {
-      case "accepted":
-        return 1;
-      case "rewritten":
-        return 1;
-      case "dismissed":
-        return -1;
-      default:
-        return 0.45;
-    }
-  }
-  if (role === "team") {
-    switch (outcome) {
-      case "accepted":
-      case "rewritten":
-        return 0.55;
-      case "dismissed":
-        return -0.4;
-      default:
-        return 0.25;
-    }
-  }
-  return 0;
-}
-var DEFAULT_HALF_LIFE_DAYS = 180;
-function recencyWeight(createdAt, now = /* @__PURE__ */ new Date(), halfLifeDays = DEFAULT_HALF_LIFE_DAYS) {
-  const ageMs = now.getTime() - new Date(createdAt).getTime();
-  const ageDays = Math.max(0, ageMs / 864e5);
-  return 2 ** (-ageDays / halfLifeDays);
-}
-function specificityWeight(input) {
-  let weight = 0.2;
-  if (input.hasFilePath) weight += 0.4;
-  if (input.hasLine) weight += 0.25;
-  if (input.hasDiffHunk) weight += 0.15;
-  return weight;
-}
-function contextWeight(input) {
-  let weight = 0.5;
-  if (input.sameRepository) weight += 0.3;
-  if (input.samePath) weight += 0.1;
-  if (input.sameLanguage) weight += 0.1;
-  if (input.differentLanguage) weight -= 0.25;
-  return weight;
-}
-function eventWeight(parts) {
-  const base = baseWeight(parts.role, parts.outcome);
-  const multiplied = parts.role === "owner" ? base * (parts.ownerMultiplier ?? 3) : base;
-  return multiplied * recencyWeight(parts.createdAt, parts.now) * specificityWeight(parts.specificity) * contextWeight(parts.context);
-}
-
-// plugins/review-voice/src/retrieval/retrieve.ts
-function toMatchQuery(text4) {
-  const terms = text4.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((term) => term.length > 2 && !STOPWORDS.has(term));
-  const unique = [...new Set(terms)].slice(0, 24);
-  return unique.map((term) => `"${term}"`).join(" OR ");
-}
-var STOPWORDS = /* @__PURE__ */ new Set([
-  "the",
-  "and",
-  "for",
-  "that",
-  "this",
-  "with",
-  "from",
-  "are",
-  "was",
-  "were",
-  "not",
-  "but",
-  "you",
-  "your",
-  "can",
-  "will",
-  "should",
-  "would",
-  "could",
-  "has",
-  "have",
-  "had",
-  "its",
-  "it",
-  "is",
-  "be",
-  "been",
-  "when",
-  "then",
-  "there",
-  "here",
-  "they",
-  "them",
-  "than",
-  "into",
-  "out",
-  "use",
-  "used"
-]);
-var EXCERPT_CHARS = 220;
-function retrievePrecedents(db, query) {
-  const match = toMatchQuery(query.text);
-  if (match.length === 0) return [];
-  let rows;
-  try {
-    rows = db.prepare(
-      `SELECT e.event_id, e.repository, e.reviewer_login, e.reviewer_role,
-                -- A weak outcome cannot move a weight on its own (adr/0004).
-                CASE WHEN e.outcome_certainty = 'strong' THEN e.outcome_status ELSE 'unknown' END AS outcome_status,
-                e.created_at, e.file_path, e.line_start,
-                e.body_redacted, e.diff_hunk_redacted, e.language,
-                bm25(review_events_fts) AS rank
-         FROM review_events_fts
-         JOIN review_events e ON e.rowid = review_events_fts.rowid
-         WHERE review_events_fts MATCH ?
-           AND (? IS NULL OR e.pull_number IS NULL OR e.pull_number != ?
-                OR (? IS NOT NULL AND e.repository != ?))
-         ORDER BY rank
-         LIMIT 200`
-    ).all(
-      match,
-      query.excludePullNumber ?? null,
-      query.excludePullNumber ?? null,
-      query.repository ?? null,
-      query.repository ?? null
-    );
-  } catch {
-    return [];
-  }
-  const queryLanguage = query.language ?? (query.filePath === void 0 ? null : languageOf(query.filePath));
-  const scored = rows.map((row) => {
-    const role = row.reviewer_role;
-    const outcome = row.outcome_status;
-    const rowLanguage = row.file_path === null ? null : languageOf(row.file_path);
-    const weight = eventWeight({
-      role,
-      outcome,
-      createdAt: row.created_at,
-      specificity: {
-        hasFilePath: row.file_path !== null,
-        hasLine: row.line_start !== null,
-        hasDiffHunk: row.diff_hunk_redacted !== null
-      },
-      context: {
-        sameRepository: query.repository !== void 0 && row.repository === query.repository,
-        samePath: query.filePath !== void 0 && row.file_path === query.filePath,
-        // Derived from the paths rather than read from the column. The column
-        // is null on every stored event, so both the bonus and the penalty
-        // were dead code against a real corpus, and deriving it needs neither
-        // a migration nor a re-sync.
-        sameLanguage: queryLanguage !== null && rowLanguage === queryLanguage,
-        differentLanguage: queryLanguage !== null && rowLanguage !== null && rowLanguage !== queryLanguage
-      },
-      now: query.now,
-      ownerMultiplier: query.ownerMultiplier
-    });
-    const relevance = -row.rank;
-    return {
-      eventId: row.event_id,
-      repository: row.repository,
-      reviewerLogin: row.reviewer_login,
-      role,
-      outcome,
-      createdAt: row.created_at,
-      filePath: row.file_path,
-      lineStart: row.line_start,
-      excerpt: row.body_redacted.length > EXCERPT_CHARS ? `${row.body_redacted.slice(0, EXCERPT_CHARS)}\u2026` : row.body_redacted,
-      weight,
-      relevance,
-      matchStrength: 0,
-      polarity: weight < 0 ? "negative" : "positive"
-    };
-  });
-  const best = Math.max(...scored.map((p) => p.relevance), 1);
-  for (const precedent of scored) {
-    precedent.matchStrength = Math.max(0, Math.min(1, precedent.relevance / best));
-  }
-  const rank2 = (a, b) => Math.abs(b.weight) * b.matchStrength - Math.abs(a.weight) * a.matchStrength;
-  const positive = scored.filter((p) => p.weight > 0).sort(rank2).slice(0, query.maxPositive);
-  const negative = scored.filter((p) => p.weight < 0).sort(rank2).slice(0, query.maxNegative);
-  return [...negative, ...positive];
 }
 
 // plugins/review-voice/src/store/feedback.ts
@@ -18568,7 +17894,7 @@ function topLevelHelp() {
 }
 
 // plugins/review-voice/src/review/driver.ts
-import { execFileSync as execFileSync12 } from "node:child_process";
+import { execFileSync as execFileSync10 } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync10, rmSync as rmSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname9, isAbsolute as isAbsolute3, join as join14, resolve as resolve2, sep } from "node:path";
 
@@ -18982,7 +18308,7 @@ ${prompt}`;
 }
 
 // plugins/review-voice/src/diff/pull-request.ts
-import { execFileSync as execFileSync10 } from "node:child_process";
+import { execFileSync as execFileSync8 } from "node:child_process";
 var STATUS2 = {
   added: "added",
   modified: "modified",
@@ -19002,8 +18328,8 @@ function toUnifiedDiff(file2) {
   ].join("\n");
 }
 var GITHUB_MAX_FILES = 3e3;
-function git3(args, cwd, timeout = 6e4) {
-  return execFileSync10("git", args, {
+function git2(args, cwd, timeout = 6e4) {
+  return execFileSync8("git", args, {
     cwd,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
@@ -19013,7 +18339,7 @@ function git3(args, cwd, timeout = 6e4) {
 }
 function hasCommit(sha, cwd) {
   try {
-    git3(["cat-file", "-e", `${sha}^{commit}`], cwd, 1e4);
+    git2(["cat-file", "-e", `${sha}^{commit}`], cwd, 1e4);
     return true;
   } catch {
     return false;
@@ -19021,14 +18347,14 @@ function hasCommit(sha, cwd) {
 }
 function mergeBaseOf(base, head, cwd) {
   try {
-    return git3(["merge-base", base, head], cwd, 1e4).trim() || null;
+    return git2(["merge-base", base, head], cwd, 1e4).trim() || null;
   } catch {
     return null;
   }
 }
 function originRepository(cwd) {
   try {
-    const url = git3(["remote", "get-url", "origin"], cwd, 1e4).trim();
+    const url = git2(["remote", "get-url", "origin"], cwd, 1e4).trim();
     return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
   } catch {
     return null;
@@ -19059,7 +18385,7 @@ function ensureRefs(options) {
     );
   }
   try {
-    git3(
+    git2(
       [
         "fetch",
         "--no-tags",
@@ -19074,7 +18400,7 @@ function ensureRefs(options) {
   present = check();
   if (!present.base) {
     try {
-      git3(["fetch", "--no-tags", "--quiet", "origin", options.base], options.cwd);
+      git2(["fetch", "--no-tags", "--quiet", "origin", options.base], options.cwd);
     } catch {
     }
     present = check();
@@ -19092,7 +18418,7 @@ var SAME_AS_BASE_TIP = "identical to the base branch tip (already merged there)"
 function differingFromBaseTip(base, head, cwd) {
   try {
     const args = ["diff", "--no-ext-diff", "--no-relative", "--ignore-submodules=none", "--no-renames", "--name-only", "-z", base, head];
-    return new Set(git3(args, cwd).split("\0").filter(Boolean));
+    return new Set(git2(args, cwd).split("\0").filter(Boolean));
   } catch {
     return null;
   }
@@ -19119,7 +18445,7 @@ function fullScopeResult(result, pullNumber, scope) {
 function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = (since, head, files2, root) => {
   const args = ["diff", "--no-ext-diff", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", since, head, "--", ...topPathspecs(files2)];
   try {
-    return execFileSync10("git", args, {
+    return execFileSync8("git", args, {
       cwd: root,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024,
@@ -19230,7 +18556,7 @@ async function acquirePullRequestDiff(options) {
     (path) => {
       if (headLocal) {
         try {
-          return git3(["show", `${pull.head.sha}:${path}`], cwd);
+          return git2(["show", `${pull.head.sha}:${path}`], cwd);
         } catch {
           return null;
         }
@@ -20210,7 +19536,7 @@ var STAGES = [
 ];
 
 // plugins/review-voice/src/review/worktree.ts
-import { execFileSync as execFileSync11 } from "node:child_process";
+import { execFileSync as execFileSync9 } from "node:child_process";
 import { lstatSync as lstatSync2, rmSync as rmSync2, unlinkSync as unlinkSync4 } from "node:fs";
 var SAFE_GIT = [
   "-c",
@@ -20227,7 +19553,7 @@ var SAFE_GIT = [
   "submodule.recurse=false"
 ];
 function safeGit(args, cwd) {
-  execFileSync11("git", [...SAFE_GIT, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+  execFileSync9("git", [...SAFE_GIT, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
 }
 function addHeadWorktree(headDir, head, cwd = process.cwd()) {
   const stale = lstatSync2(headDir, { throwIfNoEntry: false });
@@ -20247,7 +19573,7 @@ function addHeadWorktree(headDir, head, cwd = process.cwd()) {
 }
 function removeHeadWorktree(headDir, cwd = process.cwd()) {
   try {
-    execFileSync11("git", ["worktree", "remove", "--force", headDir], { cwd, stdio: "ignore" });
+    execFileSync9("git", ["worktree", "remove", "--force", headDir], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -20317,7 +19643,7 @@ var CONFIG_PATH = ".review-voice/config.yaml";
 var shortRef = (ref) => /^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 7) : ref;
 function showAt(ref, path) {
   try {
-    return execFileSync12("git", [...SAFE_GIT, "show", `${ref}:${path}`], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024 });
+    return execFileSync10("git", [...SAFE_GIT, "show", `${ref}:${path}`], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024 });
   } catch {
     return null;
   }
@@ -20541,7 +19867,7 @@ function prepareWorkspace(run) {
   if (!(isRecord3(refs["head"]) && refs["head"]["available"] === true)) {
     throw new Stop(2, `The head ${run.head} is not in this clone. Fetch it and run again.`);
   }
-  const git6 = (args) => execFileSync12("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync10("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
   const headDir = at(run, "head");
   if (run.headDir === null) {
     addHeadWorktree(headDir, run.head);
@@ -20943,7 +20269,7 @@ function claudeVersionOf(run) {
   if (run.claudeVersion !== void 0) return run.claudeVersion;
   const env = run.deps.env ?? process.env;
   try {
-    const out = execFileSync12(claudeBin(env), ["--version"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15e3 });
+    const out = execFileSync10(claudeBin(env), ["--version"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15e3 });
     run.claudeVersion = out.split("\n")[0].trim() || null;
   } catch {
     run.claudeVersion = null;
@@ -21294,7 +20620,7 @@ function reportText(report) {
 // plugins/review-voice/src/cli/shared.ts
 import { readSync, mkdirSync as mkdirSync6, statSync as statSync2, existsSync as existsSync8, realpathSync as realpathSync2 } from "node:fs";
 import { basename as basename4, dirname as dirname10, join as join15 } from "node:path";
-import { execFileSync as execFileSync13 } from "node:child_process";
+import { execFileSync as execFileSync11 } from "node:child_process";
 var STDIN_INPUT = {
   "check-candidates": "candidates JSON",
   "check-verification": "the evidence-verifier output",
@@ -21363,7 +20689,7 @@ function numericFlag(argv, name, fallback) {
 }
 function inferRepository(cwd) {
   try {
-    const url = execFileSync13("git", ["remote", "get-url", "origin"], {
+    const url = execFileSync11("git", ["remote", "get-url", "origin"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -21377,7 +20703,7 @@ function inferRepository(cwd) {
 function remoteRepositories(cwd) {
   let out;
   try {
-    out = execFileSync13("git", ["config", "--get-regexp", "^remote\\..*\\.url$"], {
+    out = execFileSync11("git", ["config", "--get-regexp", "^remote\\..*\\.url$"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -21472,7 +20798,7 @@ function containsCut(before, after) {
 }
 function refExists(ref, cwd) {
   try {
-    execFileSync13("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    execFileSync11("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -21739,6 +21065,191 @@ function calibrateCommand() {
   } finally {
     db.close();
   }
+}
+
+// plugins/review-voice/src/retrieval/weights.ts
+function baseWeight(role, outcome) {
+  if (role === "bot") return 0;
+  if (role === "owner") {
+    switch (outcome) {
+      case "accepted":
+        return 1;
+      case "rewritten":
+        return 1;
+      case "dismissed":
+        return -1;
+      default:
+        return 0.45;
+    }
+  }
+  if (role === "team") {
+    switch (outcome) {
+      case "accepted":
+      case "rewritten":
+        return 0.55;
+      case "dismissed":
+        return -0.4;
+      default:
+        return 0.25;
+    }
+  }
+  return 0;
+}
+var DEFAULT_HALF_LIFE_DAYS = 180;
+function recencyWeight(createdAt, now = /* @__PURE__ */ new Date(), halfLifeDays = DEFAULT_HALF_LIFE_DAYS) {
+  const ageMs = now.getTime() - new Date(createdAt).getTime();
+  const ageDays = Math.max(0, ageMs / 864e5);
+  return 2 ** (-ageDays / halfLifeDays);
+}
+function specificityWeight(input) {
+  let weight = 0.2;
+  if (input.hasFilePath) weight += 0.4;
+  if (input.hasLine) weight += 0.25;
+  if (input.hasDiffHunk) weight += 0.15;
+  return weight;
+}
+function contextWeight(input) {
+  let weight = 0.5;
+  if (input.sameRepository) weight += 0.3;
+  if (input.samePath) weight += 0.1;
+  if (input.sameLanguage) weight += 0.1;
+  if (input.differentLanguage) weight -= 0.25;
+  return weight;
+}
+function eventWeight(parts) {
+  const base = baseWeight(parts.role, parts.outcome);
+  const multiplied = parts.role === "owner" ? base * (parts.ownerMultiplier ?? 3) : base;
+  return multiplied * recencyWeight(parts.createdAt, parts.now) * specificityWeight(parts.specificity) * contextWeight(parts.context);
+}
+
+// plugins/review-voice/src/retrieval/retrieve.ts
+function toMatchQuery(text4) {
+  const terms = text4.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((term) => term.length > 2 && !STOPWORDS.has(term));
+  const unique = [...new Set(terms)].slice(0, 24);
+  return unique.map((term) => `"${term}"`).join(" OR ");
+}
+var STOPWORDS = /* @__PURE__ */ new Set([
+  "the",
+  "and",
+  "for",
+  "that",
+  "this",
+  "with",
+  "from",
+  "are",
+  "was",
+  "were",
+  "not",
+  "but",
+  "you",
+  "your",
+  "can",
+  "will",
+  "should",
+  "would",
+  "could",
+  "has",
+  "have",
+  "had",
+  "its",
+  "it",
+  "is",
+  "be",
+  "been",
+  "when",
+  "then",
+  "there",
+  "here",
+  "they",
+  "them",
+  "than",
+  "into",
+  "out",
+  "use",
+  "used"
+]);
+var EXCERPT_CHARS = 220;
+function retrievePrecedents(db, query) {
+  const match = toMatchQuery(query.text);
+  if (match.length === 0) return [];
+  let rows;
+  try {
+    rows = db.prepare(
+      `SELECT e.event_id, e.repository, e.reviewer_login, e.reviewer_role,
+                -- A weak outcome cannot move a weight on its own (adr/0004).
+                CASE WHEN e.outcome_certainty = 'strong' THEN e.outcome_status ELSE 'unknown' END AS outcome_status,
+                e.created_at, e.file_path, e.line_start,
+                e.body_redacted, e.diff_hunk_redacted, e.language,
+                bm25(review_events_fts) AS rank
+         FROM review_events_fts
+         JOIN review_events e ON e.rowid = review_events_fts.rowid
+         WHERE review_events_fts MATCH ?
+           AND (? IS NULL OR e.pull_number IS NULL OR e.pull_number != ?
+                OR (? IS NOT NULL AND e.repository != ?))
+         ORDER BY rank
+         LIMIT 200`
+    ).all(
+      match,
+      query.excludePullNumber ?? null,
+      query.excludePullNumber ?? null,
+      query.repository ?? null,
+      query.repository ?? null
+    );
+  } catch {
+    return [];
+  }
+  const queryLanguage = query.language ?? (query.filePath === void 0 ? null : languageOf(query.filePath));
+  const scored = rows.map((row) => {
+    const role = row.reviewer_role;
+    const outcome = row.outcome_status;
+    const rowLanguage = row.file_path === null ? null : languageOf(row.file_path);
+    const weight = eventWeight({
+      role,
+      outcome,
+      createdAt: row.created_at,
+      specificity: {
+        hasFilePath: row.file_path !== null,
+        hasLine: row.line_start !== null,
+        hasDiffHunk: row.diff_hunk_redacted !== null
+      },
+      context: {
+        sameRepository: query.repository !== void 0 && row.repository === query.repository,
+        samePath: query.filePath !== void 0 && row.file_path === query.filePath,
+        // Derived from the paths rather than read from the column. The column
+        // is null on every stored event, so both the bonus and the penalty
+        // were dead code against a real corpus, and deriving it needs neither
+        // a migration nor a re-sync.
+        sameLanguage: queryLanguage !== null && rowLanguage === queryLanguage,
+        differentLanguage: queryLanguage !== null && rowLanguage !== null && rowLanguage !== queryLanguage
+      },
+      now: query.now,
+      ownerMultiplier: query.ownerMultiplier
+    });
+    const relevance = -row.rank;
+    return {
+      eventId: row.event_id,
+      repository: row.repository,
+      reviewerLogin: row.reviewer_login,
+      role,
+      outcome,
+      createdAt: row.created_at,
+      filePath: row.file_path,
+      lineStart: row.line_start,
+      excerpt: row.body_redacted.length > EXCERPT_CHARS ? `${row.body_redacted.slice(0, EXCERPT_CHARS)}\u2026` : row.body_redacted,
+      weight,
+      relevance,
+      matchStrength: 0,
+      polarity: weight < 0 ? "negative" : "positive"
+    };
+  });
+  const best = Math.max(...scored.map((p) => p.relevance), 1);
+  for (const precedent of scored) {
+    precedent.matchStrength = Math.max(0, Math.min(1, precedent.relevance / best));
+  }
+  const rank2 = (a, b) => Math.abs(b.weight) * b.matchStrength - Math.abs(a.weight) * a.matchStrength;
+  const positive = scored.filter((p) => p.weight > 0).sort(rank2).slice(0, query.maxPositive);
+  const negative = scored.filter((p) => p.weight < 0).sort(rank2).slice(0, query.maxNegative);
+  return [...negative, ...positive];
 }
 
 // plugins/review-voice/src/retrieval/baseline.ts
@@ -22737,7 +22248,7 @@ import { readFileSync as readFileSync16 } from "node:fs";
 import { dirname as dirname12, join as join19, sep as sep3 } from "node:path";
 
 // plugins/review-voice/src/conventions/tree.ts
-import { execFileSync as execFileSync14 } from "node:child_process";
+import { execFileSync as execFileSync12 } from "node:child_process";
 import { existsSync as existsSync11, readFileSync as readFileSync15, readdirSync as readdirSync3, statSync as statSync4 } from "node:fs";
 import { join as join18, sep as sep2 } from "node:path";
 function filesystemReader(root) {
@@ -22757,7 +22268,7 @@ function filesystemReader(root) {
 }
 var GIT_BUFFER = 512 * 1024 * 1024;
 function gitTreeReader(root, ref) {
-  const listing = execFileSync14("git", ["ls-tree", "-r", "-l", "--full-tree", "-z", ref], {
+  const listing = execFileSync12("git", ["ls-tree", "-r", "-l", "--full-tree", "-z", ref], {
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: GIT_BUFFER
@@ -22802,7 +22313,7 @@ function gitTreeReader(root, ref) {
       const { object } = file2(path);
       let blob = blobs.get(object);
       if (blob === void 0) {
-        blob = execFileSync14("git", ["cat-file", "blob", object], {
+        blob = execFileSync12("git", ["cat-file", "blob", object], {
           cwd: root,
           stdio: ["ignore", "pipe", "pipe"],
           maxBuffer: GIT_BUFFER
@@ -23306,13 +22817,13 @@ import { writeFileSync as writeFileSync5, mkdirSync as mkdirSync9, statSync as s
 import { dirname as dirname14, isAbsolute as isAbsolute4, relative as relative3, resolve as resolve6, sep as sep5 } from "node:path";
 
 // plugins/review-voice/src/evaluate/recall.ts
-import { execFileSync as execFileSync16 } from "node:child_process";
+import { execFileSync as execFileSync14 } from "node:child_process";
 import { copyFileSync as copyFileSync2, existsSync as existsSync13, mkdirSync as mkdirSync8, mkdtempSync as mkdtempSync2, readdirSync as readdirSync5, readFileSync as readFileSync19, rmSync as rmSync5, statSync as statSync5 } from "node:fs";
 import { tmpdir as tmpdir2 } from "node:os";
 import { join as join21, resolve as resolve5 } from "node:path";
 
 // plugins/review-voice/src/evaluate/fixtures.ts
-import { execFileSync as execFileSync15 } from "node:child_process";
+import { execFileSync as execFileSync13 } from "node:child_process";
 import {
   existsSync as existsSync12,
   lstatSync as lstatSync3,
@@ -23550,9 +23061,9 @@ function gitEnvironment() {
     GIT_COMMITTER_DATE: COMMIT_DATE
   };
 }
-function git4(cwd, label2, args) {
+function git3(cwd, label2, args) {
   try {
-    return execFileSync15("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", ...args], {
+    return execFileSync13("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", ...args], {
       cwd,
       env: gitEnvironment(),
       encoding: "utf8",
@@ -23589,7 +23100,7 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
     for (const path of contextFiles(contextDir, label2)) supplied.set(path, readFileSync18(join20(contextDir, path), "utf8"));
   }
   mkdirSync7(targetDir, { recursive: true });
-  git4(targetDir, label2, ["init", "-q", "-b", "main", "--template="]);
+  git3(targetDir, label2, ["init", "-q", "-b", "main", "--template="]);
   for (const [path, image] of images) {
     const given = supplied.get(path);
     if (given !== void 0) {
@@ -23618,25 +23129,25 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
     config2 = readFileSync18(configPath, "utf8");
   }
   writeInside(targetDir, ".review-voice/config.yaml", config2, label2);
-  git4(targetDir, label2, ["add", "-A"]);
-  git4(targetDir, label2, ["commit", "-q", "-m", `base: ${label2}`]);
-  const base = git4(targetDir, label2, ["rev-parse", "HEAD"]).trim();
-  git4(targetDir, label2, ["checkout", "-q", "-b", "feature"]);
+  git3(targetDir, label2, ["add", "-A"]);
+  git3(targetDir, label2, ["commit", "-q", "-m", `base: ${label2}`]);
+  const base = git3(targetDir, label2, ["rev-parse", "HEAD"]).trim();
+  git3(targetDir, label2, ["checkout", "-q", "-b", "feature"]);
   const scratch = mkdtempSync(join20(tmpdir(), "rv-fixture-patch-"));
   try {
     const copy = join20(scratch, "normalised.patch");
     writeFileSync4(copy, normalised);
     try {
-      git4(targetDir, label2, ["apply", "--whitespace=nowarn", copy]);
+      git3(targetDir, label2, ["apply", "--whitespace=nowarn", copy]);
     } catch (error) {
       throw new Error(`${error.message} (the patch does not apply to its reconstructed pre-image)`);
     }
   } finally {
     rmSync4(scratch, { recursive: true, force: true });
   }
-  git4(targetDir, label2, ["add", "-A"]);
-  git4(targetDir, label2, ["commit", "-q", "-m", `head: ${label2}`]);
-  const head = git4(targetDir, label2, ["rev-parse", "HEAD"]).trim();
+  git3(targetDir, label2, ["add", "-A"]);
+  git3(targetDir, label2, ["commit", "-q", "-m", `head: ${label2}`]);
+  const head = git3(targetDir, label2, ["rev-parse", "HEAD"]).trim();
   const changed = [];
   for (const file2 of files2) {
     const path = file2.newPath ?? file2.oldPath;
@@ -23718,7 +23229,7 @@ function selectFixtures(options) {
 var json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 function shimFiles(repoDir, base, head, paths) {
   return paths.map((path) => {
-    const text4 = execFileSync16("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
+    const text4 = execFileSync14("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
       cwd: repoDir,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024
@@ -23792,7 +23303,7 @@ function reviewIsSilent(report) {
   }
 }
 function checkoutBase(repoDir) {
-  execFileSync16("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync14("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
 }
 async function runFixture(fixture, index, context2) {
   const { expectation } = fixture;
@@ -24014,7 +23525,7 @@ async function recallCommand(argv, runInProcess2) {
 // plugins/review-voice/src/cli/worktree.ts
 import { statSync as statSync7, lstatSync as lstatSync5, rmSync as rmSync7 } from "node:fs";
 import { join as join22, resolve as resolve7 } from "node:path";
-import { execFileSync as execFileSync17 } from "node:child_process";
+import { execFileSync as execFileSync15 } from "node:child_process";
 function worktreeCommand(argv) {
   const action = argv[0];
   const dir = flag(argv, "--dir");
@@ -24058,7 +23569,7 @@ function worktreeCommand(argv) {
   }
   let sha;
   try {
-    sha = execFileSync17("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    sha = execFileSync15("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     console.error(`--head ${head} is not a commit in this clone. Fetch it and run again.`);
     return 2;
@@ -24078,20 +23589,20 @@ import { readFileSync as readFileSync20, writeFileSync as writeFileSync6, mkdirS
 import { join as join23 } from "node:path";
 
 // plugins/review-voice/src/diff/prior.ts
-import { execFileSync as execFileSync18 } from "node:child_process";
-function git5(args, cwd) {
-  return execFileSync18("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
+import { execFileSync as execFileSync16 } from "node:child_process";
+function git4(args, cwd) {
+  return execFileSync16("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
 }
 function resolveCommit(ref, cwd) {
   try {
-    return git5(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd).trim() || null;
+    return git4(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd).trim() || null;
   } catch {
     return null;
   }
 }
 function originRepository2(cwd) {
   try {
-    const url = git5(["remote", "get-url", "origin"], cwd).trim();
+    const url = git4(["remote", "get-url", "origin"], cwd).trim();
     return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
   } catch {
     return null;
@@ -24103,7 +23614,7 @@ function resolveSince(since, repository, cwd) {
   if (!/^[0-9a-f]{7,64}$/i.test(since)) return null;
   if (originRepository2(cwd)?.toLowerCase() !== repository.toLowerCase()) return null;
   try {
-    git5(["fetch", "--no-tags", "--quiet", "origin", since], cwd);
+    git4(["fetch", "--no-tags", "--quiet", "origin", since], cwd);
   } catch {
     return null;
   }
@@ -24118,7 +23629,7 @@ function fetchPriorHead(sha, repository, cwd) {
   }
   const args = ["fetch", "--no-tags", "--quiet", "origin", sha];
   try {
-    execFileSync18("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
+    execFileSync16("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
     return null;
   } catch (error) {
     return gitFailure(args, error);
@@ -24451,6 +23962,285 @@ async function threadCommand(argv) {
 // plugins/review-voice/src/cli/symbols.ts
 import { readFileSync as readFileSync21, writeFileSync as writeFileSync8 } from "node:fs";
 
+// plugins/review-voice/src/scoring/existence.ts
+import { execFileSync as execFileSync17 } from "node:child_process";
+var ASSERTS_ABSENCE = [
+  /\b(?:does|do)\s+not\s+exist\b/i,
+  /\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)\b/i,
+  /\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)\b/i,
+  /\bnever\s+(?:defined|declared|exported)\b/i,
+  /\bcannot\s+be\s+found\b/i,
+  /\bnowhere\s+in\s+the\s+(?:repo|repository|codebase)\b/i
+];
+var DETERMINER = /^(?:the|this|that|these|those|our|your|their|its|his|her|my|a|an)\s+/i;
+function withoutDeterminer(complement) {
+  let text4 = complement.trim().replace(/[`'"]/g, "");
+  for (let i = 0; i < 3; i += 1) text4 = text4.replace(DETERMINER, "");
+  return text4.trim();
+}
+var GENERIC_REPOSITORY = /^(?:entire\s+|whole\s+)?(?:mono)?(?:repo|repository|code\s?base|project|tree)\b/i;
+var NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
+var NAMED_UNIT_SUFFIX = /^(?:the\s+)?\S+\s+(?:repo|repository|service|package|library)\b/i;
+var ANOTHER_UNIT = /^(?:another|a\s+different|a\s+sibling|the\s+other)\s+(?:repo|repository|package|service)\b/i;
+var ABSENCE_WITH_COMPLEMENT = /\b(?:does|do)\s+not\s+exist|\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)|\bno\s+such\s+(?:file|symbol|function|component|hook|module|export)|\bnever\s+(?:defined|declared|exported)|\bcannot\s+be\s+found/i;
+var LOCATIVE = /\b(?:in|from|within|under|inside|throughout|across)\s+([^.,;]+)/i;
+function namesThisRepository(complement, repository) {
+  if (repository === null) return false;
+  const candidates = [repository, repository.split("/").pop() ?? repository].map((name) => name.trim().toLowerCase()).filter((name) => name.length > 0);
+  const said = withoutDeterminer(complement).toLowerCase();
+  return candidates.some(
+    (name) => [name, `${name} repository`, `${name} repo`, `${name} monorepo`, `${name} codebase`].includes(said)
+  );
+}
+var PROPERTY_NOT_PLACE = /\b(?:ex|im)ported\b|\bnot\s+(?:public|exposed|re-?exported)\b/i;
+function absenceScope(text4, repository = null) {
+  if (PROPERTY_NOT_PLACE.test(text4)) return "bounded";
+  if (/\b(?:anywhere|nowhere)\b/i.test(text4)) return "repository";
+  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text4);
+  if (assertion === null) return "repository";
+  const after = text4.slice(assertion.index + assertion[0].length);
+  const locative = LOCATIVE.exec(after);
+  if (locative === null) return "repository";
+  const complement = (locative[1] ?? "").trim();
+  const bare = withoutDeterminer(complement);
+  if (GENERIC_REPOSITORY.test(bare)) return "repository";
+  if (namesThisRepository(complement, repository)) return "repository";
+  if (ANOTHER_UNIT.test(complement) || NAMED_UNIT.test(bare) || NAMED_UNIT_SUFFIX.test(bare)) {
+    return "elsewhere";
+  }
+  return "bounded";
+}
+function namedSymbols(text4) {
+  const found = /* @__PURE__ */ new Set();
+  for (const match of text4.matchAll(/`([^`]+)`/g)) {
+    const token = (match[1] ?? "").trim();
+    if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found.add(token);
+  }
+  for (const match of text4.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
+    if (match[1] !== void 0) found.add(match[1]);
+  }
+  for (const match of text4.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
+    if (match[1] !== void 0) found.add(match[1]);
+  }
+  for (const token of [...found]) {
+    const base = token.split("/").pop();
+    if (base !== void 0 && base !== token && base.length >= 4 && !base.startsWith("-")) found.add(base);
+  }
+  return [...found];
+}
+var gitGrep = (symbol, cwd, ref) => {
+  const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "-e", symbol] : ["grep", "--fixed-strings", "--quiet", "-e", symbol, ref];
+  try {
+    execFileSync17("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
+    return true;
+  } catch (error) {
+    if (error.status === 1) return false;
+    throw error;
+  }
+};
+var gitGrepPaths = (...search) => grepPaths(false, ...search);
+var gitGrepWordPaths = (...search) => grepPaths(true, ...search);
+var NOT_IDENTIFIER = "[^[:alnum:]_$]";
+function grepPaths(wholeIdentifier, ...[symbol, cwd, ref, timeoutMs]) {
+  const pattern = wholeIdentifier ? `(^|${NOT_IDENTIFIER})${symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(${NOT_IDENTIFIER}|$)` : symbol;
+  const args = [
+    "grep",
+    wholeIdentifier ? "--extended-regexp" : "--fixed-strings",
+    "--full-name",
+    "-l",
+    "-z",
+    "-e",
+    pattern,
+    ...ref === null ? [] : [ref]
+  ];
+  try {
+    const output = execFileSync17("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
+    const prefix = ref === null ? "" : `${ref}:`;
+    return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
+  } catch (error) {
+    if (error.status === 1) return [];
+    throw error;
+  }
+}
+var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
+  const [first, second] = patterns;
+  const args = ref === null ? ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second] : ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second, ref];
+  try {
+    const output = execFileSync17("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: Math.min(1e4, timeoutMs ?? 1e4),
+      maxBuffer: 32 * 1024 * 1024
+    });
+    const prefix = ref === null ? "" : `${ref}:`;
+    const lines2 = [];
+    for (const record3 of output.split("\n")) {
+      const [rawPath = "", number = "", ...rest] = record3.split("\0");
+      const line3 = Number(number);
+      const text4 = rest.join("\0");
+      if (!Number.isSafeInteger(line3) || line3 < 1) continue;
+      lines2.push({
+        path: prefix !== "" && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
+        line: line3,
+        text: text4
+      });
+    }
+    return lines2;
+  } catch (error) {
+    if (error.status === 1) return [];
+    throw error;
+  }
+};
+var gitTrackedPaths = (cwd, ref) => {
+  const args = ref === null ? ["ls-files", "-z", "--full-name", "--", ":/"] : ["ls-tree", "-r", "-z", "--name-only", "--full-tree", ref];
+  const output = execFileSync17("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 1e4,
+    maxBuffer: 64 * 1024 * 1024
+  });
+  return output.split("\0").filter((path) => path.length > 0);
+};
+var RESOURCE_PATHSPECS = [
+  ":(glob)**/*.resx",
+  ":(glob)**/*.resw",
+  ":(glob)**/*.po",
+  ":(glob)**/*.xlf",
+  ":(glob)**/*.xliff",
+  ":(glob)**/*.arb",
+  ":(glob)**/locales/**",
+  ":(glob)**/i18n/**"
+];
+var gitResourceSources = (cwd) => {
+  try {
+    const output = execFileSync17("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1e4,
+      maxBuffer: 16 * 1024 * 1024
+    });
+    return output.split("\0").filter((path) => path.length > 0);
+  } catch {
+    return [];
+  }
+};
+var GENERATED_ACCESSOR = [
+  /^R\.[a-z]+\.[a-z_]\w*$/,
+  /^(?:\w+\.)*\w*(?:Resources|Resource|Strings)\.[A-Z]\w*$/,
+  /^(?:S|AppLocalizations)\.of\([^)]*\)\.\w+$/,
+  /^(?:L10n|l10n)\.[A-Za-z_]\w*$/
+];
+var FILE_NAME = /\.(?:tsx?|jsx?|mjs|cjs|cs|py|go|rb|java|kt|rs|swift|dart|json|ya?ml|md|xml|resx|resw|po|xlf|xliff|arb)$/i;
+function isPath(symbol) {
+  return symbol.includes("/") || FILE_NAME.test(symbol);
+}
+var LOOSE_ABSENCE = [
+  /\b(?:does|do|did)\s*(?:not|n't)\s+exist|\bmissing\b|\babsent\b|\b(?:deleted|removed)\b|\bnot\s+(?:found|present)\b/i
+];
+var CLAUSE_BREAK = /[.;!?](?=\s|$)|\b(?:which|that|who|but|whereas|while)\b/gi;
+function tiedToAbsence(text4, symbols) {
+  const strict = tiedBy(ASSERTS_ABSENCE, text4, symbols);
+  return strict.size > 0 ? strict : tiedBy(LOOSE_ABSENCE, text4, symbols);
+}
+function tiedBy(phrases, text4, symbols) {
+  const masked = text4.replace(/`[^`]*`/g, (span) => `\`${"x".repeat(span.length - 2)}\``);
+  const starts = [0];
+  for (const match of masked.matchAll(CLAUSE_BREAK)) {
+    starts.push(match[0].length === 1 ? match.index + 1 : match.index);
+  }
+  starts.push(text4.length);
+  const occurrences = symbols.flatMap((symbol) => {
+    const at2 = [];
+    for (let index = text4.indexOf(symbol); index !== -1; index = text4.indexOf(symbol, index + 1)) {
+      if (text4[index - 1] !== "/") at2.push({ symbol, index });
+    }
+    return at2;
+  });
+  const tied = /* @__PURE__ */ new Set();
+  for (let i = 0; i + 1 < starts.length; i += 1) {
+    const start = starts[i] ?? 0;
+    const end = starts[i + 1] ?? text4.length;
+    const clause = masked.slice(start, end);
+    if (!phrases.some((phrase) => phrase.test(clause))) continue;
+    const inClause = occurrences.filter(({ index }) => index >= start && index < end);
+    if (inClause.length > 0) {
+      for (const { symbol } of inClause) tied.add(symbol);
+    } else if (/^\s*(?:which|that|who)\b/i.test(clause)) {
+      let antecedent;
+      for (const occurrence of occurrences) {
+        if (occurrence.index < start && (antecedent === void 0 || occurrence.index > antecedent.index)) {
+          antecedent = occurrence;
+        }
+      }
+      if (antecedent !== void 0) tied.add(antecedent.symbol);
+    }
+  }
+  return tied;
+}
+function generatedAccessor(symbol) {
+  return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
+}
+function checkAbsenceClaim(text4, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths) {
+  const searchedRefLabel = ref ?? "working tree";
+  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text4))) return null;
+  const scope = absenceScope(text4, repository);
+  if (scope === "bounded") return null;
+  if (scope === "elsewhere") {
+    return {
+      found: [],
+      checked: [],
+      // Not silence. An empty `found` with `inconclusive: false` is the shape
+      // that reads as corroboration, and this repository cannot speak for
+      // another one.
+      inconclusive: true,
+      searchedRef: searchedRefLabel
+    };
+  }
+  const stated = namedSymbols(text4).filter(
+    (symbol) => text4.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
+  );
+  const tied = tiedToAbsence(text4, stated);
+  const symbols = stated.filter((symbol) => !isPath(symbol) || tied.size === 0 || tied.has(symbol));
+  if (symbols.length === 0) return null;
+  const searchedRef = ref ?? "working tree";
+  const found = [];
+  const checked = [];
+  let paths = null;
+  for (const symbol of symbols.slice(0, 12)) {
+    try {
+      checked.push(symbol);
+      if (isPath(symbol)) {
+        paths ??= trackedPaths(cwd, ref);
+        const path = symbol.replace(/^\.?\//, "").replace(/\/$/, "");
+        const exists = path.includes("/") ? paths.some((tracked) => tracked === path || tracked.startsWith(`${path}/`)) : paths.some((tracked) => tracked === path || tracked.endsWith(`/${path}`));
+        if (exists) found.push(symbol);
+      } else if (search(symbol, cwd, ref)) {
+        found.push(symbol);
+      }
+    } catch {
+      return { found: [], checked, inconclusive: true, searchedRef };
+    }
+  }
+  if (found.length === 0) {
+    const accessor = checked.find(generatedAccessor);
+    const sources = accessor === void 0 ? resources(cwd) : [];
+    if (accessor !== void 0 || sources.length > 0) {
+      const why = accessor !== void 0 ? `\`${accessor}\` is shaped like a generated resource accessor` : `the repository tracks resource sources (${sources.slice(0, 3).join(", ")}${sources.length > 3 ? ", ..." : ""})`;
+      return {
+        found,
+        checked,
+        inconclusive: true,
+        searchedRef,
+        reason: `${why}, so the name may be generated at build time; finding it nowhere tracked does not show it is absent`
+      };
+    }
+  }
+  return { found, checked, inconclusive: false, searchedRef };
+}
+
 // plugins/review-voice/src/diff/declarations.ts
 var IDENTIFIER = "[A-Za-z_$][A-Za-z0-9_$]*";
 var PREFIX = "(?:(?:export|default|declare|public|private|protected|static|abstract|override|readonly)\\s+)*";
@@ -24561,14 +24351,14 @@ function declarationSearchTokens(name) {
   const second = longest[1]?.token;
   return first === void 0 || second === void 0 ? null : [first, second];
 }
-function normalisePath3(path) {
+function normalisePath2(path) {
   return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
 }
 function headerPath4(raw) {
   const field = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
   const path = unquoteGitPath(field.trimEnd());
   if (path === "/dev/null") return null;
-  return normalisePath3(path.replace(/^[ab]\//, ""));
+  return normalisePath2(path.replace(/^[ab]\//, ""));
 }
 function hunkHeader2(line3) {
   const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line3);
@@ -24629,6 +24419,173 @@ function declarationsFromDiff(diff) {
     if (header !== null) active = header;
   }
   return found;
+}
+
+// plugins/review-voice/src/scoring/reach.ts
+function symbolsFromHunks(diff, changedPath) {
+  const wanted = changedPath === null ? null : normalisePath3(changedPath);
+  const found = /* @__PURE__ */ new Set();
+  let inFile = false;
+  for (const raw of diff.split(/\r?\n/)) {
+    if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
+      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
+      if (match?.[1] !== void 0) inFile = wanted === null || normalisePath3(match[1]) === wanted;
+      else if (raw.startsWith("diff --git ")) inFile = false;
+      continue;
+    }
+    if (!inFile) continue;
+    if (raw.startsWith("--- ")) continue;
+    if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
+    const text4 = raw.slice(1);
+    for (const m of text4.matchAll(
+      /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g
+    )) {
+      if (m[1] !== void 0) found.add(m[1]);
+    }
+  }
+  return [...found];
+}
+var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
+  /(?:^|\/)(?:eslint\.config\.[^/]+|\.eslintrc(?:\.[^/]+)?|biome\.json|\.stylelintrc(?:\.[^/]+)?|\.prettierrc(?:\.[^/]+)?)$/i,
+  /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/i,
+  /^(?:\.github\/workflows\/|\.gitlab-ci(?:\.yml)?$|\.circleci\/config\.yml$|azure-pipelines(?:\.[^/]+)?\.ya?ml$|Jenkinsfile$)/i,
+  /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|Pipfile\.lock|composer\.lock|go\.sum)$/i,
+  /^(?:package\.json|Makefile|GNUmakefile|justfile|Taskfile\.ya?ml|turbo\.json|nx\.json)$/i,
+  /^(?:scripts|tools|build|bin)\//i
+];
+function normalisePath3(path) {
+  return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+}
+function directoryOf(path) {
+  const parts = normalisePath3(path).split("/");
+  parts.pop();
+  return parts.join("/");
+}
+function directoryCount(paths) {
+  return new Set([...paths].map(directoryOf)).size;
+}
+var PROSE_EXTENSIONS = /* @__PURE__ */ new Set(["md", "markdown", "mdx", "txt", "rst", "adoc"]);
+function isCode(path) {
+  const name = normalisePath3(path).split("/").pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  const extension = dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
+  if (PROSE_EXTENSIONS.has(extension)) return false;
+  return classify(normalisePath3(path)) === "source";
+}
+var NON_DISCRIMINATING_DIRECTORIES = 12;
+var IMPORT_LINE = [
+  /^import\s+(?:type\s+)?(?:[\w$*{}\s,]+\s+from\s+)?['"][^'"]+['"]\s*;?$/,
+  /^from\s+[\w.]+\s+import\s+[\w*,\s()]+$/,
+  /^import\s+[\w.]+(?:\s+as\s+\w+)?(?:\s*,\s*[\w.]+(?:\s+as\s+\w+)?)*$/,
+  /^import\s+(?:static\s+)?[\w.]+(?:\.\*)?;?$/
+];
+function isImportOnlyChange(diff, changedPath) {
+  const wanted = normalisePath3(changedPath);
+  let inFile = false;
+  let imports = 0;
+  for (const raw of diff.split(/\r?\n/)) {
+    if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
+      const match = /^\+\+\+ [ab]\/(.+)$/.exec(raw);
+      if (match?.[1] !== void 0) inFile = normalisePath3(match[1]) === wanted;
+      else if (raw.startsWith("diff --git ")) inFile = false;
+      continue;
+    }
+    if (!inFile || raw.startsWith("--- ")) continue;
+    if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
+    const text4 = raw.slice(1).trim();
+    if (text4 === "") continue;
+    if (!IMPORT_LINE.some((pattern) => pattern.test(text4))) return false;
+    imports += 1;
+  }
+  return imports > 0;
+}
+function withinSubtree(path, changedDirectory) {
+  if (changedDirectory === "") return false;
+  const normalised = normalisePath3(path);
+  return normalised === changedDirectory || normalised.startsWith(`${changedDirectory}/`);
+}
+function isRepositoryWideToolchainPath(path) {
+  const normalised = normalisePath3(path);
+  return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
+}
+function computeReach(text4, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
+  const searchedRef = ref ?? "working tree";
+  const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
+  const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
+  const source = ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
+  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text4)).slice(0, 12);
+  const searched = [];
+  const ignored = [];
+  const hits = /* @__PURE__ */ new Set();
+  let usedModuleFallback = false;
+  const normalisedChangedPath = normalisePath3(changedPath);
+  const changedDirectory = directoryOf(changedPath);
+  const result = (reach, inconclusive) => {
+    const counted2 = [...hits].filter(isCode).sort();
+    const outside = counted2.filter(
+      (path) => normalisePath3(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
+    );
+    return {
+      reach,
+      symbolSource: source,
+      moduleFallback: usedModuleFallback,
+      symbols: searched,
+      ignoredSymbols: [...ignored].sort(),
+      paths: [...hits].sort(),
+      countedPaths: counted2,
+      directoryCount: directoryCount(counted2),
+      outsideDirectoryCount: directoryCount(outside),
+      inconclusive,
+      searchedRef
+    };
+  };
+  if (symbols.length === 0) return result(null, false);
+  if (diff !== null && isImportOnlyChange(diff, changedPath)) return result(null, false);
+  for (const symbol of symbols) {
+    searched.push(symbol);
+    let found;
+    try {
+      found = search(symbol, cwd, ref);
+    } catch {
+      return result(null, true);
+    }
+    const code = found.filter(isCode);
+    if (source !== "diff" && !code.some((path) => normalisePath3(path) === normalisedChangedPath)) {
+      ignored.push(symbol);
+      continue;
+    }
+    if (directoryCount(code) > NON_DISCRIMINATING_DIRECTORIES) {
+      ignored.push(symbol);
+      continue;
+    }
+    for (const path of found) hits.add(path);
+  }
+  if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
+  let counted = [...hits].filter(isCode);
+  if (counted.length === 0 && source !== "claim") {
+    const moduleName = normalisePath3(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
+    if (moduleName !== void 0 && moduleName.length >= 4) {
+      searched.push(moduleName);
+      try {
+        for (const path of search(moduleName, cwd, ref)) hits.add(path);
+      } catch {
+        return result(null, true);
+      }
+      counted = [...hits].filter(isCode);
+      usedModuleFallback = counted.length > 0;
+    }
+  }
+  if (counted.length === 0) return result(null, false);
+  if (counted.every((path) => normalisePath3(path) === normalisedChangedPath)) {
+    return result("local", false);
+  }
+  const outsideDirectories = directoryCount(
+    counted.filter(
+      (path) => normalisePath3(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
+    )
+  );
+  if (outsideDirectories >= 2) return result("repository", false);
+  return result("component", false);
 }
 
 // plugins/review-voice/src/diff/symbols.ts
@@ -25968,7 +25925,7 @@ function checkSimplificationCommand(argv) {
 // plugins/review-voice/src/cli/verify.ts
 import { statSync as statSync8 } from "node:fs";
 import { resolve as resolve8 } from "node:path";
-import { execFileSync as execFileSync19 } from "node:child_process";
+import { execFileSync as execFileSync18 } from "node:child_process";
 
 // plugins/review-voice/src/verify/external.ts
 var DEFAULT_TIMEOUT_SECONDS2 = 90;
@@ -26186,7 +26143,7 @@ async function verifyCommand(argv) {
     const commitOf = (ref) => {
       if (ref === null) return null;
       try {
-        return execFileSync19("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        return execFileSync18("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
         console.error(`${ref} does not resolve to a commit here, so the verification command is not told about it.`);
         return null;
@@ -27692,7 +27649,53 @@ ${error.message}`);
   }
 }
 
-// plugins/review-voice/src/cli.ts
+// plugins/review-voice/src/cli/score.ts
+import { readFileSync as readFileSync30 } from "node:fs";
+import { execFileSync as execFileSync20 } from "node:child_process";
+
+// plugins/review-voice/src/scoring/citation.ts
+import { execFileSync as execFileSync19 } from "node:child_process";
+function git5(args, cwd) {
+  return execFileSync19("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 1e4
+  });
+}
+function normalise2(path) {
+  return path.replaceAll("\\", "/").replace(/^\.\/+/, "");
+}
+function pathsInDiff(diff) {
+  const paths = /* @__PURE__ */ new Set();
+  for (const match of diff.matchAll(/^\+\+\+ [ab]\/(.+)$/gm)) {
+    if (match[1] !== void 0 && match[1] !== "/dev/null") paths.add(normalise2(match[1]));
+  }
+  return paths;
+}
+function checkCitation(candidatePath, cwd, ref, diff) {
+  const wanted = normalise2(candidatePath);
+  if (wanted.length === 0) return { resolves: false, suggestion: null, inconclusive: false };
+  if (diff !== null && pathsInDiff(diff).has(wanted)) {
+    return { resolves: true, suggestion: null, inconclusive: false };
+  }
+  let tracked;
+  try {
+    const args = ref === null ? ["ls-files"] : ["ls-tree", "-r", "--name-only", ref];
+    tracked = git5(args, cwd).split("\n").filter((line3) => line3.length > 0);
+  } catch {
+    return { resolves: false, suggestion: null, inconclusive: true };
+  }
+  if (tracked.includes(wanted)) return { resolves: true, suggestion: null, inconclusive: false };
+  const lowered = wanted.toLowerCase();
+  const nearest = tracked.find((path) => path.toLowerCase() === lowered);
+  if (nearest !== void 0) return { resolves: false, suggestion: nearest, inconclusive: false };
+  const base = wanted.split("/").pop();
+  const sameName = base === void 0 ? void 0 : tracked.find((path) => path.split("/").pop() === base);
+  return { resolves: false, suggestion: sameName ?? null, inconclusive: false };
+}
+
+// plugins/review-voice/src/cli/score.ts
 function withSnakeCaseId(entry) {
   if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
   const out = {};
@@ -28310,6 +28313,15 @@ function gateOf(rejectedBecause) {
   if (rejectedBecause.startsWith("technical confidence ")) return "confidence";
   return null;
 }
+function configuredOwner() {
+  try {
+    return loadConfig(repositoryRoot(process.cwd())).ownerReviewer;
+  } catch {
+    return null;
+  }
+}
+
+// plugins/review-voice/src/cli.ts
 function carriedHeldFindings(runId, head) {
   const db = openDatabase();
   try {
@@ -28363,7 +28375,7 @@ function matchHeld(candidate, held) {
   return best === null ? null : { entry: best.entry, drop: false };
 }
 function readSignals(file2, root) {
-  const document = JSON.parse(readFileSync30(file2, "utf8"));
+  const document = JSON.parse(readFileSync31(file2, "utf8"));
   if (typeof document !== "object" || document === null || Array.isArray(document)) throw new Error("not a JSON object");
   const signals = document.signals;
   if (signals === void 0) return [];
@@ -28408,13 +28420,6 @@ function matchSignal(candidate, signals) {
 function mentions(text4, name) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(^|[^\\w$-])${escaped}(?![\\w$-])`).test(text4);
-}
-function configuredOwner() {
-  try {
-    return loadConfig(repositoryRoot(process.cwd())).ownerReviewer;
-  } catch {
-    return null;
-  }
 }
 function markSiblings(kept) {
   const facts = kept.map((entry) => ({
@@ -28471,7 +28476,7 @@ function checkCandidatesCommand(argv) {
       }
       let ids;
       try {
-        const statements = JSON.parse(readFileSync30(intentFile, "utf8")).statements;
+        const statements = JSON.parse(readFileSync31(intentFile, "utf8")).statements;
         if (!Array.isArray(statements)) throw new Error("statements is not a list");
         ids = new Set(statements.map((statement) => statement?.id).filter((id) => typeof id === "string"));
       } catch (error) {
@@ -28502,7 +28507,7 @@ function checkCandidatesCommand(argv) {
     }
     let hunks;
     try {
-      hunks = parseHunks(readFileSync30(diffFile, "utf8"));
+      hunks = parseHunks(readFileSync31(diffFile, "utf8"));
     } catch (error) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -28577,7 +28582,7 @@ function checkCandidatesCommand(argv) {
         return 2;
       }
       try {
-        const parsed2 = JSON.parse(readFileSync30(threadFile, "utf8"));
+        const parsed2 = JSON.parse(readFileSync31(threadFile, "utf8"));
         thread = Array.isArray(parsed2) ? parsed2 : parsed2.comments ?? [];
         if (!Array.isArray(thread)) throw new Error("comments is not a list");
       } catch (error) {
