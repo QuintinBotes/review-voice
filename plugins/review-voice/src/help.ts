@@ -401,9 +401,10 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       'Flags:',
       '  --json                 Emit the metrics as JSON, with posted-finding outcomes by severity and lane',
       '  --recall <results.json>  Also report the fixture recall figures from a file `review-voice recall` wrote',
+      '  --since <Nd>           Window in days for posted_fixed_rate_recent and posted_dismissed_rate_recent (default 30d)',
       'Reads: nothing on stdin; the local store, and the results file with --recall.',
-      'Writes: text (or JSON) on stdout.',
-      'Exit codes: 0 ok, 2 bad invocation (a missing or malformed results file).',
+      'Writes: text (or JSON) on stdout; --json also carries stage_seconds, the median and p95 seconds per stage.',
+      'Exit codes: 0 ok, 2 bad invocation.',
     ),
   },
   recall: {
