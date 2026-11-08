@@ -60,6 +60,12 @@ refuses with exit 2, because there is no approval to re-check.
   checks. It is appended to the posted body, each line on its own, and it is
   in the preview. It is not part of the idempotency key, so a CI change on
   the same head does not make the same review a second post.
+  With `verdict.scope_block: true`, the body and preview also carry a collapsed
+  Review scope block and a JSON comment from the recorded run, before these
+  annotation lines. It names the head, scope, origin, stages and checks, and
+  posts only counts of held claims. Model ids appear only with
+  `verdict.scope_block_models: true`. Both settings default to `false`; the
+  block is also outside the idempotency key.
 - **A carry.** `action: "carry"` means the scope is unchanged since the
   commit the owner approved, that approval still stands, and this review
   would approve anyway. `event` and `payload` are null, exit 0, and there is

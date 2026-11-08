@@ -798,15 +798,20 @@ export function scopeBlock(
   const originPart =
     provenance === null ? `Origin: ${NOT_RECORDED}.` : `Origin: ${safeCheckName(provenance.origin)} (${safeCheckName(provenance.independence)}).`;
 
+  // A name from configuration or the store is rendered as inline code, as the
+  // CI annotations render check names: `safeCheckName` has removed backticks,
+  // so nothing in it can close the code span, and inside one no markup
+  // renders, so a check named `</details><h1>...` cannot escape the block.
+  const code = (name: string): string => `\`${name}\``;
   const stageNames = run.stages.flatMap((stage) => {
     if (typeof stage.name !== 'string' || safeCheckName(stage.name) === '') return [];
-    const name = safeCheckName(stage.name);
+    const name = code(safeCheckName(stage.name));
     if (!policy.scopeBlockModels) return [name];
     const models = [...new Set([...(Array.isArray(stage.models) ? stage.models : []), ...(typeof stage.model === 'string' ? [stage.model] : [])])]
       .filter((model): model is string => typeof model === 'string')
       .map(safeCheckName)
       .filter((model) => model !== '');
-    return [models.length === 0 ? name : `${name} (${[...new Set(models)].join(', ')})`];
+    return [models.length === 0 ? name : `${name} (${[...new Set(models)].map(code).join(', ')})`];
   });
   const stagesLine = `Stages: ${stageNames.length === 0 ? NOT_RECORDED : stageNames.join(', ')}.`;
 
@@ -816,9 +821,9 @@ export function scopeBlock(
   if (checks !== null) {
     const parts = [
       ...checks.staticRan.map(
-        (check) => `${safeCheckName(check.name)} ran (exit ${check.exitCode ?? 'none'}, ${plural(check.signals, 'signal')})`,
+        (check) => `${code(safeCheckName(check.name))} ran (exit ${check.exitCode ?? 'none'}, ${plural(check.signals, 'signal')})`,
       ),
-      ...checks.staticDidNotRun.map((check) => `${safeCheckName(check.name)} did not run (${safeCheckName(check.reason)})`),
+      ...checks.staticDidNotRun.map((check) => `${code(safeCheckName(check.name))} did not run (${code(safeCheckName(check.reason))})`),
     ];
     staticLine = `Static checks: ${parts.length === 0 ? 'none configured' : parts.join('; ')}.`;
     symbolLine =
@@ -829,6 +834,10 @@ export function scopeBlock(
   }
 
   const held = heldCounts(run.held);
+  // A recorded finding the posting step withheld (no score for it, say) was
+  // not posted either, and a block that said "nothing held back" over it
+  // would be false. It has no held verdict of its own, so it counts as other.
+  held.other += planned.held.length;
   const notPosted = [
     held.unverified > 0 ? plural(held.unverified, 'unverified claim') : null,
     held.belowGate > 0 ? `${held.belowGate} below the gate` : null,

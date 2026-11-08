@@ -1590,6 +1590,112 @@ function buildPayload(input) {
 function withAnnotations(body, annotations) {
   return [body, ...annotations].join("\n\n");
 }
+function heldCounts(held) {
+  const counts = { unverified: 0, belowGate: 0, challenge: 0, restatesTool: 0, policySuppressed: 0, other: 0 };
+  for (const entry of held) {
+    switch (entry.verdict) {
+      case "unverified":
+        counts.unverified += 1;
+        break;
+      case "below-gate":
+        counts.belowGate += 1;
+        break;
+      case "challenge-refuted":
+      case "challenge-partly":
+        counts.challenge += 1;
+        break;
+      case "restates-tool":
+        counts.restatesTool += 1;
+        break;
+      case "policy-suppressed":
+        counts.policySuppressed += 1;
+        break;
+      default:
+        counts.other += 1;
+    }
+  }
+  return counts;
+}
+var NOT_RECORDED = "not recorded";
+var FULL_SHA = /^[0-9a-f]{40,64}$/i;
+var NEVER_CHECKED = ["UI behaviour", "product policy", "load behaviour"];
+function scopeBlock(run, planned, policy) {
+  const head = run.headRef;
+  const fullHead = head !== null && FULL_SHA.test(head) ? head.toLowerCase() : null;
+  const provenance = run.provenance;
+  const checks = run.checks;
+  const headPart = head === null || safeCheckName(head) === "" ? `Head ${NOT_RECORDED}` : `Head \`${safeCheckName(head).slice(0, 7)}\``;
+  const scopePart = run.scope === null ? `scope ${NOT_RECORDED}` : `${run.scope.kind} scope`;
+  const modePart = provenance?.mode == null ? `mode ${NOT_RECORDED}` : `${provenance.mode} mode`;
+  const originPart = provenance === null ? `Origin: ${NOT_RECORDED}.` : `Origin: ${safeCheckName(provenance.origin)} (${safeCheckName(provenance.independence)}).`;
+  const code = (name) => `\`${name}\``;
+  const stageNames = run.stages.flatMap((stage) => {
+    if (typeof stage.name !== "string" || safeCheckName(stage.name) === "") return [];
+    const name = code(safeCheckName(stage.name));
+    if (!policy.scopeBlockModels) return [name];
+    const models = [.../* @__PURE__ */ new Set([...Array.isArray(stage.models) ? stage.models : [], ...typeof stage.model === "string" ? [stage.model] : []])].filter((model) => typeof model === "string").map(safeCheckName).filter((model) => model !== "");
+    return [models.length === 0 ? name : `${name} (${[...new Set(models)].map(code).join(", ")})`];
+  });
+  const stagesLine = `Stages: ${stageNames.length === 0 ? NOT_RECORDED : stageNames.join(", ")}.`;
+  let staticLine = `Static checks: ${NOT_RECORDED}.`;
+  let symbolLine = `Symbol context: ${NOT_RECORDED}.`;
+  const notChecked = [...NEVER_CHECKED];
+  if (checks !== null) {
+    const parts = [
+      ...checks.staticRan.map(
+        (check) => `${code(safeCheckName(check.name))} ran (exit ${check.exitCode ?? "none"}, ${plural(check.signals, "signal")})`
+      ),
+      ...checks.staticDidNotRun.map((check) => `${code(safeCheckName(check.name))} did not run (${code(safeCheckName(check.reason))})`)
+    ];
+    staticLine = `Static checks: ${parts.length === 0 ? "none configured" : parts.join("; ")}.`;
+    symbolLine = checks.symbolsInconclusive === 0 ? "Symbol context: every changed file finished." : `Symbol context: ${plural(checks.symbolsInconclusive, "file")} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}.`;
+    if (checks.symbolsInconclusive > 0) notChecked.push("files the symbol search did not finish");
+  }
+  const held = heldCounts(run.held);
+  held.other += planned.held.length;
+  const notPosted = [
+    held.unverified > 0 ? plural(held.unverified, "unverified claim") : null,
+    held.belowGate > 0 ? `${held.belowGate} below the gate` : null,
+    held.challenge > 0 ? `${held.challenge} held by the challenger` : null,
+    held.restatesTool > 0 ? `${held.restatesTool} restating a static check` : null,
+    held.policySuppressed > 0 ? `${held.policySuppressed} suppressed by policy` : null,
+    held.other > 0 ? `${held.other} held for other reasons` : null
+  ].filter((part) => part !== null);
+  const posted = [...planned.inline, ...planned.unanchored];
+  const findings = Object.fromEntries(
+    ["blocking", "important", "minor", "nit", "question"].map((severity) => [
+      severity,
+      posted.filter((finding) => finding.severity === severity).length
+    ])
+  );
+  const facts = {
+    head: fullHead,
+    origin: provenance?.origin ?? null,
+    independence: provenance?.independence ?? null,
+    findings,
+    held,
+    checks: checks === null ? null : { ran: checks.staticRan.length, didNotRun: checks.staticDidNotRun.length }
+  };
+  const trailer = JSON.stringify(facts).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+  return [
+    "<details><summary>Review scope</summary>",
+    "",
+    `${headPart}, ${scopePart}, ${modePart}. ${originPart}`,
+    stagesLine,
+    staticLine,
+    symbolLine,
+    `Not posted: ${notPosted.length === 0 ? "nothing held back" : notPosted.join(", ")}.`,
+    `Not checked: ${notChecked.join(", ")}.`,
+    "",
+    "</details>",
+    `<!-- review-voice ${trailer} -->`
+  ].join("\n");
+}
+function withScopeBlock(body, block) {
+  return `${body}
+
+${block}`;
+}
 function replaceAnnotations(body, previous, next) {
   const suffix = previous.map((line3) => `
 
@@ -18957,7 +19063,8 @@ async function computeVerdict(options) {
     const sent = sentInline(options.db, options.repository, options.pullNumber, head);
     const comments = full2.comments.filter((comment) => !sent.has(commentSignature(comment)));
     alreadyInline = full2.comments.length - comments.length;
-    payload = { ...full2, body: withAnnotations(full2.body, decision.annotations), comments };
+    const body = policy.scopeBlock ? withScopeBlock(full2.body, scopeBlock(run, planned, policy)) : full2.body;
+    payload = { ...full2, body: withAnnotations(body, decision.annotations), comments };
     preview = renderPreview({
       repository: options.repository,
       pullNumber: options.pullNumber,

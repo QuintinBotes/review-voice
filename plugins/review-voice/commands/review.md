@@ -249,10 +249,12 @@ Report anything in `warnings` the same way.
 
 ## Step 1c - Collect static evidence
 
-Run `RV evidence`.
+Run `RV evidence > <tmpdir>/evidence.json` and keep the file for step 6, which
+records what the checks did; it is written even when static evidence is off,
+as a report that says nothing ran.
 
-If `enabled` is false, skip this step entirely and say nothing about it. Static
-checks are opt-in; their absence is not a finding.
+If `enabled` is false in that output, say nothing further about this step.
+Static checks are opt-in; their absence is not a finding.
 
 Pass `signals` to the `diff-analyst` as supporting evidence. The key is always
 present and is empty when collection is off. A signal is
@@ -905,7 +907,8 @@ stray directory and another project's notes took the reviewed count from 11 to
   so a finding step 4b moved carries its category at its new line, to a
   temporary file and pass it:
   `RV record --repository <owner/repo> --base <ref> --head <sha> --candidates <file>
-  --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --stages <file> --origin interactive` with the validated output on
+  --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --stages <file>
+  --evidence <tmpdir>/evidence.json --symbols <tmpdir>/symbols.json --origin interactive` with the validated output on
   stdin. `--origin interactive` is the default and is spelled out so the record says what it means:
   this review ran inside your own Claude Code session, which may be the session that wrote the
   change, so it is stored as not independent. `explain` and `status` show it. Only when step 3d produced a non-empty `bodyFindings` array, add

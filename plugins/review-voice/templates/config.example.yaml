@@ -162,6 +162,10 @@ verdict:
   # true turns every APPROVE into COMMENT, so approval is left to a person.
   # REQUEST_CHANGES is unchanged, and a needs-rerun hold still applies.
   never_approve: false
+  # The recorded scope and check counts help readers judge what the review covered.
+  scope_block: false
+  # Model ids stay private unless this is true and the scope block is enabled.
+  scope_block_models: false
   # true posts nothing when a clean approval's scope is unchanged since the
   # commit the owner approved and that approval still stands (it needs
   # identity.owner_reviewer).
