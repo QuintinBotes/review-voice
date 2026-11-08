@@ -1,0 +1,18 @@
+--- a/src/routes/widgets.ts
++++ b/src/routes/widgets.ts
+@@ -1,14 +1,13 @@
+ type Request = { role: string; id: string };
+ 
+ function requireRole(request: Request, role: string) {
+   return request.role === role;
+ }
+ 
+ function deleteWidget(widgets: Map<string, string>, id: string) {
+   return widgets.delete(id);
+ }
+ 
+ export function deleteWidgetRoute(request: Request, widgets: Map<string, string>) {
+-  if (requireRole(request, 'admin')) return deleteWidget(widgets, request.id);
+-  return false;
++  return deleteWidget(widgets, request.id);
+ }

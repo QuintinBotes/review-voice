@@ -50,6 +50,18 @@ export interface Language<Kind extends string = TypeEscapeKind> {
   rules: Rule<Kind>[];
   quotes: string;
   lineComment: string;
+  /**
+   * A second line-comment marker, for a language with two (PHP's `#` beside
+   * `//`). A `#` that opens `#[` is an attribute, not a comment, and is kept.
+   */
+  altLineComment?: string;
+  /**
+   * Whether `/.../` is a regular expression literal, whose contents are
+   * blanked like a string's so a keyword inside one is not read as code. What
+   * precedes the slash decides: after an operand (a name, a number, `)` or
+   * `]`) it divides.
+   */
+  regexLiterals?: boolean;
   blockComments: boolean;
   /** Code lines that name a type without using it, e.g. an import. */
   skip?: RegExp;
@@ -157,17 +169,53 @@ export function splitLine<Kind extends string>(text: string, language: Language<
     } else if (text.startsWith(language.lineComment, index)) {
       comment += text.slice(index);
       break;
+    } else if (language.altLineComment !== undefined && text.startsWith(language.altLineComment, index) && !text.startsWith('#[', index)) {
+      comment += text.slice(index);
+      break;
     } else if (language.blockComments && text.startsWith('/*', index)) {
       const end = text.indexOf('*/', index + 2);
       comment += `${text.slice(index, end === -1 ? undefined : end + 2)} `;
       if (end === -1) break;
       index = end + 1;
+    } else if (language.regexLiterals === true && char === '/' && opensRegex(code)) {
+      const end = regexEnd(text, index);
+      if (end === -1) {
+        code += char;
+        raw += char;
+      } else {
+        code += `/${' '.repeat(end - index - 1)}/`;
+        raw += text.slice(index, end + 1);
+        index = end;
+      }
     } else {
       code += char;
       raw += char;
     }
   }
   return { code, comment, raw };
+}
+
+// A slash after nothing, an operator, an opening bracket, a separator or a
+// keyword opens a regular expression; after an operand it divides.
+function opensRegex(before: string): boolean {
+  const trimmed = before.trimEnd();
+  if (trimmed === '' || /[(,=:[!&|?{};+\-*%<>~^]$/.test(trimmed)) return true;
+  return /(?:^|[^\w$.])(?:return|typeof|case|in|of|delete|void|throw|new|instanceof|do|else)$/.test(trimmed);
+}
+
+// The index of the slash closing the regular expression opened at `start`, or
+// -1 when the line has none. A slash after a backslash or inside a character
+// class does not close it.
+function regexEnd(text: string, start: number): number {
+  let inClass = false;
+  for (let index = start + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '\\') index += 1;
+    else if (inClass) inClass = char !== ']';
+    else if (char === '[') inClass = true;
+    else if (char === '/') return index;
+  }
+  return -1;
 }
 
 function kindsIn(text: string, language: Language): TypeEscapeKind[] {

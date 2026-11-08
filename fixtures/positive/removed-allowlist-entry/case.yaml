@@ -1,0 +1,10 @@
+name: removed-allowlist-entry
+asserts: >
+  Replacing the sole trusted origin with a wildcard allows requests from any
+  origin through the origin check.
+expect:
+  min_findings: 1
+  severity: blocking
+  path: src/security/origin-allowlist.ts
+  category: trust_boundary
+  line: 2

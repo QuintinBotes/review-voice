@@ -248,6 +248,16 @@ export function countHunks(diff: string, wanted: { has(path: string): boolean })
     if (!removed) hunk.decisionPoints += decisionPoints;
     hunk.branches.push({ scope, line: newLine, decisionPoints, removed });
   };
+  // A removal is anchored to the next surviving or added line. One that nothing
+  // follows in its hunk (the file's last lines were removed) would point past
+  // the end of the new file, so it takes the last surviving line instead, as
+  // `parseHunks` places a deletion site; a file emptied entirely takes line 1.
+  const finish = (): void => {
+    if (current === null) return;
+    for (const removed of current.removed) {
+      if (removed.line >= newLine) removed.line = Math.max(1, newLine - 1);
+    }
+  };
 
   for (const raw of diff.split('\n')) {
     const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
@@ -290,6 +300,7 @@ export function countHunks(diff: string, wanted: { has(path: string): boolean })
     }
 
     if (line.startsWith('diff --git ')) {
+      finish();
       path = null;
       current = null;
       remainingOld = 0;
@@ -302,6 +313,7 @@ export function countHunks(diff: string, wanted: { has(path: string): boolean })
     }
     const header = HUNK_HEADER.exec(line);
     if (header !== null && path !== null) {
+      finish();
       remainingOld = header[1] === undefined ? 1 : Number(header[1]);
       remainingNew = header[3] === undefined ? 1 : Number(header[3]);
       current = { path, line: Number(header[2]), decisionPoints: 0, branches: [], added: [], removed: [] };
@@ -312,6 +324,7 @@ export function countHunks(diff: string, wanted: { has(path: string): boolean })
       if (wanted.has(path)) hunks.push(current);
     }
   }
+  finish();
   return hunks;
 }
 

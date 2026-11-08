@@ -60,7 +60,13 @@ input, and the untrusted-input rule above governs it.
 
 ## Structural evidence
 
-For a structural candidate, verify the cited shape and its named "and so"
+For an `authorization`, `security` or `trust_boundary` claim based on
+`removedControls`, read the surrounding code and search the head to confirm
+that the control is absent before verifying the claim. A check re-established
+elsewhere means there is no finding. If the search finds nothing and the
+consequence cannot be traced, the claim remains a `question`.
+
+For the structural patterns below, verify the cited shape and its named "and so"
 consequence; reject a preference with no nameable consequence. These are
 `maintainability` claims, except independent serialized awaits, which are
 `performance`; keep one structural finding rather than adjacent naming nits.

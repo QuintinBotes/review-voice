@@ -296,13 +296,18 @@ function readDeletedFiles(
   files: readonly ChangedFile[],
   deletedProduction: readonly string[],
   sides: ChangeSides,
+  mode: MeasuredChange['mode'],
 ): DeletedFile[] {
   if (sides.base === null) return [];
   const specs = new Map<string, string>();
   for (const path of deletedProduction) {
     const file = files.find((entry) => entry.status === 'deleted' && entry.path === path);
     const source = file?.previousPath ?? path;
-    if (!source.includes('\n')) specs.set(path, `${sides.base}:${source}`);
+    // A working-tree diff is taken against the index, so a file deleted there
+    // held what the index holds, which may differ from the head commit when a
+    // change to it was staged first.
+    const side = mode === 'worktree' ? '' : sides.base;
+    if (!source.includes('\n')) specs.set(path, `${side}:${source}`);
   }
   const blobs = readBlobs(root, [...new Set(specs.values())]);
   const read: DeletedFile[] = [];
@@ -339,7 +344,7 @@ export function collectStructure(
     const root = repositoryRoot(cwd);
     const sides = changeSides(root, change);
     counts = measureLines(root, files, paths, sides);
-    deletedFiles = readDeletedFiles(root, files, deletedProduction, sides);
+    deletedFiles = readDeletedFiles(root, files, deletedProduction, sides, change.mode);
   } catch {
     // Nothing measured.
   }

@@ -248,7 +248,7 @@ Both sides are read with one `git cat-file --batch`. The base is the commit the
 change starts from, the same one `.gitattributes` is read at, and a renamed
 file is measured at its previous path. A follow-up review starts from the head
 it last reviewed, so a crossing an earlier push made is not raised again, and
-a deleted file is not measured at all. The head is the working tree, the index
+a deleted file has no size crossing. The head is the working tree, the index
 or the head commit, depending on the mode. A side that cannot be read, such as
 a pull request whose head was not fetched, puts the file in `unmeasured`
 instead of treating it as small. "Production" means what the decision-point
@@ -304,6 +304,34 @@ ignore comments, and directives are read from comments only. It works a line at
 a time and does not follow multi-line strings. A file with any other extension
 gets no entries rather than a guess. The analyst treats an entry as a lead and
 needs to name the hidden invariant and the type that would carry it.
+
+The fourth is `removedControls`: `{ path, line, kind, text, deletedFile? }`
+for control-like lines removed from production source. Its five lexical kinds
+are `guard` (a conditional naming an access, validation or limit check),
+`refusal` (a throw, raise or return naming a refusal status or message),
+`decorator` (an access-control attribute or decorator), `middleware` (a route
+or middleware registration naming a control), and `allowlist-entry` (one
+element in a file or enclosing declaration named as an allowlist). The scanner
+shares quote and comment handling with `typeEscapes`. Guard keywords,
+decorators and middleware match code; guard conditions, refusals and list
+elements can use string contents. Comment-only lines and keywords confined to
+comments do not match. This is a line-by-line lexical signal, with no parser
+or tracking of multiline strings and block comments.
+
+A removed line whose text, with whitespace collapsed, is added back anywhere
+in the diff is netted out as a move, including additions in other files.
+Entries use the new-side deletion anchor, trim the text to 120 characters and
+keep at most 20 per file, earliest first. Wholly deleted production files are
+read from the base blob because they are absent from the reviewed patch;
+their entries use line 1 and `deletedFile: true`, as do the entries of a file
+emptied of every line, since neither has a surviving line to anchor on. Deleted
+files are skipped when the base side is unavailable or its blob cannot be read. Configured test paths and
+generated files are excluded by the same classification as other structural
+signals. The manifest and summary carry the same array. An entry is evidence
+only and does not change the verdict: the analyst must read the surrounding
+code and search the head for a re-established check, and the verifier must
+confirm its absence. A check found elsewhere yields no finding; an untraced
+consequence yields a question.
 
 `review.structure.simplify` defaults to `false`. When it is `true` (or a review
 is invoked with `--simplify`), the review command runs one additional analyst

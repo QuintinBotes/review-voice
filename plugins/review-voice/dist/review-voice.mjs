@@ -2425,6 +2425,12 @@ function countHunks(diff, wanted) {
     if (!removed) hunk.decisionPoints += decisionPoints;
     hunk.branches.push({ scope, line: newLine, decisionPoints, removed });
   };
+  const finish = () => {
+    if (current === null) return;
+    for (const removed of current.removed) {
+      if (removed.line >= newLine) removed.line = Math.max(1, newLine - 1);
+    }
+  };
   for (const raw of diff.split("\n")) {
     const line3 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (current !== null && (remainingOld > 0 || remainingNew > 0)) {
@@ -2462,6 +2468,7 @@ function countHunks(diff, wanted) {
       if (line3.startsWith("\\")) continue;
     }
     if (line3.startsWith("diff --git ")) {
+      finish();
       path = null;
       current = null;
       remainingOld = 0;
@@ -2474,6 +2481,7 @@ function countHunks(diff, wanted) {
     }
     const header = HUNK_HEADER.exec(line3);
     if (header !== null && path !== null) {
+      finish();
       remainingOld = header[1] === void 0 ? 1 : Number(header[1]);
       remainingNew = header[3] === void 0 ? 1 : Number(header[3]);
       current = { path, line: Number(header[2]), decisionPoints: 0, branches: [], added: [], removed: [] };
@@ -2483,6 +2491,7 @@ function countHunks(diff, wanted) {
       if (wanted.has(path)) hunks.push(current);
     }
   }
+  finish();
   return hunks;
 }
 function config(partial) {
@@ -2860,17 +2869,46 @@ function splitLine(text4, language2) {
     } else if (text4.startsWith(language2.lineComment, index)) {
       comment += text4.slice(index);
       break;
+    } else if (language2.altLineComment !== void 0 && text4.startsWith(language2.altLineComment, index) && !text4.startsWith("#[", index)) {
+      comment += text4.slice(index);
+      break;
     } else if (language2.blockComments && text4.startsWith("/*", index)) {
       const end = text4.indexOf("*/", index + 2);
       comment += `${text4.slice(index, end === -1 ? void 0 : end + 2)} `;
       if (end === -1) break;
       index = end + 1;
+    } else if (language2.regexLiterals === true && char === "/" && opensRegex(code)) {
+      const end = regexEnd(text4, index);
+      if (end === -1) {
+        code += char;
+        raw += char;
+      } else {
+        code += `/${" ".repeat(end - index - 1)}/`;
+        raw += text4.slice(index, end + 1);
+        index = end;
+      }
     } else {
       code += char;
       raw += char;
     }
   }
   return { code, comment, raw };
+}
+function opensRegex(before) {
+  const trimmed = before.trimEnd();
+  if (trimmed === "" || /[(,=:[!&|?{};+\-*%<>~^]$/.test(trimmed)) return true;
+  return /(?:^|[^\w$.])(?:return|typeof|case|in|of|delete|void|throw|new|instanceof|do|else)$/.test(trimmed);
+}
+function regexEnd(text4, start) {
+  let inClass = false;
+  for (let index = start + 1; index < text4.length; index += 1) {
+    const char = text4[index];
+    if (char === "\\") index += 1;
+    else if (inClass) inClass = char !== "]";
+    else if (char === "[") inClass = true;
+    else if (char === "/") return index;
+  }
+  return -1;
 }
 function kindsIn(text4, language2) {
   const line3 = splitLine(text4, language2);
@@ -2939,24 +2977,46 @@ var capitalised = (word) => word.charAt(0).toUpperCase() + word.slice(1);
 var GUARD_WORD = new RegExp(
   `(?<![A-Za-z])(?:${GUARD_WORDS.join("|")}|${GUARD_WORDS.map(capitalised).join("|")}|${GUARD_WORDS.map((w) => w.toUpperCase()).join("|")})|(?<=[a-z0-9])(?:${GUARD_WORDS.map(capitalised).join("|")})`
 );
-function conditionAfter(raw, from) {
-  const rest = raw.slice(from);
-  const open = /^\s*\(/.exec(rest);
-  if (open === null) return rest;
+function conditionAfter(line3, from) {
+  const code = line3.code.slice(from);
+  const open = /^\s*\(/.exec(code);
+  if (open === null) return line3.raw.slice(from, toBody(code, from, 0));
   let depth = 0;
-  for (let index = open[0].length - 1; index < rest.length; index += 1) {
-    if (rest[index] === "(") depth += 1;
-    else if (rest[index] === ")") {
+  for (let index = open[0].length - 1; index < code.length; index += 1) {
+    if (code[index] === "(") depth += 1;
+    else if (code[index] === ")") {
       depth -= 1;
-      if (depth === 0) return rest.slice(0, index + 1);
+      if (depth === 0) {
+        const continues = /^\s*(?:and|or|&&|\|\|)(?![\w$])/.test(code.slice(index + 1));
+        return line3.raw.slice(from, continues ? toBody(code, from, index + 1) : from + index + 1);
+      }
     }
   }
-  return rest;
+  return line3.raw.slice(from);
+}
+function toBody(code, from, start) {
+  const body = /:(?=\s|$)|\{|\bthen\b|\bdo\b/.exec(code.slice(start));
+  return body === null ? void 0 : from + start + body.index;
 }
 var MIDDLEWARE_NAME = "(?:[Aa]uth|[Vv]erify|[Rr]equire[A-Z_]|[Cc]srf|CSRF|[Rr]ate_?[Ll]imit|RATE_?LIMIT)";
 var STATEMENT_WORD = /\b(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|raise|when|import|export|const|let|var|def|class|function)\b/;
 var ALLOWLIST_NAME = /allow|whitelist|permitted|roles|scopes|origins/i;
-var LIST_ELEMENT = /^\s*(?:"[^"]*"|'[^']*'|`[^`]*`|[\w$.@*/-]+|["']?[\w$.-]+["']?\s*:\s*[^,]+?)\s*,?\s*$/g;
+var WHOLE_LINE = /^.*$/g;
+function isListElement(raw) {
+  let text4 = raw.trim();
+  if (text4.endsWith(",")) text4 = text4.slice(0, -1).trimEnd();
+  if (text4 === "") return false;
+  const quote2 = text4[0];
+  if ((quote2 === '"' || quote2 === "'" || quote2 === "`") && text4.length >= 2 && text4.endsWith(quote2) && !text4.slice(1, -1).includes(quote2)) {
+    return true;
+  }
+  if (/^[\w$.@*/-]+$/.test(text4)) return true;
+  const colon = text4.indexOf(":");
+  if (colon <= 0) return false;
+  const key2 = text4.slice(0, colon).trim();
+  const value = text4.slice(colon + 1).trim();
+  return /^["']?[\w$.-]+["']?$/.test(key2) && value !== "" && !value.includes(",");
+}
 var RULES = [
   {
     // Matched on code so a conditional named only in a string is not one; the
@@ -2965,16 +3025,19 @@ var RULES = [
     // is read as a conditional on `isReady`, which has no such word, and passes.
     kind: "guard",
     in: "code",
-    pattern: /\b(?:if|elif|unless|guard|when|case)\b/g,
-    accept: (match, line3) => GUARD_WORD.test(conditionAfter(line3.raw, (match.index ?? 0) + match[0].length))
+    // Declarations and assignments can name a variable guard without introducing a conditional.
+    pattern: /\b(?:if|elif|unless|guard|when|case)\b(?!\s*=)/g,
+    accept: (match, line3) => !/\b(?:const|let|var)\s+$/.test(line3.code.slice(0, match.index ?? 0)) && GUARD_WORD.test(conditionAfter(line3, (match.index ?? 0) + match[0].length))
   },
   {
-    // A refusal is mostly a status or a message, so it is read from the raw
-    // line: `throw new Error('Forbidden')` keeps its word. A `return` that merely
-    // sits in a string is read too; that is the price of reading strings at all.
+    // The keyword is read from the code view, so a `return` that merely sits in
+    // a string is not one; what follows it is read from the raw line, since the
+    // refusal is mostly a status or a message: `throw new Error('Forbidden')`
+    // keeps its word. Code and raw are the same length, so the index carries.
     kind: "refusal",
-    in: "raw",
-    pattern: /\b(?:throw|raise|return)\b.{0,160}?(?:\b40[13]\b|Forbidden|Unauthori[sz]ed|TooMany|Invalid|Denied)/g
+    in: "code",
+    pattern: /\b(?:throw|raise|return)\b/g,
+    accept: (match, line3) => /^.{0,160}?(?:\b40[13]\b|Forbidden|Unauthori[sz]ed|TooMany|Invalid|Denied)/.test(line3.raw.slice((match.index ?? 0) + match[0].length))
   },
   {
     // An attribute or decorator that gates a handler. Code only, and anchored
@@ -3001,20 +3064,22 @@ var RULES = [
     // `'for'` is an entry and a bare `for` is not.
     kind: "allowlist-entry",
     in: "raw",
-    pattern: LIST_ELEMENT,
-    accept: (_match, line3) => !/[=(]/.test(line3.code) && !STATEMENT_WORD.test(line3.code)
+    pattern: WHOLE_LINE,
+    accept: (_match, line3) => isListElement(line3.raw) && !/[=(]/.test(line3.code) && !STATEMENT_WORD.test(line3.code)
   }
 ];
 function language(quotes, lineComment2, blockComments) {
   return { rules: RULES, quotes, lineComment: lineComment2, blockComments };
 }
 var C_STYLE = language(`'"`, "//", true);
-var SCRIPT = language("'\"`", "//", true);
+var SCRIPT = { ...language("'\"`", "//", true), regexLiterals: true };
 var GO = language("'\"`", "//", true);
 var HASH = language(`'"`, "#", false);
+var PHP = { ...C_STYLE, altLineComment: "#" };
 var LANGUAGES3 = {
   ...Object.fromEntries([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, SCRIPT])),
-  ...Object.fromEntries([".cs", ".java", ".kt", ".php"].map((ext) => [ext, C_STYLE])),
+  ...Object.fromEntries([".cs", ".java", ".kt"].map((ext) => [ext, C_STYLE])),
+  ".php": PHP,
   ".go": GO,
   ".py": HASH,
   ".rb": HASH
@@ -3038,10 +3103,24 @@ var EVERY_PATH = { has: () => true };
 function findRemovedControls(diff, paths, deletedFiles = []) {
   const wanted = new Set(paths);
   const hunks = countHunks(diff, EVERY_PATH);
-  const added = /* @__PURE__ */ new Set();
+  const added = /* @__PURE__ */ new Map();
+  const addedByFile = /* @__PURE__ */ new Map();
   for (const hunk of hunks) {
-    for (const line3 of hunk.added) added.add(collapse(line3.text));
+    const own = addedByFile.get(hunk.path) ?? /* @__PURE__ */ new Map();
+    addedByFile.set(hunk.path, own);
+    for (const line3 of hunk.added) {
+      const key2 = collapse(line3.text);
+      added.set(key2, (added.get(key2) ?? 0) + 1);
+      own.set(key2, (own.get(key2) ?? 0) + 1);
+    }
   }
+  const spend = (pool, key2) => {
+    const left = pool.get(key2) ?? 0;
+    if (left === 0) return false;
+    pool.set(key2, left - 1);
+    return true;
+  };
+  const netted = (text4) => spend(added, collapse(text4));
   const found = [];
   const byPath = /* @__PURE__ */ new Map();
   const entriesOf = (path) => {
@@ -3049,16 +3128,31 @@ function findRemovedControls(diff, paths, deletedFiles = []) {
     byPath.set(path, entries);
     return entries;
   };
+  const movedWithinFile = /* @__PURE__ */ new Set();
   for (const hunk of hunks) {
-    if (!wanted.has(hunk.path)) continue;
-    const lang = LANGUAGES3[extname2(hunk.path).toLowerCase()];
-    if (lang === void 0) continue;
+    const own = addedByFile.get(hunk.path);
+    if (own === void 0) continue;
+    for (const removed of hunk.removed) {
+      const key2 = collapse(removed.text);
+      if (spend(own, key2)) {
+        spend(added, key2);
+        movedWithinFile.add(removed);
+      }
+    }
+  }
+  for (const hunk of hunks) {
+    const lang = wanted.has(hunk.path) ? LANGUAGES3[extname2(hunk.path).toLowerCase()] : void 0;
     const named = ALLOWLIST_NAME.test(basename(hunk.path));
-    for (const { line: line3, text: text4, scope } of hunk.removed) {
-      if (added.has(collapse(text4))) continue;
+    const emptied = hunk.line === 0;
+    for (const removed of hunk.removed) {
+      if (movedWithinFile.has(removed) || netted(removed.text)) continue;
+      if (lang === void 0) continue;
+      const { line: line3, text: text4, scope } = removed;
       const allowlisted = named || scope !== null && ALLOWLIST_NAME.test(scope);
       for (const kind of kindsIn2(text4, lang, allowlisted)) {
-        entriesOf(hunk.path).push({ path: hunk.path, line: line3, kind, text: text4.trim().slice(0, MAX_TEXT) });
+        const entry = { path: hunk.path, line: line3, kind, text: text4.trim().slice(0, MAX_TEXT) };
+        if (emptied) entry.deletedFile = true;
+        entriesOf(hunk.path).push(entry);
       }
     }
   }
@@ -3072,9 +3166,9 @@ function findRemovedControls(diff, paths, deletedFiles = []) {
     const allowlisted = ALLOWLIST_NAME.test(basename(file2.path));
     let kept = 0;
     for (const raw of file2.text.split("\n")) {
-      if (kept >= MAX_PER_FILE2) break;
       const text4 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-      if (added.has(collapse(text4))) continue;
+      if (netted(text4)) continue;
+      if (kept >= MAX_PER_FILE2) continue;
       for (const kind of kindsIn2(text4, lang, allowlisted)) {
         if (kept >= MAX_PER_FILE2) break;
         found.push({ path: file2.path, line: 1, kind, text: text4.trim().slice(0, MAX_TEXT), deletedFile: true });
@@ -3222,13 +3316,14 @@ function findStructureSignals(diff, paths, counts, limits = DEFAULT_STRUCTURE, d
     unmeasured: { count: unmeasured.length, paths: unmeasured.slice(0, MAX_UNMEASURED_LISTED) }
   };
 }
-function readDeletedFiles(root, files2, deletedProduction, sides) {
+function readDeletedFiles(root, files2, deletedProduction, sides, mode) {
   if (sides.base === null) return [];
   const specs = /* @__PURE__ */ new Map();
   for (const path of deletedProduction) {
     const file2 = files2.find((entry) => entry.status === "deleted" && entry.path === path);
     const source = file2?.previousPath ?? path;
-    if (!source.includes("\n")) specs.set(path, `${sides.base}:${source}`);
+    const side = mode === "worktree" ? "" : sides.base;
+    if (!source.includes("\n")) specs.set(path, `${side}:${source}`);
   }
   const blobs = readBlobs(root, [...new Set(specs.values())]);
   const read = [];
@@ -3249,7 +3344,7 @@ function collectStructure(cwd, change, production, limits = DEFAULT_STRUCTURE, d
     const root = repositoryRoot(cwd);
     const sides = changeSides(root, change);
     counts = measureLines(root, files2, paths, sides);
-    deletedFiles = readDeletedFiles(root, files2, deletedProduction, sides);
+    deletedFiles = readDeletedFiles(root, files2, deletedProduction, sides, change.mode);
   } catch {
   }
   return findStructureSignals(change.diff, paths, counts, limits, deletedFiles);

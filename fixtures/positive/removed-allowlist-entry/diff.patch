@@ -1,0 +1,11 @@
+--- a/src/security/origin-allowlist.ts
++++ b/src/security/origin-allowlist.ts
+@@ -1,7 +1,7 @@
+ const allowedOrigins = [
+-  'https://example.com',
++  '*',
+ ];
+ 
+ export function acceptsOrigin(origin: string) {
+   return allowedOrigins.includes('*') || allowedOrigins.includes(origin);
+ }

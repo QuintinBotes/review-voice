@@ -1,0 +1,6 @@
+name: moved-auth-check
+asserts: >
+  Moving the requireRole guard into shared middleware keeps the widget
+  deletion restricted to callers with the admin role.
+expect:
+  output: "No actionable findings."
