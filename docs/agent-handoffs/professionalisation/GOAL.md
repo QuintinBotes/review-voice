@@ -44,6 +44,7 @@ Phase 2  S06 (after S02), then S07
 Phase 3  S08, then S09 (after S02 and S08); S14
 Phase 4  S10 part A (after S04 part A), S10 part B, then S11 (after S10 part A)
 Phase 5  S12 slices 0, 1, 2, 3, 4, 5a, 5b, 6a, 6b, in order, with nothing else in flight
+Phase 6  S15 to S24, in the order of "Phase 4, the market gaps" at the end of this goal
 ```
 
 Every spec but S13 edits `plugins/review-voice/src/cli.ts`, so run one
@@ -249,3 +250,67 @@ Provide a concise summary of:
 - Final status: COMPLETE, PARTIALLY VERIFIED, or BLOCKED.
 
 Use COMPLETE only when all acceptance criteria have been verified and relevant checks pass. Use PARTIALLY VERIFIED when implementation is finished but some verification cannot be performed. Use BLOCKED when unresolved work cannot proceed without additional input, access, or a decision.
+
+## Phase 6, the market gaps (S15 to S24)
+
+These ten specs close the gaps the code review market report of 2026-11-08
+found, its ten additions ranked by value (section 5) and its two follow-ups.
+In the order block above they are phase 6. None starts before S12's last
+slice has merged, because nine of them edit `cli.ts` or the modules S12 moves
+it into, and S12 overlaps with nothing. S20 edits no `cli.ts` but still runs
+in its turn, since it shares `src/evidence/run.ts` with S16 part A.
+
+The owner set two constraints on 2026-11-08, and every run keeps both:
+
+- GitHub only. No GitLab, Bitbucket, Azure DevOps, Jira or Linear. The
+  report's third addition is not taken, and S19 reads issues of the pull
+  request's own GitHub repository only.
+- None of the report's anti-features (section 6). No approval that counts
+  toward required approvals or rests on a model's score, no pushed fixes or
+  fix pull requests, no chat agent that acts on a contributor's instructions,
+  no walkthrough, diagram or praise, no generated titles, descriptions or
+  tests, no learning without the owner's approval, no network for an agent,
+  no silent withholding of approval and no neutral check, no model-assigned
+  severity, no comment cap, no training on user data, no thread resolution, no
+  token broader than the task, and no finding on code the change did not
+  touch.
+
+The order, one spec or part at a time:
+
+1. S15, the evidence block posted with each finding (value rank 1). It goes
+   first because S21, S22 and S24 build on its `safeCheckName` `max`, its
+   `PlannedFindings.backing` and its block strip, and its drop of absolute
+   decisive paths keeps S16's reproduction copy off the pull request.
+2. S16 part A, then part B, execution-based verification in thorough mode
+   (rank 2). It precedes S17, S19 and S20, which change the same challenger
+   prompt, agent files and `src/evidence/run.ts` after it.
+3. S17 part A, then part B, the cross-family runner (rank 4; rank 3, GitLab,
+   is not taken). It follows S16's challenger changes and precedes the specs
+   that extend its scope-block trailer key and its approval cap.
+4. S18 part A, a person's benchmark run, then part B, the external benchmark
+   (rank 5). Nothing depends on it, so while D1, D2 or D4 is open S19 runs in
+   its place and S18 resumes once they are settled.
+5. S19, ticket intent from the GitHub issues a pull request closes (rank 6).
+6. S20, one SARIF adapter for static evidence (rank 7), after S16 part A in
+   `run.ts` and after S16's and S17's ADR 0003 amendments.
+7. S21 part A, then part B, one bounded reply per own finding (rank 8). It
+   runs only after the owner admits a second write path; without that yes it
+   is skipped and filed.
+8. S22 part A, then part B, path-scoped approval and the held queue (rank 9).
+9. S23, the rendered analytics report (rank 10), after S15, S16, S17 and S21,
+   whose figures it renders, and only once the owner has settled
+   `CONTRIBUTING.md`'s dashboard sentence.
+10. S24, the reading guide and the posting tier (the report's follow-up), last,
+    because it extends what S15, S17, S19 and S22 change in `planFindings`,
+    `decide()`, `computeVerdict` and the scope-block trailer.
+
+Why this order. No spec in the phase needs another one built before it can
+start; each depends only on specs of phases 0 to 5 (S14, which lands in phase
+3, shares `ScoreLike` with S15 and `agents/evidence-verifier.md` with S16).
+So the report's value ranking decides, adjusted where two specs
+change the same function, so that each change lands on the one before it.
+Each spec's "Order against the other market specs" section names those
+overlaps and which lands first. A spec whose open decision has no default
+waits and the next one runs: S18 (D1, D2 and the D4 spend), S21 (the second
+write path) and S23 (the dashboard sentence). Every other open decision takes
+the spec's default and is filed as an `orbit-feedback` issue, as above.

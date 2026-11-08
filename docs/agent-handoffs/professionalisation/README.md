@@ -14,7 +14,8 @@ This folder holds a gap analysis of Review Voice against three product
 documents for a pull-request reviewer (a product specification, an
 architecture and a set of decision records; the product's own name is
 ignored throughout), and fourteen implementation specs that close the gaps
-worth closing. Each spec ends with a paste-ready Orbit goal. Every spec was
+worth closing. Ten more, S15 to S24, close the gaps a market survey of
+2026-11-08 found (see "The market gaps"). Each spec ends with a paste-ready Orbit goal. Every spec was
 checked against the code by an independent reader on 2026-11-07, and the
 findings (wrong line references, tests that would break, files missing from
 the allowed paths, criteria no check could prove) were folded back in.
@@ -121,6 +122,29 @@ real bug-fix pull requests reintroduced on a clean fork, scored on a comment
 at the right lines. S04's fixture materialiser is the local version of that
 method and the step before running Review Voice against a public set.
 
+## The market gaps
+
+A second survey, the code review market report of 2026-11-08, ranked ten
+additions by value (its section 5) and named what Review Voice should not
+copy (its section 6). The owner kept two constraints, GitHub only and none of
+those anti-features. Each row names the addition, what Review Voice does today
+and the decision, in the report's ranking; `GOAL.md`, "Phase 4, the market
+gaps", gives the order the specs run in.
+
+| Addition in the report | Review Voice today | Decision |
+|---|---|---|
+| 1. Post the evidence with the finding | `explain` prints the challenger's verdict, the precedents and the fix locally; the posted comment is the finding alone | Adopt an opt-in collapsed evidence block built from the recorded run, and an opt-in fix prompt line (S15) |
+| 2. Execution-based verification in `thorough` mode | Verification reads code; only a configured static check runs repository code | Adopt verifier-written reproductions run twice by a probe-gated confined runner, opt-in from the base commit, thorough mode only (S16) |
+| 3. GitLab, then Bitbucket and Azure DevOps | GitHub only | Not taken, by the owner's decision of 2026-11-08 |
+| 4. Cross-family verification as a first-class runner | The challenger always runs on Claude; the second pass is a shell string with a free-text verifier name | Adopt one runner seam for `codex` and `gemini`, configured and never detected into use, families recorded beside provenance, an opt-in agent-authored rule (S17) |
+| 5. An external benchmark run | Recall is measured on the repository's own synthetic fixtures | Adopt an offline importer and one published run per set, never tuned against (S18) |
+| 6. Ticket intent | The intent extractor quotes the description only | Adopt the GitHub issues the description closes, same repository, under the verbatim-quote check; Jira and Linear not taken (S19) |
+| 7. A SARIF adapter for static evidence | Four line-oriented adapters; SARIF output is mis-parsed or ignored | Adopt one SARIF 2.1.0 adapter for every tool that emits it (S20) |
+| 8. One bounded reply per own finding | A question under a finding gets no answer | Adopt one templated reply per thread, built from the recorded run, behind the posting guards, once the owner admits a second write path (S21) |
+| 9. Path-scoped approval and a held-findings queue | Approval is capped for every change or by complexity; held findings are listed by `explain` only | Adopt `verdict.never_approve_paths`, `verdict.only_approve_paths` and an opt-in held queue in the job summary and the watcher report (S22) |
+| 10. A rendered analytics report | `evaluate` prints text or JSON | Adopt `evaluate --html`, owner precision by lane and rule, and rule effectiveness since approval (S23) |
+| Follow-up and table stakes: a reading guide and a posting threshold | One summary line; every verified tier posts | Adopt an opt-in deterministic reading guide and `verdict.min_posted_tier`, which never withholds the five exempt categories (S24) |
+
 ## Order and dependencies
 
 ```
@@ -130,6 +154,9 @@ Phase 2  S06 enforce policies (needs S02)  ->  S07 thread dismissals
 Phase 3  S08 tool findings  ->  S09 scope block (needs S02, S08)   S14 suggestions (optional)
 Phase 4  S10 removed controls (A needs S04 A; then B)  ->  S11 risk-routed lanes (needs S10 A)
 Phase 5  S12 cli split, slices 0, 1, 2, 3, 4, 5a, 5b, 6a, 6b, when nothing else is in flight
+Phase 6  S15 evidence block  ->  S16 reproductions (A, B)  ->  S17 cross-family runner (A, B)  ->  S18 benchmark (A, a person's run, B)
+         ->  S19 linked issues  ->  S20 SARIF  ->  S21 bounded reply (A, B)  ->  S22 approval paths and held queue (A, B)
+         ->  S23 analytics report  ->  S24 reading guide and posting tier, one at a time, after S12
 ```
 
 Within a phase the specs are independent and may run as separate Orbit runs
@@ -139,7 +166,10 @@ spec. S12 moves `cli.ts` wholesale and must not overlap with anything.
 
 Twenty-four Orbit runs in all: S01, S02, S03, S04A, S04B, S05, S06, S07, S08,
 S09, S10A, S10B, S11, S13, S14 and the nine S12 slices. S03, S06 and S11 each
-name a stop point that may add one run.
+name a stop point that may add one run. Phase 6 adds fifteen more, one at a
+time in the order shown: S15, S16A, S16B, S17A, S17B, S18A, S18B, S19, S20,
+S21A, S21B, S22A, S22B, S23 and S24, with a person's benchmark run between
+S18's parts. S15, S19, S23 and S24 each name a stop point that may add one.
 
 ## Running a spec with Orbit
 
@@ -265,6 +295,11 @@ that counts.
    `--origin action` in S02, the `fail-open` input in S03) and the nightly
    recall job in `.github/workflows/eval.yml` (S04). `GOAL.md` files each as a
    GitHub issue.
+5. Answer the open questions of S15 to S24, each listed in its spec. Three
+   have no default and hold their spec back until the owner answers: S18's
+   D1, D2 and D4 (the set, its shape and the spend), S21's second write path,
+   and S23's reading of the dashboard sentence in `CONTRIBUTING.md`. The rest
+   take the spec's default, and `GOAL.md` files each as an issue.
 
 ## Sources
 
@@ -277,3 +312,6 @@ that counts.
   of the specs against the code, folded into the specs.
 - An external survey of fourteen pull-request reviewers' documentation and
   published evaluations, 2026-11-07.
+- The code review market report of 2026-11-08 (sections 4 to 6), the source
+  of S15 to S24, each written and then checked against the code by a second
+  reader.
