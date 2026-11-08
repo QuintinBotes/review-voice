@@ -2591,6 +2591,14 @@ function describeReviewScope(scope: ReviewScope | null): string | null {
 }
 
 function recordCommand(argv: string[]): number {
+  // An empty ref is a shell slip, not a choice: a run with no head can never be
+  // compared with a later run on the same head, so it is refused, not stored (#236).
+  for (const name of ['--base', '--head']) {
+    if (argv.includes(name) && (flag(argv, name) ?? '') === '') {
+      console.error(`${name} needs a git ref or sha; it was empty. Leave the flag out to record none.`);
+      return 2;
+    }
+  }
   const output = readStdin();
   if (output.trim().length === 0) {
     console.error('Nothing on stdin. Pipe the validated review in.');

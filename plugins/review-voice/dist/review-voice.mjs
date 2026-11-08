@@ -22939,6 +22939,12 @@ function describeReviewScope(scope) {
   return describeScope(scope);
 }
 function recordCommand(argv) {
+  for (const name of ["--base", "--head"]) {
+    if (argv.includes(name) && (flag(argv, name) ?? "") === "") {
+      console.error(`${name} needs a git ref or sha; it was empty. Leave the flag out to record none.`);
+      return 2;
+    }
+  }
   const output = readStdin();
   if (output.trim().length === 0) {
     console.error("Nothing on stdin. Pipe the validated review in.");
