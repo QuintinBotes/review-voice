@@ -19,6 +19,7 @@ import { allowlistEntryProblem } from '../github/client.ts';
 import { defaultQueueConfig, QUEUE_SOURCES, type QueueConfig, type QueueSource } from '../queue/config.ts';
 import { defaultWatchConfig, MAX_REVIEW_TIMEOUT_MS, parseDuration, type WatchConfig } from '../watch/config.ts';
 import { DEFAULT_RETENTION, type RetentionConfig } from '../store/retention.ts';
+import { defaultReproduction, type ReproductionConfig, type ReproductionRunner } from '../evidence/reproduce.ts';
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
@@ -51,6 +52,8 @@ export interface LoadedConfig {
     /** The `env_passthrough` names the commands get beyond the minimal environment (issue 279). */
     envPassthrough: string[];
   };
+  /** `reproduction:`, the confined runner for verifier-written reproductions. Off by default. */
+  reproduction: ReproductionConfig;
   /** A second, ideally different-model, verification pass. Off by default. */
   verification: {
     enabled: boolean;
@@ -119,7 +122,7 @@ function positiveInt(value: unknown): number | undefined {
  * exactly these. review.models is a map of stages, checked against MODEL_KEYS.
  */
 export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
-  '': ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'verification', 'queue', 'watch', 'retention', 'writes'],
+  '': ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'reproduction', 'verification', 'queue', 'watch', 'retention', 'writes'],
   identity: ['owner_reviewer', 'reviewers'],
   repositories: ['include'],
   review: [
@@ -145,6 +148,8 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   ],
   static_evidence: ['enabled', 'env_passthrough', 'commands'],
   'static_evidence.commands[]': ['name', 'run', 'timeout_seconds', 'version'],
+  reproduction: ['enabled', 'runners', 'link_paths', 'memory_mb', 'cpu_seconds'],
+  'reproduction.runners[]': ['name', 'run', 'extension', 'timeout_seconds'],
   verification: ['enabled', 'command', 'name', 'timeout_seconds', 'drop_threshold', 'env_passthrough'],
   queue: ['sources', 'teams', 'max_per_pass', 'follow_up_days', 'skip'],
   'queue.skip': ['authors', 'assigned_to', 'author_patterns', 'allow_bots_when_requested', 'drafts', 'approved_at_head_by'],
@@ -369,6 +374,75 @@ function readLanes(value: unknown, result: LoadedConfig): void {
     if (typeof lane === 'string') result.warnings.push(`review.lanes[${index}]: ${lane}; dropping the lane.`);
     else result.lanes.push(lane);
   });
+}
+
+/** What is wrong with one `reproduction.runners` entry, or the runner it describes. */
+function parseReproductionRunner(entry: unknown, taken: readonly ReproductionRunner[], path: string, warnings: string[]): ReproductionRunner | string {
+  const block = section(entry, path, warnings);
+  if (block === null) return 'must be a mapping';
+  const { name, run, extension } = block;
+  if (typeof name !== 'string' || !/^[a-z][a-z0-9-]*$/.test(name)) return 'name must be lower-case letters, digits and dashes';
+  if (taken.some((runner) => runner.name === name)) return `name ${name} is already used`;
+  // {file} is the only text the CLI substitutes, and only with a path it chose,
+  // so a second placeholder could only be a mistake that runs something else.
+  if (typeof run !== 'string' || (run.match(/\{[^{}]*\}/g) ?? []).join() !== '{file}') {
+    return 'run must contain {file} exactly once and no other brace placeholder';
+  }
+  if (typeof extension !== 'string' || !/^\.[A-Za-z0-9.]{1,15}$/.test(extension)) return 'extension must be a dot and up to 15 letters, digits or dots';
+  const timeout = block['timeout_seconds'] ?? 120;
+  if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout < 1 || timeout > 600) {
+    return 'timeout_seconds must be a whole number from 1 to 600';
+  }
+  return { name, run, extension, timeoutSeconds: timeout };
+}
+
+/**
+ * `reproduction:` (S16). It runs pull request code, so it is read only from
+ * this configuration, never the head's, and every entry that breaks a rule is
+ * named and dropped rather than repaired.
+ */
+function readReproduction(value: unknown, result: LoadedConfig): void {
+  const block = section(value, 'reproduction', result.warnings);
+  if (block === null) {
+    result.warnings.push('reproduction must be a mapping; using the defaults.');
+    return;
+  }
+  const target = result.reproduction;
+  const enabled = block['enabled'];
+  if (typeof enabled === 'boolean') target.enabled = enabled;
+  else if (enabled !== undefined) result.warnings.push('reproduction.enabled must be true or false; using false.');
+  const runners = block['runners'];
+  if (runners !== undefined && !Array.isArray(runners)) result.warnings.push('reproduction.runners must be a list; ignoring it.');
+  if (Array.isArray(runners)) {
+    runners.forEach((entry, index) => {
+      const runner = parseReproductionRunner(entry, target.runners, `reproduction.runners[${index}]`, result.warnings);
+      if (typeof runner !== 'string') {
+        target.runners.push(runner);
+        return;
+      }
+      const name = asRecord(entry)?.['name'];
+      result.warnings.push(`reproduction.runners[${index}]${typeof name === 'string' ? ` (${name})` : ''}: ${runner}; dropping the runner.`);
+    });
+  }
+  const links = block['link_paths'];
+  if (links !== undefined && !Array.isArray(links)) result.warnings.push('reproduction.link_paths must be a list; ignoring it.');
+  if (Array.isArray(links)) {
+    for (const entry of links) {
+      if (typeof entry === 'string' && entry !== '' && entry !== '.' && entry !== '..' && !entry.includes('/')) {
+        if (!target.linkPaths.includes(entry)) target.linkPaths.push(entry);
+      } else {
+        result.warnings.push(`reproduction.link_paths: ${JSON.stringify(entry)} is not a single path segment; skipping it.`);
+      }
+    }
+  }
+  const limit = (key: string, field: 'memoryMb' | 'cpuSeconds', min: number, max: number): void => {
+    const value = block[key];
+    if (value === undefined) return;
+    if (typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max) target[field] = value;
+    else result.warnings.push(`reproduction.${key} must be a whole number from ${min} to ${max}; using ${target[field]}.`);
+  };
+  limit('memory_mb', 'memoryMb', 64, 16384);
+  limit('cpu_seconds', 'cpuSeconds', 1, 600);
 }
 
 /** Words that appear in nearly every failure, so alone they would turn every failure into a rerun. */
@@ -890,6 +964,8 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
     }
   }
 
+  if (doc['reproduction'] !== undefined) readReproduction(doc['reproduction'], result);
+
   const writes = section(doc['writes'], 'writes', result.warnings);
   result.postingEnabled = writes?.['github_posting_enabled'] === true;
 
@@ -984,6 +1060,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     watch: defaultWatchConfig(),
     retention: { ...DEFAULT_RETENTION },
     staticEvidence: { enabled: false, commands: [], envPassthrough: [] },
+    reproduction: defaultReproduction(),
     verification: { enabled: false, command: '', envPassthrough: [], blockPresent: false },
     humanReview: {
       ...DEFAULT_HUMAN_REVIEW,

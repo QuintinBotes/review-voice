@@ -41,6 +41,7 @@ import { draftCommand } from './cli/draft.ts';
 import { postCheckCommand } from './cli/post-check.ts';
 import { discoverCommand } from './cli/discover.ts';
 import { evidenceCommand } from './cli/evidence.ts';
+import { reproduceCommand } from './cli/reproduce.ts';
 import { calibrateCommand } from './cli/calibrate.ts';
 import { retrieveCommand } from './cli/retrieve.ts';
 import { feedbackCommand } from './cli/feedback.ts';
@@ -275,6 +276,9 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'evidence':
       return await whileStoppable(() => evidenceCommand(argv.slice(1)));
+
+    case 'reproduce':
+      return await whileStoppable(() => reproduceCommand(argv.slice(1)));
 
     case 'worktree':
       return worktreeCommand(argv.slice(1));

@@ -39,7 +39,7 @@ never anywhere we control**:
 | Path | Contents |
 |---|---|
 | `review-voice.db` | Normalised, redacted events; feedback; policies; the audit log (the `audit_events` table; there is no audit file) |
-| `runs/` | One directory per pull request review: the diff, copies of the changed files at the base, the review thread and every stage's input and output, kept raw because they are the code under review |
+| `runs/` | One directory per pull request review: the diff, copies of the changed files at the base, the review thread and every stage's input and output, and reproduction files and their output, kept raw because they are the code under review |
 | `clones/` | The watcher's clones of allowlisted repositories, reused between passes (`watch.workspace` moves them) |
 | `embeddings/` | Retrieval index |
 | `policies/` | Versioned policy artifacts, including archived versions |
