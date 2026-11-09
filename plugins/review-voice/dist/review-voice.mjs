@@ -12375,8 +12375,9 @@ function reproductionEnvironment(source, scratch) {
   return { ...env, HOME: join7(scratch, "home"), TMPDIR: join7(scratch, "tmp"), CI: "1", NO_COLOR: "1" };
 }
 function limitsLine(config2, platform = process.platform) {
-  const quiet = platform === "darwin" ? " 2>/dev/null" : "";
-  return `ulimit -t ${config2.cpuSeconds}; ulimit -v ${config2.memoryMb * 1024}${quiet}; ulimit -f 2097152`;
+  const kib = config2.memoryMb * 1024;
+  const memory = platform === "darwin" ? `ulimit -v ${kib} 2>/dev/null` : `ulimit -d ${kib}`;
+  return `ulimit -t ${config2.cpuSeconds}; ${memory}; ulimit -f 2097152`;
 }
 function layoutOf(ctx, places) {
   const platform = ctx.platform ?? process.platform;

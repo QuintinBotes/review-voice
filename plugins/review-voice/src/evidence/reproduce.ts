@@ -155,12 +155,16 @@ export function reproductionEnvironment(source: NodeJS.ProcessEnv, scratch: stri
   return { ...env, HOME: join(scratch, 'home'), TMPDIR: join(scratch, 'tmp'), CI: '1', NO_COLOR: '1' };
 }
 
-/** CPU seconds, virtual memory in KiB, and a 1 GiB file-size cap in 512-byte blocks. */
+/** CPU seconds, a memory cap in KiB, and a 1 GiB file-size cap in 512-byte blocks. */
 export function limitsLine(config: ReproductionConfig, platform: NodeJS.Platform = process.platform): string {
-  // macOS refuses RLIMIT_AS, so the bound there is advisory, and its refusal
-  // would otherwise open every record and hide the real cause of a failed probe.
-  const quiet = platform === 'darwin' ? ' 2>/dev/null' : '';
-  return `ulimit -t ${config.cpuSeconds}; ulimit -v ${config.memoryMb * 1024}${quiet}; ulimit -f 2097152`;
+  const kib = config.memoryMb * 1024;
+  // On Linux the cap is RLIMIT_DATA, which counts the writable memory a process
+  // maps (Linux 4.7 and later) but not address space it only reserves: Node 24
+  // reserves V8's code range at start-up, and an RLIMIT_AS of a gigabyte stops
+  // node before it runs. macOS refuses RLIMIT_AS, so the bound there is
+  // advisory, and its refusal would otherwise open every record.
+  const memory = platform === 'darwin' ? `ulimit -v ${kib} 2>/dev/null` : `ulimit -d ${kib}`;
+  return `ulimit -t ${config.cpuSeconds}; ${memory}; ulimit -f 2097152`;
 }
 
 /** Where everything of one candidate's run sits, with every path already real. */

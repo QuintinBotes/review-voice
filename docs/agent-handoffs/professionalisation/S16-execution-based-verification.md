@@ -359,6 +359,14 @@ holds nothing there on a reproduction.
 
 Where the earlier text differs.
 
+- The memory limit. On Linux the `ulimit` line caps the data segment,
+  `ulimit -d <memory_mb * 1024>` (RLIMIT_DATA, which since Linux 4.7 counts
+  the writable private memory a process maps), not `ulimit -v`. Node 24
+  reserves V8's code range at start-up, and under an RLIMIT_AS of the default
+  1024 MiB that reservation failed on GitHub's Ubuntu runner, so `node` died
+  before the probe ran ("Failed to reserve virtual memory for CodeRange").
+  Address space a runtime only reserves is not memory it uses, so the data
+  cap bounds the same thing without stopping the runtime.
 - The Outcome. On Linux the CLI runs a reproduction twice in a throwaway copy
   of the head worktree, with no writes outside that copy and its own scratch
   directory. On macOS it runs none until #321.

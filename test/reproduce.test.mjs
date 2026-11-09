@@ -404,7 +404,7 @@ test('on Linux the wrapper is unshare with the listed flags, a read-only root an
   const script = call.options.args.at(-1);
   const copy = call.options.cwd;
   const scratch = scratchBeside(copy);
-  const inner = "ulimit -t 30; ulimit -v 524288; ulimit -f 2097152; exec node --test 'src/add.repro.test.mjs'";
+  const inner = "ulimit -t 30; ulimit -d 524288; ulimit -f 2097152; exec node --test 'src/add.repro.test.mjs'";
   assert.ok(script.endsWith(`\ncd ${shellQuote(copy)}\nexec unshare --user --map-root-user /bin/sh -c ${shellQuote(inner)}`), script);
   assert.equal(call.options.shell, false);
   assert.equal(call.options.timeout, 120000);
