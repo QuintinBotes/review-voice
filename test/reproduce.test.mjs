@@ -1234,6 +1234,14 @@ test('the probe tries every escape, and a connection it does not admit still fai
   assert.deepEqual(await probeSandbox(context(repo, { spawn: liar })), { platform: 'linux', mechanism: 'none', probe: 'escaped by connect' });
 });
 
+test('a probe that dies with a fatal-error banner is named by its first line with words', async (t) => {
+  const repo = scratchRepository(t);
+  const banner = '\n\n#\n# Fatal error in , line 0\n# Check failed: reservation.\n#\n';
+  const fake = fakeSpawn([], { probe: { status: null, stdout: '', stderr: banner } });
+  const report = await reproduce({ verifications: [entry()] }, candidates(), context(repo, { spawn: fake.spawn, platform: 'linux' }));
+  assert.deepEqual(report.sandbox, { platform: 'linux', mechanism: 'none', probe: 'unshare: # Fatal error in , line 0' });
+});
+
 test('a probe passes only when it exits 0 and prints exactly RV_PROBE_OK', async (t) => {
   const repo = scratchRepository(t);
   for (const probe of [{ status: 0, stdout: '' }, { status: 0, stdout: 'RV_PROBE_OK extra\n' }, { status: 0, stdout: 'RV_PROBE_OK\nRV_PROBE_OK\n' }, { status: 1, stdout: 'RV_PROBE_OK\n' }]) {

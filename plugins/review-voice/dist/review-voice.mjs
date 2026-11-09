@@ -12574,7 +12574,7 @@ var contentOf = (path) => {
     return null;
   }
 };
-var firstLine = (text4) => text4.split("\n").map((line3) => line3.trim()).find((line3) => line3 !== "") ?? "";
+var firstLine = (text4) => text4.split("\n").map((line3) => line3.trim()).find((line3) => /[\p{L}\p{N}]/u.test(line3)) ?? "";
 async function probeSandbox(ctx, given) {
   const platform = ctx.platform ?? process.platform;
   if (platform === "darwin") return { platform, mechanism: "none", probe: DARWIN_OFF };

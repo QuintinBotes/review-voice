@@ -403,7 +403,8 @@ const contentOf = (path: string): string | null => {
   }
 };
 
-const firstLine = (text: string): string => text.split('\n').map((line) => line.trim()).find((line) => line !== '') ?? '';
+// The first line that says something: a fatal-error banner opens with lines of only `#`, which name no cause.
+const firstLine = (text: string): string => text.split('\n').map((line) => line.trim()).find((line) => /[\p{L}\p{N}]/u.test(line)) ?? '';
 
 /**
  * The sandbox a reproduction gets on this platform. Only Linux has one for
