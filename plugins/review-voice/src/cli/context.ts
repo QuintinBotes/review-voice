@@ -46,7 +46,8 @@ export function contextCommand(): number {
           // says nothing about whether it has a verification block, and the
           // parse error is the actionable item.
           warnings:
-            config.verification.blockPresent || config.warnings.length > 0
+            config.verification.blockPresent ||
+            config.warnings.some((warning) => warning.startsWith('.review-voice/config.yaml could not be parsed'))
             ? config.warnings
             : existsSync(configPath)
               ? [
