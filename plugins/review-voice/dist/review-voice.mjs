@@ -9166,7 +9166,10 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
   const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit" && confidenceSource === "verifier";
   if (staleConsumer && verification2?.impactTraced !== true && !untracedDocumentNit) {
-    const untraced = "a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause (impact_traced: true)" + (isDocumentationPath(candidate.path) ? `; a documentation consumer may go untraced only at nit and on the verifier's confidence, and this one is ${severity.severity}` + (confidenceSource === "analyst" ? " on the analyst's confidence alone" : confidenceSource === "unverifiable-cap" ? " with context the verifier could not obtain" : `; ${DOCUMENT_NIT_HINT.replace("<id>", candidate.candidateId)}`) : "");
+    const untraced = "a stale-consumer finding needs the verifier to trace the impact from the consumer to its cause (impact_traced: true)" + (isDocumentationPath(candidate.path) ? `; a documentation consumer may go untraced only at nit and on the verifier's confidence, and this one is ${severity.severity}` + (confidenceSource === "analyst" ? " on the analyst's confidence alone" : confidenceSource === "unverifiable-cap" ? " with context the verifier could not obtain" : `; ${DOCUMENT_NIT_HINT.replace("<id>", candidate.candidateId)}`) : (
+      // Without a route here a verified stale comment was a dead end, since `--severity` cannot restate nit (#317).
+      "; outside a document (.md, .rst or .adoc) that holds at every tier, a comment in a source file included, so to post it untraced, have the analyst refile it as an ordinary finding on the changed line its `caused_by` names, with the consumer and its path in the claim and evidence"
+    ));
     if (rejectedBecause === null) rejectedBecause = untraced;
     else if (rejectedBecause.startsWith("score ")) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
     else rejectedBecause = `${rejectedBecause}. Also: ${untraced}`;
