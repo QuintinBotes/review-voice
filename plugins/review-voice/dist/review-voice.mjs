@@ -18898,7 +18898,40 @@ var ID = /^int_[0-9]{3,}$/;
 var LIST_OR_HEADING = /^\s*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?|\[[ xX]\]\s+|#{1,6}\s+|>\s*)/u;
 var LEAD_LABEL = /^(?:(?:\[[^\]]*\]\([^)\s]+\)|https?:\/\/\S+):|\*\*[^*]+?[.:]\*\*)(?= |$)/u;
 var QUALIFYING_LABEL = /\b(?:not|no|out of scope|non-goals?|won't|without|except|unless|only if|later|follow-ups?)\b|n't\b/iu;
+var FENCE = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/u;
+var FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})\s*$/u;
+var COMMENT_LINE = /^ {0,3}<!--(?:(?!-->).)*-->\s*$/u;
+var COMMENT_OPEN = /^ {0,3}<!--(?!-?>)(?:(?!-->).)*$/u;
+var COMMENT_CLOSE = /^(?:(?!-->).)*-->\s*$/u;
+var BOLD_LABEL = /^\*\*([^*]*[^*\s.!?])\*\*$/u;
 var collapse2 = (text4) => text4.replace(/\s+/gu, " ").trim();
+var isBoldLabel = (line3) => !LIST_OR_HEADING.test(line3) && BOLD_LABEL.test(collapse2(line3));
+function lineKinds(lines2) {
+  const fenced = /* @__PURE__ */ new Set();
+  const comments = /* @__PURE__ */ new Set();
+  let fence = null;
+  let close = 0;
+  for (let index = 0; index < lines2.length; index += 1) {
+    const line3 = lines2[index] ?? "";
+    const marker = (fence === null ? FENCE : FENCE_CLOSE).exec(line3)?.[1];
+    if (fence !== null || marker !== void 0) {
+      fenced.add(index);
+      if (fence === null) fence = marker ?? null;
+      else if (marker !== void 0 && marker[0] === fence[0] && marker.length >= fence.length) fence = null;
+      continue;
+    }
+    if (COMMENT_LINE.test(line3)) comments.add(index);
+    if (!COMMENT_OPEN.test(line3)) continue;
+    if (close <= index) {
+      close = index + 1;
+      while (close < lines2.length && !(lines2[close] ?? "").includes("-->")) close += 1;
+    }
+    if (close === lines2.length || !COMMENT_CLOSE.test(lines2[close] ?? "")) continue;
+    for (let at2 = index; at2 <= close; at2 += 1) comments.add(at2);
+    index = close;
+  }
+  return { fenced, comments };
+}
 function sentencesOf(description) {
   let text4 = "";
   const starts = /* @__PURE__ */ new Set([0]);
@@ -18909,7 +18942,12 @@ function sentencesOf(description) {
   const headings = /* @__PURE__ */ new Set();
   let open = null;
   let contentEnd = 0;
-  for (const line3 of description.split(/\r?\n/u)) {
+  const answers = [];
+  let answer2 = null;
+  let answerEnd = 0;
+  const lines2 = description.split(/\r?\n/u);
+  const { fenced, comments } = lineKinds(lines2);
+  for (const [index, line3] of lines2.entries()) {
     const marked = LIST_OR_HEADING.test(line3);
     const content = collapse2(line3.replace(LIST_OR_HEADING, ""));
     if (content === "") {
@@ -18936,19 +18974,31 @@ function sentencesOf(description) {
       open.from = text4.length;
     }
     if (heading) headings.add(content);
+    const next = () => lines2.slice(index + 1).find((after, at2) => after.trim() !== "" && !comments.has(index + 1 + at2)) ?? "";
+    const paragraph = blank || text4 === "" || comments.has(index - 1) || fenced.has(index - 1);
+    const bold = !heading && open === null && !fenced.has(index) && !comments.has(index) && paragraph && isBoldLabel(line3) && !isBoldLabel(next());
+    if (heading && !comments.has(index) || bold) {
+      if (answer2 !== null && answer2.from !== -1) answers.push({ ...answer2, to: answerEnd });
+      answer2 = { heading: bold ? BOLD_LABEL.exec(content)?.[1] ?? content : content, from: -1, to: -1 };
+    } else if (answer2 !== null && !comments.has(index)) {
+      if (answer2.from === -1) answer2.from = text4.length;
+      answerEnd = text4.length + content.length;
+    }
     text4 += content;
     contentEnd = text4.length;
     blank = false;
     previousHeading = heading;
   }
   if (open !== null && open.from !== -1) sections2.push({ ...open, to: contentEnd });
+  if (answer2 !== null && answer2.from !== -1) answers.push({ ...answer2, to: answerEnd });
   ends.add(text4.length);
   for (const match of text4.matchAll(/[.!?](?= |$)/gu)) {
     ends.add(match.index);
     ends.add(match.index + 1);
     starts.add(match.index + 2);
   }
-  return { text: text4, starts, ends, sections: sections2, headings };
+  const whole = answers.filter(({ from, to }) => starts.has(from) && ends.has(to));
+  return { text: text4, starts, ends, sections: sections2, answers: whole, headings };
 }
 function statesSomething(wanted, sentences) {
   return LEAD_LABEL.exec(wanted)?.[0] !== wanted && !sentences.headings.has(wanted);
@@ -18986,11 +19036,11 @@ function widenToSentence(quote2, sentences) {
 function answeredHeading(quote2, sentences) {
   const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
   if (wanted === "" || wanted.split(" ").length >= MIN_QUOTE_WORDS) return null;
-  const section2 = sentences.sections.find(({ from, to }) => {
+  const matches = ({ from, to }) => {
     const body = sentences.text.slice(from, to);
     return body === wanted || body === `${wanted}.`;
-  });
-  return section2?.heading ?? null;
+  };
+  return (sentences.sections.find(matches) ?? sentences.answers.find(matches))?.heading ?? null;
 }
 function excerptOf(value, sentences, name, id, notes) {
   const problem = excerptProblem(value, sentences, name);
