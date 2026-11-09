@@ -1556,9 +1556,11 @@ test('a process a reproduction leaves behind never writes the head worktree', as
     t.skip(`needs a sandbox that holds: ${probe.probe}`);
     return;
   }
+  // The run starts in <run dir>/reproductions/trees/<id>-*/tree, four levels below the run directory that holds the head.
+  assert.equal(repo.worktree, join(repo.runDir, 'head'));
   const planted = join(repo.worktree, 'planted-head');
-  // Written a second after the run, once the CLI has checked the place the run had.
-  const child = `setTimeout(() => { const fs = require('fs'); try { fs.writeFileSync('planted-here', 'x'); } catch {} try { fs.writeFileSync(${JSON.stringify(planted)}, 'x'); } catch {} }, 1000);`;
+  // Written a second after the run, once the CLI has checked the place the run had; a constant, so no path is spliced into code.
+  const child = "setTimeout(() => { const fs = require('fs'); try { fs.writeFileSync('planted-here', 'x'); } catch {} try { fs.writeFileSync('../../../../head/planted-head', 'x'); } catch {} }, 1000);";
   const content = [
     "import { spawn } from 'node:child_process';",
     `spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { detached: true, stdio: 'ignore' }).unref();`,
