@@ -285,9 +285,9 @@ export function parseHunks(diff: string): Map<string, FileHunks> {
   }
 
   finishHunk();
-  // A deleted file can have a provisional `diff --git` path before its
-  // `+++ /dev/null` header. `selectPath` removes it there, so no extra cleanup
-  // is needed after the final file.
+  // A file with no `+++` header (empty, binary, only renamed, or deleted
+  // without a hunk) keeps its provisional entry, with no ranges, only when it
+  // is the last file; a caller counting files filters on `ranges.length`.
   return files;
 }
 

@@ -1,7 +1,7 @@
 /** #226: record --held warns about an entry no later --held-from run can match, and still records it. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -18,9 +18,15 @@ function record(held) {
     writeFileSync(join(dir, 'src', 'a.ts'), 'one\ntwo\nthree\n');
     writeFileSync(join(dir, 'files.json'), JSON.stringify({ files: [{ path: 'src/a.ts' }] }));
     writeFileSync(join(dir, 'held.json'), JSON.stringify(held));
+    // The past-the-end check reads the file at --head (#322), so src/a.ts is committed.
+    const git = (...args) =>
+      execFileSync('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', '-c', 'commit.gpgsign=false', ...args], { cwd: dir, encoding: 'utf8' }).trim();
+    git('init', '-q');
+    git('add', 'src');
+    git('commit', '-q', '-m', 'head');
     const done = spawnSync(
       process.execPath,
-      [bundle, 'record', '--repository', 'o/r', '--head', 'abc', '--files', join(dir, 'files.json'), '--held', join(dir, 'held.json')],
+      [bundle, 'record', '--repository', 'o/r', '--head', git('rev-parse', 'HEAD'), '--files', join(dir, 'files.json'), '--held', join(dir, 'held.json')],
       { cwd: dir, encoding: 'utf8', input: REVIEW, env: { ...process.env, REVIEW_VOICE_DATA_DIR: dir } },
     );
     const id = JSON.parse(done.stdout).reviewRunId;

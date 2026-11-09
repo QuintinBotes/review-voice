@@ -586,6 +586,8 @@ export interface StageTiming {
   filesRead?: number | undefined;
   /** Added and removed lines of the diff the stage read; set on `analyst` at record time. */
   diffLines?: number | undefined;
+  /** Files of that diff with a hunk at the head, so not deleted, empty, binary or only renamed; set on `analyst` at record time. */
+  diffFiles?: number | undefined;
   /** The model and cost of an agent stage the review driver ran (docs/adr/0021). */
   model?: string | undefined;
   /** One model per agent call, in order: the challenge stage picks one per finding. */

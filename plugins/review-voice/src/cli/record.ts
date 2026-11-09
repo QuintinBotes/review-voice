@@ -1,4 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { pluginVersion } from '../version.ts';
 import { validateOutput } from '../contract/validate.ts';
 import { DEFAULT_LIMITS } from '../contract/limits.ts';
@@ -36,12 +38,13 @@ import {
 import { seriousNotCarried, type CarriedFinding } from '../diff/carry.ts';
 import { resolveCommit } from '../diff/prior.ts';
 import { parseTieBreaks, type TieBreak } from '../verify/reconcile.ts';
-import { cleanStages, shallowPassWarning } from '../store/effort.ts';
+import { cleanStages, parseStagesFile, shallowPassWarning } from '../store/effort.ts';
 import { noFindingsHint, readStdin, inferRepository, flag, boundLists } from './shared.ts';
 import { reviewScopeFromManifest } from './explain.ts';
 import { carryForRun, sameCommit } from './carry.ts';
 import { readSignals } from './check-candidates.ts';
 import { repositoryRoot } from '../diff/acquire.ts';
+import { SAFE_GIT } from '../review/worktree.ts';
 import type { EvidenceSignal } from '../evidence/types.ts';
 
 /**
@@ -187,6 +190,7 @@ export function recordCommand(argv: string[]): number {
   const filesFile = flag(argv, '--files');
   let pullNumber: number | undefined;
   let manifestRepository: string | null = null;
+  let manifestMode: unknown = null;
   let scope: ReviewScope | undefined;
   let complexity: ComplexityAssessment | null = null;
   const knownPaths = new Set<string>();
@@ -199,6 +203,7 @@ export function recordCommand(argv: string[]): number {
       if (Number.isInteger(manifest.pullNumber) && (manifest.pullNumber as number) > 0) {
         pullNumber = manifest.pullNumber as number;
       }
+      manifestMode = manifest.mode;
       if (typeof manifest.repository === 'string' && /^[^/\s]+\/[^/\s]+$/.test(manifest.repository)) {
         manifestRepository = manifest.repository;
       }
@@ -290,19 +295,36 @@ export function recordCommand(argv: string[]): number {
       // A path no candidate or diff file carries can never match the real anchor
       // on a later --held-from run. Warn, but record it: the reason still counts.
       for (const candidate of candidates) knownPaths.add(candidate.path);
+      // The content under review (#322): the index for a staged review, the working tree for a worktree review or
+      // when no --head names a side, else the file at --head, since the checkout may be elsewhere.
+      const heldHead = flag(argv, '--head');
+      const atHead = manifestMode !== 'worktree' && manifestMode !== 'staged' && heldHead !== null;
+      // A ref starting with '-' would reach git as an option, so it is never resolved.
+      const heldRevision =
+        manifestMode === 'staged' ? '' : atHead && !heldHead.startsWith('-') ? resolveCommit(heldHead, process.cwd()) : null;
+      if (knownPaths.size > 0 && held.length > 0 && atHead && heldRevision === null) {
+        console.error(`--head ${heldHead} is not a commit in this clone, so held lines were not checked against the file at it.`);
+      }
       if (knownPaths.size > 0) {
         for (const entry of held) {
           if (!knownPaths.has(entry.path)) {
             console.error(`Held entry ${entry.path}:${entry.line} matches no changed file or candidate; later --held-from runs will not match it.`);
             continue;
           }
-          // shortcut: the line count is read only when the file is in the working tree.
+          if (atHead && heldRevision === null) continue;
           try {
-            const content = readFileSync(entry.path, 'utf8');
+            const content =
+              heldRevision === null
+                ? readFileSync(join(repositoryRoot(process.cwd()), entry.path), 'utf8')
+                : execFileSync('git', [...SAFE_GIT, 'show', `${heldRevision}:${entry.path}`], {
+                    encoding: 'utf8',
+                    stdio: ['ignore', 'pipe', 'ignore'],
+                    maxBuffer: 64 * 1024 * 1024,
+                  });
             const lines = content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
             if (entry.line > lines) console.error(`Held entry ${entry.path}:${entry.line} is past the end of the file (${lines} lines).`);
           } catch {
-            // Not in the working tree: the line cannot be checked, so say nothing.
+            // Not a file there, or not a repository: the line cannot be checked, so say nothing.
           }
         }
       }
@@ -316,18 +338,12 @@ export function recordCommand(argv: string[]): number {
   let stages: StageTiming[] = [];
   if (stagesFile !== null) {
     try {
-      const parsed = JSON.parse(readFileSync(stagesFile, 'utf8')) as { stages?: unknown };
-      const list = Array.isArray(parsed) ? parsed : (parsed.stages ?? []);
-      stages = (Array.isArray(list) ? list : []).filter(
-        (stage): stage is StageTiming =>
-          typeof stage === 'object' &&
-          stage !== null &&
-          typeof (stage as StageTiming).name === 'string' &&
-          Number.isFinite((stage as StageTiming).seconds),
+      stages = cleanStages(
+        parseStagesFile(JSON.parse(readFileSync(stagesFile, 'utf8')), (message) => console.error(`Stages in ${stagesFile}: ${message}.`)),
+        diff === '' ? null : diff,
       );
-      stages = cleanStages(stages, diff === '' ? null : diff);
-    } catch {
-      console.error(`Cannot read stages from ${stagesFile}.`);
+    } catch (error) {
+      console.error(`Cannot read stages from ${stagesFile}: ${(error as Error).message}`);
       return 2;
     }
   }
