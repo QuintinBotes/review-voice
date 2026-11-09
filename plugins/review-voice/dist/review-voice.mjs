@@ -11907,6 +11907,73 @@ function asStringArray(value) {
 function positiveInt(value) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : void 0;
 }
+var CONFIG_KEYS = {
+  "": ["identity", "repositories", "review", "ci", "verdict", "static_evidence", "verification", "queue", "watch", "retention", "writes"],
+  identity: ["owner_reviewer", "reviewers"],
+  repositories: ["include"],
+  review: [
+    "human_review",
+    "structure",
+    "mode",
+    "models",
+    "confidence_threshold",
+    "final_score_threshold",
+    "lanes",
+    "suggestions",
+    "max_findings",
+    "max_words_per_finding",
+    "max_total_words"
+  ],
+  "review.human_review": [
+    "max_decision_points",
+    "max_hunk_decision_points",
+    "sensitive_paths",
+    "sensitive_exempt_paths",
+    "test_paths",
+    "generated_paths",
+    "cap_approval",
+    "structure"
+  ],
+  "review.human_review.structure": ["file_line_crossing", "branch_growth", "removed_controls"],
+  "review.structure": ["max_file_lines", "max_added_branches_per_function", "simplify"],
+  "review.lanes[]": ["name", "agent", "prefix", "when", "severity"],
+  "review.lanes[].when": ["min_changed_source_lines", "paths", "exclude_kinds", "signals"],
+  "review.lanes[].severity": ["cap", "escalate"],
+  "review.lanes[].severity.escalate": ["to", "requires"],
+  ci: ["gate_checks", "stuck_after_minutes", "stuck_after_overrides", "rerun_signatures", "builtin_rerun_signatures"],
+  "ci.gate_checks[]": ["name", "summary"],
+  "ci.stuck_after_overrides[]": ["name", "minutes"],
+  verdict: [
+    "ci_pending",
+    "ci_red",
+    "ci_needs_rerun",
+    "carry_approval_on_unchanged",
+    "recheck_thread_before_post",
+    "never_approve",
+    "scope_block",
+    "scope_block_models",
+    "evidence_block",
+    "evidence_block_precedents"
+  ],
+  static_evidence: ["enabled", "env_passthrough", "commands"],
+  "static_evidence.commands[]": ["name", "run", "timeout_seconds", "version"],
+  verification: ["enabled", "command", "name", "timeout_seconds", "drop_threshold", "env_passthrough"],
+  queue: ["sources", "teams", "max_per_pass", "follow_up_days", "skip"],
+  "queue.skip": ["authors", "assigned_to", "author_patterns", "allow_bots_when_requested", "drafts", "approved_at_head_by"],
+  "queue.skip.approved_at_head_by": ["logins", "sources"],
+  watch: ["workspace", "interval", "post", "lock_port", "run_repository_commands", "review_timeout", "max_attempts_per_head"],
+  retention: ["runs_days", "audit_days"],
+  writes: ["github_posting_enabled"]
+};
+function section(value, path, warnings) {
+  const block = asRecord(value);
+  if (block === null) return null;
+  const known = CONFIG_KEYS[path.replace(/\[\d+\]/g, "[]")] ?? [];
+  for (const key2 of Object.keys(block)) {
+    if (!known.includes(key2)) warnings.push(`${path === "" ? "" : `${path}.`}${key2} is not a setting Review Voice reads; ignoring it.`);
+  }
+  return block;
+}
 function readHumanReview(block, result) {
   if (block === null) return;
   const limit = (key2) => {
@@ -11936,7 +12003,7 @@ function readHumanReview(block, result) {
   }
   const structure = block["structure"];
   if (structure === void 0) return;
-  const signals = asRecord(structure);
+  const signals = section(structure, "review.human_review.structure", result.warnings);
   if (signals === null) {
     result.warnings.push("review.human_review.structure must be a mapping; using the defaults.");
     return;
@@ -11994,8 +12061,8 @@ function readCostMode(review2, result) {
     }
   }
 }
-function parseLane(entry, taken) {
-  const block = asRecord(entry);
+function parseLane(entry, taken, path, warnings) {
+  const block = section(entry, path, warnings);
   if (block === null) return "must be a mapping";
   const { name, agent: agent2, prefix } = block;
   if (typeof name !== "string" || !/^[a-z][a-z0-9-]*$/.test(name)) return "name must be lower-case letters, digits and dashes";
@@ -12006,7 +12073,7 @@ function parseLane(entry, taken) {
   if (typeof agent2 !== "string" || !agentExists(agent2)) return `agent ${String(agent2)} is not an agent under agents/`;
   const when = {};
   if (block["when"] !== void 0) {
-    const rule = asRecord(block["when"]);
+    const rule = section(block["when"], `${path}.when`, warnings);
     if (rule === null) return "when must be a mapping";
     const min = rule["min_changed_source_lines"];
     if (min !== void 0) {
@@ -12015,7 +12082,7 @@ function parseLane(entry, taken) {
     }
     const paths = rule["paths"];
     if (paths !== void 0) {
-      if (!Array.isArray(paths) || !paths.every((path) => typeof path === "string" && path.length > 0)) return "when.paths must be a list of globs";
+      if (!Array.isArray(paths) || !paths.every((path2) => typeof path2 === "string" && path2.length > 0)) return "when.paths must be a list of globs";
       when.paths = paths;
     }
     const kinds = rule["exclude_kinds"];
@@ -12035,7 +12102,7 @@ function parseLane(entry, taken) {
   }
   const severity = {};
   if (block["severity"] !== void 0) {
-    const rule = asRecord(block["severity"]);
+    const rule = section(block["severity"], `${path}.severity`, warnings);
     if (rule === null) return "severity must be a mapping";
     const tier = (value) => LANE_TIERS.find((known) => known === value);
     if (rule["cap"] !== void 0) {
@@ -12044,7 +12111,7 @@ function parseLane(entry, taken) {
       severity.cap = cap;
     }
     if (rule["escalate"] !== void 0) {
-      const escalate = asRecord(rule["escalate"]);
+      const escalate = section(rule["escalate"], `${path}.severity.escalate`, warnings);
       const to = tier(escalate?.["to"]);
       if (to === void 0) return `severity.escalate.to must be one of ${LANE_TIERS.join(", ")}`;
       if (escalate?.["requires"] !== "blocker_confirmed") return "severity.escalate.requires must be blocker_confirmed";
@@ -12074,7 +12141,7 @@ function readLanes(value, result) {
     return;
   }
   value.forEach((entry, index) => {
-    const lane = parseLane(entry, result.lanes);
+    const lane = parseLane(entry, result.lanes, `review.lanes[${index}]`, result.warnings);
     if (typeof lane === "string") result.warnings.push(`review.lanes[${index}]: ${lane}; dropping the lane.`);
     else result.lanes.push(lane);
   });
@@ -12131,8 +12198,8 @@ function readCiRules(block, result) {
     result.warnings.push("ci.stuck_after_overrides must be a list; ignoring it.");
   } else if (overrides !== void 0) {
     const stuckAfter = [];
-    for (const entry of overrides) {
-      const override = asRecord(entry);
+    for (const [index, entry] of overrides.entries()) {
+      const override = section(entry, `ci.stuck_after_overrides[${index}]`, result.warnings);
       const name = override?.["name"];
       const value = minutes(override?.["minutes"]);
       if (typeof name !== "string" || name.length === 0 || value === void 0) {
@@ -12254,7 +12321,7 @@ function readQueue(block, result) {
   queue.maxPerPass = wholeAboveZero("max_per_pass") ?? queue.maxPerPass;
   queue.followUpDays = wholeAboveZero("follow_up_days") ?? queue.followUpDays;
   if (block["skip"] === void 0) return;
-  const skip2 = asRecord(block["skip"]);
+  const skip2 = section(block["skip"], "queue.skip", result.warnings);
   if (skip2 === null) {
     result.warnings.push("queue.skip must be a mapping; using the defaults.");
     return;
@@ -12277,7 +12344,7 @@ function readQueue(block, result) {
   queue.skip.allowBotsWhenRequested = flag2(skip2, "allow_bots_when_requested") ?? queue.skip.allowBotsWhenRequested;
   queue.skip.drafts = flag2(skip2, "drafts") ?? queue.skip.drafts;
   if (skip2["approved_at_head_by"] !== void 0) {
-    const approved = asRecord(skip2["approved_at_head_by"]);
+    const approved = section(skip2["approved_at_head_by"], "queue.skip.approved_at_head_by", result.warnings);
     if (approved === null) {
       result.warnings.push("queue.skip.approved_at_head_by must be a mapping; ignoring it.");
     } else {
@@ -12434,7 +12501,6 @@ function loadBaselineLayer(owner, path = join7(pluginRoot(), "policies", "baseli
     return null;
   }
 }
-var KNOWN_TOP_LEVEL = ["identity", "repositories", "review", "ci", "verdict", "static_evidence", "verification", "queue", "watch", "retention", "writes"];
 function readThresholds(review2, result) {
   const read = (key2) => {
     const value = review2[key2];
@@ -12480,6 +12546,108 @@ function configFile(repositoryRoot2, warnings = []) {
   }
   return join7(repositoryRoot2, ".review-voice", "config.yaml");
 }
+function readConfigDocument(value, repositoryRoot2, result) {
+  const doc = section(value, "", result.warnings);
+  if (doc === null) return;
+  const identity2 = section(doc["identity"], "identity", result.warnings);
+  if (typeof identity2?.["owner_reviewer"] === "string") {
+    result.ownerReviewer = identity2["owner_reviewer"];
+  }
+  readReviewers(identity2, result);
+  const repositories = section(doc["repositories"], "repositories", result.warnings);
+  for (const entry of asStringArray(repositories?.["include"])) {
+    const problem = allowlistEntryProblem(entry);
+    if (problem === null) result.allowlist.push(entry);
+    else result.warnings.push(`repositories.include: ${problem} Skipping it.`);
+  }
+  if (doc["queue"] !== void 0 && asRecord(doc["queue"]) === null) {
+    result.warnings.push("queue must be a mapping; using the defaults.");
+  }
+  readQueue(section(doc["queue"], "queue", result.warnings), result);
+  if (doc["watch"] !== void 0) readWatch(section(doc["watch"], "watch", result.warnings), result);
+  if (doc["retention"] !== void 0) readRetention(section(doc["retention"], "retention", result.warnings), result);
+  const staticEvidence = section(doc["static_evidence"], "static_evidence", result.warnings);
+  if (staticEvidence !== null) {
+    result.staticEvidence.enabled = staticEvidence["enabled"] === true;
+    result.staticEvidence.envPassthrough = readEnvPassthrough(
+      staticEvidence["env_passthrough"],
+      "static_evidence.env_passthrough",
+      result
+    );
+    const commands = Array.isArray(staticEvidence["commands"]) ? staticEvidence["commands"] : [];
+    for (const [index, entry] of commands.entries()) {
+      const command = section(entry, `static_evidence.commands[${index}]`, result.warnings);
+      if (command === null) continue;
+      const name = command["name"];
+      const run = command["run"];
+      if (typeof name !== "string" || typeof run !== "string") continue;
+      const timeout = positiveInt(command["timeout_seconds"]);
+      const version = command["version"];
+      result.staticEvidence.commands.push({
+        name,
+        run,
+        ...timeout === void 0 ? {} : { timeoutSeconds: timeout },
+        ...typeof version === "string" && version.trim() !== "" ? { version } : {}
+      });
+    }
+  }
+  const writes = section(doc["writes"], "writes", result.warnings);
+  result.postingEnabled = writes?.["github_posting_enabled"] === true;
+  const ci = section(doc["ci"], "ci", result.warnings);
+  const gateChecks = Array.isArray(ci?.["gate_checks"]) ? ci["gate_checks"] : [];
+  for (const [index, entry] of gateChecks.entries()) {
+    if (typeof entry === "string" && entry.length > 0) {
+      result.ciGateChecks.push({ name: entry });
+      continue;
+    }
+    const gate = section(entry, `ci.gate_checks[${index}]`, result.warnings);
+    const name = gate?.["name"];
+    if (typeof name !== "string" || name.length === 0) continue;
+    const summary = gate?.["summary"];
+    result.ciGateChecks.push({
+      name,
+      ...typeof summary === "string" && summary.length > 0 ? { summary } : {}
+    });
+  }
+  readCiRules(ci, result);
+  if (doc["verdict"] !== void 0) {
+    const verdict2 = section(doc["verdict"], "verdict", result.warnings);
+    if (verdict2 === null) result.warnings.push("verdict must be a mapping; using the defaults.");
+    readVerdictPolicy(verdict2, result);
+  }
+  const verification2 = section(doc["verification"], "verification", result.warnings);
+  if (verification2 !== null) {
+    const command = verification2["command"];
+    result.verification = {
+      enabled: verification2["enabled"] === true && typeof command === "string" && command.length > 0,
+      command: typeof command === "string" ? command : "",
+      name: typeof verification2["name"] === "string" ? verification2["name"] : void 0,
+      timeoutSeconds: positiveInt(verification2["timeout_seconds"]),
+      dropThreshold: typeof verification2["drop_threshold"] === "number" ? verification2["drop_threshold"] : void 0,
+      envPassthrough: readEnvPassthrough(verification2["env_passthrough"], "verification.env_passthrough", result),
+      blockPresent: true
+    };
+  }
+  const review2 = section(doc["review"], "review", result.warnings);
+  if (review2 !== null) {
+    readHumanReview(section(review2["human_review"], "review.human_review", result.warnings), result);
+    readStructure(section(review2["structure"], "review.structure", result.warnings), result);
+    readCostMode(review2, result);
+    readThresholds(review2, result);
+    readLanes(review2["lanes"], result);
+    const suggestions = review2["suggestions"];
+    if (typeof suggestions === "boolean") result.verdictPolicy.suggestions = suggestions;
+    else if (suggestions !== void 0) result.warnings.push("review.suggestions must be true or false; using false.");
+    result.layers.push({
+      scope: { type: "repository", key: repositoryRoot2 },
+      source: ".review-voice/config.yaml",
+      requiresApproval: false,
+      ...positiveInt(review2["max_findings"]) === void 0 ? {} : { maxFindings: positiveInt(review2["max_findings"]) },
+      ...positiveInt(review2["max_words_per_finding"]) === void 0 ? {} : { maxWordsPerFinding: positiveInt(review2["max_words_per_finding"]) },
+      ...positiveInt(review2["max_total_words"]) === void 0 ? {} : { maxTotalWords: positiveInt(review2["max_total_words"]) }
+    });
+  }
+}
 function loadConfig(repositoryRoot2, baselinePath, path, db) {
   const result = {
     ownerReviewer: null,
@@ -12515,110 +12683,7 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
   const configPath = path ?? configFile(repositoryRoot2, result.warnings);
   if (existsSync3(configPath)) {
     try {
-      const doc = asRecord(parse(readFileSync4(configPath, "utf8")));
-      if (doc !== null) {
-        for (const key2 of Object.keys(doc)) {
-          if (!KNOWN_TOP_LEVEL.includes(key2)) result.warnings.push(`${key2} is not a setting Review Voice reads; ignoring it.`);
-        }
-        const identity2 = asRecord(doc["identity"]);
-        if (typeof identity2?.["owner_reviewer"] === "string") {
-          result.ownerReviewer = identity2["owner_reviewer"];
-        }
-        readReviewers(identity2, result);
-        const repositories = asRecord(doc["repositories"]);
-        for (const entry of asStringArray(repositories?.["include"])) {
-          const problem = allowlistEntryProblem(entry);
-          if (problem === null) result.allowlist.push(entry);
-          else result.warnings.push(`repositories.include: ${problem} Skipping it.`);
-        }
-        if (doc["queue"] !== void 0 && asRecord(doc["queue"]) === null) {
-          result.warnings.push("queue must be a mapping; using the defaults.");
-        }
-        readQueue(asRecord(doc["queue"]), result);
-        if (doc["watch"] !== void 0) readWatch(asRecord(doc["watch"]), result);
-        if (doc["retention"] !== void 0) readRetention(asRecord(doc["retention"]), result);
-        const staticEvidence = asRecord(doc["static_evidence"]);
-        if (staticEvidence !== null) {
-          result.staticEvidence.enabled = staticEvidence["enabled"] === true;
-          result.staticEvidence.envPassthrough = readEnvPassthrough(
-            staticEvidence["env_passthrough"],
-            "static_evidence.env_passthrough",
-            result
-          );
-          const commands = Array.isArray(staticEvidence["commands"]) ? staticEvidence["commands"] : [];
-          for (const entry of commands) {
-            const command = asRecord(entry);
-            if (command === null) continue;
-            const name = command["name"];
-            const run = command["run"];
-            if (typeof name !== "string" || typeof run !== "string") continue;
-            const timeout = positiveInt(command["timeout_seconds"]);
-            const version = command["version"];
-            result.staticEvidence.commands.push({
-              name,
-              run,
-              ...timeout === void 0 ? {} : { timeoutSeconds: timeout },
-              ...typeof version === "string" && version.trim() !== "" ? { version } : {}
-            });
-          }
-        }
-        const writes = asRecord(doc["writes"]);
-        result.postingEnabled = writes?.["github_posting_enabled"] === true;
-        const ci = asRecord(doc["ci"]);
-        const gateChecks = Array.isArray(ci?.["gate_checks"]) ? ci["gate_checks"] : [];
-        for (const entry of gateChecks) {
-          if (typeof entry === "string" && entry.length > 0) {
-            result.ciGateChecks.push({ name: entry });
-            continue;
-          }
-          const gate = asRecord(entry);
-          const name = gate?.["name"];
-          if (typeof name !== "string" || name.length === 0) continue;
-          const summary = gate?.["summary"];
-          result.ciGateChecks.push({
-            name,
-            ...typeof summary === "string" && summary.length > 0 ? { summary } : {}
-          });
-        }
-        readCiRules(ci, result);
-        if (doc["verdict"] !== void 0) {
-          const verdict2 = asRecord(doc["verdict"]);
-          if (verdict2 === null) result.warnings.push("verdict must be a mapping; using the defaults.");
-          readVerdictPolicy(verdict2, result);
-        }
-        const verification2 = asRecord(doc["verification"]);
-        if (verification2 !== null) {
-          const command = verification2["command"];
-          result.verification = {
-            enabled: verification2["enabled"] === true && typeof command === "string" && command.length > 0,
-            command: typeof command === "string" ? command : "",
-            name: typeof verification2["name"] === "string" ? verification2["name"] : void 0,
-            timeoutSeconds: positiveInt(verification2["timeout_seconds"]),
-            dropThreshold: typeof verification2["drop_threshold"] === "number" ? verification2["drop_threshold"] : void 0,
-            envPassthrough: readEnvPassthrough(verification2["env_passthrough"], "verification.env_passthrough", result),
-            blockPresent: true
-          };
-        }
-        const review2 = asRecord(doc["review"]);
-        if (review2 !== null) {
-          readHumanReview(asRecord(review2["human_review"]), result);
-          readStructure(asRecord(review2["structure"]), result);
-          readCostMode(review2, result);
-          readThresholds(review2, result);
-          readLanes(review2["lanes"], result);
-          const suggestions = review2["suggestions"];
-          if (typeof suggestions === "boolean") result.verdictPolicy.suggestions = suggestions;
-          else if (suggestions !== void 0) result.warnings.push("review.suggestions must be true or false; using false.");
-          result.layers.push({
-            scope: { type: "repository", key: repositoryRoot2 },
-            source: ".review-voice/config.yaml",
-            requiresApproval: false,
-            ...positiveInt(review2["max_findings"]) === void 0 ? {} : { maxFindings: positiveInt(review2["max_findings"]) },
-            ...positiveInt(review2["max_words_per_finding"]) === void 0 ? {} : { maxWordsPerFinding: positiveInt(review2["max_words_per_finding"]) },
-            ...positiveInt(review2["max_total_words"]) === void 0 ? {} : { maxTotalWords: positiveInt(review2["max_total_words"]) }
-          });
-        }
-      }
+      readConfigDocument(parse(readFileSync4(configPath, "utf8")), repositoryRoot2, result);
     } catch (error) {
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }
@@ -13546,8 +13611,8 @@ function patchSections(patch) {
   });
   return sections2;
 }
-function sectionHunks(section) {
-  const parts = section.split(/^(?=@@ )/m);
+function sectionHunks(section2) {
+  const parts = section2.split(/^(?=@@ )/m);
   const header = parts[0].startsWith("@@ ") ? "" : parts.shift();
   const hunks = [];
   for (const text4 of parts) {
@@ -13674,8 +13739,8 @@ function withoutBaseChanges(delta, base, baseDelta) {
   }
   return { text: kept.length === 0 ? "" : changes.header + kept.join(""), mixed };
 }
-function hasReplayMarkers(section) {
-  return /^-<{7} /m.test(section) && /^->{7} /m.test(section);
+function hasReplayMarkers(section2) {
+  return /^-<{7} /m.test(section2) && /^->{7} /m.test(section2);
 }
 function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedReason, conflicts = [], withdrawn = [], priorMergeBase = mergeBase) {
   const diffText = git6.diffText;
@@ -13691,7 +13756,7 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
   const whole = [];
   const mixed = [];
   const resolved = [];
-  for (const [path, section] of own) {
+  for (const [path, section2] of own) {
     const delta = sinceReview.get(path);
     if (delta === void 0) continue;
     const fresh = withoutBaseChanges(delta, baseChanges.get(path), baseDelta.get(path));
@@ -13703,15 +13768,15 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
     }
     if (fresh.text.length === 0) continue;
     if (fresh.mixed) mixed.push(path);
-    else if (narrowToResolution(section, resolutions.get(path)) === null) whole.push(path);
+    else if (narrowToResolution(section2, resolutions.get(path)) === null) whole.push(path);
     else narrowed.push(path);
     resolved.push(fresh.text);
   }
   const rest = paths.filter((path) => !own.has(path));
   const leaked = [];
   const dropped = [];
-  const outsideSections = [...patchSections(read(from, rest))].map(([path, section]) => {
-    if (!hasReplayMarkers(section)) return section;
+  const outsideSections = [...patchSections(read(from, rest))].map(([path, section2]) => {
+    if (!hasReplayMarkers(section2)) return section2;
     const ownSection = patchSections(read(mergeBase, [path])).get(path);
     if (ownSection === void 0) {
       dropped.push(path);
@@ -18921,11 +18986,11 @@ function widenToSentence(quote2, sentences) {
 function answeredHeading(quote2, sentences) {
   const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
   if (wanted === "" || wanted.split(" ").length >= MIN_QUOTE_WORDS) return null;
-  const section = sentences.sections.find(({ from, to }) => {
+  const section2 = sentences.sections.find(({ from, to }) => {
     const body = sentences.text.slice(from, to);
     return body === wanted || body === `${wanted}.`;
   });
-  return section?.heading ?? null;
+  return section2?.heading ?? null;
 }
 function excerptOf(value, sentences, name, id, notes) {
   const problem = excerptProblem(value, sentences, name);
@@ -21701,7 +21766,7 @@ function contextCommand() {
           // Not raised on top of a parse failure: a config that did not parse
           // says nothing about whether it has a verification block, and the
           // parse error is the actionable item.
-          warnings: config2.verification.blockPresent || config2.warnings.length > 0 ? config2.warnings : existsSync10(configPath) ? [
+          warnings: config2.verification.blockPresent || config2.warnings.some((warning) => warning.startsWith(".review-voice/config.yaml could not be parsed")) ? config2.warnings : existsSync10(configPath) ? [
             ...config2.warnings,
             "No verification block in .review-voice/config.yaml, so the second-pass verifier never runs. Configs written before it existed do not have one. See the second-pass verification section of the README."
           ] : [
@@ -29031,9 +29096,9 @@ async function whileStoppable(run) {
 async function dispatch(argv) {
   const command = argv[0];
   if (command !== void 0 && (argv.includes("--help") || argv.includes("-h"))) {
-    const section = commandHelp(command);
-    if (section !== null) {
-      console.log(section);
+    const section2 = commandHelp(command);
+    if (section2 !== null) {
+      console.log(section2);
       return 0;
     }
     if (command === "--help" || command === "-h" || command === "help") {
@@ -29057,14 +29122,14 @@ ${topLevelHelp()}`);
         console.log(topLevelHelp());
         return 0;
       }
-      const section = commandHelp(topic);
-      if (section === null) {
+      const section2 = commandHelp(topic);
+      if (section2 === null) {
         console.error(`Unknown command: ${topic}
 
 ${topLevelHelp()}`);
         return 2;
       }
-      console.log(section);
+      console.log(section2);
       return 0;
     }
     case "--version":

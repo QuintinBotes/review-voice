@@ -114,6 +114,61 @@ function positiveInt(value: unknown): number | undefined {
 }
 
 /**
+ * Every mapping the loader reads, by dotted path ('' is the top level, [] each
+ * entry of a list), and the keys it reads there. A test checks the readers read
+ * exactly these. review.models is a map of stages, checked against MODEL_KEYS.
+ */
+export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
+  '': ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'verification', 'queue', 'watch', 'retention', 'writes'],
+  identity: ['owner_reviewer', 'reviewers'],
+  repositories: ['include'],
+  review: [
+    'human_review', 'structure', 'mode', 'models', 'confidence_threshold', 'final_score_threshold', 'lanes', 'suggestions',
+    'max_findings', 'max_words_per_finding', 'max_total_words',
+  ],
+  'review.human_review': [
+    'max_decision_points', 'max_hunk_decision_points', 'sensitive_paths', 'sensitive_exempt_paths', 'test_paths',
+    'generated_paths', 'cap_approval', 'structure',
+  ],
+  'review.human_review.structure': ['file_line_crossing', 'branch_growth', 'removed_controls'],
+  'review.structure': ['max_file_lines', 'max_added_branches_per_function', 'simplify'],
+  'review.lanes[]': ['name', 'agent', 'prefix', 'when', 'severity'],
+  'review.lanes[].when': ['min_changed_source_lines', 'paths', 'exclude_kinds', 'signals'],
+  'review.lanes[].severity': ['cap', 'escalate'],
+  'review.lanes[].severity.escalate': ['to', 'requires'],
+  ci: ['gate_checks', 'stuck_after_minutes', 'stuck_after_overrides', 'rerun_signatures', 'builtin_rerun_signatures'],
+  'ci.gate_checks[]': ['name', 'summary'],
+  'ci.stuck_after_overrides[]': ['name', 'minutes'],
+  verdict: [
+    'ci_pending', 'ci_red', 'ci_needs_rerun', 'carry_approval_on_unchanged', 'recheck_thread_before_post', 'never_approve',
+    'scope_block', 'scope_block_models', 'evidence_block', 'evidence_block_precedents',
+  ],
+  static_evidence: ['enabled', 'env_passthrough', 'commands'],
+  'static_evidence.commands[]': ['name', 'run', 'timeout_seconds', 'version'],
+  verification: ['enabled', 'command', 'name', 'timeout_seconds', 'drop_threshold', 'env_passthrough'],
+  queue: ['sources', 'teams', 'max_per_pass', 'follow_up_days', 'skip'],
+  'queue.skip': ['authors', 'assigned_to', 'author_patterns', 'allow_bots_when_requested', 'drafts', 'approved_at_head_by'],
+  'queue.skip.approved_at_head_by': ['logins', 'sources'],
+  watch: ['workspace', 'interval', 'post', 'lock_port', 'run_repository_commands', 'review_timeout', 'max_attempts_per_head'],
+  retention: ['runs_days', 'audit_days'],
+  writes: ['github_posting_enabled'],
+};
+
+/**
+ * `value` as a mapping, warning for each key CONFIG_KEYS does not list at
+ * `path`, so a misspelt setting is named rather than dropped (issue 318).
+ */
+function section(value: unknown, path: string, warnings: string[]): Record<string, unknown> | null {
+  const block = asRecord(value);
+  if (block === null) return null;
+  const known = CONFIG_KEYS[path.replace(/\[\d+\]/g, '[]')] ?? [];
+  for (const key of Object.keys(block)) {
+    if (!known.includes(key)) warnings.push(`${path === '' ? '' : `${path}.`}${key} is not a setting Review Voice reads; ignoring it.`);
+  }
+  return block;
+}
+
+/**
  * A limit that is not a whole number above zero would make every change high
  * or none of them, so it falls back to the default and says so.
  */
@@ -149,7 +204,7 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
 
   const structure = block['structure'];
   if (structure === undefined) return;
-  const signals = asRecord(structure);
+  const signals = section(structure, 'review.human_review.structure', result.warnings);
   if (signals === null) {
     result.warnings.push('review.human_review.structure must be a mapping; using the defaults.');
     return;
@@ -217,8 +272,8 @@ function readCostMode(review: Record<string, unknown>, result: LoadedConfig): vo
 }
 
 /** What is wrong with one `review.lanes` entry, or the lane it describes. */
-function parseLane(entry: unknown, taken: readonly Lane[]): Lane | string {
-  const block = asRecord(entry);
+function parseLane(entry: unknown, taken: readonly Lane[], path: string, warnings: string[]): Lane | string {
+  const block = section(entry, path, warnings);
   if (block === null) return 'must be a mapping';
   const { name, agent, prefix } = block;
   if (typeof name !== 'string' || !/^[a-z][a-z0-9-]*$/.test(name)) return 'name must be lower-case letters, digits and dashes';
@@ -230,7 +285,7 @@ function parseLane(entry: unknown, taken: readonly Lane[]): Lane | string {
 
   const when: Lane['when'] = {};
   if (block['when'] !== undefined) {
-    const rule = asRecord(block['when']);
+    const rule = section(block['when'], `${path}.when`, warnings);
     if (rule === null) return 'when must be a mapping';
     const min = rule['min_changed_source_lines'];
     if (min !== undefined) {
@@ -260,7 +315,7 @@ function parseLane(entry: unknown, taken: readonly Lane[]): Lane | string {
 
   const severity: Lane['severity'] = {};
   if (block['severity'] !== undefined) {
-    const rule = asRecord(block['severity']);
+    const rule = section(block['severity'], `${path}.severity`, warnings);
     if (rule === null) return 'severity must be a mapping';
     const tier = (value: unknown): Tier | undefined => LANE_TIERS.find((known) => known === value);
     if (rule['cap'] !== undefined) {
@@ -269,7 +324,7 @@ function parseLane(entry: unknown, taken: readonly Lane[]): Lane | string {
       severity.cap = cap;
     }
     if (rule['escalate'] !== undefined) {
-      const escalate = asRecord(rule['escalate']);
+      const escalate = section(rule['escalate'], `${path}.severity.escalate`, warnings);
       const to = tier(escalate?.['to']);
       if (to === undefined) return `severity.escalate.to must be one of ${LANE_TIERS.join(', ')}`;
       if (escalate?.['requires'] !== 'blocker_confirmed') return 'severity.escalate.requires must be blocker_confirmed';
@@ -310,7 +365,7 @@ function readLanes(value: unknown, result: LoadedConfig): void {
     return;
   }
   value.forEach((entry, index) => {
-    const lane = parseLane(entry, result.lanes);
+    const lane = parseLane(entry, result.lanes, `review.lanes[${index}]`, result.warnings);
     if (typeof lane === 'string') result.warnings.push(`review.lanes[${index}]: ${lane}; dropping the lane.`);
     else result.lanes.push(lane);
   });
@@ -357,8 +412,8 @@ function readCiRules(block: Record<string, unknown> | null, result: LoadedConfig
     result.warnings.push('ci.stuck_after_overrides must be a list; ignoring it.');
   } else if (overrides !== undefined) {
     const stuckAfter: { name: string; minutes: number }[] = [];
-    for (const entry of overrides) {
-      const override = asRecord(entry);
+    for (const [index, entry] of overrides.entries()) {
+      const override = section(entry, `ci.stuck_after_overrides[${index}]`, result.warnings);
       const name = override?.['name'];
       const value = minutes(override?.['minutes']);
       if (typeof name !== 'string' || name.length === 0 || value === undefined) {
@@ -494,7 +549,7 @@ function readQueue(block: Record<string, unknown> | null, result: LoadedConfig):
   queue.followUpDays = wholeAboveZero('follow_up_days') ?? queue.followUpDays;
 
   if (block['skip'] === undefined) return;
-  const skip = asRecord(block['skip']);
+  const skip = section(block['skip'], 'queue.skip', result.warnings);
   if (skip === null) {
     result.warnings.push('queue.skip must be a mapping; using the defaults.');
     return;
@@ -518,7 +573,7 @@ function readQueue(block: Record<string, unknown> | null, result: LoadedConfig):
   queue.skip.drafts = flag(skip, 'drafts') ?? queue.skip.drafts;
 
   if (skip['approved_at_head_by'] !== undefined) {
-    const approved = asRecord(skip['approved_at_head_by']);
+    const approved = section(skip['approved_at_head_by'], 'queue.skip.approved_at_head_by', result.warnings);
     if (approved === null) {
       result.warnings.push('queue.skip.approved_at_head_by must be a mapping; ignoring it.');
     } else {
@@ -723,8 +778,6 @@ export function loadBaselineLayer(owner: string | null, path = join(pluginRoot()
   }
 }
 
-const KNOWN_TOP_LEVEL = ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'verification', 'queue', 'watch', 'retention', 'writes'];
-
 /** A score gate must be a fraction in (0, 1]. */
 function readThresholds(review: Record<string, unknown>, result: LoadedConfig): void {
   const read = (key: string): number | undefined => {
@@ -786,6 +839,133 @@ export function configFile(repositoryRoot: string, warnings: string[] = []): str
 }
 
 /**
+ * Reads a parsed config document into `result`. Split from `loadConfig` so a
+ * test can see every key it reads (issue 318).
+ */
+export function readConfigDocument(value: unknown, repositoryRoot: string, result: LoadedConfig): void {
+  const doc = section(value, '', result.warnings);
+  if (doc === null) return;
+  const identity = section(doc['identity'], 'identity', result.warnings);
+  if (typeof identity?.['owner_reviewer'] === 'string') {
+    result.ownerReviewer = identity['owner_reviewer'];
+  }
+  readReviewers(identity, result);
+  const repositories = section(doc['repositories'], 'repositories', result.warnings);
+  for (const entry of asStringArray(repositories?.['include'])) {
+    const problem = allowlistEntryProblem(entry);
+    if (problem === null) result.allowlist.push(entry);
+    else result.warnings.push(`repositories.include: ${problem} Skipping it.`);
+  }
+  if (doc['queue'] !== undefined && asRecord(doc['queue']) === null) {
+    result.warnings.push('queue must be a mapping; using the defaults.');
+  }
+  readQueue(section(doc['queue'], 'queue', result.warnings), result);
+  if (doc['watch'] !== undefined) readWatch(section(doc['watch'], 'watch', result.warnings), result);
+  if (doc['retention'] !== undefined) readRetention(section(doc['retention'], 'retention', result.warnings), result);
+
+  const staticEvidence = section(doc['static_evidence'], 'static_evidence', result.warnings);
+  if (staticEvidence !== null) {
+    result.staticEvidence.enabled = staticEvidence['enabled'] === true;
+    result.staticEvidence.envPassthrough = readEnvPassthrough(
+      staticEvidence['env_passthrough'],
+      'static_evidence.env_passthrough',
+      result,
+    );
+    const commands = Array.isArray(staticEvidence['commands']) ? staticEvidence['commands'] : [];
+    for (const [index, entry] of commands.entries()) {
+      const command = section(entry, `static_evidence.commands[${index}]`, result.warnings);
+      if (command === null) continue;
+      const name = command['name'];
+      const run = command['run'];
+      if (typeof name !== 'string' || typeof run !== 'string') continue;
+      const timeout = positiveInt(command['timeout_seconds']);
+      // How to ask the tool for its version; only a non-blank string counts.
+      const version = command['version'];
+      result.staticEvidence.commands.push({
+        name,
+        run,
+        ...(timeout === undefined ? {} : { timeoutSeconds: timeout }),
+        ...(typeof version === 'string' && version.trim() !== '' ? { version } : {}),
+      });
+    }
+  }
+
+  const writes = section(doc['writes'], 'writes', result.warnings);
+  result.postingEnabled = writes?.['github_posting_enabled'] === true;
+
+  const ci = section(doc['ci'], 'ci', result.warnings);
+  const gateChecks = Array.isArray(ci?.['gate_checks']) ? (ci['gate_checks'] as unknown[]) : [];
+  for (const [index, entry] of gateChecks.entries()) {
+    // A bare string is a name; anything malformed is skipped rather than
+    // guessed at, since a wrong gate would hide a real failure.
+    if (typeof entry === 'string' && entry.length > 0) {
+      result.ciGateChecks.push({ name: entry });
+      continue;
+    }
+    const gate = section(entry, `ci.gate_checks[${index}]`, result.warnings);
+    const name = gate?.['name'];
+    if (typeof name !== 'string' || name.length === 0) continue;
+    const summary = gate?.['summary'];
+    result.ciGateChecks.push({
+      name,
+      ...(typeof summary === 'string' && summary.length > 0 ? { summary } : {}),
+    });
+  }
+
+  readCiRules(ci, result);
+
+  if (doc['verdict'] !== undefined) {
+    const verdict = section(doc['verdict'], 'verdict', result.warnings);
+    if (verdict === null) result.warnings.push('verdict must be a mapping; using the defaults.');
+    readVerdictPolicy(verdict, result);
+  }
+
+  const verification = section(doc['verification'], 'verification', result.warnings);
+  if (verification !== null) {
+    const command = verification['command'];
+    result.verification = {
+      enabled: verification['enabled'] === true && typeof command === 'string' && command.length > 0,
+      command: typeof command === 'string' ? command : '',
+      name: typeof verification['name'] === 'string' ? verification['name'] : undefined,
+      timeoutSeconds: positiveInt(verification['timeout_seconds']),
+      dropThreshold:
+        typeof verification['drop_threshold'] === 'number' ? verification['drop_threshold'] : undefined,
+      envPassthrough: readEnvPassthrough(verification['env_passthrough'], 'verification.env_passthrough', result),
+      blockPresent: true,
+    };
+  }
+
+  const review = section(doc['review'], 'review', result.warnings);
+  if (review !== null) {
+    // The user's own config is trusted: they wrote it, in their checkout.
+    readHumanReview(section(review['human_review'], 'review.human_review', result.warnings), result);
+    readStructure(section(review['structure'], 'review.structure', result.warnings), result);
+    readCostMode(review, result);
+    readThresholds(review, result);
+    readLanes(review['lanes'], result);
+    // On the verdict policy, as cap_approval is, so verdict, post and the
+    // watcher read it without plumbing of their own (docs/adr/0033).
+    const suggestions = review['suggestions'];
+    if (typeof suggestions === 'boolean') result.verdictPolicy.suggestions = suggestions;
+    else if (suggestions !== undefined) result.warnings.push('review.suggestions must be true or false; using false.');
+    result.layers.push({
+      scope: { type: 'repository', key: repositoryRoot },
+      source: '.review-voice/config.yaml',
+      requiresApproval: false,
+      ...(positiveInt(review['max_findings']) === undefined
+        ? {}
+        : { maxFindings: positiveInt(review['max_findings'])! }),
+      ...(positiveInt(review['max_words_per_finding']) === undefined
+        ? {}
+        : { maxWordsPerFinding: positiveInt(review['max_words_per_finding'])! }),
+      ...(positiveInt(review['max_total_words']) === undefined
+        ? {}
+        : { maxTotalWords: positiveInt(review['max_total_words'])! }),
+    });
+  }
+}
+
+/**
  * `path` reads that config file instead of the one `configFile` names; `watch` passes its own copy.
  *
  * `db` is optional and the only thing that loads approved policies: without a
@@ -828,130 +1008,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
   const configPath = path ?? configFile(repositoryRoot, result.warnings);
   if (existsSync(configPath)) {
     try {
-      const doc = asRecord(parseYaml(readFileSync(configPath, 'utf8')));
-      if (doc !== null) {
-        for (const key of Object.keys(doc)) {
-          if (!KNOWN_TOP_LEVEL.includes(key)) result.warnings.push(`${key} is not a setting Review Voice reads; ignoring it.`);
-        }
-        const identity = asRecord(doc['identity']);
-        if (typeof identity?.['owner_reviewer'] === 'string') {
-          result.ownerReviewer = identity['owner_reviewer'];
-        }
-        readReviewers(identity, result);
-        const repositories = asRecord(doc['repositories']);
-        for (const entry of asStringArray(repositories?.['include'])) {
-          const problem = allowlistEntryProblem(entry);
-          if (problem === null) result.allowlist.push(entry);
-          else result.warnings.push(`repositories.include: ${problem} Skipping it.`);
-        }
-        if (doc['queue'] !== undefined && asRecord(doc['queue']) === null) {
-          result.warnings.push('queue must be a mapping; using the defaults.');
-        }
-        readQueue(asRecord(doc['queue']), result);
-        if (doc['watch'] !== undefined) readWatch(asRecord(doc['watch']), result);
-        if (doc['retention'] !== undefined) readRetention(asRecord(doc['retention']), result);
-
-        const staticEvidence = asRecord(doc['static_evidence']);
-        if (staticEvidence !== null) {
-          result.staticEvidence.enabled = staticEvidence['enabled'] === true;
-          result.staticEvidence.envPassthrough = readEnvPassthrough(
-            staticEvidence['env_passthrough'],
-            'static_evidence.env_passthrough',
-            result,
-          );
-          const commands = Array.isArray(staticEvidence['commands']) ? staticEvidence['commands'] : [];
-          for (const entry of commands) {
-            const command = asRecord(entry);
-            if (command === null) continue;
-            const name = command['name'];
-            const run = command['run'];
-            if (typeof name !== 'string' || typeof run !== 'string') continue;
-            const timeout = positiveInt(command['timeout_seconds']);
-            // How to ask the tool for its version; only a non-blank string counts.
-            const version = command['version'];
-            result.staticEvidence.commands.push({
-              name,
-              run,
-              ...(timeout === undefined ? {} : { timeoutSeconds: timeout }),
-              ...(typeof version === 'string' && version.trim() !== '' ? { version } : {}),
-            });
-          }
-        }
-
-        const writes = asRecord(doc['writes']);
-        result.postingEnabled = writes?.['github_posting_enabled'] === true;
-
-        const ci = asRecord(doc['ci']);
-        const gateChecks = Array.isArray(ci?.['gate_checks']) ? (ci['gate_checks'] as unknown[]) : [];
-        for (const entry of gateChecks) {
-          // A bare string is a name; anything malformed is skipped rather than
-          // guessed at, since a wrong gate would hide a real failure.
-          if (typeof entry === 'string' && entry.length > 0) {
-            result.ciGateChecks.push({ name: entry });
-            continue;
-          }
-          const gate = asRecord(entry);
-          const name = gate?.['name'];
-          if (typeof name !== 'string' || name.length === 0) continue;
-          const summary = gate?.['summary'];
-          result.ciGateChecks.push({
-            name,
-            ...(typeof summary === 'string' && summary.length > 0 ? { summary } : {}),
-          });
-        }
-
-        readCiRules(ci, result);
-
-        if (doc['verdict'] !== undefined) {
-          const verdict = asRecord(doc['verdict']);
-          if (verdict === null) result.warnings.push('verdict must be a mapping; using the defaults.');
-          readVerdictPolicy(verdict, result);
-        }
-
-        const verification = asRecord(doc['verification']);
-        if (verification !== null) {
-          const command = verification['command'];
-          result.verification = {
-            enabled: verification['enabled'] === true && typeof command === 'string' && command.length > 0,
-            command: typeof command === 'string' ? command : '',
-            name: typeof verification['name'] === 'string' ? verification['name'] : undefined,
-            timeoutSeconds: positiveInt(verification['timeout_seconds']),
-            dropThreshold:
-              typeof verification['drop_threshold'] === 'number' ? verification['drop_threshold'] : undefined,
-            envPassthrough: readEnvPassthrough(verification['env_passthrough'], 'verification.env_passthrough', result),
-            blockPresent: true,
-          };
-        }
-
-        const review = asRecord(doc['review']);
-        if (review !== null) {
-          // The user's own config is trusted: they wrote it, in their checkout.
-          readHumanReview(asRecord(review['human_review']), result);
-          readStructure(asRecord(review['structure']), result);
-          readCostMode(review, result);
-          readThresholds(review, result);
-          readLanes(review['lanes'], result);
-          // On the verdict policy, as cap_approval is, so verdict, post and the
-          // watcher read it without plumbing of their own (docs/adr/0033).
-          const suggestions = review['suggestions'];
-          if (typeof suggestions === 'boolean') result.verdictPolicy.suggestions = suggestions;
-          else if (suggestions !== undefined) result.warnings.push('review.suggestions must be true or false; using false.');
-          result.layers.push({
-            scope: { type: 'repository', key: repositoryRoot },
-            source: '.review-voice/config.yaml',
-            requiresApproval: false,
-            ...(positiveInt(review['max_findings']) === undefined
-              ? {}
-              : { maxFindings: positiveInt(review['max_findings'])! }),
-            ...(positiveInt(review['max_words_per_finding']) === undefined
-              ? {}
-              : { maxWordsPerFinding: positiveInt(review['max_words_per_finding'])! }),
-            ...(positiveInt(review['max_total_words']) === undefined
-              ? {}
-              : { maxTotalWords: positiveInt(review['max_total_words'])! }),
-          });
-        }
-      }
+      readConfigDocument(parseYaml(readFileSync(configPath, 'utf8')), repositoryRoot, result);
     } catch (error) {
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }

@@ -183,8 +183,7 @@ review:
     #   prefix: cc_
     #   when: { signals: [risk-markers], min_changed_source_lines: 80 }
     #   severity: { cap: important }
-  challenge:
-    enabled: true                    # ADR 0024; on in standard and thorough
+  # The challenge stage (ADR 0024) runs in standard and thorough mode and has no switch of its own.
   human_review:
     cap_approval: true               # ADR 0028; false lets a clean complex change approve
 

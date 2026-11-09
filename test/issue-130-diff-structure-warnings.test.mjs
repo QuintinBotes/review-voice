@@ -59,7 +59,8 @@ test('diff reports all loaded structural warnings and retains the defaults', () 
     const result = spawnSync(process.execPath, [bundle, 'diff', '--out', output], { cwd: directory, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
 
-    for (const warning of context.warnings) {
+    // The missing-verification advisory is context's own, not a loader warning, so diff does not print it.
+    for (const warning of context.warnings.filter((warning) => !warning.startsWith('No verification block'))) {
       assert.match(result.stderr, new RegExp(`Warning: ${warning.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
     }
     const summary = JSON.parse(result.stdout).summary;

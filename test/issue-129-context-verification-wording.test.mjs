@@ -62,3 +62,18 @@ test('context distinguishes no config file from a config without verification', 
     rmSync(noVerification, { recursive: true, force: true });
   }
 });
+
+test('a config warning other than a parse failure keeps the missing-verification advisory', () => {
+  // The config from issue 318: two misspelt nested keys and no verification block.
+  const typo = repository('verdict:\n  never_aprove: true\nreview:\n  suggestion: true\n');
+  try {
+    assert.deepEqual(context(typo).warnings, [
+      'verdict.never_aprove is not a setting Review Voice reads; ignoring it.',
+      'review.suggestion is not a setting Review Voice reads; ignoring it.',
+      'No verification block in .review-voice/config.yaml, so the second-pass verifier never runs. ' +
+        'Configs written before it existed do not have one. See the second-pass verification section of the README.',
+    ]);
+  } finally {
+    rmSync(typo, { recursive: true, force: true });
+  }
+});
