@@ -211,6 +211,27 @@ static_evidence:
   # any other variable a command needs by name (issue 279). Example:
   # env_passthrough: [NPM_TOKEN]
 
+reproduction:
+  # Off by default. In thorough mode the verifier may write a reproduction for
+  # a blocking or important finding; the CLI runs it in a throwaway copy of the
+  # head worktree in a confined runner (no network, writes only inside that
+  # copy, which is removed after), and only through a runner listed here.
+  # Linux only for now. On macOS nothing runs until issue #321 hardens the
+  # sandbox-exec profile. Running pull request code is the risk this switch
+  # accepts (docs/adr/0003, docs/THREAT-MODEL.md).
+  enabled: false
+  runners: []
+  # Example:
+  #   - name: node-test
+  #     run: node --test {file}
+  #     extension: .test.mjs
+  #     timeout_seconds: 120
+  # Directories of your clone linked into each copy so a reproduction can
+  # import installed dependencies. The sandbox keeps them read-only. None by default.
+  link_paths: []
+  memory_mb: 1024
+  cpu_seconds: 60
+
 verification:
   # An optional second pass over each surviving finding, run by a command you
   # choose. Off by default.
@@ -276,8 +297,8 @@ watch:
   max_attempts_per_head: 2           # a head that failed this often is left for you
   review_timeout: 45m                # a review running longer is killed and recorded as failed; at most 6h
   # false runs each review with REVIEW_VOICE_NO_COMMANDS=1, so the static
-  # evidence and second-pass verification commands in this config do not run
-  # unattended. true lets them run.
+  # evidence and second-pass verification commands in this config, and
+  # reproductions, do not run unattended. true lets them run.
   run_repository_commands: false
   # The 127.0.0.1 port that keeps a second watcher on this data directory
   # from starting. Derived from the data directory by default (49152 to

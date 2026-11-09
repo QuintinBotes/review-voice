@@ -26,6 +26,8 @@ export function contextCommand(): number {
           ownerReviewer: config.ownerReviewer,
           allowlist: config.allowlist,
           staticEvidence: config.staticEvidence,
+          // The driver reads the runners from context.json, as it reads the configured check names.
+          reproduction: { enabled: config.reproduction.enabled, runners: config.reproduction.runners },
           // The review command needs the structural opt-ins after resolving
           // config, including the optional simplification pass.
           structure: config.structure,

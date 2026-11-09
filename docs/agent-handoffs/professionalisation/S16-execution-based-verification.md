@@ -225,6 +225,193 @@ through the link: read, never write (below). Each link's target is allowed
 for reading by name, because the watcher's clones sit inside the data
 directory (`watch/command.ts:192`), which the sandbox otherwise hides.
 
+#### Amendment 2026-11-09: a throwaway copy per reproduction
+
+This amendment changes "Placing the file", the parts of "Confinement" that
+name the worktree or the macOS mechanism, the first rule of "The reach marker
+and the flaky rule", and every other part of this spec that has a reproduction
+run on the head worktree, restores the worktree, or links `link_paths` into it
+and removes them. Those are the Outcome, the comment in the Configuration
+sample, "Tests for part A", AC-2, AC-3, AC-4 and the Orbit goal for part A, and
+"Where the earlier text differs" below gives each as amended. Where they
+differ, this amendment wins.
+
+Why. On macOS a process that a reproduction starts with `setsid`, or with
+Node's `detached: true` (posix_spawn with POSIX_SPAWN_SETSID), leaves the
+process group. It outlives the run, the group kill and a stop signal. It stays
+inside the sandbox, so it has no network and writes only where the run could,
+but the run could write the head worktree, and so it could write that worktree
+after the modification check, where the challenger reads next. Denying
+`setsid` in the profile, a nested sandbox and a reaper inside the same sandbox
+instance were each tried and none closes it. Linux is not affected, because
+the pid namespace with `--kill-child` ends every descendant, but the design
+below is the same on both platforms. The rule it keeps is that nothing a
+sandboxed process can write is read by any later stage. The same process is
+why the change check no longer runs git and the file is written only once,
+since after a run nothing the CLI does in the copy may depend on what the copy
+now holds.
+
+What changed.
+
+- macOS is off until issue #321, which hardens the sandbox-exec profile before
+  macOS runs a reproduction. On darwin `probeSandbox` returns
+  `mechanism: 'none'` with probe
+  `sandbox-exec is not yet trusted to confine a reproduction (issue #321)`,
+  before it writes or spawns anything, so every reproduction there is
+  `did-not-run` with that reason and `reproduce --probe` prints it. The
+  profile, the macOS wrapper, the probe's macOS escapes and their unit tests
+  stay for #321; the probe body is `runProbe`, which a reproduction reaches
+  only through `probeSandbox`. The tests that need a real sandbox run where
+  the probe passes, which is the Linux CI job, and skip with the probe's
+  reason elsewhere; every rule also has a test through the injected spawn on
+  the Linux wrapper, which runs on every host.
+- The head worktree is never writable by a reproduction. Each candidate's
+  reproduction runs in its own throwaway copy of it, made with `cpSync`
+  (recursive, `verbatimSymlinks`, `COPYFILE_FICLONE`, never overwriting), so
+  APFS and reflink filesystems clone and others copy, and a relative link in
+  the copy resolves inside the copy. A copy that cannot be made is
+  `did-not-run` with reason `could not copy the worktree: <first line>`, and
+  the next candidate still runs.
+- Every execution gets a fresh directory,
+  `<run dir>/reproductions/trees/<candidateId>-<random>/`, made with
+  `mkdtempSync`, so a directory left from before is never used or removed.
+  The copy sits at `tree` and the scratch directory (its HOME and TMPDIR) at
+  `scratch`. `trees` is a reserved name. The sandbox may write only those two,
+  never the directory that holds them, so a process one candidate leaves
+  behind cannot reach another candidate's run. The `<scratch>` of
+  "Confinement" is this per-execution directory. A second verification entry
+  with a candidate id already seen in the invocation is `did-not-run` with
+  reason `duplicate candidate id`, and nothing is spawned for it, since the
+  kept copy of the file and the record are named by the id.
+- Placement is checked in the copy, where the CLI writes. A tracked absolute
+  link that points into the head worktree is refused with
+  `its directory resolves outside the worktree`. `link_paths` are linked into
+  each copy before its first run, and never into the head worktree. git runs
+  in a copy only before its first run, for `rev-parse` and the placement
+  rule's `git ls-files`, pinned per copy and with `GIT_OPTIONAL_LOCKS=0`,
+  because the copy's `.git` names the head's git directory. After any
+  reproduction has run in a copy, the CLI runs no git command in it.
+- The file is written once, into the fresh copy, before run 1, never over an
+  existing entry, and the CLI neither removes nor rewrites it between runs.
+  No reproduction has run in the copy before that write (only the probe, the
+  CLI's own script), so no directory check guards it, and there is no second
+  write for a link left by run 1 to redirect.
+- The change check is a walk of the whole copy that uses `lstat` and never
+  follows a link, with each entry keyed by its path as raw bytes, so a name
+  that is not UTF-8 never decodes to a sibling's name and is never read as
+  that sibling. A file or a link records its mode, inode, size, mtime and
+  ctime; a directory its mode and inode, its own times left out, since every
+  name in it is an entry of its own. The links the CLI made and the
+  reproduction's own file are entries like any other, so a link re-pointed or
+  replaced and a change to the file are changes. The baseline is taken after
+  the write. The check runs after run 1, again before run 2, and after run 2,
+  so a change made after run 1 was checked (by a process run 1 left behind)
+  keeps run 2 from starting. A walk is capped at twice the baseline's entry
+  count plus 10000; a walk past the cap, or one that fails, is `did-not-run`
+  with reason `the reproduction modified the worktree (<reason>)`, the reason
+  being `more than <cap> entries` or `walk failed: <code>`.
+- There is no restore. A run that changes anything is `did-not-run` with
+  reason `the reproduction modified the worktree (<n> paths)`, and no further
+  run happens in that copy. After a candidate's last run, after a throw, or on
+  a stop signal, the copy and its scratch are removed; a removal that fails is
+  named on stderr as `reproduce: could not remove <path>: <reason>` and never
+  costs the report, and the retention sweep removes what is left. The
+  execution's directory is first renamed to a dot-name,
+  `.<candidateId>-<random>-<hex>`, which no profile allows and no candidate id
+  can take, because Node's recursive delete reads each directory by its path
+  and a process left behind could otherwise swap one for a link to anywhere
+  while the delete walks it. The sandbox judges the path an operation names
+  when it is made, so after the rename nothing confined can change the
+  directory. One that cannot be renamed is left in place rather than walked.
+- An exit status of 137 or 152 (SIGKILL or SIGXCPU, as a shell reports a child
+  a limit ended) is `did-not-run` with reason
+  `may have been stopped by a resource limit (exit <code>)`, beside the rule
+  for a runner's own `signal: 'SIGXCPU'` or `signal: 'SIGKILL'` line, which is
+  `may have been stopped at the <cpu_seconds>s CPU limit`. A limit stop proves
+  no more than a timeout does.
+- Signals, kept for #321. The macOS profile has `(deny signal)` followed by
+  `(allow signal (target same-sandbox))`, so neither a reproduction nor a
+  process it leaves behind can signal the CLI or any other process of the user.
+  The macOS probe has a fifth escape, `signal`, which is seen when the probe
+  can send signal 0 to the CLI's own pid (EPERM when the rule holds). The
+  Linux probe does not try it: the pid namespace shows no outside process, and
+  the CLI's host pid can name one of the namespace's own processes (a CLI that
+  is pid 1 of a container), which would fail the probe for no escape.
+  `reproduce --probe` uses the head worktree as its layout, since the probe
+  writes nothing there.
+- Preferences, kept for #321. The macOS profile also has
+  `(deny user-preference-write)`. cfprefsd writes a named preference domain
+  into the user's real `~/Library/Preferences` for the process that asks,
+  whatever its `HOME`, and the sandbox checks that as a preference write,
+  never as a file write of the process, so without the rule a reproduction
+  could rewrite the preferences of any application. The macOS probe has a
+  sixth escape, `preference`, seen when the probe can write a named domain
+  with `/usr/bin/defaults`.
+- The record is unchanged. `file` is the worktree-relative path and `copy` is
+  `<run dir>/reproductions/<candidateId>/<basename>`, outside every writable
+  place.
+
+What part B relies on. The head worktree after `reproduce` is exactly as the
+driver made it, so the challenger reads the head worktree and, for a
+reproduction, the file at `copy`, and no stage reads anything a reproduction
+could write. On macOS every record is `did-not-run` until #321, so part B
+holds nothing there on a reproduction.
+
+Where the earlier text differs.
+
+- The Outcome. On Linux the CLI runs a reproduction twice in a throwaway copy
+  of the head worktree, with no writes outside that copy and its own scratch
+  directory. On macOS it runs none until #321.
+- The Configuration sample. Its comment reads as it does in
+  `templates/config.example.yaml`, which is the block AC-1 checks the template
+  against. The CLI runs a reproduction in a throwaway copy of the head
+  worktree, which it writes only inside and which is removed after, on Linux
+  only until #321, and `link_paths` are linked into each copy.
+- "Confinement". The macOS mechanism is kept as written for #321, and
+  `probeSandbox` reports `mechanism: 'none'` on darwin until then.
+- "The reach marker and the flaky rule". The first rule also covers an exit of
+  137 or 152, with the reason above.
+- "Tests for part A". The skipped report and the absent `reproductions`
+  directory show that nothing was spawned. A touch-marker runner shows nothing
+  now, because a confined run writes only inside its copy and its scratch
+  directory, and both are removed with it. "`link_paths` linking and removal"
+  reads "`link_paths` linked into each copy and never into the head worktree".
+  The macOS wrapper and profile are checked as unit tests of `wrapperArgv` and
+  `sandboxProfile`, and the runner's rules through the Linux wrapper.
+- AC-2, as amended. `reproduce` with `enabled: false`, with no runner, or under
+  `REVIEW_VOICE_NO_COMMANDS=1` writes the skipped report and spawns nothing
+  (no `reproductions` directory is made); `reproduce --probe` prints the
+  `sandbox` object and runs no reproduction.
+- AC-3, as amended. With an injected `spawn`, the runner builds the platform
+  wrapper argv, the `ulimit` line and the allowlisted environment as
+  specified, substitutes `{file}` once with a single-quoted path, runs at most
+  twice, and classifies every branch of the reach-marker and flaky rules into
+  `reproduced`, `did-not-fail` and `did-not-run` with the specified reasons,
+  an exit of 137 or 152 included; output is redacted and capped at 8 KiB per
+  run; a path failing any placement rule is refused with its rule, a
+  symlinked directory leaving the copy, an absolute link into the head
+  worktree and a single quote included; a run that modifies its copy, an
+  ignored path and its own file included, a change to the copy after run 1
+  was checked, a walk past the cap and a walk that fails are each
+  `did-not-run` with no further run, the head worktree untouched and the copy
+  removed; the file is written once and run 2 meets the same file; no git
+  runs in a copy after a run, and every git call before carries the pinned
+  `--git-dir` and `--work-tree`; every execution gets a fresh directory, and a
+  second entry for one candidate id is `did-not-run`; on darwin the probe is
+  `none` and nothing is spawned; the macOS profile's only writable paths are
+  the candidate's copy and its `<scratch>`; `link_paths` are linked into each
+  copy before its first run and never into the head worktree
+  (`test/reproduce.test.mjs`).
+- AC-4, as amended. On macOS the probe reports the #321 reason, so the test
+  takes the branch where the sandbox is unavailable; the probe-passed branch
+  is proven on the Linux CI job, where `REVIEW_VOICE_REQUIRE_SANDBOX=1` makes
+  the unavailable branch fail.
+- The Orbit goal for part A. "on the head worktree" reads "in a throwaway copy
+  of the head worktree", "sandbox-exec on macOS" reads "none on macOS until
+  issue #321", and "only the worktree and <run dir>/reproductions/scratch are
+  writable" reads "only that copy and its scratch directory, under a fresh
+  <run dir>/reproductions/trees/<candidateId>-<random>/, are writable".
+
 #### The reach marker and the flaky rule
 
 A reproduction must print a line whose text, after any leading `#` and

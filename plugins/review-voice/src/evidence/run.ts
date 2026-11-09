@@ -16,7 +16,7 @@ export interface ConfiguredCommand {
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const MAX_VERSION_POINTS = 80;
 /** The shell's own answer when the command is missing (127) or not executable (126). */
-const SHELL_UNAVAILABLE_EXIT_CODES: readonly number[] = [126, 127];
+export const SHELL_UNAVAILABLE_EXIT_CODES: readonly number[] = [126, 127];
 
 /**
  * What a configured command gets without being listed, which is enough for a
@@ -222,15 +222,23 @@ async function readVersion(
   return sanitisedVersion(mask(String(result.stdout ?? '')));
 }
 
-/** The options a configured check runs with; see spawnCommand. */
-function spawnInGroup(
+/**
+ * The options a configured check runs with; see spawnCommand. With `args`,
+ * `run` is the program and the list its arguments, run without a shell, so a
+ * reproduction's sandbox wrapper gets its argv exactly as built.
+ */
+export function spawnInGroup(
   spawn: CommandSpawner,
   run: string,
   cwd: string,
   timeout: number,
   env: NodeJS.ProcessEnv,
+  args?: string[],
 ): CommandResult | Promise<CommandResult> {
-  return spawn(run, { cwd, env, shell: true, encoding: 'utf8', timeout, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024, detached: true });
+  return spawn(run, {
+    cwd, env, shell: args === undefined, ...(args === undefined ? {} : { args }),
+    encoding: 'utf8', timeout, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024, detached: true,
+  });
 }
 
 /** What a configured command produced, in the shape spawnSync gave it before (issue 277). */
@@ -246,7 +254,10 @@ export interface CommandResult {
 export interface CommandOptions {
   cwd: string;
   env: NodeJS.ProcessEnv;
-  shell: true;
+  /** False only with `args`. */
+  shell: boolean;
+  /** The program's arguments when it runs without a shell. */
+  args?: readonly string[];
   encoding: 'utf8';
   timeout: number;
   killSignal: 'SIGKILL';
@@ -274,14 +285,32 @@ function killGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+/** The undo steps of work in progress around a command, such as a reproduction's file in the worktree. */
+const undoOnStop = new Set<() => void>();
+
+/** Leaves `undo` for a stop signal to run, since the exit that follows skips every finally; returns the function that withdraws it. */
+export function onStop(undo: () => void): () => void {
+  undoOnStop.add(undo);
+  return () => void undoOnStop.delete(undo);
+}
+
 /**
  * Kills every configured command still running, with all it started (issue
- * 277). Each runs in a process group of its own, which a signal to the review
- * never reaches, so the review driver calls this from its signal handler
- * before it removes the worktree the commands run in.
+ * 277), then runs the undo steps left with onStop, latest first. Each command
+ * runs in a process group of its own, which a signal to the review never
+ * reaches, so the review driver calls this from its signal handler before it
+ * removes the worktree the commands run in.
  */
 export function stopCommands(): void {
   for (const pid of runningGroups) killGroup(pid, 'SIGKILL');
+  for (const undo of [...undoOnStop].reverse()) {
+    undoOnStop.delete(undo);
+    try {
+      undo();
+    } catch {
+      // The stop goes ahead; one step that failed must not keep the rest from running.
+    }
+  }
 }
 
 /**
@@ -318,7 +347,7 @@ export function stopCommandsOnSignal(): () => void {
  */
 export function spawnCommand(command: string, options: CommandOptions): Promise<CommandResult> {
   return new Promise((resolve) => {
-    const child = spawnChild(command, { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, stdio: 'pipe' });
+    const child = spawnChild(command, options.args ?? [], { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, stdio: 'pipe' });
     const pid = child.pid;
     if (pid !== undefined) runningGroups.add(pid);
     const chunks = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
