@@ -5,6 +5,57 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.0] - 2026-11-09
+
+### Added
+
+- `review.suggestions: true` lets a verified fix post as a GitHub suggestion
+  block that the author commits in one click. A candidate may carry a
+  `suggested_patch` of at most five added lines ending at its anchor. The block
+  renders only when the verifier verified the fix at the bar the prose fix
+  meets and the head still reads the original lines; otherwise the prose posts
+  alone and the preview names the reason. A suggestion that stands at a later
+  head records the finding as `fixed`. Off by default. (#301)
+
+- `verdict.evidence_block: true` ends every inline comment with a collapsed
+  Evidence block built only from the recorded run: the verifier's verdict, the
+  challenger's decision and any anchor move, the references it cited, a static
+  check that flagged the same line, and convention text that the cited
+  document really contains. `verdict.evidence_block_precedents: true` adds how
+  many retrieved owner precedents favoured the finding. Every recorded string
+  is flattened and shown as inline code. Both are off by default. (#314,
+  closes #282)
+
+- `review-voice worktree add --dir <dir> --head <commit>` and
+  `worktree remove --dir <dir>` make and remove the same safe detached
+  checkout of a head that the review driver uses. (#298)
+
+### Fixed
+
+- `/review-voice:review --pr <n>` runs static evidence and the second-pass
+  verifier in a worktree of the pull request's head, not in whatever the
+  person has checked out. (#298, closes #293)
+
+- A stop signal reaches a running configured command at once. Static checks,
+  their version commands and the second-pass verifier run through one
+  asynchronous spawner, so the driver's SIGINT and SIGTERM handler kills the
+  command's process group and removes the head worktree, and a standalone
+  `evidence` or `verify` exits 130 or 143 without leaving its command
+  running. (#299, closes #277)
+
+- The GitHub Action prints why a review stopped as one `::error::` annotation
+  in the job log, its first line only, capped and escaped. `docs/ACTION.md`
+  says the API key must be created inside a workspace. (#313)
+
+### Changed
+
+- The CLI's commands moved out of `cli.ts` into one module each under
+  `src/cli/`, with no change in behaviour. (#302 to #310)
+
+- `docs/EVALUATION.md` gives the fixture recall and review latency measured on
+  1.22.0, and says this repository runs no workflow on the maintainer's API
+  key. (#300, #312)
+
 ## [1.22.0] - 2026-11-08
 
 ### Security
