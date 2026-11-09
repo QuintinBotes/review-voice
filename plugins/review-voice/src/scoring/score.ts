@@ -1844,7 +1844,10 @@ export function scoreCandidate(
             : confidenceSource === 'unverifiable-cap'
               ? ' with context the verifier could not obtain'
               : `; ${DOCUMENT_NIT_HINT.replace('<id>', candidate.candidateId)}`)
-        : '');
+        : // Without a route here a verified stale comment was a dead end, since `--severity` cannot restate nit (#317).
+          '; outside a document (.md, .rst or .adoc) that holds at every tier, a comment in a source file included, ' +
+          'so to post it untraced, have the analyst refile it as an ordinary finding on the changed line ' +
+          'its `caused_by` names, with the consumer and its path in the claim and evidence');
     if (rejectedBecause === null) rejectedBecause = untraced;
     else if (rejectedBecause.startsWith('score ')) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
     // Appended, so a local list that shows candidates stopped by one gate
