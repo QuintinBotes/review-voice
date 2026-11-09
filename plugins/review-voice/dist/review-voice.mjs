@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { join as join25 } from "node:path";
+import { join as join26 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format } from "node:util";
@@ -26661,6 +26661,7 @@ async function agentCommand(argv) {
 // plugins/review-voice/src/store/effort.ts
 var SHALLOW_MIN_DIFF_LINES = 150;
 var SHALLOW_LINES_PER_CALL = 40;
+var SHALLOW_MIN_FILES_READ_SHARE = 0.5;
 var count2 = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : void 0;
 function changedLineCount(diff) {
   let lines2 = 0;
@@ -26670,8 +26671,40 @@ function changedLineCount(diff) {
   }
   return lines2;
 }
+var STAGE_FIELDS = {
+  name: true,
+  seconds: true,
+  toolCalls: true,
+  tokens: true,
+  filesRead: true,
+  diffLines: true,
+  diffFiles: true,
+  model: true,
+  models: true,
+  costUsd: true
+};
+function parseStagesFile(parsed2, warn2 = () => void 0) {
+  const keyed = typeof parsed2 === "object" && parsed2 !== null && !Array.isArray(parsed2) ? Object.keys(parsed2).filter((key2) => key2 !== "stages") : [];
+  const list2 = Array.isArray(parsed2) ? parsed2 : parsed2?.stages;
+  if (!Array.isArray(list2) || keyed.length > 0) {
+    throw new Error(`expected an array or {"stages": [...]}${keyed.length === 0 ? "" : `, not keys ${keyed.map((key2) => JSON.stringify(key2)).join(", ")}`}`);
+  }
+  list2.forEach((stage, index) => {
+    const problem = (() => {
+      if (typeof stage !== "object" || stage === null || Array.isArray(stage)) return "not an object";
+      const unknown = Object.keys(stage).filter((key2) => !Object.hasOwn(STAGE_FIELDS, key2));
+      if (unknown.length > 0) warn2(`entry ${index}: unknown field${unknown.length === 1 ? "" : "s"} ${unknown.map((key2) => JSON.stringify(key2)).join(", ")} not stored`);
+      const { name, seconds } = stage;
+      if (typeof name !== "string" || name === "") return "name must be a non-empty string";
+      return Number.isFinite(seconds) ? null : "seconds must be a number";
+    })();
+    if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
+  });
+  return list2;
+}
 function cleanStages(stages, diff) {
   const diffLines = diff === null ? void 0 : changedLineCount(diff);
+  const diffFiles = diff === null ? void 0 : [...parseHunks(diff).values()].filter((file2) => file2.ranges.length > 0).length;
   return stages.map((stage) => {
     const toolCalls = count2(stage.toolCalls);
     const tokens = count2(stage.tokens);
@@ -26689,7 +26722,8 @@ function cleanStages(stages, diff) {
       ...toolCalls === void 0 ? {} : { toolCalls },
       ...tokens === void 0 ? {} : { tokens },
       ...filesRead === void 0 ? {} : { filesRead },
-      ...stage.name === "analyst" && diffLines !== void 0 ? { diffLines } : {}
+      ...stage.name === "analyst" && diffLines !== void 0 ? { diffLines } : {},
+      ...stage.name === "analyst" && diffFiles !== void 0 ? { diffFiles } : {}
     };
   });
 }
@@ -26704,10 +26738,17 @@ function describeStage(stage) {
 function shallowPassWarning(stages, findingCount) {
   if (findingCount > 0) return null;
   const analyst = stages.find((stage) => stage.name === "analyst");
-  if (analyst?.toolCalls === void 0 || analyst.diffLines === void 0) return null;
-  if (analyst.diffLines < SHALLOW_MIN_DIFF_LINES) return null;
-  if (analyst.toolCalls * SHALLOW_LINES_PER_CALL >= analyst.diffLines) return null;
-  return `The analyst made ${analyst.toolCalls} tool call(s) on ${analyst.diffLines} changed lines and found nothing. That is a shallow pass for this size; consider re-running it, on a stronger model if need be, before trusting a clean result.`;
+  if (analyst === void 0) return null;
+  const { toolCalls, diffLines, filesRead, diffFiles } = analyst;
+  const reasons = [];
+  if (toolCalls !== void 0 && diffLines !== void 0 && diffLines >= SHALLOW_MIN_DIFF_LINES && toolCalls * SHALLOW_LINES_PER_CALL < diffLines) {
+    reasons.push(`made ${toolCalls} tool call(s) on ${diffLines} changed lines`);
+  }
+  if (filesRead !== void 0 && diffFiles !== void 0 && filesRead < diffFiles * SHALLOW_MIN_FILES_READ_SHARE) {
+    reasons.push(`read ${filesRead} of ${diffFiles} changed files`);
+  }
+  if (reasons.length === 0) return null;
+  return `The analyst ${reasons.join(", ")} and found nothing. That is a shallow pass for this size; consider re-running it, on a stronger model if need be, before trusting a clean result.`;
 }
 
 // plugins/review-voice/src/cli/explain.ts
@@ -27439,7 +27480,9 @@ function carryCandidatesCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/record.ts
+import { execFileSync as execFileSync21 } from "node:child_process";
 import { readFileSync as readFileSync31 } from "node:fs";
+import { join as join25 } from "node:path";
 
 // plugins/review-voice/src/cli/check-candidates.ts
 import { readFileSync as readFileSync30 } from "node:fs";
@@ -28612,6 +28655,7 @@ function recordCommand(argv) {
   const filesFile = flag(argv, "--files");
   let pullNumber;
   let manifestRepository = null;
+  let manifestMode = null;
   let scope;
   let complexity = null;
   const knownPaths = /* @__PURE__ */ new Set();
@@ -28624,6 +28668,7 @@ function recordCommand(argv) {
       if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
         pullNumber = manifest.pullNumber;
       }
+      manifestMode = manifest.mode;
       if (typeof manifest.repository === "string" && /^[^/\s]+\/[^/\s]+$/.test(manifest.repository)) {
         manifestRepository = manifest.repository;
       }
@@ -28694,14 +28739,25 @@ function recordCommand(argv) {
       });
       held = list2;
       for (const candidate of candidates) knownPaths.add(candidate.path);
+      const heldHead = flag(argv, "--head");
+      const atHead = manifestMode !== "worktree" && manifestMode !== "staged" && heldHead !== null;
+      const heldRevision = manifestMode === "staged" ? "" : atHead && !heldHead.startsWith("-") ? resolveCommit(heldHead, process.cwd()) : null;
+      if (knownPaths.size > 0 && held.length > 0 && atHead && heldRevision === null) {
+        console.error(`--head ${heldHead} is not a commit in this clone, so held lines were not checked against the file at it.`);
+      }
       if (knownPaths.size > 0) {
         for (const entry of held) {
           if (!knownPaths.has(entry.path)) {
             console.error(`Held entry ${entry.path}:${entry.line} matches no changed file or candidate; later --held-from runs will not match it.`);
             continue;
           }
+          if (atHead && heldRevision === null) continue;
           try {
-            const content = readFileSync31(entry.path, "utf8");
+            const content = heldRevision === null ? readFileSync31(join25(repositoryRoot(process.cwd()), entry.path), "utf8") : execFileSync21("git", [...SAFE_GIT, "show", `${heldRevision}:${entry.path}`], {
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "ignore"],
+              maxBuffer: 64 * 1024 * 1024
+            });
             const lines2 = content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
             if (entry.line > lines2) console.error(`Held entry ${entry.path}:${entry.line} is past the end of the file (${lines2} lines).`);
           } catch {
@@ -28717,14 +28773,12 @@ function recordCommand(argv) {
   let stages = [];
   if (stagesFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync31(stagesFile, "utf8"));
-      const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.stages ?? [];
-      stages = (Array.isArray(list2) ? list2 : []).filter(
-        (stage) => typeof stage === "object" && stage !== null && typeof stage.name === "string" && Number.isFinite(stage.seconds)
+      stages = cleanStages(
+        parseStagesFile(JSON.parse(readFileSync31(stagesFile, "utf8")), (message) => console.error(`Stages in ${stagesFile}: ${message}.`)),
+        diff === "" ? null : diff
       );
-      stages = cleanStages(stages, diff === "" ? null : diff);
-    } catch {
-      console.error(`Cannot read stages from ${stagesFile}.`);
+    } catch (error) {
+      console.error(`Cannot read stages from ${stagesFile}: ${error.message}`);
       return 2;
     }
   }
@@ -29073,7 +29127,7 @@ ${topLevelHelp()}`);
       } catch {
       }
       const dataDir = dataDirectory();
-      const review2 = spawnReview(fileURLToPath6(import.meta.url), { configPath: join25(dataDir, CONFIG_COPY) });
+      const review2 = spawnReview(fileURLToPath6(import.meta.url), { configPath: join26(dataDir, CONFIG_COPY) });
       return await watchCommand(argv.slice(1), {
         configSource: root === null ? null : configFile(root),
         loadSettings: (path) => loadConfig(root ?? process.cwd(), void 0, path),

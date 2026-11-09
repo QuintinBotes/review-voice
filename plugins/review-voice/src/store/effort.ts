@@ -1,4 +1,5 @@
 import type { StageTiming } from './runs.ts';
+import { parseHunks } from '../diff/hunks.ts';
 
 /**
  * How much the analyst actually read, and whether a clean result came from a
@@ -11,9 +12,14 @@ import type { StageTiming } from './runs.ts';
  * per 40 changed lines, on a diff of at least 150 lines. Both numbers are
  * calibrated by guess from those runs; a measured distribution should revise
  * them.
+ *
+ * It is also shallow when it read under half of the changed files it could
+ * read, on a diff of any size (#320): many small files can each go unread
+ * while the tool calls still cover the lines.
  */
 export const SHALLOW_MIN_DIFF_LINES = 150;
 export const SHALLOW_LINES_PER_CALL = 40;
+export const SHALLOW_MIN_FILES_READ_SHARE = 0.5;
 
 const count = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
@@ -28,6 +34,46 @@ export function changedLineCount(diff: string): number {
   return lines;
 }
 
+/** Every field of a stage; typed so a field added to StageTiming must be added here. */
+const STAGE_FIELDS: Record<keyof StageTiming, true> = {
+  name: true,
+  seconds: true,
+  toolCalls: true,
+  tokens: true,
+  filesRead: true,
+  diffLines: true,
+  diffFiles: true,
+  model: true,
+  models: true,
+  costUsd: true,
+};
+
+/**
+ * The stages of a `--stages` file, or an error naming what it does not know.
+ * Refused rather than filtered (#316): a stage dropped in silence left the run
+ * with an empty list that looked like a run with no stages.
+ */
+export function parseStagesFile(parsed: unknown, warn: (message: string) => void = () => undefined): StageTiming[] {
+  const keyed = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? Object.keys(parsed).filter((key) => key !== 'stages') : [];
+  const list = Array.isArray(parsed) ? parsed : (parsed as { stages?: unknown } | null)?.stages;
+  if (!Array.isArray(list) || keyed.length > 0) {
+    throw new Error(`expected an array or {"stages": [...]}${keyed.length === 0 ? '' : `, not keys ${keyed.map((key) => JSON.stringify(key)).join(', ')}`}`);
+  }
+  list.forEach((stage: unknown, index) => {
+    const problem = ((): string | null => {
+      if (typeof stage !== 'object' || stage === null || Array.isArray(stage)) return 'not an object';
+      // An extra field costs only itself: the stage is kept and the drop is named, so a stray note never fails a record.
+      const unknown = Object.keys(stage).filter((key) => !Object.hasOwn(STAGE_FIELDS, key));
+      if (unknown.length > 0) warn(`entry ${index}: unknown field${unknown.length === 1 ? '' : 's'} ${unknown.map((key) => JSON.stringify(key)).join(', ')} not stored`);
+      const { name, seconds } = stage as Record<string, unknown>;
+      if (typeof name !== 'string' || name === '') return 'name must be a non-empty string';
+      return Number.isFinite(seconds) ? null : 'seconds must be a number';
+    })();
+    if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
+  });
+  return list as StageTiming[];
+}
+
 /**
  * Keeps the fields a stage is defined by and drops the rest, so a stages file
  * cannot put arbitrary data in the run. The analyst stage also gets the size of
@@ -35,6 +81,8 @@ export function changedLineCount(diff: string): number {
  */
 export function cleanStages(stages: StageTiming[], diff: string | null): StageTiming[] {
   const diffLines = diff === null ? undefined : changedLineCount(diff);
+  // Files with a hunk at the head, as acquire counts them: parseHunks keeps a hunkless file only when it ends the patch.
+  const diffFiles = diff === null ? undefined : [...parseHunks(diff).values()].filter((file) => file.ranges.length > 0).length;
   return stages.map((stage) => {
     const toolCalls = count(stage.toolCalls);
     const tokens = count(stage.tokens);
@@ -54,6 +102,7 @@ export function cleanStages(stages: StageTiming[], diff: string | null): StageTi
       ...(tokens === undefined ? {} : { tokens }),
       ...(filesRead === undefined ? {} : { filesRead }),
       ...(stage.name === 'analyst' && diffLines !== undefined ? { diffLines } : {}),
+      ...(stage.name === 'analyst' && diffFiles !== undefined ? { diffFiles } : {}),
     };
   });
 }
@@ -72,11 +121,18 @@ export function describeStage(stage: StageTiming): string {
 export function shallowPassWarning(stages: StageTiming[], findingCount: number): string | null {
   if (findingCount > 0) return null;
   const analyst = stages.find((stage) => stage.name === 'analyst');
-  if (analyst?.toolCalls === undefined || analyst.diffLines === undefined) return null;
-  if (analyst.diffLines < SHALLOW_MIN_DIFF_LINES) return null;
-  if (analyst.toolCalls * SHALLOW_LINES_PER_CALL >= analyst.diffLines) return null;
+  if (analyst === undefined) return null;
+  const { toolCalls, diffLines, filesRead, diffFiles } = analyst;
+  const reasons: string[] = [];
+  if (toolCalls !== undefined && diffLines !== undefined && diffLines >= SHALLOW_MIN_DIFF_LINES && toolCalls * SHALLOW_LINES_PER_CALL < diffLines) {
+    reasons.push(`made ${toolCalls} tool call(s) on ${diffLines} changed lines`);
+  }
+  if (filesRead !== undefined && diffFiles !== undefined && filesRead < diffFiles * SHALLOW_MIN_FILES_READ_SHARE) {
+    reasons.push(`read ${filesRead} of ${diffFiles} changed files`);
+  }
+  if (reasons.length === 0) return null;
   return (
-    `The analyst made ${analyst.toolCalls} tool call(s) on ${analyst.diffLines} changed lines and found nothing. ` +
+    `The analyst ${reasons.join(', ')} and found nothing. ` +
     'That is a shallow pass for this size; consider re-running it, on a stronger model if need be, before trusting a clean result.'
   );
 }
