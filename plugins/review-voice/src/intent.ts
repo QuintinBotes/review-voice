@@ -45,8 +45,54 @@ const LIST_OR_HEADING = /^\s*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?|\[[ xX]\]\
 const LEAD_LABEL = /^(?:(?:\[[^\]]*\]\([^)\s]+\)|https?:\/\/\S+):|\*\*[^*]+?[.:]\*\*)(?= |$)/u;
 // ...unless the label negates or scopes that sentence ("**Not in this change:**"), which a quote must keep.
 const QUALIFYING_LABEL = /\b(?:not|no|out of scope|non-goals?|won't|without|except|unless|only if|later|follow-ups?)\b|n't\b/iu;
+// As in CommonMark, a fence has at most three spaces of indent, a backtick opener has no backtick after it, and a closer has no info string.
+const FENCE = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/u;
+const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})\s*$/u;
+// Four spaces of indent make an indented code block the reader sees, not a comment.
+// HTML ends a comment at `-->` or `--!>`.
+const COMMENT_LINE = /^ {0,3}<!--(?:(?!--!?>).)*--!?>\s*$/u;
+// `<!-->` and `<!--->` close where they open, so they start no block.
+const COMMENT_OPEN = /^ {0,3}<!--(?!-?>)(?:(?!--!?>).)*$/u;
+const COMMENT_CLOSE = /^(?:(?!--!?>).)*--!?>\s*$/u;
+// A line that is only a bold label (`**Database changes**`), not a sentence, list item or quote.
+const BOLD_LABEL = /^\*\*([^*]*[^*\s.!?])\*\*$/u;
 
 const collapse = (text: string): string => text.replace(/\s+/gu, ' ').trim();
+const isBoldLabel = (line: string): boolean => !LIST_OR_HEADING.test(line) && BOLD_LABEL.test(collapse(line));
+
+/**
+ * Which lines sit in a fenced code block, and which are wholly an HTML comment
+ * or a line of a closed comment block. A comment is a template instruction the
+ * reader never sees, so it hides no section's answer (#319).
+ */
+function lineKinds(lines: string[]): { fenced: Set<number>; comments: Set<number> } {
+  const fenced = new Set<number>();
+  const comments = new Set<number>();
+  let fence: string | null = null;
+  let close = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    const marker: string | undefined = (fence === null ? FENCE : FENCE_CLOSE).exec(line)?.[1];
+    if (fence !== null || marker !== undefined) {
+      fenced.add(index);
+      if (fence === null) fence = marker ?? null;
+      else if (marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length) fence = null;
+      continue;
+    }
+    if (COMMENT_LINE.test(line)) comments.add(index);
+    if (!COMMENT_OPEN.test(line)) continue;
+    // The first `-->` after this line; a later opener reuses it, so the scan stays linear.
+    if (close <= index) {
+      close = index + 1;
+      while (close < lines.length && !/--!?>/u.test(lines[close] ?? '')) close += 1;
+    }
+    // An unclosed `<!--`, or one whose `-->` has text after it, is not a block.
+    if (close === lines.length || !COMMENT_CLOSE.test(lines[close] ?? '')) continue;
+    for (let at = index; at <= close; at += 1) comments.add(at);
+    index = close;
+  }
+  return { fenced, comments };
+}
 
 interface Sentences {
   text: string;
@@ -54,6 +100,12 @@ interface Sentences {
   ends: Set<number>;
   /** Each heading and the offsets of the body under it, up to the next heading. */
   sections: { heading: string; from: number; to: number }[];
+  /**
+   * The same, with whole-line comments left out of each body and a bold label
+   * line outside any `#` section read as a heading, for the answer a short quote
+   * gives (#319). The text itself is unchanged, so a quote validates as before.
+   */
+  answers: { heading: string; from: number; to: number }[];
   /** Every heading's text, which is not a statement of the change. */
   headings: Set<string>;
 }
@@ -74,7 +126,12 @@ function sentencesOf(description: string): Sentences {
   const headings = new Set<string>();
   let open: Sentences['sections'][number] | null = null;
   let contentEnd = 0;
-  for (const line of description.split(/\r?\n/u)) {
+  const answers: Sentences['answers'] = [];
+  let answer: Sentences['answers'][number] | null = null;
+  let answerEnd = 0;
+  const lines = description.split(/\r?\n/u);
+  const { fenced, comments } = lineKinds(lines);
+  for (const [index, line] of lines.entries()) {
     const marked = LIST_OR_HEADING.test(line);
     const content = collapse(line.replace(LIST_OR_HEADING, ''));
     if (content === '') {
@@ -101,19 +158,34 @@ function sentencesOf(description: string): Sentences {
       open.from = text.length;
     }
     if (heading) headings.add(content);
+    // A bold label is a heading only before any `#` one, when it starts a paragraph, and not as one of a run of labels.
+    const next = (): string => lines.slice(index + 1).find((after, at) => after.trim() !== '' && !comments.has(index + 1 + at)) ?? '';
+    const paragraph = blank || text === '' || comments.has(index - 1) || fenced.has(index - 1);
+    const bold = !heading && open === null && !fenced.has(index) && !comments.has(index) && paragraph && isBoldLabel(line) && !isBoldLabel(next());
+    // A heading inside a comment block is never seen, so it answers nothing.
+    if ((heading && !comments.has(index)) || bold) {
+      if (answer !== null && answer.from !== -1) answers.push({ ...answer, to: answerEnd });
+      answer = { heading: bold ? (BOLD_LABEL.exec(content)?.[1] ?? content) : content, from: -1, to: -1 };
+    } else if (answer !== null && !comments.has(index)) {
+      if (answer.from === -1) answer.from = text.length;
+      answerEnd = text.length + content.length;
+    }
     text += content;
     contentEnd = text.length;
     blank = false;
     previousHeading = heading;
   }
   if (open !== null && open.from !== -1) sections.push({ ...open, to: contentEnd });
+  if (answer !== null && answer.from !== -1) answers.push({ ...answer, to: answerEnd });
   ends.add(text.length);
   for (const match of text.matchAll(/[.!?](?= |$)/gu)) {
     ends.add(match.index);
     ends.add(match.index + 1);
     starts.add(match.index + 2);
   }
-  return { text, starts, ends, sections, headings };
+  // An answer that is not a whole sentence of the text was widened before, comment and all, and still is.
+  const whole = answers.filter(({ from, to }) => starts.has(from) && ends.has(to));
+  return { text, starts, ends, sections, answers: whole, headings };
 }
 
 /**
@@ -177,11 +249,12 @@ function widenToSentence(quote: string, sentences: Sentences): string | null {
 function answeredHeading(quote: string, sentences: Sentences): string | null {
   const wanted = collapse(quote.replace(LIST_OR_HEADING, ''));
   if (wanted === '' || wanted.split(' ').length >= MIN_QUOTE_WORDS) return null;
-  const section = sentences.sections.find(({ from, to }) => {
+  const matches = ({ from, to }: { from: number; to: number }): boolean => {
     const body = sentences.text.slice(from, to);
     return body === wanted || body === `${wanted}.`;
-  });
-  return section?.heading ?? null;
+  };
+  // A body read as before keeps its heading; one a comment or bold label hid is matched only after it (#319).
+  return (sentences.sections.find(matches) ?? sentences.answers.find(matches))?.heading ?? null;
 }
 
 /** A valid excerpt for `value`: as given, or widened to its sentence, with a note when widened. */
