@@ -35,6 +35,8 @@ const layouts = {
   'a comment between heading and answer': ['## Database changes\n\n<!-- list migrations -->\n\nNone.', 'Database changes'],
   'a comment directly under the heading': ['## Database changes\n<!-- list migrations -->\n\nNone.', 'Database changes'],
   'a multi-line comment': ['## Database changes\n\n<!--\nList migrations,\none per line.\n-->\n\nNone.', 'Database changes'],
+  'a comment that HTML closes with --!>': ['## Database changes\n\n<!-- list migrations --!>\n\nNone.', 'Database changes'],
+  'a multi-line comment that HTML closes with --!>': ['## Database changes\n\n<!--\nList migrations.\n--!>\n\nNone.', 'Database changes'],
   'a bold label as the heading': ['**Database changes**\n\nNone.', 'Database changes'],
   'a bold label with a colon as the heading': ['**Database changes:**\n\nNone.', 'Database changes:'],
   'a bold label, with CRLF line endings': ['**Database changes**\r\n\r\nNone.', 'Database changes'],

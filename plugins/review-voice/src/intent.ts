@@ -49,10 +49,11 @@ const QUALIFYING_LABEL = /\b(?:not|no|out of scope|non-goals?|won't|without|exce
 const FENCE = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/u;
 const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})\s*$/u;
 // Four spaces of indent make an indented code block the reader sees, not a comment.
-const COMMENT_LINE = /^ {0,3}<!--(?:(?!-->).)*-->\s*$/u;
+// HTML ends a comment at `-->` or `--!>`.
+const COMMENT_LINE = /^ {0,3}<!--(?:(?!--!?>).)*--!?>\s*$/u;
 // `<!-->` and `<!--->` close where they open, so they start no block.
-const COMMENT_OPEN = /^ {0,3}<!--(?!-?>)(?:(?!-->).)*$/u;
-const COMMENT_CLOSE = /^(?:(?!-->).)*-->\s*$/u;
+const COMMENT_OPEN = /^ {0,3}<!--(?!-?>)(?:(?!--!?>).)*$/u;
+const COMMENT_CLOSE = /^(?:(?!--!?>).)*--!?>\s*$/u;
 // A line that is only a bold label (`**Database changes**`), not a sentence, list item or quote.
 const BOLD_LABEL = /^\*\*([^*]*[^*\s.!?])\*\*$/u;
 
@@ -83,7 +84,7 @@ function lineKinds(lines: string[]): { fenced: Set<number>; comments: Set<number
     // The first `-->` after this line; a later opener reuses it, so the scan stays linear.
     if (close <= index) {
       close = index + 1;
-      while (close < lines.length && !(lines[close] ?? '').includes('-->')) close += 1;
+      while (close < lines.length && !/--!?>/u.test(lines[close] ?? '')) close += 1;
     }
     // An unclosed `<!--`, or one whose `-->` has text after it, is not a block.
     if (close === lines.length || !COMMENT_CLOSE.test(lines[close] ?? '')) continue;

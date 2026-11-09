@@ -18900,9 +18900,9 @@ var LEAD_LABEL = /^(?:(?:\[[^\]]*\]\([^)\s]+\)|https?:\/\/\S+):|\*\*[^*]+?[.:]\*
 var QUALIFYING_LABEL = /\b(?:not|no|out of scope|non-goals?|won't|without|except|unless|only if|later|follow-ups?)\b|n't\b/iu;
 var FENCE = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/u;
 var FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})\s*$/u;
-var COMMENT_LINE = /^ {0,3}<!--(?:(?!-->).)*-->\s*$/u;
-var COMMENT_OPEN = /^ {0,3}<!--(?!-?>)(?:(?!-->).)*$/u;
-var COMMENT_CLOSE = /^(?:(?!-->).)*-->\s*$/u;
+var COMMENT_LINE = /^ {0,3}<!--(?:(?!--!?>).)*--!?>\s*$/u;
+var COMMENT_OPEN = /^ {0,3}<!--(?!-?>)(?:(?!--!?>).)*$/u;
+var COMMENT_CLOSE = /^(?:(?!--!?>).)*--!?>\s*$/u;
 var BOLD_LABEL = /^\*\*([^*]*[^*\s.!?])\*\*$/u;
 var collapse2 = (text4) => text4.replace(/\s+/gu, " ").trim();
 var isBoldLabel = (line3) => !LIST_OR_HEADING.test(line3) && BOLD_LABEL.test(collapse2(line3));
@@ -18924,7 +18924,7 @@ function lineKinds(lines2) {
     if (!COMMENT_OPEN.test(line3)) continue;
     if (close <= index) {
       close = index + 1;
-      while (close < lines2.length && !(lines2[close] ?? "").includes("-->")) close += 1;
+      while (close < lines2.length && !/--!?>/u.test(lines2[close] ?? "")) close += 1;
     }
     if (close === lines2.length || !COMMENT_CLOSE.test(lines2[close] ?? "")) continue;
     for (let at2 = index; at2 <= close; at2 += 1) comments.add(at2);
