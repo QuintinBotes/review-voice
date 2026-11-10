@@ -80,7 +80,7 @@ export function patchTouches(patch: string, first: number, last: number): boolea
   return false;
 }
 
-interface RawComment {
+export interface RawComment {
   id?: number;
   path?: string;
   line?: number | null;
@@ -105,7 +105,7 @@ interface RawReview {
   user?: { login?: string };
 }
 
-interface ThreadState {
+export interface ThreadState {
   resolved: boolean;
   outdated: boolean;
 }
@@ -197,6 +197,59 @@ export function sentRuns(db: Database, options: { since: string; repository?: st
 
 const isBot = (user: RawComment['user']): boolean => user?.type === 'Bot' || (user?.login ?? '').endsWith('[bot]');
 
+/** A reply under one of this tool's inline comments that is waiting for an answer (docs/adr/0035). */
+export interface PendingQuestion {
+  reviewRunId: string;
+  findingId: string;
+  repository: string;
+  pullNumber: number;
+  rootCommentId: number;
+  path: string;
+  line: number;
+  askedBy: string;
+  askedAt: string;
+  stance: 'question' | 'reject';
+}
+
+/** Whether a line outside a blockquote asks something; a quoted question is the tool's own text or someone else's. */
+const asksQuestion = (body: string): boolean => body.split('\n').some((line) => !/^\s*>/.test(line) && line.includes('?'));
+
+/**
+ * Whether the thread under `root` wants this tool's one reply, and from whom.
+ * Each rule returns null when it fails. The thread state must be known and
+ * open; no reply under the root may be by the poster, since one reply per
+ * thread is the bound whoever wrote it; the newest reply that is not a bot's,
+ * the poster's or the owner's decides; and it must ask something (a `?` outside
+ * a blockquote), whether as a question or as a disagreement. Silence,
+ * agreement and a disagreement that asks nothing are not questions (docs/adr/0004).
+ */
+export function replyWanted(
+  root: RawComment,
+  replies: RawComment[],
+  state: ThreadState | null,
+  ownerReviewer: string | null,
+): Pick<PendingQuestion, 'askedBy' | 'askedAt' | 'stance'> | null {
+  if (state === null || state.resolved) return null;
+  const login = (user: RawComment['user']): string | null => user?.login?.toLowerCase() ?? null;
+  const poster = login(root.user);
+  // With no poster login the one-per-thread rule cannot be checked, so nothing is asked.
+  if (poster === null) return null;
+  const under = replies
+    .filter((reply) => reply.in_reply_to_id === root.id)
+    .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''));
+  if (under.some((reply) => login(reply.user) === poster)) return null;
+  const owner = ownerReviewer?.toLowerCase() ?? null;
+  const latest = [...under].reverse().find((reply) => {
+    const author = login(reply.user);
+    return author !== null && !isBot(reply.user) && author !== owner;
+  });
+  if (latest === undefined) return null;
+  const body = latest.body ?? '';
+  const stance = classifyReply(body);
+  if (stance === 'acknowledge' || !asksQuestion(body)) return null;
+  return { askedBy: latest.user!.login!, askedAt: latest.created_at ?? '', stance: stance === 'reject' ? 'reject' : 'question' };
+}
+
 function sameHead(a: string, b: string): boolean {
   const left = a.toLowerCase();
   const right = b.toLowerCase();
@@ -209,6 +262,8 @@ export interface CheckOptions {
   /** Repositories that may be read; a run for any other is skipped without a request. */
   allowlist: string[];
   repository?: string | undefined;
+  /** One pull request only; every other is skipped before any request. */
+  pullNumber?: number | undefined;
   /** ISO time; only sends at or after it are followed. */
   since: string;
   now?: () => Date;
@@ -225,6 +280,8 @@ export interface CheckResult {
   outcomes: FindingOutcome[];
   skipped: { repository: string; pullNumber: number; reason: string }[];
   warnings: string[];
+  /** Threads awaiting this tool's one reply, found from the same reads as the outcomes. */
+  questions: PendingQuestion[];
 }
 
 interface PullContext {
@@ -244,9 +301,10 @@ interface PullContext {
  */
 export async function checkOutcomes(options: CheckOptions): Promise<CheckResult> {
   const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
-  const result: CheckResult = { outcomes: [], skipped: [], warnings: [] };
+  const result: CheckResult = { outcomes: [], skipped: [], warnings: [], questions: [] };
   const byPull = new Map<string, SentRun[]>();
   for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
+    if (options.pullNumber !== undefined && run.pullNumber !== options.pullNumber) continue;
     const key = `${run.repository.toLowerCase()}#${run.pullNumber}`;
     byPull.set(key, [...(byPull.get(key) ?? []), run]);
   }
@@ -269,8 +327,17 @@ export async function checkOutcomes(options: CheckOptions): Promise<CheckResult>
     }
     try {
       const context = await readPull(options.client, repository, pullNumber, result.warnings);
+      // The list is read oldest first and cut at the limit, so the newest
+      // replies, a poster's answer among them, may be missing: no thread on it
+      // is known to be unanswered, as with an unknown thread state. Only the
+      // reply command narrows to one pull request and offers a reply, so only
+      // it is told; the watcher and `outcomes` never offer one here.
+      const cut = context.replies.length >= READ_LIMIT;
+      if (cut && options.pullNumber !== undefined) result.warnings.push(`${repository}#${pullNumber}: only the first ${READ_LIMIT} inline comments were read, so no reply is offered on it`);
       for (const run of runs) {
-        result.outcomes.push(...(await followRun(options, context, run, viewerLogin)));
+        const followed = await followRun(options, context, run, viewerLogin);
+        result.outcomes.push(...followed.outcomes);
+        if (!cut) result.questions.push(...followed.questions);
       }
     } catch (error) {
       result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
@@ -355,9 +422,9 @@ async function followRun(
   context: PullContext,
   run: SentRun,
   viewerLogin: () => Promise<string | null>,
-): Promise<FindingOutcome[]> {
+): Promise<{ outcomes: FindingOutcome[]; questions: PendingQuestion[] }> {
   const detail = runDetail(options.db, run.runId);
-  if (detail === null) return [];
+  if (detail === null) return { outcomes: [], questions: [] };
   const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
   const comments: RawComment[] = [];
   for (const id of ids) {
@@ -371,9 +438,24 @@ async function followRun(
   const matched = matchComments(detail.findings, comments);
   const checkedAt = (options.now?.() ?? new Date()).toISOString();
   const outcomes: FindingOutcome[] = [];
+  const questions: PendingQuestion[] = [];
   for (const finding of detail.findings) {
     const comment = matched.get(finding.findingId);
     if (comment === undefined) continue;
+    // From the same root, replies and states as the outcome, so detection costs no request.
+    const wanted = replyWanted(comment, context.replies, context.states?.get(comment.id!) ?? null, options.ownerReviewer ?? null);
+    if (wanted !== null) {
+      questions.push({
+        reviewRunId: run.runId,
+        findingId: finding.findingId,
+        repository: run.repository,
+        pullNumber: run.pullNumber,
+        rootCommentId: comment.id!,
+        path: finding.path,
+        line: finding.line,
+        ...wanted,
+      });
+    }
     const decided = await decide(options, context, run, finding, comment);
     const outcome: FindingOutcome = {
       reviewRunId: run.runId,
@@ -391,7 +473,7 @@ async function followRun(
     saveOutcome(options.db, outcome);
     outcomes.push(outcome);
   }
-  return outcomes;
+  return { outcomes, questions };
 }
 
 /** Whether the anchored lines changed between the run's head and the current one; null when that cannot be told. */
@@ -610,6 +692,33 @@ export function postedStats(db: Database, { since }: { since?: string } = {}): P
       )
       .all(since) as unknown as OutcomeRow[],
   );
+}
+
+export interface ReplyStats {
+  /** Findings with a `review_reply_sent` row (docs/adr/0035). */
+  replied: number;
+  fixed: number;
+  dismissed: number;
+  /** fixed / (fixed + dismissed) over the replied findings' strong outcomes; null with none. */
+  fixedRate: number | null;
+}
+
+/**
+ * What became of the findings this tool replied under, joining each sent reply
+ * row to the finding's stored outcome by run and finding. A replied finding
+ * with no outcome yet, or a weak one, counts as replied and nothing more.
+ */
+export function replyStats(db: Database): ReplyStats {
+  const rows = db
+    .prepare(
+      `SELECT o.outcome AS outcome, o.strength AS strength FROM (
+         SELECT DISTINCT json_extract(metadata_json, '$.run') AS run, json_extract(metadata_json, '$.finding') AS finding
+         FROM audit_events WHERE action = 'review_reply_sent' AND json_valid(metadata_json)
+       ) r LEFT JOIN finding_outcomes o ON o.review_run_id = r.run AND o.finding_id = r.finding`,
+    )
+    .all() as unknown as OutcomeRow[];
+  const { tracked, fixed, dismissed, fixedRate } = statsOf(rows);
+  return { replied: tracked, fixed, dismissed, fixedRate };
 }
 
 export interface PostedBreakdown {

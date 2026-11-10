@@ -122,6 +122,19 @@ pull request, and its allowlist is the repository of the recorded run being
 posted: having reviewed that pull request is the consent, and a repository
 named on the command line is not. A flag naming another repository is refused.
 
+Since [adr/0035](adr/0035-one-bounded-reply-per-own-finding.md) the same writer
+has a second path, `replyToComment`, bounded to a thread this tool started. It
+sends exactly `{ body }` as a reply under one of its own inline comments, and
+refuses any other path, an edit, a reaction or a reply elsewhere, before the
+network. The text is a template filled by code from the recorded run, never
+written by a model or taken from the thread. Its `path:line` references are
+the analyst's or challenger's recorded output, which read the untrusted diff,
+so one that is absolute, climbs, or holds a control character is dropped. An
+injected comment can at most provoke one templated reply quoting them, and
+only once per thread: the
+posting switch, the confirmation, the per-thread idempotency key and the audit
+rows apply to it as they apply to a review. The thread is never resolved.
+
 ### 3b. Untrusted text reaching a subprocess argument
 
 The absence guard runs `git grep` for symbols named in a candidate's claim, and

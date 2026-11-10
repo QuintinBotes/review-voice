@@ -47,7 +47,8 @@ with the same gates it applies today.
 - **Organisation-wide policy authority.** ADR 0006 still applies. A team
   profile pools history, and the owner still approves policy.
 - **Auto-merge, dismissing reviews, or writes other than the one review.** The
-  writer's single endpoint is unchanged.
+  watcher makes no write but the review. The writer's second path, the reply
+  (ADR 0035), is reached only by `reply --confirm`.
 
 ## Who uses it, and how
 
@@ -309,6 +310,10 @@ audit events` (through stderr with `--json`). A second watcher on
 the same data directory exits at once (a lock file). `--once` runs one pass for
 cron, launchd or a scheduled workflow.
 
+`watch` never replies under a comment. It has no reply setting and no code path
+to the reply write (ADR 0035), so a question under one of its posted comments
+waits for a person to run `reply --pr N --confirm`.
+
 ### `challenge`
 
 ```
@@ -349,6 +354,15 @@ Reads the review threads of findings Review Voice posted, and the pull
 request's later commits, and records a `FindingOutcome` for each. `evaluate`
 reports the totals. `watch` runs it once per pass for the pull requests it
 touched.
+
+In text mode, a thread awaiting this tool's one reply (ADR 0035) prints one
+more line, `<repo>#<pr> <findingId> <path>:<line> question from <login>
+awaiting a reply; run reply --pr <pr>`. A thread awaits it when it is open, no
+reply under it is by the poster, and the newest reply from someone other than
+the poster, the owner or a bot asks something (a `?` outside a blockquote). A
+disagreement that asks nothing is an outcome and gets no reply. An
+acknowledgement gets none, even with a question mark. `--json` stays an array
+of outcomes.
 
 ## Verdict policy
 
@@ -404,7 +418,8 @@ ADR 0029. For each posted inline comment:
   label (ADR 0004).
 
 `evaluate` adds `posted_fixed_rate`, `posted_dismissed_rate` and
-`posted_findings_tracked`. Only strong outcomes count toward rates.
+`posted_findings_tracked`, and since ADR 0035 `posted_replies` and
+`replied_fixed_rate`. Only strong outcomes count toward rates.
 `owner_accepted_precision` keeps reading explicit feedback first.
 
 ## Security
@@ -420,9 +435,11 @@ The threat model's boundaries do not move.
 - **Search is a read outside one repository.** ADR 0026 allows exactly one
   search endpoint, and every result is filtered against the allowlist before
   anything else reads it.
-- **The writer is unchanged.** It still makes one request, to one endpoint.
-  `watch` and the Action reach it only through `post`, with its idempotency key,
-  head re-read and CI guards.
+- **The writer has two paths, both checked in code.** It creates a review, or
+  replies under one of this tool's own inline comments (ADR 0035), and refuses
+  every other method and path before the network. `watch` and the Action reach
+  it only through `post`, with its idempotency key, head re-read and CI guards.
+  Neither replies, since only `reply --confirm` sends the reply.
 - **The Action** runs on `pull_request`, never `pull_request_target` with a
   checkout of the head. Fork pull requests get no secrets, so the Action
   reviews without posting there unless the maintainer opts in.

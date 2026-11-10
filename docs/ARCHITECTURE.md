@@ -1257,7 +1257,7 @@ the cap is twice a fair share between 0.15 and 0.5.
 ### Posting
 
 `RV verdict` computes the posting decision and never writes. `RV post` repeats
-it, applies more guards and, with `--confirm`, makes the single write. An
+it, applies more guards and, with `--confirm`, makes the review write. An
 external loop should call these instead of re-implementing the rules.
 
 **The event** comes from the severities of the findings that post
@@ -1294,7 +1294,7 @@ rules above: `ci_pending` (`wait` or `proceed`), `ci_red` (`cap` or
 keeps the event and appends one line naming at most five checks to the body.
 Check names are flattened to inline code so no markdown or mention renders.
 `decide()` takes the settings as a `VerdictPolicy`; the head guard, the
-writer's single endpoint and the idempotency key are not settings.
+writer's two checked paths and the idempotency key are not settings.
 
 **Review scope.** `verdict.scope_block` (default `false`) appends a collapsed
 Review scope block and an HTML comment containing JSON from the recorded run:
@@ -1378,7 +1378,7 @@ earlier post (a COMMENT while CI was red, then the approval) are not sent again.
 9. The key is claimed as an `review_post_attempted` audit row inside one
    transaction that rechecks the block, so two concurrent posts cannot both
    claim it.
-10. The single write, `POST /pulls/{n}/reviews`, through the writer.
+10. The review write, `POST /pulls/{n}/reviews`, through the writer.
 
 **Audit rows.** Every refusal writes `review_post_refused` with its reasons,
 key, head and event. A claimed attempt writes `review_post_attempted`, then
@@ -1399,6 +1399,44 @@ dismissals is 100% precision and tells you nothing.
 The preview is rendered from the payload that would be sent. A preview
 generated separately from what gets posted is a mock-up.
 
+**Replies** (ADR 0035). `outcomes` reads every reply under every inline comment
+this tool posted. `replyWanted` in `src/store/outcomes.ts` marks a thread as
+awaiting a reply from those same reads: the thread state is known and open, no
+reply under the root is by the poster, and the newest reply that is not a
+bot's, the poster's or the owner's asks something (a `?` outside a blockquote),
+whether as a question or as a disagreement. `checkOutcomes` returns these as
+`questions` beside the outcomes, and `outcomes` prints one line per question in
+text mode. `RV reply --pr N` runs that check for one pull request and hands the
+questions to `postReplies` in `src/publish/reply.ts`. Guard order:
+
+1. `writes.github_posting_enabled` must be true, else one `review_reply_refused`
+   row and exit 2, before any read of the store.
+2. The question's run must exist and be of the pull request's repository.
+3. `renderReply` builds the body from the recorded run alone, from the score
+   that backed the posted finding and the candidate it scored, naming the first
+   seven characters of the head and the challenger's `decisive_evidence` when
+   its verdict is `confirmed`, else the `path:line` citations in the candidate's
+   evidence, at most four, deduplicated, each dropped when its path is unsafe
+   for inline code or when it alone breaks a property below. No reference,
+   no reply. The body is one fixed template, at most 600 characters, with none
+   of the validator's forbidden phrases, and `classifyReply` reads it as
+   `other`, so the outcomes reader never takes the tool's own reply for a
+   dismissal or an acknowledgement. It is redacted before those checks, so the
+   preview is the payload sent.
+4. The key `reply:<repository>#<pr>:<root comment id>` must not be blocked: a
+   key already sent, or attempted with no definite answer, refuses. A 4xx does
+   not block a retry.
+5. Without `--confirm`, the body is previewed and a `review_reply_refused` row
+   says so.
+6. The key is claimed as a `review_reply_attempted` row in one transaction.
+7. The second write, `POST /pulls/{n}/comments/{id}/replies`, through the same
+   writer, with exactly that `{ body }`; the writer's allowlist is
+   the run's repository. `review_reply_sent` or `review_reply_failed` follows,
+   with the uncertainty rule a review has.
+
+No reply to a reply, no second reply on a thread, no model in the path, no
+resolving or editing of anything. The GitHub Action never replies.
+
 ### The watcher
 
 `watch` (ADR 0027) adds no review or posting rule of its own. Each pass builds
@@ -1406,7 +1444,9 @@ the queue and handles one entry at a time: a new head runs `review` as a child
 process in the repository's clone under `watch.workspace`, and a recorded run
 goes through `computeVerdict` and `postReview` in process, with the thread
 re-read before the post. The review step is an injected function, so tests
-replace it.
+replace it. The watcher never replies under a comment. Nothing under
+`src/watch/` reaches `postReplies` or `replyToComment`, and there is no setting
+to turn on (ADR 0035), so a pending question waits for `reply --pr N --confirm`.
 
 The clone is repository content, so its `.review-voice/config.yaml` must not
 decide posting or the allowlist (ADR 0006). `loadConfig` reads

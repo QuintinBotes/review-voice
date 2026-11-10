@@ -144,11 +144,12 @@ function expiredRunDirectories(dataDir: string, days: number | null, now: Date):
 
 /**
  * The posting rows stay: `keyBlocked`, `sentInline` and the held-finding and
- * outcome readers treat them as the single write path's memory with no time
- * bound, so deleting them could let a review be posted twice. Only `purge`
- * removes them.
+ * outcome readers treat them as the write path's memory with no time bound,
+ * so deleting them could let a review be posted twice. The reply rows are the
+ * second write's memory (docs/adr/0035) and stay for the same reason. Only
+ * `purge` removes them.
  */
-const AUDIT_WHERE = "created_at < ? AND action NOT LIKE 'review_post_%'";
+const AUDIT_WHERE = "created_at < ? AND action NOT LIKE 'review_post_%' AND action NOT LIKE 'review_reply_%'";
 
 function auditCutoff(days: number | null, now: Date): string | null {
   return enabled(days) ? new Date(now.getTime() - days * DAY_MS).toISOString() : null;

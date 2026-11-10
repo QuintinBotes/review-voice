@@ -15,8 +15,9 @@ import { recordRun } from '../plugins/review-voice/src/store/runs.ts';
 import { recordAudit } from '../plugins/review-voice/src/store/audit.ts';
 import { recordFeedback } from '../plugins/review-voice/src/store/feedback.ts';
 import { GitHubClient } from '../plugins/review-voice/src/github/client.ts';
-import { checkOutcomes, classifyReply, patchTouches, postedBreakdown } from '../plugins/review-voice/src/store/outcomes.ts';
+import { checkOutcomes, classifyReply, patchTouches, postedBreakdown, replyWanted } from '../plugins/review-voice/src/store/outcomes.ts';
 import { computeMetrics } from '../plugins/review-voice/src/evaluate/metrics.ts';
+import { runInProcess } from '../plugins/review-voice/src/cli.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const bundle = join(root, 'plugins/review-voice/dist/review-voice.mjs');
@@ -293,6 +294,104 @@ test('a lane recorded on the finding is used in the breakdown', async () => {
   });
 });
 
+// --- S21: threads awaiting this tool's one reply (docs/adr/0035) ---
+
+const ROOT = { id: 105, path: 'src/open.ts', line: 50, body: '**minor** - The parser accepts an empty identifier.', user: { login: 'Review-Bot-User' } };
+const OPEN = { resolved: false, outdated: false };
+const at = (login, body, created_at, extra = {}) => ({ id: 300 + created_at.length, in_reply_to_id: 105, user: { login }, body, created_at, ...extra });
+
+test('replyWanted asks only for a question or a questioning disagreement from someone else on an open thread', () => {
+  const asked = at('author', 'Why is this a problem?', '2026-10-02T10:00:00Z');
+  assert.deepEqual(replyWanted(ROOT, [asked], OPEN, 'your-github-login'), { askedBy: 'author', askedAt: '2026-10-02T10:00:00Z', stance: 'question' });
+  // A disagreement that asks gets the reply; one that asks nothing is recorded only.
+  assert.equal(replyWanted(ROOT, [at('author', 'This is intentional, is it not?', '2026-10-02T10:00:00Z')], OPEN, null).stance, 'reject');
+  assert.equal(replyWanted(ROOT, [at('author', 'This is intentional.', '2026-10-02T10:00:00Z')], OPEN, null), null);
+  // An acknowledgement, with or without a question mark, and an other without one.
+  assert.equal(replyWanted(ROOT, [at('author', 'Good catch, done. Anything else?', '2026-10-02T10:00:00Z')], OPEN, null), null);
+  assert.equal(replyWanted(ROOT, [at('author', 'Looking into it.', '2026-10-02T10:00:00Z')], OPEN, null), null);
+  // A question mark only inside a blockquote is the quoted text, not a question.
+  assert.equal(replyWanted(ROOT, [at('author', '> Why would this fail?\nIt does not.', '2026-10-02T10:00:00Z')], OPEN, null), null);
+  // A bot, the poster (case-insensitively) and the owner ask nothing.
+  assert.equal(replyWanted(ROOT, [at('dependabot[bot]', 'Why?', '2026-10-02T10:00:00Z')], OPEN, null), null);
+  assert.equal(replyWanted(ROOT, [at('helper', 'Why?', '2026-10-02T10:00:00Z', { user: { login: 'helper', type: 'Bot' } })], OPEN, null), null);
+  assert.equal(replyWanted(ROOT, [at('review-bot-user', 'Why?', '2026-10-02T10:00:00Z')], OPEN, null), null);
+  assert.equal(replyWanted(ROOT, [at('Your-GitHub-Login', 'Why?', '2026-10-02T10:00:00Z')], OPEN, 'your-github-login'), null);
+  // Any poster reply under the root closes the thread to this tool, whoever asked after it.
+  assert.equal(replyWanted(ROOT, [at('review-bot-user', 'Answered.', '2026-10-02T09:00:00Z'), asked], OPEN, null), null);
+  // The newest eligible reply decides, by time and not by list order: a bot after the author changes nothing, a later agreement does.
+  assert.equal(replyWanted(ROOT, [asked, at('ci[bot]', 'Build passed.', '2026-10-02T11:00:00Z')], OPEN, null).stance, 'question');
+  assert.equal(replyWanted(ROOT, [at('teammate', 'Agreed, makes sense.', '2026-10-02T11:00:00Z'), asked], OPEN, null), null);
+  // A resolved thread, an unknown state, a reply to another root, and a root with no login.
+  assert.equal(replyWanted(ROOT, [asked], { resolved: true, outdated: false }, null), null);
+  assert.equal(replyWanted(ROOT, [asked], null, null), null);
+  assert.equal(replyWanted(ROOT, [{ ...asked, in_reply_to_id: 999 }], OPEN, null), null);
+  assert.equal(replyWanted({ ...ROOT, user: {} }, [asked], OPEN, null), null);
+});
+
+test('checkOutcomes returns the pending questions from the reads it already makes', async () => {
+  await withDb(async (db) => {
+    const runId = postedRun(db);
+    const quiet = fakeGitHub();
+    const before = await check(db, quiet);
+    assert.deepEqual(before.questions, []);
+    const asking = fakeGitHub({
+      replies: [
+        { id: 202, in_reply_to_id: 102, user: { login: 'author' }, body: 'This is intentional, the discount is applied later.', created_at: '2026-10-02T10:00:00Z' },
+        { id: 207, in_reply_to_id: 107, user: { login: 'author' }, body: 'Good catch, done.', created_at: '2026-10-02T10:00:00Z' },
+        { id: 205, in_reply_to_id: 105, user: { login: 'author' }, body: 'Why is an empty identifier a problem here?', created_at: '2026-10-02T10:00:00Z' },
+        { id: 206, in_reply_to_id: 106, user: { login: 'author' }, body: 'Why?', created_at: '2026-10-02T10:00:00Z' },
+        { id: 203, in_reply_to_id: 103, user: { login: 'author' }, body: 'Why?', created_at: '2026-10-02T10:00:00Z' },
+      ],
+    });
+    const result = await check(db, asking);
+    // 106 has no thread state and 103 is resolved; only 105 asks on an open thread.
+    assert.deepEqual(result.questions, [
+      { reviewRunId: runId, findingId: 'rv_05', repository: REPO, pullNumber: PR, rootCommentId: 105, path: 'src/open.ts', line: 50, askedBy: 'author', askedAt: '2026-10-02T10:00:00Z', stance: 'question' },
+    ]);
+    // Detection costs no request, and the outcomes are as before.
+    assert.deepEqual(asking.calls.map((c) => c.path), quiet.calls.map((c) => c.path));
+    assert.equal(byFinding(result).rv_05.outcome, 'open');
+    assert.equal(byFinding(result).rv_02.outcome, 'dismissed');
+    // The owner's own question is not one this tool answers.
+    const owner = await check(db, fakeGitHub({ replies: [{ id: 205, in_reply_to_id: 105, user: { login: 'author' }, body: 'Why?', created_at: '2026-10-02T10:00:00Z' }] }), { ownerReviewer: 'author' });
+    assert.deepEqual(owner.questions, []);
+  });
+});
+
+test('a reply list cut at the read limit offers no reply, since the answer may be past the cut', async () => {
+  await withDb(async (db) => {
+    postedRun(db);
+    const asked = { id: 205, in_reply_to_id: 105, user: { login: 'author' }, body: 'Why is an empty identifier a problem here?', created_at: '2026-10-02T10:00:00Z' };
+    // Seven roots, the question and 992 other comments are the first 1000; the poster's answer is the 1001st.
+    const filler = Array.from({ length: 992 }, (_, i) => ({ id: 10_000 + i, in_reply_to_id: 999, user: { login: 'someone' }, body: 'Noted.', created_at: '2026-10-02T11:00:00Z' }));
+    const answered = { id: 20_000, in_reply_to_id: 105, user: { login: 'review-bot-user' }, body: 'It is rejected later.', created_at: '2026-10-03T10:00:00Z' };
+    const cutWarning = /only the first 1000 inline comments were read, so no reply is offered/;
+    const result = await check(db, fakeGitHub({ replies: [asked, ...filler, answered] }), { pullNumber: PR });
+    assert.deepEqual(result.questions, []);
+    assert.ok(result.warnings.some((warning) => cutWarning.test(warning)), result.warnings.join('\n'));
+    assert.equal(result.outcomes.length, 7);
+    // The watcher and `outcomes` read every pull request and offer no reply, so they are not told of one.
+    const unnarrowed = await check(db, fakeGitHub({ replies: [asked, ...filler, answered] }));
+    assert.deepEqual(unnarrowed.questions, []);
+    assert.equal(unnarrowed.warnings.some((warning) => cutWarning.test(warning)), false, unnarrowed.warnings.join('\n'));
+    // Under the limit the same question is offered.
+    assert.equal((await check(db, fakeGitHub({ replies: [asked, ...filler.slice(1)] }))).questions.length, 1);
+  });
+});
+
+test('a pullNumber narrows the check to one pull request before any request', async () => {
+  await withDb(async (db) => {
+    postedRun(db);
+    const other = fakeGitHub();
+    const none = await check(db, other, { pullNumber: PR + 1 });
+    assert.equal(none.outcomes.length, 0);
+    assert.equal(other.calls.length, 0);
+    const mine = fakeGitHub();
+    assert.equal((await check(db, mine, { pullNumber: PR })).outcomes.length, 7);
+    assert.ok(mine.calls.length > 0);
+  });
+});
+
 function cli(args, dataDir) {
   try {
     const stdout = execFileSync(process.execPath, [bundle, ...args], {
@@ -315,6 +414,34 @@ test('outcomes --json with no runs is an empty array', () => {
     assert.equal(cli(['outcomes', '--repository', 'nonsense'], dir).code, 2);
     assert.match(cli(['outcomes', '--help'], dir).stdout, /--since <Nd>/);
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('outcomes prints the pending-question line in text mode, and its --json stays an array of outcomes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-outcomes-cli-'));
+  const db = openDatabase(join(dir, 'review-voice.db'));
+  postedRun(db);
+  db.close();
+  const saved = { REVIEW_VOICE_DATA_DIR: process.env.REVIEW_VOICE_DATA_DIR, GITHUB_TOKEN: process.env.GITHUB_TOKEN };
+  process.env.REVIEW_VOICE_DATA_DIR = dir;
+  process.env.GITHUB_TOKEN = 't';
+  try {
+    const replies = [{ id: 205, in_reply_to_id: 105, user: { login: 'author' }, body: 'Why is an empty identifier a problem here?', created_at: '2026-10-02T10:00:00Z' }];
+    const text = await runInProcess(['outcomes', '--repository', REPO], { fetchImpl: fakeGitHub({ replies }) });
+    assert.equal(text.code, 0, text.stderr);
+    assert.match(text.stdout, new RegExp(`^${REPO}#${PR} rv_05 src/open[.]ts:50 question from author awaiting a reply; run reply --pr ${PR}$`, 'm'), text.stdout);
+    const asJson = await runInProcess(['outcomes', '--repository', REPO, '--json'], { fetchImpl: fakeGitHub({ replies }) });
+    assert.equal(asJson.code, 0, asJson.stderr);
+    const parsed = JSON.parse(asJson.stdout);
+    assert.ok(Array.isArray(parsed));
+    assert.equal(parsed.length, 7);
+    assert.ok(!asJson.stdout.includes('awaiting a reply'));
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 });
