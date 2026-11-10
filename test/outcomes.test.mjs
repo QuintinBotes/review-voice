@@ -371,6 +371,35 @@ test('a review found by commit and author offers no reply, since the comment may
   });
 });
 
+test('two findings on one line keep their own comments, so a question is paired with the finding it was asked about', async () => {
+  await withDb(async (db) => {
+    // An earlier review carried A, so this review posted only B, on the same line.
+    const A = 'The parser accepts an empty identifier.';
+    const B = 'The cache key ignores the locale.';
+    const output = [`[minor] \`src/open.ts:50\` - ${A}`, `[minor] \`src/open.ts:50\` - ${B}`].join('\n\n');
+    const { reviewRunId } = recordRun(db, { repository: REPO, baseRef: null, headRef: HEAD, pullNumber: PR, diff: 'd', output });
+    const subject = { type: 'pull_request', id: `${REPO}#${PR}` };
+    const attempt = recordAudit(db, 'review_post_attempted', subject, { run: reviewRunId });
+    recordAudit(db, 'review_post_sent', subject, { attempt, head: HEAD, reviewId: 555 });
+    const root = { id: 901, path: 'src/open.ts', line: 50, original_line: 50, body: `**minor** - ${B}`, user: { login: 'review-bot-user' }, created_at: '2026-10-01T10:00:00Z' };
+    const asked = { id: 902, in_reply_to_id: 901, user: { login: 'author' }, body: 'Why does the locale matter here?', created_at: '2026-10-02T10:00:00Z' };
+    const impl = async (url) => {
+      const path = new URL(String(url)).pathname;
+      if (path === '/graphql') {
+        return json({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [{ isResolved: false, isOutdated: false, comments: { nodes: [{ databaseId: 901 }] } }] } } } } });
+      }
+      if (path === '/user') return json({ login: 'review-bot-user' });
+      if (path === `/repos/${REPO}/pulls/${PR}`) return json({ head: { sha: HEAD } });
+      if (path === `/repos/${REPO}/pulls/${PR}/comments`) return json([root, asked]);
+      if (path === `/repos/${REPO}/pulls/${PR}/reviews/555/comments`) return json([root]);
+      return new Response('not found', { status: 404 });
+    };
+    const result = await check(db, impl, { pullNumber: PR });
+    assert.deepEqual(result.questions.map((q) => [q.findingId, q.rootCommentId]), [['rv_02', 901]]);
+    assert.deepEqual(result.outcomes.map((o) => [o.findingId, o.commentId]), [['rv_02', 901]]);
+  });
+});
+
 test('a reply list cut at the read limit offers no reply, since the answer may be past the cut', async () => {
   await withDb(async (db) => {
     postedRun(db);

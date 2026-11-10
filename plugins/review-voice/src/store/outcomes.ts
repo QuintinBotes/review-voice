@@ -5,6 +5,7 @@ import { fileAtRef, suggestionApplied } from '../publish/suggestion.ts';
 import { ruleIdFor } from '../policy/rules.ts';
 import { runDetail, type StoredFinding } from './runs.ts';
 import { stripEvidenceBlock } from '../publish/evidence-block.ts';
+import { parseFinding } from '../contract/parse.ts';
 
 /**
  * What became of each inline comment Review Voice posted (docs/adr/0029).
@@ -384,20 +385,45 @@ function severityPrefix(finding: StoredFinding): string {
   return `**${finding.severity}** - `;
 }
 
-/** Pairs each finding with the root comment it was posted as: same file and line, the closest wording when two share a line. */
+/** A root comment's prose as posted: the evidence and suggestion blocks removed, as `commentSignature` removes them. */
+function postedProse(body: string): string {
+  const prose = stripEvidenceBlock(body);
+  const block = prose.lastIndexOf('\n\n```suggestion\n');
+  return block >= 0 && prose.endsWith('```') ? prose.slice(0, block) : prose;
+}
+
+/** Whether a root comment is exactly this finding's text as `post` renders it. */
+function postedAs(comment: RawComment, finding: StoredFinding): boolean {
+  return postedProse(comment.body ?? '') === `${severityPrefix(finding)}${parseFinding(finding.text, 0).prose}`;
+}
+
+/**
+ * Pairs each finding with the root comment it was posted as: same file and
+ * line, a comment holding exactly the finding's text first, then the closest
+ * wording. Exact pairs go first so a finding that was not posted again (an
+ * earlier review already carried it) cannot take another finding's comment
+ * at the same line.
+ */
 function matchComments(findings: StoredFinding[], comments: RawComment[]): Map<string, RawComment> {
   const taken = new Set<number>();
   const matched = new Map<string, RawComment>();
+  const at = (comment: RawComment, finding: StoredFinding): boolean =>
+    typeof comment.id === 'number' &&
+    !taken.has(comment.id) &&
+    comment.in_reply_to_id == null &&
+    comment.path === finding.path &&
+    (comment.original_line === finding.line || comment.line === finding.line);
   for (const finding of findings) {
+    const exact = comments.find((comment) => at(comment, finding) && postedAs(comment, finding));
+    if (exact !== undefined) {
+      taken.add(exact.id!);
+      matched.set(finding.findingId, exact);
+    }
+  }
+  for (const finding of findings) {
+    if (matched.has(finding.findingId)) continue;
     const words = significantWords(finding.text);
-    const candidates = comments.filter(
-      (comment) =>
-        typeof comment.id === 'number' &&
-        !taken.has(comment.id) &&
-        comment.in_reply_to_id == null &&
-        comment.path === finding.path &&
-        (comment.original_line === finding.line || comment.line === finding.line),
-    );
+    const candidates = comments.filter((comment) => at(comment, finding));
     let best: RawComment | undefined;
     let bestScore = -1;
     for (const comment of candidates) {
@@ -445,8 +471,12 @@ async function followRun(
     // From the same root, replies and states as the outcome, so detection costs no request.
     // Only a review id this tool recorded proves the comment is its own; one
     // found by commit and author may be a person's comment at the same line.
+    // And only a comment holding exactly this finding's text is its thread, so
+    // the reply quotes the evidence of the finding the person asked about.
     const wanted =
-      source === 'audit' ? replyWanted(comment, context.replies, context.states?.get(comment.id!) ?? null, options.ownerReviewer ?? null) : null;
+      source === 'audit' && postedAs(comment, finding)
+        ? replyWanted(comment, context.replies, context.states?.get(comment.id!) ?? null, options.ownerReviewer ?? null)
+        : null;
     if (wanted !== null) {
       questions.push({
         reviewRunId: run.runId,

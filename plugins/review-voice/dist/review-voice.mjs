@@ -15950,14 +15950,29 @@ async function reviewIdsOf(options, run, viewerLogin) {
 function severityPrefix(finding) {
   return `**${finding.severity}** - `;
 }
+function postedProse(body) {
+  const prose = stripEvidenceBlock(body);
+  const block = prose.lastIndexOf("\n\n```suggestion\n");
+  return block >= 0 && prose.endsWith("```") ? prose.slice(0, block) : prose;
+}
+function postedAs(comment, finding) {
+  return postedProse(comment.body ?? "") === `${severityPrefix(finding)}${parseFinding(finding.text, 0).prose}`;
+}
 function matchComments(findings, comments) {
   const taken = /* @__PURE__ */ new Set();
   const matched = /* @__PURE__ */ new Map();
+  const at2 = (comment, finding) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line);
   for (const finding of findings) {
+    const exact = comments.find((comment) => at2(comment, finding) && postedAs(comment, finding));
+    if (exact !== void 0) {
+      taken.add(exact.id);
+      matched.set(finding.findingId, exact);
+    }
+  }
+  for (const finding of findings) {
+    if (matched.has(finding.findingId)) continue;
     const words = significantWords(finding.text);
-    const candidates = comments.filter(
-      (comment) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line)
-    );
+    const candidates = comments.filter((comment) => at2(comment, finding));
     let best;
     let bestScore = -1;
     for (const comment of candidates) {
@@ -15995,7 +16010,7 @@ async function followRun(options, context2, run, viewerLogin) {
   for (const finding of detail.findings) {
     const comment = matched.get(finding.findingId);
     if (comment === void 0) continue;
-    const wanted = source === "audit" ? replyWanted(comment, context2.replies, context2.states?.get(comment.id) ?? null, options.ownerReviewer ?? null) : null;
+    const wanted = source === "audit" && postedAs(comment, finding) ? replyWanted(comment, context2.replies, context2.states?.get(comment.id) ?? null, options.ownerReviewer ?? null) : null;
     if (wanted !== null) {
       questions.push({
         reviewRunId: run.runId,
