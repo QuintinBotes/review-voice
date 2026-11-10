@@ -15995,7 +15995,7 @@ async function followRun(options, context2, run, viewerLogin) {
   for (const finding of detail.findings) {
     const comment = matched.get(finding.findingId);
     if (comment === void 0) continue;
-    const wanted = replyWanted(comment, context2.replies, context2.states?.get(comment.id) ?? null, options.ownerReviewer ?? null);
+    const wanted = source === "audit" ? replyWanted(comment, context2.replies, context2.states?.get(comment.id) ?? null, options.ownerReviewer ?? null) : null;
     if (wanted !== null) {
       questions.push({
         reviewRunId: run.runId,

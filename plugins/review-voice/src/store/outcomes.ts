@@ -443,7 +443,10 @@ async function followRun(
     const comment = matched.get(finding.findingId);
     if (comment === undefined) continue;
     // From the same root, replies and states as the outcome, so detection costs no request.
-    const wanted = replyWanted(comment, context.replies, context.states?.get(comment.id!) ?? null, options.ownerReviewer ?? null);
+    // Only a review id this tool recorded proves the comment is its own; one
+    // found by commit and author may be a person's comment at the same line.
+    const wanted =
+      source === 'audit' ? replyWanted(comment, context.replies, context.states?.get(comment.id!) ?? null, options.ownerReviewer ?? null) : null;
     if (wanted !== null) {
       questions.push({
         reviewRunId: run.runId,

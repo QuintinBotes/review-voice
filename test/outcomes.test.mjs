@@ -358,6 +358,19 @@ test('checkOutcomes returns the pending questions from the reads it already make
   });
 });
 
+test('a review found by commit and author offers no reply, since the comment may be a person\'s', async () => {
+  await withDb(async (db) => {
+    // The sent row names no review, so the review is found by the account and commit alone.
+    postedRun(db, { reviewId: null });
+    const asked = { id: 205, in_reply_to_id: 105, user: { login: 'author' }, body: 'Why is an empty identifier a problem here?', created_at: '2026-10-02T10:00:00Z' };
+    const reviews = [{ id: 777, user: { login: 'review-bot-user' }, commit_id: HEAD }];
+    const result = await check(db, fakeGitHub({ reviews, replies: [asked] }), { pullNumber: PR });
+    assert.deepEqual(result.questions, []);
+    // The outcomes are still followed through the found review.
+    assert.equal(byFinding(result).rv_05.reviewIdSource, 'reviews-list');
+  });
+});
+
 test('a reply list cut at the read limit offers no reply, since the answer may be past the cut', async () => {
   await withDb(async (db) => {
     postedRun(db);

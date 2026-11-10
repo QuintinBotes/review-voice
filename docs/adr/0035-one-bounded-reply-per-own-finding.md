@@ -36,8 +36,11 @@ thread.**
 ### The trigger
 
 `replyWanted` in `store/outcomes.ts`, from the root comment, the pull request's
-inline comments and the thread state the outcomes check already holds. Each
-rule returns nothing when it fails:
+inline comments and the thread state the outcomes check already holds. It is
+asked only when the root is in a review whose id this tool recorded when it
+posted. A review found by commit and author alone may hold a person's comment
+at the same line, so its threads get no reply, although their outcomes are
+still followed. Each rule returns nothing when it fails:
 
 1. The thread state is known and the thread is not resolved. An unreadable
    state is not an open thread, and neither is one on a pull request whose
