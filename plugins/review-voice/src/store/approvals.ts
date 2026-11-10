@@ -104,7 +104,7 @@ const EPOCH = '0000-01-01T00:00:00.000Z';
  */
 export async function checkApprovals(options: ApprovalCheckOptions): Promise<ApprovalCheckResult> {
   const result: ApprovalCheckResult = { outcomes: [], skipped: [], warnings: [] };
-  const settled = settledRuns(options.db, (options.now?.() ?? new Date()).toISOString());
+  const settled = settledRuns(options.db);
   const runs = approvedRuns(options.db, { since: EPOCH, repository: options.repository }).filter(
     (run) => run.sentAt >= options.since || !settled.has(run.runId),
   );
@@ -142,18 +142,20 @@ async function readPull(client: GitHubClient, repository: string, pullNumber: nu
 /**
  * The runs whose stored outcome no later check can change. A strong outcome is
  * final. A merge at another head can still be reverted, and a close can still
- * be reopened and merged, so those two are final only once their window has
- * passed. Pending, open and unknown are never final.
+ * be reopened and merged, so those two are final only when the check that
+ * stored them ran after their window ended: the clock passing the deadline
+ * is not a check, and a revert can land between the last check and it.
+ * Pending, open and unknown are never final.
  */
-function settledRuns(db: Database, now: string): Set<string> {
+function settledRuns(db: Database): Set<string> {
   const rows = db
     .prepare(
       `SELECT review_run_id FROM approval_outcomes
        WHERE outcome IN ('reverted', 'changes_requested', 'survived')
           OR (outcome IN ('merged_other_head', 'closed')
-              AND CASE WHEN json_valid(evidence_json) THEN json_extract(evidence_json, '$.windowEndsAt') END <= ?)`,
+              AND CASE WHEN json_valid(evidence_json) THEN json_extract(evidence_json, '$.windowEndsAt') END <= checked_at)`,
     )
-    .all(now) as { review_run_id: string }[];
+    .all() as { review_run_id: string }[];
   return new Set(rows.map((row) => row.review_run_id));
 }
 
@@ -232,6 +234,13 @@ async function followApproval(options: ApprovalCheckOptions, run: ApprovedRun, r
   )?.user?.login;
   const changesRequested = (by: string): ApprovalOutcomeRow =>
     row('changes_requested', 'strong', { summary: `${by} requested changes on the approved head after the approval`, changesRequestedBy: by });
+  // A list cut at the read limit cannot show that no one requested changes, so
+  // only an escape it does show is stored; otherwise the row stays as it was.
+  const reviewsComplete = reviews.length < READ_LIMIT;
+  const unlessTruncated = (outcome: ApprovalOutcomeRow): ApprovalOutcomeRow => {
+    if (!reviewsComplete) throw new Error(`the reviews ran past the read limit of ${READ_LIMIT}`);
+    return outcome;
+  };
 
   if (pull.merged) {
     // A merge whose head cannot be read cannot be said to be at the approved
@@ -248,7 +257,7 @@ async function followApproval(options: ApprovalCheckOptions, run: ApprovedRun, r
     if (requestedBy !== undefined) return changesRequested(requestedBy);
     if (!sameHead(currentHead, run.head)) {
       const after = await commitsAfter(options.client, run, reads);
-      return row('merged_other_head', 'weak', {
+      return unlessTruncated(row('merged_other_head', 'weak', {
         summary:
           after === null
             ? `merged at ${currentHead.slice(0, 8)}; the approved head is not among the pull request's commits`
@@ -256,32 +265,40 @@ async function followApproval(options: ApprovalCheckOptions, run: ApprovedRun, r
         commitsAfterHead: after,
         // Kept so the row is read again until a revert can no longer count.
         windowEndsAt,
-      });
+      }));
     }
     if (now.toISOString() >= windowEndsAt) {
-      return row('survived', 'strong', { summary: `merged at the approved head and not reverted in ${windowDays} days`, windowEndsAt });
+      return unlessTruncated(row('survived', 'strong', { summary: `merged at the approved head and not reverted in ${windowDays} days`, windowEndsAt }));
     }
-    return row('pending', 'weak', { summary: `merged at the approved head; the window ends ${windowEndsAt}`, windowEndsAt });
+    return unlessTruncated(row('pending', 'weak', { summary: `merged at the approved head; the window ends ${windowEndsAt}`, windowEndsAt }));
   }
 
   if (requestedBy !== undefined) return changesRequested(requestedBy);
   if (state === 'closed') {
     // Read again until the window from the close has passed, in case it is reopened and merged.
-    return row('closed', 'weak', { summary: 'closed without merging', ...(typeof pull.closed_at === 'string' ? { windowEndsAt: windowEnd(pull.closed_at) } : {}) });
+    return unlessTruncated(row('closed', 'weak', { summary: 'closed without merging', ...(typeof pull.closed_at === 'string' ? { windowEndsAt: windowEnd(pull.closed_at) } : {}) }));
   }
-  if (state === 'open') return row('open', 'weak', { summary: 'still open' });
-  return row('unknown', 'weak', { summary: `the pull request state is ${state}` });
+  if (state === 'open') return unlessTruncated(row('open', 'weak', { summary: 'still open' }));
+  return unlessTruncated(row('unknown', 'weak', { summary: `the pull request state is ${state}` }));
 }
 
-/** Stores an approval outcome, replacing the one an earlier check left. */
+/**
+ * Stores an approval outcome, replacing the one an earlier check left. Two
+ * checks can finish out of order (the watcher and `outcomes --approvals`), so
+ * an older check never overwrites a newer one. The row is written only while
+ * its run exists, so a check still waiting on GitHub when a purge ran cannot
+ * put back what the purge removed.
+ */
 export function saveApprovalOutcome(db: Database, outcome: ApprovalOutcomeRow): void {
   db.prepare(
     `INSERT INTO approval_outcomes
        (review_run_id, repository, pull_number, head, review_id, outcome, strength, evidence_json, checked_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+     WHERE EXISTS (SELECT 1 FROM review_runs WHERE review_run_id = ?)
      ON CONFLICT (review_run_id) DO UPDATE SET
        repository = excluded.repository, pull_number = excluded.pull_number, head = excluded.head, review_id = excluded.review_id,
-       outcome = excluded.outcome, strength = excluded.strength, evidence_json = excluded.evidence_json, checked_at = excluded.checked_at`,
+       outcome = excluded.outcome, strength = excluded.strength, evidence_json = excluded.evidence_json, checked_at = excluded.checked_at
+     WHERE excluded.checked_at >= approval_outcomes.checked_at`,
   ).run(
     outcome.reviewRunId,
     outcome.repository,
@@ -292,6 +309,7 @@ export function saveApprovalOutcome(db: Database, outcome: ApprovalOutcomeRow): 
     outcome.strength,
     JSON.stringify(outcome.evidence),
     outcome.checkedAt,
+    outcome.reviewRunId,
   );
 }
 

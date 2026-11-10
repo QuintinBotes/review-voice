@@ -14755,7 +14755,7 @@ var READ_LIMIT2 = 1e3;
 var EPOCH = "0000-01-01T00:00:00.000Z";
 async function checkApprovals(options) {
   const result = { outcomes: [], skipped: [], warnings: [] };
-  const settled = settledRuns(options.db, (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString());
+  const settled = settledRuns(options.db);
   const runs = approvedRuns(options.db, { since: EPOCH, repository: options.repository }).filter(
     (run) => run.sentAt >= options.since || !settled.has(run.runId)
   );
@@ -14788,13 +14788,13 @@ async function readPull2(client, repository, pullNumber) {
   const reviews = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`, READ_LIMIT2);
   return { pull, reviews, commits: null, revert: null };
 }
-function settledRuns(db, now) {
+function settledRuns(db) {
   const rows = db.prepare(
     `SELECT review_run_id FROM approval_outcomes
        WHERE outcome IN ('reverted', 'changes_requested', 'survived')
           OR (outcome IN ('merged_other_head', 'closed')
-              AND CASE WHEN json_valid(evidence_json) THEN json_extract(evidence_json, '$.windowEndsAt') END <= ?)`
-  ).all(now);
+              AND CASE WHEN json_valid(evidence_json) THEN json_extract(evidence_json, '$.windowEndsAt') END <= checked_at)`
+  ).all();
   return new Set(rows.map((row) => row.review_run_id));
 }
 var escapeRegExp3 = (text4) => text4.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -14846,6 +14846,11 @@ async function followApproval(options, run, reads) {
     (review2) => review2.state === "CHANGES_REQUESTED" && typeof review2.user?.login === "string" && !isBot(review2.user) && review2.user.login.toLowerCase() !== poster && typeof review2.commit_id === "string" && sameHead(review2.commit_id, run.head) && typeof review2.submitted_at === "string" && review2.submitted_at > approvedAt
   )?.user?.login;
   const changesRequested = (by) => row("changes_requested", "strong", { summary: `${by} requested changes on the approved head after the approval`, changesRequestedBy: by });
+  const reviewsComplete = reviews.length < READ_LIMIT2;
+  const unlessTruncated = (outcome) => {
+    if (!reviewsComplete) throw new Error(`the reviews ran past the read limit of ${READ_LIMIT2}`);
+    return outcome;
+  };
   if (pull.merged) {
     if (currentHead === null || mergedAt === null) {
       return row("unknown", "weak", { summary: "the merged head or the merge time could not be read" });
@@ -14857,33 +14862,35 @@ async function followApproval(options, run, reads) {
     if (requestedBy !== void 0) return changesRequested(requestedBy);
     if (!sameHead(currentHead, run.head)) {
       const after = await commitsAfter(options.client, run, reads);
-      return row("merged_other_head", "weak", {
+      return unlessTruncated(row("merged_other_head", "weak", {
         summary: after === null ? `merged at ${currentHead.slice(0, 8)}; the approved head is not among the pull request's commits` : `merged at ${currentHead.slice(0, 8)}, ${after} commit(s) after the approved head`,
         commitsAfterHead: after,
         // Kept so the row is read again until a revert can no longer count.
         windowEndsAt
-      });
+      }));
     }
     if (now.toISOString() >= windowEndsAt) {
-      return row("survived", "strong", { summary: `merged at the approved head and not reverted in ${windowDays} days`, windowEndsAt });
+      return unlessTruncated(row("survived", "strong", { summary: `merged at the approved head and not reverted in ${windowDays} days`, windowEndsAt }));
     }
-    return row("pending", "weak", { summary: `merged at the approved head; the window ends ${windowEndsAt}`, windowEndsAt });
+    return unlessTruncated(row("pending", "weak", { summary: `merged at the approved head; the window ends ${windowEndsAt}`, windowEndsAt }));
   }
   if (requestedBy !== void 0) return changesRequested(requestedBy);
   if (state === "closed") {
-    return row("closed", "weak", { summary: "closed without merging", ...typeof pull.closed_at === "string" ? { windowEndsAt: windowEnd(pull.closed_at) } : {} });
+    return unlessTruncated(row("closed", "weak", { summary: "closed without merging", ...typeof pull.closed_at === "string" ? { windowEndsAt: windowEnd(pull.closed_at) } : {} }));
   }
-  if (state === "open") return row("open", "weak", { summary: "still open" });
-  return row("unknown", "weak", { summary: `the pull request state is ${state}` });
+  if (state === "open") return unlessTruncated(row("open", "weak", { summary: "still open" }));
+  return unlessTruncated(row("unknown", "weak", { summary: `the pull request state is ${state}` }));
 }
 function saveApprovalOutcome(db, outcome) {
   db.prepare(
     `INSERT INTO approval_outcomes
        (review_run_id, repository, pull_number, head, review_id, outcome, strength, evidence_json, checked_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+     WHERE EXISTS (SELECT 1 FROM review_runs WHERE review_run_id = ?)
      ON CONFLICT (review_run_id) DO UPDATE SET
        repository = excluded.repository, pull_number = excluded.pull_number, head = excluded.head, review_id = excluded.review_id,
-       outcome = excluded.outcome, strength = excluded.strength, evidence_json = excluded.evidence_json, checked_at = excluded.checked_at`
+       outcome = excluded.outcome, strength = excluded.strength, evidence_json = excluded.evidence_json, checked_at = excluded.checked_at
+     WHERE excluded.checked_at >= approval_outcomes.checked_at`
   ).run(
     outcome.reviewRunId,
     outcome.repository,
@@ -14893,7 +14900,8 @@ function saveApprovalOutcome(db, outcome) {
     outcome.outcome,
     outcome.strength,
     JSON.stringify(outcome.evidence),
-    outcome.checkedAt
+    outcome.checkedAt,
+    outcome.reviewRunId
   );
 }
 function wilsonUpper(k, n, z = 1.96) {
