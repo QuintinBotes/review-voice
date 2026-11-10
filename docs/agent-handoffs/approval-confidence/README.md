@@ -102,10 +102,17 @@ the default branch later show, and `evaluate` reports an approval escape rate.
 - **Reads, all GET.** `/repos/{r}/pulls/{n}` (state, `merged`, `merged_at`,
   `merge_commit_sha`, current head); `/pulls/{n}/reviews` (already read by
   `checkOutcomes`); `/pulls/{n}/commits` for commits after the approved head;
-  and one allowlisted search per merged pull request, through the search route
-  the queue uses (ADR 0026), for a pull request in the same repository whose
-  body holds `Reverts {owner}/{repo}#{n}`, the text GitHub's revert button
-  writes.
+  and one allowlisted search per merged pull request, through a new typed
+  source on the queue's search route (ADR 0026), for a merged pull request in
+  the same repository whose body holds `Reverts {owner}/{repo}#{n}`, the text
+  GitHub's revert button writes. The source is `reverts:{owner}/{repo}#{n}`;
+  `src/github/client.ts` builds its query as
+  `is:pr is:merged repo:{owner}/{repo} "Reverts {owner}/{repo}#{n}" in:body`,
+  checks the repository against the allowlist before sending, and lets no
+  caller text reach `q`. The search route as it stood admitted only the four
+  open-pull-request sources and no other `/search` path, so this one typed
+  source is the narrowest change that reaches the revert; ADR 0034 records it
+  as an amendment of ADR 0026.
 - **Outcomes**, with ADR 0004's strength rules:
 
   | Outcome | Strength | When |
@@ -128,7 +135,9 @@ the default branch later show, and `evaluate` reports an approval escape rate.
 - **Storage.** A new `MIGRATIONS` entry in `src/store/db.ts`:
   `approval_outcomes (review_run_id, repository, pull_number, head, review_id,
   outcome, strength, evidence_json, checked_at)`, one row per run, a newer
-  check replacing an older one, as `finding_outcomes` does.
+  check replacing an older one, as `finding_outcomes` does. A full `purge`
+  removes `approval_outcomes` with the runs it follows (`src/consent/purge.ts`),
+  so no reviewer login or figure outlives the data it came from.
 - **Metrics** in `computeMetrics`, reported and never gated:
   `approvals_tracked`, and
 
@@ -161,8 +170,10 @@ verdict, no judgement of pull requests Review Voice did not approve.
 - AC-3. `evaluate` prints `no data` with zero settled approvals, the rate and
   its bound otherwise, and the basis string above; `--json` carries
   `approval_breakdown`; a group with nothing settled reports `null`.
-- AC-4. Every request the check makes is a GET to a repository in the
-  allowlist; a run for any other repository is skipped without a request.
+- AC-4. Every request the check makes is a GET, either to a repository in the
+  allowlist or the typed `reverts:` search naming one; a run for any other
+  repository is skipped without a request, and a `reverts:` source outside the
+  allowlist is refused before any request.
 - AC-5. `watch --once` follows approvals in the same pass as findings, and a
   failure there does not fail the pass.
 - AC-6. ADR 0034 exists, ADR 0029 gains a dated amendment, the index marks
@@ -172,6 +183,8 @@ verdict, no judgement of pull requests Review Voice did not approve.
 ### Allowed paths
 
 `plugins/review-voice/src/store/outcomes.ts`, `src/store/db.ts`,
+`src/github/client.ts` (the one typed `reverts:` search source),
+`src/consent/purge.ts` (the purge of `approval_outcomes`),
 `src/store/approvals.ts` (new), `src/evaluate/metrics.ts`,
 `src/cli/outcomes.ts`, `src/cli/status.ts`, `src/cli/evaluate.ts`,
 `src/watch/command.ts`, `src/policy/load.ts`, `src/help.ts`,
