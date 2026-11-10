@@ -1,0 +1,20 @@
+{
+  "output": {
+    "verifications": [
+      {
+        "candidate_id": "cand_001",
+        "verified": true,
+        "evidence_quality": "high",
+        "technical_confidence": 0.92,
+        "reason": "The comment on line 1 makes the number one-based and line 3 no longer subtracts one.",
+        "fix_verdict": "absent",
+        "reproduction": {
+          "runner": "node-test",
+          "path": "src/paginate.repro.test.mjs",
+          "content": "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { page } from './paginate.mjs';\n\ntest('the first page starts at the first item', () => {\n  const items = [1, 2, 3, 4];\n  console.log('RV_REPRO_REACHED cand_001');\n  assert.deepEqual(page(items, 1, 2), [1, 2]);\n});\n",
+          "expected": "The first page of four items in pages of two is [1, 2]."
+        }
+      }
+    ]
+  }
+}

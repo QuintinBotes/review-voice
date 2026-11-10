@@ -116,6 +116,39 @@
         ]
       }
     },
+    "reproduction": {
+      "description": "Only when the prompt lists reproduction runners, for a blocking or important candidate: a test the CLI writes at path and runs twice through the named runner in a confined runner. content prints RV_REPRO_REACHED <candidate_id> immediately before the one assertion that fails on the defect. The CLI checks the runner and the path against the configuration and the worktree.",
+      "type": "object",
+      "required": [
+        "runner",
+        "path",
+        "content",
+        "expected"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "runner": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "expected": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        }
+      }
+    },
     "partly_addressed": {
       "description": "Only for a candidate whose possibleRepeatOf is the owner's own comment, when the author fixed part of what that comment raised and part is still open. remaining lists the open points, addressed the fixed ones.",
       "type": "object",

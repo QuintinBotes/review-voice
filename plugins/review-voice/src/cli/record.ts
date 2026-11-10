@@ -29,9 +29,11 @@ import {
   type StageTiming,
   type RunProvenance,
   type RecordedChecks,
+  type RecordedReproduction,
   ORIGINS,
   PROVENANCE_MODES,
   recordedChecks,
+  recordedReproductions,
   storedPolicyVersions,
   type PolicyVersionRef,
 } from '../store/runs.ts';
@@ -406,6 +408,23 @@ export function recordCommand(argv: string[]): number {
     }
   }
 
+  // What the reproduce stage did, kept without output, since the output can hold
+  // anything the copy could read and so stays in the run directory under retention.
+  const reproductionsFile = flag(argv, '--reproductions');
+  let reproductions: RecordedReproduction[] | undefined;
+  if (argv.includes('--reproductions')) {
+    if (reproductionsFile === null) {
+      console.error('--reproductions needs the reproductions.json that `reproduce` wrote.');
+      return 2;
+    }
+    try {
+      reproductions = recordedReproductions(JSON.parse(readFileSync(reproductionsFile, 'utf8')) as unknown);
+    } catch (error) {
+      console.error(`Cannot read reproductions from ${reproductionsFile}: ${error instanceof Error ? error.message : String(error)}.`);
+      return 2;
+    }
+  }
+
   // What settles an earlier run's partly-addressed follow-up: its comment
   // thread resolved on the thread this run read, or the verifier's ruling.
   const followUpThreadFile = flag(argv, '--thread');
@@ -589,6 +608,7 @@ export function recordCommand(argv: string[]): number {
       followUps,
       stages,
       ...(checks === undefined ? {} : { checks }),
+      ...(reproductions === undefined ? {} : { reproductions }),
       toolSignals,
       conventions,
       provenance: {

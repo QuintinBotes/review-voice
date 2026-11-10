@@ -69,3 +69,23 @@ score the challenge stored, and each reference is checked against the same
 path or climbs out with `..` is dropped. The challenger's `reason` is never
 posted. The challenger's inputs, the rule that only `confirmed` with the line
 confirmed or moved passes, and the hold rules are unchanged.
+
+## Amendment - 2026-11-09
+
+The **Input** bullet widens by one fact. When the `reproduce` stage
+([0025](0025-cost-modes-choose-stages-and-models.md), S16) ran a reproduction
+for the finding, `challenge --emit-prompts --reproductions` adds its record,
+which is the runner, the file's path in the worktree, the path of the kept
+copy, each run's exit code and the first 40 lines of the first run's redacted
+output, or one line saying why it did not run. The reproduction file is the
+verifier's work, and the owner decided it may reach the challenger, as an
+artefact with its observed output, which is a fact, labelled untrusted. The verifier's `expected` sentence, its reason,
+its confidence and its evidence are still never included. A reproduction
+settles nothing by itself, and the challenger is told to refute the finding when
+the reproduction exercises something other than the claim, fails for an
+unrelated reason, or asserts a behaviour the code never promised, and may cite
+the copy in `decisive_evidence`, where the evidence block drops it as an
+absolute path. Applying the verdicts drops an entry that names the
+reproduction file by its worktree path or its basename, since that file exists
+only in the copy and the block would otherwise post it. A reproduction that did not fail reaches the challenger only for
+a category no suppression may reach, since there it does not hold the finding.

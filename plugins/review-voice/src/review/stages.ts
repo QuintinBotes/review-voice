@@ -10,6 +10,7 @@ export type StageId =
   | 'intent'
   | 'lanes'
   | 'verify'
+  | 'reproduce'
   | 'second-pass'
   | 'tie-break'
   | 'score'
@@ -50,6 +51,13 @@ export const STAGES: readonly Stage[] = [
     agents: ['evidence-verifier'],
     commands: ['check-verification'],
     onFailure: 'relaunch once with the named ids, then exit 7',
+  },
+  {
+    name: 'reproduce',
+    kind: 'cli',
+    agents: [],
+    commands: ['reproduce'],
+    onFailure: 'the finding keeps its verification; the reproduction is recorded as not run',
   },
   { name: 'second-pass', kind: 'cli', agents: [], commands: ['verify', 'reconcile'], onFailure: 'as today' },
   { name: 'tie-break', kind: 'agent', agents: ['tie-breaker'], commands: ['reconcile'], onFailure: 'the dispute stays unsettled' },

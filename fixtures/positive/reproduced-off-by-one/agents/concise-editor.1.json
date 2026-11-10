@@ -1,0 +1,5 @@
+{
+  "output": {
+    "text": "[minor] `src/paginate.mjs:3` - page 1 now starts at index size, so the first page of items is skipped."
+  }
+}

@@ -14,6 +14,7 @@ import type { VerifiedSimplification } from '../simplification.ts';
 import { suggestedPatchOf, type SuggestedPatch } from '../scoring/score.ts';
 import { redact } from '../redact/redact.ts';
 import type { EvidenceSignal } from '../evidence/types.ts';
+import type { ReproductionRecord, ReproductionRun } from '../evidence/reproduce.ts';
 import { flatten, MACHINE_PATH } from '../publish/evidence-block.ts';
 
 export interface StoredFinding {
@@ -145,6 +146,10 @@ export function partlyAddressedOf(value: unknown): PartlyAddressedFinding | unde
  * `restates-tool` is a candidate that repeats a static-analysis signal at the
  * same place (docs/adr/0003). It is not carried to the next head: the tool
  * reports the defect again there, so nothing needs remembering.
+ *
+ * `reproduction-did-not-fail` is a finding whose reproduction passed at least
+ * once in the confined runner (S16). It is not carried to the next head either:
+ * the reproduction runs again there, so `carriedHeldFindings` does not list it.
  */
 export type HeldVerdict =
   | 'partly'
@@ -156,7 +161,8 @@ export type HeldVerdict =
   | 'owner-declined'
   | 'challenge-refuted'
   | 'challenge-partly'
-  | 'restates-tool';
+  | 'restates-tool'
+  | 'reproduction-did-not-fail';
 
 export interface HeldFinding {
   path: string;
@@ -181,6 +187,7 @@ export const HELD_VERDICTS: readonly HeldVerdict[] = [
   'challenge-refuted',
   'challenge-partly',
   'restates-tool',
+  'reproduction-did-not-fail',
 ];
 
 /** Null when the entry is well formed, else what is wrong with it. */
@@ -457,6 +464,74 @@ export interface RecordRunInput {
   toolSignals?: readonly EvidenceSignal[] | undefined;
   /** The convention documents `conventions` returned, for each finding's `conventionQuotes`. */
   conventions?: readonly { path: string; content: string }[] | undefined;
+  /** What the `reproduce` stage did, without the output; see `recordedReproductions`. Absent when the run was not given it. */
+  reproductions?: RecordedReproduction[] | undefined;
+}
+
+/**
+ * One reproduction as the store keeps it, which is the record `reproduce`
+ * wrote without any run's output. The output can hold anything the copy of the
+ * worktree could read, so it stays in the run directory under retention.
+ */
+export type RecordedReproduction = Omit<ReproductionRecord, 'runs'> & { runs: Omit<ReproductionRun, 'output'>[] };
+
+const OUTCOMES: readonly ReproductionRecord['outcome'][] = ['reproduced', 'did-not-fail', 'did-not-run'];
+
+/** One stored record, or null when it is not the shape `reproduce` writes. */
+function reproductionOf(entry: unknown): RecordedReproduction | null {
+  const r = asRecord(entry);
+  if (r === null || !Array.isArray(r['runs']) || !OUTCOMES.includes(r['outcome'] as ReproductionRecord['outcome'])) return null;
+  const texts = ['candidateId', 'path', 'runner', 'file', 'copy', 'expected'] as const;
+  if (texts.some((key) => typeof r[key] !== 'string') || !Number.isInteger(r['line'])) return null;
+  const runs: RecordedReproduction['runs'] = [];
+  for (const raw of r['runs']) {
+    const run = asRecord(raw);
+    if (run === null || typeof run['reached'] !== 'boolean' || typeof run['durationMs'] !== 'number') return null;
+    runs.push({ exitCode: Number.isInteger(run['exitCode']) ? (run['exitCode'] as number) : null, durationMs: run['durationMs'], reached: run['reached'] });
+  }
+  return {
+    candidateId: r['candidateId'] as string,
+    path: r['path'] as string,
+    line: r['line'] as number,
+    runner: r['runner'] as string,
+    file: r['file'] as string,
+    copy: r['copy'] as string,
+    expected: r['expected'] as string,
+    outcome: r['outcome'] as ReproductionRecord['outcome'],
+    ...(typeof r['reason'] === 'string' ? { reason: r['reason'] } : {}),
+    runs,
+  };
+}
+
+/**
+ * The records of a `reproductions.json`, without output. Throws on a shape the
+ * command does not write, so a hand-edited file cannot record a result that
+ * looks complete.
+ */
+export function recordedReproductions(report: unknown): RecordedReproduction[] {
+  const value = asRecord(report);
+  if (value === null || !Array.isArray(value['reproductions'])) throw new Error('the reproductions report has no reproductions list');
+  return value['reproductions'].map((entry, index) => {
+    const record = reproductionOf(entry);
+    if (record === null) throw new Error(`reproductions entry ${index} is not a record reproduce writes`);
+    return record;
+  });
+}
+
+/**
+ * Marks each did-not-fail record whose finding this run held, from the held
+ * list as it is at record time. `decline` later rewrites a held entry's
+ * verdict, so a measure that read the held list would forget the hold.
+ */
+function markHeld(records: readonly RecordedReproduction[], held: readonly HeldFinding[]): (RecordedReproduction & { held?: true })[] {
+  const ids = new Set(held.filter((entry) => entry.verdict === 'reproduction-did-not-fail').map((entry) => entry.candidateId));
+  return records.map((record) => (record.outcome === 'did-not-fail' && ids.has(record.candidateId) ? { ...record, held: true } : record));
+}
+
+/** The stored records, or null for a row recorded before they existed or without them. */
+function storedReproductions(raw: unknown): RecordedReproduction[] | null {
+  if (!Array.isArray(raw)) return null;
+  return raw.map(reproductionOf).filter((record): record is RecordedReproduction => record !== null);
 }
 
 /**
@@ -877,6 +952,7 @@ export function recordRun(
         ...(input.carry === undefined ? {} : { carry: input.carry }),
         ...(input.followUps === undefined || input.followUps.length === 0 ? {} : { followUps: input.followUps }),
         ...(input.checks === undefined ? {} : { checks: input.checks }),
+        ...(input.reproductions === undefined ? {} : { reproductions: markHeld(input.reproductions, input.held ?? []) }),
       }),
       new Date().toISOString(),
       JSON.stringify(input.stages ?? []),
@@ -933,6 +1009,8 @@ export interface RunDetail {
   bodyFindings: VerifiedSimplification[];
   /** Null for rows recorded before checks were kept, or recorded without `--evidence` and `--symbols`. */
   checks: RecordedChecks | null;
+  /** Null for rows recorded before reproductions were kept, or recorded without `--reproductions`. */
+  reproductions: RecordedReproduction[] | null;
 }
 
 function storedComplexity(raw: unknown): ComplexityAssessment | null {
@@ -1013,6 +1091,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     followUps?: unknown;
     bodyFindings?: unknown;
     checks?: unknown;
+    reproductions?: unknown;
   };
 
   return {
@@ -1034,6 +1113,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     followUps: Array.isArray(parsed.followUps) ? (parsed.followUps as FollowUpState[]) : [],
     bodyFindings: Array.isArray(parsed.bodyFindings) ? (parsed.bodyFindings as VerifiedSimplification[]) : [],
     checks: storedChecks(parsed.checks),
+    reproductions: storedReproductions(parsed.reproductions),
     // Older rows predate the column, so absence is normal rather than an error.
     stages: ((): StageTiming[] => {
       const raw = row['stages_json'];

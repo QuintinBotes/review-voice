@@ -1,0 +1,8 @@
+# Synthetic. The base commit's configuration: reproductions on, one runner.
+reproduction:
+  enabled: true
+  runners:
+    - name: node-test
+      run: node --test {file}
+      extension: .test.mjs
+      timeout_seconds: 60

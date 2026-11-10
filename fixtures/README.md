@@ -51,6 +51,18 @@ applying a normalised copy of `diff.patch`, with hunk headers recounted and
 unmarked body lines read as context. A patch that plain `git apply` rejects
 therefore still works, and the fixture file itself is never changed.
 
+## Reproductions
+
+The `reproduced-off-by-one` and `reproduction-passes-held` positives carry a
+`config.yaml` that turns the `reproduction` block on and canned agent outputs
+under `agents/` whose verifier writes a reproduction (S16). In the first the
+reproduction reaches its marker and fails twice, so the finding posts with its
+record; in the second it asserts what the code already does, passes, and the
+finding is held as `reproduction-did-not-fail`. Both are `harness: skip`,
+because the recall harness runs with `REVIEW_VOICE_NO_COMMANDS=1`, so
+reproductions never run there. `test/reproduction-pipeline.test.mjs` drives
+them through the review driver.
+
 ## Removed controls
 
 The `removed-auth-check`, `removed-rate-limit` and `removed-allowlist-entry`

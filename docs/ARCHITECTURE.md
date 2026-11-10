@@ -98,8 +98,8 @@ is how the runner is exercised on its own.
 
 `review-voice review --pr <n>` runs a whole review in a clone
 (docs/adr/0022). `src/review/stages.ts` is the stage table: prep, carry,
-intent, lanes, verify, second-pass, tie-break, score, challenge, edit, record
-and post, each naming its commands and agents. `src/review/driver.ts` walks it
+intent, lanes, verify, reproduce, second-pass, tie-break, score, challenge,
+edit, record and post, each naming its commands and agents. `src/review/driver.ts` walks it
 in order. Every CLI step and every check is the existing command, run in the
 same process with its output captured (`runInProcess` in `src/cli.ts`), so the
 driver holds no review logic of its own; it moves files between stages and
@@ -142,6 +142,27 @@ summed into its stage; a stage whose calls reported none has no `tokens`, never
 zero. `src/review/prompts.ts` holds each agent's
 prompt and output envelope; a test holds `commands/review.md` to the agents in
 the stage table.
+
+The `reproduce` stage (S16) runs only when the plan turns it on, which is
+`thorough` with the `reproduction` block enabled and a runner configured, and
+not under `REVIEW_VOICE_NO_COMMANDS=1`. Then the verifier's prompt lists the
+runners and asks for a reproduction of each blocking or important finding it
+verifies, and after `verify` the driver calls `reproduce --worktree <head>`
+through `cli`, so a failing `reproduce` is a note and every finding goes on as
+before. It applies each record to the verified candidates
+(`applyReproductions`). A reproduction that did not fail, on the first run or
+the second, holds its finding as `reproduction-did-not-fail`
+(`source: reproduce`), except in a category no suppression may reach
+(`SUPPRESSION_EXEMPT_CATEGORIES`, which holds security, authorization,
+authentication, data integrity and trust boundary). There a passing test may be
+badly written, or code under review may have sensed the sandbox, so the record
+is kept and shown to the challenger and in `explain`, the finding is not held,
+and a note says so. The hold is not carried to the next head, since the
+reproduction runs again there. A record that did not run leaves a note and
+changes nothing; a reproduced one changes no score or tier and is evidence the
+challenger reads. The driver passes `reproductions.json` to
+`challenge --emit-prompts` and to `record` when the stage wrote it, and
+`record` keeps each record without its output.
 
 ### Diff acquisition
 
@@ -571,6 +592,23 @@ file the reviewer can, including credential files under `HOME` such as a
 registry's `.npmrc` or the GitHub CLI's hosts file. For that the defences are
 unchanged: list no command for a head you do not trust, keep
 `REVIEW_VOICE_NO_COMMANDS` on a watcher, and the confined runner S16 specifies.
+
+That confined runner is `reproduce` (`src/evidence/reproduce.ts`). It runs a
+reproduction the verifier wrote, and only through a runner the `reproduction`
+block configures, whose `run` string is the only command text it executes. Each
+reproduction runs twice at most, in its own throwaway copy of the head
+worktree, after a probe through the same wrapper has shown that the network, a
+write outside the copy and its scratch directory, an overwrite of the runner's
+own files and a read of the run directory are refused. On Linux the wrapper is
+`unshare` with user, mount, network and pid namespaces and a read-only root; on
+macOS nothing runs until issue #321; elsewhere there is no mechanism and
+nothing runs. The environment is an allowlist, never the reviewer's, and CPU,
+memory, file-size and wall-clock limits apply. A run counts only when it printed
+`RV_REPRO_REACHED <candidate id>` before its assertion. Two failing runs are
+`reproduced`, a pass on either run is `did-not-fail`, and anything else,
+including a timeout, a limit, a crash before the marker or a change to the
+copy, is `did-not-run` with its reason. Output is redacted and capped at 8 KiB a run in
+`reproductions.json`, which stays in the run directory under retention.
 
 ### Severity is derived, not requested
 
@@ -1002,6 +1040,11 @@ given the claim, the failure mode, the location, the diff and the intent the
 finding cites, and never the verifier's reasoning, confidence or evidence.
 `RV challenge --emit-prompts` builds those prompts from an allowlist of fields,
 so nothing added to a score later reaches the challenger by accident.
+One input was added on purpose. With `--reproductions`, a finding whose
+reproduction ran gets its runner, file, the path of the kept copy, the exit
+codes and the first 40 lines of redacted output, or the reason it did not run,
+labelled untrusted and with the rule that it settles nothing by itself. The
+verifier's `expected` sentence and reasoning stay out (ADR 0024, amended).
 
 `RV challenge` then applies the verdicts. A set that skips an eligible finding,
 or a verdict whose label contradicts its fields, is refused, as `reconcile`

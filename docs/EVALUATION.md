@@ -62,6 +62,7 @@ Each figure below is reported and never a gate. A figure with no data prints
 | 95th percentile review seconds | The slow tail beside the median; per-run sum of stage seconds |
 | Median and 95th percentile review cost (USD) | Per-run sum of stage `costUsd`, over costed runs only; see below |
 | Challenge hold rate | Of the findings the challenger judged, the share it held; see below |
+| Reproduction hold rate | Of the reproductions that completed, the share whose finding was held; see below |
 | Posted fixed rate and dismissed rate, recent | The same strong-outcome rates over a rolling window; see below |
 
 `RV evaluate --json` also carries a top-level `stage_seconds` map of stage name
@@ -89,6 +90,25 @@ score entry carrying a `challenge` key; a held one is a judged entry whose
 `rejectedBecause` starts `challenge-`. Runs with no judged entry are excluded,
 and the basis prints `H held / J judged over R run(s)`. The `held` array and
 the stage list are not consulted, so the rate is never above 1.
+
+#### Reproduction hold rate
+
+```
+reproduction_hold_rate = held / completed
+```
+
+Read from `reproductions[]` in the recorded output, across runs. A completed
+reproduction is a record that is `reproduced` or `did-not-fail`; a held one is
+a `did-not-fail` record that `record` marked because the run held its finding
+as `reproduction-did-not-fail`. The mark is set when the run is recorded, so an
+owner who later declines the held finding does not change the figure. The figure
+is how often a reproduction removed a finding that would otherwise have
+posted. It is not recall, and it is not a precision figure. A `did-not-fail`
+on a category no suppression may reach is completed but never held, and a
+`did-not-run` says nothing either way, so it is counted in the basis and kept
+out of the rate. The basis prints `H held / C completed, N did not run, over R
+run(s)`. With no completed reproduction, which includes a store where every
+record did not run, the figure is `no data`.
 
 #### The window
 

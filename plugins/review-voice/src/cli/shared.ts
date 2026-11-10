@@ -320,7 +320,36 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     const partly = entry['partly_addressed'] ?? entry['partlyAddressed'];
     const partlyProblem = partly === undefined ? null : partlyAddressedProblem(partly);
     if (partlyProblem !== null) return `${who}: partly_addressed ${partlyProblem}.`;
+    const reproduction = entry['reproduction'];
+    const reproductionProblem = reproduction === undefined ? null : reproductionShapeProblem(reproduction);
+    if (reproductionProblem !== null) return `${who}: ${reproductionProblem}.`;
   }
+  return null;
+}
+
+/** The longest each reproduction field may be, as verification.schema.json states. */
+const REPRODUCTION_FIELDS: Readonly<Record<string, number>> = { runner: Infinity, path: 300, content: 65536, expected: 300 };
+
+/**
+ * What is wrong with a verifier's `reproduction`, naming the field. The runner
+ * and the path are checked by `reproduce` against the configuration and the
+ * worktree, which this check has neither of.
+ */
+function reproductionShapeProblem(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return 'reproduction must be an object with runner, path, content and expected';
+  }
+  const fields = value as Record<string, unknown>;
+  const extra = Object.keys(fields).find((key) => !Object.hasOwn(REPRODUCTION_FIELDS, key));
+  if (extra !== undefined) return `reproduction.${extra} is not a field; use runner, path, content and expected`;
+  for (const [key, most] of Object.entries(REPRODUCTION_FIELDS)) {
+    const text = fields[key];
+    if (typeof text !== 'string' || text.length === 0 || text.length > most) {
+      return `reproduction.${key} must be a string of ${most === Infinity ? 'at least 1 character' : `1 to ${most} characters`}`;
+    }
+  }
+  // The config's name rule (policy/load.ts). An unconfigured name is echoed into a did-not-run reason the challenger reads, so free text never gets that far.
+  if (!/^[a-z][a-z0-9-]*$/.test(fields['runner'] as string)) return 'reproduction.runner must be a runner name from the list, lower-case letters, digits and dashes';
   return null;
 }
 

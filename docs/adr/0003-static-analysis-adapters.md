@@ -105,3 +105,28 @@ working once the repository lists that variable; until then it runs without
 it. The lists are read from the same configuration as the commands, the base
 commit's for a pull request, so a pull request cannot widen what its own
 checks receive.
+
+## Amendment - 2026-11-09
+
+A configured reproduction runner (`reproduction.runners`, S16) is
+configuration like a static check. Detection suggests nothing for it, and its
+`run` string, with `{file}` replaced by a single-quoted path the CLI chose, is
+the only command text that runs. The file it runs is a reproduction the
+evidence-verifier wrote for one blocking or important finding, in thorough
+mode only, when the base commit's configuration turns the block on. It runs
+only inside the confined runner (`src/evidence/reproduce.ts`), only after a
+probe through the same wrapper has shown that the network, a write outside
+the reproduction's own throwaway copy of the head worktree and its scratch
+directory, an overwrite of the runner's own files and a read of the run
+directory are all refused, and never on a platform where that cannot be
+shown, so on macOS nothing runs until issue #321. Its exposure is the runner's
+stated limits. It can read the user's other files (read-only on Linux), its
+output reaches the challenger's model after redaction, code under review can
+sense the sandbox and pass on purpose, and it can spend its time limit. A
+reproduction that does not fail holds its finding as
+`reproduction-did-not-fail`, except in a category no suppression may reach
+([0032](0032-approved-policies-are-enforced-at-scoring.md)), where it is
+recorded and shown but never holds. `REVIEW_VOICE_NO_COMMANDS` turns it off
+like every other command. "Ship an execution sandbox" stays rejected for
+anything broader than one configured command running one verifier-written file
+through one platform mechanism behind a probe.

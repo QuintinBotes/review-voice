@@ -182,6 +182,59 @@ platform rather than merely advisory. Whether an agent's own `Bash(git:*)`
 narrows things further, inside a shell that has already been granted, is the
 part still unmeasured.
 
+#### A reproduction runner
+
+**Attack.** In thorough mode, with the `reproduction` block on, the CLI runs a
+reproduction the verifier wrote for a blocking or important finding (S16). The
+file imports code from the pull request, so a hostile pull request plants code
+that runs when the reproduction imports it. That code can try to reach the network,
+write somewhere a later stage reads, read the reviewer's credentials or the
+store, outlive the run, or simply pass on purpose.
+
+**Mitigations.**
+
+- Opt-in, read from the base commit's configuration, so a pull request cannot
+  turn it on for itself; thorough mode only; `REVIEW_VOICE_NO_COMMANDS=1`, the
+  watcher's default, turns it off.
+- The only command text that runs is the configured runner's `run` string, with
+  `{file}` replaced by a single-quoted path whose characters cannot close the
+  quotes. Model and repository text never reach a shell.
+- A probe runs through the same wrapper first, and nothing runs unless it shows
+  that a connection to a loopback listener, a write outside the reproduction's
+  places, an overwrite of the runner's own files and a read of a canary in the
+  run directory are all refused. On macOS nothing runs until issue #321.
+- On Linux the runner uses user, mount, network and pid namespaces, which give
+  no network, a read-only view of the filesystem, writes only to a fresh throwaway
+  copy of the head worktree and its scratch directory, the data directory, the
+  run directory, the clone's `.git` and the listed credential locations hidden,
+  and every process ended when the run ends.
+- The environment is an allowlist (`PATH`, `LANG`, `LC_ALL`, `TERM`, a scratch
+  `HOME` and `TMPDIR`, `CI`, `NO_COLOR`), so no token and no `REVIEW_VOICE_*`
+  variable reaches it.
+- CPU, memory, file-size and wall-clock limits, and a stop signal kills a
+  running reproduction.
+- The head worktree the challenger reads is never writable by a reproduction,
+  and a run that changes anything in its own copy is recorded as not run.
+- Output is redacted and capped at 8 KiB per run before it is stored or shown.
+  The database keeps each record's exit codes and reason without the output,
+  with one exception. A `reproduction-did-not-fail` hold's reason keeps the
+  first redacted output line, cut at 120 characters, for as long as the run
+  row lives, outside the run directory's retention.
+- A run counts only when it printed the `RV_REPRO_REACHED` marker before its
+  assertion, so a crash while loading is never a reproduction, and a pass holds
+  a finding only outside the categories no suppression may reach.
+
+**Residual risk.** A reproduction can read the user's other files, read-only,
+outside the hidden locations. What it prints reaches the challenger's model
+after redaction, so a planted instruction there is one more piece of untrusted
+evidence the challenger must ignore. Code under review can sense the sandbox and
+pass on purpose, which turns a real finding into a `reproduction-did-not-fail`
+hold; that is why a security, authorization, authentication, data integrity or
+trust boundary finding is never held on a pass. Nothing runs where the probe
+fails, which includes hosts that refuse unprivileged user namespaces. The macOS
+mechanism, `sandbox-exec`, is deprecated by Apple and off until issue #321. A
+reproduction can still spend its whole time limit.
+
 ### 5. Policy drift and poisoning
 
 **Attack.** Accumulated weak signals, a hostile repository policy file, or noisy

@@ -1,0 +1,20 @@
+{
+  "output": {
+    "candidates": [
+      {
+        "candidate_id": "cand_001",
+        "path": "src/paginate.mjs",
+        "line": 3,
+        "category": "correctness",
+        "severity": "important",
+        "claim": "page() treats the one-based page number as a zero-based offset, so page 1 returns the second page.",
+        "failure_mode": "page(items, 1, size) starts at index size and skips the first page of items.",
+        "evidence": [
+          "src/paginate.mjs:1 says the page number is one-based.",
+          "src/paginate.mjs:3 multiplies the number by size without subtracting one."
+        ],
+        "technical_confidence": 0.9
+      }
+    ]
+  }
+}

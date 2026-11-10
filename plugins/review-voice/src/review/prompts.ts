@@ -71,6 +71,8 @@ export interface RunFiles {
   dir: string;
   intent: boolean;
   followUps: boolean;
+  /** The configured reproduction runners, set only when the plan's `reproduce` stage runs (S16). */
+  reproductionRunners: { name: string; run: string; extension: string }[] | null;
 }
 
 const file = (run: RunFiles, name: string, what: string): string => `- ${what}: ${join(run.dir, name)}`;
@@ -125,6 +127,26 @@ export function reanchorPrompt(run: RunFiles, lane: { name: string; prefix: stri
   ].join('\n');
 }
 
+/**
+ * What the verifier is asked to write when the `reproduce` stage runs. The CLI
+ * runs the file, never the verifier, and only through a runner named here.
+ */
+function reproductionRequest(runners: RunFiles['reproductionRunners']): string[] {
+  if (runners === null || runners.length === 0) return [];
+  return [
+    '',
+    'Reproductions. The configured runners, as name (command, extension):',
+    ...runners.map((runner) => `- ${runner.name} (${runner.run}, ${runner.extension})`),
+    'For each candidate you verify whose severity is blocking or important, add "reproduction": ' +
+      '{"runner", "path", "content", "expected"}, with a runner from this list. path is a new file beside the code it exercises: ' +
+      "a directory that already exists, a file name that does not, ending with the runner's extension. content imports the code " +
+      'under test by relative path and prints RV_REPRO_REACHED <candidate_id> on its own line immediately before the one assertion ' +
+      'that fails on the defect and passes once it is fixed. expected is one sentence. The reproduction uses no network, writes ' +
+      "nothing except under $TMPDIR (a write into the worktree records it as not run), and finishes within the runner's time limit. " +
+      'When no listed runner fits the language, leave the field out and say so in reason.',
+  ];
+}
+
 export function verifierPrompt(run: RunFiles): string {
   return [
     'Verify every candidate in the kept list of checked.json against the code at the head.',
@@ -135,6 +157,7 @@ export function verifierPrompt(run: RunFiles): string {
         ? [file(run, 'follow-ups.json', "open follow-ups; check each one's remaining points at the head and return follow_ups")]
         : []),
     ]),
+    ...reproductionRequest(run.reproductionRunners),
     '',
     'Return {"verifications": [...]} with one entry per kept candidate, each matching schemas/verification.schema.json' +
       `${run.followUps ? ', and "follow_ups": [{"id", "remaining", "addressed", "reason"}]' : ''}, plus toolCalls and filesRead.`,

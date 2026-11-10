@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parseHunks, type FileHunks } from '../diff/hunks.ts';
-import { applyChallenge, candidatesById, challengePrompts, intentStatements } from '../verify/challenge.ts';
+import { applyChallenge, candidatesById, challengePrompts, intentStatements, reproductionsById } from '../verify/challenge.ts';
 import { readStdin, flag } from './shared.ts';
 
 /**
@@ -14,15 +14,16 @@ export function challengeCommand(argv: string[]): number {
   const emit = argv.includes('--emit-prompts');
   const diffFile = flag(argv, '--diff-file');
   const intentFile = flag(argv, '--intent');
+  const reproductionsFile = flag(argv, '--reproductions');
   const outFile = flag(argv, '--out');
   if (scoresFile === null || candidatesFile === null || (!emit && diffFile === null)) {
     console.error(
-      'Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--diff-file <patch>] --emit-prompts\n' +
-        '       challenge --scores <file> --candidates <file> --diff-file <patch> [--out <file>] < verdicts.json',
+      'Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--reproductions <file>] [--diff-file <patch>] --emit-prompts\n' +
+        '       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--out <file>] < verdicts.json',
     );
     return 2;
   }
-  for (const name of ['--intent', '--diff-file', '--out']) {
+  for (const name of ['--intent', '--reproductions', '--diff-file', '--out']) {
     if (argv.includes(name) && flag(argv, name) === null) {
       console.error(`${name} needs a file path.`);
       return 2;
@@ -39,6 +40,16 @@ export function challengeCommand(argv: string[]): number {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
+  // Read in both modes: the prompts show a reproduction, and applying drops a decisive entry naming its file.
+  let reproductions: ReturnType<typeof reproductionsById> = new Map();
+  if (reproductionsFile !== null) {
+    try {
+      reproductions = reproductionsById(readJson(reproductionsFile));
+    } catch (error) {
+      console.error(`Cannot read ${reproductionsFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
 
   if (emit) {
     let statements: ReturnType<typeof intentStatements> = [];
@@ -50,7 +61,7 @@ export function challengeCommand(argv: string[]): number {
         return 2;
       }
     }
-    console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile) }, null, 2));
+    console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile, reproductions) }, null, 2));
     return 0;
   }
 
@@ -69,7 +80,7 @@ export function challengeCommand(argv: string[]): number {
     return 2;
   }
 
-  const result = applyChallenge(scores, candidates, verdicts, hunks);
+  const result = applyChallenge(scores, candidates, verdicts, hunks, reproductions);
   if (!result.ok) {
     console.error('Challenge refused:');
     for (const problem of result.problems) console.error(`  ${problem}`);
