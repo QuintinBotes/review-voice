@@ -9687,7 +9687,7 @@ var GitHubClient = class {
     }
     this.baseUrl = options.baseUrl ?? "https://api.github.com";
     this.doFetch = options.fetchImpl ?? fetch;
-    this.sleep = options.sleep ?? ((ms) => new Promise((resolve13) => setTimeout(resolve13, ms)));
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve14) => setTimeout(resolve14, ms)));
     this.token = options.token ?? null;
   }
   authorization() {
@@ -13777,7 +13777,7 @@ function stopCommandsOnSignal() {
   };
 }
 function spawnCommand(command, options) {
-  return new Promise((resolve13) => {
+  return new Promise((resolve14) => {
     const child = spawnChild(command, options.args ?? [], { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, stdio: "pipe" });
     const pid = child.pid;
     if (pid !== void 0) runningGroups.add(pid);
@@ -13808,7 +13808,7 @@ function spawnCommand(command, options) {
         killGroup(pid, "SIGKILL");
         runningGroups.delete(pid);
       }
-      resolve13({
+      resolve14({
         status,
         stdout: Buffer.concat(chunks.stdout).toString(options.encoding),
         stderr: Buffer.concat(chunks.stderr).toString(options.encoding),
@@ -17561,13 +17561,13 @@ function lockPort(dataDir) {
 var answer = (dataDir) => `review-voice-watch ${process.pid} ${dataDir}
 `;
 function probe(port) {
-  return new Promise((resolve13) => {
+  return new Promise((resolve14) => {
     const socket = connect({ host: "127.0.0.1", port });
     let text4 = "";
     const done = (pid) => {
       clearTimeout(timer);
       socket.destroy();
-      resolve13(pid);
+      resolve14(pid);
     };
     const timer = setTimeout(() => done(null), PROBE_MS);
     socket.setEncoding("utf8");
@@ -17592,16 +17592,16 @@ async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT
       socket.once("data", () => socket.end(answer(dataDir)));
     });
     const listening = server;
-    const failure = await new Promise((resolve13) => {
-      listening.once("error", (error) => resolve13(error));
-      listening.listen({ host: "127.0.0.1", port, exclusive: true }, () => resolve13(null));
+    const failure = await new Promise((resolve14) => {
+      listening.once("error", (error) => resolve14(error));
+      listening.listen({ host: "127.0.0.1", port, exclusive: true }, () => resolve14(null));
     });
     if (failure === null) break;
     if (failure.code !== "EADDRINUSE") throw failure;
     const holder = await probe(port);
     if (holder !== null) return { holder };
     if (attempt >= patience.tries) return { foreign: port };
-    await new Promise((resolve13) => setTimeout(resolve13, patience.waitMs));
+    await new Promise((resolve14) => setTimeout(resolve14, patience.waitMs));
   }
   server.unref();
   const display = join9(dataDir, "watch.lock");
@@ -18049,7 +18049,7 @@ function killGroup2(pid, signal2) {
 function spawnReview(bundle, options) {
   const graceMs = options.graceMs ?? 1e4;
   const live2 = /* @__PURE__ */ new Map();
-  const review2 = ({ repository, pull, clone, post, mode, expectHead, timeoutMs, runRepositoryCommands }) => new Promise((resolve13) => {
+  const review2 = ({ repository, pull, clone, post, mode, expectHead, timeoutMs, runRepositoryCommands }) => new Promise((resolve14) => {
     const args = [bundle, "review", "--pr", String(pull), "--repository", repository, "--json", "--expect-head", expectHead, "--origin", "watch"];
     if (post) args.push("--post", "--recheck-thread");
     if (mode !== void 0) args.push("--mode", mode);
@@ -18086,10 +18086,10 @@ function spawnReview(bundle, options) {
       if (pid !== void 0) live2.delete(pid);
       markDone();
       if (timedOut) {
-        resolve13({ exitCode: 124, runId: null, event: null, reviewUrl: null, detail: `review timed out after ${formatDuration(timeoutMs)}` });
+        resolve14({ exitCode: 124, runId: null, event: null, reviewUrl: null, detail: `review timed out after ${formatDuration(timeoutMs)}` });
       } else {
         const why = stderr.length > 0 ? stderr : exitSignal !== null ? `killed by ${exitSignal}` : spawnError;
-        resolve13(reviewResult(exitCode ?? 1, stdout, why));
+        resolve14(reviewResult(exitCode ?? 1, stdout, why));
       }
     };
     const terminate = () => {
@@ -18745,6 +18745,32 @@ var COMMAND_HELP = {
       "Reads: the fixtures; with the claude runner, the model through the agent runner.",
       "Writes: the results file and one line per fixture on stdout; a temporary directory, removed unless --keep.",
       "Exit codes: 0 ok, 1 a run failed (the file is still written), 2 bad invocation."
+    )
+  },
+  "import-benchmark": {
+    summary: "Import a downloaded benchmark set as recall fixtures, outside the repository",
+    body: lines(
+      "review-voice import-benchmark --from <file> --set-version <version> --set-licence <spdx> --out <dir> [flags]",
+      "  Turn one public benchmark set a person downloaded into positive/<slug>-<n> recall fixtures, one",
+      "  per located issue, each case.yaml recording the source, licence and set version, plus an",
+      "  import.json manifest. Works offline, fetches nothing and never writes inside a git working",
+      "  tree: imported items are third-party code and stay out of the repository.",
+      "",
+      "Flags:",
+      "  --from <file>          The set as downloaded (JSON Lines); read once, its SHA-256 recorded (required)",
+      "  --set-version <ver>    The tag or commit the file was downloaded at, [A-Za-z0-9._-]{1,64} (required)",
+      "  --set-licence <spdx>   The set's own licence, as the person read it (required)",
+      "  --out <dir>            An absent or empty directory outside any git working tree (required)",
+      "  --licences <file>      JSON object from repository, as the set spells it, to an SPDX id",
+      "  --diffs <dir>          <slug>.patch per item, and <slug>.md for its description, made offline",
+      "  --first <n>            Import only the first n items in the set's order; recorded in the manifest",
+      "Reads: the set file, --licences and --diffs; nothing on stdin and nothing from the network.",
+      "Writes: positive/<slug>-<n>/ fixtures and import.json under --out; each refusal and its detail on",
+      "  stderr; temporary build directories, removed.",
+      "Exit codes: 0 at least one fixture written, 1 every item refused (the manifest is still written),",
+      "  2 bad invocation (a missing flag, an unreadable --from or --licences, a document not in the recorded",
+      "  shape, a bad version or licence, an --out that is not empty or is inside a git working tree). A",
+      "  --diffs file that cannot be read refuses its item no-diff."
     )
   },
   outcomes: {
@@ -19556,7 +19582,7 @@ function interpretEnvelope(stdout, stderr, code2) {
   return { ok: false, output: null, costUsd, ...counted, error: detail };
 }
 function spawnWatched(bin, args, input, options) {
-  return new Promise((resolve13) => {
+  return new Promise((resolve14) => {
     const child = spawn2(process.execPath, ["-e", WATCHDOG, "--", bin, ...args], {
       cwd: options.cwd,
       env: options.env,
@@ -19575,7 +19601,7 @@ function spawnWatched(bin, args, input, options) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve13(result);
+      resolve14(result);
     };
     const stop = (reason2) => {
       stopped ??= reason2;
@@ -25653,10 +25679,400 @@ async function recallCommand(argv, runInProcess2) {
   return summary.failedRuns > 0 ? 1 : 0;
 }
 
-// plugins/review-voice/src/cli/worktree.ts
-import { statSync as statSync9, lstatSync as lstatSync6, rmSync as rmSync10 } from "node:fs";
-import { join as join25, resolve as resolve10 } from "node:path";
+// plugins/review-voice/src/cli/import-benchmark.ts
 import { execFileSync as execFileSync16 } from "node:child_process";
+import { createHash as createHash6 } from "node:crypto";
+import { existsSync as existsSync18, lstatSync as lstatSync7, mkdirSync as mkdirSync12, readdirSync as readdirSync7, readFileSync as readFileSync25, statSync as statSync9 } from "node:fs";
+import { dirname as dirname17, join as join26, resolve as resolve10 } from "node:path";
+
+// plugins/review-voice/src/evaluate/benchmark.ts
+import { lstatSync as lstatSync6, mkdirSync as mkdirSync11, mkdtempSync as mkdtempSync6, readFileSync as readFileSync24, rmSync as rmSync10, writeFileSync as writeFileSync10 } from "node:fs";
+import { tmpdir as tmpdir5 } from "node:os";
+import { join as join25 } from "node:path";
+var BENCHMARK_SET = "qodo-pr-review-bench";
+var SET_LICENCE_SOURCE = "dataset card";
+var BenchmarkShapeError = class extends Error {
+};
+var PULL_TAIL = /([^/\s]+)\/pull\/(\d+)\/?$/;
+function readSet(text4) {
+  const items = [];
+  for (const [index, row] of text4.split("\n").entries()) {
+    if (row.trim() === "") continue;
+    const where = `item ${items.length} (line ${index + 1})`;
+    let parsed2 = null;
+    try {
+      parsed2 = JSON.parse(row);
+    } catch {
+    }
+    if (typeof parsed2 !== "object" || parsed2 === null || Array.isArray(parsed2)) throw new BenchmarkShapeError(`${where}: not a JSON object`);
+    const record3 = parsed2;
+    const reference = record3["pr_url_to_review"];
+    const tail = typeof reference === "string" ? PULL_TAIL.exec(reference) : null;
+    if (tail === null) throw new BenchmarkShapeError(`${where}: id is missing (pr_url_to_review does not end in <repo>/pull/<n>)`);
+    const repository = record3["repo"];
+    if (typeof repository !== "string") throw new BenchmarkShapeError(`${where}: repository (repo) is missing`);
+    const issues = record3["issues"];
+    if (!Array.isArray(issues)) throw new BenchmarkShapeError(`${where}: issues is not a list`);
+    items.push({
+      id: `${tail[1]}/pull/${tail[2]}`.toLowerCase().replaceAll("/", "-"),
+      repository,
+      pullRequest: reference,
+      licence: null,
+      diff: null,
+      description: null,
+      issues: issues.map((issue) => {
+        const fields = typeof issue === "object" && issue !== null ? issue : {};
+        const rule = fields["rule_name"];
+        return { path: fields["file_path"], line: fields["start_line"], severity: null, note: typeof rule === "string" ? rule : null };
+      })
+    });
+  }
+  return items;
+}
+var LICENCE_ID = /^[A-Za-z0-9.+-]+$/;
+var NOT_A_LICENCE = /* @__PURE__ */ new Set(["noassertion", "none", "unknown", "other", "unlicensed"]);
+function isKnownLicence(value) {
+  let text4 = value.trim();
+  const wrapped = /^\((.*)\)$/.exec(text4);
+  if (wrapped !== null) text4 = wrapped[1].trim();
+  if (text4 === "") return false;
+  return text4.split(/\s+(?:AND|OR|WITH)\s+/).every((part) => LICENCE_ID.test(part) && !NOT_A_LICENCE.has(part.toLowerCase()));
+}
+function slugOf(id) {
+  return id.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+}
+function isIdentifier(value) {
+  return value === null || value.length <= 200 && !/[\p{Cc}\u2028\u2029]/u.test(value);
+}
+function isRegularFile(path) {
+  try {
+    return lstatSync6(path).isFile();
+  } catch {
+    return false;
+  }
+}
+function probeBuild(scratch, slug, diff) {
+  const fixture = join25(scratch, "fixture");
+  const repo = join25(scratch, "repo");
+  try {
+    mkdirSync11(fixture, { recursive: true });
+    writeFileSync10(join25(fixture, "diff.patch"), diff);
+    materializeFixture(fixture, repo, { name: slug });
+    return { hunks: parseHunks(normalisePatch(diff.toString("utf8"))) };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    rmSync10(fixture, { recursive: true, force: true });
+    rmSync10(repo, { recursive: true, force: true });
+  }
+}
+function caseYaml(entry, set2, note) {
+  const q = JSON.stringify;
+  const name = entry.fixture.slice("positive/".length);
+  return [
+    `name: ${q(name)}`,
+    `asserts: ${q(`Issue ${entry.issue} of benchmark item ${entry.item}`)}`,
+    "source:",
+    `  set: ${q(BENCHMARK_SET)}`,
+    `  set_version: ${q(set2.setVersion)}`,
+    `  set_sha256: ${q(set2.setSha256)}`,
+    `  set_licence: ${q(set2.setLicence)}`,
+    `  item: ${q(entry.item)}`,
+    `  repository: ${q(entry.repository)}`,
+    `  pull_request: ${entry.pullRequest === null ? "null" : q(entry.pullRequest)}`,
+    `  licence: ${q(entry.licence)}`,
+    `  licence_from: ${q(entry.licenceFrom)}`,
+    `  issue: ${entry.issue}`,
+    ...note === null ? [] : [`  note: ${q(note)}`],
+    "expect:",
+    "  min_findings: 1",
+    `  path: ${q(entry.path)}`,
+    `  line: ${entry.line}`,
+    ""
+  ].join("\n");
+}
+function importBenchmark(options) {
+  const items = options.first === null ? options.items : options.items.slice(0, options.first);
+  const manifest = {
+    set: BENCHMARK_SET,
+    setVersion: options.setVersion,
+    setSha256: options.setSha256,
+    setLicence: options.setLicence,
+    licenceSource: SET_LICENCE_SOURCE,
+    importedWith: pluginVersion(),
+    firstItems: options.first,
+    items: [],
+    refused: [],
+    counts: { items: items.length, issues: 0, fixtures: 0, refusedItems: 0, refusedIssues: 0 }
+  };
+  const slugs = /* @__PURE__ */ new Set();
+  const scratch = mkdtempSync6(join25(tmpdir5(), "rv-benchmark-"));
+  try {
+    for (const item of items) {
+      const slug = slugOf(item.id);
+      const refuse = (issue, reason2, detail) => {
+        manifest.refused.push({ item: isIdentifier(item.id) ? item.id : slug, issue, reason: reason2 });
+        if (issue === null) manifest.counts.refusedItems += 1;
+        else manifest.counts.refusedIssues += 1;
+        options.onRefusal(`${issue === null ? slug : `${slug}-${issue}`}: ${reason2}: ${detail}`);
+      };
+      if (slug === "" || slugs.has(slug) || ![item.id, item.repository, item.pullRequest].every(isIdentifier)) {
+        refuse(null, "bad-id", slug === "" ? "the id gives an empty slug" : slugs.has(slug) ? `the slug ${slug} is already taken by an earlier item` : "the id, repository or pull request reference is over 200 characters or holds a line break or a control character");
+        continue;
+      }
+      slugs.add(slug);
+      const fromSet = item.licence === null || item.licence.trim() === "" ? null : item.licence.trim();
+      const fromOwner = options.licences.get(item.repository)?.trim() ?? null;
+      if (fromSet !== null && fromOwner !== null && fromSet !== fromOwner) {
+        refuse(null, "licence-conflict", `the set says ${fromSet} and --licences says ${fromOwner} for ${item.repository}`);
+        continue;
+      }
+      const licence = fromSet ?? fromOwner;
+      if (licence === null || !isKnownLicence(licence)) {
+        refuse(null, "unknown-licence", licence === null ? `no licence for ${item.repository} in the set or in --licences` : `${JSON.stringify(licence)} is not an SPDX identifier or expression`);
+        continue;
+      }
+      let diff = item.diff === null ? null : Buffer.from(item.diff, "utf8");
+      let description = item.description;
+      if (diff === null) {
+        const patchPath2 = options.diffs === null ? null : join25(options.diffs, `${slug}.patch`);
+        if (patchPath2 === null || !isRegularFile(patchPath2)) {
+          refuse(null, "no-diff", `the set has no diff; looked for ${patchPath2 ?? `${slug}.patch under --diffs, which was not given`}`);
+          continue;
+        }
+        try {
+          diff = readFileSync24(patchPath2);
+          const bodyPath = join25(options.diffs, `${slug}.md`);
+          const body = description === null ? lstatSync6(bodyPath, { throwIfNoEntry: false }) : void 0;
+          if (body !== void 0) {
+            if (!body.isFile()) throw new Error(`${bodyPath} is not a regular file`);
+            description = readFileSync24(bodyPath, "utf8");
+          }
+        } catch (error) {
+          refuse(null, "no-diff", `the set has no diff and --diffs could not be read: ${error instanceof Error ? error.message : String(error)}`);
+          continue;
+        }
+      }
+      const built = probeBuild(scratch, slug, diff);
+      if ("error" in built) {
+        refuse(null, "does-not-build", built.error);
+        continue;
+      }
+      if (item.issues.length === 0) {
+        refuse(null, "no-issue", "the set lists no issue for this item");
+        continue;
+      }
+      manifest.counts.issues += item.issues.length;
+      for (const [index, issue] of item.issues.entries()) {
+        const number = index + 1;
+        const { path, line: line3 } = issue;
+        if (typeof path !== "string" || typeof line3 !== "number" || !Number.isInteger(line3) || line3 < 1) {
+          refuse(number, "no-location", `path ${JSON.stringify(path)} and line ${JSON.stringify(line3)} do not name a file and a positive whole number`);
+          continue;
+        }
+        if (/["\\\p{Cc}\u2028\u2029]/u.test(path)) {
+          refuse(number, "unsafe-path", "the path holds a double quote, a backslash, a control character or a line terminator");
+          continue;
+        }
+        const file2 = built.hunks.get(path);
+        const changed = file2 === void 0 ? [] : [...file2.added, ...file2.deletionSites];
+        if (!changed.some((at2) => Math.abs(at2 - line3) <= AGREEMENT_LINE_TOLERANCE)) {
+          refuse(number, "off-diff", file2 === void 0 ? `${path} is not in the diff` : `no added line or deletion site of ${path} is within ${AGREEMENT_LINE_TOLERANCE} of line ${line3}`);
+          continue;
+        }
+        const entry = {
+          fixture: `positive/${slug}-${number}`,
+          item: item.id,
+          issue: number,
+          repository: item.repository,
+          pullRequest: item.pullRequest,
+          licence,
+          licenceFrom: fromSet === null ? "owner" : "set",
+          path,
+          line: line3,
+          severity: isIdentifier(issue.severity) ? issue.severity : null
+        };
+        const dir = join25(options.out, entry.fixture);
+        mkdirSync11(dir, { recursive: true });
+        writeFileSync10(join25(dir, "diff.patch"), diff);
+        if (description !== null) writeFileSync10(join25(dir, "pr-body.md"), description);
+        writeFileSync10(join25(dir, "case.yaml"), caseYaml(entry, options, isIdentifier(issue.note) ? issue.note : null));
+        manifest.items.push(entry);
+        manifest.counts.fixtures += 1;
+      }
+    }
+  } finally {
+    rmSync10(scratch, { recursive: true, force: true });
+  }
+  mkdirSync11(options.out, { recursive: true });
+  writeFileSync10(join25(options.out, "import.json"), `${JSON.stringify(manifest, null, 2)}
+`);
+  return manifest;
+}
+
+// plugins/review-voice/src/cli/import-benchmark.ts
+var SET_VERSION = /^[A-Za-z0-9._-]{1,64}$/;
+function insideGit(dir) {
+  const env = {};
+  for (const [key2, value] of Object.entries(process.env)) {
+    if (!key2.startsWith("GIT_")) env[key2] = value;
+  }
+  Object.assign(env, {
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    // Discovery otherwise stops at a mount point and says "not a git repository" for a volume mounted inside a working tree.
+    GIT_DISCOVERY_ACROSS_FILESYSTEM: "1",
+    // The outside test below reads git's English message, and git translates it in any other locale.
+    LC_ALL: "C"
+  });
+  try {
+    const answer2 = execFileSync16("git", ["rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return answer2.split("\n").some((line3) => line3.trim() === "true");
+  } catch (error) {
+    const { status, stderr } = error;
+    const message = typeof stderr === "string" && stderr.trim() !== "" ? stderr.trim() : error.message;
+    return status === 128 && /not a git repository \(or any of the parent directories\)/.test(message) ? false : message;
+  }
+}
+function importBenchmarkCommand(argv) {
+  const valued = /* @__PURE__ */ new Set(["--from", "--set-version", "--set-licence", "--out", "--licences", "--diffs", "--first"]);
+  for (const [index, arg] of argv.entries()) {
+    if (arg.startsWith("--") ? !valued.has(arg) : !valued.has(argv[index - 1] ?? "")) {
+      console.error(`Unexpected argument ${arg}.`);
+      return 2;
+    }
+  }
+  for (const name of valued) {
+    if (argv.includes(name) && flag(argv, name) === null) {
+      console.error(`${name} needs a value.`);
+      return 2;
+    }
+  }
+  const from = flag(argv, "--from");
+  const setVersion = flag(argv, "--set-version");
+  const setLicence = flag(argv, "--set-licence");
+  const outFlag = flag(argv, "--out");
+  if (from === null || setVersion === null || setLicence === null || outFlag === null) {
+    console.error("import-benchmark needs --from <file>, --set-version <version>, --set-licence <spdx> and --out <dir>.");
+    return 2;
+  }
+  if (!SET_VERSION.test(setVersion)) {
+    console.error(`--set-version must match ${SET_VERSION.source}; it names a directory under docs/benchmarks/.`);
+    return 2;
+  }
+  if (!isKnownLicence(setLicence)) {
+    console.error(`--set-licence ${JSON.stringify(setLicence)} is not an SPDX identifier or expression.`);
+    return 2;
+  }
+  let first = null;
+  if (argv.includes("--first")) {
+    first = Number(flag(argv, "--first"));
+    if (!Number.isInteger(first) || first < 1) {
+      console.error("--first needs a positive whole number.");
+      return 2;
+    }
+  }
+  const diffs = flag(argv, "--diffs");
+  if (diffs !== null && !(existsSync18(diffs) && statSync9(diffs).isDirectory())) {
+    console.error(`--diffs ${diffs} is not a directory.`);
+    return 2;
+  }
+  const out = resolve10(outFlag);
+  let linked = false;
+  try {
+    linked = lstatSync7(out).isSymbolicLink();
+  } catch {
+  }
+  if (linked) {
+    console.error(`--out ${out} is a symbolic link; name a directory that is absent or empty.`);
+    return 2;
+  }
+  let ancestor = out;
+  while (!existsSync18(ancestor)) ancestor = dirname17(ancestor);
+  if (!statSync9(ancestor).isDirectory()) {
+    console.error(`--out ${out} is not an empty directory (${ancestor} is a file).`);
+    return 2;
+  }
+  let entries;
+  try {
+    entries = ancestor === out ? readdirSync7(out) : [];
+  } catch (error) {
+    console.error(`--out ${out} cannot be listed: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  if (entries.length > 0) {
+    console.error(`--out ${out} is not an empty directory.`);
+    return 2;
+  }
+  const inside2 = insideGit(ancestor);
+  if (inside2 === true) {
+    console.error(
+      `--out ${out} is inside a git working tree. Imported items are third-party code under their own licences, and CONTRIBUTING.md rule 1 keeps real review data out of the repository; import into a directory outside any repository.`
+    );
+    return 2;
+  }
+  if (inside2 !== false) {
+    console.error(`--out ${out} is refused because git could not say whether it is inside a working tree (${inside2}).`);
+    return 2;
+  }
+  let bytes;
+  try {
+    bytes = readFileSync25(from);
+  } catch (error) {
+    console.error(`--from ${from}: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  let items;
+  try {
+    items = readSet(bytes.toString("utf8"));
+  } catch (error) {
+    if (!(error instanceof BenchmarkShapeError)) throw error;
+    console.error(`--from ${from} is not the shape D2 recorded: ${error.message}`);
+    return 2;
+  }
+  const licences = /* @__PURE__ */ new Map();
+  const licencesPath = flag(argv, "--licences");
+  if (licencesPath !== null) {
+    let parsed2;
+    try {
+      parsed2 = JSON.parse(readFileSync25(licencesPath, "utf8"));
+    } catch (error) {
+      console.error(`--licences ${licencesPath}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+    const entries2 = typeof parsed2 === "object" && parsed2 !== null && !Array.isArray(parsed2) ? Object.entries(parsed2) : null;
+    if (entries2 === null || !entries2.every(([, value]) => typeof value === "string")) {
+      console.error(`--licences ${licencesPath} must be a JSON object from repository to SPDX id.`);
+      return 2;
+    }
+    for (const [repository, licence] of entries2) licences.set(repository, licence);
+  }
+  try {
+    mkdirSync12(out, { recursive: true });
+  } catch (error) {
+    console.error(`--out ${out} cannot be created: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const { counts } = importBenchmark({
+    items,
+    setVersion,
+    setSha256: createHash6("sha256").update(bytes).digest("hex"),
+    setLicence,
+    licences,
+    diffs,
+    first,
+    out,
+    onRefusal: (detail) => console.error(detail)
+  });
+  console.log(`${counts.fixtures} fixture(s) from ${counts.items} item(s); refused ${counts.refusedItems} item(s) and ${counts.refusedIssues} issue(s).`);
+  console.log(`Manifest: ${join26(out, "import.json")}`);
+  return counts.fixtures > 0 ? 0 : 1;
+}
+
+// plugins/review-voice/src/cli/worktree.ts
+import { statSync as statSync10, lstatSync as lstatSync8, rmSync as rmSync11 } from "node:fs";
+import { join as join27, resolve as resolve11 } from "node:path";
+import { execFileSync as execFileSync17 } from "node:child_process";
 function worktreeCommand(argv) {
   const action = argv[0];
   const dir = flag(argv, "--dir");
@@ -25664,7 +26080,7 @@ function worktreeCommand(argv) {
     console.error("Usage: review-voice worktree add --dir <dir> --head <commit> | review-voice worktree remove --dir <dir>");
     return 2;
   }
-  if (statSync9(resolve10(dir), { throwIfNoEntry: false })?.isDirectory() !== true) {
+  if (statSync10(resolve11(dir), { throwIfNoEntry: false })?.isDirectory() !== true) {
     console.error(`--dir ${dir} is not a directory.`);
     return 2;
   }
@@ -25678,10 +26094,10 @@ function worktreeCommand(argv) {
     }
     throw error;
   }
-  const headDir = join25(resolve10(dir), "head");
+  const headDir = join27(resolve11(dir), "head");
   if (action === "remove") {
-    const present = lstatSync6(headDir, { throwIfNoEntry: false });
-    if (present?.isSymbolicLink()) rmSync10(headDir, { force: true });
+    const present = lstatSync8(headDir, { throwIfNoEntry: false });
+    if (present?.isSymbolicLink()) rmSync11(headDir, { force: true });
     if (present === void 0 || present.isSymbolicLink()) {
       console.log(JSON.stringify({ path: headDir, removed: false }));
       return 0;
@@ -25700,7 +26116,7 @@ function worktreeCommand(argv) {
   }
   let sha;
   try {
-    sha = execFileSync16("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    sha = execFileSync17("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     console.error(`--head ${head} is not a commit in this clone. Fetch it and run again.`);
     return 2;
@@ -25716,13 +26132,13 @@ function worktreeCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/diff.ts
-import { readFileSync as readFileSync24, writeFileSync as writeFileSync10, mkdirSync as mkdirSync11 } from "node:fs";
-import { join as join26 } from "node:path";
+import { readFileSync as readFileSync26, writeFileSync as writeFileSync11, mkdirSync as mkdirSync13 } from "node:fs";
+import { join as join28 } from "node:path";
 
 // plugins/review-voice/src/diff/prior.ts
-import { execFileSync as execFileSync17 } from "node:child_process";
+import { execFileSync as execFileSync18 } from "node:child_process";
 function git4(args, cwd) {
-  return execFileSync17("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
+  return execFileSync18("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
 }
 function resolveCommit(ref, cwd) {
   try {
@@ -25760,7 +26176,7 @@ function fetchPriorHead(sha, repository, cwd) {
   }
   const args = ["fetch", "--no-tags", "--quiet", "origin", sha];
   try {
-    execFileSync17("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
+    execFileSync18("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
     return null;
   } catch (error) {
     return gitFailure(args, error);
@@ -25983,11 +26399,11 @@ function emitDiff(acquired, outDir) {
     return 0;
   }
   try {
-    mkdirSync11(outDir, { recursive: true });
-    const patchPath2 = join26(outDir, "diff.patch");
-    const metaPath = join26(outDir, "files.json");
-    writeFileSync10(patchPath2, result.diff);
-    writeFileSync10(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
+    mkdirSync13(outDir, { recursive: true });
+    const patchPath2 = join28(outDir, "diff.patch");
+    const metaPath = join28(outDir, "files.json");
+    writeFileSync11(patchPath2, result.diff);
+    writeFileSync11(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
     console.log(
       JSON.stringify(
         { patch: patchPath2, files: metaPath, diffBytes: result.diff.length, summary: diffSummary(result) },
@@ -26029,10 +26445,10 @@ function readFilesAndDiff(filesPath, diffPath) {
   let manifest;
   let diffText;
   try {
-    const parsed2 = JSON.parse(readFileSync24(filesPath, "utf8"));
+    const parsed2 = JSON.parse(readFileSync26(filesPath, "utf8"));
     if (typeof parsed2 !== "object" || parsed2 === null || Array.isArray(parsed2)) throw new Error("not a JSON object");
     manifest = parsed2;
-    diffText = readFileSync24(diffPath, "utf8");
+    diffText = readFileSync26(diffPath, "utf8");
   } catch (error) {
     console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
     return null;
@@ -26047,7 +26463,7 @@ function readFilesAndDiff(filesPath, diffPath) {
 }
 
 // plugins/review-voice/src/cli/thread.ts
-import { writeFileSync as writeFileSync11 } from "node:fs";
+import { writeFileSync as writeFileSync12 } from "node:fs";
 async function threadCommand(argv) {
   const pullNumber = Number(flag(argv, "--pr"));
   if (!Number.isInteger(pullNumber) || pullNumber < 1) {
@@ -26068,7 +26484,7 @@ async function threadCommand(argv) {
   }
   try {
     const path = resolveOutPath(out, "thread.json");
-    writeFileSync11(path, JSON.stringify(result, null, 2), "utf8");
+    writeFileSync12(path, JSON.stringify(result, null, 2), "utf8");
     console.log(
       JSON.stringify(
         {
@@ -26091,10 +26507,10 @@ async function threadCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/symbols.ts
-import { readFileSync as readFileSync25, writeFileSync as writeFileSync12 } from "node:fs";
+import { readFileSync as readFileSync27, writeFileSync as writeFileSync13 } from "node:fs";
 
 // plugins/review-voice/src/scoring/existence.ts
-import { execFileSync as execFileSync18 } from "node:child_process";
+import { execFileSync as execFileSync19 } from "node:child_process";
 var ASSERTS_ABSENCE = [
   /\b(?:does|do)\s+not\s+exist\b/i,
   /\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)\b/i,
@@ -26162,7 +26578,7 @@ function namedSymbols(text4) {
 var gitGrep = (symbol, cwd, ref) => {
   const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "-e", symbol] : ["grep", "--fixed-strings", "--quiet", "-e", symbol, ref];
   try {
-    execFileSync18("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
+    execFileSync19("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
     return true;
   } catch (error) {
     if (error.status === 1) return false;
@@ -26185,7 +26601,7 @@ function grepPaths(wholeIdentifier, ...[symbol, cwd, ref, timeoutMs]) {
     ...ref === null ? [] : [ref]
   ];
   try {
-    const output = execFileSync18("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
+    const output = execFileSync19("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
     const prefix = ref === null ? "" : `${ref}:`;
     return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
   } catch (error) {
@@ -26197,7 +26613,7 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
   const [first, second] = patterns;
   const args = ref === null ? ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second] : ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second, ref];
   try {
-    const output = execFileSync18("git", args, {
+    const output = execFileSync19("git", args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -26225,7 +26641,7 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
 };
 var gitTrackedPaths = (cwd, ref) => {
   const args = ref === null ? ["ls-files", "-z", "--full-name", "--", ":/"] : ["ls-tree", "-r", "-z", "--name-only", "--full-tree", ref];
-  const output = execFileSync18("git", args, {
+  const output = execFileSync19("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -26246,7 +26662,7 @@ var RESOURCE_PATHSPECS = [
 ];
 var gitResourceSources = (cwd) => {
   try {
-    const output = execFileSync18("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
+    const output = execFileSync19("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -26988,7 +27404,7 @@ function symbolsCommand(argv) {
   }
   let diff;
   try {
-    diff = readFileSync25(diffFile, "utf8");
+    diff = readFileSync27(diffFile, "utf8");
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -27031,7 +27447,7 @@ function symbolsCommand(argv) {
   }
   try {
     const path = resolveOutPath(out, "symbols.json");
-    writeFileSync12(path, JSON.stringify(result, null, 2), "utf8");
+    writeFileSync13(path, JSON.stringify(result, null, 2), "utf8");
     console.log(
       JSON.stringify(
         {
@@ -27055,7 +27471,7 @@ function symbolsCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/plan.ts
-import { readFileSync as readFileSync26 } from "node:fs";
+import { readFileSync as readFileSync28 } from "node:fs";
 function planCommand(argv) {
   const filesPath = flag(argv, "--files");
   const diffPath = flag(argv, "--diff-file");
@@ -27069,7 +27485,7 @@ function planCommand(argv) {
   let authorship;
   if (authorshipPath !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync26(authorshipPath, "utf8"));
+      const parsed2 = JSON.parse(readFileSync28(authorshipPath, "utf8"));
       if (typeof parsed2 !== "object" || parsed2 === null || Array.isArray(parsed2)) throw new Error("not a JSON object");
       authorship = parsed2;
     } catch (error) {
@@ -27263,11 +27679,11 @@ function ineligibleReason(input) {
 }
 
 // plugins/review-voice/src/corpus/dedup.ts
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 function contentKey(parts) {
   const normalised = parts.body.replace(/\s+/g, " ").trim().toLowerCase();
   const SEPARATOR = String.fromCharCode(31);
-  return createHash6("sha256").update(
+  return createHash7("sha256").update(
     [
       parts.repository.toLowerCase(),
       parts.reviewerLogin.toLowerCase(),
@@ -27929,7 +28345,7 @@ async function outcomesCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/check-verification.ts
-import { readFileSync as readFileSync27 } from "node:fs";
+import { readFileSync as readFileSync29 } from "node:fs";
 function keptCandidateIds(value) {
   const record3 = value;
   const list2 = Array.isArray(value) ? value : Array.isArray(record3?.kept) ? record3.kept : Array.isArray(record3?.candidates) ? record3.candidates : [];
@@ -27940,7 +28356,7 @@ function checkVerificationCommand(argv) {
   let keptIds = null;
   if (candidatesFile !== null) {
     try {
-      keptIds = keptCandidateIds(JSON.parse(readFileSync27(candidatesFile, "utf8")));
+      keptIds = keptCandidateIds(JSON.parse(readFileSync29(candidatesFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -27980,7 +28396,7 @@ function checkVerificationCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/check-simplification.ts
-import { readFileSync as readFileSync28 } from "node:fs";
+import { readFileSync as readFileSync30 } from "node:fs";
 function checkSimplificationCommand(argv) {
   const diffFile = flag(argv, "--diff-file");
   if (diffFile === null) {
@@ -27994,7 +28410,7 @@ function checkSimplificationCommand(argv) {
   }
   let hunks;
   try {
-    hunks = parseHunks(readFileSync28(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync30(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -28026,7 +28442,7 @@ function checkSimplificationCommand(argv) {
   }
   let candidateDocument;
   try {
-    candidateDocument = JSON.parse(readFileSync28(candidateFile, "utf8"));
+    candidateDocument = JSON.parse(readFileSync30(candidateFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${candidateFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -28070,16 +28486,16 @@ function checkSimplificationCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/verify.ts
-import { statSync as statSync10 } from "node:fs";
-import { resolve as resolve11 } from "node:path";
-import { execFileSync as execFileSync19 } from "node:child_process";
+import { statSync as statSync11 } from "node:fs";
+import { resolve as resolve12 } from "node:path";
+import { execFileSync as execFileSync20 } from "node:child_process";
 async function verifyCommand(argv) {
   const cwdFlag = flag(argv, "--cwd");
   if (argv.includes("--cwd") && cwdFlag === null) {
     console.error("--cwd needs a directory.");
     return 2;
   }
-  if (cwdFlag !== null && statSync10(resolve11(cwdFlag), { throwIfNoEntry: false })?.isDirectory() !== true) {
+  if (cwdFlag !== null && statSync11(resolve12(cwdFlag), { throwIfNoEntry: false })?.isDirectory() !== true) {
     console.error(`--cwd ${cwdFlag} is not a directory.`);
     return 2;
   }
@@ -28115,7 +28531,7 @@ async function verifyCommand(argv) {
     const commitOf = (ref) => {
       if (ref === null) return null;
       try {
-        return execFileSync19("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        return execFileSync20("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
         console.error(`${ref} does not resolve to a commit here, so the verification command is not told about it.`);
         return null;
@@ -28124,12 +28540,12 @@ async function verifyCommand(argv) {
     const base = commitOf(flag(argv, "--base"));
     const head = commitOf(flag(argv, "--head"));
     const report = await verifyFindings(findings, config2.verification, {
-      cwd: cwdFlag === null ? root : resolve11(cwdFlag),
+      cwd: cwdFlag === null ? root : resolve12(cwdFlag),
       context: {
         repository: flag(argv, "--repository") ?? inferRepository(root),
         // Resolved here, where the caller named it: with --cwd the command runs
         // elsewhere, and a relative path would be read against that directory.
-        diffPath: flag(argv, "--diff-file") === null ? null : resolve11(flag(argv, "--diff-file")),
+        diffPath: flag(argv, "--diff-file") === null ? null : resolve12(flag(argv, "--diff-file")),
         // Only when the caller says they are readable. A ref that is not there
         // is worse than no ref: a command told to read it fails in a way it may
         // mistake for evidence.
@@ -28149,7 +28565,7 @@ async function verifyCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/reconcile.ts
-import { readFileSync as readFileSync29 } from "node:fs";
+import { readFileSync as readFileSync31 } from "node:fs";
 function reconcileCommand(argv) {
   let candidates;
   try {
@@ -28169,7 +28585,7 @@ function reconcileCommand(argv) {
   }
   let verifications;
   try {
-    verifications = verdictList(JSON.parse(readFileSync29(verificationFile, "utf8")));
+    verifications = verdictList(JSON.parse(readFileSync31(verificationFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read ${verificationFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -28185,7 +28601,7 @@ function reconcileCommand(argv) {
   }
   let secondPass2;
   try {
-    secondPass2 = parseSecondPass(JSON.parse(readFileSync29(secondPassFile, "utf8")));
+    secondPass2 = parseSecondPass(JSON.parse(readFileSync31(secondPassFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read the second pass from ${secondPassFile}: ${error.message}`);
     return 2;
@@ -28194,7 +28610,7 @@ function reconcileCommand(argv) {
   const tieBreaksFile = flag(argv, "--tie-breaks");
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync29(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync31(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -28221,7 +28637,7 @@ function reconcileCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/challenge.ts
-import { readFileSync as readFileSync30, writeFileSync as writeFileSync13 } from "node:fs";
+import { readFileSync as readFileSync32, writeFileSync as writeFileSync14 } from "node:fs";
 function challengeCommand(argv) {
   const scoresFile = flag(argv, "--scores");
   const candidatesFile = flag(argv, "--candidates");
@@ -28242,7 +28658,7 @@ function challengeCommand(argv) {
       return 2;
     }
   }
-  const readJson2 = (path) => JSON.parse(readFileSync30(path, "utf8"));
+  const readJson2 = (path) => JSON.parse(readFileSync32(path, "utf8"));
   let scores;
   let candidates;
   try {
@@ -28277,7 +28693,7 @@ function challengeCommand(argv) {
   let verdicts;
   let hunks;
   try {
-    hunks = parseHunks(readFileSync30(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync32(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -28300,7 +28716,7 @@ function challengeCommand(argv) {
     process.stdout.write(body);
   } else {
     try {
-      writeFileSync13(outFile, body);
+      writeFileSync14(outFile, body);
     } catch (error) {
       console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -28312,7 +28728,7 @@ function challengeCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/reanchor.ts
-import { readFileSync as readFileSync31, writeFileSync as writeFileSync14, renameSync as renameSync4, rmSync as rmSync11 } from "node:fs";
+import { readFileSync as readFileSync33, writeFileSync as writeFileSync15, renameSync as renameSync4, rmSync as rmSync12 } from "node:fs";
 function reanchorCommand(argv) {
   const candidateId = flag(argv, "--candidate");
   const line3 = Number(flag(argv, "--line"));
@@ -28326,12 +28742,12 @@ function reanchorCommand(argv) {
     console.error("--path needs the file the finding belongs in.");
     return 2;
   }
-  const readJson2 = (path) => JSON.parse(readFileSync31(path, "utf8"));
+  const readJson2 = (path) => JSON.parse(readFileSync33(path, "utf8"));
   let scores;
   let hunks;
   try {
     scores = readJson2(scoresFile);
-    hunks = parseHunks(readFileSync31(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync33(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -28359,15 +28775,15 @@ function reanchorCommand(argv) {
   try {
     if (candidatesFile !== null) {
       staged.push([`${candidatesFile}.reanchor-${process.pid}`, candidatesFile]);
-      writeFileSync14(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
+      writeFileSync15(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
 `);
     }
     staged.push([`${scoresFile}.reanchor-${process.pid}`, scoresFile]);
-    writeFileSync14(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
+    writeFileSync15(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
 `);
     for (const [temporary, target] of staged) renameSync4(temporary, target);
   } catch (error) {
-    for (const [temporary] of staged) rmSync11(temporary, { force: true });
+    for (const [temporary] of staged) rmSync12(temporary, { force: true });
     console.error(`Cannot write: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
@@ -28376,8 +28792,8 @@ function reanchorCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/agent.ts
-import { readFileSync as readFileSync32, statSync as statSync11 } from "node:fs";
-import { dirname as dirname17, resolve as resolve12 } from "node:path";
+import { readFileSync as readFileSync34, statSync as statSync12 } from "node:fs";
+import { dirname as dirname18, resolve as resolve13 } from "node:path";
 async function agentCommand(argv) {
   const name = flag(argv, "--name");
   const model = flag(argv, "--model");
@@ -28399,7 +28815,7 @@ async function agentCommand(argv) {
   }
   let schema4;
   try {
-    schema4 = JSON.parse(readFileSync32(schemaPath, "utf8"));
+    schema4 = JSON.parse(readFileSync34(schemaPath, "utf8"));
   } catch (error) {
     console.error(`Cannot read the schema ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -28408,7 +28824,7 @@ async function agentCommand(argv) {
     console.error(`The schema ${schemaPath} must be a JSON object.`);
     return 2;
   }
-  const schemaDir = dirname17(resolve12(schemaPath));
+  const schemaDir = dirname18(resolve13(schemaPath));
   try {
     schemaForRunner(schema4, schemaDir);
   } catch (error) {
@@ -28421,7 +28837,7 @@ async function agentCommand(argv) {
   const cwd = flag(argv, "--cwd") ?? process.cwd();
   let isDirectory2 = false;
   try {
-    isDirectory2 = statSync11(cwd).isDirectory();
+    isDirectory2 = statSync12(cwd).isDirectory();
   } catch {
     isDirectory2 = false;
   }
@@ -28813,8 +29229,8 @@ function statusCommand() {
 }
 
 // plugins/review-voice/src/cli/carry.ts
-import { readFileSync as readFileSync33, writeFileSync as writeFileSync15, mkdirSync as mkdirSync12 } from "node:fs";
-import { dirname as dirname18, join as join27 } from "node:path";
+import { readFileSync as readFileSync35, writeFileSync as writeFileSync16, mkdirSync as mkdirSync14 } from "node:fs";
+import { dirname as dirname19, join as join29 } from "node:path";
 
 // plugins/review-voice/src/diff/held.ts
 var QUOTE_LIMIT = 200;
@@ -28936,7 +29352,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   if (threadFile !== null) {
     let text4;
     try {
-      text4 = readFileSync33(threadFile, "utf8");
+      text4 = readFileSync35(threadFile, "utf8");
     } catch (error) {
       throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -28946,7 +29362,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   let noLongerChanged = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
-      const files2 = JSON.parse(readFileSync33(filesFile, "utf8"));
+      const files2 = JSON.parse(readFileSync35(filesFile, "utf8"));
       const listed = files2.scope?.noLongerChanged;
       noLongerChanged = new Set(Array.isArray(listed) ? listed.filter((path) => typeof path === "string") : []);
     } catch (error) {
@@ -29047,8 +29463,8 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let manifest;
   let hunks;
   try {
-    manifest = JSON.parse(readFileSync33(join27(dir, "files.json"), "utf8"));
-    hunks = parseHunks(readFileSync33(join27(dir, "diff.patch"), "utf8"));
+    manifest = JSON.parse(readFileSync35(join29(dir, "files.json"), "utf8"));
+    hunks = parseHunks(readFileSync35(join29(dir, "diff.patch"), "utf8"));
   } catch (error) {
     return `Cannot read the interdiff in ${dir}: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -29063,7 +29479,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let candidates;
   let verification2;
   try {
-    const parsed2 = listIn(JSON.parse(readFileSync33(candidatesFile, "utf8")), ["candidates"]);
+    const parsed2 = listIn(JSON.parse(readFileSync35(candidatesFile, "utf8")), ["candidates"]);
     if (parsed2 === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidates = parsed2.list;
     const normalised = candidates.map((raw, index) => normaliseCandidate(raw, index));
@@ -29071,11 +29487,11 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
     const misplaced = normalised.filter((c) => !candidateAnchor(hunks, c).ok);
     if (misplaced.length > 0) {
       throw new Error(
-        `interdiff candidate(s) not on a changed line of ${join27(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
+        `interdiff candidate(s) not on a changed line of ${join29(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
       );
     }
     candidates = candidates.map((raw, index) => withId(raw, normalised[index].candidateId));
-    const parsedVerification = listIn(JSON.parse(readFileSync33(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync35(verificationFile, "utf8")), VERDICT_KEYS);
     verification2 = parsedVerification?.list ?? [];
     if (parsedVerification === null && candidates.length > 0) throw new Error(`${verificationFile} contains no verifications`);
     const problem = verificationProblem(verification2);
@@ -29088,7 +29504,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
 function partialDiffReason(diffFile) {
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync33(join27(dirname18(diffFile), "files.json"), "utf8"));
+    manifest = JSON.parse(readFileSync35(join29(dirname19(diffFile), "files.json"), "utf8"));
   } catch {
     return null;
   }
@@ -29120,24 +29536,24 @@ function carryCandidatesCommand(argv) {
   let hunks;
   let heldIn = null;
   try {
-    const parsedCandidates = listIn(JSON.parse(readFileSync33(candidatesFile, "utf8")), ["candidates"]);
+    const parsedCandidates = listIn(JSON.parse(readFileSync35(candidatesFile, "utf8")), ["candidates"]);
     if (parsedCandidates === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidatesIn = parsedCandidates;
     candidates = candidatesIn.list.map((raw, index) => normaliseCandidate(raw, index));
     assertUniqueCandidateIds(candidates);
-    const parsedVerification = listIn(JSON.parse(readFileSync33(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync35(verificationFile, "utf8")), VERDICT_KEYS);
     if (parsedVerification === null || parsedVerification.list.length === 0) {
       throw new Error(`${verificationFile} contains no verifications`);
     }
     verificationIn = parsedVerification;
     const problem = verificationProblem(verificationIn.list);
     if (problem !== null) throw new Error(`malformed verification - ${problem}`);
-    hunks = parseHunks(readFileSync33(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync35(diffFile, "utf8"));
     const partial = partialDiffReason(diffFile);
     if (partial !== null) throw new Error(partial);
     const heldFile = flag(argv, "--held");
     if (heldFile !== null) {
-      heldIn = listIn(JSON.parse(readFileSync33(heldFile, "utf8")), ["held"]);
+      heldIn = listIn(JSON.parse(readFileSync35(heldFile, "utf8")), ["held"]);
       if (heldIn === null) throw new Error(`${heldFile} is not an array or {"held": [...]}`);
       heldIn.list.forEach((entry, index) => {
         const heldError = heldProblem(entry);
@@ -29229,20 +29645,20 @@ function carryCandidatesCommand(argv) {
     ...heldIn === null ? {} : { held: { kept: heldKept.length, dropped: heldDropped } }
   };
   try {
-    mkdirSync12(outDir, { recursive: true });
-    writeFileSync15(
-      join27(outDir, "candidates.json"),
+    mkdirSync14(outDir, { recursive: true });
+    writeFileSync16(
+      join29(outDir, "candidates.json"),
       `${JSON.stringify(candidatesIn.rebuild([...carriedCandidates, ...interdiffCandidates]), null, 2)}
 `
     );
-    writeFileSync15(
-      join27(outDir, "verification.json"),
+    writeFileSync16(
+      join29(outDir, "verification.json"),
       `${JSON.stringify(verificationIn.rebuild([...carriedVerification, ...interdiffVerification]), null, 2)}
 `
     );
-    if (heldIn !== null) writeFileSync15(join27(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
+    if (heldIn !== null) writeFileSync16(join29(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
 `);
-    writeFileSync15(join27(outDir, "carry.json"), `${JSON.stringify(record3, null, 2)}
+    writeFileSync16(join29(outDir, "carry.json"), `${JSON.stringify(record3, null, 2)}
 `);
   } catch (error) {
     console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -29271,10 +29687,10 @@ function carryCandidatesCommand(argv) {
         carried: result.carried.length,
         refused,
         interdiffReviewed: interdiff !== null,
-        candidates: join27(outDir, "candidates.json"),
-        verification: join27(outDir, "verification.json"),
-        ...heldIn === null ? {} : { held: join27(outDir, "held.json") },
-        carry: join27(outDir, "carry.json")
+        candidates: join29(outDir, "candidates.json"),
+        verification: join29(outDir, "verification.json"),
+        ...heldIn === null ? {} : { held: join29(outDir, "held.json") },
+        carry: join29(outDir, "carry.json")
       },
       null,
       2
@@ -29284,22 +29700,22 @@ function carryCandidatesCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/record.ts
-import { execFileSync as execFileSync22 } from "node:child_process";
-import { readFileSync as readFileSync36 } from "node:fs";
-import { join as join28, posix as posix6 } from "node:path";
+import { execFileSync as execFileSync23 } from "node:child_process";
+import { readFileSync as readFileSync38 } from "node:fs";
+import { join as join30, posix as posix6 } from "node:path";
 
 // plugins/review-voice/src/cli/check-candidates.ts
-import { readFileSync as readFileSync35 } from "node:fs";
+import { readFileSync as readFileSync37 } from "node:fs";
 import { isAbsolute as isAbsolute5, posix as posix5, relative as relative5 } from "node:path";
 
 // plugins/review-voice/src/cli/score.ts
-import { readFileSync as readFileSync34 } from "node:fs";
-import { execFileSync as execFileSync21 } from "node:child_process";
+import { readFileSync as readFileSync36 } from "node:fs";
+import { execFileSync as execFileSync22 } from "node:child_process";
 
 // plugins/review-voice/src/scoring/citation.ts
-import { execFileSync as execFileSync20 } from "node:child_process";
+import { execFileSync as execFileSync21 } from "node:child_process";
 function git5(args, cwd) {
-  return execFileSync20("git", args, {
+  return execFileSync21("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -29356,7 +29772,7 @@ function deletedFileCheck(argv) {
   const head = flag(argv, "--head");
   const cwd = process.cwd();
   if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
-  const git6 = (args) => execFileSync21("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync22("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
   let deleted;
   const deletions = () => {
     if (deleted !== void 0) return deleted;
@@ -29527,7 +29943,7 @@ function scoreCommand(argv) {
   const verificationFlag = flag(argv, "--verification");
   if (verificationFlag !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync34(verificationFlag, "utf8"));
+      const parsed2 = JSON.parse(readFileSync36(verificationFlag, "utf8"));
       const list2 = verdictList(parsed2);
       const problem = verificationProblem(list2);
       if (problem !== null) {
@@ -29614,7 +30030,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      reachDiff = readFileSync34(path, "utf8");
+      reachDiff = readFileSync36(path, "utf8");
       anchorHunks = parseHunks(reachDiff);
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -29630,7 +30046,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      const parsed2 = JSON.parse(readFileSync34(path, "utf8"));
+      const parsed2 = JSON.parse(readFileSync36(path, "utf8"));
       thread = Array.isArray(parsed2) ? parsed2 : parsed2.comments ?? [];
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -30018,7 +30434,7 @@ function matchHeld(candidate, held) {
   return best === null ? null : { entry: best.entry, drop: false };
 }
 function readSignals(file2, root) {
-  const document = JSON.parse(readFileSync35(file2, "utf8"));
+  const document = JSON.parse(readFileSync37(file2, "utf8"));
   if (typeof document !== "object" || document === null || Array.isArray(document)) throw new Error("not a JSON object");
   const signals = document.signals;
   if (signals === void 0) return [];
@@ -30119,7 +30535,7 @@ function checkCandidatesCommand(argv) {
       }
       let ids;
       try {
-        const statements = JSON.parse(readFileSync35(intentFile, "utf8")).statements;
+        const statements = JSON.parse(readFileSync37(intentFile, "utf8")).statements;
         if (!Array.isArray(statements)) throw new Error("statements is not a list");
         ids = new Set(statements.map((statement) => statement?.id).filter((id) => typeof id === "string"));
       } catch (error) {
@@ -30150,7 +30566,7 @@ function checkCandidatesCommand(argv) {
     }
     let hunks;
     try {
-      hunks = parseHunks(readFileSync35(diffFile, "utf8"));
+      hunks = parseHunks(readFileSync37(diffFile, "utf8"));
     } catch (error) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -30225,7 +30641,7 @@ function checkCandidatesCommand(argv) {
         return 2;
       }
       try {
-        const parsed2 = JSON.parse(readFileSync35(threadFile, "utf8"));
+        const parsed2 = JSON.parse(readFileSync37(threadFile, "utf8"));
         thread = Array.isArray(parsed2) ? parsed2 : parsed2.comments ?? [];
         if (!Array.isArray(thread)) throw new Error("comments is not a list");
       } catch (error) {
@@ -30416,7 +30832,7 @@ function recordCommand(argv) {
   let diff = "";
   if (diffFile !== null) {
     try {
-      diff = readFileSync36(diffFile, "utf8");
+      diff = readFileSync38(diffFile, "utf8");
     } catch {
       console.error(`Cannot read ${diffFile}.`);
       return 2;
@@ -30438,7 +30854,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed2 = JSON.parse(readFileSync36(bodyFindingsFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync38(bodyFindingsFile, "utf8"));
       const list2 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null && Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : null;
       if (list2 === null) throw new Error('expected an array or {"bodyFindings": [...]}');
       if (list2.length > 1) throw new Error("at most one body-only simplification is allowed per review");
@@ -30467,7 +30883,7 @@ function recordCommand(argv) {
   const pullFiles = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
-      const manifest = JSON.parse(readFileSync36(filesFile, "utf8"));
+      const manifest = JSON.parse(readFileSync38(filesFile, "utf8"));
       if (Array.isArray(manifest.files)) {
         for (const file2 of manifest.files) {
           if (typeof file2?.path !== "string") continue;
@@ -30496,7 +30912,7 @@ function recordCommand(argv) {
   let candidates = [];
   if (candidatesFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync36(candidatesFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync38(candidatesFile, "utf8"));
       candidates = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
     } catch {
       console.error(`Cannot read candidates from ${candidatesFile}.`);
@@ -30508,7 +30924,7 @@ function recordCommand(argv) {
   let scoredPolicyVersions = null;
   if (scoresFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync36(scoresFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync38(scoresFile, "utf8"));
       scores = boundLists(Array.isArray(parsed2) ? parsed2 : parsed2.scores ?? []);
       scoredPolicyVersions = Array.isArray(parsed2) ? null : policyVersionRefs(parsed2.policyVersions);
     } catch {
@@ -30520,7 +30936,7 @@ function recordCommand(argv) {
   let verdicts = [];
   if (verdictsFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync36(verdictsFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync38(verdictsFile, "utf8"));
       verdicts = Array.isArray(parsed2) ? parsed2 : parsed2.verdicts ?? [];
     } catch {
       console.error(`Cannot read verdicts from ${verdictsFile}.`);
@@ -30531,7 +30947,7 @@ function recordCommand(argv) {
   let tieBreaks = [];
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync36(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync38(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -30541,7 +30957,7 @@ function recordCommand(argv) {
   let held = [];
   if (heldFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync36(heldFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync38(heldFile, "utf8"));
       const list2 = Array.isArray(parsed2) ? parsed2 : parsed2?.held;
       if (!Array.isArray(list2)) throw new Error('expected an array or {"held": [...]}');
       list2.forEach((entry, index) => {
@@ -30564,7 +30980,7 @@ function recordCommand(argv) {
           }
           if (atHead && heldRevision === null) continue;
           try {
-            const content = heldRevision === null ? readFileSync36(join28(repositoryRoot(process.cwd()), entry.path), "utf8") : execFileSync22("git", [...SAFE_GIT, "show", `${heldRevision}:${entry.path}`], {
+            const content = heldRevision === null ? readFileSync38(join30(repositoryRoot(process.cwd()), entry.path), "utf8") : execFileSync23("git", [...SAFE_GIT, "show", `${heldRevision}:${entry.path}`], {
               encoding: "utf8",
               stdio: ["ignore", "pipe", "ignore"],
               maxBuffer: 64 * 1024 * 1024
@@ -30585,7 +31001,7 @@ function recordCommand(argv) {
   if (stagesFile !== null) {
     try {
       stages = cleanStages(
-        parseStagesFile(JSON.parse(readFileSync36(stagesFile, "utf8")), (message) => console.error(`Stages in ${stagesFile}: ${message}.`)),
+        parseStagesFile(JSON.parse(readFileSync38(stagesFile, "utf8")), (message) => console.error(`Stages in ${stagesFile}: ${message}.`)),
         diff === "" ? null : diff
       );
     } catch (error) {
@@ -30604,8 +31020,8 @@ function recordCommand(argv) {
     }
     try {
       checks = recordedChecks(
-        JSON.parse(readFileSync36(evidenceFile, "utf8")),
-        JSON.parse(readFileSync36(symbolsFile, "utf8"))
+        JSON.parse(readFileSync38(evidenceFile, "utf8")),
+        JSON.parse(readFileSync38(symbolsFile, "utf8"))
       );
       let root = process.cwd();
       try {
@@ -30628,7 +31044,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const report = JSON.parse(readFileSync36(conventionsFile, "utf8"));
+      const report = JSON.parse(readFileSync38(conventionsFile, "utf8"));
       const documents = report?.documents;
       if (!Array.isArray(documents)) throw new Error("it has no documents list");
       conventions = documents.flatMap((doc) => {
@@ -30648,7 +31064,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      reproductions = recordedReproductions(JSON.parse(readFileSync36(reproductionsFile, "utf8")));
+      reproductions = recordedReproductions(JSON.parse(readFileSync38(reproductionsFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read reproductions from ${reproductionsFile}: ${error instanceof Error ? error.message : String(error)}.`);
       return 2;
@@ -30663,7 +31079,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed2 = JSON.parse(readFileSync36(followUpThreadFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync38(followUpThreadFile, "utf8"));
       const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.comments;
       if (!Array.isArray(list2)) throw new Error("comments is not a list");
       followUpThread = list2;
@@ -30681,7 +31097,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      rulings = parseFollowUpRulings(JSON.parse(readFileSync36(rulingsFile, "utf8")));
+      rulings = parseFollowUpRulings(JSON.parse(readFileSync38(rulingsFile, "utf8")));
     } catch (error) {
       const why = error instanceof FollowUpRulingError ? error.message : `cannot read it (${error.message})`;
       console.error(`Cannot read follow-up rulings from ${rulingsFile}: ${why}.`);
@@ -30741,7 +31157,7 @@ function recordCommand(argv) {
       const head = flag(argv, "--head");
       let marker = null;
       try {
-        const parsed2 = JSON.parse(readFileSync36(carryFile, "utf8"));
+        const parsed2 = JSON.parse(readFileSync38(carryFile, "utf8"));
         const refused = Array.isArray(parsed2["refused"]) ? parsed2["refused"].map((r) => String(r?.candidateId)) : null;
         const interdiff = parsed2["interdiff"];
         if (refused !== null && typeof parsed2["since"] === "string" && typeof parsed2["head"] === "string") {
@@ -30943,6 +31359,8 @@ ${topLevelHelp()}`);
       return evaluateCommand(argv.slice(1));
     case "recall":
       return await recallCommand(argv.slice(1), runInProcess);
+    case "import-benchmark":
+      return importBenchmarkCommand(argv.slice(1));
     case "outcomes":
       return outcomesCommand(argv.slice(1));
     case "draft":
@@ -30988,7 +31406,7 @@ ${topLevelHelp()}`);
         stopReview: review2.stop,
         prepareClone: gitPrepareClone(),
         now: () => /* @__PURE__ */ new Date(),
-        sleep: (ms) => new Promise((resolve13) => setTimeout(resolve13, ms)),
+        sleep: (ms) => new Promise((resolve14) => setTimeout(resolve14, ms)),
         out: (text4) => console.log(text4),
         err: (text4) => console.error(text4)
       });
