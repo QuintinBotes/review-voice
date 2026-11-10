@@ -30,10 +30,12 @@ import {
   type RunProvenance,
   type RecordedChecks,
   type RecordedReproduction,
+  type RecordedStructure,
   ORIGINS,
   PROVENANCE_MODES,
   recordedChecks,
   recordedReproductions,
+  recordedStructure,
   storedPolicyVersions,
   type PolicyVersionRef,
 } from '../store/runs.ts';
@@ -195,6 +197,7 @@ export function recordCommand(argv: string[]): number {
   let manifestMode: unknown = null;
   let scope: ReviewScope | undefined;
   let complexity: ComplexityAssessment | null = null;
+  let structure: RecordedStructure | undefined;
   const knownPaths = new Set<string>();
   if (filesFile !== null) {
     try {
@@ -213,6 +216,10 @@ export function recordCommand(argv: string[]): number {
       if (manifest.complexity !== undefined && manifest.complexity !== null) {
         complexity = parseComplexity(manifest.complexity);
         if (complexity === null) console.error(`The complexity assessment in ${filesFile} is malformed; recording without it.`);
+      }
+      if (manifest.structure !== undefined && manifest.structure !== null) {
+        structure = recordedStructure(manifest.structure) ?? undefined;
+        if (structure === undefined) console.error(`The structure signals in ${filesFile} are malformed; recording without them.`);
       }
     } catch {
       // The review text and patch remain enough to record a useful run. Losing
@@ -609,6 +616,7 @@ export function recordCommand(argv: string[]): number {
       stages,
       ...(checks === undefined ? {} : { checks }),
       ...(reproductions === undefined ? {} : { reproductions }),
+      ...(structure === undefined ? {} : { structure }),
       toolSignals,
       conventions,
       provenance: {

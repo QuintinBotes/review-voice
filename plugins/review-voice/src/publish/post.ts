@@ -25,6 +25,7 @@ import {
   decide,
   idempotencyKey,
   planFindings,
+  readingGuide,
   renderPreview,
   replaceAnnotations,
   scopeBlock,
@@ -84,6 +85,8 @@ export interface VerdictOutput {
   ci: CiState | null;
   run: string | null;
   held: HeldBack[];
+  /** Verified findings `verdict.min_posted_tier` withheld, each with that reason; they stay in the record (docs/adr/0028). */
+  belowTier: HeldBack[];
   /** The recorded assessment, the pull request's own or a prior run's; null when none was recorded. */
   complexity: ComplexityAssessment | null;
   /** For the agent to tell the user; never in the posted review. Null unless the change is high-complexity. */
@@ -151,6 +154,7 @@ function refusal(head: string, reason: string): { exitCode: number; output: Verd
       ci: null,
       run: null,
       held: [],
+      belowTier: [],
       complexity: null,
       humanReviewNote: null,
       wouldHaveEvent: null,
@@ -291,7 +295,8 @@ async function carriedApproval(options: VerdictOptions, run: RunDetail, reasons:
 /**
  * Looks for the owner's request for changes that a high-complexity verdict
  * leaves blocking (docs/adr/0012). Only when this review found nothing
- * blocking: a finding that is, or might be, blocking keeps the request fair.
+ * blocking: a finding that is, or might be, blocking keeps the request fair,
+ * whether it is posted, held or below the posting tier.
  * Adds its reason to `reasons`; never writes to GitHub.
  */
 async function staleRequest(
@@ -300,7 +305,7 @@ async function staleRequest(
   reasons: string[],
 ): Promise<StaleRequestChanges | null> {
   const severities = [
-    ...[...planned.inline, ...planned.unanchored].map((finding) => finding.severity),
+    ...[...planned.inline, ...planned.unanchored, ...planned.belowTier].map((finding) => finding.severity),
     ...planned.held.map((held) => held.severity),
   ];
   if (severities.some((severity) => severity === null || severity === 'blocking' || severity === 'important')) return null;
@@ -456,7 +461,8 @@ export async function computeVerdict(
   const run = recordedRun(options, head);
   if (typeof run === 'string') return refusal(head, run);
 
-  const planned = planFindings(options.review, run, (id) => runDetail(options.db, id));
+  const policy = verdictPolicy(options.policy);
+  const planned = planFindings(options.review, run, (id) => runDetail(options.db, id), policy.minPostedTier);
 
   const actual = await readHead(options.client, options.repository, options.pullNumber);
   const headMoved = actual !== head;
@@ -466,7 +472,6 @@ export async function computeVerdict(
 
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === 'high';
-  const policy = verdictPolicy(options.policy);
 
   const lookupReasons: string[] = [];
   const carriedReviewUrl =
@@ -537,13 +542,19 @@ export async function computeVerdict(
     // block on and off, as the scope block and annotations do.
     const evidence = policy.evidenceBlock ? withEvidenceBlocks(unsent, planned, policy) : { comments: unsent, blocks: 0 };
     evidenceBlocks = evidence.blocks;
-    const body = policy.scopeBlock ? withScopeBlock(full.body, scopeBlock(run, planned, policy)) : full.body;
+    // The guide before the scope block, so the block's trailer stays the last
+    // line before any CI annotation; both after the key, so toggling either
+    // keeps it.
+    let body = full.body;
+    if (policy.readingGuide) body = withScopeBlock(body, readingGuide(run));
+    if (policy.scopeBlock) body = withScopeBlock(body, scopeBlock(run, planned, policy));
     payload = { ...full, body: withAnnotations(body, decision.annotations), comments: evidence.comments };
     preview = renderPreview({
       repository: options.repository,
       pullNumber: options.pullNumber,
       payload,
       held: planned.held,
+      belowTier: planned.belowTier,
       alreadyInline,
       withheldSuggestions,
     });
@@ -562,6 +573,13 @@ export async function computeVerdict(
       ci,
       run: run.reviewRunId,
       held: planned.held,
+      belowTier: planned.belowTier.map((finding) => ({
+        findingId: finding.findingId,
+        severity: finding.severity,
+        path: finding.path,
+        line: finding.line,
+        reason: `below verdict.min_posted_tier (${policy.minPostedTier})`,
+      })),
       complexity,
       humanReviewNote: humanReviewNote(complexity),
       wouldHaveEvent: needsHuman ? planned.mapped : null,
@@ -935,6 +953,7 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
           pullNumber: options.pullNumber,
           payload,
           held: verdict.held,
+          belowTier: verdict.belowTier,
           alreadyInline: verdict.alreadyInline,
           withheldSuggestions: verdict.withheldSuggestions,
         }),

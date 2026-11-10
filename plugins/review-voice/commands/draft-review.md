@@ -77,6 +77,20 @@ refuses with exit 2, because there is no approval to re-check.
   carry one. The block is outside the idempotency key and the comment
   signature, so turning it on or off never sends the same review or comment
   twice. Both settings default to `false`.
+- **Posting tier and reading guide.** With `verdict.min_posted_tier` (one of
+  `blocking`, `important`, `minor`, `nit`; default `nit`, which posts every
+  tier), a verified finding below the tier is not posted. It stays in the
+  record and comes back in `belowTier` with its reason, the preview lists it
+  under `Below the posting tier, not posted`, and the scope block counts it as
+  `belowTier` in its prose and JSON. The five categories no suppression may
+  reach post at any tier, and a withheld finding above a nit still keeps an
+  approval at COMMENT. With `verdict.reading_guide: true` (default `false`),
+  the body carries a collapsed Reading guide before the scope block, listing
+  the changed files that carry a structural signal, most first, from the
+  recorded counts, never a finding. The guide is outside the idempotency
+  key; the tier is not, since a withheld finding changes the posted payload,
+  so the same review re-posted under a different tier is a new post and not
+  a refused duplicate.
 - **A carry.** `action: "carry"` means the scope is unchanged since the
   commit the owner approved, that approval still stands, and this review
   would approve anyway. `event` and `payload` are null, exit 0, and there is

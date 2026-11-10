@@ -186,6 +186,16 @@ verdict:
   evidence_block: false
   # The owner precedent count reveals that a precedent store exists, so it needs its own switch.
   evidence_block_precedents: false
+  # blocking | important | minor | nit. A verified finding below this tier is
+  # not posted; it stays in the record and the scope block counts it, so turn
+  # scope_block on beside a tier. The five categories no suppression may reach
+  # (security, authorization, authentication, data_integrity, trust_boundary)
+  # post at any tier, and a withheld finding above a nit still caps an approval.
+  min_posted_tier: nit
+  # true puts a collapsed "Reading guide" before the scope block, listing the
+  # changed files that carry a structural signal, most first, from the recorded
+  # counts.
+  reading_guide: false
   # true posts nothing when a clean approval's scope is unchanged since the
   # commit the owner approved and that approval still stands (it needs
   # identity.owner_reviewer).

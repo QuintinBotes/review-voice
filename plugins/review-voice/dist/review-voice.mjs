@@ -1868,7 +1868,7 @@ function productionChange(files2, diffText, partial, markedGenerated2 = /* @__PU
 
 // plugins/review-voice/src/policy/load.ts
 import { readFileSync as readFileSync5, existsSync as existsSync4 } from "node:fs";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { dirname as dirname6, isAbsolute, join as join8 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
@@ -10795,7 +10795,1652 @@ function collectStructure(cwd, change, production, limits = DEFAULT_STRUCTURE, d
 }
 
 // plugins/review-voice/src/publish/verdict.ts
+import { createHash as createHash3 } from "node:crypto";
+
+// plugins/review-voice/src/store/runs.ts
+import { randomUUID as randomUUID3, createHash as createHash2 } from "node:crypto";
+import { posix as posix3 } from "node:path";
+
+// plugins/review-voice/src/diff/incremental.ts
+import { execFileSync as execFileSync5 } from "node:child_process";
+var nullableString = (value) => typeof value === "string" || value === null;
+var UNCHANGED_REASONS = /* @__PURE__ */ new Set(["base-merged", "history-rewritten", "base-sync-only"]);
+function parseReviewScope(value) {
+  if (typeof value !== "object" || value === null) return null;
+  const scope = value;
+  const strings = (list2) => Array.isArray(list2) && list2.every((item) => typeof item === "string");
+  const prior = typeof scope.since === "string" && nullableString(scope.priorRunId) && nullableString(scope.priorReviewedAt);
+  if (scope.kind === "incremental" && prior && Number.isInteger(scope.commits) && strings(scope.files)) {
+    return scope;
+  }
+  const absorbed = (scope.absorbedByBase === void 0 || strings(scope.absorbedByBase)) && (scope.noLongerChanged === void 0 || strings(scope.noLongerChanged));
+  if (scope.kind === "unchanged" && prior && typeof scope.mergeBase === "string" && UNCHANGED_REASONS.has(scope.reason) && absorbed) {
+    return scope;
+  }
+  if (scope.kind === "interdiff" && prior && typeof scope.mergeBase === "string" && strings(scope.files) && Number.isInteger(scope.hunks) && (scope.detail === void 0 || typeof scope.detail === "string") && absorbed) {
+    return scope;
+  }
+  if (scope.kind === "full" && typeof scope.cause === "string" && nullableString(scope.since) && nullableString(scope.priorRunId) && (scope.detail === void 0 || typeof scope.detail === "string")) {
+    return scope;
+  }
+  return null;
+}
+function describeScope(scope) {
+  if (scope === null) return null;
+  switch (scope.kind) {
+    case "incremental":
+      return `incremental since ${scope.since.slice(0, 7)} (${scope.commits} commit${scope.commits === 1 ? "" : "s"})`;
+    case "unchanged":
+      return `unchanged since ${scope.since.slice(0, 7)} (${scope.reason})`;
+    case "interdiff": {
+      const counts = `${scope.hunks} hunk${scope.hunks === 1 ? "" : "s"} in ${scope.files.length} file${scope.files.length === 1 ? "" : "s"}`;
+      return `interdiff since ${scope.since.slice(0, 7)} (${scope.detail === void 0 ? counts : `${counts}; ${scope.detail}`})`;
+    }
+    case "full":
+      return scope.detail === void 0 ? `full (${scope.cause})` : `full (${scope.cause}: ${scope.detail})`;
+  }
+}
+var REPLAY_GIT = [2, 40];
+function gitFailure(args, error) {
+  const end = args.indexOf("--");
+  const command = (end === -1 ? args : args.slice(0, end)).map((arg) => /^[0-9a-f]{40,64}$/.test(arg) ? arg.slice(0, 7) : arg).join(" ");
+  const failure = error;
+  const stderr = typeof failure.stderr === "string" ? failure.stderr : Buffer.isBuffer(failure.stderr) ? failure.stderr.toString("utf8") : "";
+  const said = stderr.split("\n").map((line3) => line3.trim()).find((line3) => line3.length > 0) ?? (typeof failure.status === "number" ? `exit status ${failure.status}` : String(failure.message ?? "unknown error").split("\n")[0]);
+  return `${command} failed: ${said}`;
+}
+function firstLine(error) {
+  return (error instanceof Error ? error.message : String(error)).split("\n")[0] ?? "";
+}
+function runGit(args, cwd) {
+  try {
+    return execFileSync5("git", args, {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    throw Object.assign(new Error(gitFailure(args, error)), { status: error.status });
+  }
+}
+var systemGit = {
+  hasCommit(sha, cwd) {
+    try {
+      runGit(["cat-file", "-e", `${sha}^{commit}`], cwd);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  isAncestor(ancestor, descendant, cwd) {
+    try {
+      runGit(["merge-base", "--is-ancestor", ancestor, descendant], cwd);
+      return true;
+    } catch (error) {
+      if (error.status === 1) return false;
+      throw error;
+    }
+  },
+  mergeCommits(since, head, cwd) {
+    return runGit(["rev-list", "--merges", `${since}..${head}`], cwd).split("\n").filter((sha) => sha.length > 0);
+  },
+  changedPaths(since, head, cwd) {
+    return runGit(["diff", "--name-only", "--no-renames", "-z", since, head], cwd).split("\0").filter((path) => path.length > 0);
+  },
+  commitCount(since, head, cwd) {
+    const count3 = Number(runGit(["rev-list", "--count", `${since}..${head}`], cwd).trim());
+    if (!Number.isSafeInteger(count3) || count3 < 0) throw new Error("git returned an invalid commit count");
+    return count3;
+  },
+  mergeBase(left, right, cwd) {
+    const base = runGit(["merge-base", left, right], cwd).trim();
+    if (!/^[0-9a-f]{7,64}$/.test(base)) throw new Error("git returned no merge base");
+    return base;
+  },
+  diffText(from, to, paths, cwd) {
+    return runGit(
+      ["diff", "--no-ext-diff", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", from, to, "--", ...topPathspecs(paths)],
+      cwd
+    );
+  },
+  replay(from, onto, head, cwd) {
+    const version = /(\d+)\.(\d+)/.exec(runGit(["version"], cwd));
+    const [major, minor] = [Number(version?.[1] ?? 0), Number(version?.[2] ?? 0)];
+    if (major < REPLAY_GIT[0] || major === REPLAY_GIT[0] && minor < REPLAY_GIT[1]) {
+      throw new Error(
+        `git ${version?.[0] ?? "(unknown version)"} cannot replay the reviewed head onto a new base; that needs git ${REPLAY_GIT.join(".")} or later`
+      );
+    }
+    const args = ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", "--merge-base", from, onto, head];
+    let output;
+    let conflicted = false;
+    try {
+      output = execFileSync5("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) {
+      const failure = error;
+      if (failure.status !== 1 || typeof failure.stdout !== "string") throw new Error(gitFailure(args, error));
+      output = failure.stdout;
+      conflicted = true;
+    }
+    const [tree, ...paths] = output.split("\0").filter((part) => part.length > 0);
+    if (tree === void 0 || !/^[0-9a-f]{40,64}$/.test(tree)) throw new Error("git merge-tree returned no tree");
+    return { tree, conflicts: conflicted ? [...new Set(paths)].sort() : [] };
+  }
+};
+function topPathspecs(paths) {
+  return paths.map((path) => `:(top,literal)${path}`);
+}
+function full(cause, priorRun, detail) {
+  return {
+    kind: "full",
+    cause,
+    since: priorRun?.headRef ?? null,
+    priorRunId: priorRun?.reviewRunId ?? null,
+    ...detail === void 0 ? {} : { detail }
+  };
+}
+function changedReviewedFiles(files2, changedPaths) {
+  const changed = new Set(changedPaths);
+  const selected = /* @__PURE__ */ new Set();
+  for (const file2 of files2) {
+    if (changed.has(file2.path) || file2.previousPath !== void 0 && changed.has(file2.previousPath)) {
+      selected.add(file2.path);
+    }
+  }
+  return [...selected].sort();
+}
+function hunkKey(body) {
+  const keep = /* @__PURE__ */ new Set();
+  body.forEach((line3, index) => {
+    if (!line3.startsWith("+") && !line3.startsWith("-") && !line3.startsWith("\\")) return;
+    keep.add(index);
+    if (index > 0 && body[index - 1].startsWith(" ")) keep.add(index - 1);
+    if (index + 1 < body.length && body[index + 1].startsWith(" ")) keep.add(index + 1);
+  });
+  return [...keep].sort((x, y) => x - y).map((index) => body[index]).join("\n");
+}
+function gitHeaderPath(line3) {
+  const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line3);
+  const raw = quoted?.[1] ?? /^diff --git (?:a\/)?.+? (b\/.+)$/.exec(line3)?.[1] ?? null;
+  return raw === null ? null : unquoteGitPath(raw).replace(/^b\//, "");
+}
+function ownDiffFiles(patch) {
+  const files2 = /* @__PURE__ */ new Map();
+  let file2 = null;
+  let hunk = null;
+  const closeHunk = () => {
+    while (hunk !== null && hunk.length > 1 && hunk.at(-1) === "") hunk.pop();
+    if (file2 !== null && hunk !== null) {
+      file2.hunks.push({ key: hunkKey(hunk.slice(1)) });
+    }
+    hunk = null;
+  };
+  for (const raw of patch.split("\n")) {
+    const line3 = raw;
+    if (line3.startsWith("diff --git ")) {
+      closeHunk();
+      const path = gitHeaderPath(line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+      file2 = { hunks: [] };
+      if (path !== null) files2.set(path, file2);
+      continue;
+    }
+    if (line3.startsWith("@@ ")) {
+      closeHunk();
+      hunk = [line3];
+      continue;
+    }
+    if (hunk !== null) {
+      if (line3.startsWith("+") || line3.startsWith("-") || line3.startsWith(" ") || line3.startsWith("\\") || line3 === "") {
+        hunk.push(line3);
+        continue;
+      }
+      closeHunk();
+    }
+  }
+  closeHunk();
+  return files2;
+}
+function planScope(options) {
+  const prior = options.priorRun;
+  const only = (scope) => ({ scope, interdiffPatch: null });
+  if (options.forceFull) return only(full("requested", prior));
+  if (prior === null) return only(full("no-prior-review", null));
+  if (prior.headRef === options.head) return only(full("no-new-commits", prior));
+  if (options.truncated) return only(full("truncated", prior));
+  try {
+    const git6 = options.git ?? systemGit;
+    if (!options.headAvailable) {
+      return only(full("compare-unavailable", prior, `the head ${options.head.slice(0, 7)} is not in this clone`));
+    }
+    if (!git6.hasCommit(prior.headRef, options.cwd)) {
+      const why = options.fetchPriorHead?.(prior.headRef) ?? null;
+      if (!git6.hasCommit(prior.headRef, options.cwd)) {
+        const missing = `the previous head ${prior.headRef.slice(0, 7)} is not in this clone`;
+        return only(full("compare-unavailable", prior, why === null ? missing : `${missing}; ${why}`));
+      }
+    }
+    const ancestor = git6.isAncestor(prior.headRef, options.head, options.cwd);
+    const merged = ancestor && git6.mergeCommits(prior.headRef, options.head, options.cwd).length > 0;
+    if (options.base !== void 0) {
+      return ownDiffScope(options, prior, git6, ancestor, merged);
+    }
+    if (!ancestor) return only(full("history-rewritten", prior));
+    if (merged) return only(full("base-merged", prior));
+    const files2 = changedReviewedFiles(
+      options.reviewedFiles,
+      git6.changedPaths(prior.headRef, options.head, options.cwd)
+    );
+    if (files2.length === 0) return only(full("base-sync-only", prior));
+    return only(incremental(options, prior, git6, files2));
+  } catch (error) {
+    return only(full("compare-unavailable", prior, firstLine(error)));
+  }
+}
+function incremental(options, prior, git6, files2) {
+  return {
+    kind: "incremental",
+    since: prior.headRef,
+    priorRunId: prior.reviewRunId,
+    priorReviewedAt: prior.createdAt,
+    commits: git6.commitCount(prior.headRef, options.head, options.cwd),
+    files: files2
+  };
+}
+function ownDiffScope(options, prior, git6, ancestor, merged) {
+  const base = options.base;
+  if (git6.mergeBase === void 0 || git6.diffText === void 0) {
+    return { scope: full("compare-unavailable", prior, "this git surface cannot read an own diff"), interdiffPatch: null };
+  }
+  if (!git6.hasCommit(base, options.cwd)) {
+    return { scope: full("compare-unavailable", prior, `the base ${base.slice(0, 7)} is not in this clone`), interdiffPatch: null };
+  }
+  const mergeBase = git6.mergeBase(base, options.head, options.cwd);
+  const priorMergeBase = git6.mergeBase(base, prior.headRef, options.cwd);
+  const paths = pullRequestPaths(options, prior, git6, priorMergeBase, mergeBase);
+  if (priorMergeBase === mergeBase) {
+    return interdiffFrom(options, prior, git6, prior.headRef, mergeBase, paths.all, ancestor ? "base-sync-only" : "history-rewritten");
+  }
+  if (git6.replay === void 0) {
+    return { scope: full("compare-unavailable", prior, "this git surface cannot replay the reviewed head"), interdiffPatch: null };
+  }
+  const replayed = git6.replay(priorMergeBase, mergeBase, prior.headRef, options.cwd);
+  return interdiffFrom(
+    options,
+    prior,
+    git6,
+    replayed.tree,
+    mergeBase,
+    paths.all,
+    !ancestor ? "history-rewritten" : merged ? "base-merged" : "base-sync-only",
+    replayed.conflicts,
+    paths.withdrawn,
+    priorMergeBase
+  );
+}
+function pullRequestPaths(options, prior, git6, priorMergeBase, mergeBase) {
+  const reviewed = options.reviewedFiles.flatMap(
+    (file2) => file2.previousPath === void 0 ? [file2.path] : [file2.path, file2.previousPath]
+  );
+  const current = new Set(git6.changedPaths(mergeBase, options.head, options.cwd));
+  const withdrawn = git6.changedPaths(priorMergeBase, prior.headRef, options.cwd).filter((path) => !current.has(path));
+  return { all: [.../* @__PURE__ */ new Set([...reviewed, ...options.deletedFiles ?? [], ...withdrawn])], withdrawn };
+}
+function patchSections(patch) {
+  const sections2 = /* @__PURE__ */ new Map();
+  const starts = [...patch.matchAll(/^diff --git .*$/gm)];
+  starts.forEach((match, index) => {
+    const end = starts[index + 1]?.index ?? patch.length;
+    const header = match[0].endsWith("\r") ? match[0].slice(0, -1) : match[0];
+    const path = gitHeaderPath(header);
+    if (path !== null) sections2.set(path, patch.slice(match.index, end));
+  });
+  return sections2;
+}
+function sectionHunks(section2) {
+  const parts = section2.split(/^(?=@@ )/m);
+  const header = parts[0].startsWith("@@ ") ? "" : parts.shift();
+  const hunks = [];
+  for (const text4 of parts) {
+    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text4);
+    if (numbers === null) return null;
+    const start = Number(numbers[1]);
+    const count3 = numbers[2] === void 0 ? 1 : Number(numbers[2]);
+    hunks.push({ text: text4, first: start, last: count3 === 0 ? start + 1 : start + count3 - 1 });
+  }
+  return { header, hunks };
+}
+function narrowToResolution(own, resolution) {
+  if (resolution === void 0) return null;
+  const ownHunks = sectionHunks(own);
+  const touched = sectionHunks(resolution);
+  if (ownHunks === null || touched === null || ownHunks.hunks.length === 0 || touched.hunks.length === 0) return null;
+  const meets = (left, right) => left.first <= right.last && right.first <= left.last;
+  const kept = /* @__PURE__ */ new Set();
+  for (const change of touched.hunks) {
+    const hits = ownHunks.hunks.filter((hunk) => meets(hunk, change));
+    if (hits.length === 0) return null;
+    for (const hit of hits) kept.add(hit);
+  }
+  return ownHunks.header + ownHunks.hunks.filter((hunk) => kept.has(hunk)).map((hunk) => hunk.text).join("");
+}
+function hunkChanges(hunk) {
+  const [header, ...body] = hunk.text.split("\n");
+  const numbers = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(header);
+  let line3 = Number(numbers[1]) + (numbers[2] === "0" ? 1 : 0);
+  let headLine = Number(numbers[3]) + (numbers[4] === "0" ? 1 : 0);
+  const changes = [];
+  let change;
+  let side;
+  for (const text4 of body) {
+    if (text4.startsWith("-") || text4.startsWith("+")) {
+      if (change === void 0) {
+        change = { start: line3, headStart: headLine, removed: [], added: [] };
+        changes.push(change);
+      }
+      side = text4.startsWith("-") ? change.removed : change.added;
+      side.push(text4.slice(1));
+      if (text4.startsWith("-")) line3++;
+      else headLine++;
+    } else if (text4.startsWith("\\")) {
+      side?.push(text4);
+    } else {
+      change = void 0;
+      side = void 0;
+      if (text4.startsWith(" ")) {
+        line3++;
+        headLine++;
+      }
+    }
+  }
+  return changes;
+}
+function withoutInheritedRuns(hunk, isInherited) {
+  const runs = hunkChanges(hunk);
+  const [header, ...body] = hunk.text.split("\n");
+  const parsed2 = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(header);
+  const kept = [];
+  let index = -1;
+  let inRun = false;
+  let dropping = false;
+  let previousDropped = false;
+  for (const text4 of body) {
+    const edit2 = text4.startsWith("-") || text4.startsWith("+");
+    if (text4.startsWith("\\")) {
+      if (!previousDropped) kept.push(text4);
+      continue;
+    }
+    if (edit2 && !inRun) {
+      inRun = true;
+      index += 1;
+      dropping = isInherited(runs[index]);
+    } else if (!edit2) {
+      inRun = false;
+      dropping = false;
+    }
+    if (dropping && text4.startsWith("-")) {
+      previousDropped = true;
+      continue;
+    }
+    previousDropped = false;
+    kept.push(dropping ? ` ${text4.slice(1)}` : text4);
+  }
+  const oldCount = kept.filter((text4) => text4.startsWith(" ") || text4.startsWith("-")).length;
+  const newCount = kept.filter((text4) => text4.startsWith(" ") || text4.startsWith("+")).length;
+  return [`@@ -${parsed2[1]},${oldCount} +${parsed2[2]},${newCount} @@${parsed2[3]}`, ...kept].join("\n");
+}
+function withoutBaseChanges(delta, base, baseDelta) {
+  if (base === void 0 || baseDelta === void 0) return { text: delta, mixed: false };
+  const changes = sectionHunks(delta);
+  const baseHunks = sectionHunks(base);
+  const movedBase = sectionHunks(baseDelta);
+  if (changes === null || baseHunks === null || movedBase === null || changes.hunks.length === 0 || baseHunks.hunks.length === 0 || movedBase.hunks.length === 0 || /^(?:old mode|new mode|new file mode|deleted file mode|rename |copy )/m.test(changes.header)) return null;
+  const key2 = (change, coordinate) => JSON.stringify([change[coordinate], change.removed, change.added]);
+  const meets = (left, right, coordinate) => {
+    const side = coordinate === "start" ? "removed" : "added";
+    return left[coordinate] <= right[coordinate] + right[side].length && right[coordinate] <= left[coordinate] + left[side].length;
+  };
+  const moved = movedBase.hunks.flatMap(hunkChanges);
+  const movedKeys = new Set(moved.map((change) => key2(change, "headStart")));
+  const compared = baseHunks.hunks.flatMap(hunkChanges);
+  const baseChanges = compared.filter((change) => movedKeys.has(key2(change, "headStart")));
+  const ambiguous = compared.filter((change) => !movedKeys.has(key2(change, "headStart")) && moved.some(
+    (other) => meets(change, other, "headStart") && !(change.headStart === other.headStart && change.removed.length === 1 && other.removed.length === 1 && change.added.length === 1 && other.added.length === 1 && change.added[0] === other.added[0])
+  ));
+  const baseKeys = new Set(baseChanges.map((change) => key2(change, "start")));
+  const isInherited = (edit2) => baseKeys.has(key2(edit2, "start"));
+  const kept = [];
+  let mixed = false;
+  for (const hunk of changes.hunks) {
+    const edits = hunkChanges(hunk);
+    const inherited = edits.filter(isInherited);
+    if (inherited.length === edits.length) continue;
+    const overlapsBase = edits.some(
+      (edit2) => !isInherited(edit2) && (ambiguous.some((other) => meets(edit2, other, "start")) || baseChanges.some(
+        (other) => meets(edit2, other, "start") && (other.added.length === 0 || other.added.some((line3) => edit2.added.includes(line3)))
+      ))
+    );
+    if (overlapsBase) mixed = true;
+    kept.push(inherited.length === 0 ? hunk.text : withoutInheritedRuns(hunk, isInherited));
+  }
+  return { text: kept.length === 0 ? "" : changes.header + kept.join(""), mixed };
+}
+function hasReplayMarkers(section2) {
+  return /^-<{7} /m.test(section2) && /^->{7} /m.test(section2);
+}
+function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedReason, conflicts = [], withdrawn = [], priorMergeBase = mergeBase) {
+  const diffText = git6.diffText;
+  const read = (left, list2) => list2.length === 0 ? "" : diffText(left, options.head, list2, options.cwd);
+  const wanted = new Set(paths);
+  const conflicted = conflicts.filter((path) => wanted.has(path));
+  const own = patchSections(read(mergeBase, conflicted));
+  const resolutions = patchSections(read(from, [...own.keys()]));
+  const sinceReview = patchSections(read(prior.headRef, [...own.keys()]));
+  const baseChanges = patchSections(own.size === 0 ? "" : diffText(prior.headRef, mergeBase, [...own.keys()], options.cwd));
+  const baseDelta = patchSections(own.size === 0 ? "" : diffText(priorMergeBase, mergeBase, [...own.keys()], options.cwd));
+  const narrowed = [];
+  const whole = [];
+  const mixed = [];
+  const resolved = [];
+  for (const [path, section2] of own) {
+    const delta = sinceReview.get(path);
+    if (delta === void 0) continue;
+    const fresh = withoutBaseChanges(delta, baseChanges.get(path), baseDelta.get(path));
+    if (fresh === null) {
+      return {
+        scope: full("compare-unavailable", prior, `read in full after a conflicting replay: the two-head diff of ${path} could not be read hunk by hunk`),
+        interdiffPatch: null
+      };
+    }
+    if (fresh.text.length === 0) continue;
+    if (fresh.mixed) mixed.push(path);
+    else if (narrowToResolution(section2, resolutions.get(path)) === null) whole.push(path);
+    else narrowed.push(path);
+    resolved.push(fresh.text);
+  }
+  const rest = paths.filter((path) => !own.has(path));
+  const leaked = [];
+  const dropped = [];
+  const outsideSections = [...patchSections(read(from, rest))].map(([path, section2]) => {
+    if (!hasReplayMarkers(section2)) return section2;
+    const ownSection = patchSections(read(mergeBase, [path])).get(path);
+    if (ownSection === void 0) {
+      dropped.push(path);
+      return "";
+    }
+    leaked.push(path);
+    return ownSection;
+  });
+  const outside = outsideSections.join("");
+  const patch = [outside, ...resolved].filter((part) => part.length > 0).join("");
+  const notes = [
+    narrowed.length === 0 ? null : `narrowed to the merge resolution after a conflicting replay: ${narrowed.sort().join(", ")}`,
+    whole.length === 0 ? null : `read as the two-head diff minus base changes after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(", ")}`,
+    mixed.length === 0 ? null : `kept whole hunks where the base's and the author's edits could not be separated after a conflicting replay: ${mixed.sort().join(", ")}`,
+    leaked.length === 0 ? null : `read as the pull request's own diff after a conflicting replay, so no conflict marker is shown: ${leaked.sort().join(", ")}`
+  ].filter((note) => note !== null);
+  const detail = notes.length === 0 ? {} : { detail: notes.join("; ") };
+  let absorbedList = [];
+  const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true));
+  if (from !== prior.headRef && candidates.length > 0) {
+    const differs2 = new Set(git6.changedPaths(from, options.head, options.cwd));
+    absorbedList = candidates.filter((path) => !differs2.has(path)).sort();
+  }
+  const absorbed = {
+    ...absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList },
+    ...dropped.length === 0 ? {} : { noLongerChanged: dropped.sort() }
+  };
+  const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
+  if (patch.trim().length === 0) {
+    return { scope: { kind: "unchanged", ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null };
+  }
+  const reviewed = /* @__PURE__ */ new Map();
+  for (const file2 of options.reviewedFiles) {
+    reviewed.set(file2.path, file2.path);
+    if (file2.previousPath !== void 0) reviewed.set(file2.previousPath, file2.path);
+  }
+  const files2 = /* @__PURE__ */ new Set();
+  let hunks = 0;
+  for (const [path, file2] of ownDiffFiles(patch)) {
+    files2.add(reviewed.get(path) ?? path);
+    hunks += file2.hunks.length;
+  }
+  return {
+    scope: { kind: "interdiff", ...common, files: [...files2].sort(), hunks, ...detail, ...absorbed },
+    interdiffPatch: patch
+  };
+}
+
+// plugins/review-voice/src/diff/carry.ts
+import { execFileSync as execFileSync6 } from "node:child_process";
+
+// plugins/review-voice/src/diff/reanchor.ts
+function candidateAnchor(hunks, candidate) {
+  return candidate.anchor === "stale-consumer" ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null) : classifyAnchor(hunks, candidate.path, candidate.line);
+}
+var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var idOf = (entry) => entry["candidateId"] ?? entry["candidate_id"];
+function reanchorScores(scores, candidateId, target, hunks) {
+  if (!isRecord(scores) || !Array.isArray(scores["scores"])) {
+    return { ok: false, refused: "expected the JSON `RV score` printed, with a `scores` list" };
+  }
+  const entries = scores["scores"].filter(isRecord);
+  const entry = entries.find((e) => idOf(e) === candidateId);
+  if (entry === void 0) return { ok: false, refused: `no scored candidate ${candidateId}` };
+  if (entry["eligible"] !== true) {
+    const why = typeof entry["rejectedBecause"] === "string" ? ` (${entry["rejectedBecause"]})` : "";
+    return {
+      ok: false,
+      refused: `${candidateId} is not eligible${why}; re-anchoring keeps a score, it does not make one. Re-run the analyst and score.`
+    };
+  }
+  const eligible = Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord) : [];
+  const shipped = eligible.find((e) => idOf(e) === candidateId);
+  if (shipped?.["anchor"] === "stale-consumer" || entry["anchorCheck"]?.kind === "stale-consumer") {
+    return {
+      ok: false,
+      refused: `${candidateId} is a stale consumer on unchanged code, so a new line cannot be checked against the diff. Re-run the analyst.`
+    };
+  }
+  if (typeof entry["path"] !== "string" || !Number.isInteger(entry["line"])) {
+    return { ok: false, refused: `scored candidate ${candidateId} has no path and line` };
+  }
+  const from = { path: entry["path"], line: entry["line"] };
+  const check = classifyAnchor(hunks, target.path ?? from.path, target.line);
+  if (!check.ok) return { ok: false, refused: `${candidateId} ${reason(check)}` };
+  const to = { path: check.path, line: check.line };
+  const taken = entries.find(
+    (e) => idOf(e) !== candidateId && e["eligible"] === true && e["path"] === to.path && e["line"] === to.line
+  );
+  if (taken !== void 0) {
+    return { ok: false, refused: `${String(idOf(taken))} is already anchored at ${to.path}:${to.line}` };
+  }
+  const moved = (e) => idOf(e) === candidateId ? { ...e, path: to.path, line: to.line, reanchoredFrom: from, ..."anchorCheck" in e ? { anchorCheck: check } : {} } : e;
+  const updated = {
+    ...scores,
+    scores: scores["scores"].map((e) => isRecord(e) ? moved(e) : e),
+    ...Array.isArray(scores["eligible"]) ? { eligible: scores["eligible"].map((e) => isRecord(e) ? moved(e) : e) } : {}
+  };
+  return { ok: true, updated, from, to, anchorCheck: check };
+}
+function reanchorCandidates(parsed2, candidateId, to) {
+  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord(parsed2) && Array.isArray(parsed2["candidates"]) ? parsed2["candidates"] : null;
+  if (list2 === null) return null;
+  if (!list2.some((c) => isRecord(c) && idOf(c) === candidateId)) return null;
+  const rewritten = list2.map((c) => {
+    if (!(isRecord(c) && idOf(c) === candidateId)) return c;
+    const moved = c["path"] !== to.path || c["line"] !== to.line;
+    const { suggested_patch: _patch, ...rest } = c;
+    return { ...moved ? rest : c, path: to.path, line: to.line };
+  });
+  return Array.isArray(parsed2) ? rewritten : { ...parsed2, candidates: rewritten };
+}
+
+// plugins/review-voice/src/diff/carry.ts
+var SERIOUS_SEVERITIES = ["blocking", "important"];
+function seriousNotCarried(notCarried) {
+  return notCarried.filter((f) => f.severity !== void 0 && SERIOUS_SEVERITIES.includes(f.severity.toLowerCase()));
+}
+var NEIGHBOURHOOD = 2;
+function commitReadable(ref, cwd) {
+  try {
+    execFileSync6("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function oldSideHunks(patch) {
+  const hunks = [];
+  for (const line3 of patch.split("\n")) {
+    const match = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line3);
+    if (match === null) continue;
+    hunks.push({
+      oldStart: Number(match[1]),
+      oldCount: match[2] === void 0 ? 1 : Number(match[2]),
+      newCount: match[3] === void 0 ? 1 : Number(match[3])
+    });
+  }
+  return hunks;
+}
+function remapLine(hunks, line3) {
+  const low = line3 - NEIGHBOURHOOD;
+  const high = line3 + NEIGHBOURHOOD;
+  let shift = 0;
+  for (const hunk of hunks) {
+    const first = hunk.oldStart;
+    const last = hunk.oldCount === 0 ? hunk.oldStart + 1 : hunk.oldStart + hunk.oldCount - 1;
+    if (last >= low && first <= high) return { reason: "anchor or its neighbours changed" };
+    if (last < low) shift += hunk.newCount - hunk.oldCount;
+  }
+  return { line: line3 + shift };
+}
+var CarryError = class extends Error {
+};
+function gitOut(args, cwd) {
+  try {
+    return execFileSync6("git", args, {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    throw new CarryError(`git ${args.join(" ")} failed: ${error.message}`);
+  }
+}
+function existsAt(ref, path, cwd) {
+  try {
+    execFileSync6("git", ["cat-file", "-e", `${ref}:${path}`], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function followLine(previousHead, head, path, line3, cwd) {
+  if (!existsAt(head, path, cwd)) return { reason: "file deleted or renamed" };
+  const patch = gitOut(
+    ["diff", "--unified=0", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", previousHead, head, "--", ...topPathspecs([path])],
+    cwd
+  );
+  return remapLine(oldSideHunks(patch), line3);
+}
+function rewriteAnchor(text4, path, oldLine, line3) {
+  return text4.replace(`\`${path}:${oldLine}\``, `\`${path}:${line3}\``);
+}
+function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map(), noLongerChanged = /* @__PURE__ */ new Set()) {
+  for (const ref of [previousHead, head]) {
+    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
+  }
+  const carried = [];
+  const notCarried = [];
+  const heldBack = [];
+  const settled = [];
+  for (const finding of findings) {
+    const holdReason = hold.get(finding.findingId);
+    if (holdReason !== void 0) {
+      heldBack.push({
+        findingId: finding.findingId,
+        path: finding.path,
+        line: finding.line,
+        reason: holdReason,
+        ...finding.severity === void 0 ? {} : { severity: finding.severity }
+      });
+      continue;
+    }
+    if (noLongerChanged.has(finding.path)) {
+      settled.push({
+        findingId: finding.findingId,
+        path: finding.path,
+        line: finding.line,
+        reason: "file no longer changed by the pull request",
+        ...finding.severity === void 0 ? {} : { severity: finding.severity }
+      });
+      continue;
+    }
+    const moved = followLine(previousHead, head, finding.path, finding.line, cwd);
+    if ("reason" in moved) {
+      notCarried.push({
+        findingId: finding.findingId,
+        path: finding.path,
+        line: finding.line,
+        reason: moved.reason,
+        ...finding.severity === void 0 ? {} : { severity: finding.severity }
+      });
+      continue;
+    }
+    carried.push({
+      findingId: finding.findingId,
+      path: finding.path,
+      oldLine: finding.line,
+      line: moved.line,
+      text: rewriteAnchor(finding.text, finding.path, finding.line, moved.line)
+    });
+  }
+  const output = findings.length === settled.length ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join("\n\n");
+  return { carried, notCarried, heldBack, settled, output };
+}
+function findingBody(text4) {
+  const joined = text4.replace(/\s+/g, " ").trim();
+  const match = /^\[[a-z_]+\]\s+`[^`]+:\d+`\s*(.*)$/i.exec(joined);
+  return match === null ? joined : match[1] ?? "";
+}
+function matchCarried(recorded2, carried) {
+  const matches = /* @__PURE__ */ new Map();
+  const mismatches = [];
+  const used = /* @__PURE__ */ new Set();
+  for (const finding of recorded2) {
+    const body = findingBody(finding.text);
+    const source = carried.find(
+      (c) => !used.has(c.findingId) && c.path === finding.path && findingBody(c.text) === body
+    );
+    if (source === void 0) continue;
+    used.add(source.findingId);
+    if (source.line !== finding.line) {
+      mismatches.push(`${finding.findingId} (${finding.path}:${finding.line}) repeats ${source.findingId}, which carries to line ${source.line}`);
+      continue;
+    }
+    matches.set(finding.findingId, source.findingId);
+  }
+  return { matches, mismatches };
+}
+function changedFiles(previousHead, head, cwd) {
+  const out = gitOut(["diff", "--name-only", "--no-renames", "-z", previousHead, head], cwd);
+  return new Set(out.split("\0").filter((name) => name.length > 0));
+}
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function namesFile2(text4, path) {
+  if (text4.includes(path)) return true;
+  const name = path.split("/").pop() ?? path;
+  return new RegExp(`(^|[^\\w./-])${escapeRegExp(name)}($|[^\\w-])`).test(text4);
+}
+function carryCandidates(candidates, previousHead, head, hunks, cwd) {
+  for (const ref of [previousHead, head]) {
+    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
+  }
+  const changed = changedFiles(previousHead, head, cwd);
+  const carried = [];
+  const refused = [];
+  for (const candidate of candidates) {
+    const refuse = (reason2) => {
+      refused.push({ candidateId: candidate.candidateId, path: candidate.path, line: candidate.line, reason: reason2 });
+    };
+    if (changed.has(candidate.path)) {
+      refuse(`${candidate.path} changed between the two heads`);
+      continue;
+    }
+    const cause = candidate.anchor === "stale-consumer" ? candidate.causedBy ?? null : null;
+    if (cause !== null && changed.has(cause.path)) {
+      refuse(`the file of its cause, ${cause.path}, changed between the two heads`);
+      continue;
+    }
+    const named = [...changed].find((path) => (candidate.texts ?? []).some((text4) => namesFile2(text4, path)));
+    if (named !== void 0) {
+      refuse(`its claim, evidence or verification names ${named}, which changed between the two heads`);
+      continue;
+    }
+    const moved = followLine(previousHead, head, candidate.path, candidate.line, cwd);
+    if ("reason" in moved) {
+      refuse(`${candidate.path}:${candidate.line}: ${moved.reason}`);
+      continue;
+    }
+    let movedCause;
+    if (candidate.anchor === "stale-consumer") {
+      const from = candidate.causedBy ?? null;
+      if (from === null) {
+        refuse("a stale consumer with no caused_by");
+        continue;
+      }
+      const followed = followLine(previousHead, head, from.path, from.line, cwd);
+      if ("reason" in followed) {
+        refuse(`its cause ${from.path}:${from.line}: ${followed.reason}`);
+        continue;
+      }
+      movedCause = { path: from.path, oldLine: from.line, line: followed.line };
+    }
+    const check = candidateAnchor(hunks, {
+      path: candidate.path,
+      line: moved.line,
+      anchor: candidate.anchor,
+      causedBy: movedCause === void 0 ? candidate.causedBy : { path: movedCause.path, line: movedCause.line }
+    });
+    if (!check.ok) {
+      refuse(`at the new head it ${reason(check)}`);
+      continue;
+    }
+    carried.push({
+      candidateId: candidate.candidateId,
+      path: candidate.path,
+      oldLine: candidate.line,
+      line: moved.line,
+      ...movedCause === void 0 ? {} : { causedBy: movedCause }
+    });
+  }
+  return { carried, refused };
+}
+
+// plugins/review-voice/src/redact/redact.ts
 import { createHash } from "node:crypto";
+
+// plugins/review-voice/src/redact/patterns.ts
+var SECRET_PATTERNS = [
+  // Key material is replaced whole: a PEM block's header is not the secret,
+  // but leaving it invites someone to reconstruct what was removed.
+  {
+    label: "PRIVATE_KEY",
+    pattern: /-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----/g
+  },
+  { label: "PEM_BLOCK", pattern: /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g },
+  { label: "GITHUB_TOKEN", pattern: /\b(gh[pousr]_[A-Za-z0-9]{16,255})\b/g, group: 1 },
+  { label: "GITHUB_TOKEN", pattern: /\b(github_pat_[A-Za-z0-9_]{20,})\b/g, group: 1 },
+  { label: "AWS_ACCESS_KEY", pattern: /\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b/g, group: 1 },
+  {
+    label: "AWS_SECRET_KEY",
+    pattern: /\b(?:aws_secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi,
+    group: 1
+  },
+  { label: "GOOGLE_API_KEY", pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g, group: 1 },
+  { label: "SLACK_TOKEN", pattern: /\b(xox[abposr]-[0-9A-Za-z-]{10,})\b/g, group: 1 },
+  { label: "STRIPE_KEY", pattern: /\b((?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,})\b/g, group: 1 },
+  { label: "NPM_TOKEN", pattern: /\b(npm_[A-Za-z0-9]{36})\b/g, group: 1 },
+  { label: "PYPI_TOKEN", pattern: /\b(pypi-[A-Za-z0-9_-]{16,})\b/g, group: 1 },
+  { label: "OPENAI_KEY", pattern: /\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b/g, group: 1 },
+  { label: "ANTHROPIC_KEY", pattern: /\b(sk-ant-[A-Za-z0-9_-]{20,})\b/g, group: 1 },
+  // JWTs: three base64url segments. The payload is often the sensitive part.
+  {
+    label: "JWT",
+    pattern: /\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g,
+    group: 1
+  },
+  // A connection string's credentials, keeping the scheme and host so the
+  // surrounding review comment still makes sense.
+  {
+    label: "DB_CREDENTIALS",
+    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi,
+    group: 3
+  },
+  {
+    label: "AUTHORIZATION_HEADER",
+    pattern: /\b(?:Authorization|Proxy-Authorization)\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12,})/gi,
+    group: 1
+  },
+  // Assignment-shaped secrets. Deliberately last: it is the broadest rule, and
+  // a more specific label above is more useful in an audit than "SECRET".
+  {
+    label: "SECRET_ASSIGNMENT",
+    pattern: /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["']([^"'\s]{8,})["']/gi,
+    group: 1
+  }
+];
+var PLACEHOLDERS = /* @__PURE__ */ new Set([
+  "xxxxxxxx",
+  "changeme",
+  "password",
+  "redacted",
+  "your_token_here",
+  "example",
+  "placeholder",
+  "dummy",
+  "notarealsecret",
+  "test",
+  "password123",
+  "<token>",
+  "secret",
+  "todo",
+  "fixme",
+  "null",
+  "undefined",
+  "none"
+]);
+
+// plugins/review-voice/src/redact/redact.ts
+var REDACTION_VERSION = "1";
+function hash(value) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 32);
+}
+function isPlaceholder(value) {
+  const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
+  if (PLACEHOLDERS.has(normalised)) return true;
+  return /^(.)\1{3,}$/.test(value);
+}
+function redact(input) {
+  const counts = {};
+  let text4 = input;
+  for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
+    pattern.lastIndex = 0;
+    text4 = text4.replace(pattern, (match, ...groups) => {
+      const captured = group === void 0 || group === 0 ? match : groups[group - 1];
+      if (captured === void 0 || captured.length === 0) return match;
+      if (isPlaceholder(captured)) return match;
+      counts[label2] = (counts[label2] ?? 0) + 1;
+      const replacement = `[REDACTED:${label2}]`;
+      return group === void 0 || group === 0 ? replacement : match.replace(captured, replacement);
+    });
+  }
+  return {
+    text: text4,
+    counts,
+    sourceHash: hash(input),
+    redactedHash: hash(text4),
+    version: REDACTION_VERSION
+  };
+}
+
+// plugins/review-voice/src/publish/evidence-block.ts
+var EVIDENCE_MARKER = "<!-- review-voice evidence -->";
+function stripEvidenceBlock(body) {
+  const at2 = body.lastIndexOf(`
+
+${EVIDENCE_MARKER}`);
+  return at2 < 0 || !body.trimEnd().endsWith("</details>") ? body : body.slice(0, at2);
+}
+var DECISIVE = /^\S(?:.*\S)?:\d+(?:-\d+)?$/u;
+var MAX_DECISIVE = 6;
+var DECISIVE_CAP = 120;
+var PATH_CAP = 120;
+var TEXT_CAP = 160;
+var MAX_QUOTES = 2;
+var MACHINE_PATH = /(?<![\w.~-])[\\/][^\s\\/'"]+[\\/]|(?<![\w.-])(?:~|\.\.)[\\/]|(?<!\w)[A-Za-z]:[\\/]/u;
+var isRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+function flatten(text4, max) {
+  return safeCheckName(text4.replace(new RegExp("\\p{Cf}", "gu"), ""), max);
+}
+var code = (text4) => `\`${text4}\``;
+function repositoryRelative(reference) {
+  const path = reference.replace(/:\d+(?:-\d+)?$/, "");
+  return !path.startsWith("~") && !/[\s:]/.test(path) && path.split(/[\\/]/).every((part) => part !== "" && part !== "..");
+}
+function challengeFacts(score2) {
+  const challenge2 = score2?.challenge;
+  if (!isRecord2(challenge2)) return null;
+  const verdict2 = challenge2["verdict"];
+  if (verdict2 !== "confirmed" && verdict2 !== "partly" && verdict2 !== "refuted") return null;
+  const from = score2?.reanchoredFrom?.line;
+  const line3 = challenge2["line_ok"] === true ? "line confirmed" : typeof from === "number" && Number.isInteger(from) && from > 0 ? `anchor moved from line ${from}` : null;
+  const evidence = Array.isArray(challenge2["decisive_evidence"]) ? challenge2["decisive_evidence"] : [];
+  const decisive = evidence.filter((entry) => typeof entry === "string").map((entry) => flatten(entry, Number.POSITIVE_INFINITY)).filter((entry) => DECISIVE.test(entry) && repositoryRelative(entry)).map((entry) => flatten(entry, DECISIVE_CAP)).slice(0, MAX_DECISIVE);
+  return { verdict: verdict2, line: line3, decisive };
+}
+function evidenceBlock(finding, backing, policy) {
+  if (backing === null || backing.confidenceSource !== "verifier") return "";
+  const challenge2 = challengeFacts(backing);
+  const verdict2 = challenge2 === null ? "not run" : [challenge2.verdict, challenge2.line].filter((part) => part !== null).join(", ");
+  const lines2 = [`Verified by the evidence verifier. Challenger: ${verdict2}.`];
+  if (challenge2 !== null && challenge2.decisive.length > 0) {
+    lines2.push(`Decisive lines: ${challenge2.decisive.map(code).join(", ")}.`);
+  }
+  const signal2 = finding?.toolSignal;
+  if (isRecord2(signal2) && typeof signal2["tool"] === "string" && typeof signal2["text"] === "string") {
+    const tool = flatten(signal2["tool"]);
+    const text4 = flatten(signal2["text"], TEXT_CAP);
+    if (tool !== "" && text4 !== "" && !MACHINE_PATH.test(tool) && !MACHINE_PATH.test(text4)) {
+      lines2.push(`Static check ${code(tool)} also flagged this line: ${code(text4)}`);
+    }
+  }
+  const quotesOwner = finding?.conventionQuotesCandidate;
+  const ownQuotes = typeof quotesOwner === "string" && typeof backing.candidateId === "string" && quotesOwner === backing.candidateId;
+  const quotes = ownQuotes ? finding?.conventionQuotes : void 0;
+  const conventions = (Array.isArray(quotes) ? quotes : []).filter((entry) => isRecord2(entry) && typeof entry["path"] === "string" && typeof entry["quote"] === "string").map((entry) => ({ path: flatten(entry.path, PATH_CAP), quote: flatten(entry.quote, TEXT_CAP) })).filter((entry) => entry.path !== "" && entry.quote !== "").slice(0, MAX_QUOTES);
+  for (const entry of conventions) lines2.push(`Convention ${code(entry.path)} says ${code(entry.quote)}.`);
+  if (policy.evidenceBlockPrecedents && Array.isArray(backing.precedents) && backing.precedents.length > 0) {
+    const favour = backing.precedents.filter(
+      (precedent) => isRecord2(precedent) && precedent["role"] === "owner" && precedent["polarity"] === "positive"
+    ).length;
+    lines2.push(`Owner precedents in favour: ${favour} of ${backing.precedents.length} retrieved.`);
+  }
+  return [EVIDENCE_MARKER, "<details><summary>Evidence</summary>", "", ...lines2, "", "</details>"].join("\n");
+}
+function backingAt(planned, path, line3) {
+  const finding = planned.inline.find((candidate) => candidate.path === path && candidate.line === line3);
+  return finding === void 0 ? void 0 : planned.backing.get(finding);
+}
+function withEvidenceBlocks(comments, planned, policy) {
+  let blocks = 0;
+  const out = comments.map((comment) => {
+    const backing = backingAt(planned, comment.path, comment.line);
+    const block = backing === void 0 ? "" : evidenceBlock(backing.stored, backing.score, policy);
+    if (block === "") return comment;
+    blocks += 1;
+    return { ...comment, body: `${comment.body}
+
+${block}` };
+  });
+  return { comments: out, blocks };
+}
+
+// plugins/review-voice/src/store/runs.ts
+function partlyAddressedOf(value) {
+  if (typeof value !== "object" || value === null) return void 0;
+  const v = value;
+  if (v["kind"] !== "own-comment" || v["status"] !== "partly-addressed") return void 0;
+  const strings = (list2) => Array.isArray(list2) && list2.length > 0 && list2.every((item) => typeof item === "string") ? list2 : null;
+  const remaining = strings(v["remaining"]);
+  const addressed = strings(v["addressed"]);
+  if (remaining === null || addressed === null) return void 0;
+  if (typeof v["author"] !== "string" || typeof v["path"] !== "string" || !Number.isInteger(v["line"])) return void 0;
+  return {
+    status: "partly-addressed",
+    prior: {
+      author: v["author"],
+      path: v["path"],
+      line: v["line"],
+      ...Number.isInteger(v["commentId"]) ? { commentId: v["commentId"] } : {}
+    },
+    remaining,
+    addressed
+  };
+}
+var HELD_VERDICTS = [
+  "partly",
+  "refuted",
+  "unverified",
+  "repeat",
+  "below-gate",
+  "policy-suppressed",
+  "owner-declined",
+  "challenge-refuted",
+  "challenge-partly",
+  "restates-tool",
+  "reproduction-did-not-fail"
+];
+function heldProblem(entry) {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "not an object";
+  const e = entry;
+  if (typeof e["path"] !== "string" || e["path"].length === 0) return "path must be a non-empty string";
+  if (!Number.isInteger(e["line"]) || e["line"] < 1) return "line must be a positive integer";
+  if (!HELD_VERDICTS.includes(e["verdict"])) return `verdict must be one of ${HELD_VERDICTS.join(", ")}`;
+  for (const key2 of ["source", "reason"]) {
+    const value = e[key2];
+    if (typeof value !== "string" || value.trim().length === 0) return `${key2} must be a non-empty string`;
+  }
+  for (const key2 of ["severity", "candidateId", "text"]) {
+    if (e[key2] !== void 0 && typeof e[key2] !== "string") return `${key2} must be a string when present`;
+  }
+  return null;
+}
+function parseCarryMarker(value) {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value;
+  if (typeof v["since"] !== "string" || typeof v["head"] !== "string") return null;
+  const refused = Array.isArray(v["refused"]) ? v["refused"].filter((id) => typeof id === "string") : [];
+  const interdiffReviewed = v["interdiffReviewed"] === true;
+  return {
+    since: v["since"],
+    head: v["head"],
+    interdiffReviewed,
+    refused,
+    // Recomputed rather than trusted, so a hand-edited row cannot claim cover.
+    covered: interdiffReviewed && refused.length === 0 && v["covered"] === true,
+    ...typeof v["inheritedFrom"] === "string" ? { inheritedFrom: v["inheritedFrom"] } : {}
+  };
+}
+var CarryMismatch = class extends Error {
+};
+var ORIGINS = ["driver", "interactive", "watch", "action"];
+var PROVENANCE_MODES = ["fast", "standard", "thorough"];
+function independenceOf(origin) {
+  return origin === "interactive" ? "not-independent" : "independent";
+}
+function describeProvenance(provenance) {
+  if (provenance === null) return "Provenance not recorded";
+  const policy = provenance.policyVersions.length === 0 ? "none" : provenance.policyVersions.map((p) => `${p.scopeType}/${p.scopeKey} v${p.version}`).join(", ");
+  return `Provenance ${describeOrigin(provenance)}, plugin ${provenance.pluginVersion}, claude ${provenance.claudeVersion ?? "unknown"}, mode ${provenance.mode ?? "unknown"}, policy ${policy}`;
+}
+function describeOrigin(provenance) {
+  return `origin ${provenance.origin} (${provenance.independence})`;
+}
+function storedPolicyVersions(db, runId) {
+  const row = db.prepare("SELECT active_policy_versions_json FROM review_runs WHERE review_run_id = ?").get(runId);
+  if (row === void 0 || row.active_policy_versions_json === null) return null;
+  try {
+    const parsed2 = JSON.parse(row.active_policy_versions_json);
+    if (!Array.isArray(parsed2)) return null;
+    const versions = [];
+    for (const entry of parsed2) {
+      const p = typeof entry === "object" && entry !== null ? entry : {};
+      if (typeof p["scopeType"] !== "string" || typeof p["scopeKey"] !== "string" || typeof p["policyId"] !== "string" || typeof p["version"] !== "number") return null;
+      versions.push({ scopeType: p["scopeType"], scopeKey: p["scopeKey"], policyId: p["policyId"], version: p["version"] });
+    }
+    return versions;
+  } catch {
+    return null;
+  }
+}
+var reportedProvenance = /* @__PURE__ */ new Set();
+function storedProvenance(raw, reviewRunId) {
+  if (typeof raw !== "string") return null;
+  const malformed = () => {
+    if (!reportedProvenance.has(reviewRunId)) {
+      reportedProvenance.add(reviewRunId);
+      console.error(`The provenance recorded for run ${reviewRunId} is malformed; reading it as not recorded.`);
+    }
+    return null;
+  };
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return malformed();
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return malformed();
+  const v = value;
+  const origin = ORIGINS.find((known) => known === v["origin"]);
+  const mode = v["mode"] === null ? null : PROVENANCE_MODES.find((known) => known === v["mode"]) ?? void 0;
+  const policies = v["policyVersions"];
+  if (origin === void 0 || mode === void 0 || typeof v["pluginVersion"] !== "string" || !(v["claudeVersion"] === null || typeof v["claudeVersion"] === "string") || !Array.isArray(policies)) {
+    return malformed();
+  }
+  const policyVersions = [];
+  for (const entry of policies) {
+    const p = typeof entry === "object" && entry !== null ? entry : {};
+    if (typeof p["scopeType"] !== "string" || typeof p["scopeKey"] !== "string" || typeof p["policyId"] !== "string" || typeof p["version"] !== "number") {
+      return malformed();
+    }
+    policyVersions.push({ scopeType: p["scopeType"], scopeKey: p["scopeKey"], policyId: p["policyId"], version: p["version"] });
+  }
+  return {
+    origin,
+    // Recomputed, never read back, so a hand-edited row cannot claim independence.
+    independence: independenceOf(origin),
+    pluginVersion: v["pluginVersion"],
+    claudeVersion: v["claudeVersion"],
+    mode,
+    policyVersions
+  };
+}
+var OUTCOMES = ["reproduced", "did-not-fail", "did-not-run"];
+function reproductionOf(entry) {
+  const r = asRecord(entry);
+  if (r === null || !Array.isArray(r["runs"]) || !OUTCOMES.includes(r["outcome"])) return null;
+  const texts = ["candidateId", "path", "runner", "file", "copy", "expected"];
+  if (texts.some((key2) => typeof r[key2] !== "string") || !Number.isInteger(r["line"])) return null;
+  const runs = [];
+  for (const raw of r["runs"]) {
+    const run = asRecord(raw);
+    if (run === null || typeof run["reached"] !== "boolean" || typeof run["durationMs"] !== "number") return null;
+    runs.push({ exitCode: Number.isInteger(run["exitCode"]) ? run["exitCode"] : null, durationMs: run["durationMs"], reached: run["reached"] });
+  }
+  return {
+    candidateId: r["candidateId"],
+    path: r["path"],
+    line: r["line"],
+    runner: r["runner"],
+    file: r["file"],
+    copy: r["copy"],
+    expected: r["expected"],
+    outcome: r["outcome"],
+    ...typeof r["reason"] === "string" ? { reason: r["reason"] } : {},
+    runs
+  };
+}
+function recordedReproductions(report) {
+  const value = asRecord(report);
+  if (value === null || !Array.isArray(value["reproductions"])) throw new Error("the reproductions report has no reproductions list");
+  return value["reproductions"].map((entry, index) => {
+    const record3 = reproductionOf(entry);
+    if (record3 === null) throw new Error(`reproductions entry ${index} is not a record reproduce writes`);
+    return record3;
+  });
+}
+function markHeld(records, held) {
+  const ids = new Set(held.filter((entry) => entry.verdict === "reproduction-did-not-fail").map((entry) => entry.candidateId));
+  return records.map((record3) => record3.outcome === "did-not-fail" && ids.has(record3.candidateId) ? { ...record3, held: true } : record3);
+}
+function storedReproductions(raw) {
+  if (!Array.isArray(raw)) return null;
+  return raw.map(reproductionOf).filter((record3) => record3 !== null);
+}
+var asRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+function recordedChecks(evidence, symbols) {
+  const report = asRecord(evidence);
+  if (report === null) throw new Error("the evidence report is not an object");
+  const commands = report["commands"];
+  const didNotRun = report["didNotRun"];
+  if (!Array.isArray(commands)) throw new Error("the evidence report has no commands list");
+  if (!Array.isArray(didNotRun) || !didNotRun.every((name) => typeof name === "string")) {
+    throw new Error("the evidence report has no didNotRun list of names");
+  }
+  const skipped = typeof report["skipped"] === "string" && report["skipped"].trim() !== "" ? report["skipped"] : null;
+  const entries = commands.map((entry, index) => {
+    const command = asRecord(entry);
+    if (command === null || typeof command["name"] !== "string") throw new Error(`commands entry ${index} has no name`);
+    return command;
+  });
+  const notRun = [...new Set(didNotRun)];
+  const staticRan = entries.filter((command) => !notRun.includes(command.name)).map((command) => ({
+    name: command.name,
+    exitCode: Number.isInteger(command["exitCode"]) ? command["exitCode"] : null,
+    signals: Array.isArray(command["signals"]) ? command["signals"].length : 0,
+    ...typeof command["version"] === "string" && command["version"] !== "" ? { version: command["version"] } : {}
+  }));
+  const staticDidNotRun = notRun.map((name) => {
+    const unavailable = entries.find((command) => command.name === name)?.["unavailable"];
+    return {
+      name,
+      reason: typeof unavailable === "string" && unavailable.trim() !== "" ? unavailable : skipped ?? "not run"
+    };
+  });
+  const search = asRecord(symbols);
+  if (search === null || !Array.isArray(search["files"])) throw new Error("the symbols report has no files list");
+  const budget = asRecord(search["budget"]);
+  return {
+    staticRan,
+    staticDidNotRun,
+    symbolsInconclusive: search["files"].filter((file2) => asRecord(file2)?.["inconclusive"] === true).length,
+    symbolsBudgetExhausted: budget?.["exhausted"] === true
+  };
+}
+function storedChecks(raw) {
+  const value = asRecord(raw);
+  if (value === null || !Array.isArray(value["staticRan"]) || !Array.isArray(value["staticDidNotRun"])) return null;
+  if (!Number.isInteger(value["symbolsInconclusive"]) || typeof value["symbolsBudgetExhausted"] !== "boolean") return null;
+  const ran = [];
+  for (const entry of value["staticRan"]) {
+    const c = asRecord(entry);
+    if (c === null || typeof c["name"] !== "string" || !Number.isInteger(c["signals"])) return null;
+    ran.push({
+      name: c["name"],
+      exitCode: Number.isInteger(c["exitCode"]) ? c["exitCode"] : null,
+      signals: c["signals"],
+      ...typeof c["version"] === "string" ? { version: c["version"] } : {}
+    });
+  }
+  const didNot = [];
+  for (const entry of value["staticDidNotRun"]) {
+    const c = asRecord(entry);
+    if (c === null || typeof c["name"] !== "string" || typeof c["reason"] !== "string") return null;
+    didNot.push({ name: c["name"], reason: c["reason"] });
+  }
+  return {
+    staticRan: ran,
+    staticDidNotRun: didNot,
+    symbolsInconclusive: value["symbolsInconclusive"],
+    symbolsBudgetExhausted: value["symbolsBudgetExhausted"]
+  };
+}
+function describeChecks(checks) {
+  if (checks === null) return "Checks not recorded";
+  const ran = checks.staticRan.map((c) => `${c.name} ran (exit ${c.exitCode ?? "none"}, ${c.signals} signal${c.signals === 1 ? "" : "s"})`);
+  const didNot = checks.staticDidNotRun.map((c) => `${c.name} did not run (${c.reason})`);
+  const staticParts = [...ran, ...didNot];
+  const symbols = checks.symbolsInconclusive === 0 ? "every symbol file finished" : `${checks.symbolsInconclusive} symbol file${checks.symbolsInconclusive === 1 ? "" : "s"} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}`;
+  return `Checks ${staticParts.length === 0 ? "no static checks" : staticParts.join("; ")}; ${symbols}`;
+}
+var REMOVED_CONTROL_ORDER = { guard: 0, refusal: 1, decorator: 2, middleware: 3, "allowlist-entry": 4 };
+var RISK_MARKER_ORDER = { "new-route": 0, "lock-or-async": 1, "string-built-query": 2, unsafe: 3 };
+var STRUCTURE_LISTS = ["sizeCrossings", "branchGrowth", "typeEscapes", "removedControls", "riskMarkers"];
+var repositoryPath = (path) => path !== "" && !/^[\\/]/u.test(path) && !MACHINE_PATH.test(path);
+function recordedStructure(raw) {
+  const value = asRecord(raw);
+  if (value === null || !STRUCTURE_LISTS.every((list2) => Array.isArray(value[list2]))) return null;
+  const files2 = /* @__PURE__ */ new Map();
+  const entries = /* @__PURE__ */ new Map();
+  const deleted = /* @__PURE__ */ new Map();
+  const entryOf = (entry) => {
+    const record3 = asRecord(entry);
+    return record3 !== null && typeof record3["path"] === "string" && repositoryPath(record3["path"]) ? record3 : null;
+  };
+  const fileOf = (record3) => {
+    const path = record3["path"];
+    let file2 = files2.get(path);
+    if (file2 === void 0) {
+      file2 = { path, deletedFile: false, removedControls: {}, riskMarkers: {}, sizeCrossing: null, branchGrowth: 0, typeEscapes: 0 };
+      files2.set(path, file2);
+    }
+    entries.set(path, (entries.get(path) ?? 0) + 1);
+    return file2;
+  };
+  for (const entry of value["removedControls"]) {
+    const record3 = entryOf(entry);
+    const kind = record3?.["kind"];
+    if (record3 === null || typeof kind !== "string" || !Object.hasOwn(REMOVED_CONTROL_ORDER, kind)) continue;
+    const file2 = fileOf(record3);
+    file2.removedControls[kind] = (file2.removedControls[kind] ?? 0) + 1;
+    if (record3["deletedFile"] === true) deleted.set(file2.path, (deleted.get(file2.path) ?? 0) + 1);
+  }
+  for (const entry of value["riskMarkers"]) {
+    const record3 = entryOf(entry);
+    const kind = record3?.["kind"];
+    if (record3 === null || typeof kind !== "string" || !Object.hasOwn(RISK_MARKER_ORDER, kind)) continue;
+    const file2 = fileOf(record3);
+    file2.riskMarkers[kind] = (file2.riskMarkers[kind] ?? 0) + 1;
+  }
+  for (const entry of value["typeEscapes"]) {
+    const record3 = entryOf(entry);
+    if (record3 !== null) fileOf(record3).typeEscapes += 1;
+  }
+  for (const entry of value["branchGrowth"]) {
+    const record3 = entryOf(entry);
+    if (record3 !== null) fileOf(record3).branchGrowth += 1;
+  }
+  for (const entry of value["sizeCrossings"]) {
+    const record3 = entryOf(entry);
+    if (record3 === null || !Number.isInteger(record3["headLines"]) || !Number.isInteger(record3["threshold"])) continue;
+    const file2 = fileOf(record3);
+    if (file2.sizeCrossing === null) file2.sizeCrossing = { headLines: record3["headLines"], threshold: record3["threshold"] };
+  }
+  for (const file2 of files2.values()) file2.deletedFile = (deleted.get(file2.path) ?? 0) === entries.get(file2.path);
+  const unmeasured = asRecord(value["unmeasured"])?.["count"];
+  return {
+    files: [...files2.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+    unmeasured: Number.isInteger(unmeasured) ? unmeasured : 0
+  };
+}
+function storedStructure(raw) {
+  const value = asRecord(raw);
+  if (value === null || !Array.isArray(value["files"]) || !Number.isInteger(value["unmeasured"])) return null;
+  const counts = (table, order) => {
+    const record3 = asRecord(table);
+    return record3 !== null && Object.entries(record3).every(([kind, count3]) => Object.hasOwn(order, kind) && Number.isInteger(count3)) ? record3 : null;
+  };
+  const files2 = [];
+  for (const entry of value["files"]) {
+    const file2 = asRecord(entry);
+    if (file2 === null || typeof file2["path"] !== "string" || typeof file2["deletedFile"] !== "boolean") return null;
+    const removedControls = counts(file2["removedControls"], REMOVED_CONTROL_ORDER);
+    const riskMarkers = counts(file2["riskMarkers"], RISK_MARKER_ORDER);
+    const crossing = file2["sizeCrossing"] === null ? null : asRecord(file2["sizeCrossing"]);
+    if (removedControls === null || riskMarkers === null || !Number.isInteger(file2["branchGrowth"]) || !Number.isInteger(file2["typeEscapes"])) return null;
+    if (crossing !== null && !(Number.isInteger(crossing["headLines"]) && Number.isInteger(crossing["threshold"]))) return null;
+    files2.push({
+      path: file2["path"],
+      deletedFile: file2["deletedFile"],
+      removedControls,
+      riskMarkers,
+      sizeCrossing: crossing === null ? null : { headLines: crossing["headLines"], threshold: crossing["threshold"] },
+      branchGrowth: file2["branchGrowth"],
+      typeEscapes: file2["typeEscapes"]
+    });
+  }
+  return { files: files2, unmeasured: value["unmeasured"] };
+}
+function describeStructure(structure) {
+  if (structure === null) return "Structure not recorded";
+  const count3 = structure.files.length;
+  return `Structure ${count3} file${count3 === 1 ? "" : "s"} with a signal, ${structure.unmeasured} unmeasured`;
+}
+var basename3 = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
+function attribute(finding, hints, taken) {
+  const free = hints.filter((hint) => !taken.has(hint));
+  const exact = free.find((hint) => hint.path === finding.path && hint.line === finding.line);
+  if (exact !== void 0) return { hint: exact, how: "exact" };
+  const sameFile = free.filter(
+    (hint) => basename3(hint.path) === basename3(finding.path) && hint.line === finding.line
+  );
+  if (sameFile.length === 1) return { hint: sameFile[0], how: "basename" };
+  const sameLine = free.filter((hint) => hint.line === finding.line);
+  if (sameLine.length === 1) return { hint: sameLine[0], how: "line" };
+  return { hint: void 0, how: "none" };
+}
+var laneOf = (hint) => typeof hint?.lane === "string" && hint.lane.length > 0 ? hint.lane : "diff";
+var blockerClassOf = (hint) => {
+  const claimed = hint?.blocker_class ?? hint?.blockerClass;
+  return typeof claimed === "string" && claimed.length > 0 ? claimed : void 0;
+};
+function storedCandidate(hint) {
+  const blocker = hint.blocker_class ?? hint.blockerClass;
+  const { blockerClass: _camel, ...rest } = hint;
+  return { ...rest, lane: laneOf(hint), ...blocker === void 0 ? {} : { blocker_class: blocker } };
+}
+function patchPath(hint) {
+  const inside2 = hint.suggested_patch?.path;
+  return typeof inside2 === "string" ? inside2 : hint.path;
+}
+var TOOL_TEXT_CAP = 160;
+var MAX_CONVENTION_QUOTES = 2;
+function cut(text4, max) {
+  const points = [...text4];
+  return points.length > max ? `${points.slice(0, max - 1).join("")}\u2026` : text4;
+}
+var plainPath = (path) => posix3.normalize(path.split("\\").join("/")).replace(/^\.\//, "");
+function toolSignalFor(finding, signals) {
+  const path = plainPath(finding.path);
+  const signal2 = signals.find((entry) => entry.path === path && entry.line === finding.line);
+  if (signal2 === void 0) return void 0;
+  if (MACHINE_PATH.test(flatten(signal2.tool, Number.POSITIVE_INFINITY))) return void 0;
+  const shown = [signal2.evidence[0], signal2.claim].find(
+    (text4) => text4 !== void 0 && !MACHINE_PATH.test(flatten(text4, Number.POSITIVE_INFINITY))
+  );
+  if (shown === void 0) return void 0;
+  return { tool: signal2.tool, line: finding.line, text: cut(redactedAsPosted(shown), TOOL_TEXT_CAP) };
+}
+var redactedAsPosted = (text4) => redact(flatten(redact(text4).text, Number.POSITIVE_INFINITY)).text;
+var squashed = (text4) => text4.replace(/\s+/g, " ").trim();
+var QUOTED = /["\u201c]([^"\u201c\u201d]+)["\u201d]/g;
+function namesWhole(text4, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w./\\\\-])(?:\\./)?${escaped}(?![\\w/\\\\-]|\\.\\w)`).test(text4);
+}
+function documentNamed(text4, documents) {
+  const exact = documents.filter((doc) => doc.path !== "" && namesWhole(text4, doc.path)).sort((a, b) => b.path.length - a.path.length)[0];
+  if (exact !== void 0) return exact;
+  const base = (path) => path.split("/").pop() ?? path;
+  return documents.find((doc) => namesWhole(text4, base(doc.path)) && documents.filter((other) => base(other.path) === base(doc.path)).length === 1);
+}
+function conventionQuotesFor(evidence, documents) {
+  if (!Array.isArray(evidence) || documents.length === 0) return void 0;
+  const found = [];
+  for (const entry of evidence) {
+    if (found.length >= MAX_CONVENTION_QUOTES) break;
+    if (typeof entry !== "string") continue;
+    const document = documentNamed(entry, documents);
+    if (document === void 0) continue;
+    const content = squashed(document.content).toLowerCase();
+    const quote2 = [...entry.matchAll(QUOTED)].map((match) => squashed(match[1] ?? "")).find((segment) => segment.split(" ").length >= 4 && content.includes(segment.toLowerCase()));
+    if (quote2 !== void 0) found.push({ path: document.path, quote: redactedAsPosted(quote2) });
+  }
+  return found.length === 0 ? void 0 : found;
+}
+function assignIds(output, hints, facts = {}) {
+  const taken = /* @__PURE__ */ new Set();
+  return splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null).map((finding, index) => {
+    const anchor = { path: finding.path, line: finding.line ?? 0 };
+    const { hint, how } = attribute(anchor, hints, taken);
+    if (hint !== void 0) taken.add(hint);
+    const partly = partlyAddressedOf(hint?.possibleRepeatOf);
+    const patch = suggestedPatchOf(hint?.suggested_patch);
+    const blockerClass = blockerClassOf(hint);
+    const ruleId = ruleIdFor(hint?.category, laneOf(hint), blockerClass);
+    const toolSignal = toolSignalFor(anchor, facts.toolSignals ?? []);
+    const conventionQuotes = conventionQuotesFor(hint?.evidence, facts.conventions ?? []);
+    return {
+      findingId: `rv_${String(index + 1).padStart(2, "0")}`,
+      severity: finding.severity,
+      path: anchor.path,
+      line: anchor.line,
+      text: finding.raw,
+      // Absent when a review ran without candidates to hand. Null is honest;
+      // guessing a category from the wording would invent evidence.
+      category: hint?.category,
+      lane: laneOf(hint),
+      ...blockerClass === void 0 ? {} : { blockerClass },
+      // Null when there is no category: a finding nothing classified has no rule.
+      ...ruleId === null ? {} : { ruleId },
+      // Stated so a disagreement between what the analyst cited and what
+      // shipped is visible rather than showing up as a missing category.
+      ...how === "exact" || how === "none" ? {} : { attributedBy: how },
+      ...how === "none" && hints.length > 0 ? { unattributed: true } : {},
+      ...partly === void 0 ? {} : { partlyAddressed: partly },
+      ...patch === null || hint === void 0 ? {} : { suggestedPatch: patch, suggestedPatchSource: { path: patchPath(hint), candidateId: typeof hint.candidate_id === "string" ? hint.candidate_id : null } },
+      ...toolSignal === void 0 ? {} : { toolSignal },
+      // Tied to the candidate that cited them, so the block shows them only
+      // beside that candidate's own verified score (as S14 ties a patch).
+      ...conventionQuotes === void 0 ? {} : { conventionQuotes, conventionQuotesCandidate: typeof hint?.candidate_id === "string" ? hint.candidate_id : null }
+    };
+  });
+}
+function hashDiff(diff) {
+  return createHash2("sha256").update(diff).digest("hex").slice(0, 32);
+}
+function recordRun(db, input) {
+  if ((input.bodyFindings?.length ?? 0) > 1) {
+    throw new Error("A review may record at most one body-only simplification finding.");
+  }
+  const reviewRunId = randomUUID3();
+  const findings = assignIds(input.output, input.candidates ?? [], { toolSignals: input.toolSignals, conventions: input.conventions });
+  if (input.carried !== void 0) {
+    const { matches, mismatches } = matchCarried(findings, input.carried.findings);
+    if (mismatches.length > 0) throw new CarryMismatch(mismatches.join("\n"));
+    for (const finding of findings) {
+      const from = matches.get(finding.findingId);
+      if (from !== void 0) finding.carriedFrom = { runId: input.carried.runId, findingId: from };
+    }
+  }
+  const policyVersions = input.provenance?.policyVersions ?? activePolicyVersions(db);
+  const provenance = input.provenance === void 0 ? null : {
+    origin: input.provenance.origin,
+    independence: independenceOf(input.provenance.origin),
+    pluginVersion: input.provenance.pluginVersion,
+    claudeVersion: input.provenance.claudeVersion,
+    mode: input.provenance.mode,
+    policyVersions
+  };
+  db.exec("SAVEPOINT record_run");
+  try {
+    db.prepare(
+      `INSERT INTO review_runs (
+         review_run_id, repository, base_ref, head_ref, diff_hash,
+         active_policy_versions_json, retrieved_precedents_json,
+         candidates_json, output_json, created_at, stages_json,
+         pull_number, scope_json, complexity_json, provenance_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      reviewRunId,
+      input.repository,
+      input.baseRef,
+      input.headRef,
+      hashDiff(input.diff),
+      JSON.stringify(policyVersions),
+      JSON.stringify(input.precedents ?? []),
+      JSON.stringify((input.candidates ?? []).map(storedCandidate)),
+      JSON.stringify({
+        output: input.output,
+        findings,
+        scores: input.scores ?? [],
+        verdicts: input.verdicts ?? [],
+        tieBreaks: input.tieBreaks ?? [],
+        held: input.held ?? [],
+        ...input.bodyFindings === void 0 || input.bodyFindings.length === 0 ? {} : { bodyFindings: input.bodyFindings },
+        ...input.carry === void 0 ? {} : { carry: input.carry },
+        ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps },
+        ...input.checks === void 0 ? {} : { checks: input.checks },
+        ...input.reproductions === void 0 ? {} : { reproductions: markHeld(input.reproductions, input.held ?? []) },
+        ...input.structure === void 0 ? {} : { structure: input.structure }
+      }),
+      (/* @__PURE__ */ new Date()).toISOString(),
+      JSON.stringify(input.stages ?? []),
+      input.pullNumber ?? null,
+      input.scope === void 0 ? null : JSON.stringify(input.scope),
+      input.complexity === void 0 || input.complexity === null ? null : JSON.stringify(input.complexity),
+      provenance === null ? null : JSON.stringify(provenance)
+    );
+    recordAudit(db, "review_run_recorded", { type: "review_run", id: reviewRunId }, {
+      repository: input.repository,
+      findingCount: findings.length,
+      ...provenance === null ? {} : { origin: provenance.origin }
+    });
+    db.exec("RELEASE record_run");
+  } catch (error) {
+    db.exec("ROLLBACK TO record_run");
+    db.exec("RELEASE record_run");
+    throw error;
+  }
+  return { reviewRunId, findings, provenance };
+}
+function storedComplexity(raw) {
+  if (typeof raw !== "string") return null;
+  try {
+    return parseComplexity(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+function storedScope(raw) {
+  if (typeof raw !== "string") return null;
+  try {
+    return parseReviewScope(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+function declineHeld(db, reviewRunId, at2, reason2) {
+  const row = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(reviewRunId);
+  if (row === void 0) return { ok: false, error: `No recorded run ${reviewRunId}.` };
+  const parsed2 = JSON.parse(row.output_json);
+  const held = Array.isArray(parsed2.held) ? parsed2.held : [];
+  const matching = held.filter((entry) => entry.path === at2.path && entry.line === at2.line);
+  if (matching.length === 0) {
+    const anchors = held.map((entry) => `${entry.path}:${entry.line}`);
+    return {
+      ok: false,
+      error: `No held finding at ${at2.path}:${at2.line} in run ${reviewRunId}. ${anchors.length === 0 ? "It holds none." : `Held: ${anchors.join(", ")}.`}`
+    };
+  }
+  for (const entry of matching) {
+    entry.verdict = "owner-declined";
+    entry.source = "owner";
+    entry.reason = reason2;
+  }
+  db.prepare("UPDATE review_runs SET output_json = ? WHERE review_run_id = ?").run(JSON.stringify(parsed2), reviewRunId);
+  recordAudit(db, "held_declined", { type: "review_run", id: reviewRunId }, { path: at2.path, line: at2.line });
+  return { ok: true, declined: matching.length };
+}
+function runDetail(db, reviewRunId) {
+  const row = reviewRunId === void 0 ? db.prepare("SELECT * FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get() : db.prepare("SELECT * FROM review_runs WHERE review_run_id = ?").get(reviewRunId);
+  if (row === void 0) return null;
+  const parsed2 = JSON.parse(row["output_json"]);
+  return {
+    reviewRunId: row["review_run_id"],
+    repository: row["repository"],
+    pullNumber: Number.isInteger(row["pull_number"]) ? row["pull_number"] : null,
+    scope: storedScope(row["scope_json"]),
+    complexity: storedComplexity(row["complexity_json"]),
+    provenance: storedProvenance(row["provenance_json"], row["review_run_id"]),
+    headRef: typeof row["head_ref"] === "string" ? row["head_ref"] : null,
+    createdAt: row["created_at"],
+    output: parsed2.output,
+    findings: parsed2.findings,
+    scores: parsed2.scores ?? [],
+    verdicts: parsed2.verdicts ?? [],
+    tieBreaks: Array.isArray(parsed2.tieBreaks) ? parsed2.tieBreaks : [],
+    held: Array.isArray(parsed2.held) ? parsed2.held : [],
+    carry: parseCarryMarker(parsed2.carry),
+    followUps: Array.isArray(parsed2.followUps) ? parsed2.followUps : [],
+    bodyFindings: Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : [],
+    checks: storedChecks(parsed2.checks),
+    reproductions: storedReproductions(parsed2.reproductions),
+    structure: storedStructure(parsed2.structure),
+    // Older rows predate the column, so absence is normal rather than an error.
+    stages: (() => {
+      const raw = row["stages_json"];
+      if (typeof raw !== "string") return [];
+      try {
+        const parsedStages = JSON.parse(raw);
+        return Array.isArray(parsedStages) ? parsedStages : [];
+      } catch {
+        return [];
+      }
+    })(),
+    precedents: JSON.parse(row["retrieved_precedents_json"])
+  };
+}
+function latestRunForPull(db, repository, pullNumber) {
+  const row = db.prepare(
+    `SELECT review_run_id, head_ref, created_at
+       FROM review_runs
+       WHERE LOWER(repository) = LOWER(?)
+         AND pull_number = ?
+         AND head_ref IS NOT NULL
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`
+  ).get(repository, pullNumber);
+  if (row === void 0) return null;
+  return {
+    reviewRunId: row.review_run_id,
+    headRef: row.head_ref,
+    createdAt: row.created_at
+  };
+}
+function recordedRunsForPull(db, repository, pullNumber, limit = 10) {
+  const rows = db.prepare(
+    `SELECT review_run_id, head_ref, created_at
+       FROM review_runs
+       WHERE LOWER(repository) = LOWER(?)
+         AND pull_number = ?
+         AND head_ref IS NOT NULL
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT ?`
+  ).all(repository, pullNumber, limit);
+  return rows.map((row) => ({ runId: row.review_run_id, head: row.head_ref, createdAt: row.created_at }));
+}
+function latestRun(db) {
+  const row = db.prepare("SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get();
+  if (row === void 0) return null;
+  const parsed2 = JSON.parse(row.output_json);
+  return { reviewRunId: row.review_run_id, findings: parsed2.findings };
+}
 
 // plugins/review-voice/src/contract/words.ts
 var HAS_ALPHANUMERIC = /[\p{L}\p{N}]/u;
@@ -10818,12 +12463,12 @@ var STRUCTURAL_NOISE = [
     message: "Summary section. The output is findings only."
   }
 ];
-function escapeRegExp(value) {
+function escapeRegExp2(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function findForbiddenPhrases(prose, phrases) {
   return phrases.filter(
-    (phrase) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(phrase)}(?![\\p{L}\\p{N}])`, "iu").test(prose)
+    (phrase) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp2(phrase)}(?![\\p{L}\\p{N}])`, "iu").test(prose)
   );
 }
 function validateFinding(finding, limits, violations) {
@@ -11112,88 +12757,6 @@ function renderSimplification(finding) {
   return `**maintainability** - ${finding.candidate.claim} Remove ${removed}; use \`${abstraction2.path}:${abstraction2.line}\` (${abstraction2.name}).`;
 }
 
-// plugins/review-voice/src/publish/evidence-block.ts
-var EVIDENCE_MARKER = "<!-- review-voice evidence -->";
-function stripEvidenceBlock(body) {
-  const at2 = body.lastIndexOf(`
-
-${EVIDENCE_MARKER}`);
-  return at2 < 0 || !body.trimEnd().endsWith("</details>") ? body : body.slice(0, at2);
-}
-var DECISIVE = /^\S(?:.*\S)?:\d+(?:-\d+)?$/u;
-var MAX_DECISIVE = 6;
-var DECISIVE_CAP = 120;
-var PATH_CAP = 120;
-var TEXT_CAP = 160;
-var MAX_QUOTES = 2;
-var MACHINE_PATH = /(?<![\w.~-])[\\/][^\s\\/'"]+[\\/]|(?<![\w.-])(?:~|\.\.)[\\/]|(?<!\w)[A-Za-z]:[\\/]/u;
-var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-function flatten(text4, max) {
-  return safeCheckName(text4.replace(new RegExp("\\p{Cf}", "gu"), ""), max);
-}
-var code = (text4) => `\`${text4}\``;
-function repositoryRelative(reference) {
-  const path = reference.replace(/:\d+(?:-\d+)?$/, "");
-  return !path.startsWith("~") && !/[\s:]/.test(path) && path.split(/[\\/]/).every((part) => part !== "" && part !== "..");
-}
-function challengeFacts(score2) {
-  const challenge2 = score2?.challenge;
-  if (!isRecord(challenge2)) return null;
-  const verdict2 = challenge2["verdict"];
-  if (verdict2 !== "confirmed" && verdict2 !== "partly" && verdict2 !== "refuted") return null;
-  const from = score2?.reanchoredFrom?.line;
-  const line3 = challenge2["line_ok"] === true ? "line confirmed" : typeof from === "number" && Number.isInteger(from) && from > 0 ? `anchor moved from line ${from}` : null;
-  const evidence = Array.isArray(challenge2["decisive_evidence"]) ? challenge2["decisive_evidence"] : [];
-  const decisive = evidence.filter((entry) => typeof entry === "string").map((entry) => flatten(entry, Number.POSITIVE_INFINITY)).filter((entry) => DECISIVE.test(entry) && repositoryRelative(entry)).map((entry) => flatten(entry, DECISIVE_CAP)).slice(0, MAX_DECISIVE);
-  return { verdict: verdict2, line: line3, decisive };
-}
-function evidenceBlock(finding, backing, policy) {
-  if (backing === null || backing.confidenceSource !== "verifier") return "";
-  const challenge2 = challengeFacts(backing);
-  const verdict2 = challenge2 === null ? "not run" : [challenge2.verdict, challenge2.line].filter((part) => part !== null).join(", ");
-  const lines2 = [`Verified by the evidence verifier. Challenger: ${verdict2}.`];
-  if (challenge2 !== null && challenge2.decisive.length > 0) {
-    lines2.push(`Decisive lines: ${challenge2.decisive.map(code).join(", ")}.`);
-  }
-  const signal2 = finding?.toolSignal;
-  if (isRecord(signal2) && typeof signal2["tool"] === "string" && typeof signal2["text"] === "string") {
-    const tool = flatten(signal2["tool"]);
-    const text4 = flatten(signal2["text"], TEXT_CAP);
-    if (tool !== "" && text4 !== "" && !MACHINE_PATH.test(tool) && !MACHINE_PATH.test(text4)) {
-      lines2.push(`Static check ${code(tool)} also flagged this line: ${code(text4)}`);
-    }
-  }
-  const quotesOwner = finding?.conventionQuotesCandidate;
-  const ownQuotes = typeof quotesOwner === "string" && typeof backing.candidateId === "string" && quotesOwner === backing.candidateId;
-  const quotes = ownQuotes ? finding?.conventionQuotes : void 0;
-  const conventions = (Array.isArray(quotes) ? quotes : []).filter((entry) => isRecord(entry) && typeof entry["path"] === "string" && typeof entry["quote"] === "string").map((entry) => ({ path: flatten(entry.path, PATH_CAP), quote: flatten(entry.quote, TEXT_CAP) })).filter((entry) => entry.path !== "" && entry.quote !== "").slice(0, MAX_QUOTES);
-  for (const entry of conventions) lines2.push(`Convention ${code(entry.path)} says ${code(entry.quote)}.`);
-  if (policy.evidenceBlockPrecedents && Array.isArray(backing.precedents) && backing.precedents.length > 0) {
-    const favour = backing.precedents.filter(
-      (precedent) => isRecord(precedent) && precedent["role"] === "owner" && precedent["polarity"] === "positive"
-    ).length;
-    lines2.push(`Owner precedents in favour: ${favour} of ${backing.precedents.length} retrieved.`);
-  }
-  return [EVIDENCE_MARKER, "<details><summary>Evidence</summary>", "", ...lines2, "", "</details>"].join("\n");
-}
-function backingAt(planned, path, line3) {
-  const finding = planned.inline.find((candidate) => candidate.path === path && candidate.line === line3);
-  return finding === void 0 ? void 0 : planned.backing.get(finding);
-}
-function withEvidenceBlocks(comments, planned, policy) {
-  let blocks = 0;
-  const out = comments.map((comment) => {
-    const backing = backingAt(planned, comment.path, comment.line);
-    const block = backing === void 0 ? "" : evidenceBlock(backing.stored, backing.score, policy);
-    if (block === "") return comment;
-    blocks += 1;
-    return { ...comment, body: `${comment.body}
-
-${block}` };
-  });
-  return { comments: out, blocks };
-}
-
 // plugins/review-voice/src/publish/verdict.ts
 function eventFor(severities) {
   if (severities.some((severity) => severity === "blocking" || severity === "important")) return "REQUEST_CHANGES";
@@ -11201,6 +12764,8 @@ function eventFor(severities) {
   return "APPROVE";
 }
 var RANK = { blocking: 0, important: 1, minor: 2, question: 3, nit: 4 };
+var POSTED_TIERS = ["blocking", "important", "minor", "nit"];
+var TIER_RANK = { blocking: 0, important: 1, minor: 2, question: 2, nit: 3 };
 var NO_LINE = /^\[([a-z_]+)\]\s+`([^`]+)`\s+-\s*([\s\S]*)$/i;
 function reviewFindings(output) {
   let index = 0;
@@ -11291,10 +12856,11 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
   }
   return { verified: false, reason: reason2, runId: current.reviewRunId, score: null };
 }
-function planFindings(output, run, loadRun) {
+function planFindings(output, run, loadRun, minPostedTier = "nit") {
   const inline = [];
   const unanchored = [];
   const held = [];
+  const belowTier = [];
   const heldSeverities = [];
   const fixVerified = /* @__PURE__ */ new Map();
   const backing = /* @__PURE__ */ new Map();
@@ -11321,6 +12887,12 @@ function planFindings(output, run, loadRun) {
       heldSeverities.push(finding.severity ?? "minor");
       continue;
     }
+    const category = run.findings.find((stored) => stored.findingId === finding.findingId)?.category ?? result.stored?.category;
+    if (TIER_RANK[finding.severity] > TIER_RANK[minPostedTier] && (category === void 0 || !isSuppressionExempt(category))) {
+      belowTier.push(finding);
+      heldSeverities.push(finding.severity);
+      continue;
+    }
     const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true && result.deletedFile !== true;
     (anchorable ? inline : unanchored).push(finding);
     if (anchorable && result.fixVerified !== void 0) fixVerified.set(finding, result.fixVerified);
@@ -11330,7 +12902,7 @@ function planFindings(output, run, loadRun) {
   let mapped = eventFor(posted);
   const heldBackApproval = mapped === "APPROVE" && eventFor(heldSeverities) !== "APPROVE";
   if (heldBackApproval) mapped = "COMMENT";
-  return { inline, unanchored, held, mapped, heldBackApproval, fixVerified, backing };
+  return { inline, unanchored, held, belowTier, mapped, heldBackApproval, fixVerified, backing };
 }
 var DEFAULT_VERDICT_POLICY = Object.freeze({
   ciPending: "wait",
@@ -11344,7 +12916,9 @@ var DEFAULT_VERDICT_POLICY = Object.freeze({
   scopeBlockModels: false,
   suggestions: false,
   evidenceBlock: false,
-  evidenceBlockPrecedents: false
+  evidenceBlockPrecedents: false,
+  minPostedTier: "nit",
+  readingGuide: false
 });
 function verdictPolicy(policy) {
   return { ...DEFAULT_VERDICT_POLICY, ...policy };
@@ -11385,7 +12959,7 @@ function decide(input) {
     carriedReviewUrl: null
   });
   if (input.heldBackApproval === true) {
-    reasons.push("an unverified finding above a nit was held back, so this comments rather than approves");
+    reasons.push("a finding above a nit was held back, unverified or below the posting tier, so this comments rather than approves");
   }
   if (input.headMoved) {
     return done({
@@ -11571,7 +13145,7 @@ function wouldHaveSummary(planned) {
   }
   if (planned.heldBackApproval) {
     const nits = count3 === 0 ? "" : `, with ${plural2(count3, "nit")}`;
-    return `Would have commented: an unverified finding above a nit was held back${nits}.`;
+    return `Would have commented: a finding above a nit was held back, unverified or below the posting tier${nits}.`;
   }
   return `Would have commented: ${plural2(count3, "comment")}, the highest ${highest}.`;
 }
@@ -11611,7 +13185,7 @@ function withAnnotations(body, annotations) {
   return [body, ...annotations].join("\n\n");
 }
 function heldCounts(held) {
-  const counts = { unverified: 0, belowGate: 0, challenge: 0, restatesTool: 0, policySuppressed: 0, other: 0 };
+  const counts = { unverified: 0, belowGate: 0, challenge: 0, restatesTool: 0, policySuppressed: 0, other: 0, belowTier: 0 };
   for (const entry of held) {
     switch (entry.verdict) {
       case "unverified":
@@ -11673,13 +13247,15 @@ function scopeBlock(run, planned, policy) {
   }
   const held = heldCounts(run.held);
   held.other += planned.held.length;
+  held.belowTier = planned.belowTier.length;
   const notPosted = [
     held.unverified > 0 ? plural2(held.unverified, "unverified claim") : null,
     held.belowGate > 0 ? `${held.belowGate} below the gate` : null,
     held.challenge > 0 ? `${held.challenge} held by the challenger` : null,
     held.restatesTool > 0 ? `${held.restatesTool} restating a static check` : null,
     held.policySuppressed > 0 ? `${held.policySuppressed} suppressed by policy` : null,
-    held.other > 0 ? `${held.other} held for other reasons` : null
+    held.other > 0 ? `${held.other} held for other reasons` : null,
+    held.belowTier > 0 ? `${held.belowTier} below the posting tier` : null
   ].filter((part) => part !== null);
   const posted = [...planned.inline, ...planned.unanchored];
   const findings = Object.fromEntries(
@@ -11710,6 +13286,36 @@ function scopeBlock(run, planned, policy) {
     "</details>",
     `<!-- review-voice ${trailer} -->`
   ].join("\n");
+}
+var MAX_GUIDE_FILES = 20;
+function readingGuide(run) {
+  const lines2 = ["<details><summary>Reading guide</summary>", "", "Changed files by structural signal, most first. Lexical leads the CLI measured, not findings.", ""];
+  const structure = run.structure;
+  if (structure === null) {
+    lines2.push("Structure not recorded.");
+  } else {
+    const sum = (counts) => Object.values(counts).reduce((total, count3) => total + (count3 ?? 0), 0);
+    const kinds = (counts, order) => Object.keys(counts).filter((kind) => (counts[kind] ?? 0) > 0).sort((a, b) => (order[a] ?? 0) - (order[b] ?? 0)).join(", ");
+    const files2 = [...structure.files].filter((file2) => repositoryPath(file2.path)).sort(
+      (a, b) => sum(b.removedControls) - sum(a.removedControls) || sum(b.riskMarkers) - sum(a.riskMarkers) || Number(b.sizeCrossing !== null) - Number(a.sizeCrossing !== null) || b.branchGrowth - a.branchGrowth || b.typeEscapes - a.typeEscapes || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
+    );
+    if (files2.length === 0) lines2.push("No structural signal in this change.");
+    files2.slice(0, MAX_GUIDE_FILES).forEach((file2, index) => {
+      const removed = sum(file2.removedControls);
+      const risks = sum(file2.riskMarkers);
+      const parts = [
+        removed > 0 ? `${plural2(removed, "removed control")} (${kinds(file2.removedControls, REMOVED_CONTROL_ORDER)})` : null,
+        risks > 0 ? `${plural2(risks, "risk marker")} (${kinds(file2.riskMarkers, RISK_MARKER_ORDER)})` : null,
+        file2.sizeCrossing === null ? null : `crossed ${file2.sizeCrossing.threshold} lines (now ${file2.sizeCrossing.headLines})`,
+        file2.branchGrowth > 0 ? `${plural2(file2.branchGrowth, "function")} grew past the branch threshold` : null,
+        file2.typeEscapes > 0 ? plural2(file2.typeEscapes, "type escape") : null
+      ].filter((part) => part !== null);
+      lines2.push(`${index + 1}. \`${safeCheckName(file2.path)}\`${file2.deletedFile ? " (deleted file)" : ""}: ${parts.join("; ")}`);
+    });
+    if (files2.length > MAX_GUIDE_FILES) lines2.push(`and ${plural2(files2.length - MAX_GUIDE_FILES, "more file")} with a signal.`);
+    if (structure.unmeasured > 0) lines2.push(`${plural2(structure.unmeasured, "production file")} could not be measured.`);
+  }
+  return [...lines2, "", "</details>"].join("\n");
 }
 function withScopeBlock(body, block) {
   return `${body}
@@ -11750,16 +13356,22 @@ function renderPreview(input) {
       lines2.push(`  ${held.findingId ?? "-"} ${where} (${held.reason})`);
     }
   }
+  if (input.belowTier.length > 0) {
+    lines2.push(`Below the posting tier, not posted: ${input.belowTier.length}`);
+    for (const finding of input.belowTier) {
+      lines2.push(`  ${finding.findingId ?? "-"} ${finding.path ?? "no anchor"}:${finding.line ?? "?"} (${finding.severity})`);
+    }
+  }
   return lines2.join("\n");
 }
 function commentSignature(comment) {
   const body = stripEvidenceBlock(comment.body);
   const block = body.lastIndexOf("\n\n```suggestion\n");
   const prose = block >= 0 && body.endsWith("```") ? body.slice(0, block) : body;
-  return `${comment.path}:${comment.line}:${createHash("sha256").update(prose).digest("hex").slice(0, 32)}`;
+  return `${comment.path}:${comment.line}:${createHash3("sha256").update(prose).digest("hex").slice(0, 32)}`;
 }
 function idempotencyKey(repository, pullNumber, payload) {
-  const digest = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+  const digest = createHash3("sha256").update(JSON.stringify(payload)).digest("hex");
   return `${repository.toLowerCase()}#${pullNumber}@${payload.commit_id}:${digest}`;
 }
 
@@ -11900,121 +13512,14 @@ function retentionLine(result) {
 }
 
 // plugins/review-voice/src/evidence/reproduce.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
+import { execFileSync as execFileSync8 } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync as chmodSync2, constants, cpSync, existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirSync2, mkdtempSync, readdirSync as readdirSync2, readFileSync as readFileSync4, realpathSync, renameSync, rmSync as rmSync3, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { basename as basename3, dirname as dirname5, join as join7, relative, resolve } from "node:path";
-
-// plugins/review-voice/src/redact/redact.ts
-import { createHash as createHash2 } from "node:crypto";
-
-// plugins/review-voice/src/redact/patterns.ts
-var SECRET_PATTERNS = [
-  // Key material is replaced whole: a PEM block's header is not the secret,
-  // but leaving it invites someone to reconstruct what was removed.
-  {
-    label: "PRIVATE_KEY",
-    pattern: /-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----/g
-  },
-  { label: "PEM_BLOCK", pattern: /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g },
-  { label: "GITHUB_TOKEN", pattern: /\b(gh[pousr]_[A-Za-z0-9]{16,255})\b/g, group: 1 },
-  { label: "GITHUB_TOKEN", pattern: /\b(github_pat_[A-Za-z0-9_]{20,})\b/g, group: 1 },
-  { label: "AWS_ACCESS_KEY", pattern: /\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b/g, group: 1 },
-  {
-    label: "AWS_SECRET_KEY",
-    pattern: /\b(?:aws_secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi,
-    group: 1
-  },
-  { label: "GOOGLE_API_KEY", pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g, group: 1 },
-  { label: "SLACK_TOKEN", pattern: /\b(xox[abposr]-[0-9A-Za-z-]{10,})\b/g, group: 1 },
-  { label: "STRIPE_KEY", pattern: /\b((?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,})\b/g, group: 1 },
-  { label: "NPM_TOKEN", pattern: /\b(npm_[A-Za-z0-9]{36})\b/g, group: 1 },
-  { label: "PYPI_TOKEN", pattern: /\b(pypi-[A-Za-z0-9_-]{16,})\b/g, group: 1 },
-  { label: "OPENAI_KEY", pattern: /\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b/g, group: 1 },
-  { label: "ANTHROPIC_KEY", pattern: /\b(sk-ant-[A-Za-z0-9_-]{20,})\b/g, group: 1 },
-  // JWTs: three base64url segments. The payload is often the sensitive part.
-  {
-    label: "JWT",
-    pattern: /\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g,
-    group: 1
-  },
-  // A connection string's credentials, keeping the scheme and host so the
-  // surrounding review comment still makes sense.
-  {
-    label: "DB_CREDENTIALS",
-    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi,
-    group: 3
-  },
-  {
-    label: "AUTHORIZATION_HEADER",
-    pattern: /\b(?:Authorization|Proxy-Authorization)\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12,})/gi,
-    group: 1
-  },
-  // Assignment-shaped secrets. Deliberately last: it is the broadest rule, and
-  // a more specific label above is more useful in an audit than "SECRET".
-  {
-    label: "SECRET_ASSIGNMENT",
-    pattern: /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["']([^"'\s]{8,})["']/gi,
-    group: 1
-  }
-];
-var PLACEHOLDERS = /* @__PURE__ */ new Set([
-  "xxxxxxxx",
-  "changeme",
-  "password",
-  "redacted",
-  "your_token_here",
-  "example",
-  "placeholder",
-  "dummy",
-  "notarealsecret",
-  "test",
-  "password123",
-  "<token>",
-  "secret",
-  "todo",
-  "fixme",
-  "null",
-  "undefined",
-  "none"
-]);
-
-// plugins/review-voice/src/redact/redact.ts
-var REDACTION_VERSION = "1";
-function hash(value) {
-  return createHash2("sha256").update(value).digest("hex").slice(0, 32);
-}
-function isPlaceholder(value) {
-  const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
-  if (PLACEHOLDERS.has(normalised)) return true;
-  return /^(.)\1{3,}$/.test(value);
-}
-function redact(input) {
-  const counts = {};
-  let text4 = input;
-  for (const { label: label2, pattern, group } of SECRET_PATTERNS) {
-    pattern.lastIndex = 0;
-    text4 = text4.replace(pattern, (match, ...groups) => {
-      const captured = group === void 0 || group === 0 ? match : groups[group - 1];
-      if (captured === void 0 || captured.length === 0) return match;
-      if (isPlaceholder(captured)) return match;
-      counts[label2] = (counts[label2] ?? 0) + 1;
-      const replacement = `[REDACTED:${label2}]`;
-      return group === void 0 || group === 0 ? replacement : match.replace(captured, replacement);
-    });
-  }
-  return {
-    text: text4,
-    counts,
-    sourceHash: hash(input),
-    redactedHash: hash(text4),
-    version: REDACTION_VERSION
-  };
-}
+import { basename as basename4, dirname as dirname5, join as join7, relative, resolve } from "node:path";
 
 // plugins/review-voice/src/review/worktree.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { execFileSync as execFileSync7 } from "node:child_process";
 import { lstatSync as lstatSync2, rmSync as rmSync2, unlinkSync } from "node:fs";
 var SAFE_GIT = [
   "-c",
@@ -12031,7 +13536,7 @@ var SAFE_GIT = [
   "submodule.recurse=false"
 ];
 function safeGit(args, cwd) {
-  execFileSync5("git", [...SAFE_GIT, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+  execFileSync7("git", [...SAFE_GIT, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
 }
 function addHeadWorktree(headDir, head, cwd = process.cwd()) {
   const stale = lstatSync2(headDir, { throwIfNoEntry: false });
@@ -12051,7 +13556,7 @@ function addHeadWorktree(headDir, head, cwd = process.cwd()) {
 }
 function removeHeadWorktree(headDir, cwd = process.cwd()) {
   try {
-    execFileSync5("git", ["worktree", "remove", "--force", headDir], { cwd, stdio: "ignore" });
+    execFileSync7("git", ["worktree", "remove", "--force", headDir], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -12338,7 +13843,7 @@ function spawnCommand(command, options) {
 function defaultReproduction() {
   return { enabled: false, runners: [], linkPaths: [], memoryMb: 1024, cpuSeconds: 60 };
 }
-var runGit = (args, cwd) => execFileSync6("git", [...SAFE_GIT, ...args], {
+var runGit2 = (args, cwd) => execFileSync8("git", [...SAFE_GIT, ...args], {
   cwd,
   encoding: "utf8",
   stdio: ["ignore", "pipe", "pipe"],
@@ -12364,7 +13869,7 @@ function realOf(path) {
       return join7(realpathSync(at2), ...rest.reverse());
     } catch {
       if (dirname5(at2) === at2) return resolve(path);
-      rest.push(basename3(at2));
+      rest.push(basename4(at2));
     }
   }
 }
@@ -12393,7 +13898,7 @@ function layoutOf(ctx, places) {
   const home = realOf(ctx.home);
   let common = [];
   try {
-    common = [realOf(resolve(clone, (ctx.git ?? runGit)(["rev-parse", "--git-common-dir"], clone).trim()))];
+    common = [realOf(resolve(clone, (ctx.git ?? runGit2)(["rev-parse", "--git-common-dir"], clone).trim()))];
   } catch {
   }
   const hiddenDirs = unique([
@@ -12577,7 +14082,7 @@ var contentOf = (path) => {
     return null;
   }
 };
-var firstLine = (text4) => text4.split("\n").map((line3) => line3.trim()).find((line3) => /[\p{L}\p{N}]/u.test(line3)) ?? "";
+var firstLine2 = (text4) => text4.split("\n").map((line3) => line3.trim()).find((line3) => /[\p{L}\p{N}]/u.test(line3)) ?? "";
 async function probeSandbox(ctx, given) {
   const platform = ctx.platform ?? process.platform;
   if (platform === "darwin") return { platform, mechanism: "none", probe: DARWIN_OFF };
@@ -12625,7 +14130,7 @@ async function runProbe(ctx, layout) {
     const seen = ["write", "read", "connect", "profile", "signal", "preference"].filter((name) => said.has(name) || outside[name] === true);
     if (seen.length > 0) return { platform, mechanism: "none", probe: `escaped by ${seen.join(", ")}` };
     if (result.error === void 0 && result.status === 0 && result.stdout.trim() === "RV_PROBE_OK") return { platform, mechanism, probe: "passed" };
-    const why = result.error === void 0 ? firstLine(result.stderr) || firstLine(result.stdout) || `exited ${String(result.status)}` : result.error.message;
+    const why = result.error === void 0 ? firstLine2(result.stderr) || firstLine2(result.stdout) || `exited ${String(result.status)}` : result.error.message;
     return { platform, mechanism: "none", probe: why.startsWith(`${mechanism}:`) ? why : `${mechanism}: ${why}` };
   } finally {
     withdraw();
@@ -12634,7 +14139,7 @@ async function runProbe(ctx, layout) {
   }
 }
 function pinGit(ctx, worktree) {
-  const git6 = ctx.git ?? runGit;
+  const git6 = ctx.git ?? runGit2;
   if (lstatSync3(join7(worktree, ".git"), { throwIfNoEntry: false })?.isFile() !== true) {
     return "the worktree is not a linked git worktree (its .git is not a file)";
   }
@@ -12642,7 +14147,7 @@ function pinGit(ctx, worktree) {
   try {
     gitDir = realOf(git6(["rev-parse", "--absolute-git-dir"], worktree).trim());
   } catch (error) {
-    return `git could not resolve the worktree: ${firstLine(error.message)}`;
+    return `git could not resolve the worktree: ${firstLine2(error.message)}`;
   }
   if (inside(gitDir, worktree)) return "the worktree holds its own git directory, which a reproduction could rewrite";
   const pinned = [`--git-dir=${gitDir}`, `--work-tree=${worktree}`];
@@ -12668,11 +14173,11 @@ function placementProblem(path, runner, layout, linkNames, tracked) {
   const realDir = realpathSync(dir);
   if (!inside(realDir, layout.worktree)) return "its directory resolves outside the worktree";
   if (layout.links.some((link) => inside(realDir, link.target))) return "its directory is under a link path";
-  if (lstatSync3(join7(realDir, basename3(path)), { throwIfNoEntry: false }) !== void 0) return "a file of that name is already there";
+  if (lstatSync3(join7(realDir, basename4(path)), { throwIfNoEntry: false }) !== void 0) return "a file of that name is already there";
   if (tracked(placedPath(path, layout.worktree))) return "the path is tracked at the head";
   return null;
 }
-var placedPath = (path, worktree) => relative(worktree, join7(realpathSync(join7(worktree, dirname5(path))), basename3(path)));
+var placedPath = (path, worktree) => relative(worktree, join7(realpathSync(join7(worktree, dirname5(path))), basename4(path)));
 var signature = (stat) => stat.isDirectory() ? `${stat.mode} ${stat.ino}` : `${stat.mode} ${stat.ino} ${stat.size} ${stat.mtimeNs} ${stat.ctimeNs}`;
 var SLASH = Buffer.from("/");
 function snapshot(root, cap = Infinity) {
@@ -12697,18 +14202,18 @@ function reopen(dir) {
   }
 }
 function removePlaces(dir) {
-  const frozen = join7(dirname5(dir), `.${basename3(dir)}-${randomBytes(4).toString("hex")}`);
+  const frozen = join7(dirname5(dir), `.${basename4(dir)}-${randomBytes(4).toString("hex")}`);
   try {
     renameSync(dir, frozen);
   } catch (error) {
-    console.error(`reproduce: could not remove ${dir}: ${firstLine(error.message)}`);
+    console.error(`reproduce: could not remove ${dir}: ${firstLine2(error.message)}`);
     return;
   }
   reopen(frozen);
   try {
     rmSync3(frozen, { recursive: true, force: true });
   } catch (error) {
-    console.error(`reproduce: could not remove ${frozen}: ${firstLine(error.message)}`);
+    console.error(`reproduce: could not remove ${frozen}: ${firstLine2(error.message)}`);
   }
 }
 function reachedMarker(text4, candidateId) {
@@ -12775,18 +14280,18 @@ async function runReproduction(record3, content, runner, layout, ctx) {
   }
   return end("reproduced");
 }
-var isRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isRecord3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var RESERVED = /* @__PURE__ */ new Set(["scratch", "probe", "stage", "sandbox.sb", "probe-escape", "trees"]);
 async function reproduce(verification2, candidates, ctx) {
-  const list2 = isRecord2(verification2) && Array.isArray(verification2["verifications"]) ? verification2["verifications"] : Array.isArray(verification2) ? verification2 : [];
+  const list2 = isRecord3(verification2) && Array.isArray(verification2["verifications"]) ? verification2["verifications"] : Array.isArray(verification2) ? verification2 : [];
   const reproductions = [];
   const seen = /* @__PURE__ */ new Set();
   let sandbox = null;
   const text4 = (value) => typeof value === "string" ? value : "";
-  for (const entry of list2.filter(isRecord2)) {
+  for (const entry of list2.filter(isRecord3)) {
     const repro = entry["reproduction"];
     const id = entry["candidate_id"] ?? entry["candidateId"];
-    if (!isRecord2(repro) || typeof id !== "string") continue;
+    if (!isRecord3(repro) || typeof id !== "string") continue;
     const candidate = candidates.get(id);
     const line3 = candidate?.["line"];
     const record3 = {
@@ -12845,7 +14350,7 @@ async function reproduce(verification2, candidates, ctx) {
         copyOf = { worktree: join7(dir, "tree"), scratch: join7(dir, "scratch") };
         cpSync(realpathSync(ctx.worktree), copyOf.worktree, { recursive: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE, errorOnExist: true, force: false });
       } catch (error) {
-        notRun(`could not copy the worktree: ${firstLine(error.message)}`);
+        notRun(`could not copy the worktree: ${firstLine2(error.message)}`);
         continue;
       }
       const layout = layoutOf(ctx, copyOf);
@@ -12869,12 +14374,12 @@ async function reproduce(verification2, candidates, ctx) {
       if (layout.platform === "darwin") writeFileSync(layout.profile, sandboxProfile(layout));
       const copyDir = join7(layout.reproDir, id);
       mkdirSync2(copyDir, { recursive: true });
-      const copy = join7(copyDir, basename3(record3.file));
+      const copy = join7(copyDir, basename4(record3.file));
       writeFileSync(copy, content);
       record3.copy = copy;
       reproductions.push(await runReproduction(record3, content, runner, layout, ctx));
     } catch (error) {
-      notRun(`the runner failed: ${firstLine(error.message)}`);
+      notRun(`the runner failed: ${firstLine2(error.message)}`);
     } finally {
       withdraw();
       removeOwn();
@@ -12884,7 +14389,7 @@ async function reproduce(verification2, candidates, ctx) {
 }
 
 // plugins/review-voice/src/policy/load.ts
-function asRecord(value) {
+function asRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
 }
 function asStringArray(value) {
@@ -12939,7 +14444,9 @@ var CONFIG_KEYS = {
     "scope_block",
     "scope_block_models",
     "evidence_block",
-    "evidence_block_precedents"
+    "evidence_block_precedents",
+    "min_posted_tier",
+    "reading_guide"
   ],
   static_evidence: ["enabled", "env_passthrough", "commands"],
   "static_evidence.commands[]": ["name", "run", "timeout_seconds", "version"],
@@ -12954,7 +14461,7 @@ var CONFIG_KEYS = {
   writes: ["github_posting_enabled"]
 };
 function section(value, path, warnings) {
-  const block = asRecord(value);
+  const block = asRecord2(value);
   if (block === null) return null;
   const known = CONFIG_KEYS[path.replace(/\[\d+\]/g, "[]")] ?? [];
   for (const key2 of Object.keys(block)) {
@@ -13033,7 +14540,7 @@ function readCostMode(review2, result) {
   }
   const models = review2["models"];
   if (models === void 0) return;
-  const block = asRecord(models);
+  const block = asRecord2(models);
   if (block === null) {
     result.warnings.push("review.models must be a map of stage to model name; ignoring it.");
     return;
@@ -13169,7 +14676,7 @@ function readReproduction(value, result) {
         target.runners.push(runner);
         return;
       }
-      const name = asRecord(entry)?.["name"];
+      const name = asRecord2(entry)?.["name"];
       result.warnings.push(`reproduction.runners[${index}]${typeof name === "string" ? ` (${name})` : ""}: ${runner}; dropping the runner.`);
     });
   }
@@ -13311,6 +14818,8 @@ function readVerdictPolicy(block, result) {
   policy.scopeBlockModels = enabled2("scope_block_models", DEFAULT_VERDICT_POLICY.scopeBlockModels);
   policy.evidenceBlock = enabled2("evidence_block", DEFAULT_VERDICT_POLICY.evidenceBlock);
   policy.evidenceBlockPrecedents = enabled2("evidence_block_precedents", DEFAULT_VERDICT_POLICY.evidenceBlockPrecedents);
+  policy.minPostedTier = choice("min_posted_tier", POSTED_TIERS, DEFAULT_VERDICT_POLICY.minPostedTier);
+  policy.readingGuide = enabled2("reading_guide", DEFAULT_VERDICT_POLICY.readingGuide);
 }
 var TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 function readQueue(block, result) {
@@ -13462,15 +14971,15 @@ function readRetention(block, result) {
   read("audit_days", "auditDays");
 }
 function contentHash(text4) {
-  return createHash3("sha256").update(text4).digest("hex").slice(0, 16);
+  return createHash4("sha256").update(text4).digest("hex").slice(0, 16);
 }
 function layerFromPolicyFile(text4, source, fallbackKey) {
-  const doc = asRecord(parse(text4));
+  const doc = asRecord2(parse(text4));
   if (doc === null) return null;
-  const scope = asRecord(doc["scope"]);
+  const scope = asRecord2(doc["scope"]);
   const type = typeof scope?.["type"] === "string" ? scope["type"] : "repository";
   const key2 = typeof scope?.["key"] === "string" ? scope["key"] : fallbackKey;
-  const priorities = Array.isArray(doc["priorities"]) ? doc["priorities"].map((item) => asRecord(item)).filter((item) => item !== null).filter((item) => typeof item["category"] === "string").map((item) => ({
+  const priorities = Array.isArray(doc["priorities"]) ? doc["priorities"].map((item) => asRecord2(item)).filter((item) => item !== null).filter((item) => typeof item["category"] === "string").map((item) => ({
     category: item["category"],
     weight: typeof item["weight"] === "string" ? item["weight"] : "normal"
   })) : [];
@@ -13492,7 +15001,7 @@ function approvedPolicyLayers(db, warnings) {
     versions.push({ scopeType: row.scopeType, scopeKey: row.scopeKey, policyId: row.policyId, version: row.version });
     const label2 = `approved policy version ${row.version}`;
     try {
-      const doc = asRecord(parse(row.contentYaml));
+      const doc = asRecord2(parse(row.contentYaml));
       if (doc === null) {
         warnings.push(`${label2} is empty; ignoring it.`);
         continue;
@@ -13527,9 +15036,9 @@ function pluginRoot() {
 function loadBaselineLayer(owner, path = join8(pluginRoot(), "policies", "baseline-global.yaml")) {
   if (!existsSync4(path)) return null;
   try {
-    const doc = asRecord(parse(readFileSync5(path, "utf8")));
+    const doc = asRecord2(parse(readFileSync5(path, "utf8")));
     if (doc === null) return null;
-    const voice = asRecord(doc["voice"]);
+    const voice = asRecord2(doc["voice"]);
     const maxFindings = positiveInt(voice?.["max_findings"]);
     const maxWords = positiveInt(voice?.["max_words_per_finding"]);
     const maxTotal = positiveInt(voice?.["max_total_words"]);
@@ -13607,7 +15116,7 @@ function readConfigDocument(value, repositoryRoot2, result) {
     if (problem === null) result.allowlist.push(entry);
     else result.warnings.push(`repositories.include: ${problem} Skipping it.`);
   }
-  if (doc["queue"] !== void 0 && asRecord(doc["queue"]) === null) {
+  if (doc["queue"] !== void 0 && asRecord2(doc["queue"]) === null) {
     result.warnings.push("queue must be a mapping; using the defaults.");
   }
   readQueue(section(doc["queue"], "queue", result.warnings), result);
@@ -14105,1367 +15614,6 @@ async function queueCommand(argv, deps) {
 // plugins/review-voice/src/watch/command.ts
 import { closeSync, constants as constants2, fsyncSync, mkdirSync as mkdirSync4, openSync, readFileSync as readFileSync7, renameSync as renameSync2, unlinkSync as unlinkSync4, writeSync } from "node:fs";
 import { join as join11 } from "node:path";
-
-// plugins/review-voice/src/store/runs.ts
-import { randomUUID as randomUUID3, createHash as createHash4 } from "node:crypto";
-import { posix as posix3 } from "node:path";
-
-// plugins/review-voice/src/diff/incremental.ts
-import { execFileSync as execFileSync7 } from "node:child_process";
-var nullableString = (value) => typeof value === "string" || value === null;
-var UNCHANGED_REASONS = /* @__PURE__ */ new Set(["base-merged", "history-rewritten", "base-sync-only"]);
-function parseReviewScope(value) {
-  if (typeof value !== "object" || value === null) return null;
-  const scope = value;
-  const strings = (list2) => Array.isArray(list2) && list2.every((item) => typeof item === "string");
-  const prior = typeof scope.since === "string" && nullableString(scope.priorRunId) && nullableString(scope.priorReviewedAt);
-  if (scope.kind === "incremental" && prior && Number.isInteger(scope.commits) && strings(scope.files)) {
-    return scope;
-  }
-  const absorbed = (scope.absorbedByBase === void 0 || strings(scope.absorbedByBase)) && (scope.noLongerChanged === void 0 || strings(scope.noLongerChanged));
-  if (scope.kind === "unchanged" && prior && typeof scope.mergeBase === "string" && UNCHANGED_REASONS.has(scope.reason) && absorbed) {
-    return scope;
-  }
-  if (scope.kind === "interdiff" && prior && typeof scope.mergeBase === "string" && strings(scope.files) && Number.isInteger(scope.hunks) && (scope.detail === void 0 || typeof scope.detail === "string") && absorbed) {
-    return scope;
-  }
-  if (scope.kind === "full" && typeof scope.cause === "string" && nullableString(scope.since) && nullableString(scope.priorRunId) && (scope.detail === void 0 || typeof scope.detail === "string")) {
-    return scope;
-  }
-  return null;
-}
-function describeScope(scope) {
-  if (scope === null) return null;
-  switch (scope.kind) {
-    case "incremental":
-      return `incremental since ${scope.since.slice(0, 7)} (${scope.commits} commit${scope.commits === 1 ? "" : "s"})`;
-    case "unchanged":
-      return `unchanged since ${scope.since.slice(0, 7)} (${scope.reason})`;
-    case "interdiff": {
-      const counts = `${scope.hunks} hunk${scope.hunks === 1 ? "" : "s"} in ${scope.files.length} file${scope.files.length === 1 ? "" : "s"}`;
-      return `interdiff since ${scope.since.slice(0, 7)} (${scope.detail === void 0 ? counts : `${counts}; ${scope.detail}`})`;
-    }
-    case "full":
-      return scope.detail === void 0 ? `full (${scope.cause})` : `full (${scope.cause}: ${scope.detail})`;
-  }
-}
-var REPLAY_GIT = [2, 40];
-function gitFailure(args, error) {
-  const end = args.indexOf("--");
-  const command = (end === -1 ? args : args.slice(0, end)).map((arg) => /^[0-9a-f]{40,64}$/.test(arg) ? arg.slice(0, 7) : arg).join(" ");
-  const failure = error;
-  const stderr = typeof failure.stderr === "string" ? failure.stderr : Buffer.isBuffer(failure.stderr) ? failure.stderr.toString("utf8") : "";
-  const said = stderr.split("\n").map((line3) => line3.trim()).find((line3) => line3.length > 0) ?? (typeof failure.status === "number" ? `exit status ${failure.status}` : String(failure.message ?? "unknown error").split("\n")[0]);
-  return `${command} failed: ${said}`;
-}
-function firstLine2(error) {
-  return (error instanceof Error ? error.message : String(error)).split("\n")[0] ?? "";
-}
-function runGit2(args, cwd) {
-  try {
-    return execFileSync7("git", args, {
-      cwd,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-  } catch (error) {
-    throw Object.assign(new Error(gitFailure(args, error)), { status: error.status });
-  }
-}
-var systemGit = {
-  hasCommit(sha, cwd) {
-    try {
-      runGit2(["cat-file", "-e", `${sha}^{commit}`], cwd);
-      return true;
-    } catch {
-      return false;
-    }
-  },
-  isAncestor(ancestor, descendant, cwd) {
-    try {
-      runGit2(["merge-base", "--is-ancestor", ancestor, descendant], cwd);
-      return true;
-    } catch (error) {
-      if (error.status === 1) return false;
-      throw error;
-    }
-  },
-  mergeCommits(since, head, cwd) {
-    return runGit2(["rev-list", "--merges", `${since}..${head}`], cwd).split("\n").filter((sha) => sha.length > 0);
-  },
-  changedPaths(since, head, cwd) {
-    return runGit2(["diff", "--name-only", "--no-renames", "-z", since, head], cwd).split("\0").filter((path) => path.length > 0);
-  },
-  commitCount(since, head, cwd) {
-    const count3 = Number(runGit2(["rev-list", "--count", `${since}..${head}`], cwd).trim());
-    if (!Number.isSafeInteger(count3) || count3 < 0) throw new Error("git returned an invalid commit count");
-    return count3;
-  },
-  mergeBase(left, right, cwd) {
-    const base = runGit2(["merge-base", left, right], cwd).trim();
-    if (!/^[0-9a-f]{7,64}$/.test(base)) throw new Error("git returned no merge base");
-    return base;
-  },
-  diffText(from, to, paths, cwd) {
-    return runGit2(
-      ["diff", "--no-ext-diff", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", from, to, "--", ...topPathspecs(paths)],
-      cwd
-    );
-  },
-  replay(from, onto, head, cwd) {
-    const version = /(\d+)\.(\d+)/.exec(runGit2(["version"], cwd));
-    const [major, minor] = [Number(version?.[1] ?? 0), Number(version?.[2] ?? 0)];
-    if (major < REPLAY_GIT[0] || major === REPLAY_GIT[0] && minor < REPLAY_GIT[1]) {
-      throw new Error(
-        `git ${version?.[0] ?? "(unknown version)"} cannot replay the reviewed head onto a new base; that needs git ${REPLAY_GIT.join(".")} or later`
-      );
-    }
-    const args = ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", "--merge-base", from, onto, head];
-    let output;
-    let conflicted = false;
-    try {
-      output = execFileSync7("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
-    } catch (error) {
-      const failure = error;
-      if (failure.status !== 1 || typeof failure.stdout !== "string") throw new Error(gitFailure(args, error));
-      output = failure.stdout;
-      conflicted = true;
-    }
-    const [tree, ...paths] = output.split("\0").filter((part) => part.length > 0);
-    if (tree === void 0 || !/^[0-9a-f]{40,64}$/.test(tree)) throw new Error("git merge-tree returned no tree");
-    return { tree, conflicts: conflicted ? [...new Set(paths)].sort() : [] };
-  }
-};
-function topPathspecs(paths) {
-  return paths.map((path) => `:(top,literal)${path}`);
-}
-function full(cause, priorRun, detail) {
-  return {
-    kind: "full",
-    cause,
-    since: priorRun?.headRef ?? null,
-    priorRunId: priorRun?.reviewRunId ?? null,
-    ...detail === void 0 ? {} : { detail }
-  };
-}
-function changedReviewedFiles(files2, changedPaths) {
-  const changed = new Set(changedPaths);
-  const selected = /* @__PURE__ */ new Set();
-  for (const file2 of files2) {
-    if (changed.has(file2.path) || file2.previousPath !== void 0 && changed.has(file2.previousPath)) {
-      selected.add(file2.path);
-    }
-  }
-  return [...selected].sort();
-}
-function hunkKey(body) {
-  const keep = /* @__PURE__ */ new Set();
-  body.forEach((line3, index) => {
-    if (!line3.startsWith("+") && !line3.startsWith("-") && !line3.startsWith("\\")) return;
-    keep.add(index);
-    if (index > 0 && body[index - 1].startsWith(" ")) keep.add(index - 1);
-    if (index + 1 < body.length && body[index + 1].startsWith(" ")) keep.add(index + 1);
-  });
-  return [...keep].sort((x, y) => x - y).map((index) => body[index]).join("\n");
-}
-function gitHeaderPath(line3) {
-  const quoted = /^diff --git (?:"(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(line3);
-  const raw = quoted?.[1] ?? /^diff --git (?:a\/)?.+? (b\/.+)$/.exec(line3)?.[1] ?? null;
-  return raw === null ? null : unquoteGitPath(raw).replace(/^b\//, "");
-}
-function ownDiffFiles(patch) {
-  const files2 = /* @__PURE__ */ new Map();
-  let file2 = null;
-  let hunk = null;
-  const closeHunk = () => {
-    while (hunk !== null && hunk.length > 1 && hunk.at(-1) === "") hunk.pop();
-    if (file2 !== null && hunk !== null) {
-      file2.hunks.push({ key: hunkKey(hunk.slice(1)) });
-    }
-    hunk = null;
-  };
-  for (const raw of patch.split("\n")) {
-    const line3 = raw;
-    if (line3.startsWith("diff --git ")) {
-      closeHunk();
-      const path = gitHeaderPath(line3.endsWith("\r") ? line3.slice(0, -1) : line3);
-      file2 = { hunks: [] };
-      if (path !== null) files2.set(path, file2);
-      continue;
-    }
-    if (line3.startsWith("@@ ")) {
-      closeHunk();
-      hunk = [line3];
-      continue;
-    }
-    if (hunk !== null) {
-      if (line3.startsWith("+") || line3.startsWith("-") || line3.startsWith(" ") || line3.startsWith("\\") || line3 === "") {
-        hunk.push(line3);
-        continue;
-      }
-      closeHunk();
-    }
-  }
-  closeHunk();
-  return files2;
-}
-function planScope(options) {
-  const prior = options.priorRun;
-  const only = (scope) => ({ scope, interdiffPatch: null });
-  if (options.forceFull) return only(full("requested", prior));
-  if (prior === null) return only(full("no-prior-review", null));
-  if (prior.headRef === options.head) return only(full("no-new-commits", prior));
-  if (options.truncated) return only(full("truncated", prior));
-  try {
-    const git6 = options.git ?? systemGit;
-    if (!options.headAvailable) {
-      return only(full("compare-unavailable", prior, `the head ${options.head.slice(0, 7)} is not in this clone`));
-    }
-    if (!git6.hasCommit(prior.headRef, options.cwd)) {
-      const why = options.fetchPriorHead?.(prior.headRef) ?? null;
-      if (!git6.hasCommit(prior.headRef, options.cwd)) {
-        const missing = `the previous head ${prior.headRef.slice(0, 7)} is not in this clone`;
-        return only(full("compare-unavailable", prior, why === null ? missing : `${missing}; ${why}`));
-      }
-    }
-    const ancestor = git6.isAncestor(prior.headRef, options.head, options.cwd);
-    const merged = ancestor && git6.mergeCommits(prior.headRef, options.head, options.cwd).length > 0;
-    if (options.base !== void 0) {
-      return ownDiffScope(options, prior, git6, ancestor, merged);
-    }
-    if (!ancestor) return only(full("history-rewritten", prior));
-    if (merged) return only(full("base-merged", prior));
-    const files2 = changedReviewedFiles(
-      options.reviewedFiles,
-      git6.changedPaths(prior.headRef, options.head, options.cwd)
-    );
-    if (files2.length === 0) return only(full("base-sync-only", prior));
-    return only(incremental(options, prior, git6, files2));
-  } catch (error) {
-    return only(full("compare-unavailable", prior, firstLine2(error)));
-  }
-}
-function incremental(options, prior, git6, files2) {
-  return {
-    kind: "incremental",
-    since: prior.headRef,
-    priorRunId: prior.reviewRunId,
-    priorReviewedAt: prior.createdAt,
-    commits: git6.commitCount(prior.headRef, options.head, options.cwd),
-    files: files2
-  };
-}
-function ownDiffScope(options, prior, git6, ancestor, merged) {
-  const base = options.base;
-  if (git6.mergeBase === void 0 || git6.diffText === void 0) {
-    return { scope: full("compare-unavailable", prior, "this git surface cannot read an own diff"), interdiffPatch: null };
-  }
-  if (!git6.hasCommit(base, options.cwd)) {
-    return { scope: full("compare-unavailable", prior, `the base ${base.slice(0, 7)} is not in this clone`), interdiffPatch: null };
-  }
-  const mergeBase = git6.mergeBase(base, options.head, options.cwd);
-  const priorMergeBase = git6.mergeBase(base, prior.headRef, options.cwd);
-  const paths = pullRequestPaths(options, prior, git6, priorMergeBase, mergeBase);
-  if (priorMergeBase === mergeBase) {
-    return interdiffFrom(options, prior, git6, prior.headRef, mergeBase, paths.all, ancestor ? "base-sync-only" : "history-rewritten");
-  }
-  if (git6.replay === void 0) {
-    return { scope: full("compare-unavailable", prior, "this git surface cannot replay the reviewed head"), interdiffPatch: null };
-  }
-  const replayed = git6.replay(priorMergeBase, mergeBase, prior.headRef, options.cwd);
-  return interdiffFrom(
-    options,
-    prior,
-    git6,
-    replayed.tree,
-    mergeBase,
-    paths.all,
-    !ancestor ? "history-rewritten" : merged ? "base-merged" : "base-sync-only",
-    replayed.conflicts,
-    paths.withdrawn,
-    priorMergeBase
-  );
-}
-function pullRequestPaths(options, prior, git6, priorMergeBase, mergeBase) {
-  const reviewed = options.reviewedFiles.flatMap(
-    (file2) => file2.previousPath === void 0 ? [file2.path] : [file2.path, file2.previousPath]
-  );
-  const current = new Set(git6.changedPaths(mergeBase, options.head, options.cwd));
-  const withdrawn = git6.changedPaths(priorMergeBase, prior.headRef, options.cwd).filter((path) => !current.has(path));
-  return { all: [.../* @__PURE__ */ new Set([...reviewed, ...options.deletedFiles ?? [], ...withdrawn])], withdrawn };
-}
-function patchSections(patch) {
-  const sections2 = /* @__PURE__ */ new Map();
-  const starts = [...patch.matchAll(/^diff --git .*$/gm)];
-  starts.forEach((match, index) => {
-    const end = starts[index + 1]?.index ?? patch.length;
-    const header = match[0].endsWith("\r") ? match[0].slice(0, -1) : match[0];
-    const path = gitHeaderPath(header);
-    if (path !== null) sections2.set(path, patch.slice(match.index, end));
-  });
-  return sections2;
-}
-function sectionHunks(section2) {
-  const parts = section2.split(/^(?=@@ )/m);
-  const header = parts[0].startsWith("@@ ") ? "" : parts.shift();
-  const hunks = [];
-  for (const text4 of parts) {
-    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text4);
-    if (numbers === null) return null;
-    const start = Number(numbers[1]);
-    const count3 = numbers[2] === void 0 ? 1 : Number(numbers[2]);
-    hunks.push({ text: text4, first: start, last: count3 === 0 ? start + 1 : start + count3 - 1 });
-  }
-  return { header, hunks };
-}
-function narrowToResolution(own, resolution) {
-  if (resolution === void 0) return null;
-  const ownHunks = sectionHunks(own);
-  const touched = sectionHunks(resolution);
-  if (ownHunks === null || touched === null || ownHunks.hunks.length === 0 || touched.hunks.length === 0) return null;
-  const meets = (left, right) => left.first <= right.last && right.first <= left.last;
-  const kept = /* @__PURE__ */ new Set();
-  for (const change of touched.hunks) {
-    const hits = ownHunks.hunks.filter((hunk) => meets(hunk, change));
-    if (hits.length === 0) return null;
-    for (const hit of hits) kept.add(hit);
-  }
-  return ownHunks.header + ownHunks.hunks.filter((hunk) => kept.has(hunk)).map((hunk) => hunk.text).join("");
-}
-function hunkChanges(hunk) {
-  const [header, ...body] = hunk.text.split("\n");
-  const numbers = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(header);
-  let line3 = Number(numbers[1]) + (numbers[2] === "0" ? 1 : 0);
-  let headLine = Number(numbers[3]) + (numbers[4] === "0" ? 1 : 0);
-  const changes = [];
-  let change;
-  let side;
-  for (const text4 of body) {
-    if (text4.startsWith("-") || text4.startsWith("+")) {
-      if (change === void 0) {
-        change = { start: line3, headStart: headLine, removed: [], added: [] };
-        changes.push(change);
-      }
-      side = text4.startsWith("-") ? change.removed : change.added;
-      side.push(text4.slice(1));
-      if (text4.startsWith("-")) line3++;
-      else headLine++;
-    } else if (text4.startsWith("\\")) {
-      side?.push(text4);
-    } else {
-      change = void 0;
-      side = void 0;
-      if (text4.startsWith(" ")) {
-        line3++;
-        headLine++;
-      }
-    }
-  }
-  return changes;
-}
-function withoutInheritedRuns(hunk, isInherited) {
-  const runs = hunkChanges(hunk);
-  const [header, ...body] = hunk.text.split("\n");
-  const parsed2 = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(header);
-  const kept = [];
-  let index = -1;
-  let inRun = false;
-  let dropping = false;
-  let previousDropped = false;
-  for (const text4 of body) {
-    const edit2 = text4.startsWith("-") || text4.startsWith("+");
-    if (text4.startsWith("\\")) {
-      if (!previousDropped) kept.push(text4);
-      continue;
-    }
-    if (edit2 && !inRun) {
-      inRun = true;
-      index += 1;
-      dropping = isInherited(runs[index]);
-    } else if (!edit2) {
-      inRun = false;
-      dropping = false;
-    }
-    if (dropping && text4.startsWith("-")) {
-      previousDropped = true;
-      continue;
-    }
-    previousDropped = false;
-    kept.push(dropping ? ` ${text4.slice(1)}` : text4);
-  }
-  const oldCount = kept.filter((text4) => text4.startsWith(" ") || text4.startsWith("-")).length;
-  const newCount = kept.filter((text4) => text4.startsWith(" ") || text4.startsWith("+")).length;
-  return [`@@ -${parsed2[1]},${oldCount} +${parsed2[2]},${newCount} @@${parsed2[3]}`, ...kept].join("\n");
-}
-function withoutBaseChanges(delta, base, baseDelta) {
-  if (base === void 0 || baseDelta === void 0) return { text: delta, mixed: false };
-  const changes = sectionHunks(delta);
-  const baseHunks = sectionHunks(base);
-  const movedBase = sectionHunks(baseDelta);
-  if (changes === null || baseHunks === null || movedBase === null || changes.hunks.length === 0 || baseHunks.hunks.length === 0 || movedBase.hunks.length === 0 || /^(?:old mode|new mode|new file mode|deleted file mode|rename |copy )/m.test(changes.header)) return null;
-  const key2 = (change, coordinate) => JSON.stringify([change[coordinate], change.removed, change.added]);
-  const meets = (left, right, coordinate) => {
-    const side = coordinate === "start" ? "removed" : "added";
-    return left[coordinate] <= right[coordinate] + right[side].length && right[coordinate] <= left[coordinate] + left[side].length;
-  };
-  const moved = movedBase.hunks.flatMap(hunkChanges);
-  const movedKeys = new Set(moved.map((change) => key2(change, "headStart")));
-  const compared = baseHunks.hunks.flatMap(hunkChanges);
-  const baseChanges = compared.filter((change) => movedKeys.has(key2(change, "headStart")));
-  const ambiguous = compared.filter((change) => !movedKeys.has(key2(change, "headStart")) && moved.some(
-    (other) => meets(change, other, "headStart") && !(change.headStart === other.headStart && change.removed.length === 1 && other.removed.length === 1 && change.added.length === 1 && other.added.length === 1 && change.added[0] === other.added[0])
-  ));
-  const baseKeys = new Set(baseChanges.map((change) => key2(change, "start")));
-  const isInherited = (edit2) => baseKeys.has(key2(edit2, "start"));
-  const kept = [];
-  let mixed = false;
-  for (const hunk of changes.hunks) {
-    const edits = hunkChanges(hunk);
-    const inherited = edits.filter(isInherited);
-    if (inherited.length === edits.length) continue;
-    const overlapsBase = edits.some(
-      (edit2) => !isInherited(edit2) && (ambiguous.some((other) => meets(edit2, other, "start")) || baseChanges.some(
-        (other) => meets(edit2, other, "start") && (other.added.length === 0 || other.added.some((line3) => edit2.added.includes(line3)))
-      ))
-    );
-    if (overlapsBase) mixed = true;
-    kept.push(inherited.length === 0 ? hunk.text : withoutInheritedRuns(hunk, isInherited));
-  }
-  return { text: kept.length === 0 ? "" : changes.header + kept.join(""), mixed };
-}
-function hasReplayMarkers(section2) {
-  return /^-<{7} /m.test(section2) && /^->{7} /m.test(section2);
-}
-function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedReason, conflicts = [], withdrawn = [], priorMergeBase = mergeBase) {
-  const diffText = git6.diffText;
-  const read = (left, list2) => list2.length === 0 ? "" : diffText(left, options.head, list2, options.cwd);
-  const wanted = new Set(paths);
-  const conflicted = conflicts.filter((path) => wanted.has(path));
-  const own = patchSections(read(mergeBase, conflicted));
-  const resolutions = patchSections(read(from, [...own.keys()]));
-  const sinceReview = patchSections(read(prior.headRef, [...own.keys()]));
-  const baseChanges = patchSections(own.size === 0 ? "" : diffText(prior.headRef, mergeBase, [...own.keys()], options.cwd));
-  const baseDelta = patchSections(own.size === 0 ? "" : diffText(priorMergeBase, mergeBase, [...own.keys()], options.cwd));
-  const narrowed = [];
-  const whole = [];
-  const mixed = [];
-  const resolved = [];
-  for (const [path, section2] of own) {
-    const delta = sinceReview.get(path);
-    if (delta === void 0) continue;
-    const fresh = withoutBaseChanges(delta, baseChanges.get(path), baseDelta.get(path));
-    if (fresh === null) {
-      return {
-        scope: full("compare-unavailable", prior, `read in full after a conflicting replay: the two-head diff of ${path} could not be read hunk by hunk`),
-        interdiffPatch: null
-      };
-    }
-    if (fresh.text.length === 0) continue;
-    if (fresh.mixed) mixed.push(path);
-    else if (narrowToResolution(section2, resolutions.get(path)) === null) whole.push(path);
-    else narrowed.push(path);
-    resolved.push(fresh.text);
-  }
-  const rest = paths.filter((path) => !own.has(path));
-  const leaked = [];
-  const dropped = [];
-  const outsideSections = [...patchSections(read(from, rest))].map(([path, section2]) => {
-    if (!hasReplayMarkers(section2)) return section2;
-    const ownSection = patchSections(read(mergeBase, [path])).get(path);
-    if (ownSection === void 0) {
-      dropped.push(path);
-      return "";
-    }
-    leaked.push(path);
-    return ownSection;
-  });
-  const outside = outsideSections.join("");
-  const patch = [outside, ...resolved].filter((part) => part.length > 0).join("");
-  const notes = [
-    narrowed.length === 0 ? null : `narrowed to the merge resolution after a conflicting replay: ${narrowed.sort().join(", ")}`,
-    whole.length === 0 ? null : `read as the two-head diff minus base changes after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(", ")}`,
-    mixed.length === 0 ? null : `kept whole hunks where the base's and the author's edits could not be separated after a conflicting replay: ${mixed.sort().join(", ")}`,
-    leaked.length === 0 ? null : `read as the pull request's own diff after a conflicting replay, so no conflict marker is shown: ${leaked.sort().join(", ")}`
-  ].filter((note) => note !== null);
-  const detail = notes.length === 0 ? {} : { detail: notes.join("; ") };
-  let absorbedList = [];
-  const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true));
-  if (from !== prior.headRef && candidates.length > 0) {
-    const differs2 = new Set(git6.changedPaths(from, options.head, options.cwd));
-    absorbedList = candidates.filter((path) => !differs2.has(path)).sort();
-  }
-  const absorbed = {
-    ...absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList },
-    ...dropped.length === 0 ? {} : { noLongerChanged: dropped.sort() }
-  };
-  const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
-  if (patch.trim().length === 0) {
-    return { scope: { kind: "unchanged", ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null };
-  }
-  const reviewed = /* @__PURE__ */ new Map();
-  for (const file2 of options.reviewedFiles) {
-    reviewed.set(file2.path, file2.path);
-    if (file2.previousPath !== void 0) reviewed.set(file2.previousPath, file2.path);
-  }
-  const files2 = /* @__PURE__ */ new Set();
-  let hunks = 0;
-  for (const [path, file2] of ownDiffFiles(patch)) {
-    files2.add(reviewed.get(path) ?? path);
-    hunks += file2.hunks.length;
-  }
-  return {
-    scope: { kind: "interdiff", ...common, files: [...files2].sort(), hunks, ...detail, ...absorbed },
-    interdiffPatch: patch
-  };
-}
-
-// plugins/review-voice/src/diff/carry.ts
-import { execFileSync as execFileSync8 } from "node:child_process";
-
-// plugins/review-voice/src/diff/reanchor.ts
-function candidateAnchor(hunks, candidate) {
-  return candidate.anchor === "stale-consumer" ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null) : classifyAnchor(hunks, candidate.path, candidate.line);
-}
-var isRecord3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-var idOf = (entry) => entry["candidateId"] ?? entry["candidate_id"];
-function reanchorScores(scores, candidateId, target, hunks) {
-  if (!isRecord3(scores) || !Array.isArray(scores["scores"])) {
-    return { ok: false, refused: "expected the JSON `RV score` printed, with a `scores` list" };
-  }
-  const entries = scores["scores"].filter(isRecord3);
-  const entry = entries.find((e) => idOf(e) === candidateId);
-  if (entry === void 0) return { ok: false, refused: `no scored candidate ${candidateId}` };
-  if (entry["eligible"] !== true) {
-    const why = typeof entry["rejectedBecause"] === "string" ? ` (${entry["rejectedBecause"]})` : "";
-    return {
-      ok: false,
-      refused: `${candidateId} is not eligible${why}; re-anchoring keeps a score, it does not make one. Re-run the analyst and score.`
-    };
-  }
-  const eligible = Array.isArray(scores["eligible"]) ? scores["eligible"].filter(isRecord3) : [];
-  const shipped = eligible.find((e) => idOf(e) === candidateId);
-  if (shipped?.["anchor"] === "stale-consumer" || entry["anchorCheck"]?.kind === "stale-consumer") {
-    return {
-      ok: false,
-      refused: `${candidateId} is a stale consumer on unchanged code, so a new line cannot be checked against the diff. Re-run the analyst.`
-    };
-  }
-  if (typeof entry["path"] !== "string" || !Number.isInteger(entry["line"])) {
-    return { ok: false, refused: `scored candidate ${candidateId} has no path and line` };
-  }
-  const from = { path: entry["path"], line: entry["line"] };
-  const check = classifyAnchor(hunks, target.path ?? from.path, target.line);
-  if (!check.ok) return { ok: false, refused: `${candidateId} ${reason(check)}` };
-  const to = { path: check.path, line: check.line };
-  const taken = entries.find(
-    (e) => idOf(e) !== candidateId && e["eligible"] === true && e["path"] === to.path && e["line"] === to.line
-  );
-  if (taken !== void 0) {
-    return { ok: false, refused: `${String(idOf(taken))} is already anchored at ${to.path}:${to.line}` };
-  }
-  const moved = (e) => idOf(e) === candidateId ? { ...e, path: to.path, line: to.line, reanchoredFrom: from, ..."anchorCheck" in e ? { anchorCheck: check } : {} } : e;
-  const updated = {
-    ...scores,
-    scores: scores["scores"].map((e) => isRecord3(e) ? moved(e) : e),
-    ...Array.isArray(scores["eligible"]) ? { eligible: scores["eligible"].map((e) => isRecord3(e) ? moved(e) : e) } : {}
-  };
-  return { ok: true, updated, from, to, anchorCheck: check };
-}
-function reanchorCandidates(parsed2, candidateId, to) {
-  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord3(parsed2) && Array.isArray(parsed2["candidates"]) ? parsed2["candidates"] : null;
-  if (list2 === null) return null;
-  if (!list2.some((c) => isRecord3(c) && idOf(c) === candidateId)) return null;
-  const rewritten = list2.map((c) => {
-    if (!(isRecord3(c) && idOf(c) === candidateId)) return c;
-    const moved = c["path"] !== to.path || c["line"] !== to.line;
-    const { suggested_patch: _patch, ...rest } = c;
-    return { ...moved ? rest : c, path: to.path, line: to.line };
-  });
-  return Array.isArray(parsed2) ? rewritten : { ...parsed2, candidates: rewritten };
-}
-
-// plugins/review-voice/src/diff/carry.ts
-var SERIOUS_SEVERITIES = ["blocking", "important"];
-function seriousNotCarried(notCarried) {
-  return notCarried.filter((f) => f.severity !== void 0 && SERIOUS_SEVERITIES.includes(f.severity.toLowerCase()));
-}
-var NEIGHBOURHOOD = 2;
-function commitReadable(ref, cwd) {
-  try {
-    execFileSync8("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-function oldSideHunks(patch) {
-  const hunks = [];
-  for (const line3 of patch.split("\n")) {
-    const match = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line3);
-    if (match === null) continue;
-    hunks.push({
-      oldStart: Number(match[1]),
-      oldCount: match[2] === void 0 ? 1 : Number(match[2]),
-      newCount: match[3] === void 0 ? 1 : Number(match[3])
-    });
-  }
-  return hunks;
-}
-function remapLine(hunks, line3) {
-  const low = line3 - NEIGHBOURHOOD;
-  const high = line3 + NEIGHBOURHOOD;
-  let shift = 0;
-  for (const hunk of hunks) {
-    const first = hunk.oldStart;
-    const last = hunk.oldCount === 0 ? hunk.oldStart + 1 : hunk.oldStart + hunk.oldCount - 1;
-    if (last >= low && first <= high) return { reason: "anchor or its neighbours changed" };
-    if (last < low) shift += hunk.newCount - hunk.oldCount;
-  }
-  return { line: line3 + shift };
-}
-var CarryError = class extends Error {
-};
-function gitOut(args, cwd) {
-  try {
-    return execFileSync8("git", args, {
-      cwd,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-  } catch (error) {
-    throw new CarryError(`git ${args.join(" ")} failed: ${error.message}`);
-  }
-}
-function existsAt(ref, path, cwd) {
-  try {
-    execFileSync8("git", ["cat-file", "-e", `${ref}:${path}`], { cwd, stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-function followLine(previousHead, head, path, line3, cwd) {
-  if (!existsAt(head, path, cwd)) return { reason: "file deleted or renamed" };
-  const patch = gitOut(
-    ["diff", "--unified=0", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", previousHead, head, "--", ...topPathspecs([path])],
-    cwd
-  );
-  return remapLine(oldSideHunks(patch), line3);
-}
-function rewriteAnchor(text4, path, oldLine, line3) {
-  return text4.replace(`\`${path}:${oldLine}\``, `\`${path}:${line3}\``);
-}
-function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map(), noLongerChanged = /* @__PURE__ */ new Set()) {
-  for (const ref of [previousHead, head]) {
-    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
-  }
-  const carried = [];
-  const notCarried = [];
-  const heldBack = [];
-  const settled = [];
-  for (const finding of findings) {
-    const holdReason = hold.get(finding.findingId);
-    if (holdReason !== void 0) {
-      heldBack.push({
-        findingId: finding.findingId,
-        path: finding.path,
-        line: finding.line,
-        reason: holdReason,
-        ...finding.severity === void 0 ? {} : { severity: finding.severity }
-      });
-      continue;
-    }
-    if (noLongerChanged.has(finding.path)) {
-      settled.push({
-        findingId: finding.findingId,
-        path: finding.path,
-        line: finding.line,
-        reason: "file no longer changed by the pull request",
-        ...finding.severity === void 0 ? {} : { severity: finding.severity }
-      });
-      continue;
-    }
-    const moved = followLine(previousHead, head, finding.path, finding.line, cwd);
-    if ("reason" in moved) {
-      notCarried.push({
-        findingId: finding.findingId,
-        path: finding.path,
-        line: finding.line,
-        reason: moved.reason,
-        ...finding.severity === void 0 ? {} : { severity: finding.severity }
-      });
-      continue;
-    }
-    carried.push({
-      findingId: finding.findingId,
-      path: finding.path,
-      oldLine: finding.line,
-      line: moved.line,
-      text: rewriteAnchor(finding.text, finding.path, finding.line, moved.line)
-    });
-  }
-  const output = findings.length === settled.length ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join("\n\n");
-  return { carried, notCarried, heldBack, settled, output };
-}
-function findingBody(text4) {
-  const joined = text4.replace(/\s+/g, " ").trim();
-  const match = /^\[[a-z_]+\]\s+`[^`]+:\d+`\s*(.*)$/i.exec(joined);
-  return match === null ? joined : match[1] ?? "";
-}
-function matchCarried(recorded2, carried) {
-  const matches = /* @__PURE__ */ new Map();
-  const mismatches = [];
-  const used = /* @__PURE__ */ new Set();
-  for (const finding of recorded2) {
-    const body = findingBody(finding.text);
-    const source = carried.find(
-      (c) => !used.has(c.findingId) && c.path === finding.path && findingBody(c.text) === body
-    );
-    if (source === void 0) continue;
-    used.add(source.findingId);
-    if (source.line !== finding.line) {
-      mismatches.push(`${finding.findingId} (${finding.path}:${finding.line}) repeats ${source.findingId}, which carries to line ${source.line}`);
-      continue;
-    }
-    matches.set(finding.findingId, source.findingId);
-  }
-  return { matches, mismatches };
-}
-function changedFiles(previousHead, head, cwd) {
-  const out = gitOut(["diff", "--name-only", "--no-renames", "-z", previousHead, head], cwd);
-  return new Set(out.split("\0").filter((name) => name.length > 0));
-}
-function escapeRegExp2(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function namesFile2(text4, path) {
-  if (text4.includes(path)) return true;
-  const name = path.split("/").pop() ?? path;
-  return new RegExp(`(^|[^\\w./-])${escapeRegExp2(name)}($|[^\\w-])`).test(text4);
-}
-function carryCandidates(candidates, previousHead, head, hunks, cwd) {
-  for (const ref of [previousHead, head]) {
-    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
-  }
-  const changed = changedFiles(previousHead, head, cwd);
-  const carried = [];
-  const refused = [];
-  for (const candidate of candidates) {
-    const refuse = (reason2) => {
-      refused.push({ candidateId: candidate.candidateId, path: candidate.path, line: candidate.line, reason: reason2 });
-    };
-    if (changed.has(candidate.path)) {
-      refuse(`${candidate.path} changed between the two heads`);
-      continue;
-    }
-    const cause = candidate.anchor === "stale-consumer" ? candidate.causedBy ?? null : null;
-    if (cause !== null && changed.has(cause.path)) {
-      refuse(`the file of its cause, ${cause.path}, changed between the two heads`);
-      continue;
-    }
-    const named = [...changed].find((path) => (candidate.texts ?? []).some((text4) => namesFile2(text4, path)));
-    if (named !== void 0) {
-      refuse(`its claim, evidence or verification names ${named}, which changed between the two heads`);
-      continue;
-    }
-    const moved = followLine(previousHead, head, candidate.path, candidate.line, cwd);
-    if ("reason" in moved) {
-      refuse(`${candidate.path}:${candidate.line}: ${moved.reason}`);
-      continue;
-    }
-    let movedCause;
-    if (candidate.anchor === "stale-consumer") {
-      const from = candidate.causedBy ?? null;
-      if (from === null) {
-        refuse("a stale consumer with no caused_by");
-        continue;
-      }
-      const followed = followLine(previousHead, head, from.path, from.line, cwd);
-      if ("reason" in followed) {
-        refuse(`its cause ${from.path}:${from.line}: ${followed.reason}`);
-        continue;
-      }
-      movedCause = { path: from.path, oldLine: from.line, line: followed.line };
-    }
-    const check = candidateAnchor(hunks, {
-      path: candidate.path,
-      line: moved.line,
-      anchor: candidate.anchor,
-      causedBy: movedCause === void 0 ? candidate.causedBy : { path: movedCause.path, line: movedCause.line }
-    });
-    if (!check.ok) {
-      refuse(`at the new head it ${reason(check)}`);
-      continue;
-    }
-    carried.push({
-      candidateId: candidate.candidateId,
-      path: candidate.path,
-      oldLine: candidate.line,
-      line: moved.line,
-      ...movedCause === void 0 ? {} : { causedBy: movedCause }
-    });
-  }
-  return { carried, refused };
-}
-
-// plugins/review-voice/src/store/runs.ts
-function partlyAddressedOf(value) {
-  if (typeof value !== "object" || value === null) return void 0;
-  const v = value;
-  if (v["kind"] !== "own-comment" || v["status"] !== "partly-addressed") return void 0;
-  const strings = (list2) => Array.isArray(list2) && list2.length > 0 && list2.every((item) => typeof item === "string") ? list2 : null;
-  const remaining = strings(v["remaining"]);
-  const addressed = strings(v["addressed"]);
-  if (remaining === null || addressed === null) return void 0;
-  if (typeof v["author"] !== "string" || typeof v["path"] !== "string" || !Number.isInteger(v["line"])) return void 0;
-  return {
-    status: "partly-addressed",
-    prior: {
-      author: v["author"],
-      path: v["path"],
-      line: v["line"],
-      ...Number.isInteger(v["commentId"]) ? { commentId: v["commentId"] } : {}
-    },
-    remaining,
-    addressed
-  };
-}
-var HELD_VERDICTS = [
-  "partly",
-  "refuted",
-  "unverified",
-  "repeat",
-  "below-gate",
-  "policy-suppressed",
-  "owner-declined",
-  "challenge-refuted",
-  "challenge-partly",
-  "restates-tool",
-  "reproduction-did-not-fail"
-];
-function heldProblem(entry) {
-  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "not an object";
-  const e = entry;
-  if (typeof e["path"] !== "string" || e["path"].length === 0) return "path must be a non-empty string";
-  if (!Number.isInteger(e["line"]) || e["line"] < 1) return "line must be a positive integer";
-  if (!HELD_VERDICTS.includes(e["verdict"])) return `verdict must be one of ${HELD_VERDICTS.join(", ")}`;
-  for (const key2 of ["source", "reason"]) {
-    const value = e[key2];
-    if (typeof value !== "string" || value.trim().length === 0) return `${key2} must be a non-empty string`;
-  }
-  for (const key2 of ["severity", "candidateId", "text"]) {
-    if (e[key2] !== void 0 && typeof e[key2] !== "string") return `${key2} must be a string when present`;
-  }
-  return null;
-}
-function parseCarryMarker(value) {
-  if (typeof value !== "object" || value === null) return null;
-  const v = value;
-  if (typeof v["since"] !== "string" || typeof v["head"] !== "string") return null;
-  const refused = Array.isArray(v["refused"]) ? v["refused"].filter((id) => typeof id === "string") : [];
-  const interdiffReviewed = v["interdiffReviewed"] === true;
-  return {
-    since: v["since"],
-    head: v["head"],
-    interdiffReviewed,
-    refused,
-    // Recomputed rather than trusted, so a hand-edited row cannot claim cover.
-    covered: interdiffReviewed && refused.length === 0 && v["covered"] === true,
-    ...typeof v["inheritedFrom"] === "string" ? { inheritedFrom: v["inheritedFrom"] } : {}
-  };
-}
-var CarryMismatch = class extends Error {
-};
-var ORIGINS = ["driver", "interactive", "watch", "action"];
-var PROVENANCE_MODES = ["fast", "standard", "thorough"];
-function independenceOf(origin) {
-  return origin === "interactive" ? "not-independent" : "independent";
-}
-function describeProvenance(provenance) {
-  if (provenance === null) return "Provenance not recorded";
-  const policy = provenance.policyVersions.length === 0 ? "none" : provenance.policyVersions.map((p) => `${p.scopeType}/${p.scopeKey} v${p.version}`).join(", ");
-  return `Provenance ${describeOrigin(provenance)}, plugin ${provenance.pluginVersion}, claude ${provenance.claudeVersion ?? "unknown"}, mode ${provenance.mode ?? "unknown"}, policy ${policy}`;
-}
-function describeOrigin(provenance) {
-  return `origin ${provenance.origin} (${provenance.independence})`;
-}
-function storedPolicyVersions(db, runId) {
-  const row = db.prepare("SELECT active_policy_versions_json FROM review_runs WHERE review_run_id = ?").get(runId);
-  if (row === void 0 || row.active_policy_versions_json === null) return null;
-  try {
-    const parsed2 = JSON.parse(row.active_policy_versions_json);
-    if (!Array.isArray(parsed2)) return null;
-    const versions = [];
-    for (const entry of parsed2) {
-      const p = typeof entry === "object" && entry !== null ? entry : {};
-      if (typeof p["scopeType"] !== "string" || typeof p["scopeKey"] !== "string" || typeof p["policyId"] !== "string" || typeof p["version"] !== "number") return null;
-      versions.push({ scopeType: p["scopeType"], scopeKey: p["scopeKey"], policyId: p["policyId"], version: p["version"] });
-    }
-    return versions;
-  } catch {
-    return null;
-  }
-}
-var reportedProvenance = /* @__PURE__ */ new Set();
-function storedProvenance(raw, reviewRunId) {
-  if (typeof raw !== "string") return null;
-  const malformed = () => {
-    if (!reportedProvenance.has(reviewRunId)) {
-      reportedProvenance.add(reviewRunId);
-      console.error(`The provenance recorded for run ${reviewRunId} is malformed; reading it as not recorded.`);
-    }
-    return null;
-  };
-  let value;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    return malformed();
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return malformed();
-  const v = value;
-  const origin = ORIGINS.find((known) => known === v["origin"]);
-  const mode = v["mode"] === null ? null : PROVENANCE_MODES.find((known) => known === v["mode"]) ?? void 0;
-  const policies = v["policyVersions"];
-  if (origin === void 0 || mode === void 0 || typeof v["pluginVersion"] !== "string" || !(v["claudeVersion"] === null || typeof v["claudeVersion"] === "string") || !Array.isArray(policies)) {
-    return malformed();
-  }
-  const policyVersions = [];
-  for (const entry of policies) {
-    const p = typeof entry === "object" && entry !== null ? entry : {};
-    if (typeof p["scopeType"] !== "string" || typeof p["scopeKey"] !== "string" || typeof p["policyId"] !== "string" || typeof p["version"] !== "number") {
-      return malformed();
-    }
-    policyVersions.push({ scopeType: p["scopeType"], scopeKey: p["scopeKey"], policyId: p["policyId"], version: p["version"] });
-  }
-  return {
-    origin,
-    // Recomputed, never read back, so a hand-edited row cannot claim independence.
-    independence: independenceOf(origin),
-    pluginVersion: v["pluginVersion"],
-    claudeVersion: v["claudeVersion"],
-    mode,
-    policyVersions
-  };
-}
-var OUTCOMES = ["reproduced", "did-not-fail", "did-not-run"];
-function reproductionOf(entry) {
-  const r = asRecord2(entry);
-  if (r === null || !Array.isArray(r["runs"]) || !OUTCOMES.includes(r["outcome"])) return null;
-  const texts = ["candidateId", "path", "runner", "file", "copy", "expected"];
-  if (texts.some((key2) => typeof r[key2] !== "string") || !Number.isInteger(r["line"])) return null;
-  const runs = [];
-  for (const raw of r["runs"]) {
-    const run = asRecord2(raw);
-    if (run === null || typeof run["reached"] !== "boolean" || typeof run["durationMs"] !== "number") return null;
-    runs.push({ exitCode: Number.isInteger(run["exitCode"]) ? run["exitCode"] : null, durationMs: run["durationMs"], reached: run["reached"] });
-  }
-  return {
-    candidateId: r["candidateId"],
-    path: r["path"],
-    line: r["line"],
-    runner: r["runner"],
-    file: r["file"],
-    copy: r["copy"],
-    expected: r["expected"],
-    outcome: r["outcome"],
-    ...typeof r["reason"] === "string" ? { reason: r["reason"] } : {},
-    runs
-  };
-}
-function recordedReproductions(report) {
-  const value = asRecord2(report);
-  if (value === null || !Array.isArray(value["reproductions"])) throw new Error("the reproductions report has no reproductions list");
-  return value["reproductions"].map((entry, index) => {
-    const record3 = reproductionOf(entry);
-    if (record3 === null) throw new Error(`reproductions entry ${index} is not a record reproduce writes`);
-    return record3;
-  });
-}
-function markHeld(records, held) {
-  const ids = new Set(held.filter((entry) => entry.verdict === "reproduction-did-not-fail").map((entry) => entry.candidateId));
-  return records.map((record3) => record3.outcome === "did-not-fail" && ids.has(record3.candidateId) ? { ...record3, held: true } : record3);
-}
-function storedReproductions(raw) {
-  if (!Array.isArray(raw)) return null;
-  return raw.map(reproductionOf).filter((record3) => record3 !== null);
-}
-var asRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-function recordedChecks(evidence, symbols) {
-  const report = asRecord2(evidence);
-  if (report === null) throw new Error("the evidence report is not an object");
-  const commands = report["commands"];
-  const didNotRun = report["didNotRun"];
-  if (!Array.isArray(commands)) throw new Error("the evidence report has no commands list");
-  if (!Array.isArray(didNotRun) || !didNotRun.every((name) => typeof name === "string")) {
-    throw new Error("the evidence report has no didNotRun list of names");
-  }
-  const skipped = typeof report["skipped"] === "string" && report["skipped"].trim() !== "" ? report["skipped"] : null;
-  const entries = commands.map((entry, index) => {
-    const command = asRecord2(entry);
-    if (command === null || typeof command["name"] !== "string") throw new Error(`commands entry ${index} has no name`);
-    return command;
-  });
-  const notRun = [...new Set(didNotRun)];
-  const staticRan = entries.filter((command) => !notRun.includes(command.name)).map((command) => ({
-    name: command.name,
-    exitCode: Number.isInteger(command["exitCode"]) ? command["exitCode"] : null,
-    signals: Array.isArray(command["signals"]) ? command["signals"].length : 0,
-    ...typeof command["version"] === "string" && command["version"] !== "" ? { version: command["version"] } : {}
-  }));
-  const staticDidNotRun = notRun.map((name) => {
-    const unavailable = entries.find((command) => command.name === name)?.["unavailable"];
-    return {
-      name,
-      reason: typeof unavailable === "string" && unavailable.trim() !== "" ? unavailable : skipped ?? "not run"
-    };
-  });
-  const search = asRecord2(symbols);
-  if (search === null || !Array.isArray(search["files"])) throw new Error("the symbols report has no files list");
-  const budget = asRecord2(search["budget"]);
-  return {
-    staticRan,
-    staticDidNotRun,
-    symbolsInconclusive: search["files"].filter((file2) => asRecord2(file2)?.["inconclusive"] === true).length,
-    symbolsBudgetExhausted: budget?.["exhausted"] === true
-  };
-}
-function storedChecks(raw) {
-  const value = asRecord2(raw);
-  if (value === null || !Array.isArray(value["staticRan"]) || !Array.isArray(value["staticDidNotRun"])) return null;
-  if (!Number.isInteger(value["symbolsInconclusive"]) || typeof value["symbolsBudgetExhausted"] !== "boolean") return null;
-  const ran = [];
-  for (const entry of value["staticRan"]) {
-    const c = asRecord2(entry);
-    if (c === null || typeof c["name"] !== "string" || !Number.isInteger(c["signals"])) return null;
-    ran.push({
-      name: c["name"],
-      exitCode: Number.isInteger(c["exitCode"]) ? c["exitCode"] : null,
-      signals: c["signals"],
-      ...typeof c["version"] === "string" ? { version: c["version"] } : {}
-    });
-  }
-  const didNot = [];
-  for (const entry of value["staticDidNotRun"]) {
-    const c = asRecord2(entry);
-    if (c === null || typeof c["name"] !== "string" || typeof c["reason"] !== "string") return null;
-    didNot.push({ name: c["name"], reason: c["reason"] });
-  }
-  return {
-    staticRan: ran,
-    staticDidNotRun: didNot,
-    symbolsInconclusive: value["symbolsInconclusive"],
-    symbolsBudgetExhausted: value["symbolsBudgetExhausted"]
-  };
-}
-function describeChecks(checks) {
-  if (checks === null) return "Checks not recorded";
-  const ran = checks.staticRan.map((c) => `${c.name} ran (exit ${c.exitCode ?? "none"}, ${c.signals} signal${c.signals === 1 ? "" : "s"})`);
-  const didNot = checks.staticDidNotRun.map((c) => `${c.name} did not run (${c.reason})`);
-  const staticParts = [...ran, ...didNot];
-  const symbols = checks.symbolsInconclusive === 0 ? "every symbol file finished" : `${checks.symbolsInconclusive} symbol file${checks.symbolsInconclusive === 1 ? "" : "s"} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}`;
-  return `Checks ${staticParts.length === 0 ? "no static checks" : staticParts.join("; ")}; ${symbols}`;
-}
-var basename4 = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
-function attribute(finding, hints, taken) {
-  const free = hints.filter((hint) => !taken.has(hint));
-  const exact = free.find((hint) => hint.path === finding.path && hint.line === finding.line);
-  if (exact !== void 0) return { hint: exact, how: "exact" };
-  const sameFile = free.filter(
-    (hint) => basename4(hint.path) === basename4(finding.path) && hint.line === finding.line
-  );
-  if (sameFile.length === 1) return { hint: sameFile[0], how: "basename" };
-  const sameLine = free.filter((hint) => hint.line === finding.line);
-  if (sameLine.length === 1) return { hint: sameLine[0], how: "line" };
-  return { hint: void 0, how: "none" };
-}
-var laneOf = (hint) => typeof hint?.lane === "string" && hint.lane.length > 0 ? hint.lane : "diff";
-var blockerClassOf = (hint) => {
-  const claimed = hint?.blocker_class ?? hint?.blockerClass;
-  return typeof claimed === "string" && claimed.length > 0 ? claimed : void 0;
-};
-function storedCandidate(hint) {
-  const blocker = hint.blocker_class ?? hint.blockerClass;
-  const { blockerClass: _camel, ...rest } = hint;
-  return { ...rest, lane: laneOf(hint), ...blocker === void 0 ? {} : { blocker_class: blocker } };
-}
-function patchPath(hint) {
-  const inside2 = hint.suggested_patch?.path;
-  return typeof inside2 === "string" ? inside2 : hint.path;
-}
-var TOOL_TEXT_CAP = 160;
-var MAX_CONVENTION_QUOTES = 2;
-function cut(text4, max) {
-  const points = [...text4];
-  return points.length > max ? `${points.slice(0, max - 1).join("")}\u2026` : text4;
-}
-var plainPath = (path) => posix3.normalize(path.split("\\").join("/")).replace(/^\.\//, "");
-function toolSignalFor(finding, signals) {
-  const path = plainPath(finding.path);
-  const signal2 = signals.find((entry) => entry.path === path && entry.line === finding.line);
-  if (signal2 === void 0) return void 0;
-  if (MACHINE_PATH.test(flatten(signal2.tool, Number.POSITIVE_INFINITY))) return void 0;
-  const shown = [signal2.evidence[0], signal2.claim].find(
-    (text4) => text4 !== void 0 && !MACHINE_PATH.test(flatten(text4, Number.POSITIVE_INFINITY))
-  );
-  if (shown === void 0) return void 0;
-  return { tool: signal2.tool, line: finding.line, text: cut(redactedAsPosted(shown), TOOL_TEXT_CAP) };
-}
-var redactedAsPosted = (text4) => redact(flatten(redact(text4).text, Number.POSITIVE_INFINITY)).text;
-var squashed = (text4) => text4.replace(/\s+/g, " ").trim();
-var QUOTED = /["\u201c]([^"\u201c\u201d]+)["\u201d]/g;
-function namesWhole(text4, name) {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\w./\\\\-])(?:\\./)?${escaped}(?![\\w/\\\\-]|\\.\\w)`).test(text4);
-}
-function documentNamed(text4, documents) {
-  const exact = documents.filter((doc) => doc.path !== "" && namesWhole(text4, doc.path)).sort((a, b) => b.path.length - a.path.length)[0];
-  if (exact !== void 0) return exact;
-  const base = (path) => path.split("/").pop() ?? path;
-  return documents.find((doc) => namesWhole(text4, base(doc.path)) && documents.filter((other) => base(other.path) === base(doc.path)).length === 1);
-}
-function conventionQuotesFor(evidence, documents) {
-  if (!Array.isArray(evidence) || documents.length === 0) return void 0;
-  const found = [];
-  for (const entry of evidence) {
-    if (found.length >= MAX_CONVENTION_QUOTES) break;
-    if (typeof entry !== "string") continue;
-    const document = documentNamed(entry, documents);
-    if (document === void 0) continue;
-    const content = squashed(document.content).toLowerCase();
-    const quote2 = [...entry.matchAll(QUOTED)].map((match) => squashed(match[1] ?? "")).find((segment) => segment.split(" ").length >= 4 && content.includes(segment.toLowerCase()));
-    if (quote2 !== void 0) found.push({ path: document.path, quote: redactedAsPosted(quote2) });
-  }
-  return found.length === 0 ? void 0 : found;
-}
-function assignIds(output, hints, facts = {}) {
-  const taken = /* @__PURE__ */ new Set();
-  return splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).filter((finding) => finding.severity !== null && finding.path !== null).map((finding, index) => {
-    const anchor = { path: finding.path, line: finding.line ?? 0 };
-    const { hint, how } = attribute(anchor, hints, taken);
-    if (hint !== void 0) taken.add(hint);
-    const partly = partlyAddressedOf(hint?.possibleRepeatOf);
-    const patch = suggestedPatchOf(hint?.suggested_patch);
-    const blockerClass = blockerClassOf(hint);
-    const ruleId = ruleIdFor(hint?.category, laneOf(hint), blockerClass);
-    const toolSignal = toolSignalFor(anchor, facts.toolSignals ?? []);
-    const conventionQuotes = conventionQuotesFor(hint?.evidence, facts.conventions ?? []);
-    return {
-      findingId: `rv_${String(index + 1).padStart(2, "0")}`,
-      severity: finding.severity,
-      path: anchor.path,
-      line: anchor.line,
-      text: finding.raw,
-      // Absent when a review ran without candidates to hand. Null is honest;
-      // guessing a category from the wording would invent evidence.
-      category: hint?.category,
-      lane: laneOf(hint),
-      ...blockerClass === void 0 ? {} : { blockerClass },
-      // Null when there is no category: a finding nothing classified has no rule.
-      ...ruleId === null ? {} : { ruleId },
-      // Stated so a disagreement between what the analyst cited and what
-      // shipped is visible rather than showing up as a missing category.
-      ...how === "exact" || how === "none" ? {} : { attributedBy: how },
-      ...how === "none" && hints.length > 0 ? { unattributed: true } : {},
-      ...partly === void 0 ? {} : { partlyAddressed: partly },
-      ...patch === null || hint === void 0 ? {} : { suggestedPatch: patch, suggestedPatchSource: { path: patchPath(hint), candidateId: typeof hint.candidate_id === "string" ? hint.candidate_id : null } },
-      ...toolSignal === void 0 ? {} : { toolSignal },
-      // Tied to the candidate that cited them, so the block shows them only
-      // beside that candidate's own verified score (as S14 ties a patch).
-      ...conventionQuotes === void 0 ? {} : { conventionQuotes, conventionQuotesCandidate: typeof hint?.candidate_id === "string" ? hint.candidate_id : null }
-    };
-  });
-}
-function hashDiff(diff) {
-  return createHash4("sha256").update(diff).digest("hex").slice(0, 32);
-}
-function recordRun(db, input) {
-  if ((input.bodyFindings?.length ?? 0) > 1) {
-    throw new Error("A review may record at most one body-only simplification finding.");
-  }
-  const reviewRunId = randomUUID3();
-  const findings = assignIds(input.output, input.candidates ?? [], { toolSignals: input.toolSignals, conventions: input.conventions });
-  if (input.carried !== void 0) {
-    const { matches, mismatches } = matchCarried(findings, input.carried.findings);
-    if (mismatches.length > 0) throw new CarryMismatch(mismatches.join("\n"));
-    for (const finding of findings) {
-      const from = matches.get(finding.findingId);
-      if (from !== void 0) finding.carriedFrom = { runId: input.carried.runId, findingId: from };
-    }
-  }
-  const policyVersions = input.provenance?.policyVersions ?? activePolicyVersions(db);
-  const provenance = input.provenance === void 0 ? null : {
-    origin: input.provenance.origin,
-    independence: independenceOf(input.provenance.origin),
-    pluginVersion: input.provenance.pluginVersion,
-    claudeVersion: input.provenance.claudeVersion,
-    mode: input.provenance.mode,
-    policyVersions
-  };
-  db.exec("SAVEPOINT record_run");
-  try {
-    db.prepare(
-      `INSERT INTO review_runs (
-         review_run_id, repository, base_ref, head_ref, diff_hash,
-         active_policy_versions_json, retrieved_precedents_json,
-         candidates_json, output_json, created_at, stages_json,
-         pull_number, scope_json, complexity_json, provenance_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      reviewRunId,
-      input.repository,
-      input.baseRef,
-      input.headRef,
-      hashDiff(input.diff),
-      JSON.stringify(policyVersions),
-      JSON.stringify(input.precedents ?? []),
-      JSON.stringify((input.candidates ?? []).map(storedCandidate)),
-      JSON.stringify({
-        output: input.output,
-        findings,
-        scores: input.scores ?? [],
-        verdicts: input.verdicts ?? [],
-        tieBreaks: input.tieBreaks ?? [],
-        held: input.held ?? [],
-        ...input.bodyFindings === void 0 || input.bodyFindings.length === 0 ? {} : { bodyFindings: input.bodyFindings },
-        ...input.carry === void 0 ? {} : { carry: input.carry },
-        ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps },
-        ...input.checks === void 0 ? {} : { checks: input.checks },
-        ...input.reproductions === void 0 ? {} : { reproductions: markHeld(input.reproductions, input.held ?? []) }
-      }),
-      (/* @__PURE__ */ new Date()).toISOString(),
-      JSON.stringify(input.stages ?? []),
-      input.pullNumber ?? null,
-      input.scope === void 0 ? null : JSON.stringify(input.scope),
-      input.complexity === void 0 || input.complexity === null ? null : JSON.stringify(input.complexity),
-      provenance === null ? null : JSON.stringify(provenance)
-    );
-    recordAudit(db, "review_run_recorded", { type: "review_run", id: reviewRunId }, {
-      repository: input.repository,
-      findingCount: findings.length,
-      ...provenance === null ? {} : { origin: provenance.origin }
-    });
-    db.exec("RELEASE record_run");
-  } catch (error) {
-    db.exec("ROLLBACK TO record_run");
-    db.exec("RELEASE record_run");
-    throw error;
-  }
-  return { reviewRunId, findings, provenance };
-}
-function storedComplexity(raw) {
-  if (typeof raw !== "string") return null;
-  try {
-    return parseComplexity(JSON.parse(raw));
-  } catch {
-    return null;
-  }
-}
-function storedScope(raw) {
-  if (typeof raw !== "string") return null;
-  try {
-    return parseReviewScope(JSON.parse(raw));
-  } catch {
-    return null;
-  }
-}
-function declineHeld(db, reviewRunId, at2, reason2) {
-  const row = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(reviewRunId);
-  if (row === void 0) return { ok: false, error: `No recorded run ${reviewRunId}.` };
-  const parsed2 = JSON.parse(row.output_json);
-  const held = Array.isArray(parsed2.held) ? parsed2.held : [];
-  const matching = held.filter((entry) => entry.path === at2.path && entry.line === at2.line);
-  if (matching.length === 0) {
-    const anchors = held.map((entry) => `${entry.path}:${entry.line}`);
-    return {
-      ok: false,
-      error: `No held finding at ${at2.path}:${at2.line} in run ${reviewRunId}. ${anchors.length === 0 ? "It holds none." : `Held: ${anchors.join(", ")}.`}`
-    };
-  }
-  for (const entry of matching) {
-    entry.verdict = "owner-declined";
-    entry.source = "owner";
-    entry.reason = reason2;
-  }
-  db.prepare("UPDATE review_runs SET output_json = ? WHERE review_run_id = ?").run(JSON.stringify(parsed2), reviewRunId);
-  recordAudit(db, "held_declined", { type: "review_run", id: reviewRunId }, { path: at2.path, line: at2.line });
-  return { ok: true, declined: matching.length };
-}
-function runDetail(db, reviewRunId) {
-  const row = reviewRunId === void 0 ? db.prepare("SELECT * FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get() : db.prepare("SELECT * FROM review_runs WHERE review_run_id = ?").get(reviewRunId);
-  if (row === void 0) return null;
-  const parsed2 = JSON.parse(row["output_json"]);
-  return {
-    reviewRunId: row["review_run_id"],
-    repository: row["repository"],
-    pullNumber: Number.isInteger(row["pull_number"]) ? row["pull_number"] : null,
-    scope: storedScope(row["scope_json"]),
-    complexity: storedComplexity(row["complexity_json"]),
-    provenance: storedProvenance(row["provenance_json"], row["review_run_id"]),
-    headRef: typeof row["head_ref"] === "string" ? row["head_ref"] : null,
-    createdAt: row["created_at"],
-    output: parsed2.output,
-    findings: parsed2.findings,
-    scores: parsed2.scores ?? [],
-    verdicts: parsed2.verdicts ?? [],
-    tieBreaks: Array.isArray(parsed2.tieBreaks) ? parsed2.tieBreaks : [],
-    held: Array.isArray(parsed2.held) ? parsed2.held : [],
-    carry: parseCarryMarker(parsed2.carry),
-    followUps: Array.isArray(parsed2.followUps) ? parsed2.followUps : [],
-    bodyFindings: Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : [],
-    checks: storedChecks(parsed2.checks),
-    reproductions: storedReproductions(parsed2.reproductions),
-    // Older rows predate the column, so absence is normal rather than an error.
-    stages: (() => {
-      const raw = row["stages_json"];
-      if (typeof raw !== "string") return [];
-      try {
-        const parsedStages = JSON.parse(raw);
-        return Array.isArray(parsedStages) ? parsedStages : [];
-      } catch {
-        return [];
-      }
-    })(),
-    precedents: JSON.parse(row["retrieved_precedents_json"])
-  };
-}
-function latestRunForPull(db, repository, pullNumber) {
-  const row = db.prepare(
-    `SELECT review_run_id, head_ref, created_at
-       FROM review_runs
-       WHERE LOWER(repository) = LOWER(?)
-         AND pull_number = ?
-         AND head_ref IS NOT NULL
-       ORDER BY created_at DESC, rowid DESC
-       LIMIT 1`
-  ).get(repository, pullNumber);
-  if (row === void 0) return null;
-  return {
-    reviewRunId: row.review_run_id,
-    headRef: row.head_ref,
-    createdAt: row.created_at
-  };
-}
-function recordedRunsForPull(db, repository, pullNumber, limit = 10) {
-  const rows = db.prepare(
-    `SELECT review_run_id, head_ref, created_at
-       FROM review_runs
-       WHERE LOWER(repository) = LOWER(?)
-         AND pull_number = ?
-         AND head_ref IS NOT NULL
-       ORDER BY created_at DESC, rowid DESC
-       LIMIT ?`
-  ).all(repository, pullNumber, limit);
-  return rows.map((row) => ({ runId: row.review_run_id, head: row.head_ref, createdAt: row.created_at }));
-}
-function latestRun(db) {
-  const row = db.prepare("SELECT review_run_id, output_json FROM review_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").get();
-  if (row === void 0) return null;
-  const parsed2 = JSON.parse(row.output_json);
-  return { reviewRunId: row.review_run_id, findings: parsed2.findings };
-}
 
 // plugins/review-voice/src/github/writer.ts
 var WriteViolation = class extends Error {
@@ -16630,6 +16778,7 @@ function refusal(head, reason2) {
       ci: null,
       run: null,
       held: [],
+      belowTier: [],
       complexity: null,
       humanReviewNote: null,
       wouldHaveEvent: null,
@@ -16714,7 +16863,7 @@ async function carriedApproval(options, run, reasons) {
 }
 async function staleRequest(options, planned, reasons) {
   const severities = [
-    ...[...planned.inline, ...planned.unanchored].map((finding) => finding.severity),
+    ...[...planned.inline, ...planned.unanchored, ...planned.belowTier].map((finding) => finding.severity),
     ...planned.held.map((held) => held.severity)
   ];
   if (severities.some((severity) => severity === null || severity === "blocking" || severity === "important")) return null;
@@ -16826,13 +16975,13 @@ async function computeVerdict(options) {
   if (!SHA2.test(head)) return refusal(options.head, "--head must be the full commit sha the review read");
   const run = recordedRun(options, head);
   if (typeof run === "string") return refusal(head, run);
-  const planned = planFindings(options.review, run, (id) => runDetail(options.db, id));
+  const policy = verdictPolicy(options.policy);
+  const planned = planFindings(options.review, run, (id) => runDetail(options.db, id), policy.minPostedTier);
   const actual = await readHead(options.client, options.repository, options.pullNumber);
   const headMoved = actual !== head;
   const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {});
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === "high";
-  const policy = verdictPolicy(options.policy);
   const lookupReasons = [];
   const carriedReviewUrl = !headMoved && policy.carryApprovalOnUnchanged ? await carriedApproval(options, run, lookupReasons) : null;
   const decision = decide({
@@ -16877,13 +17026,16 @@ async function computeVerdict(options) {
     alreadyInline = full2.comments.length - unsent.length;
     const evidence = policy.evidenceBlock ? withEvidenceBlocks(unsent, planned, policy) : { comments: unsent, blocks: 0 };
     evidenceBlocks = evidence.blocks;
-    const body = policy.scopeBlock ? withScopeBlock(full2.body, scopeBlock(run, planned, policy)) : full2.body;
+    let body = full2.body;
+    if (policy.readingGuide) body = withScopeBlock(body, readingGuide(run));
+    if (policy.scopeBlock) body = withScopeBlock(body, scopeBlock(run, planned, policy));
     payload = { ...full2, body: withAnnotations(body, decision.annotations), comments: evidence.comments };
     preview = renderPreview({
       repository: options.repository,
       pullNumber: options.pullNumber,
       payload,
       held: planned.held,
+      belowTier: planned.belowTier,
       alreadyInline,
       withheldSuggestions
     });
@@ -16901,6 +17053,13 @@ async function computeVerdict(options) {
       ci,
       run: run.reviewRunId,
       held: planned.held,
+      belowTier: planned.belowTier.map((finding) => ({
+        findingId: finding.findingId,
+        severity: finding.severity,
+        path: finding.path,
+        line: finding.line,
+        reason: `below verdict.min_posted_tier (${policy.minPostedTier})`
+      })),
       complexity,
       humanReviewNote: humanReviewNote(complexity),
       wouldHaveEvent: needsHuman ? planned.mapped : null,
@@ -17137,6 +17296,7 @@ async function postReview(options) {
           pullNumber: options.pullNumber,
           payload,
           held: verdict2.held,
+          belowTier: verdict2.belowTier,
           alreadyInline: verdict2.alreadyInline,
           withheldSuggestions: verdict2.withheldSuggestions
         })
@@ -18464,6 +18624,16 @@ var COMMAND_HELP = {
       "                                          true also counts the owner precedents retrieved that",
       "                                          favoured the finding in that block, which reveals that",
       "                                          a precedent store exists",
+      "  verdict.min_posted_tier: nit            nit posts every tier; minor, important or blocking",
+      "                                          withholds a verified finding below it, which stays in",
+      '                                          the record, is listed in "belowTier" and counted in the',
+      "                                          scope block. The five categories no suppression may",
+      "                                          reach post at any tier, and a withheld finding above a",
+      "                                          nit still caps an approval at COMMENT",
+      '  verdict.reading_guide: false            true puts a collapsed "Reading guide" before the scope',
+      "                                          block, listing the changed files that carry a structural",
+      "                                          signal, most first, from the recorded counts; never",
+      "                                          a finding, a line number or source text",
       '  An annotation names at most five checks and appears in "annotations".',
       "Reads: the validated review on stdin; with review.suggestions, each file a suggestion",
       "  replaces lines of, at the head (GET contents).",
@@ -27934,6 +28104,7 @@ function explainCommand(argv) {
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
     console.log(describeProvenance(detail.provenance));
     console.log(describeChecks(detail.checks));
+    console.log(describeStructure(detail.structure));
     for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
     const shallow = shallowPassWarning(detail.stages, detail.findings.length);
     if (shallow !== null) console.log(`Warning ${shallow}`);
@@ -29821,6 +29992,7 @@ function recordCommand(argv) {
   let manifestMode = null;
   let scope;
   let complexity = null;
+  let structure;
   const knownPaths = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
@@ -29839,6 +30011,10 @@ function recordCommand(argv) {
       if (manifest.complexity !== void 0 && manifest.complexity !== null) {
         complexity = parseComplexity(manifest.complexity);
         if (complexity === null) console.error(`The complexity assessment in ${filesFile} is malformed; recording without it.`);
+      }
+      if (manifest.structure !== void 0 && manifest.structure !== null) {
+        structure = recordedStructure(manifest.structure) ?? void 0;
+        if (structure === void 0) console.error(`The structure signals in ${filesFile} are malformed; recording without them.`);
       }
     } catch {
       console.error(`Cannot read ${filesFile}; recording without pull-request scope.`);
@@ -30149,6 +30325,7 @@ function recordCommand(argv) {
       stages,
       ...checks === void 0 ? {} : { checks },
       ...reproductions === void 0 ? {} : { reproductions },
+      ...structure === void 0 ? {} : { structure },
       toolSignals,
       conventions,
       provenance: {

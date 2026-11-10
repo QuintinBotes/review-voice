@@ -31,7 +31,7 @@ const CHECKS = {
 };
 const held = (verdict) => ({ path: 'src/held.ts', line: 1, verdict, source: 'verifier', reason: 'Local held reason.', text: 'Local claim text.' });
 const HELD = ['unverified', 'below-gate', 'below-gate', 'challenge-refuted', 'restates-tool', 'policy-suppressed'].map(held);
-const ZERO_HELD = { unverified: 0, belowGate: 0, challenge: 0, restatesTool: 0, policySuppressed: 0, other: 0 };
+const ZERO_HELD = { unverified: 0, belowGate: 0, challenge: 0, restatesTool: 0, policySuppressed: 0, other: 0, belowTier: 0 };
 const ZERO_FINDINGS = { blocking: 0, important: 0, minor: 0, nit: 0, question: 0 };
 const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
 const check = (name, conclusion) => ({ id: 1, name, status: 'completed', conclusion, completed_at: '2026-11-01T10:00:00Z' });
@@ -132,7 +132,7 @@ test('AC-3: the recorded scope has the specified shape and is shared by preview 
   const facts = {
     head: HEAD, origin: 'driver', independence: 'independent',
     findings: { ...ZERO_FINDINGS, minor: 1 },
-    held: { unverified: 1, belowGate: 2, challenge: 1, restatesTool: 1, policySuppressed: 1, other: 0 },
+    held: { unverified: 1, belowGate: 2, challenge: 1, restatesTool: 1, policySuppressed: 1, other: 0, belowTier: 0 },
     checks: { ran: 1, didNotRun: 1 },
   };
   const expected = [
