@@ -14,8 +14,7 @@ import { onStop, SHELL_UNAVAILABLE_EXIT_CODES, spawnCommand, spawnInGroup, type 
  * sandbox, only after a probe has shown that sandbox holds, and only in a
  * throwaway copy of the head worktree. On macOS a process a reproduction starts
  * with setsid outlives the run and its group kill, so nothing a sandboxed
- * process can write is read by any later stage, and macOS runs nothing until
- * issue #321 hardens its profile.
+ * process can write is read by any later stage.
  */
 
 /** A configured way to run one reproduction file; `run` holds `{file}` exactly once. */
@@ -107,10 +106,13 @@ export interface ReproduceContext {
 
 const OUTPUT_CAP_BYTES = 8 * 1024;
 const PROBE_TIMEOUT_MS = 30_000;
-/** Why darwin is `none` before anything is written or spawned. */
-const DARWIN_OFF = 'sandbox-exec is not yet trusted to confine a reproduction (issue #321)';
 /** The named preference domain the macOS probe tries to write through cfprefsd. */
 const PROBE_DOMAIN = 'review-voice.probe';
+const NOTIFYUTIL = '/usr/bin/notifyutil';
+/** How long the listener has, once the probe is back, to show it heard the probe's post. */
+const NOTIFY_GRACE_MS = 500;
+/** How long the listener has to register its key before the probe fails. */
+const NOTIFY_READY_MS = 5_000;
 const CREDENTIAL_DIRS = ['.ssh', '.gnupg', '.aws', '.config/gh', 'Library/Keychains'];
 const CREDENTIAL_FILES = ['.netrc', '.npmrc', '.git-credentials'];
 /** A candidate id names the copy's directory, so it is one plain segment that cannot be `.` or `..`. */
@@ -164,6 +166,10 @@ export function limitsLine(config: ReproductionConfig, platform: NodeJS.Platform
   // node before it runs. macOS refuses RLIMIT_AS, so the bound there is
   // advisory, and its refusal would otherwise open every record.
   const memory = platform === 'darwin' ? `ulimit -v ${kib} 2>/dev/null` : `ulimit -d ${kib}`;
+  // On macOS the CPU limit is the only bound on a process that leaves the
+  // group, and a partial one: at it the kernel ends a process that spins or
+  // makes ordinary system calls, but not one that handles SIGXCPU or keeps
+  // reading its own CPU usage (getrusage).
   return `ulimit -t ${config.cpuSeconds}; ${memory}; ulimit -f 2097152`;
 }
 
@@ -251,7 +257,15 @@ export function layoutOf(ctx: ReproduceContext, places?: { worktree: string; scr
   };
 }
 
-/** The macOS profile. Later rules win, so the worktree inside the hidden data directory stays usable. */
+/**
+ * The macOS profile, an allowlist: whatever it does not allow is denied, by
+ * default or, where (deny default) does not reach, by name: the network,
+ * every other mach service, POSIX IPC, Apple events, preferences, IOKit,
+ * NVRAM and other processes among them. The kernel does not ask the sandbox
+ * before it creates a System V IPC object, so a run can create one, though it
+ * can neither use nor remove it, and no rule here stops that. Later rules
+ * win, so the worktree inside the hidden data directory stays usable.
+ */
 export function sandboxProfile(layout: Layout): string {
   const reachable = [layout.worktree, layout.scratch, ...layout.links.map((link) => link.target)];
   const ancestors = unique(
@@ -267,27 +281,42 @@ export function sandboxProfile(layout: Layout): string {
   const literals = (paths: string[]): string => paths.map((path) => `(literal ${sbString(path)})`).join(' ');
   return [
     '(version 1)',
-    '(allow default)',
-    '(deny network*)',
-    // Neither a reproduction nor a process it leaves behind can signal the CLI or any other process of the user.
-    '(deny signal)',
+    '(deny default)',
+    // (deny default) leaves IOKit properties and NVRAM readable, which name the machine: its serial number, platform UUID and NVRAM variables.
+    '(deny iokit-get-properties iokit-set-properties)',
+    '(deny nvram*)',
+    // It leaves other processes' information readable too, their list and paths among it; a process still reads its own.
+    '(deny process-info*)',
+    '(allow process-info* (target self))',
+    // The shell execs the runner, and a runner such as node --test starts a process for each test file.
+    '(allow process-fork)',
+    '(allow process-exec*)',
+    // libc and an interpreter read the CPU count, the page size and the kernel version as they start.
+    '(allow sysctl-read)',
+    // Except the sysctls under kern.proc, which list every process and give another's command line, a token passed as an argument among it.
+    '(deny sysctl-read (sysctl-name-prefix "kern.proc"))',
+    // A runner stops its own workers; neither a reproduction nor a process it leaves behind can signal any other.
     '(allow signal (target same-sandbox))',
-    '(deny file-write*)',
-    // cfprefsd writes a named domain into the real ~/Library/Preferences for
-    // the process, which the sandbox checks as a preference write, never as a
-    // file write of the process.
-    '(deny user-preference-write)',
-    `(allow file-write* ${subpaths([layout.worktree, layout.scratch])} (literal "/dev/null"))`,
-    `(deny file-write* ${literals([join(layout.worktree, '.git')])})`,
-    // A user-immutable flag would keep the copy from being removed; the Linux
-    // namespace has no CAP_LINUX_IMMUTABLE to set one.
-    '(deny file-write-flags)',
+    // The user and group lookups (getpwuid) that os.userInfo, git and Python's pwd make, which read and change nothing.
+    '(allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo"))',
+    // An interpreter reads its own install, the system libraries and the code under review.
+    '(allow file-read*)',
     `(deny file-read* ${subpaths(layout.hiddenDirs)} ${literals(layout.hiddenFiles)})`,
     `(allow file-read* ${subpaths(reachable)})`,
+    // A terminal of another session would hand a run, or a process it leaves behind, what is typed there; after the reachable places, so no link reopens one.
+    '(deny file-read* (regex #"^/dev/(tty|pty|cu\\.)") (literal "/dev/ptmx"))',
     // Node resolves a path by an lstat of every parent, the hidden data
     // directory's included, so those parents' own metadata is readable while
     // what they hold stays hidden.
     `(allow file-read-metadata ${literals(ancestors)})`,
+    // A test writes its own files, temporary files under TMPDIR, output it throws away,
+    // and its own stdout and stderr by path (/dev/stdout is /dev/fd/1), which reopens
+    // only a descriptor the process already holds, with no wider access.
+    `(allow file-write* ${subpaths([layout.worktree, layout.scratch])} (literal "/dev/null") (regex #"^/dev/fd/[0-9]+$"))`,
+    `(deny file-write* ${literals([join(layout.worktree, '.git')])})`,
+    // A user-immutable flag would keep the copy from being removed; the Linux
+    // namespace has no CAP_LINUX_IMMUTABLE to set one.
+    '(deny file-write-flags)',
     '',
   ].join('\n');
 }
@@ -372,7 +401,7 @@ function spawnConfined(layout: Layout, ctx: ReproduceContext, run: string, timeo
 }
 
 /** Tries each escape and prints RV_PROBE_OK only when every one failed. */
-function probeScript(targets: { port: number; escape: string; canary: string; overwrite: string; pid: number | null; domain: string | null }): string {
+function probeScript(targets: { port: number; escape: string; canary: string; overwrite: string; pid: number | null; domain: string | null; notify: string | null }): string {
   return [
     "const fs = require('fs');",
     `const t = ${JSON.stringify(targets)};`,
@@ -390,6 +419,8 @@ function probeScript(targets: { port: number; escape: string; canary: string; ov
     // deletes what it wrote, though cfprefsd keeps an empty plist of the domain,
     // one fixed name however often a broken sandbox is probed.
     "if (t.domain !== null) { const cp = require('child_process'); if (cp.spawnSync('/usr/bin/defaults', ['write', t.domain, 'probe', 'escaped']).status === 0) { escaped.push('preference'); cp.spawnSync('/usr/bin/defaults', ['delete', t.domain]); } }",
+    // A refused post exits 0 too, so only the listener outside can tell.
+    `if (t.notify !== null) require('child_process').spawnSync(${JSON.stringify(NOTIFYUTIL)}, ['-p', t.notify]);`,
     "const socket = require('net').connect(t.port, '127.0.0.1');",
     'let done = false;',
     "const finish = (connected) => { if (done) return; done = true; clearTimeout(timer); socket.destroy(); if (connected) escaped.push('connect'); console.log(escaped.length > 0 ? 'escaped by ' + escaped.join(', ') : 'RV_PROBE_OK'); };",
@@ -410,23 +441,66 @@ const contentOf = (path: string): string | null => {
 // The first line that says something: a fatal-error banner opens with lines of only `#`, which name no cause.
 const firstLine = (text: string): string => text.split('\n').map((line) => line.trim()).find((line) => /[\p{L}\p{N}]/u.test(line)) ?? '';
 
+const delay = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
+
+/** `notifyutil -1 <key>` outside the sandbox, for the one key the macOS probe posts. */
+interface NotifyListener {
+  key: string;
+  /** What it printed once the probe was back, which is the key only if the probe's post got out. Stops it; called again, gives the same. */
+  end: () => Promise<string>;
+}
+
 /**
- * The sandbox a reproduction gets on this platform. Only Linux has one for
- * now. On macOS the profile and the probe stay for issue #321, which hardens
- * the profile before macOS runs a reproduction.
+ * Starts the listener through the probe's own spawner and returns once
+ * notifyd holds its key, so the probe cannot post before it listens, or why
+ * it could not. A key exists in notifyd only while a process is registered
+ * for it, so a state set from here reads back only once the listener holds
+ * the key. The spawner gives no handle to kill by, so the listener is ended
+ * by a post of its own key, and its timeout kills it otherwise.
+ */
+async function listenForNotify(spawn: CommandSpawner, cwd: string): Promise<NotifyListener | string> {
+  const key = `rv.probe.${process.pid}.${randomBytes(4).toString('hex')}`;
+  const notifyutil = (args: string[]): Promise<CommandResult> => Promise.resolve(spawnInGroup(spawn, NOTIFYUTIL, cwd, 2 * PROBE_TIMEOUT_MS, {}, args));
+  let ended: CommandResult | undefined;
+  const listening = notifyutil(['-1', key]).then((result) => {
+    ended = result;
+  });
+  let ending: Promise<string> | undefined;
+  const end = (): Promise<string> =>
+    (ending ??= (async () => {
+      await Promise.race([listening, delay(NOTIFY_GRACE_MS)]);
+      const heard = ended?.stdout ?? '';
+      if (ended === undefined) await notifyutil(['-p', key]);
+      await listening;
+      return heard;
+    })());
+  const deadline = Date.now() + NOTIFY_READY_MS;
+  while (ended === undefined && Date.now() < deadline) {
+    if ((await notifyutil(['-s', key, '1', '-g', key])).stdout.trim() === `${key} 1`) return { key, end };
+    await delay(20);
+  }
+  // Judged before the stop, which always leaves the listener ended.
+  const unregistered = ended === undefined;
+  await end();
+  const why = unregistered ? `the key was not registered within ${NOTIFY_READY_MS / 1000}s` : ended?.error?.message ?? `notifyutil exited ${String(ended?.status)}`;
+  return `could not listen for notifications for the probe: ${why}`;
+}
+
+/**
+ * The sandbox a reproduction gets on this platform: unshare namespaces on
+ * Linux, sandbox-exec with the allowlist profile on macOS, and none elsewhere.
  */
 export async function probeSandbox(ctx: ReproduceContext, given?: Layout): Promise<SandboxState> {
   const platform = ctx.platform ?? process.platform;
-  if (platform === 'darwin') return { platform, mechanism: 'none', probe: DARWIN_OFF };
-  if (platform !== 'linux') return { platform, mechanism: 'none', probe: `no confinement mechanism on ${platform}` };
+  if (platform !== 'linux' && platform !== 'darwin') return { platform, mechanism: 'none', probe: `no confinement mechanism on ${platform}` };
   return runProbe(ctx, given ?? layoutOf(ctx));
 }
 
 /**
  * Runs the probe through the wrapper the reproductions get. Anything but
  * RV_PROBE_OK with no escape seen from outside is a failure, and after a
- * failure the mechanism is `none` and nothing runs. Exported for issue #321
- * and the tests; a reproduction reaches it only through probeSandbox.
+ * failure the mechanism is `none` and nothing runs. Exported for the tests;
+ * a reproduction reaches it only through probeSandbox.
  */
 export async function runProbe(ctx: ReproduceContext, layout: Layout): Promise<SandboxState> {
   const platform = layout.platform;
@@ -451,13 +525,23 @@ export async function runProbe(ctx: ReproduceContext, layout: Layout): Promise<S
   };
   // A stop signal exits without reaching the finally, so it is left the same removal.
   const withdraw = onStop(clear);
+  let listener: NotifyListener | null = null;
   try {
-    if (mechanism === 'sandbox-exec') writeFileSync(layout.profile, sandboxProfile(layout));
+    if (mechanism === 'sandbox-exec') {
+      // Through the spawner, so a stop signal kills it with the probe.
+      const started = await listenForNotify(ctx.spawn ?? spawnCommand, layout.reproDir);
+      if (typeof started === 'string') return { platform, mechanism: 'none', probe: started };
+      listener = started;
+      writeFileSync(layout.profile, sandboxProfile(layout));
+    }
     rmSync(layout.escape, { force: true });
     writeFileSync(layout.canary, 'canary\n');
     const address = server.address();
     const port = typeof address === 'object' && address !== null ? address.port : 0;
-    const script = probeScript({ port, escape: layout.escape, canary: layout.canary, overwrite, pid: mechanism === 'sandbox-exec' ? process.pid : null, domain: mechanism === 'sandbox-exec' ? PROBE_DOMAIN : null });
+    const script = probeScript({
+      port, escape: layout.escape, canary: layout.canary, overwrite,
+      pid: mechanism === 'sandbox-exec' ? process.pid : null, domain: mechanism === 'sandbox-exec' ? PROBE_DOMAIN : null, notify: listener?.key ?? null,
+    });
     writeFileSync(layout.probeFile, `${script}\n`);
     const before = contentOf(overwrite);
     const result = await spawnConfined(layout, ctx, `${shellQuote(ctx.execPath ?? process.execPath)} -e ${shellQuote(script)}`, PROBE_TIMEOUT_MS);
@@ -469,8 +553,9 @@ export async function runProbe(ctx: ReproduceContext, layout: Layout): Promise<S
       write: existsSync(layout.escape),
       connect: connections > 0,
       profile: contentOf(overwrite) !== before,
+      notify: listener !== null && (await listener.end()).trim() !== '',
     };
-    const seen = (['write', 'read', 'connect', 'profile', 'signal', 'preference'] as const).filter((name) => said.has(name) || outside[name] === true);
+    const seen = (['write', 'read', 'connect', 'profile', 'signal', 'preference', 'notify'] as const).filter((name) => said.has(name) || outside[name] === true);
     if (seen.length > 0) return { platform, mechanism: 'none', probe: `escaped by ${seen.join(', ')}` };
     if (result.error === undefined && result.status === 0 && result.stdout.trim() === 'RV_PROBE_OK') return { platform, mechanism, probe: 'passed' };
     const why = result.error === undefined ? firstLine(result.stderr) || firstLine(result.stdout) || `exited ${String(result.status)}` : result.error.message;
@@ -479,6 +564,7 @@ export async function runProbe(ctx: ReproduceContext, layout: Layout): Promise<S
     withdraw();
     server.close();
     clear();
+    await listener?.end();
   }
 }
 

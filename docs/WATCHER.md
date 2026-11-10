@@ -333,8 +333,8 @@ Runs each reproduction the verifier wrote for a blocking or important
 candidate, twice at most, in a throwaway copy of the head worktree inside the
 confined runner, through a runner the base commit's `reproduction` block
 configures, and writes one record per entry, each `reproduced`, `did-not-fail`
-or `did-not-run` with its reason. Nothing runs before the probe passes, and on
-macOS nothing runs until issue #321. `review` runs it as stage 6 and holds a
+or `did-not-run` with its reason. Nothing runs before the probe passes, which
+it can only on Linux and macOS. `review` runs it as stage 6 and holds a
 finding whose reproduction did not fail as `reproduction-did-not-fail`, unless
 its category is one no suppression may reach. `--probe` prints what the
 machine's sandbox gives and runs no reproduction.

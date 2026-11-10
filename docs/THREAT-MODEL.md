@@ -202,17 +202,45 @@ store, outlive the run, or simply pass on purpose.
 - A probe runs through the same wrapper first, and nothing runs unless it shows
   that a connection to a loopback listener, a write outside the reproduction's
   places, an overwrite of the runner's own files and a read of a canary in the
-  run directory are all refused. On macOS nothing runs until issue #321.
+  run directory are all refused. On macOS it also shows that a signal to the
+  CLI, a preference write and a notification post are refused. A refused post
+  still exits 0, so a listener the CLI starts outside the sandbox for a fresh
+  key judges it, and the listener is always stopped.
 - On Linux the runner uses user, mount, network and pid namespaces, which give
   no network, a read-only view of the filesystem, writes only to a fresh throwaway
   copy of the head worktree and its scratch directory, the data directory, the
   run directory, the clone's `.git` and the listed credential locations hidden,
   and every process ended when the run ends.
+- On macOS the runner uses `sandbox-exec` with an allowlist profile. It starts
+  from `(deny default)` and allows only what a test runner needs: starting
+  processes, reading kernel settings other than those under `kern.proc`, which
+  list every process and give another process's command line, signals within
+  the sandbox, one lookup service (`com.apple.system.opendirectoryd.libinfo`,
+  for the read-only user and group lookups that `os.userInfo`, git and
+  Python's `pwd` make), process information about itself, reads outside the
+  hidden locations and terminal devices, and writes only to the copy, its
+  scratch directory, `/dev/null` and its own open descriptors by path
+  (`/dev/stdout` is `/dev/fd/1`), which grants no access a descriptor did not
+  already have. The network, every other mach service,
+  POSIX IPC, Apple events and preferences stay denied by default. `(deny
+  default)` does not reach IOKit properties, NVRAM or process information about
+  other processes, so the profile denies them by name. Terminal devices are
+  denied so that neither a run nor a process it leaves behind can take what is
+  typed into another session. The kernel does not ask the sandbox before it
+  creates a System V IPC object, so a run can create a shared memory segment,
+  a semaphore set or a message queue, though it can neither use nor remove one,
+  and no profile rule stops that.
 - The environment is an allowlist (`PATH`, `LANG`, `LC_ALL`, `TERM`, a scratch
   `HOME` and `TMPDIR`, `CI`, `NO_COLOR`), so no token and no `REVIEW_VOICE_*`
   variable reaches it.
 - CPU, memory, file-size and wall-clock limits, and a stop signal kills a
-  running reproduction.
+  running reproduction. Every process a run starts inherits the CPU limit, one
+  that leaves the process group included. On macOS, where the pid namespace
+  that ends every process on Linux does not exist, it is the only bound on
+  such a process, and a partial one: at the limit the kernel ends a process
+  that spins or keeps making ordinary system calls, but not one that handles
+  SIGXCPU or keeps reading its own CPU usage (getrusage, as Node's
+  `process.cpuUsage` does).
 - The head worktree the challenger reads is never writable by a reproduction,
   and a run that changes anything in its own copy is recorded as not run.
 - Output is redacted and capped at 8 KiB per run before it is stored or shown.
@@ -232,8 +260,19 @@ pass on purpose, which turns a real finding into a `reproduction-did-not-fail`
 hold; that is why a security, authorization, authentication, data integrity or
 trust boundary finding is never held on a pass. Nothing runs where the probe
 fails, which includes hosts that refuse unprivileged user namespaces. The macOS
-mechanism, `sandbox-exec`, is deprecated by Apple and off until issue #321. A
-reproduction can still spend its whole time limit.
+mechanism, `sandbox-exec`, is deprecated by Apple, so a macOS release can change
+what it enforces; the probe runs before every invocation's first reproduction
+and fails closed. On macOS a process a reproduction leaves behind that sleeps,
+handles SIGXCPU or keeps reading its own CPU usage stays until the user logs
+out, and in the last two cases keeps using CPU until then. It stays confined
+by the profile, with no network, no POSIX IPC and no write outside its own copy
+and scratch directory, which are removed, so nothing it writes reaches a later
+stage. A System V IPC object a run, or a process it leaves behind, creates on
+macOS outlives it until it is removed with `ipcrm` or the machine restarts, and
+the CLI does not remove it. It carries no data, since the run cannot use it, but
+the system holds few of them (32 shared memory segments by default), so a run
+can use them all up and make other programs fail to create one. A reproduction
+can still spend its whole time limit.
 
 ### 5. Policy drift and poisoning
 

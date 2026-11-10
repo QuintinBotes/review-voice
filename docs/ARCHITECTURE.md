@@ -601,8 +601,9 @@ worktree, after a probe through the same wrapper has shown that the network, a
 write outside the copy and its scratch directory, an overwrite of the runner's
 own files and a read of the run directory are refused. On Linux the wrapper is
 `unshare` with user, mount, network and pid namespaces and a read-only root; on
-macOS nothing runs until issue #321; elsewhere there is no mechanism and
-nothing runs. The environment is an allowlist, never the reviewer's, and CPU,
+macOS it is `sandbox-exec` with a profile that denies everything it does not
+allow, and the probe there also shows that a signal, a preference write and a
+notification are refused; elsewhere there is no mechanism and nothing runs. The environment is an allowlist, never the reviewer's, and CPU,
 memory, file-size and wall-clock limits apply. A run counts only when it printed
 `RV_REPRO_REACHED <candidate id>` before its assertion. Two failing runs are
 `reproduced`, a pass on either run is `did-not-fail`, and anything else,

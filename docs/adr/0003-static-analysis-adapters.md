@@ -130,3 +130,56 @@ recorded and shown but never holds. `REVIEW_VOICE_NO_COMMANDS` turns it off
 like every other command. "Ship an execution sandbox" stays rejected for
 anything broader than one configured command running one verifier-written file
 through one platform mechanism behind a probe.
+
+## Amendment - 2026-11-10
+
+Reproductions now run on macOS too (issue #321), through `sandbox-exec` with an
+allowlist profile in place of the profile that started from `(allow default)`
+and denied what it named. The profile starts from `(deny default)` and allows
+only what a test runner such as `node --test` or `npm test` needs: process fork
+and exec, sysctl reads, signals to processes in the same sandbox, file reads
+outside the hidden locations, and file writes in the reproduction's copy, its
+scratch directory, `/dev/null` and its own open descriptors by path
+(`/dev/fd/<n>`, so `/dev/stdout` and `/dev/stderr` work), which grants no access
+a descriptor did not already have. It allows one mach service,
+`com.apple.system.opendirectoryd.libinfo`, because `os.userInfo`, git and
+Python's `pwd` look up the user (getpwuid) and fail without it; the service
+answers read-only user and group lookups and cannot change anything. Every
+other mach service, the network, POSIX IPC, Apple events and preferences stay
+denied by default. `(deny default)` does not reach IOKit properties, NVRAM or
+process information, which would name the machine (its serial number and
+platform UUID) and list other processes and their paths, so the profile denies
+them by name: `(deny iokit-get-properties iokit-set-properties)`, `(deny
+nvram*)`, and `(deny process-info*)` followed by `(allow process-info* (target
+self))`, since a process reads information about itself. The sysctls under
+`kern.proc` list every process too and give another process's command line,
+which can carry a token passed as an argument, so `(deny sysctl-read
+(sysctl-name-prefix "kern.proc"))` follows the sysctl reads the profile allows.
+The kernel does not ask the sandbox before it creates a System V IPC object, so
+a run can create a shared memory segment, a semaphore set or a message queue,
+though it can neither use nor remove one, and no profile rule, `(deny
+ipc-sysv*)` included, stops that. Such an object outlives the run until `ipcrm`
+or a restart, and the CLI does not remove it; the system holds few of them (32
+shared memory segments by default), so a run can use them all up. File reads of
+terminal devices (`/dev/tty*`, `/dev/pty*`, `/dev/cu.*` and `/dev/ptmx`) are
+denied after every read the profile allows, since a run, or a process it leaves
+behind, could otherwise take what is typed into another session. The probe
+keeps every check it had and adds one: the CLI starts `notifyutil -1` for a
+fresh key outside the sandbox, the probe posts that key from inside, and any
+output from the listener is the escape `notify`, since a refused post exits 0
+too. The listener is always stopped. As before, a probe that fails means
+nothing runs.
+
+A process a reproduction starts can leave the process group and outlive the run
+on macOS, where no pid namespace ends it. It inherits the CPU limit (`ulimit -t
+<cpu_seconds>`), and at the limit the kernel ends a process that spins or keeps
+making ordinary system calls. One that sleeps, handles SIGXCPU or keeps reading
+its own CPU usage (getrusage, as Node's `process.cpuUsage` does) is not ended:
+it stays until the user logs out, and in the last two cases keeps using CPU
+until then. It stays confined by the profile: no network, no POSIX IPC, and no
+write outside its own copy and scratch directory, which are removed after the
+run, so nothing it writes reaches a later stage. Reads of the user's other
+files stay allowed, read-only, outside the hidden locations, as on Linux.
+`sandbox-exec` is deprecated by Apple, so a macOS release can change what it
+enforces, and the probe before the first reproduction of each invocation is what
+shows it still holds.

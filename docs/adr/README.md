@@ -14,7 +14,7 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 |---|---|---|
 | [0001](0001-embedding-implementation.md) | Embedding and retrieval implementation | Accepted |
 | [0002](0002-github-auth-model.md) | GitHub authentication model | Accepted, amended 2026-10-06 by 0018 and 2026-10-25 by 0026 |
-| [0003](0003-static-analysis-adapters.md) | Static analysis adapter strategy | Accepted, amended 2026-11-08, amended 2026-11-09 (reproductions) |
+| [0003](0003-static-analysis-adapters.md) | Static analysis adapter strategy | Accepted, amended 2026-11-08, amended 2026-11-09 (reproductions), amended 2026-11-10 (macOS reproductions) |
 | [0004](0004-outcome-inference-limits.md) | Outcome inference limits | Accepted, amended by 0029, amended 2026-11-08 |
 | [0005](0005-data-encryption.md) | Data encryption at rest | Accepted |
 | [0006](0006-team-governance.md) | Team and policy governance | Accepted |
