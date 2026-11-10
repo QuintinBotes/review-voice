@@ -1,0 +1,16 @@
+name: reproduced-off-by-one
+asserts: >
+  A one-based page number used as a zero-based offset skips the first page. In
+  thorough mode with a reproduction runner configured, the verifier writes a
+  reproduction that reaches its marker and fails twice, so the record is
+  reproduced, the challenger reads it, and the finding posts at the tier its
+  score derived, as it would without the reproduction.
+harness: skip
+harness_reason: "the recall harness runs with REVIEW_VOICE_NO_COMMANDS=1, so reproductions never run there"
+expect:
+  findings: 1
+  severity: minor
+  path: src/paginate.mjs
+  line: 3
+  category: correctness
+  reproduction: reproduced

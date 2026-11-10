@@ -119,7 +119,7 @@ interface Lane {
 }
 
 // The plan a mode resolves to: which stages run, on which model.
-type StageName = 'intent' | 'lanes' | 'verify' | 'second-pass' | 'tie-break' | 'challenge' | 'edit';
+type StageName = 'intent' | 'lanes' | 'verify' | 'reproduce' | 'second-pass' | 'tie-break' | 'challenge' | 'edit';
 interface StagePlan { mode: 'fast' | 'standard' | 'thorough'; stages: Record<StageName, { run: boolean; model: string | null }>; reason: string }
 
 // The challenger's answer for one eligible finding.
@@ -265,13 +265,14 @@ The stage graph, in order. A stage the plan turns off is recorded as skipped.
 | 3 | `intent` (intent-extractor), then `check-intent` | agent | carry on without intent |
 | 4 | `lanes`, every eligible lane in parallel, then merge and `check-candidates` | agent | relaunch once with the refusal, then exit 7 |
 | 5 | `verify` (evidence-verifier), then `check-verification` | agent | relaunch once with the named ids, then exit 7 |
-| 6 | `second-pass` (`verify` with the configured command) | CLI | as today |
-| 7 | `tie-break`, once per `reconcile` dispute | agent | dispute stays unsettled |
-| 8 | `score`, then lane severity rules | CLI | stop |
-| 9 | `challenge`, one challenger per eligible finding | agent | the finding is held |
-| 10 | `edit` (concise-editor), `validate-output` (one retry) | agent | relaunch once, then exit 7 |
-| 11 | `record`, then `verdict` | CLI | stop |
-| 12 | `post`, only with `--post` and posting enabled | CLI | per `post` exit codes |
+| 6 | `reproduce`, in thorough mode with a reproduction runner configured | CLI | the finding keeps its verification; the reproduction is recorded as not run |
+| 7 | `second-pass` (`verify` with the configured command) | CLI | as today |
+| 8 | `tie-break`, once per `reconcile` dispute | agent | dispute stays unsettled |
+| 9 | `score`, then lane severity rules | CLI | stop |
+| 10 | `challenge`, one challenger per eligible finding | agent | the finding is held |
+| 11 | `edit` (concise-editor), `validate-output` (one retry) | agent | relaunch once, then exit 7 |
+| 12 | `record`, then `verdict` | CLI | stop |
+| 13 | `post`, only with `--post` and posting enabled | CLI | per `post` exit codes |
 
 ### `queue`
 
@@ -317,7 +318,26 @@ review-voice challenge --scores <scores.json> --candidates <checked.json> < verd
 Validates challenger output and marks each eligible finding confirmed, held
 (`challenge-refuted` or `challenge-partly`) or moved (`corrected_line`, through
 the existing `reanchor` rules). `review` calls the same function. The command
-exists so the interactive flow can use it too.
+exists so the interactive flow can use it too. With `--emit-prompts`,
+`--reproductions <reproductions.json>` adds a finding's reproduction record to
+its prompt.
+
+### `reproduce`
+
+```
+review-voice reproduce --worktree <dir> --verification <verification.json> --candidates <checked.json> --out <reproductions.json> --run-dir <dir>
+review-voice reproduce --worktree <dir> --run-dir <dir> --probe
+```
+
+Runs each reproduction the verifier wrote for a blocking or important
+candidate, twice at most, in a throwaway copy of the head worktree inside the
+confined runner, through a runner the base commit's `reproduction` block
+configures, and writes one record per entry, each `reproduced`, `did-not-fail`
+or `did-not-run` with its reason. Nothing runs before the probe passes, and on
+macOS nothing runs until issue #321. `review` runs it as stage 6 and holds a
+finding whose reproduction did not fail as `reproduction-did-not-fail`, unless
+its category is one no suppression may reach. `--probe` prints what the
+machine's sandbox gives and runs no reproduction.
 
 ### `outcomes`
 
@@ -356,6 +376,7 @@ claim during the run. That is the same repeat rule `check-candidates` applies.
 | diff lane | sonnet | sonnet | opus |
 | other lanes | off | sonnet, when eligible | opus, when eligible |
 | verify | sonnet | sonnet; opus when a candidate is important or above | opus |
+| reproduce | off | off | when configured |
 | second-pass | off | when configured | when configured |
 | tie-break | sonnet | opus | opus |
 | challenge | off | sonnet; opus for important or above | opus |

@@ -28,6 +28,7 @@ export function planCommand(argv: string[]): number {
     complexity,
     removedControls: structureEntries(manifest['structure'], 'removedControls'),
     secondPassConfigured: config?.verification.enabled ?? false,
+    reproductionConfigured: config !== null && config.reproduction.enabled && config.reproduction.runners.length > 0,
   });
   console.log(JSON.stringify(plan, null, 2));
   return 0;

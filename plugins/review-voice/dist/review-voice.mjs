@@ -1794,6 +1794,8 @@ function resolvePlan(input) {
       lanes: { run: true, model: diffLane },
       // The verifier is a floor: no mode turns it off.
       verify: { run: true, model: overrides.verify ?? (thorough ? OPUS : SONNET) },
+      // A reproduction runs pull request code, so only the mode that pays for the most evidence runs it, and only when configured.
+      reproduce: { run: thorough && (input.reproductionConfigured ?? false), model: null },
       // The second pass is a configured command, so it has no model of its own.
       "second-pass": { run: secondPass2, model: null },
       "tie-break": { run: true, model: overrides["tie-break"] ?? (fast ? SONNET : OPUS) },
@@ -14940,7 +14942,8 @@ var HELD_VERDICTS = [
   "owner-declined",
   "challenge-refuted",
   "challenge-partly",
-  "restates-tool"
+  "restates-tool",
+  "reproduction-did-not-fail"
 ];
 function heldProblem(entry) {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "not an object";
@@ -15046,6 +15049,48 @@ function storedProvenance(raw, reviewRunId) {
     mode,
     policyVersions
   };
+}
+var OUTCOMES = ["reproduced", "did-not-fail", "did-not-run"];
+function reproductionOf(entry) {
+  const r = asRecord2(entry);
+  if (r === null || !Array.isArray(r["runs"]) || !OUTCOMES.includes(r["outcome"])) return null;
+  const texts = ["candidateId", "path", "runner", "file", "copy", "expected"];
+  if (texts.some((key2) => typeof r[key2] !== "string") || !Number.isInteger(r["line"])) return null;
+  const runs = [];
+  for (const raw of r["runs"]) {
+    const run = asRecord2(raw);
+    if (run === null || typeof run["reached"] !== "boolean" || typeof run["durationMs"] !== "number") return null;
+    runs.push({ exitCode: Number.isInteger(run["exitCode"]) ? run["exitCode"] : null, durationMs: run["durationMs"], reached: run["reached"] });
+  }
+  return {
+    candidateId: r["candidateId"],
+    path: r["path"],
+    line: r["line"],
+    runner: r["runner"],
+    file: r["file"],
+    copy: r["copy"],
+    expected: r["expected"],
+    outcome: r["outcome"],
+    ...typeof r["reason"] === "string" ? { reason: r["reason"] } : {},
+    runs
+  };
+}
+function recordedReproductions(report) {
+  const value = asRecord2(report);
+  if (value === null || !Array.isArray(value["reproductions"])) throw new Error("the reproductions report has no reproductions list");
+  return value["reproductions"].map((entry, index) => {
+    const record3 = reproductionOf(entry);
+    if (record3 === null) throw new Error(`reproductions entry ${index} is not a record reproduce writes`);
+    return record3;
+  });
+}
+function markHeld(records, held) {
+  const ids = new Set(held.filter((entry) => entry.verdict === "reproduction-did-not-fail").map((entry) => entry.candidateId));
+  return records.map((record3) => record3.outcome === "did-not-fail" && ids.has(record3.candidateId) ? { ...record3, held: true } : record3);
+}
+function storedReproductions(raw) {
+  if (!Array.isArray(raw)) return null;
+  return raw.map(reproductionOf).filter((record3) => record3 !== null);
 }
 var asRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
 function recordedChecks(evidence, symbols) {
@@ -15287,7 +15332,8 @@ function recordRun(db, input) {
         ...input.bodyFindings === void 0 || input.bodyFindings.length === 0 ? {} : { bodyFindings: input.bodyFindings },
         ...input.carry === void 0 ? {} : { carry: input.carry },
         ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps },
-        ...input.checks === void 0 ? {} : { checks: input.checks }
+        ...input.checks === void 0 ? {} : { checks: input.checks },
+        ...input.reproductions === void 0 ? {} : { reproductions: markHeld(input.reproductions, input.held ?? []) }
       }),
       (/* @__PURE__ */ new Date()).toISOString(),
       JSON.stringify(input.stages ?? []),
@@ -15370,6 +15416,7 @@ function runDetail(db, reviewRunId) {
     followUps: Array.isArray(parsed2.followUps) ? parsed2.followUps : [],
     bodyFindings: Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : [],
     checks: storedChecks(parsed2.checks),
+    reproductions: storedReproductions(parsed2.reproductions),
     // Older rows predate the column, so absence is normal rather than an error.
     stages: (() => {
       const raw = row["stages_json"];
@@ -16207,6 +16254,26 @@ function challengeCounts(db) {
   }
   return { held, judged, runs };
 }
+function reproductionCounts(db) {
+  const rows = db.prepare("SELECT output_json FROM review_runs").all();
+  const counts = { held: 0, completed: 0, didNotRun: 0, runs: 0 };
+  for (const row of rows) {
+    let parsed2;
+    try {
+      parsed2 = JSON.parse(row.output_json);
+    } catch {
+      continue;
+    }
+    const records = Array.isArray(parsed2?.reproductions) ? parsed2.reproductions : [];
+    if (records.length === 0) continue;
+    counts.runs += 1;
+    const outcome = (entry) => typeof entry === "object" && entry !== null ? entry.outcome : void 0;
+    counts.completed += records.filter((entry) => outcome(entry) === "reproduced" || outcome(entry) === "did-not-fail").length;
+    counts.didNotRun += records.filter((entry) => outcome(entry) === "did-not-run").length;
+    counts.held += records.filter((entry) => outcome(entry) === "did-not-fail" && entry.held === true).length;
+  }
+  return counts;
+}
 function computeMetrics(db, options = {}) {
   const runs = db.prepare("SELECT output_json FROM review_runs").all();
   const windowDays = options.windowDays ?? DEFAULT_WINDOW_DAYS;
@@ -16219,6 +16286,7 @@ function computeMetrics(db, options = {}) {
   const { costs, excluded: uncosted } = runCosts(db);
   const costBasis = `${costs.length} costed run(s), ${uncosted} excluded (no cost recorded)`;
   const challenge2 = challengeCounts(db);
+  const reproduction = reproductionCounts(db);
   const agreement = candidateSetAgreement(db);
   const findingsPerRun = [];
   const wordsPerFinding = [];
@@ -16312,6 +16380,16 @@ function computeMetrics(db, options = {}) {
       "no target",
       () => true,
       `${challenge2.held} held / ${challenge2.judged} judged over ${challenge2.runs} run(s)`,
+      "goal"
+    ),
+    // How often a reproduction removed a finding that would otherwise have
+    // posted. Not recall, since a did-not-run says nothing either way.
+    metric(
+      "reproduction_hold_rate",
+      reproduction.completed === 0 ? null : reproduction.held / reproduction.completed,
+      "no target",
+      () => true,
+      `${reproduction.held} held / ${reproduction.completed} completed, ${reproduction.didNotRun} did not run, over ${reproduction.runs} run(s)`,
       "goal"
     ),
     metric(
@@ -17910,6 +17988,9 @@ var COMMAND_HELP = {
       "  --candidates  check-candidates output (or a candidates array); refuses output that",
       "                skips a kept candidate, so the verifier can be re-asked for it.",
       "  blocker_confirmed, when present, must be true or false.",
+      "  reproduction, when present, is {runner, path, content, expected}, each a non-empty string",
+      "  (path and expected up to 300 characters, content up to 65536) and no other field;",
+      "  reproduce checks the runner and the path against the configuration and the worktree.",
       "",
       "Reads: the evidence-verifier output on stdin.",
       "Writes: JSON on stdout.",
@@ -18530,6 +18611,9 @@ var COMMAND_HELP = {
       "  --conventions <path>   conventions.json from `conventions`. Stores on a finding each quote its",
       "                         candidate's evidence cites from a named document, only when that",
       "                         document holds it (conventionQuotes, at most two)",
+      "  --reproductions <path> reproductions.json from `reproduce`. Stores each record without any",
+      "                         run's output (exit codes, reached, durations, outcome and reason), for",
+      "                         `explain` and `evaluate`; the output stays in the run directory",
       "  --origin <driver|interactive|watch|action>",
       "                         Where the run came from (default interactive, the slash command).",
       "                         Stored with an independence label derived from it alone: interactive",
@@ -18585,8 +18669,9 @@ var COMMAND_HELP = {
       "  --files <path>         files.json from `diff --out` (required)",
       "  --diff-file <path>     diff.patch from `diff --out` (required)",
       "  --mode <mode>          fast, standard, thorough or auto; beats review.mode",
-      "Reads: --files, --diff-file, and review.mode, review.models and verification.enabled",
-      "  from .review-voice/config.yaml when the working directory has one.",
+      "Reads: --files, --diff-file, and review.mode, review.models, verification.enabled and",
+      "  the reproduction block from .review-voice/config.yaml when the working directory has one.",
+      "  The reproduce stage runs only in thorough, with reproduction enabled and a runner.",
       "Writes: the StagePlan JSON on stdout; config warnings on stderr.",
       "Exit codes: 0 ok, 2 bad invocation or unreadable input."
     )
@@ -18631,8 +18716,8 @@ var COMMAND_HELP = {
   challenge: {
     summary: "Build challenger prompts, or apply challenger verdicts to scores",
     body: lines(
-      "review-voice challenge --scores <path> --candidates <path> [--intent <path>] --emit-prompts",
-      "review-voice challenge --scores <path> --candidates <path> --diff-file <path> [--out <path>] < verdicts.json",
+      "review-voice challenge --scores <path> --candidates <path> [--intent <path>] [--reproductions <path>] --emit-prompts",
+      "review-voice challenge --scores <path> --candidates <path> --diff-file <path> [--reproductions <path>] [--out <path>] < verdicts.json",
       "  The independent challenge (adr/0024). With --emit-prompts, print one challenger prompt per",
       "  eligible finding: its claim, failure mode, category, location and the intent it cites, never",
       "  the verifier's reasoning, confidence or evidence. Otherwise check the challenger verdicts on",
@@ -18646,6 +18731,10 @@ var COMMAND_HELP = {
       '                         {"candidates": [...]}, or check-candidates output {"kept": [...]}',
       "  --emit-prompts         Print the prompts instead of applying verdicts",
       "  --intent <path>        intent.json from check-intent, for the statement a finding cites",
+      "  --reproductions <path> reproductions.json from `reproduce`; a finding with a record gets its",
+      "                         runner, file, copy, exit codes and first 40 output lines (or the reason",
+      "                         it did not run), never the verifier's expected sentence or reason;",
+      "                         applying, a decisive entry naming a reproduction file is dropped",
       "  --diff-file <path>     The reviewed diff; a corrected line must be changed in it (required",
       "                         to apply; with --emit-prompts, named in each prompt)",
       "  --out <path>           Write the challenged scores here instead of stdout",
@@ -18742,7 +18831,8 @@ var COMMAND_HELP = {
       "Reads: nothing on stdin; the local store.",
       "Writes: text (or JSON) on stdout. Each finding shows its rule id, and a finding from",
       "  score suppressed[] appears under Held back as policy-suppressed, with the rule id",
-      "  and policy version that held it; score --promote posts such a finding.",
+      "  and policy version that held it; score --promote posts such a finding. A finding whose",
+      "  reproduction was recorded shows the line reproduction <runner> <outcome> (run 1 exit N, ...) <copy>.",
       "Exit codes: 0 ok."
     )
   },
@@ -18804,7 +18894,11 @@ var COMMAND_HELP = {
       "  (the built-in defaults when the base has none, or is not in the clone).",
       "Reads: GitHub (read-only), the clone, the local store and the config named above;",
       "  REVIEW_VOICE_FAKE_AGENTS selects the fake agent backend; REVIEW_VOICE_NO_COMMANDS=1 skips",
-      "  the static evidence commands and the second-pass verification command.",
+      "  the static evidence commands, the reproductions and the second-pass verification command.",
+      "  In thorough mode, with a reproduction block in the configuration, the verifier writes a",
+      "  reproduction for each blocking or important finding and `reproduce` runs it (Linux only); one",
+      "  that does not fail holds its finding as reproduction-did-not-fail, unless its category is one",
+      "  no suppression may reach (docs/adr/0032).",
       "Writes: every stage's input and output under the run directory, and the recorded run;",
       "  with --post, the one review `post` sends. The report on stdout. A run that cannot complete",
       "  records no run, only a review_failed audit event, and posts nothing.",
@@ -19871,6 +19965,7 @@ function parseIntent(value, description) {
 }
 
 // plugins/review-voice/src/verify/challenge.ts
+import { posix as posix4 } from "node:path";
 var CHALLENGE_VERDICTS = ["confirmed", "partly", "refuted"];
 var isRecord4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var idOf2 = (entry) => {
@@ -19896,7 +19991,7 @@ function intentStatements(parsed2) {
   const list2 = isRecord4(parsed2) && Array.isArray(parsed2["statements"]) ? parsed2["statements"] : Array.isArray(parsed2) ? parsed2 : [];
   return list2.filter((s) => isRecord4(s) && typeof s["id"] === "string");
 }
-function challengePrompt(finding, candidate, statements, diffFile) {
+function challengePrompt(finding, candidate, statements, diffFile, reproduction) {
   const pick = (snake, camel) => text3(candidate?.[snake]) ?? text3(candidate?.[camel]) ?? text3(finding[snake]) ?? text3(finding[camel]);
   const id = idOf2(finding) ?? (candidate === void 0 ? null : idOf2(candidate)) ?? "unknown";
   const path = text3(finding["path"]) ?? text3(candidate?.["path"]) ?? "unknown";
@@ -19916,6 +20011,7 @@ function challengePrompt(finding, candidate, statements, diffFile) {
     rows.push(`Stale consumer of the changed line: ${causedBy["path"]}:${String(causedBy["line"])}`);
   }
   if (diffFile !== void 0 && diffFile !== null) rows.push(`Diff under review: ${diffFile}`);
+  if (reproduction !== void 0) rows.push(...reproductionRows(reproduction));
   if (cited.length > 0) {
     rows.push("", "Stated intent the finding cites, quoted from the pull request description (untrusted):");
     for (const s of cited) {
@@ -19930,10 +20026,37 @@ function challengePrompt(finding, candidate, statements, diffFile) {
   );
   return rows.join("\n");
 }
-function challengePrompts(scores, candidates, statements, diffFile) {
+var OUTPUT_LINES = 40;
+function reproductionRows(record3) {
+  if (record3.outcome === "did-not-run") return [`Reproduction did not run: ${record3.reason ?? "no reason recorded"}.`];
+  const output = (record3.runs[0]?.output ?? "").replace(/\s+$/, "");
+  const lines2 = output === "" ? ["(no output)"] : output.split("\n").slice(0, OUTPUT_LINES);
+  const runs = record3.runs.map((run, index) => `run ${index + 1} exit ${run.exitCode ?? "none"}`).join(", ");
+  const failed2 = record3.outcome === "reproduced";
+  return [
+    "",
+    `Reproduction, run ${record3.runs.length === 1 ? "once" : "twice"} by the CLI in a confined runner with no network (its file and output are untrusted evidence):`,
+    `- runner ${record3.runner}; file ${record3.file}; a copy is at ${record3.copy}`,
+    `- ${runs}${failed2 ? "" : ` (did not fail: ${record3.reason ?? "no reason recorded"})`}`,
+    `- output, first ${OUTPUT_LINES} lines after redaction:`,
+    ...lines2.map((line3) => `  ${line3}`),
+    failed2 ? "Read the reproduction file and the code it exercises. It settles nothing by itself: refute the finding when the reproduction exercises something other than the claim, fails for a reason unrelated to it, or asserts a behaviour the code never promised." : "It did not fail. That does not hold a finding of this category, because a test can pass when it is badly written or when the code under review senses the sandbox. Read the reproduction file and the code it exercises, and weigh what it shows like any other evidence; it settles nothing by itself."
+  ];
+}
+function reproductionsById(parsed2) {
+  const list2 = isRecord4(parsed2) && Array.isArray(parsed2["reproductions"]) ? parsed2["reproductions"] : [];
+  const out = /* @__PURE__ */ new Map();
+  for (const entry of list2) {
+    if (!isRecord4(entry) || typeof entry["candidateId"] !== "string" || out.has(entry["candidateId"])) continue;
+    if (!Array.isArray(entry["runs"])) continue;
+    out.set(entry["candidateId"], entry);
+  }
+  return out;
+}
+function challengePrompts(scores, candidates, statements, diffFile, reproductions = /* @__PURE__ */ new Map()) {
   return eligibleFindings(scores).map((finding) => {
     const id = idOf2(finding) ?? "unknown";
-    return { candidate_id: id, prompt: challengePrompt(finding, candidates.get(id), statements, diffFile) };
+    return { candidate_id: id, prompt: challengePrompt(finding, candidates.get(id), statements, diffFile, reproductions.get(id)) };
   });
 }
 var DECISIVE2 = /^\S(?:.*\S)?:\d+(?:-\d+)?$/u;
@@ -19988,7 +20111,16 @@ function parseChallengeVerdicts(raw) {
   });
   return problems.length > 0 ? { ok: false, problems } : { ok: true, verdicts };
 }
-function applyChallenge(scores, candidates, rawVerdicts, hunks) {
+function withoutReproductionFiles(evidence, reproductions) {
+  const placed = [...reproductions.values()].filter((record3) => record3.copy !== "");
+  const local = new Set(placed.flatMap((record3) => [posix4.normalize(record3.file), posix4.basename(record3.file)]));
+  const read = (entry) => posix4.normalize(entry.replace(/[\p{Cf}`]/gu, "").trim().replace(/:\d+(?:-\d+)?$/, ""));
+  return evidence.filter((entry) => {
+    const path = read(entry);
+    return !local.has(path) && !local.has(posix4.basename(path));
+  });
+}
+function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = /* @__PURE__ */ new Map()) {
   if (!isRecord4(scores) || !Array.isArray(scores["scores"]) || !Array.isArray(scores["eligible"])) {
     return { ok: false, problems: ["expected the JSON `RV score` printed, with `scores` and `eligible` lists"] };
   }
@@ -20038,7 +20170,8 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks) {
     const id = idOf2(entry);
     const verdict2 = id === null ? void 0 : byId.get(id);
     if (verdict2 === void 0) return entry;
-    const { candidate_id: _id, ...rest } = verdict2;
+    const { candidate_id: _id, ...cited } = verdict2;
+    const rest = { ...cited, decisive_evidence: withoutReproductionFiles(cited.decisive_evidence, reproductions) };
     const heldAs = holdReasons.get(id);
     return heldAs === void 0 ? { ...entry, challenge: rest } : { ...entry, challenge: rest, eligible: false, rejectedBecause: `${heldAs.verdict}: ${heldAs.reason}` };
   };
@@ -20092,7 +20225,7 @@ function candidateIdOf(raw) {
   const id = raw["candidate_id"] ?? raw["candidateId"];
   return typeof id === "string" && id.length > 0 ? id : null;
 }
-var OUTCOMES = ["kept", "downgraded", "dropped", "unverified"];
+var OUTCOMES2 = ["kept", "downgraded", "dropped", "unverified"];
 var VERDICTS = ["confirmed", "rejected", "uncertain"];
 var OUTCOME_VERDICT = {
   kept: "confirmed",
@@ -20155,8 +20288,8 @@ function parseSecondPass(parsed2) {
   list2.forEach((entry, index) => {
     const e = typeof entry === "object" && entry !== null ? entry : {};
     const who = `verdict ${index}`;
-    if (!OUTCOMES.includes(e["outcome"])) {
-      throw new ReconcileInputError(`${who}: outcome must be one of ${OUTCOMES.join(", ")}`);
+    if (!OUTCOMES2.includes(e["outcome"])) {
+      throw new ReconcileInputError(`${who}: outcome must be one of ${OUTCOMES2.join(", ")}`);
     }
     if (e["outcome"] === "downgraded" && (typeof e["finalSeverity"] !== "string" || e["finalSeverity"] === "")) {
       throw new ReconcileInputError(`${who}: a downgraded verdict needs finalSeverity`);
@@ -20475,6 +20608,15 @@ function reanchorPrompt(run, lane, failing) {
     'Return {"candidates": [...]} with only the corrected candidates, keeping their candidate_id; leave out the ones you withdraw.'
   ].join("\n");
 }
+function reproductionRequest(runners) {
+  if (runners === null || runners.length === 0) return [];
+  return [
+    "",
+    "Reproductions. The configured runners, as name (command, extension):",
+    ...runners.map((runner) => `- ${runner.name} (${runner.run}, ${runner.extension})`),
+    `For each candidate you verify whose severity is blocking or important, add "reproduction": {"runner", "path", "content", "expected"}, with a runner from this list. path is a new file beside the code it exercises: a directory that already exists, a file name that does not, ending with the runner's extension. content imports the code under test by relative path and prints RV_REPRO_REACHED <candidate_id> on its own line immediately before the one assertion that fails on the defect and passes once it is fixed. expected is one sentence. The reproduction uses no network, writes nothing except under $TMPDIR (a write into the worktree records it as not run), and finishes within the runner's time limit. When no listed runner fits the language, leave the field out and say so in reason.`
+  ];
+}
 function verifierPrompt(run) {
   return [
     "Verify every candidate in the kept list of checked.json against the code at the head.",
@@ -20483,6 +20625,7 @@ function verifierPrompt(run) {
       file(run, "checked.json", "the candidates; verify each entry of kept"),
       ...run.followUps ? [file(run, "follow-ups.json", "open follow-ups; check each one's remaining points at the head and return follow_ups")] : []
     ]),
+    ...reproductionRequest(run.reproductionRunners),
     "",
     `Return {"verifications": [...]} with one entry per kept candidate, each matching schemas/verification.schema.json${run.followUps ? ', and "follow_ups": [{"id", "remaining", "addressed", "reason"}]' : ""}, plus toolCalls and filesRead.`
   ].join("\n");
@@ -20555,6 +20698,13 @@ var STAGES = [
     agents: ["evidence-verifier"],
     commands: ["check-verification"],
     onFailure: "relaunch once with the named ids, then exit 7"
+  },
+  {
+    name: "reproduce",
+    kind: "cli",
+    agents: [],
+    commands: ["reproduce"],
+    onFailure: "the finding keeps its verification; the reproduction is recorded as not run"
   },
   { name: "second-pass", kind: "cli", agents: [], commands: ["verify", "reconcile"], onFailure: "as today" },
   { name: "tie-break", kind: "agent", agents: ["tie-breaker"], commands: ["reconcile"], onFailure: "the dispute stays unsettled" },
@@ -20728,7 +20878,16 @@ async function inParallel(items, work, limit = DEFAULT_AGENT_PARALLELISM) {
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
   return results;
 }
-var files = (run) => ({ dir: run.dir, intent: run.intent, followUps: run.followUps });
+var files = (run) => ({ dir: run.dir, intent: run.intent, followUps: run.followUps, reproductionRunners: null });
+function reproductionRunners(run) {
+  if (!run.plan.stages.reproduce.run || noCommands(run)) return null;
+  const context2 = readJson(at(run, "context.json"));
+  const block = isRecord5(context2) && isRecord5(context2["reproduction"]) ? context2["reproduction"] : {};
+  const runners = list(block["runners"]).flatMap(
+    (runner) => typeof runner["name"] === "string" && typeof runner["run"] === "string" && typeof runner["extension"] === "string" ? [{ name: runner["name"], run: runner["run"], extension: runner["extension"] }] : []
+  );
+  return runners.length === 0 ? null : runners;
+}
 var withoutCounts = (output) => {
   const { toolCalls: _calls, filesRead: _read, ...rest } = isRecord5(output) ? output : {};
   return rest;
@@ -21036,7 +21195,7 @@ async function verify(run) {
   if (run.kept.length === 0) return skip(run, "verifier", "no candidates");
   const strong = run.kept.some((candidate) => candidate["severity"] === "important" || candidate["severity"] === "blocking");
   const { model } = modelForFinding(run.plan, "verify", strong ? "important" : "minor");
-  const result = await agent(run, "verifier", "evidence-verifier", model ?? "sonnet", SCHEMAS.verification, verifierPrompt(files(run)), async (output2) => {
+  const result = await agent(run, "verifier", "evidence-verifier", model ?? "sonnet", SCHEMAS.verification, verifierPrompt({ ...files(run), reproductionRunners: reproductionRunners(run) }), async (output2) => {
     writeJson(at(run, "verification.json"), withoutCounts(output2));
     const checked = await cli(run, ["check-verification", "--candidates", at(run, "checked.json")], JSON.stringify(withoutCounts(output2)));
     return checked.code === 0 ? null : checked.stderr.trim() || `check-verification exited ${checked.code}`;
@@ -21053,6 +21212,84 @@ async function verify(run) {
       run.setAside.push(candidate);
     }
   }
+}
+var firstOutputLine = (text4) => text4.split("\n").map((line3) => line3.trim()).find((line3) => line3 !== "") ?? "";
+function applyReproductions(survivors, report) {
+  const records = isRecord5(report) ? list(report["reproductions"]) : [];
+  const held = [];
+  const notes = [];
+  const holding = /* @__PURE__ */ new Set();
+  for (const record3 of records) {
+    const id = String(record3["candidateId"] ?? "");
+    const reason2 = typeof record3["reason"] === "string" ? record3["reason"] : "no reason recorded";
+    if (record3["outcome"] === "did-not-run") {
+      notes.push(`Reproduction for ${id} did not run: ${reason2}`);
+      continue;
+    }
+    if (record3["outcome"] !== "did-not-fail" || holding.has(id)) continue;
+    const candidate = survivors.find((entry) => idOf3(entry) === id);
+    if (candidate === void 0) continue;
+    const category = typeof candidate["category"] === "string" ? candidate["category"] : "";
+    if (isSuppressionExempt(category)) {
+      notes.push(`Reproduction for ${id} did not fail (${reason2}); a ${category} finding is not held on a passing reproduction.`);
+      continue;
+    }
+    holding.add(id);
+    const runs = list(record3["runs"]);
+    const output = firstOutputLine(String(runs.at(-1)?.["output"] ?? "")).slice(0, 120);
+    held.push({
+      path: String(candidate["path"]),
+      line: candidate["line"],
+      verdict: "reproduction-did-not-fail",
+      source: "reproduce",
+      reason: `${String(record3["runner"] ?? "")}: ${reason2}${output === "" ? "" : `; ${output}`}`,
+      ...typeof candidate["severity"] === "string" ? { severity: candidate["severity"] } : {},
+      candidateId: id,
+      ...typeof candidate["claim"] === "string" && candidate["claim"] !== "" ? { text: candidate["claim"] } : {}
+    });
+  }
+  return { survivors: survivors.filter((entry) => !holding.has(idOf3(entry))), held, notes };
+}
+async function reproduceStage(run) {
+  const out = at(run, "reproductions.json");
+  rmSync4(out, { force: true });
+  if (!run.plan.stages.reproduce.run) return skip(run, "reproduce", "off in this mode, or not configured");
+  if (noCommands(run)) {
+    run.notes.push("REVIEW_VOICE_NO_COMMANDS=1, so no reproduction was run.");
+    return skip(run, "reproduce", "REVIEW_VOICE_NO_COMMANDS=1");
+  }
+  if (run.survivors.length === 0) return skip(run, "reproduce", "nothing verified");
+  if (run.headDir === null) throw new Stop(2, "reproduce has no head worktree to copy.");
+  const result = await cli(run, [
+    "reproduce",
+    "--worktree",
+    run.headDir,
+    "--verification",
+    at(run, "verification.json"),
+    "--candidates",
+    at(run, "checked.json"),
+    "--out",
+    out,
+    "--run-dir",
+    run.dir
+  ]);
+  if (result.code !== 0) {
+    rmSync4(out, { force: true });
+    run.notes.push(`reproduce exited ${result.code}: ${firstLines(result.stderr)}`);
+    return;
+  }
+  let report;
+  try {
+    report = readJson(out);
+  } catch (error) {
+    rmSync4(out, { force: true });
+    run.notes.push(`reproduce wrote no readable report: ${firstLines(error instanceof Error ? error.message : String(error))}`);
+    return;
+  }
+  const applied = applyReproductions(run.survivors, report);
+  run.survivors = applied.survivors;
+  run.held.push(...applied.held);
+  run.notes.push(...applied.notes);
 }
 async function secondPass(run) {
   if (!run.plan.stages["second-pass"].run) return skip(run, "second-pass", "off in this mode, or not configured");
@@ -21176,8 +21413,24 @@ async function challenge(run) {
   }
   const subset = at(run, "scores.to-challenge.json");
   writeJson(subset, { ...scores, eligible: challenged });
-  const base = ["--scores", subset, "--candidates", at(run, "candidates.json"), "--diff-file", at(run, "diff.patch")];
-  const emitted = parsed((await must(run, ["challenge", ...base, "--emit-prompts", ...run.intent ? ["--intent", at(run, "intent.json")] : []], void 0, 1)).stdout);
+  const reproductions = at(run, "reproductions.json");
+  const base = [
+    "--scores",
+    subset,
+    "--candidates",
+    at(run, "candidates.json"),
+    "--diff-file",
+    at(run, "diff.patch"),
+    ...existsSync8(reproductions) ? ["--reproductions", reproductions] : []
+  ];
+  const emitted = parsed(
+    (await must(
+      run,
+      ["challenge", ...base, "--emit-prompts", ...run.intent ? ["--intent", at(run, "intent.json")] : []],
+      void 0,
+      1
+    )).stdout
+  );
   const promptOf = new Map(list(emitted["prompts"]).map((entry) => [idOf3(entry), String(entry["prompt"])]));
   const results = await inParallel(challenged, (finding) => {
     const id = idOf3(finding);
@@ -21247,7 +21500,8 @@ async function recordStage(run) {
     ...scored ? ["--scores", scores, "--candidates", at(run, "record-candidates.json")] : [],
     ...run.secondPass ? ["--verdicts", at(run, "second-pass.json")] : [],
     ...run.tieBroken ? ["--tie-breaks", at(run, "reconciled.json")] : [],
-    ...run.followUps ? ["--follow-ups", at(run, "verification.json")] : []
+    ...run.followUps ? ["--follow-ups", at(run, "verification.json")] : [],
+    ...existsSync8(at(run, "reproductions.json")) ? ["--reproductions", at(run, "reproductions.json")] : []
   ]);
 }
 function claudeVersionOf(run) {
@@ -21340,6 +21594,7 @@ var HANDLERS = {
   intent,
   lanes,
   verify,
+  reproduce: reproduceStage,
   "second-pass": secondPass,
   "tie-break": tieBreak,
   score,
@@ -21831,7 +22086,27 @@ function verificationProblem(list2) {
     const partly = entry["partly_addressed"] ?? entry["partlyAddressed"];
     const partlyProblem = partly === void 0 ? null : partlyAddressedProblem(partly);
     if (partlyProblem !== null) return `${who}: partly_addressed ${partlyProblem}.`;
+    const reproduction = entry["reproduction"];
+    const reproductionProblem = reproduction === void 0 ? null : reproductionShapeProblem(reproduction);
+    if (reproductionProblem !== null) return `${who}: ${reproductionProblem}.`;
   }
+  return null;
+}
+var REPRODUCTION_FIELDS = { runner: Infinity, path: 300, content: 65536, expected: 300 };
+function reproductionShapeProblem(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return "reproduction must be an object with runner, path, content and expected";
+  }
+  const fields = value;
+  const extra = Object.keys(fields).find((key2) => !Object.hasOwn(REPRODUCTION_FIELDS, key2));
+  if (extra !== void 0) return `reproduction.${extra} is not a field; use runner, path, content and expected`;
+  for (const [key2, most] of Object.entries(REPRODUCTION_FIELDS)) {
+    const text4 = fields[key2];
+    if (typeof text4 !== "string" || text4.length === 0 || text4.length > most) {
+      return `reproduction.${key2} must be a string of ${most === Infinity ? "at least 1 character" : `1 to ${most} characters`}`;
+    }
+  }
+  if (!/^[a-z][a-z0-9-]*$/.test(fields["runner"])) return "reproduction.runner must be a runner name from the list, lower-case letters, digits and dashes";
   return null;
 }
 function isMissingContext(item) {
@@ -23350,8 +23625,8 @@ function gitTreeReader(root, ref) {
     }
   }
   const key2 = (path) => {
-    const posix5 = path.split(sep2).join("/");
-    return posix5 === "." ? "" : posix5;
+    const posix6 = path.split(sep2).join("/");
+    return posix6 === "." ? "" : posix6;
   };
   const file2 = (path) => {
     const entry = files2.get(key2(path));
@@ -26005,7 +26280,8 @@ function planCommand(argv) {
     ...change,
     complexity,
     removedControls: structureEntries(manifest["structure"], "removedControls"),
-    secondPassConfigured: config2?.verification.enabled ?? false
+    secondPassConfigured: config2?.verification.enabled ?? false,
+    reproductionConfigured: config2 !== null && config2.reproduction.enabled && config2.reproduction.runners.length > 0
   });
   console.log(JSON.stringify(plan, null, 2));
   return 0;
@@ -27315,14 +27591,15 @@ function challengeCommand(argv) {
   const emit = argv.includes("--emit-prompts");
   const diffFile = flag(argv, "--diff-file");
   const intentFile = flag(argv, "--intent");
+  const reproductionsFile = flag(argv, "--reproductions");
   const outFile = flag(argv, "--out");
   if (scoresFile === null || candidatesFile === null || !emit && diffFile === null) {
     console.error(
-      "Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--diff-file <patch>] --emit-prompts\n       challenge --scores <file> --candidates <file> --diff-file <patch> [--out <file>] < verdicts.json"
+      "Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--reproductions <file>] [--diff-file <patch>] --emit-prompts\n       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--out <file>] < verdicts.json"
     );
     return 2;
   }
-  for (const name of ["--intent", "--diff-file", "--out"]) {
+  for (const name of ["--intent", "--reproductions", "--diff-file", "--out"]) {
     if (argv.includes(name) && flag(argv, name) === null) {
       console.error(`${name} needs a file path.`);
       return 2;
@@ -27338,6 +27615,15 @@ function challengeCommand(argv) {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
+  let reproductions = /* @__PURE__ */ new Map();
+  if (reproductionsFile !== null) {
+    try {
+      reproductions = reproductionsById(readJson2(reproductionsFile));
+    } catch (error) {
+      console.error(`Cannot read ${reproductionsFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
   if (emit) {
     let statements = [];
     if (intentFile !== null) {
@@ -27348,7 +27634,7 @@ function challengeCommand(argv) {
         return 2;
       }
     }
-    console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile) }, null, 2));
+    console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile, reproductions) }, null, 2));
     return 0;
   }
   let verdicts;
@@ -27365,7 +27651,7 @@ function challengeCommand(argv) {
     console.error("Cannot parse the challenger verdicts on stdin as JSON.");
     return 2;
   }
-  const result = applyChallenge(scores, candidates, verdicts, hunks);
+  const result = applyChallenge(scores, candidates, verdicts, hunks, reproductions);
   if (!result.ok) {
     console.error("Challenge refused:");
     for (const problem of result.problems) console.error(`  ${problem}`);
@@ -27621,6 +27907,11 @@ function reviewScopeFromManifest(value) {
 function describeReviewScope(scope) {
   return describeScope(scope);
 }
+function describeReproduction(record3) {
+  const runs = record3.runs.length === 0 ? "no run" : record3.runs.map((run, index) => `run ${index + 1} exit ${run.exitCode ?? "none"}`).join(", ");
+  const copy = record3.copy === "" ? "" : ` ${record3.copy}`;
+  return `${record3.runner} ${record3.outcome} (${runs})${copy}`;
+}
 function explainCommand(argv) {
   const db = openDatabase();
   try {
@@ -27732,6 +28023,10 @@ function explainCommand(argv) {
           );
         }
       }
+      const paired = [...planned.backing].find(([entry]) => entry.findingId === finding.findingId)?.[1];
+      const candidateId = paired === void 0 ? score2?.candidateId : paired.runId === detail.reviewRunId ? paired.score.candidateId : void 0;
+      const reproduction = detail.reproductions?.find((r) => candidateId !== void 0 && r.candidateId === candidateId);
+      if (reproduction !== void 0) console.log(`  reproduction      ${describeReproduction(reproduction)}`);
       const challenge2 = challengeFacts(backingAt(planned, finding.path, finding.line)?.score ?? null);
       if (challenge2 !== null) {
         console.log(
@@ -27769,7 +28064,12 @@ function explainCommand(argv) {
     }
     if (detail.held.length > 0 && wanted === void 0) {
       console.log(`Held back (${detail.held.length}):`);
-      for (const h of detail.held) console.log(`  [${h.verdict}] ${h.path}:${h.line}  ${h.source} - ${h.reason}`);
+      for (const h of detail.held) {
+        console.log(`  [${h.verdict}] ${h.path}:${h.line}  ${h.source} - ${h.reason}`);
+        if (h.verdict === "reproduction-did-not-fail") continue;
+        const reproduction = detail.reproductions?.find((r) => h.candidateId !== void 0 && r.candidateId === h.candidateId);
+        if (reproduction !== void 0) console.log(`      reproduction  ${describeReproduction(reproduction)}`);
+      }
       console.log("");
     }
     const dropped = verdicts.filter(
@@ -28349,7 +28649,7 @@ import { join as join26 } from "node:path";
 
 // plugins/review-voice/src/cli/check-candidates.ts
 import { readFileSync as readFileSync32 } from "node:fs";
-import { isAbsolute as isAbsolute5, posix as posix4, relative as relative5 } from "node:path";
+import { isAbsolute as isAbsolute5, posix as posix5, relative as relative5 } from "node:path";
 
 // plugins/review-voice/src/cli/score.ts
 import { readFileSync as readFileSync31 } from "node:fs";
@@ -29088,7 +29388,7 @@ function readSignals(file2, root) {
     const s = entry;
     if (typeof s !== "object" || s === null || typeof s.path !== "string" || typeof s.line !== "number" || typeof s.claim !== "string") return [];
     const spelled = s.path.split("\\").join("/");
-    const path = isAbsolute5(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix4.normalize(spelled).replace(/^\.\//, "");
+    const path = isAbsolute5(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix5.normalize(spelled).replace(/^\.\//, "");
     if (path === "" || path === "." || path.startsWith("..") || isAbsolute5(path)) return [];
     return [
       {
@@ -29108,7 +29408,7 @@ function matchSignal(candidate, signals) {
   if (isSuppressionExempt(candidate.category)) return null;
   const text4 = `${candidate.claim} ${candidate.failureMode}`;
   const mine = significantWords(text4);
-  const path = posix4.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
+  const path = posix5.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
   for (const signal2 of signals) {
     if (signal2.path !== path || signal2.line === null || Math.abs(signal2.line - candidate.line) > 2) continue;
     const message = `${signal2.claim} ${signal2.evidence.join(" ")}`;
@@ -29692,6 +29992,20 @@ function recordCommand(argv) {
       return 2;
     }
   }
+  const reproductionsFile = flag(argv, "--reproductions");
+  let reproductions;
+  if (argv.includes("--reproductions")) {
+    if (reproductionsFile === null) {
+      console.error("--reproductions needs the reproductions.json that `reproduce` wrote.");
+      return 2;
+    }
+    try {
+      reproductions = recordedReproductions(JSON.parse(readFileSync33(reproductionsFile, "utf8")));
+    } catch (error) {
+      console.error(`Cannot read reproductions from ${reproductionsFile}: ${error instanceof Error ? error.message : String(error)}.`);
+      return 2;
+    }
+  }
   const followUpThreadFile = flag(argv, "--thread");
   let followUpThread = null;
   let followUpThreadFor = null;
@@ -29834,6 +30148,7 @@ function recordCommand(argv) {
       followUps,
       stages,
       ...checks === void 0 ? {} : { checks },
+      ...reproductions === void 0 ? {} : { reproductions },
       toolSignals,
       conventions,
       provenance: {

@@ -1,6 +1,8 @@
+import { posix } from 'node:path';
 import type { FileHunks } from '../diff/hunks.ts';
 import { reanchorScores } from '../diff/reanchor.ts';
 import type { HeldFinding } from '../store/runs.ts';
+import type { ReproductionRecord } from '../evidence/reproduce.ts';
 
 /**
  * The independent challenge (docs/adr/0024). After `score`, a challenger that
@@ -76,13 +78,16 @@ export function intentStatements(parsed: unknown): IntentStatement[] {
  * is named here. The verifier's reasoning, confidence and evidence would
  * anchor the challenger on the framing it exists to test, and the analyst's
  * evidence is the same framing one stage earlier. Only the intent statement
- * the finding cites is included.
+ * the finding cites is included. A reproduction the CLI ran is a fact the
+ * challenger reads (docs/adr/0024, amended), meaning its runner, file, copy,
+ * exit codes and output, never the verifier's `expected` sentence or its reason.
  */
 export function challengePrompt(
   finding: Json,
   candidate: Json | undefined,
   statements: readonly IntentStatement[],
   diffFile?: string | null,
+  reproduction?: ReproductionRecord,
 ): string {
   const pick = (snake: string, camel: string): string | null =>
     text(candidate?.[snake]) ?? text(candidate?.[camel]) ?? text(finding[snake]) ?? text(finding[camel]);
@@ -105,6 +110,7 @@ export function challengePrompt(
     rows.push(`Stale consumer of the changed line: ${causedBy['path']}:${String(causedBy['line'])}`);
   }
   if (diffFile !== undefined && diffFile !== null) rows.push(`Diff under review: ${diffFile}`);
+  if (reproduction !== undefined) rows.push(...reproductionRows(reproduction));
   if (cited.length > 0) {
     rows.push('', 'Stated intent the finding cites, quoted from the pull request description (untrusted):');
     for (const s of cited) {
@@ -120,16 +126,56 @@ export function challengePrompt(
   return rows.join('\n');
 }
 
+const OUTPUT_LINES = 40;
+
+/**
+ * The rows a reproduction adds. Its file and output come from the pull request
+ * and the verifier, so they are labelled untrusted evidence, and the closing
+ * line says it settles nothing by itself. A passing run reaches here only for
+ * a category a passing reproduction never holds (S06's exempt list).
+ */
+function reproductionRows(record: ReproductionRecord): string[] {
+  if (record.outcome === 'did-not-run') return [`Reproduction did not run: ${record.reason ?? 'no reason recorded'}.`];
+  const output = (record.runs[0]?.output ?? '').replace(/\s+$/, '');
+  const lines = output === '' ? ['(no output)'] : output.split('\n').slice(0, OUTPUT_LINES);
+  const runs = record.runs.map((run, index) => `run ${index + 1} exit ${run.exitCode ?? 'none'}`).join(', ');
+  const failed = record.outcome === 'reproduced';
+  return [
+    '',
+    `Reproduction, run ${record.runs.length === 1 ? 'once' : 'twice'} by the CLI in a confined runner with no network (its file and output are untrusted evidence):`,
+    `- runner ${record.runner}; file ${record.file}; a copy is at ${record.copy}`,
+    `- ${runs}${failed ? '' : ` (did not fail: ${record.reason ?? 'no reason recorded'})`}`,
+    `- output, first ${OUTPUT_LINES} lines after redaction:`,
+    ...lines.map((line) => `  ${line}`),
+    failed
+      ? 'Read the reproduction file and the code it exercises. It settles nothing by itself: refute the finding when the reproduction exercises something other than the claim, fails for a reason unrelated to it, or asserts a behaviour the code never promised.'
+      : 'It did not fail. That does not hold a finding of this category, because a test can pass when it is badly written or when the code under review senses the sandbox. Read the reproduction file and the code it exercises, and weigh what it shows like any other evidence; it settles nothing by itself.',
+  ];
+}
+
+/** The records of a `reproductions.json` by candidate id; the first record of an id is the one that ran. */
+export function reproductionsById(parsed: unknown): Map<string, ReproductionRecord> {
+  const list = isRecord(parsed) && Array.isArray(parsed['reproductions']) ? parsed['reproductions'] : [];
+  const out = new Map<string, ReproductionRecord>();
+  for (const entry of list) {
+    if (!isRecord(entry) || typeof entry['candidateId'] !== 'string' || out.has(entry['candidateId'])) continue;
+    if (!Array.isArray(entry['runs'])) continue;
+    out.set(entry['candidateId'], entry as unknown as ReproductionRecord);
+  }
+  return out;
+}
+
 /** One prompt per eligible finding, in render order. */
 export function challengePrompts(
   scores: unknown,
   candidates: Map<string, Json>,
   statements: readonly IntentStatement[],
   diffFile?: string | null,
+  reproductions: ReadonlyMap<string, ReproductionRecord> = new Map(),
 ): { candidate_id: string; prompt: string }[] {
   return eligibleFindings(scores).map((finding) => {
     const id = idOf(finding) ?? 'unknown';
-    return { candidate_id: id, prompt: challengePrompt(finding, candidates.get(id), statements, diffFile) };
+    return { candidate_id: id, prompt: challengePrompt(finding, candidates.get(id), statements, diffFile, reproductions.get(id)) };
   });
 }
 
@@ -193,6 +239,26 @@ export function parseChallengeVerdicts(raw: unknown): { ok: true; verdicts: Chal
   return problems.length > 0 ? { ok: false, problems } : { ok: true, verdicts };
 }
 
+/**
+ * The decisive entries that name no reproduction file. That file exists only
+ * in the reproduction's throwaway copy, so the evidence block would post a
+ * path the pull request does not have; the copy's own path is absolute, and
+ * the block drops it. Read as the block reads an entry, without backticks or
+ * invisible characters, and by basename too, which is how a model may cite it.
+ * Only a record with a copy names such a file: a path the runner refused was
+ * never written, and may name a file the pull request has.
+ */
+function withoutReproductionFiles(evidence: readonly string[], reproductions: ReadonlyMap<string, ReproductionRecord>): string[] {
+  const placed = [...reproductions.values()].filter((record) => record.copy !== '');
+  const local = new Set(placed.flatMap((record) => [posix.normalize(record.file), posix.basename(record.file)]));
+  // Trimmed as the block trims, and by basename too, so a padded code span or a path to the kept copy is caught.
+  const read = (entry: string): string => posix.normalize(entry.replace(/[\p{Cf}`]/gu, '').trim().replace(/:\d+(?:-\d+)?$/, ''));
+  return evidence.filter((entry) => {
+    const path = read(entry);
+    return !local.has(path) && !local.has(posix.basename(path));
+  });
+}
+
 export interface ChallengeSummary {
   confirmed: string[];
   held: { candidate_id: string; verdict: 'challenge-partly' | 'challenge-refuted'; reason: string }[];
@@ -216,6 +282,7 @@ export function applyChallenge(
   candidates: Map<string, Json>,
   rawVerdicts: unknown,
   hunks: Map<string, FileHunks>,
+  reproductions: ReadonlyMap<string, ReproductionRecord> = new Map(),
 ): ChallengeResult {
   if (!isRecord(scores) || !Array.isArray(scores['scores']) || !Array.isArray(scores['eligible'])) {
     return { ok: false, problems: ['expected the JSON `RV score` printed, with `scores` and `eligible` lists'] };
@@ -271,7 +338,8 @@ export function applyChallenge(
     const id = idOf(entry);
     const verdict = id === null ? undefined : byId.get(id);
     if (verdict === undefined) return entry;
-    const { candidate_id: _id, ...rest } = verdict;
+    const { candidate_id: _id, ...cited } = verdict;
+    const rest = { ...cited, decisive_evidence: withoutReproductionFiles(cited.decisive_evidence, reproductions) };
     const heldAs = holdReasons.get(id as string);
     return heldAs === undefined
       ? { ...entry, challenge: rest }

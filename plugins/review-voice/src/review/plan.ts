@@ -6,7 +6,7 @@ import { unquoteGitPath } from '../diff/hunks.ts';
 /** Cost modes and the stage plan (docs/adr/0025). Pure: nothing here reads a file or calls a model. */
 export type Mode = 'fast' | 'standard' | 'thorough';
 export type RequestedMode = Mode | 'auto';
-export type StageName = 'intent' | 'lanes' | 'verify' | 'second-pass' | 'tie-break' | 'challenge' | 'edit';
+export type StageName = 'intent' | 'lanes' | 'verify' | 'reproduce' | 'second-pass' | 'tie-break' | 'challenge' | 'edit';
 export type Tier = 'blocking' | 'important' | 'minor' | 'nit';
 
 export const MODES: readonly RequestedMode[] = ['fast', 'standard', 'thorough', 'auto'];
@@ -39,6 +39,11 @@ export interface PlanInput {
    */
   removedControls?: number;
   secondPassConfigured: boolean;
+  /**
+   * The `reproduction` block is on with at least one runner. Optional so a
+   * caller that does not read it is read as off; `planCommand` always sets it.
+   */
+  reproductionConfigured?: boolean;
 }
 
 const SONNET = 'sonnet';
@@ -89,6 +94,8 @@ export function resolvePlan(input: PlanInput): StagePlan {
       lanes: { run: true, model: diffLane },
       // The verifier is a floor: no mode turns it off.
       verify: { run: true, model: overrides.verify ?? (thorough ? OPUS : SONNET) },
+      // A reproduction runs pull request code, so only the mode that pays for the most evidence runs it, and only when configured.
+      reproduce: { run: thorough && (input.reproductionConfigured ?? false), model: null },
       // The second pass is a configured command, so it has no model of its own.
       'second-pass': { run: secondPass, model: null },
       'tie-break': { run: true, model: overrides['tie-break'] ?? (fast ? SONNET : OPUS) },

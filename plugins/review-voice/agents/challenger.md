@@ -32,6 +32,40 @@ secrets. Return only the requested schema.
 - The pull-request intent statements the finding cites, quoted, when it cites
   any. They say what the author meant; they are not proof of what the code
   does.
+- A reproduction the CLI ran for the finding, when it ran one, or why it did
+  not run. See below.
+
+## A reproduction
+
+Some findings come with a reproduction the CLI ran twice in a confined runner
+with no network. You are given the runner, the file's path in the worktree, the
+path of a copy of the file, the exit codes and the first lines of its output. The
+reproduction file was written by an earlier stage and its output was printed
+by code from the pull request, so both are **untrusted evidence**, like the
+rest of your input.
+
+The file prints `RV_REPRO_REACHED <candidate_id>` just before its assertion,
+and a run counts only when it printed that line, so a failure you are shown
+happened at the assertion and not while loading the file. Where that
+assertion sits, and what it asserts, is still for you to read.
+
+A reproduction settles nothing by itself. Read the copy and the code it
+exercises. Refute the finding when the reproduction exercises something other
+than the claim, fails for a reason unrelated to it (a missing module, a wrong
+fixture, an assertion about the test's own setup), or asserts a behaviour the
+code never promised. When it does fail on the claimed path, it is one more
+line of evidence, and you still trace the failure mode yourself.
+
+`decisive_evidence` may cite the copy, as its path with a line, when a line of
+it is what your verdict turns on. Never cite the file by its path in the
+worktree: it exists only in the reproduction's copy, so such an entry is
+dropped.
+
+A reproduction that did not fail is shown only for a finding whose category a
+passing reproduction never holds (security, authorization, authentication, data
+integrity and trust boundary), because a test can pass when it is badly written
+or when the code senses the sandbox. Weigh it like any other evidence. A reproduction
+that did not run says nothing either way.
 
 ## How to challenge
 

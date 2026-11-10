@@ -1,0 +1,16 @@
+{
+  "output": {
+    "verdicts": [
+      {
+        "candidate_id": "cand_001",
+        "verdict": "confirmed",
+        "line_ok": true,
+        "decisive_evidence": [
+          "src/paginate.mjs:3",
+          "src/paginate.mjs:1"
+        ],
+        "reason": "src/paginate.mjs:3 computes the offset from the one-based number without subtracting one."
+      }
+    ]
+  }
+}

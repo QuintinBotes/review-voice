@@ -1,0 +1,19 @@
+{
+  "output": {
+    "candidates": [
+      {
+        "candidate_id": "cand_001",
+        "path": "src/window.mjs",
+        "line": 3,
+        "category": "correctness",
+        "severity": "important",
+        "claim": "lastEntries() slices from entries.length - n, which drops the newest entry.",
+        "failure_mode": "lastEntries(entries, 2) returns one entry fewer than asked for.",
+        "evidence": [
+          "src/window.mjs:3 slices from entries.length - n."
+        ],
+        "technical_confidence": 0.8
+      }
+    ]
+  }
+}

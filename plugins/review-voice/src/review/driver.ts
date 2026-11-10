@@ -11,7 +11,7 @@ import { parseHunks } from '../diff/hunks.ts';
 import { stopCommands } from '../evidence/run.ts';
 import type { GitHubClient } from '../github/client.ts';
 import { descriptionOf } from '../intent.ts';
-import { blockingContext, type MissingContext } from '../scoring/score.ts';
+import { blockingContext, isSuppressionExempt, type MissingContext } from '../scoring/score.ts';
 import { recordAudit } from '../store/audit.ts';
 import { openDatabase } from '../store/db.ts';
 import { dataDirectory } from '../store/paths.ts';
@@ -395,7 +395,24 @@ async function inParallel<T, R>(items: readonly T[], work: (item: T) => Promise<
   return results;
 }
 
-const files = (run: Run): prompts.RunFiles => ({ dir: run.dir, intent: run.intent, followUps: run.followUps });
+const files = (run: Run): prompts.RunFiles => ({ dir: run.dir, intent: run.intent, followUps: run.followUps, reproductionRunners: null });
+
+/**
+ * The runners the verifier may write a reproduction for, from the context the
+ * base commit's configuration produced; null unless the `reproduce` stage will
+ * run, so the verifier is never asked for a file nothing runs.
+ */
+function reproductionRunners(run: Run): prompts.RunFiles['reproductionRunners'] {
+  if (!run.plan!.stages.reproduce.run || noCommands(run)) return null;
+  const context = readJson(at(run, 'context.json'));
+  const block = isRecord(context) && isRecord(context['reproduction']) ? context['reproduction'] : {};
+  const runners = list(block['runners']).flatMap((runner) =>
+    typeof runner['name'] === 'string' && typeof runner['run'] === 'string' && typeof runner['extension'] === 'string'
+      ? [{ name: runner['name'], run: runner['run'], extension: runner['extension'] }]
+      : [],
+  );
+  return runners.length === 0 ? null : runners;
+}
 
 const withoutCounts = (output: unknown): Json => {
   const { toolCalls: _calls, filesRead: _read, ...rest } = isRecord(output) ? output : {};
@@ -766,7 +783,7 @@ async function verify(run: Run): Promise<void> {
   if (run.kept.length === 0) return skip(run, 'verifier', 'no candidates');
   const strong = run.kept.some((candidate) => candidate['severity'] === 'important' || candidate['severity'] === 'blocking');
   const { model } = modelForFinding(run.plan!, 'verify', strong ? 'important' : 'minor');
-  const result = await agent(run, 'verifier', 'evidence-verifier', model ?? 'sonnet', prompts.SCHEMAS.verification, prompts.verifierPrompt(files(run)), async (output) => {
+  const result = await agent(run, 'verifier', 'evidence-verifier', model ?? 'sonnet', prompts.SCHEMAS.verification, prompts.verifierPrompt({ ...files(run), reproductionRunners: reproductionRunners(run) }), async (output) => {
     writeJson(at(run, 'verification.json'), withoutCounts(output));
     const checked = await cli(run, ['check-verification', '--candidates', at(run, 'checked.json')], JSON.stringify(withoutCounts(output)));
     return checked.code === 0 ? null : checked.stderr.trim() || `check-verification exited ${checked.code}`;
@@ -785,6 +802,104 @@ async function verify(run: Run): Promise<void> {
       run.setAside.push(candidate);
     }
   }
+}
+
+const firstOutputLine = (text: string): string => text.split('\n').map((line) => line.trim()).find((line) => line !== '') ?? '';
+
+/**
+ * What the reproduce stage's records do to the verified candidates (S16). A
+ * reproduction that did not fail holds its finding as
+ * `reproduction-did-not-fail`, except in a category no suppression may reach
+ * (S06's exempt list, by the owner's decision for S16). A passing test can be
+ * badly written, and code under review can sense the sandbox and pass on
+ * purpose, so there the result is recorded and shown, never a hold. A record
+ * that did not run changes nothing and leaves a note; a reproduced one is
+ * evidence the challenger reads, and changes nothing here.
+ */
+export function applyReproductions(survivors: readonly Json[], report: unknown): { survivors: Json[]; held: HeldFinding[]; notes: string[] } {
+  const records = isRecord(report) ? list(report['reproductions']) : [];
+  const held: HeldFinding[] = [];
+  const notes: string[] = [];
+  const holding = new Set<string>();
+  for (const record of records) {
+    const id = String(record['candidateId'] ?? '');
+    const reason = typeof record['reason'] === 'string' ? record['reason'] : 'no reason recorded';
+    if (record['outcome'] === 'did-not-run') {
+      notes.push(`Reproduction for ${id} did not run: ${reason}`);
+      continue;
+    }
+    if (record['outcome'] !== 'did-not-fail' || holding.has(id)) continue;
+    const candidate = survivors.find((entry) => idOf(entry) === id);
+    if (candidate === undefined) continue;
+    const category = typeof candidate['category'] === 'string' ? candidate['category'] : '';
+    if (isSuppressionExempt(category)) {
+      notes.push(`Reproduction for ${id} did not fail (${reason}); a ${category} finding is not held on a passing reproduction.`);
+      continue;
+    }
+    holding.add(id);
+    const runs = list(record['runs']);
+    const output = firstOutputLine(String(runs.at(-1)?.['output'] ?? '')).slice(0, 120);
+    held.push({
+      path: String(candidate['path']),
+      line: candidate['line'] as number,
+      verdict: 'reproduction-did-not-fail',
+      source: 'reproduce',
+      reason: `${String(record['runner'] ?? '')}: ${reason}${output === '' ? '' : `; ${output}`}`,
+      ...(typeof candidate['severity'] === 'string' ? { severity: candidate['severity'] } : {}),
+      candidateId: id,
+      ...(typeof candidate['claim'] === 'string' && candidate['claim'] !== '' ? { text: candidate['claim'] } : {}),
+    });
+  }
+  return { survivors: survivors.filter((entry) => !holding.has(idOf(entry))), held, notes };
+}
+
+/**
+ * Runs the verifier's reproductions in the confined runner, between verify and
+ * the second pass. Through `cli`, not `must`, so a reproduce that fails is a
+ * note and every finding goes on as it was (the stage row's onFailure).
+ */
+async function reproduceStage(run: Run): Promise<void> {
+  const out = at(run, 'reproductions.json');
+  // A re-run into the same directory must not hand an earlier run's records to the challenger or the record.
+  rmSync(out, { force: true });
+  if (!run.plan!.stages.reproduce.run) return skip(run, 'reproduce', 'off in this mode, or not configured');
+  if (noCommands(run)) {
+    run.notes.push('REVIEW_VOICE_NO_COMMANDS=1, so no reproduction was run.');
+    return skip(run, 'reproduce', 'REVIEW_VOICE_NO_COMMANDS=1');
+  }
+  if (run.survivors.length === 0) return skip(run, 'reproduce', 'nothing verified');
+  // The loop prepares the workspace before the first agent stage, and verify precedes this one.
+  if (run.headDir === null) throw new Stop(2, 'reproduce has no head worktree to copy.');
+  const result = await cli(run, [
+    'reproduce',
+    '--worktree',
+    run.headDir,
+    '--verification',
+    at(run, 'verification.json'),
+    '--candidates',
+    at(run, 'checked.json'),
+    '--out',
+    out,
+    '--run-dir',
+    run.dir,
+  ]);
+  if (result.code !== 0) {
+    rmSync(out, { force: true });
+    run.notes.push(`reproduce exited ${result.code}: ${firstLines(result.stderr)}`);
+    return;
+  }
+  let report: unknown;
+  try {
+    report = readJson(out);
+  } catch (error) {
+    rmSync(out, { force: true });
+    run.notes.push(`reproduce wrote no readable report: ${firstLines(error instanceof Error ? error.message : String(error))}`);
+    return;
+  }
+  const applied = applyReproductions(run.survivors, report);
+  run.survivors = applied.survivors;
+  run.held.push(...applied.held);
+  run.notes.push(...applied.notes);
 }
 
 async function secondPass(run: Run): Promise<void> {
@@ -921,8 +1036,22 @@ async function challenge(run: Run): Promise<void> {
   // occupies its anchor and a corrected line cannot land on it (#207).
   const subset = at(run, 'scores.to-challenge.json');
   writeJson(subset, { ...scores, eligible: challenged });
-  const base = ['--scores', subset, '--candidates', at(run, 'candidates.json'), '--diff-file', at(run, 'diff.patch')];
-  const emitted = parsed((await must(run, ['challenge', ...base, '--emit-prompts', ...(run.intent ? ['--intent', at(run, 'intent.json')] : [])], undefined, 1)).stdout);
+  // Both calls read the reproductions: the prompts show them, and applying drops a decisive entry naming a reproduction file.
+  const reproductions = at(run, 'reproductions.json');
+  const base = [
+    '--scores', subset, '--candidates', at(run, 'candidates.json'), '--diff-file', at(run, 'diff.patch'),
+    ...(existsSync(reproductions) ? ['--reproductions', reproductions] : []),
+  ];
+  const emitted = parsed(
+    (
+      await must(
+        run,
+        ['challenge', ...base, '--emit-prompts', ...(run.intent ? ['--intent', at(run, 'intent.json')] : [])],
+        undefined,
+        1,
+      )
+    ).stdout,
+  );
   const promptOf = new Map(list(emitted['prompts']).map((entry) => [idOf(entry), String(entry['prompt'])]));
   const results = await inParallel(challenged, (finding) => {
     const id = idOf(finding);
@@ -993,6 +1122,7 @@ async function recordStage(run: Run): Promise<void> {
     ...(run.secondPass ? ['--verdicts', at(run, 'second-pass.json')] : []),
     ...(run.tieBroken ? ['--tie-breaks', at(run, 'reconciled.json')] : []),
     ...(run.followUps ? ['--follow-ups', at(run, 'verification.json')] : []),
+    ...(existsSync(at(run, 'reproductions.json')) ? ['--reproductions', at(run, 'reproductions.json')] : []),
   ]);
 }
 
@@ -1099,6 +1229,7 @@ const HANDLERS: Record<StageId, (run: Run) => Promise<void>> = {
   intent,
   lanes,
   verify,
+  reproduce: reproduceStage,
   'second-pass': secondPass,
   'tie-break': tieBreak,
   score,

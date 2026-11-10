@@ -1,0 +1,15 @@
+name: reproduction-passes-held
+asserts: >
+  An analyst claims that slicing from entries.length - n drops the newest
+  entry. The verifier's reproduction asserts what the code already does, so it
+  passes on its first run, and the finding is held as
+  reproduction-did-not-fail instead of posting.
+harness: skip
+harness_reason: "the recall harness runs with REVIEW_VOICE_NO_COMMANDS=1, so reproductions never run there"
+expect:
+  findings: 0
+  held: reproduction-did-not-fail
+  path: src/window.mjs
+  line: 3
+  category: correctness
+  reproduction: did-not-fail

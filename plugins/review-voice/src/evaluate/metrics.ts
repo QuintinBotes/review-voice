@@ -211,6 +211,35 @@ function challengeCounts(db: Database): { held: number; judged: number; runs: nu
 }
 
 /**
+ * Reproduction counts from `output_json.reproductions[]` (S16). Completed is a
+ * record that `reproduced` or `did-not-fail`; held is a did-not-fail record
+ * `record` marked as held, which a did-not-fail in a category no suppression
+ * may reach never is. The mark, not the held list, because `decline` rewrites
+ * a held entry's verdict after the run. A `did-not-run` says nothing either
+ * way, so it is counted beside the rate and never in it.
+ */
+function reproductionCounts(db: Database): { held: number; completed: number; didNotRun: number; runs: number } {
+  const rows = db.prepare('SELECT output_json FROM review_runs').all() as unknown as RunRow[];
+  const counts = { held: 0, completed: 0, didNotRun: 0, runs: 0 };
+  for (const row of rows) {
+    let parsed: { reproductions?: unknown } | null;
+    try {
+      parsed = JSON.parse(row.output_json) as { reproductions?: unknown } | null;
+    } catch {
+      continue;
+    }
+    const records = Array.isArray(parsed?.reproductions) ? parsed.reproductions : [];
+    if (records.length === 0) continue;
+    counts.runs += 1;
+    const outcome = (entry: unknown): unknown => (typeof entry === 'object' && entry !== null ? (entry as { outcome?: unknown }).outcome : undefined);
+    counts.completed += records.filter((entry) => outcome(entry) === 'reproduced' || outcome(entry) === 'did-not-fail').length;
+    counts.didNotRun += records.filter((entry) => outcome(entry) === 'did-not-run').length;
+    counts.held += records.filter((entry) => outcome(entry) === 'did-not-fail' && (entry as { held?: unknown }).held === true).length;
+  }
+  return counts;
+}
+
+/**
  * Computes the specification's evaluation metrics from recorded runs and
  * feedback.
  *
@@ -236,6 +265,7 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
   const { costs, excluded: uncosted } = runCosts(db);
   const costBasis = `${costs.length} costed run(s), ${uncosted} excluded (no cost recorded)`;
   const challenge = challengeCounts(db);
+  const reproduction = reproductionCounts(db);
 
   const agreement = candidateSetAgreement(db);
 
@@ -356,6 +386,16 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
       'no target',
       () => true,
       `${challenge.held} held / ${challenge.judged} judged over ${challenge.runs} run(s)`,
+      'goal',
+    ),
+    // How often a reproduction removed a finding that would otherwise have
+    // posted. Not recall, since a did-not-run says nothing either way.
+    metric(
+      'reproduction_hold_rate',
+      reproduction.completed === 0 ? null : reproduction.held / reproduction.completed,
+      'no target',
+      () => true,
+      `${reproduction.held} held / ${reproduction.completed} completed, ${reproduction.didNotRun} did not run, over ${reproduction.runs} run(s)`,
       'goal',
     ),
     metric(

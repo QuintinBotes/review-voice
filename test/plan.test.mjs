@@ -29,15 +29,15 @@ const off = { run: false, model: null };
 // Expected plan per mode, for second pass off / on.
 const EXPECTED = {
   fast: () => ({
-    intent: on(S), lanes: on(S), verify: on(S), 'second-pass': off, 'tie-break': on(S), challenge: off, edit: on(S),
+    intent: on(S), lanes: on(S), verify: on(S), reproduce: off, 'second-pass': off, 'tie-break': on(S), challenge: off, edit: on(S),
     laneModels: { diff: S, others: null },
   }),
   standard: (second) => ({
-    intent: on(S), lanes: on(S), verify: on(S), 'second-pass': second ? { run: true, model: null } : off,
+    intent: on(S), lanes: on(S), verify: on(S), reproduce: off, 'second-pass': second ? { run: true, model: null } : off,
     'tie-break': on(O), challenge: on(S), edit: on(S), laneModels: { diff: S, others: S },
   }),
   thorough: (second) => ({
-    intent: on(S), lanes: on(O), verify: on(O), 'second-pass': second ? { run: true, model: null } : off,
+    intent: on(S), lanes: on(O), verify: on(O), reproduce: off, 'second-pass': second ? { run: true, model: null } : off,
     'tie-break': on(O), challenge: on(O), edit: on(S), laneModels: { diff: O, others: O },
   }),
 };
@@ -76,6 +76,17 @@ for (const mode of ['fast', 'standard', 'thorough']) {
     });
   }
 }
+
+test('reproduce runs only in thorough with a reproduction configured, and never has a model', () => {
+  for (const mode of ['fast', 'standard', 'thorough']) {
+    for (const reproductionConfigured of [false, true]) {
+      const plan = resolvePlan({ requested: mode, ...SMALL, secondPassConfigured: false, reproductionConfigured });
+      assert.deepEqual(plan.stages.reproduce, mode === 'thorough' && reproductionConfigured ? { run: true, model: null } : off, `${mode} ${reproductionConfigured}`);
+    }
+  }
+  // auto reaches thorough the same way, so a large change runs it too.
+  assert.equal(resolvePlan({ requested: 'auto', ...BIG, secondPassConfigured: false, reproductionConfigured: true }).stages.reproduce.run, true);
+});
 
 test('verify runs in every mode, with or without a second pass', () => {
   for (const mode of ['fast', 'standard', 'thorough']) {
@@ -222,9 +233,15 @@ test('productionChange counts the diff for a file that records no line counts', 
   assert.deepEqual(result, { productionSourceChanged: true, productionLinesChanged: 5 });
 });
 
-function planCli(args, files, diff) {
+function planCli(args, files, diff, config) {
   const dir = mkdtempSync(join(tmpdir(), 'rv-plan-cli-'));
   const dataDir = mkdtempSync(join(tmpdir(), 'rv-plan-data-'));
+  if (config !== undefined) {
+    // plan reads the configuration of the repository it runs in.
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    mkdirSync(join(dir, '.review-voice'));
+    writeFileSync(join(dir, '.review-voice/config.yaml'), JSON.stringify(config));
+  }
   const filesPath = join(dir, 'files.json');
   const diffPath = join(dir, 'diff.patch');
   if (files !== undefined) writeFileSync(filesPath, typeof files === 'string' ? files : JSON.stringify(files));
@@ -277,6 +294,20 @@ test('plan command: bad invocations exit 2', () => {
     const run = planCli(args, files, diff);
     assert.equal(run.status, 2, run.stderr);
   }
+});
+
+test('plan command: the reproduce stage follows the reproduction block, in thorough only', () => {
+  const manifest = { files: [file('src/a.ts')] };
+  const runner = { name: 'node-test', run: 'node --test {file}', extension: '.test.mjs' };
+  const stage = (mode, reproduction) => {
+    const run = planCli((f, d) => [...both(f, d), '--mode', mode], manifest, '', { reproduction });
+    assert.equal(run.status, 0, run.stderr);
+    return JSON.parse(run.stdout).stages.reproduce;
+  };
+  assert.deepEqual(stage('thorough', { enabled: true, runners: [runner] }), { run: true, model: null });
+  assert.deepEqual(stage('standard', { enabled: true, runners: [runner] }), off);
+  assert.deepEqual(stage('thorough', { enabled: false, runners: [runner] }), off);
+  assert.deepEqual(stage('thorough', { enabled: true, runners: [] }), off);
 });
 
 test('plan command: help is available', () => {

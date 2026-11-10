@@ -1,0 +1,8 @@
+--- a/src/window.mjs
++++ b/src/window.mjs
+@@ -1,4 +1,4 @@
+ // Returns the last n entries, oldest first.
+ export function lastEntries(entries, n) {
+-  return entries.slice(-n);
++  return entries.slice(entries.length - n);
+ }

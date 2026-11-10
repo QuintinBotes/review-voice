@@ -63,3 +63,17 @@ its reason. `auto` therefore reads:
 
 A removed control changes which models and stages run, never the verdict. An
 explicit `--mode` or `review.mode` other than `auto` is not changed by it.
+
+## Amendment - 2026-11-09
+
+The plan gains a `reproduce` stage (S16), between `verify` and `second-pass`,
+with no model. It runs only in `thorough`, and only when the configuration's
+`reproduction` block is enabled with at least one runner
+(`PlanInput.reproductionConfigured`, which `plan` reads from the same
+configuration as the rest of the plan). Every other mode, and `thorough`
+without the block, records it as off. A reproduction runs pull request code, so
+it belongs to the mode that already spends the most to gather evidence, and
+nothing in `fast` or `standard` changes. Under `REVIEW_VOICE_NO_COMMANDS=1` the
+driver skips the stage with a note, as it does the second pass. The floors are
+unchanged, and the stage never turns the verifier, the challenge or the posting
+guards off.

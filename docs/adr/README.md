@@ -14,7 +14,7 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 |---|---|---|
 | [0001](0001-embedding-implementation.md) | Embedding and retrieval implementation | Accepted |
 | [0002](0002-github-auth-model.md) | GitHub authentication model | Accepted, amended 2026-10-06 by 0018 and 2026-10-25 by 0026 |
-| [0003](0003-static-analysis-adapters.md) | Static analysis adapter strategy | Accepted, amended 2026-11-08 |
+| [0003](0003-static-analysis-adapters.md) | Static analysis adapter strategy | Accepted, amended 2026-11-08, amended 2026-11-09 (reproductions) |
 | [0004](0004-outcome-inference-limits.md) | Outcome inference limits | Accepted, amended by 0029, amended 2026-11-08 |
 | [0005](0005-data-encryption.md) | Data encryption at rest | Accepted |
 | [0006](0006-team-governance.md) | Team and policy governance | Accepted |
@@ -35,8 +35,8 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0021](0021-agents-run-in-a-confined-headless-runner.md) | Agents run in a confined headless runner | Accepted |
 | [0022](0022-one-command-drives-a-review.md) | One command drives a review | Accepted, amended 2026-11-07 (`failure` in the report) |
 | [0023](0023-analyst-lanes-are-configured.md) | Analyst lanes are configured, each with its own severity rule | Accepted, amended 2026-11-08 (`when.signals`; security and concurrency analysts) |
-| [0024](0024-an-independent-challenge-gates-every-posted-finding.md) | An independent challenge gates every posted finding | Accepted, amended 2026-11-08 (evidence block) |
-| [0025](0025-cost-modes-choose-stages-and-models.md) | Cost modes choose stages and models | Accepted, amended 2026-11-08 (`auto` and a removed control) |
+| [0024](0024-an-independent-challenge-gates-every-posted-finding.md) | An independent challenge gates every posted finding | Accepted, amended 2026-11-08 (evidence block), amended 2026-11-09 (reproductions) |
+| [0025](0025-cost-modes-choose-stages-and-models.md) | Cost modes choose stages and models | Accepted, amended 2026-11-08 (`auto` and a removed control), amended 2026-11-09 (reproductions) |
 | [0026](0026-the-queue-reads-github-search-inside-the-allowlist.md) | The queue reads GitHub search, inside the allowlist | Accepted |
 | [0027](0027-one-watcher-remembers-every-head.md) | One watcher remembers every head | Accepted, amended 2026-11-07 (failure statuses, retention) |
 | [0028](0028-verdict-policies-are-configurable.md) | Verdict policies for CI and complexity are configurable | Accepted, amended 2026-11-07 (`never_approve`), amended 2026-11-08 (scope block), amended 2026-11-08 (evidence block) |

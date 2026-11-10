@@ -1,0 +1,9 @@
+--- a/src/paginate.mjs
++++ b/src/paginate.mjs
+@@ -1,5 +1,5 @@
+ // Returns the items on a one-based page.
+ export function page(items, number, size) {
+-  const start = (number - 1) * size;
++  const start = number * size;
+   return items.slice(start, start + size);
+ }

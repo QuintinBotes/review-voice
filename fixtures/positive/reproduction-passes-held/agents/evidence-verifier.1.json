@@ -1,0 +1,20 @@
+{
+  "output": {
+    "verifications": [
+      {
+        "candidate_id": "cand_001",
+        "verified": true,
+        "evidence_quality": "medium",
+        "technical_confidence": 0.85,
+        "reason": "The slice start changed on line 3.",
+        "fix_verdict": "absent",
+        "reproduction": {
+          "runner": "node-test",
+          "path": "src/window.repro.test.mjs",
+          "content": "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { lastEntries } from './window.mjs';\n\ntest('the newest two entries are returned', () => {\n  console.log('RV_REPRO_REACHED cand_001');\n  assert.deepEqual(lastEntries([1, 2, 3], 2), [2, 3]);\n});\n",
+          "expected": "The last two of three entries are [2, 3]."
+        }
+      }
+    ]
+  }
+}

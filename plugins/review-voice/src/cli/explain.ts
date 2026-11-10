@@ -1,7 +1,7 @@
 import { describeScope, parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
 import { followUpHistory } from '../store/follow-ups.ts';
 import { openDatabase } from '../store/db.ts';
-import { runDetail, describeChecks, describeProvenance } from '../store/runs.ts';
+import { runDetail, describeChecks, describeProvenance, type RecordedReproduction } from '../store/runs.ts';
 import { describeStage, shallowPassWarning } from '../store/effort.ts';
 import { backingAt, challengeFacts } from '../publish/evidence-block.ts';
 import { planFindings } from '../publish/verdict.ts';
@@ -13,6 +13,13 @@ export function reviewScopeFromManifest(value: unknown): ReviewScope | undefined
 
 export function describeReviewScope(scope: ReviewScope | null): string | null {
   return describeScope(scope);
+}
+
+/** `<runner> <outcome> (run 1 exit N, run 2 exit M) <copy>`, the one line the spec fixes; the reason is the held line's. */
+function describeReproduction(record: RecordedReproduction): string {
+  const runs = record.runs.length === 0 ? 'no run' : record.runs.map((run, index) => `run ${index + 1} exit ${run.exitCode ?? 'none'}`).join(', ');
+  const copy = record.copy === '' ? '' : ` ${record.copy}`;
+  return `${record.runner} ${record.outcome} (${runs})${copy}`;
 }
 
 export function explainCommand(argv: string[]): number {
@@ -188,6 +195,12 @@ export function explainCommand(argv: string[]): number {
           );
         }
       }
+      // The candidate `post` paired with the finding, so another candidate at its anchor cannot lend it a
+      // record. A carried finding's pairing is in an earlier run, whose candidate ids this run reuses.
+      const paired = [...planned.backing].find(([entry]) => entry.findingId === finding.findingId)?.[1];
+      const candidateId = paired === undefined ? score?.candidateId : paired.runId === detail.reviewRunId ? paired.score.candidateId : undefined;
+      const reproduction = detail.reproductions?.find((r) => candidateId !== undefined && r.candidateId === candidateId);
+      if (reproduction !== undefined) console.log(`  reproduction      ${describeReproduction(reproduction)}`);
       // The facts the evidence block posts, from the score it posts them from, so the two agree.
       const challenge = challengeFacts(backingAt(planned, finding.path, finding.line)?.score ?? null);
       if (challenge !== null) {
@@ -236,7 +249,14 @@ export function explainCommand(argv: string[]): number {
     // an existing comment and cross-check results that no verifier produced.
     if (detail.held.length > 0 && wanted === undefined) {
       console.log(`Held back (${detail.held.length}):`);
-      for (const h of detail.held) console.log(`  [${h.verdict}] ${h.path}:${h.line}  ${h.source} - ${h.reason}`);
+      for (const h of detail.held) {
+        console.log(`  [${h.verdict}] ${h.path}:${h.line}  ${h.source} - ${h.reason}`);
+        // A later stage can hold a finding whose reproduction ran, an exempt one the challenger refuted among them.
+        // A reproduction-did-not-fail entry already carries its runner and reason on its own line.
+        if (h.verdict === 'reproduction-did-not-fail') continue;
+        const reproduction = detail.reproductions?.find((r) => h.candidateId !== undefined && r.candidateId === h.candidateId);
+        if (reproduction !== undefined) console.log(`      reproduction  ${describeReproduction(reproduction)}`);
+      }
       console.log('');
     }
 

@@ -1,0 +1,15 @@
+{
+  "output": {
+    "verdicts": [
+      {
+        "candidate_id": "cand_001",
+        "verdict": "refuted",
+        "line_ok": true,
+        "decisive_evidence": [
+          "src/window.mjs:3"
+        ],
+        "reason": "entries.length - n is the same start as -n for every n up to the length."
+      }
+    ]
+  }
+}

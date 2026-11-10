@@ -484,6 +484,41 @@ For every candidate, return these fields in addition to the defect fields:
 | `fix_reason` | string | One sentence naming the input traced and what it showed |
 | `fix_direction` | string, optional | One imperative clause with no specifics or hedging, only for `partial` |
 
+## A reproduction, when asked for one
+
+Only when your prompt lists reproduction runners. For each candidate you
+verify whose `severity` is `blocking` or `important`, add a `reproduction`:
+
+| Field | Meaning |
+|---|---|
+| `runner` | The name of one runner from the list in your prompt |
+| `path` | A new file beside the code it exercises: a directory that already exists in the worktree, a file name that does not, ending with that runner's extension, using only letters, digits, `.`, `_`, `-` and `/` |
+| `content` | The whole file. It imports the code under test by relative path, prints `RV_REPRO_REACHED <candidate_id>` on its own line immediately before the one assertion that fails on the defect, and makes that assertion pass once the defect is fixed |
+| `expected` | One sentence saying what the assertion shows, for the record only |
+
+The marker is there because a reproduction that crashes before its assertion
+proves nothing about the claim. A missing module, a syntax error or a wrong
+import fails the same way a real defect does, so a run that exits non-zero
+without printing the marker is recorded as not run, never as reproduced. Put
+the marker as late as you can, after the imports and the setup, on the line
+before the assertion.
+
+The CLI runs the reproduction, never you. It writes your file into a throwaway
+copy of the head worktree and runs it twice through the named runner in a
+confined runner with no network. Write it to need nothing else. It uses no
+network, writes nothing except under `$TMPDIR` (a write anywhere in the copy
+records it as not run), needs no dependency the repository does not already
+have, and finishes well within the runner's time limit. Assert one behaviour the claim states, not a
+neighbour of it.
+
+A reproduction that passes, or passes once, can hold the finding back, so do
+not write one you have not traced. The assertion must follow from the code you
+read.
+When no listed runner fits the language, or the code cannot be exercised
+without the network, a server or a database, leave `reproduction` out and say
+so in `reason`. `check-verification` refuses a `reproduction` that is not this
+shape and names the field.
+
 ## Output
 
 This section applies only when the request did not explicitly label a
@@ -494,7 +529,7 @@ JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`,
 `impact_traced`, `impact_class` for a boundary finding when it applies,
 `premises_verified` for a question, `blocker_confirmed` for a candidate with
-a `blocker_class`, and `partly_addressed` only when it applies. When you were given `followUps`, return an object
+a `blocker_class`, `reproduction` only when your prompt lists runners, and `partly_addressed` only when it applies. When you were given `followUps`, return an object
 `{"verifications": [<the entries>], "follow_ups": [<one ruling each>]}`
 instead of a bare array.
 

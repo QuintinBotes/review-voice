@@ -165,7 +165,8 @@ test('every positive names the added line of its causal path, or is marked harne
     if (expectation.harness === 'skip') skipped += 1;
   }
   assert.ok(named >= 19, `expected every positive with a path to name a line, found ${named}`);
-  assert.equal(skipped, 1, 'only simplification-dispatcher is outside the harness');
+  // S16 adds two reproduction fixtures whose outcome needs the confined runner, not the recall harness.
+  assert.equal(skipped, 3, 'only simplification-dispatcher and the two reproduction fixtures are outside the harness');
 });
 
 test('clean and absence fixtures never name a line', () => {
