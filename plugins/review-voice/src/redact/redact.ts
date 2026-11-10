@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { SECRET_PATTERNS, PLACEHOLDERS } from './patterns.ts';
 
 /** Bumped whenever the patterns change, so stored events record what cleaned them. */
-export const REDACTION_VERSION = '1';
+export const REDACTION_VERSION = '2';
 
 export interface RedactionResult {
   text: string;

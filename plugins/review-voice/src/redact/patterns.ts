@@ -47,10 +47,14 @@ export const SECRET_PATTERNS: SecretPattern[] = [
   },
 
   // A connection string's credentials, keeping the scheme and host so the
-  // surrounding review comment still makes sense.
+  // surrounding review comment still makes sense. The user may be empty, as in
+  // `redis://:password@host`. The scheme is bounded because every word
+  // boundary in a long run of scheme characters starts a new attempt, and an
+  // unbounded one rescans to the end of the run each time: pull request text
+  // could stall a review for minutes. No registered scheme is near 64.
   {
     label: 'DB_CREDENTIALS',
-    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi,
+    pattern: /\b([a-z][a-z0-9+.-]{0,63}:\/\/)([^\s:@/]*):([^\s@/]+)@/gi,
     group: 3,
   },
 

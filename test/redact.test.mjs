@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { redact as redactText } from '../plugins/review-voice/src/redact/redact.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const bundle = join(root, 'plugins/review-voice/dist/review-voice.mjs');
@@ -122,7 +123,27 @@ test('hashes allow auditing without keeping the secret', () => {
 });
 
 test('the redaction version is recorded', () => {
-  assert.equal(redact('nothing here').version, '1');
+  assert.equal(redact('nothing here').version, '2');
+});
+
+test('a connection string with no user still loses its password', () => {
+  const result = redact('Set REDIS_URL=redis://:hunter2hunter2@cache.example.com:6379/0 first.');
+  assert.equal(result.text, 'Set REDIS_URL=redis://:[REDACTED:DB_CREDENTIALS]@cache.example.com:6379/0 first.');
+});
+
+test('a long run of scheme characters is redacted in linear time, so pull request text cannot stall a review', () => {
+  // In process, so the timing is the redaction's and not a child's start-up.
+  const timed = (text) => {
+    const started = performance.now();
+    redactText(text);
+    return performance.now() - started;
+  };
+  const plain = timed('a '.repeat(40000));
+  for (const run of ['a.', 'a-', 'a+']) {
+    const elapsed = timed(run.repeat(40000));
+    // Unbounded, each of these took about ten seconds.
+    assert.ok(elapsed < 10 * plain + 1000, `${run}: ${Math.round(elapsed)} ms against ${Math.round(plain)} ms`);
+  }
 });
 
 test('several secrets in one comment are all removed', () => {
