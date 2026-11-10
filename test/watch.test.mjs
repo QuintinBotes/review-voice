@@ -24,6 +24,7 @@ import { saveWatchHead, watchHead, watchSummary } from '../plugins/review-voice/
 import { defaultWatchConfig, parseDuration } from '../plugins/review-voice/src/watch/config.ts';
 import { watchCommand } from '../plugins/review-voice/src/watch/command.ts';
 import { reviewResult, spawnReview } from '../plugins/review-voice/src/watch/review.ts';
+import { heldQueueLines } from '../plugins/review-voice/src/review/held-queue.ts';
 import { pathToFileURL } from 'node:url';
 import { cloneDir, gitPrepareClone, removeStaleGitLocks } from '../plugins/review-voice/src/watch/workspace.ts';
 import { acquireLock, lockPort } from '../plugins/review-voice/src/watch/lock.ts';
@@ -1279,4 +1280,65 @@ test('once a stopped review exits, the rest of its group is killed at once, not 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- S22 part B: the held queue in the watcher report ---
+
+const queued = (verdict, line, promote = null) => ({
+  path: 'src/cart.ts',
+  line,
+  severity: 'minor',
+  verdict,
+  reason: verdict === 'below-gate' ? 'below the confidence gate' : 'could not check: the caller',
+  candidateId: `cand_00${line}`,
+  promote,
+});
+const QUEUE = [queued('below-gate', 1, 'cd /work && node rv.mjs score --promote cand_001 < in.json > out.json'), queued('unverified', 2)];
+
+test('S22: reviewResult carries the well-formed entries of heldQueue and omits the key otherwise', () => {
+  const doc = { runId: 'r', verdict: { event: 'COMMENT' }, reviewUrl: 'u' };
+  const malformed = [{ ...queued('below-gate', 3), line: 'three' }, { ...queued('below-gate', 4), promote: 5 }, 'entry', null];
+  assert.deepEqual(reviewResult(0, JSON.stringify({ ...doc, heldQueue: [...QUEUE, ...malformed] }), '').heldQueue, QUEUE);
+  for (const heldQueue of [undefined, [], malformed, 'not a list', { 0: QUEUE[0] }]) {
+    assert.equal('heldQueue' in reviewResult(0, JSON.stringify({ ...doc, heldQueue }), ''), false, JSON.stringify(heldQueue));
+  }
+});
+
+test('S22: a watch --once pass prints the held queue of a review entry two spaces in under its line', async () => {
+  await withWatcher(async (h) => {
+    const impl = fakeGitHub({ requested: [item(REPO, 7)], pulls: { [`${REPO}#7`]: openPull() } });
+    const review = fakeReview([{ ...posted, heldQueue: QUEUE }]);
+    assert.equal(await h.run(['--once', '--post'], { impl, review }), 0);
+    const lines = h.out[0].split('\n');
+    const expected = heldQueueLines(QUEUE, 'run-1');
+    assert.equal(expected.length, 4);
+    assert.match(lines[0], /^acme\/web#7: review APPROVE \(posted https:/);
+    assert.deepEqual(lines.slice(1, 5), expected.map((line) => `  ${line}`));
+    assert.equal(lines[5], '1 entry: 1 posted; 0 not reached; outcomes followed on 0 pull request(s)');
+    assert.equal(lines.length, 6);
+  });
+});
+
+test('S22: with --json the held lines go to stderr and stdout stays one JSON array', async () => {
+  await withWatcher(async (h) => {
+    const impl = fakeGitHub({ requested: [item(REPO, 7)], pulls: { [`${REPO}#7`]: openPull() } });
+    assert.equal(await h.run(['--once', '--json'], { impl, review: fakeReview([{ ...posted, heldQueue: QUEUE }]) }), 0);
+    assert.equal(h.out.length, 1);
+    const rows = JSON.parse(h.out[0]);
+    assert.ok(Array.isArray(rows));
+    assert.deepEqual(rows.map((row) => row.pull), [7]);
+    assert.deepEqual(h.err.join('\n').split('\n'), heldQueueLines(QUEUE, 'run-1').map((line) => `  ${line}`));
+  });
+});
+
+test('S22: a review result without a queue prints exactly what it printed before', async () => {
+  await withWatcher(async (h) => {
+    const impl = fakeGitHub({ requested: [item(REPO, 7)], pulls: { [`${REPO}#7`]: openPull() } });
+    assert.equal(await h.run(['--once', '--post'], { impl, review: fakeReview([posted]) }), 0);
+    assert.deepEqual(h.out[0].split('\n'), [
+      `acme/web#7: review APPROVE (posted ${posted.reviewUrl})`,
+      '1 entry: 1 posted; 0 not reached; outcomes followed on 0 pull request(s)',
+    ]);
+    assert.deepEqual(h.err, []);
+  });
 });

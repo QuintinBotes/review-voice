@@ -6,6 +6,7 @@ import type { LoadedConfig } from '../policy/load.ts';
 import { computeVerdict, postReview, type VerdictOptions } from '../publish/post.ts';
 import { buildQueue, type QueueEntry } from '../queue/queue.ts';
 import type { QueueConfig, QueueSource } from '../queue/config.ts';
+import { heldQueueLines } from '../review/held-queue.ts';
 import { MODES } from '../review/plan.ts';
 import type { Database } from '../store/db.ts';
 import { checkOutcomes } from '../store/outcomes.ts';
@@ -46,8 +47,11 @@ export interface WatchCommandDeps {
 /** The copy of the config each pass and its reviews read, so an edit or branch switch mid-pass changes nothing. */
 export const CONFIG_COPY = 'watch-config.yaml';
 
-/** A row to write, or null when the head moved and the next pass retries it. */
-type Outcome = { row: Omit<WatchHead, 'attempts' | 'updatedAt'> } | { row: null; detail: string };
+/**
+ * A row to write, or null when the head moved and the next pass retries it.
+ * `held` is the review's held queue as report lines, when it carried one.
+ */
+type Outcome = { row: Omit<WatchHead, 'attempts' | 'updatedAt'>; held?: string[] } | { row: null; detail: string };
 
 interface PassOptions {
   deps: WatchCommandDeps;
@@ -227,6 +231,7 @@ async function runPass(options: PassOptions, json: boolean): Promise<boolean> {
     });
     const rows: WatchHead[] = [];
     const lines: string[] = [];
+    const held: string[] = [];
     const counts = new Map<string, number>();
     for (const entry of queue.entries) {
       const outcome = await handle(options, client, db, entry);
@@ -242,13 +247,17 @@ async function runPass(options: PassOptions, json: boolean): Promise<boolean> {
       counts.set(row.status, (counts.get(row.status) ?? 0) + 1);
       const event = row.event === null ? '' : ` ${row.event}`;
       lines.push(`${summary}${event} (${row.status} ${row.reviewUrl ?? row.detail ?? ''})`.replace(/ \)$/, ')'));
+      const listed = (outcome.held ?? []).map((line) => `  ${line}`);
+      lines.push(...listed);
+      held.push(...listed);
     }
 
     const followed = await followOutcomes(client, db, deps, config.ownerReviewer);
     const swept = sweepRetention(db, config, deps);
     if (json) {
       deps.out(JSON.stringify(rows, null, 2));
-      // Stdout stays one JSON document, so the line goes to the error stream.
+      // Stdout stays one JSON document, so these lines go to the error stream.
+      if (held.length > 0) deps.err(held.join('\n'));
       if (swept !== null) deps.err(swept);
     } else {
       const totals = [...counts].map(([status, count]) => `${count} ${status}`).join(', ');
@@ -314,6 +323,7 @@ async function review(options: PassOptions, entry: QueueEntry): Promise<Outcome>
     runRepositoryCommands: options.config.watch.runRepositoryCommands,
   });
   if (result.exitCode === 3) return { row: null, detail: result.detail ?? 'head moved' };
+  const held = heldQueueLines(result.heldQueue ?? [], result.runId);
   const status: HeadStatus =
     result.exitCode === 0
       ? options.post && result.carried === true
@@ -342,6 +352,7 @@ async function review(options: PassOptions, entry: QueueEntry): Promise<Outcome>
       // A failed-closed head is left for a person, so its detail says so in the words the review reported.
       detail: isFailure(status) ? `${status === 'failed-closed' ? 'failed_closed: ' : ''}${result.detail ?? `review exited ${result.exitCode}`}` : result.detail,
     },
+    ...(held.length === 0 ? {} : { held }),
   };
 }
 

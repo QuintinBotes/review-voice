@@ -18,6 +18,7 @@ import { dataDirectory } from '../store/paths.ts';
 import { describeProvenance, heldProblem, runDetail, type HeldFinding, type RunProvenance, type StageTiming } from '../store/runs.ts';
 import { parseChallengeVerdicts } from '../verify/challenge.ts';
 import { parseTieBreaks } from '../verify/reconcile.ts';
+import { heldQueue, type HeldQueueEntry, type PromoteCall } from './held-queue.ts';
 import type { Lane, LaneEligibility } from './lanes.ts';
 import { modelForFinding, type RequestedMode, type StagePlan } from './plan.ts';
 import * as prompts from './prompts.ts';
@@ -74,6 +75,8 @@ export interface ReviewDeps {
   /** Read-only, for the head checks that bracket the run. */
   client: GitHubClient;
   env?: NodeJS.ProcessEnv;
+  /** The running bundle; the held queue names it in each promote command, and builds none without it. */
+  cli?: string | undefined;
 }
 
 export interface StageReport extends StageTiming {
@@ -116,6 +119,8 @@ export interface ReviewReport {
   /** `category` is the producing candidate's, absent when no candidate could be paired with the finding. */
   findings: { findingId: string; severity: string; path: string; line: number; text: string; category?: string }[];
   held: HeldFinding[];
+  /** Under `verdict.held_queue` only: one entry per `held` entry, in order. A run that ends before `record` has none. */
+  heldQueue?: HeldQueueEntry[];
   verdict: unknown;
   posted: boolean;
   /** The earlier run was carried, or the owner's standing approval was. */
@@ -184,6 +189,9 @@ interface Run {
   reconciled: Json[] | null;
   tieBroken: boolean;
   scored: boolean;
+  /** The `score` call, kept for the held queue's promote commands; null without a bundle to name. */
+  promoteCall: PromoteCall | null;
+  heldQueue: HeldQueueEntry[] | null;
   text: string | null;
   runId: string | null;
   findings: ReviewReport['findings'];
@@ -964,29 +972,44 @@ async function tieBreak(run: Run): Promise<void> {
 async function score(run: Run): Promise<void> {
   const candidates = [...(run.reconciled ?? run.survivors), ...run.setAside];
   if (candidates.length === 0) return skip(run, 'score', 'nothing verified');
-  const scored = await must(
-    run,
-    [
-      'score',
-      '--repository',
-      run.options.repository,
-      '--verification',
-      at(run, 'verification.json'),
-      ...(run.base === null ? [] : ['--base', run.base]),
-      '--diff-file',
-      at(run, 'diff.patch'),
-      '--head',
-      run.head,
-      '--thread',
-      at(run, 'thread.json'),
-      '--exclude-pull',
-      String(run.options.pullNumber),
-    ],
-    JSON.stringify({ candidates }),
-    1,
-  );
+  const args = [
+    'score',
+    '--repository',
+    run.options.repository,
+    '--verification',
+    at(run, 'verification.json'),
+    ...(run.base === null ? [] : ['--base', run.base]),
+    '--diff-file',
+    at(run, 'diff.patch'),
+    '--head',
+    run.head,
+    '--thread',
+    at(run, 'thread.json'),
+    '--exclude-pull',
+    String(run.options.pullNumber),
+  ];
+  const input = JSON.stringify({ candidates });
+  // Written before the call, so even a failed score can be run again by hand.
+  writeFileSync(at(run, 'score-input.json'), input);
+  const scored = await must(run, args, input, 1);
   writeFileSync(at(run, 'scores.json'), scored.stdout);
   run.scored = true;
+  if (run.deps.cli !== undefined) {
+    // The two variables `score` reads, as this process set them, name the run's trusted config and the store.
+    const env: Record<string, string> = {};
+    for (const name of ['REVIEW_VOICE_CONFIG', 'REVIEW_VOICE_DATA_DIR']) {
+      const value = process.env[name];
+      if (value !== undefined && value !== '') env[name] = value;
+    }
+    run.promoteCall = {
+      program: [process.execPath, run.deps.cli],
+      cwd: process.cwd(),
+      env,
+      args,
+      stdin: at(run, 'score-input.json'),
+      stdout: at(run, 'scores.promoted.json'),
+    };
+  }
   const scores = parsed(scored.stdout);
   const hold = (entry: Json, verdict: HeldFinding['verdict'], source: string, reason: string): void => {
     run.held.push({
@@ -1193,6 +1216,14 @@ async function record(run: Run, extra: string[]): Promise<void> {
   run.findings = list(result['findings']) as unknown as ReviewReport['findings'];
   run.provenance = isRecord(result['provenance']) ? (result['provenance'] as unknown as RunProvenance) : null;
   for (const warning of Array.isArray(result['warnings']) ? result['warnings'] : []) run.notes.push(String(warning));
+  const context = readJson(at(run, 'context.json'));
+  // A carried run held nothing new; the run it carried was listed when it was reviewed.
+  if (isRecord(context) && context['heldQueue'] === true && !run.carried) {
+    // Inside GitHub Actions the runner's paths do not outlive the job, so the
+    // list names only each promotable candidate, never a command.
+    const actions = (run.deps.env ?? process.env)['GITHUB_ACTIONS'] === 'true';
+    run.heldQueue = heldQueue(run.held, actions ? null : run.promoteCall);
+  }
 
   const target = ['--repository', run.options.repository, '--pr', String(run.options.pullNumber), '--head', run.head, '--run', run.runId ?? ''];
   const verdict = await cli(run, ['verdict', ...target], run.text ?? '');
@@ -1418,6 +1449,8 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     reconciled: null,
     tieBroken: false,
     scored: false,
+    promoteCall: null,
+    heldQueue: null,
     text: null,
     runId: null,
     findings: [],
@@ -1489,6 +1522,7 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     plan: run.plan,
     findings: run.findings,
     held: run.held,
+    ...(run.heldQueue === null ? {} : { heldQueue: run.heldQueue }),
     verdict: run.verdict,
     posted: run.posted,
     carried: run.carried,

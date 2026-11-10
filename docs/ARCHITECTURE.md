@@ -1275,7 +1275,11 @@ head refuses (exit 3); a standing owner approval on an unchanged scope is
 carried when `carry_approval_on_unchanged` is on (nothing is posted); CI that
 needs a rerun holds every event (exit 6, ADR 0013) unless `ci_needs_rerun` is
 `annotate`; carried candidates not reviewed since cap an approval at COMMENT
-(ADR 0017); `verdict.never_approve`, when on, caps an approval at COMMENT; a
+(ADR 0017); `verdict.never_approve`, when on, caps an approval at COMMENT, and
+so does a path hold, when the pull request's whole file list (read from GitHub
+only then, renames by both names and deleted files included, 3000 entries
+holding as possibly cut) touches `verdict.never_approve_paths` or falls outside
+`verdict.only_approve_paths`; a
 high-complexity change caps an approval at COMMENT (ADR 0012)
 unless `review.human_review.cap_approval` is false; then red CI caps an
 approval at COMMENT, and pending CI makes an approval wait (exit 4). COMMENT and
@@ -1290,8 +1294,14 @@ event changed, 4 CI running, 5 CI red, 6 CI needs a rerun, 8 the thread changed
 and unchanged-scope rules into `verdict:` settings, whose defaults are the
 rules above: `ci_pending` (`wait` or `proceed`), `ci_red` (`cap` or
 `annotate`), `ci_needs_rerun` (`hold` or `annotate`), `never_approve`,
-`carry_approval_on_unchanged` and `recheck_thread_before_post`. `annotate`
+`never_approve_paths`, `only_approve_paths`, `carry_approval_on_unchanged` and
+`recheck_thread_before_post`. `annotate`
 keeps the event and appends one line naming at most five checks to the body.
+A path hold (`approvalPathHold`, pure) keeps the paths in the local reasons and
+ends the posted summary with one fixed sentence naming the setting; a path list
+that does not load fails closed and holds every approval. The lists are an
+approval rule and cost nothing, where `sensitive_paths` also buys a thorough
+review and the human-review note.
 Check names are flattened to inline code so no markdown or mention renders.
 `decide()` takes the settings as a `VerdictPolicy`; the head guard, the
 writer's single endpoint and the idempotency key are not settings.
@@ -1308,6 +1318,23 @@ idempotency key is taken and before CI annotations, so toggling it keeps the
 same key and annotation replacement still works. `verdict`, `post` and the
 watcher share the payload and preview through `computeVerdict`; the existing
 review write carries the block (ADR 0028).
+
+**Held queue.** `verdict.held_queue` (default `false`) lists what the run held
+where a person can act on it, never on the pull request. The driver writes the
+exact input it pipes to `score` to `score-input.json` in the run directory on
+every scored run, and keeps that call. With the switch on, `record` builds
+`heldQueue` (`src/review/held-queue.ts`), one entry per `held` entry in order,
+so its length is the sum of the scope block's held counts, which do not change.
+A `below-gate` or `policy-suppressed` entry with a candidate id carries the
+POSIX-quoted `score --promote <id>` command that re-scores the run from its
+directory into `scores.promoted.json`; every other verdict, `unverified`
+included, carries none. Inside GitHub Actions no command is built, since the
+runner's paths do not outlive the job, and the list names the candidate id
+instead. `review --json` carries the list, `review` appends it to the job
+summary inside GitHub Actions (above the Action's own section, without failing
+the run), and the watcher prints it under the entry's report line. Every
+recorded string is flattened through `safeCheckName` into inline code. The
+commands are printed and never run (ADR 0031).
 
 **Evidence block.** `verdict.evidence_block` (default `false`) ends each inline
 comment, after any suggestion block, with a collapsed Evidence block that

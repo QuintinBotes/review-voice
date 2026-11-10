@@ -117,3 +117,29 @@ carries a reason any agent wrote, a confidence, a model, a held or unverified
 claim, or anything the human-review note says. The existing review write
 carries it; no GitHub write or read is added. No verified repair is offered
 as a prompt to copy. The committable suggestion is the only repair surface.
+
+## Amendment - 2026-11-09
+
+`verdict.never_approve_paths` and `verdict.only_approve_paths` (both default
+empty) leave approval to a person by path. An APPROVE becomes COMMENT when a
+path the pull request changes matches a `never_approve_paths` glob, or when
+one falls outside every `only_approve_paths` glob. The globs are the
+sensitive-paths matcher's (`**`, `*`, `?`, anchored, case-sensitive). The hold
+takes `never_approve`'s slot in `decide()`, after the standing-approval carry,
+the needs-rerun hold of [0013](0013-ci-needs-rerun.md) and the uncovered-carry
+guard, and before the complexity cap, so the carry and the needs-rerun hold
+still win, pending CI never makes such a head wait, `never_approve`'s own
+texts win when both apply, and `verdict --recheck` refuses with exit 2.
+
+The paths are the pull request's, read live from GitHub's file list (renames
+by both names, deleted files included) only when a list is set and the answer
+could still change the event; under the defaults no request is made. The list
+fails closed. 3000 entries, GitHub's own ceiling, hold approval as possibly
+cut, and a list that does not load (not a list of globs, or an entry that is
+not one) holds every approval until it is fixed, with a warning naming the key
+and the entry. The local reasons name up to three paths; the posted summary
+ends with one fixed sentence naming the setting and never a path, such as
+`Approval is held because a changed file is outside only_approve_paths.`
+`review.human_review.sensitive_paths` stays the setting for code that needs a
+person's eyes and a thorough review; these lists are an approval rule and
+cost nothing. No GitHub write is added.

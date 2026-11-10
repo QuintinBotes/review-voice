@@ -504,12 +504,12 @@ function parseNameStatus(raw) {
   const fields = raw.split("\0").filter((field) => field.length > 0);
   const out = [];
   for (let i = 0; i < fields.length; ) {
-    const code2 = fields[i];
-    if (code2.startsWith("R") || code2.startsWith("C")) {
-      out.push({ status: code2[0], previousPath: fields[i + 1], path: fields[i + 2] });
+    const code3 = fields[i];
+    if (code3.startsWith("R") || code3.startsWith("C")) {
+      out.push({ status: code3[0], previousPath: fields[i + 1], path: fields[i + 2] });
       i += 3;
     } else {
-      out.push({ status: code2[0], path: fields[i + 1] });
+      out.push({ status: code3[0], path: fields[i + 1] });
       i += 2;
     }
   }
@@ -2887,8 +2887,8 @@ function doubleQuotedString(value, ctx) {
         case "u":
           {
             str += json2.slice(start, i);
-            const code2 = json2.substr(i + 2, 4);
-            switch (code2) {
+            const code3 = json2.substr(i + 2, 4);
+            switch (code3) {
               case "0000":
                 str += "\\0";
                 break;
@@ -2914,8 +2914,8 @@ function doubleQuotedString(value, ctx) {
                 str += "\\P";
                 break;
               default:
-                if (code2.substr(0, 2) === "00")
-                  str += "\\x" + code2.substr(2);
+                if (code3.substr(0, 2) === "00")
+                  str += "\\x" + code3.substr(2);
                 else
                   str += json2.substr(i, 6);
             }
@@ -5059,22 +5059,22 @@ function assertCollection(contents) {
 
 // node_modules/yaml/browser/dist/errors.js
 var YAMLError = class extends Error {
-  constructor(name, pos, code2, message) {
+  constructor(name, pos, code3, message) {
     super();
     this.name = name;
-    this.code = code2;
+    this.code = code3;
     this.message = message;
     this.pos = pos;
   }
 };
 var YAMLParseError = class extends YAMLError {
-  constructor(pos, code2, message) {
-    super("YAMLParseError", pos, code2, message);
+  constructor(pos, code3, message) {
+    super("YAMLParseError", pos, code3, message);
   }
 };
 var YAMLWarning = class extends YAMLError {
-  constructor(pos, code2, message) {
-    super("YAMLWarning", pos, code2, message);
+  constructor(pos, code3, message) {
+    super("YAMLWarning", pos, code3, message);
   }
 };
 var prettifyError = (src, lc) => (error) => {
@@ -5885,7 +5885,7 @@ function resolveFlowScalar(scalar2, strict, onError) {
   const { offset, type, source, end } = scalar2;
   let _type;
   let value;
-  const _onError = (rel, code2, msg) => onError(offset + rel, code2, msg);
+  const _onError = (rel, code3, msg) => onError(offset + rel, code3, msg);
   switch (type) {
     case "scalar":
       _type = Scalar.PLAIN;
@@ -6083,9 +6083,9 @@ var escapeCodes = {
 function parseCharCode(source, offset, length, onError) {
   const cc = source.substr(offset, length);
   const ok = cc.length === length && /^[0-9a-fA-F]+$/.test(cc);
-  const code2 = ok ? parseInt(cc, 16) : NaN;
+  const code3 = ok ? parseInt(cc, 16) : NaN;
   try {
-    return String.fromCodePoint(code2);
+    return String.fromCodePoint(code3);
   } catch {
     const raw = source.substr(offset - 2, length + 2);
     onError(offset - 2, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw}`);
@@ -6355,12 +6355,12 @@ var Composer = class {
     this.prelude = [];
     this.errors = [];
     this.warnings = [];
-    this.onError = (source, code2, message, warning) => {
+    this.onError = (source, code3, message, warning) => {
       const pos = getErrorPos(source);
       if (warning)
-        this.warnings.push(new YAMLWarning(pos, code2, message));
+        this.warnings.push(new YAMLWarning(pos, code3, message));
       else
-        this.errors.push(new YAMLParseError(pos, code2, message));
+        this.errors.push(new YAMLParseError(pos, code3, message));
     };
     this.directives = new Directives({ version: options.version || "1.2" });
     this.options = options;
@@ -6942,9 +6942,9 @@ var Lexer = class {
     }
   }
   *parseQuotedScalar() {
-    const quote2 = this.charAt(0);
-    let end = this.buffer.indexOf(quote2, this.pos + 1);
-    if (quote2 === "'") {
+    const quote3 = this.charAt(0);
+    let end = this.buffer.indexOf(quote3, this.pos + 1);
+    if (quote3 === "'") {
       while (end !== -1 && this.buffer[end + 1] === "'")
         end = this.buffer.indexOf("'", end + 2);
     } else {
@@ -10148,31 +10148,31 @@ var LANGUAGES2 = {
 };
 function splitLine(text4, language3) {
   if (language3.blockComments && text4.trimStart().startsWith("*")) return { code: "", comment: text4, raw: "" };
-  let code2 = "";
+  let code3 = "";
   let raw = "";
   let comment = "";
-  let quote2 = null;
+  let quote3 = null;
   for (let index = 0; index < text4.length; index += 1) {
     const char = text4[index];
-    if (quote2 !== null) {
+    if (quote3 !== null) {
       if (char === "\\") {
-        code2 += "  ";
+        code3 += "  ";
         raw += text4.slice(index, index + 2);
         index += 1;
-      } else if (text4.startsWith(quote2, index)) {
-        code2 += quote2;
-        raw += quote2;
-        index += quote2.length - 1;
-        quote2 = null;
+      } else if (text4.startsWith(quote3, index)) {
+        code3 += quote3;
+        raw += quote3;
+        index += quote3.length - 1;
+        quote3 = null;
       } else {
-        code2 += " ";
+        code3 += " ";
         raw += char;
       }
     } else if (language3.quotes.includes(char)) {
-      quote2 = language3.tripleQuotes === true && text4.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
-      code2 += quote2;
-      raw += quote2;
-      index += quote2.length - 1;
+      quote3 = language3.tripleQuotes === true && text4.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
+      code3 += quote3;
+      raw += quote3;
+      index += quote3.length - 1;
     } else if (text4.startsWith(language3.lineComment, index)) {
       comment += text4.slice(index);
       break;
@@ -10184,22 +10184,22 @@ function splitLine(text4, language3) {
       comment += `${text4.slice(index, end === -1 ? void 0 : end + 2)} `;
       if (end === -1) break;
       index = end + 1;
-    } else if (language3.regexLiterals === true && char === "/" && opensRegex(code2)) {
+    } else if (language3.regexLiterals === true && char === "/" && opensRegex(code3)) {
       const end = regexEnd(text4, index);
       if (end === -1) {
-        code2 += char;
+        code3 += char;
         raw += char;
       } else {
-        code2 += `/${" ".repeat(end - index - 1)}/`;
+        code3 += `/${" ".repeat(end - index - 1)}/`;
         raw += text4.slice(index, end + 1);
         index = end;
       }
     } else {
-      code2 += char;
+      code3 += char;
       raw += char;
     }
   }
-  return { code: code2, comment, raw };
+  return { code: code3, comment, raw };
 }
 function opensRegex(before) {
   const trimmed = before.trimEnd();
@@ -10285,24 +10285,24 @@ var GUARD_WORD = new RegExp(
   `(?<![A-Za-z])(?:${GUARD_WORDS.join("|")}|${GUARD_WORDS.map(capitalised).join("|")}|${GUARD_WORDS.map((w) => w.toUpperCase()).join("|")})|(?<=[a-z0-9])(?:${GUARD_WORDS.map(capitalised).join("|")})`
 );
 function conditionAfter(line3, from) {
-  const code2 = line3.code.slice(from);
-  const open = /^\s*\(/.exec(code2);
-  if (open === null) return line3.raw.slice(from, toBody(code2, from, 0));
+  const code3 = line3.code.slice(from);
+  const open = /^\s*\(/.exec(code3);
+  if (open === null) return line3.raw.slice(from, toBody(code3, from, 0));
   let depth = 0;
-  for (let index = open[0].length - 1; index < code2.length; index += 1) {
-    if (code2[index] === "(") depth += 1;
-    else if (code2[index] === ")") {
+  for (let index = open[0].length - 1; index < code3.length; index += 1) {
+    if (code3[index] === "(") depth += 1;
+    else if (code3[index] === ")") {
       depth -= 1;
       if (depth === 0) {
-        const continues = /^\s*(?:and|or|&&|\|\|)(?![\w$])/.test(code2.slice(index + 1));
-        return line3.raw.slice(from, continues ? toBody(code2, from, index + 1) : from + index + 1);
+        const continues = /^\s*(?:and|or|&&|\|\|)(?![\w$])/.test(code3.slice(index + 1));
+        return line3.raw.slice(from, continues ? toBody(code3, from, index + 1) : from + index + 1);
       }
     }
   }
   return line3.raw.slice(from);
 }
-function toBody(code2, from, start) {
-  const body = /:(?=\s|$)|\{|\bthen\b|\bdo\b/.exec(code2.slice(start));
+function toBody(code3, from, start) {
+  const body = /:(?=\s|$)|\{|\bthen\b|\bdo\b/.exec(code3.slice(start));
   return body === null ? void 0 : from + start + body.index;
 }
 var MIDDLEWARE_NAME = "(?:[Aa]uth|[Vv]erify|[Rr]equire[A-Z_]|[Cc]srf|CSRF|[Rr]ate_?[Ll]imit|RATE_?LIMIT)";
@@ -10313,8 +10313,8 @@ function isListElement(raw) {
   let text4 = raw.trim();
   if (text4.endsWith(",")) text4 = text4.slice(0, -1).trimEnd();
   if (text4 === "") return false;
-  const quote2 = text4[0];
-  if ((quote2 === '"' || quote2 === "'" || quote2 === "`") && text4.length >= 2 && text4.endsWith(quote2) && !text4.slice(1, -1).includes(quote2)) {
+  const quote3 = text4[0];
+  if ((quote3 === '"' || quote3 === "'" || quote3 === "`") && text4.length >= 2 && text4.endsWith(quote3) && !text4.slice(1, -1).includes(quote3)) {
     return true;
   }
   if (/^[\w$.@*/-]+$/.test(text4)) return true;
@@ -10528,28 +10528,28 @@ var CODE_RULES = [
   }
 ];
 var URL_RULE = { kind: "new-route", in: "code", pattern: /(?<![\w.])path\s*\(/g };
-function buildsQuery(code2, raw, quotes, triple, at2) {
+function buildsQuery(code3, raw, quotes, triple, at2) {
   let index = 0;
-  while (index < code2.length) {
-    const char = code2[index];
+  while (index < code3.length) {
+    const char = code3[index];
     if (!quotes.includes(char)) {
       index += 1;
       continue;
     }
-    const delimiter = triple && code2.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
+    const delimiter = triple && code3.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
     const open = index;
-    const close = code2.indexOf(delimiter, open + delimiter.length);
-    const end = close === -1 ? code2.length : close;
+    const close = code3.indexOf(delimiter, open + delimiter.length);
+    const end = close === -1 ? code3.length : close;
     if (at2 > open && at2 < end) {
       const inside2 = raw.slice(open + delimiter.length, end);
-      const prefix = code2.slice(0, open);
+      const prefix = code3.slice(0, open);
       const interpolated = /\$\{|%s/.test(inside2) || /(?<![\w$])(?:rf|fr|f)$/i.test(prefix) && inside2.includes("{");
       const before = prefix.trimEnd();
-      const after = close === -1 ? "" : code2.slice(end + delimiter.length).trimStart();
+      const after = close === -1 ? "" : code3.slice(end + delimiter.length).trimStart();
       const joined = before.endsWith("+") || /^(?:\+|%(?!=)|\.format\s*\()/.test(after);
       return interpolated || joined;
     }
-    index = close === -1 ? code2.length : close + delimiter.length;
+    index = close === -1 ? code3.length : close + delimiter.length;
   }
   return false;
 }
@@ -10887,8 +10887,8 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
     }
     return { valid: violations.length === 0, findingCount: 0, totalWords: 0, violations };
   }
-  for (const { pattern, code: code2, message } of STRUCTURAL_NOISE) {
-    if (pattern.test(output)) violations.push({ code: code2, message });
+  for (const { pattern, code: code3, message } of STRUCTURAL_NOISE) {
+    if (pattern.test(output)) violations.push({ code: code3, message });
   }
   const findings = splitFindings(output).map((block) => parseFinding(block.raw, block.startLine));
   for (const line3 of strayLines(output)) {
@@ -11340,14 +11340,58 @@ var DEFAULT_VERDICT_POLICY = Object.freeze({
   carryApprovalOnUnchanged: false,
   recheckThreadBeforePost: false,
   neverApprove: false,
+  neverApprovePaths: [],
+  onlyApprovePaths: [],
+  malformedApprovalPaths: null,
   scopeBlock: false,
   scopeBlockModels: false,
   suggestions: false,
   evidenceBlock: false,
-  evidenceBlockPrecedents: false
+  evidenceBlockPrecedents: false,
+  heldQueue: false
 });
 function verdictPolicy(policy) {
   return { ...DEFAULT_VERDICT_POLICY, ...policy };
+}
+function namedPaths(paths) {
+  const sorted = [...new Set(paths)].sort();
+  const more = sorted.length - 3;
+  return `${sorted.slice(0, 3).join(", ")}${more > 0 ? `, +${more} more` : ""}`;
+}
+function approvalPathHold(changed, policy) {
+  const unchecked = (setting) => `Approval is held because the changed files could not be checked against ${setting}.`;
+  if (policy.malformedApprovalPaths !== null) {
+    return {
+      reason: `approval is left to a person, as verdict.${policy.malformedApprovalPaths} did not load, so the approval paths cannot be checked`,
+      posted: unchecked(policy.malformedApprovalPaths)
+    };
+  }
+  if (policy.neverApprovePaths.length === 0 && policy.onlyApprovePaths.length === 0) return null;
+  if (changed.truncated) {
+    return {
+      reason: "approval is left to a person, as the pull request lists more files than GitHub returns, so the approval paths cannot be checked",
+      posted: unchecked(policy.neverApprovePaths.length > 0 ? "never_approve_paths" : "only_approve_paths")
+    };
+  }
+  const never = policy.neverApprovePaths.map(globToRegExp);
+  const matched = changed.paths.filter((path) => never.some((glob) => glob.test(path)));
+  if (matched.length > 0) {
+    return {
+      reason: `approval is left to a person, as verdict.never_approve_paths matches ${namedPaths(matched)}`,
+      posted: "Approval is held because a changed file matches never_approve_paths."
+    };
+  }
+  if (policy.onlyApprovePaths.length > 0) {
+    const only = policy.onlyApprovePaths.map(globToRegExp);
+    const outside = changed.paths.filter((path) => !only.some((glob) => glob.test(path)));
+    if (outside.length > 0) {
+      return {
+        reason: `approval is left to a person, as verdict.only_approve_paths does not cover ${namedPaths(outside)}`,
+        posted: "Approval is held because a changed file is outside only_approve_paths."
+      };
+    }
+  }
+  return null;
 }
 var MAX_ANNOTATED_CHECKS = 5;
 var MAX_CHECK_NAME = 60;
@@ -11424,12 +11468,16 @@ function decide(input) {
     }
     return done({ event: "COMMENT", action: "post", reasons: [...reasons, why], exitCode: 0, cappedByCi: false }, annotations);
   }
-  if (policy.neverApprove && input.mapped === "APPROVE") {
+  const policyHold = policy.neverApprove ? "approval is left to a person by policy" : input.approvalPathHold ?? null;
+  if (policyHold !== null && input.mapped === "APPROVE") {
     if (input.recheck) {
       return done({
         event: "COMMENT",
         action: "refuse",
-        reasons: [...reasons, "there is no approval to re-check under never_approve"],
+        reasons: [
+          ...reasons,
+          policy.neverApprove ? "there is no approval to re-check under never_approve" : "there is no approval to re-check under the approval paths"
+        ],
         exitCode: 2,
         cappedByCi: false,
         cappedByPolicy: true
@@ -11439,7 +11487,7 @@ function decide(input) {
       {
         event: "COMMENT",
         action: "post",
-        reasons: [...reasons, "approval is left to a person by policy"],
+        reasons: [...reasons, policyHold],
         exitCode: 0,
         cappedByCi: false,
         cappedByPolicy: true
@@ -11596,7 +11644,7 @@ ${suggestionBlock(patch.replacement)}`,
 function buildPayload(input) {
   const posted = [...input.planned.inline, ...input.planned.unanchored];
   const body = [
-    summaryLine(input.event, posted, input.cappedBy),
+    `${summaryLine(input.event, posted, input.cappedBy)}${input.pathHold === void 0 ? "" : ` ${input.pathHold}`}`,
     ...input.planned.unanchored.map((finding) => finding.raw),
     ...(input.bodyFindings ?? []).map(renderSimplification)
   ].join("\n\n");
@@ -11648,13 +11696,13 @@ function scopeBlock(run, planned, policy) {
   const scopePart = run.scope === null ? `scope ${NOT_RECORDED}` : `${run.scope.kind} scope`;
   const modePart = provenance?.mode == null ? `mode ${NOT_RECORDED}` : `${provenance.mode} mode`;
   const originPart = provenance === null ? `Origin: ${NOT_RECORDED}.` : `Origin: ${safeCheckName(provenance.origin)} (${safeCheckName(provenance.independence)}).`;
-  const code2 = (name) => `\`${name}\``;
+  const code3 = (name) => `\`${name}\``;
   const stageNames = run.stages.flatMap((stage) => {
     if (typeof stage.name !== "string" || safeCheckName(stage.name) === "") return [];
-    const name = code2(safeCheckName(stage.name));
+    const name = code3(safeCheckName(stage.name));
     if (!policy.scopeBlockModels) return [name];
     const models = [.../* @__PURE__ */ new Set([...Array.isArray(stage.models) ? stage.models : [], ...typeof stage.model === "string" ? [stage.model] : []])].filter((model) => typeof model === "string").map((model) => safeCheckName(model)).filter((model) => model !== "");
-    return [models.length === 0 ? name : `${name} (${[...new Set(models)].map(code2).join(", ")})`];
+    return [models.length === 0 ? name : `${name} (${[...new Set(models)].map(code3).join(", ")})`];
   });
   const stagesLine = `Stages: ${stageNames.length === 0 ? NOT_RECORDED : stageNames.join(", ")}.`;
   let staticLine = `Static checks: ${NOT_RECORDED}.`;
@@ -11663,9 +11711,9 @@ function scopeBlock(run, planned, policy) {
   if (checks !== null) {
     const parts = [
       ...checks.staticRan.map(
-        (check) => `${code2(safeCheckName(check.name))} ran (exit ${check.exitCode ?? "none"}, ${plural2(check.signals, "signal")})`
+        (check) => `${code3(safeCheckName(check.name))} ran (exit ${check.exitCode ?? "none"}, ${plural2(check.signals, "signal")})`
       ),
-      ...checks.staticDidNotRun.map((check) => `${code2(safeCheckName(check.name))} did not run (${code2(safeCheckName(check.reason))})`)
+      ...checks.staticDidNotRun.map((check) => `${code3(safeCheckName(check.name))} did not run (${code3(safeCheckName(check.reason))})`)
     ];
     staticLine = `Static checks: ${parts.length === 0 ? "none configured" : parts.join("; ")}.`;
     symbolLine = checks.symbolsInconclusive === 0 ? "Symbol context: every changed file finished." : `Symbol context: ${plural2(checks.symbolsInconclusive, "file")} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}.`;
@@ -12294,8 +12342,8 @@ function spawnCommand(command, options) {
     const sizes = { stdout: 0, stderr: 0 };
     let failure;
     let settled = false;
-    const stop = (code2) => {
-      failure ??= code2;
+    const stop = (code3) => {
+      failure ??= code3;
       if (pid !== void 0) killGroup(pid, options.killSignal);
       child.stdout.destroy();
       child.stderr.destroy();
@@ -12724,9 +12772,9 @@ function recorded(text4) {
 }
 function stateOf(result, reached, text4, timeoutSeconds, cpuSeconds) {
   if (result.error !== void 0) {
-    const code2 = result.error.code;
-    if (code2 === "ETIMEDOUT") return { kind: "not-run", reason: `timed out after ${timeoutSeconds}s` };
-    if (code2 === "ENOBUFS") return { kind: "not-run", reason: "killed at the output cap" };
+    const code3 = result.error.code;
+    if (code3 === "ETIMEDOUT") return { kind: "not-run", reason: `timed out after ${timeoutSeconds}s` };
+    if (code3 === "ENOBUFS") return { kind: "not-run", reason: "killed at the output cap" };
     return { kind: "not-run", reason: `could not start: ${result.error.message}` };
   }
   if (result.status === null) return { kind: "not-run", reason: "ended by a signal" };
@@ -12752,8 +12800,8 @@ async function runReproduction(record3, content, runner, layout, ctx) {
       const changed = differs(before, snapshot(layout.worktree, cap));
       return changed > 0 ? `the reproduction modified the worktree (${changed} paths)` : null;
     } catch (error) {
-      const code2 = error.code;
-      return `the reproduction modified the worktree (${code2 === void 0 ? error.message : `walk failed: ${code2}`})`;
+      const code3 = error.code;
+      return `the reproduction modified the worktree (${code3 === void 0 ? error.message : `walk failed: ${code3}`})`;
     }
   };
   let firstCode = 0;
@@ -12936,10 +12984,13 @@ var CONFIG_KEYS = {
     "carry_approval_on_unchanged",
     "recheck_thread_before_post",
     "never_approve",
+    "never_approve_paths",
+    "only_approve_paths",
     "scope_block",
     "scope_block_models",
     "evidence_block",
-    "evidence_block_precedents"
+    "evidence_block_precedents",
+    "held_queue"
   ],
   static_evidence: ["enabled", "env_passthrough", "commands"],
   "static_evidence.commands[]": ["name", "run", "timeout_seconds", "version"],
@@ -13301,16 +13352,44 @@ function readVerdictPolicy(block, result) {
     return fallback;
   };
   const policy = result.verdictPolicy;
+  const globs = (key2, fallback) => {
+    const value = block[key2];
+    if (value === void 0) return [...fallback];
+    const entries = Array.isArray(value) ? value : null;
+    const parses = (entry) => {
+      if (typeof entry !== "string" || entry.trim() === "") return false;
+      try {
+        globToRegExp(entry);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const bad = entries === null ? value : entries.find((entry) => !parses(entry));
+    if (entries !== null && bad === void 0) return [...entries];
+    policy.malformedApprovalPaths ??= key2;
+    let shown;
+    try {
+      shown = JSON.stringify(bad);
+    } catch {
+      shown = "a value that refers to itself";
+    }
+    result.warnings.push(`verdict.${key2} must be a list of globs; ${shown} is not one, so every approval is held until it is fixed.`);
+    return [...fallback];
+  };
   policy.ciPending = choice("ci_pending", ["wait", "proceed"], DEFAULT_VERDICT_POLICY.ciPending);
   policy.ciRed = choice("ci_red", ["cap", "annotate"], DEFAULT_VERDICT_POLICY.ciRed);
   policy.ciNeedsRerun = choice("ci_needs_rerun", ["hold", "annotate"], DEFAULT_VERDICT_POLICY.ciNeedsRerun);
   policy.carryApprovalOnUnchanged = enabled2("carry_approval_on_unchanged", DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
   policy.recheckThreadBeforePost = enabled2("recheck_thread_before_post", DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
   policy.neverApprove = enabled2("never_approve", DEFAULT_VERDICT_POLICY.neverApprove);
+  policy.neverApprovePaths = globs("never_approve_paths", DEFAULT_VERDICT_POLICY.neverApprovePaths);
+  policy.onlyApprovePaths = globs("only_approve_paths", DEFAULT_VERDICT_POLICY.onlyApprovePaths);
   policy.scopeBlock = enabled2("scope_block", DEFAULT_VERDICT_POLICY.scopeBlock);
   policy.scopeBlockModels = enabled2("scope_block_models", DEFAULT_VERDICT_POLICY.scopeBlockModels);
   policy.evidenceBlock = enabled2("evidence_block", DEFAULT_VERDICT_POLICY.evidenceBlock);
   policy.evidenceBlockPrecedents = enabled2("evidence_block_precedents", DEFAULT_VERDICT_POLICY.evidenceBlockPrecedents);
+  policy.heldQueue = enabled2("held_queue", DEFAULT_VERDICT_POLICY.heldQueue);
 }
 var TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 function readQueue(block, result) {
@@ -15235,8 +15314,8 @@ function conventionQuotesFor(evidence, documents) {
     const document = documentNamed(entry, documents);
     if (document === void 0) continue;
     const content = squashed(document.content).toLowerCase();
-    const quote2 = [...entry.matchAll(QUOTED)].map((match) => squashed(match[1] ?? "")).find((segment) => segment.split(" ").length >= 4 && content.includes(segment.toLowerCase()));
-    if (quote2 !== void 0) found.push({ path: document.path, quote: redactedAsPosted(quote2) });
+    const quote3 = [...entry.matchAll(QUOTED)].map((match) => squashed(match[1] ?? "")).find((segment) => segment.split(" ").length >= 4 && content.includes(segment.toLowerCase()));
+    if (quote3 !== void 0) found.push({ path: document.path, quote: redactedAsPosted(quote3) });
   }
   return found.length === 0 ? void 0 : found;
 }
@@ -16618,6 +16697,19 @@ async function readHead(client, repository, pullNumber) {
   const sha = data?.head?.sha;
   return typeof sha === "string" ? sha.toLowerCase() : null;
 }
+var MAX_LISTED_FILES = 3e3;
+async function readChangedPaths(client, repository, pullNumber) {
+  const files2 = [];
+  let next = `/repos/${repository}/pulls/${pullNumber}/files?per_page=100`;
+  while (next !== null && files2.length < MAX_LISTED_FILES) {
+    const page = await client.get(next);
+    if (!Array.isArray(page.data)) throw new GitHubError(`GitHub returned no file list for ${next}`, 200);
+    files2.push(...page.data);
+    next = page.linkNext;
+  }
+  const paths = files2.flatMap((file2) => [file2.filename, file2.previous_filename].filter((name) => typeof name === "string"));
+  return { paths, truncated: files2.length >= MAX_LISTED_FILES };
+}
 function refusal(head, reason2) {
   return {
     exitCode: 2,
@@ -16835,6 +16927,12 @@ async function computeVerdict(options) {
   const policy = verdictPolicy(options.policy);
   const lookupReasons = [];
   const carriedReviewUrl = !headMoved && policy.carryApprovalOnUnchanged ? await carriedApproval(options, run, lookupReasons) : null;
+  const pathRule = policy.malformedApprovalPaths !== null || policy.neverApprovePaths.length > 0 || policy.onlyApprovePaths.length > 0;
+  const mayApprove = !headMoved && planned.mapped === "APPROVE" && !policy.neverApprove && carriedReviewUrl === null;
+  const pathHold = pathRule && mayApprove ? approvalPathHold(
+    policy.malformedApprovalPaths === null ? await readChangedPaths(options.client, options.repository, options.pullNumber) : { paths: [], truncated: false },
+    policy
+  ) : null;
   const decision = decide({
     mapped: planned.mapped,
     headMoved,
@@ -16846,6 +16944,7 @@ async function computeVerdict(options) {
     needsHuman,
     uncoveredCarry: run.carry?.covered === false,
     carriedReviewUrl,
+    approvalPathHold: pathHold?.reason ?? null,
     policy
   });
   decision.reasons.push(...lookupReasons);
@@ -16867,9 +16966,12 @@ async function computeVerdict(options) {
       bodyFindings: run.bodyFindings,
       ...checked === null ? {} : { suggestions: checked.suggestions },
       // One plain summary line whichever cap applies: CI first, then a held
-      // finding or an uncovered carry, then complexity. None of them names
-      // human review or the carry in the posted body.
-      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || run.carry?.covered === false && planned.mapped === "APPROVE" ? "held" : policy.neverApprove && planned.mapped === "APPROVE" ? "policy" : needsHuman && policy.capApproval && planned.mapped === "APPROVE" ? "complexity" : null
+      // finding or an uncovered carry, then policy, then complexity. None of
+      // them names human review or the carry in the posted body. A path hold
+      // alone ends the line with its fixed sentence, which names the setting
+      // and never a path.
+      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || run.carry?.covered === false && planned.mapped === "APPROVE" ? "held" : decision.cappedByPolicy ? "policy" : needsHuman && policy.capApproval && planned.mapped === "APPROVE" ? "complexity" : null,
+      ...decision.cappedByPolicy && !policy.neverApprove && pathHold !== null ? { pathHold: pathHold.posted } : {}
     });
     key2 = idempotencyKey(options.repository, options.pullNumber, full2);
     const sent = sentInline(options.db, options.repository, options.pullNumber, head);
@@ -17190,6 +17292,82 @@ async function postReview(options) {
   }
 }
 
+// plugins/review-voice/src/review/held-queue.ts
+import { appendFileSync } from "node:fs";
+import { isAbsolute as isAbsolute2 } from "node:path";
+var PROMOTABLE = /* @__PURE__ */ new Set(["below-gate", "policy-suppressed"]);
+var UNSAFE = /[`\u0000-\u001f\u007f-\u009f​-‍‪-‮⁦-⁩﻿]/;
+var BARE = /^[A-Za-z0-9_@%+=:,./-]+$/;
+var quote = (word) => BARE.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
+function promoteCommand(call, candidateId) {
+  const env = Object.entries(call.env);
+  const words = [call.cwd, ...env.flat(), ...call.program, ...call.args, candidateId, call.stdin, call.stdout];
+  if (words.some((word) => UNSAFE.test(word))) return null;
+  return [
+    "cd",
+    quote(call.cwd),
+    "&&",
+    ...env.map(([name, value]) => `${name}=${quote(value)}`),
+    ...[...call.program, ...call.args, "--promote", candidateId].map(quote),
+    "<",
+    quote(call.stdin),
+    ">",
+    quote(call.stdout)
+  ].join(" ");
+}
+function heldQueue(held, call) {
+  return held.map((entry) => {
+    const candidateId = entry.candidateId || null;
+    return {
+      path: entry.path,
+      line: entry.line,
+      severity: entry.severity ?? null,
+      verdict: entry.verdict,
+      reason: entry.reason,
+      candidateId,
+      promote: call !== null && candidateId !== null && PROMOTABLE.has(entry.verdict) ? promoteCommand(call, candidateId) : null
+    };
+  });
+}
+function isHeldQueueEntry(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const entry = value;
+  const optional = (key2) => entry[key2] === null || typeof entry[key2] === "string";
+  return typeof entry["path"] === "string" && Number.isInteger(entry["line"]) && typeof entry["verdict"] === "string" && typeof entry["reason"] === "string" && optional("severity") && optional("candidateId") && optional("promote");
+}
+var PROMOTE_NOTE = "A promoted finding still has to pass the challenge. Continue from step 4b of commands/review.md, with scores.promoted.json in place of scores.json.";
+var code2 = (text4, max) => `\`${safeCheckName(text4, max) || "none"}\``;
+function heldQueueLines(entries, runId) {
+  if (entries.length === 0) return [];
+  return [
+    `Held by Review Voice (${entries.length})${runId === null ? "" : `, run ${code2(runId)}`}`,
+    PROMOTE_NOTE,
+    ...entries.map((entry) => {
+      const location = `\`${safeCheckName(entry.path, 200) || "none"}:${entry.line}\``;
+      const what = [location, code2(entry.severity ?? "no severity"), code2(entry.verdict), code2(entry.reason, 120)].join(", ");
+      const next = entry.promote !== null && !UNSAFE.test(entry.promote) ? `Promote with \`${entry.promote}\`.` : entry.candidateId !== null && PROMOTABLE.has(entry.verdict) ? `Promotable as ${code2(entry.candidateId)}.` : "Not promotable.";
+      return `- ${what}. ${next}`;
+    })
+  ];
+}
+function writeJobSummary(report, env) {
+  const path = env["GITHUB_STEP_SUMMARY"];
+  const [heading, note, ...items] = heldQueueLines(report.heldQueue ?? [], report.runId);
+  if (env["GITHUB_ACTIONS"] !== "true" || path === void 0 || !isAbsolute2(path) || heading === void 0) return null;
+  try {
+    appendFileSync(path, `## ${heading}
+
+${note}
+
+${items.join("\n")}
+
+`);
+    return null;
+  } catch (error) {
+    return `The held findings were not added to the job summary: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
 // plugins/review-voice/src/watch/lock.ts
 import { createHash as createHash5 } from "node:crypto";
 import { readFileSync as readFileSync6, realpathSync as realpathSync2, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
@@ -17476,6 +17654,7 @@ async function runPass(options, json2) {
     });
     const rows = [];
     const lines2 = [];
+    const held = [];
     const counts = /* @__PURE__ */ new Map();
     for (const entry of queue.entries) {
       const outcome = await handle(options, client, db, entry);
@@ -17490,11 +17669,15 @@ async function runPass(options, json2) {
       counts.set(row.status, (counts.get(row.status) ?? 0) + 1);
       const event = row.event === null ? "" : ` ${row.event}`;
       lines2.push(`${summary}${event} (${row.status} ${row.reviewUrl ?? row.detail ?? ""})`.replace(/ \)$/, ")"));
+      const listed = (outcome.held ?? []).map((line3) => `  ${line3}`);
+      lines2.push(...listed);
+      held.push(...listed);
     }
     const followed = await followOutcomes(client, db, deps, config2.ownerReviewer);
     const swept = sweepRetention(db, config2, deps);
     if (json2) {
       deps.out(JSON.stringify(rows, null, 2));
+      if (held.length > 0) deps.err(held.join("\n"));
       if (swept !== null) deps.err(swept);
     } else {
       const totals = [...counts].map(([status, count3]) => `${count3} ${status}`).join(", ");
@@ -17550,6 +17733,7 @@ async function review(options, entry) {
     runRepositoryCommands: options.config.watch.runRepositoryCommands
   });
   if (result.exitCode === 3) return { row: null, detail: result.detail ?? "head moved" };
+  const held = heldQueueLines(result.heldQueue ?? [], result.runId);
   const status = result.exitCode === 0 ? options.post && result.carried === true ? "carried" : result.reviewUrl === null ? "reviewed" : "posted" : result.exitCode === 4 ? "waiting-ci" : result.exitCode === 6 ? "held" : result.failureMode === "failed_open" ? "failed-open" : result.failureMode === "failed_closed" ? "failed-closed" : "failed";
   return {
     row: {
@@ -17562,7 +17746,8 @@ async function review(options, entry) {
       status,
       // A failed-closed head is left for a person, so its detail says so in the words the review reported.
       detail: isFailure2(status) ? `${status === "failed-closed" ? "failed_closed: " : ""}${result.detail ?? `review exited ${result.exitCode}`}` : result.detail
-    }
+    },
+    ...held.length === 0 ? {} : { held }
   };
 }
 async function verdict(options, client, db, entry, recheck) {
@@ -17586,7 +17771,7 @@ async function verdict(options, client, db, entry, recheck) {
   };
   const computed = await computeVerdict({ ...target, recheck });
   const { exitCode, output } = computed;
-  const waiting = (code2) => code2 === 4 || code2 === 5 ? "waiting-ci" : code2 === 6 ? "held" : null;
+  const waiting = (code3) => code3 === 4 || code3 === 5 ? "waiting-ci" : code3 === 6 ? "held" : null;
   if (exitCode === 3) return { row: null, detail: "head moved" };
   const paused = waiting(exitCode);
   if (paused !== null) return { row: { ...base, event: output.event, status: paused, detail: output.reasons.join("; ") || null } };
@@ -17657,6 +17842,7 @@ function reviewResult(exitCode, stdout, stderr) {
   const carried = doc["carried"] === true || verdict2["action"] === "carry";
   const failure = typeof doc["failure"] === "object" && doc["failure"] !== null ? doc["failure"] : {};
   const failureMode = failure["mode"] === "failed_open" || failure["mode"] === "failed_closed" ? failure["mode"] : null;
+  const heldQueue2 = Array.isArray(doc["heldQueue"]) ? doc["heldQueue"].filter(isHeldQueueEntry) : [];
   return {
     exitCode,
     runId: text4(doc["runId"]),
@@ -17664,7 +17850,8 @@ function reviewResult(exitCode, stdout, stderr) {
     reviewUrl: text4(doc["reviewUrl"]),
     detail,
     carried,
-    ...failureMode === null ? {} : { failureMode }
+    ...failureMode === null ? {} : { failureMode },
+    ...heldQueue2.length === 0 ? {} : { heldQueue: heldQueue2 }
   };
 }
 var DRAIN_MS = 1e3;
@@ -17738,8 +17925,8 @@ function spawnReview(bundle, options) {
       spawnError = error.message;
       finish();
     });
-    child.on("exit", (code2, signal2) => {
-      exitCode = code2;
+    child.on("exit", (code3, signal2) => {
+      exitCode = code3;
       exitSignal = signal2;
       if (terminating) {
         killGroup2(pid, "SIGKILL");
@@ -18438,6 +18625,16 @@ var COMMAND_HELP = {
       "                                          the local note stays",
       "  verdict.never_approve: false            true turns every APPROVE into COMMENT;",
       "                                          approval is left to a person",
+      "  verdict.never_approve_paths: []         globs; a pull request changing a matching path",
+      "                                          (a rename by either name, a deleted file too) posts",
+      "                                          COMMENT instead of APPROVE, and the summary ends",
+      '                                          "Approval is held because a changed file matches',
+      '                                          never_approve_paths."',
+      "  verdict.only_approve_paths: []          globs; a changed path outside them all does the same,",
+      "                                          naming only_approve_paths. Both read the pull",
+      "                                          request's whole file list, add no thorough review",
+      "                                          and no note (unlike sensitive_paths), and a list that",
+      "                                          does not load holds every approval until it is fixed",
       "  verdict.carry_approval_on_unchanged: false",
       '                                          true returns action "carry" and posts nothing',
       "                                          when a clean approval's scope is unchanged and",
@@ -18464,6 +18661,10 @@ var COMMAND_HELP = {
       "                                          true also counts the owner precedents retrieved that",
       "                                          favoured the finding in that block, which reveals that",
       "                                          a precedent store exists",
+      "  verdict.held_queue: false               true lists every held finding, with its verdict and",
+      "                                          reason, in `review --json` (heldQueue), the job summary",
+      "                                          inside GitHub Actions and the watcher report, never on",
+      "                                          the pull request; the verdict is unchanged",
       '  An annotation names at most five checks and appears in "annotations".',
       "Reads: the validated review on stdin; with review.suggestions, each file a suggestion",
       "  replaces lines of, at the head (GET contents).",
@@ -18564,7 +18765,8 @@ var COMMAND_HELP = {
       "  --json                 Emit the rows each pass wrote as JSON",
       "Reads: nothing on stdin; GitHub search, pull requests and CI (read-only), the local store and config.",
       "Writes: one line per entry, `owner/repo#n: <action> [event] (<status> <url or detail>)`, then",
-      "  totals (JSON rows with --json); watch_heads rows in the local store; clones under",
+      "  totals (JSON rows with --json); under verdict.held_queue, a review's held findings two spaces",
+      "  in below its line (on stderr with --json); watch_heads rows in the local store; clones under",
       "  watch.workspace (default <data directory>/clones); <data directory>/watch.lock (the pid, for",
       "  display only) while running, and <data directory>/watch-config.yaml.",
       "  With --post, reviews through `post` and its guards.",
@@ -18888,7 +19090,12 @@ var COMMAND_HELP = {
       "                         `watch` passes it itself",
       "  --json                 print one JSON document instead of the text report; a run that could",
       "                         not complete carries failure {code, stage, mode, risk, reasons, facts}",
-      "                         with mode failed_open (normal risk) or failed_closed (high or unknown)",
+      "                         with mode failed_open (normal risk) or failed_closed (high or unknown);",
+      "                         under verdict.held_queue it carries heldQueue, one entry per held finding",
+      "                         with its verdict and reason, and for a below-gate or policy-suppressed one",
+      "                         the `score --promote` command that re-scores the run from its directory",
+      "                         (inside GitHub Actions only its candidate id). Inside GitHub Actions the",
+      "                         list is also appended to the job summary.",
       "Config: the pull request's own .review-voice/config.yaml is never read. The run uses --config,",
       "  else an absolute REVIEW_VOICE_CONFIG, else .review-voice/config.yaml at the base commit",
       "  (the built-in defaults when the base has none, or is not in the clone).",
@@ -18899,9 +19106,10 @@ var COMMAND_HELP = {
       "  reproduction for each blocking or important finding and `reproduce` runs it (Linux only); one",
       "  that does not fail holds its finding as reproduction-did-not-fail, unless its category is one",
       "  no suppression may reach (docs/adr/0032).",
-      "Writes: every stage's input and output under the run directory, and the recorded run;",
-      "  with --post, the one review `post` sends. The report on stdout. A run that cannot complete",
-      "  records no run, only a review_failed audit event, and posts nothing.",
+      "Writes: every stage's input and output under the run directory, score-input.json included,",
+      "  and the recorded run; with --post, the one review `post` sends. The report on stdout, and",
+      "  under verdict.held_queue inside GitHub Actions, the held list in the job summary. A run",
+      "  that cannot complete records no run, only a review_failed audit event, and posts nothing.",
       "Exit codes: 0 done, 2 refused or bad invocation, 3 head moved, 4 waiting on CI,",
       "  6 CI needs a rerun, 7 an agent failed twice, 8 thread changed before posting."
     )
@@ -18969,8 +19177,8 @@ function topLevelHelp() {
 
 // plugins/review-voice/src/review/driver.ts
 import { execFileSync as execFileSync11 } from "node:child_process";
-import { appendFileSync, copyFileSync, existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync11, rmSync as rmSync4, writeFileSync as writeFileSync4 } from "node:fs";
-import { dirname as dirname10, isAbsolute as isAbsolute3, join as join15, resolve as resolve3, sep } from "node:path";
+import { appendFileSync as appendFileSync2, copyFileSync, existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync11, rmSync as rmSync4, writeFileSync as writeFileSync4 } from "node:fs";
+import { dirname as dirname10, isAbsolute as isAbsolute4, join as join15, resolve as resolve3, sep } from "node:path";
 
 // plugins/review-voice/src/agents/claude-cli.ts
 import { spawn as spawn2 } from "node:child_process";
@@ -19130,7 +19338,7 @@ function claudeArguments(spec, addDirs, env) {
 function firstChars(text4) {
   return text4.trim().slice(0, ERROR_CHARS);
 }
-function interpretEnvelope(stdout, stderr, code2) {
+function interpretEnvelope(stdout, stderr, code3) {
   let envelope = null;
   try {
     const parsed2 = JSON.parse(stdout);
@@ -19141,11 +19349,11 @@ function interpretEnvelope(stdout, stderr, code2) {
   const costUsd = typeof envelope?.total_cost_usd === "number" ? envelope.total_cost_usd : null;
   const tokens = tokensOf(envelope?.usage);
   const counted = tokens === void 0 ? {} : { tokens };
-  if (code2 === 0 && envelope !== null && envelope.is_error === false && envelope.structured_output !== void 0) {
+  if (code3 === 0 && envelope !== null && envelope.is_error === false && envelope.structured_output !== void 0) {
     return { ok: true, output: envelope.structured_output, costUsd, ...counted };
   }
   const result = typeof envelope?.result === "string" ? envelope.result : "";
-  const detail = firstChars(result) || firstChars(stderr) || firstChars(stdout) || (code2 === 0 ? "claude returned no structured output" : `claude exited with code ${code2}`);
+  const detail = firstChars(result) || firstChars(stderr) || firstChars(stdout) || (code3 === 0 ? "claude returned no structured output" : `claude exited with code ${code3}`);
   return { ok: false, output: null, costUsd, ...counted, error: detail };
 }
 function runClaudeCli(spec, prompt, cwd, addDirs, env) {
@@ -19190,7 +19398,7 @@ function runClaudeCli(spec, prompt, cwd, addDirs, env) {
     child.on("error", (error) => {
       finish({ ok: false, output: null, costUsd: null, error: `could not start ${bin}: ${error.message}` });
     });
-    child.on("close", (code2) => {
+    child.on("close", (code3) => {
       if (stopped !== null) {
         finish({ ok: false, output: null, costUsd: null, error: stopped });
         return;
@@ -19199,7 +19407,7 @@ function runClaudeCli(spec, prompt, cwd, addDirs, env) {
         interpretEnvelope(
           Buffer.concat(stdout).toString("utf8"),
           Buffer.concat(stderr).toString("utf8"),
-          code2
+          code3
         )
       );
     });
@@ -19265,7 +19473,7 @@ function runFake(spec, prompt, dir, cwd = "", addDirs = []) {
 
 // plugins/review-voice/src/agents/schema.ts
 import { readFileSync as readFileSync10 } from "node:fs";
-import { dirname as dirname9, isAbsolute as isAbsolute2, relative as relative2, resolve as resolve2 } from "node:path";
+import { dirname as dirname9, isAbsolute as isAbsolute3, relative as relative2, resolve as resolve2 } from "node:path";
 function schemaForRunner(schema4, baseDir) {
   const base = resolve2(baseDir);
   const prepared = prepare(schema4, { baseDir: base, dir: base, document: schema4, inlined: false, stack: [] });
@@ -19302,14 +19510,14 @@ function checkInternalRef(ref, ctx) {
   }
 }
 function resolveFileRef(ref, ctx) {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith("//") || isAbsolute2(ref)) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith("//") || isAbsolute3(ref)) {
     throw new AgentSpecError(`Schema $ref ${ref} is absolute; only a relative file is allowed`);
   }
   const hash2 = ref.indexOf("#");
   const file2 = resolve2(ctx.dir, hash2 === -1 ? ref : ref.slice(0, hash2));
   const fragment = hash2 === -1 ? "" : ref.slice(hash2 + 1);
   const fromBase = relative2(ctx.baseDir, file2);
-  if (fromBase.startsWith("..") || isAbsolute2(fromBase)) {
+  if (fromBase.startsWith("..") || isAbsolute3(fromBase)) {
     throw new AgentSpecError(`Schema $ref ${ref} leaves ${ctx.baseDir}`);
   }
   const key2 = `${file2}#${fragment}`;
@@ -19818,15 +20026,15 @@ function sentencesOf(description) {
 function statesSomething(wanted, sentences) {
   return LEAD_LABEL.exec(wanted)?.[0] !== wanted && !sentences.headings.has(wanted);
 }
-function sectionHeading(quote2, sentences) {
-  const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
+function sectionHeading(quote3, sentences) {
+  const wanted = collapse2(quote3.replace(LIST_OR_HEADING, ""));
   let at2 = sentences.text.indexOf(wanted);
   while (at2 !== -1 && !(sentences.starts.has(at2) && sentences.ends.has(at2 + wanted.length))) at2 = sentences.text.indexOf(wanted, at2 + 1);
   return sentences.sections.find(({ from, to }) => at2 >= from && at2 < to)?.heading ?? null;
 }
-var isShort = (quote2) => collapse2(quote2.replace(LIST_OR_HEADING, "")).split(" ").length < MIN_QUOTE_WORDS;
-function excerptProblem(quote2, sentences, name) {
-  const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
+var isShort = (quote3) => collapse2(quote3.replace(LIST_OR_HEADING, "")).split(" ").length < MIN_QUOTE_WORDS;
+function excerptProblem(quote3, sentences, name) {
+  const wanted = collapse2(quote3.replace(LIST_OR_HEADING, ""));
   if (isShort(wanted) && !statesSomething(wanted, sentences)) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
   let at2 = sentences.text.indexOf(wanted);
   if (at2 === -1) return `${name} does not occur in the pull request description`;
@@ -19835,8 +20043,8 @@ function excerptProblem(quote2, sentences, name) {
   }
   return `${name} must be a whole sentence or list item of the description, not part of one`;
 }
-function widenToSentence(quote2, sentences) {
-  const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
+function widenToSentence(quote3, sentences) {
+  const wanted = collapse2(quote3.replace(LIST_OR_HEADING, ""));
   const at2 = sentences.text.indexOf(wanted);
   if (at2 === -1) return null;
   const end = at2 + wanted.length;
@@ -19848,8 +20056,8 @@ function widenToSentence(quote2, sentences) {
   const sentence = sentences.text.slice(from, to);
   return sentence.length <= MAX_QUOTE ? sentence : null;
 }
-function answeredHeading(quote2, sentences) {
-  const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
+function answeredHeading(quote3, sentences) {
+  const wanted = collapse2(quote3.replace(LIST_OR_HEADING, ""));
   if (wanted === "" || wanted.split(" ").length >= MIN_QUOTE_WORDS) return null;
   const matches = ({ from, to }) => {
     const body = sentences.text.slice(from, to);
@@ -19900,11 +20108,11 @@ function statementOf(rawEntry, at2, sentences, removed) {
   const rawQuote = text2(entry["quote"], `${at2}.quote`, MAX_QUOTE);
   if (rawQuote.problem !== null) return { value: null, problem: rawQuote.problem };
   const answered = answeredHeading(rawQuote.value, sentences);
-  const quote2 = answered === null ? excerptOf(rawQuote.value, sentences, `${at2}.quote`, id, removed) : rawQuote;
-  if (quote2.problem !== null) return { value: null, problem: quote2.problem };
-  const heading = answered ?? (isShort(quote2.value) ? sectionHeading(quote2.value, sentences) : null);
+  const quote3 = answered === null ? excerptOf(rawQuote.value, sentences, `${at2}.quote`, id, removed) : rawQuote;
+  if (quote3.problem !== null) return { value: null, problem: quote3.problem };
+  const heading = answered ?? (isShort(quote3.value) ? sectionHeading(quote3.value, sentences) : null);
   if (kind !== "non-goal") {
-    const quoted = significantWords(answered === null ? quote2.value : `${answered} ${quote2.value}`);
+    const quoted = significantWords(answered === null ? quote3.value : `${answered} ${quote3.value}`);
     if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
       return { value: null, problem: `${at2}.quote shares no significant word with its statement` };
     }
@@ -19926,7 +20134,7 @@ function statementOf(rawEntry, at2, sentences, removed) {
       id,
       kind,
       statement: statement.value,
-      quote: quote2.value,
+      quote: quote3.value,
       ...reason2 === void 0 ? {} : { reason: reason2 },
       ...complete ? { scope: "complete" } : {},
       ...heading === null ? {} : { heading }
@@ -20719,9 +20927,9 @@ var STAGES = [
 var NO_FINDINGS = "No actionable findings.";
 var Stop = class extends Error {
   code;
-  constructor(code2, message) {
+  constructor(code3, message) {
     super(message);
-    this.code = code2;
+    this.code = code3;
   }
 };
 var isRecord5 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -20749,7 +20957,7 @@ async function cli(run, argv, stdin) {
   run.lock = next.catch(() => void 0);
   const result = await next;
   try {
-    appendFileSync(at(run, "commands.log"), `$ review-voice ${argv.join(" ")}
+    appendFileSync2(at(run, "commands.log"), `$ review-voice ${argv.join(" ")}
 exit ${result.code}
 ${result.stderr}
 `);
@@ -20759,9 +20967,9 @@ ${result.stderr}
   }
   return result;
 }
-async function must(run, argv, stdin, code2 = 2) {
+async function must(run, argv, stdin, code3 = 2) {
   const result = await cli(run, argv, stdin);
-  if (result.code !== 0) throw new Stop(code2, `${argv[0]} exited ${result.code}: ${firstLines(result.stderr)}`);
+  if (result.code !== 0) throw new Stop(code3, `${argv[0]} exited ${result.code}: ${firstLines(result.stderr)}`);
   return result;
 }
 async function headOf(run) {
@@ -20800,7 +21008,7 @@ function resolveConfig(run) {
     return chosen({ kind: "flag", path: path2 });
   }
   if (previous !== void 0 && previous !== "") {
-    if (isAbsolute3(previous)) return chosen({ kind: "env", path: previous });
+    if (isAbsolute4(previous)) return chosen({ kind: "env", path: previous });
     run.notes.push("REVIEW_VOICE_CONFIG must be an absolute path, so it was ignored and the base commit supplied the configuration.");
   }
   const { sha, ref } = run.pullBase;
@@ -21349,29 +21557,42 @@ async function tieBreak(run) {
 async function score(run) {
   const candidates = [...run.reconciled ?? run.survivors, ...run.setAside];
   if (candidates.length === 0) return skip(run, "score", "nothing verified");
-  const scored = await must(
-    run,
-    [
-      "score",
-      "--repository",
-      run.options.repository,
-      "--verification",
-      at(run, "verification.json"),
-      ...run.base === null ? [] : ["--base", run.base],
-      "--diff-file",
-      at(run, "diff.patch"),
-      "--head",
-      run.head,
-      "--thread",
-      at(run, "thread.json"),
-      "--exclude-pull",
-      String(run.options.pullNumber)
-    ],
-    JSON.stringify({ candidates }),
-    1
-  );
+  const args = [
+    "score",
+    "--repository",
+    run.options.repository,
+    "--verification",
+    at(run, "verification.json"),
+    ...run.base === null ? [] : ["--base", run.base],
+    "--diff-file",
+    at(run, "diff.patch"),
+    "--head",
+    run.head,
+    "--thread",
+    at(run, "thread.json"),
+    "--exclude-pull",
+    String(run.options.pullNumber)
+  ];
+  const input = JSON.stringify({ candidates });
+  writeFileSync4(at(run, "score-input.json"), input);
+  const scored = await must(run, args, input, 1);
   writeFileSync4(at(run, "scores.json"), scored.stdout);
   run.scored = true;
+  if (run.deps.cli !== void 0) {
+    const env = {};
+    for (const name of ["REVIEW_VOICE_CONFIG", "REVIEW_VOICE_DATA_DIR"]) {
+      const value = process.env[name];
+      if (value !== void 0 && value !== "") env[name] = value;
+    }
+    run.promoteCall = {
+      program: [process.execPath, run.deps.cli],
+      cwd: process.cwd(),
+      env,
+      args,
+      stdin: at(run, "score-input.json"),
+      stdout: at(run, "scores.promoted.json")
+    };
+  }
   const scores = parsed(scored.stdout);
   const hold = (entry, verdict2, source, reason2) => {
     run.held.push({
@@ -21562,6 +21783,11 @@ async function record2(run, extra) {
   run.findings = list(result["findings"]);
   run.provenance = isRecord5(result["provenance"]) ? result["provenance"] : null;
   for (const warning of Array.isArray(result["warnings"]) ? result["warnings"] : []) run.notes.push(String(warning));
+  const context2 = readJson(at(run, "context.json"));
+  if (isRecord5(context2) && context2["heldQueue"] === true && !run.carried) {
+    const actions = (run.deps.env ?? process.env)["GITHUB_ACTIONS"] === "true";
+    run.heldQueue = heldQueue(run.held, actions ? null : run.promoteCall);
+  }
   const target = ["--repository", run.options.repository, "--pr", String(run.options.pullNumber), "--head", run.head, "--run", run.runId ?? ""];
   const verdict2 = await cli(run, ["verdict", ...target], run.text ?? "");
   writeFileSync4(at(run, "verdict.json"), verdict2.stdout);
@@ -21661,7 +21887,7 @@ function priorRisk(run) {
     return "unknown";
   }
 }
-function failureOf(run, code2) {
+function failureOf(run, code3) {
   const assessed = run.summary["complexity"];
   const complexity = isRecord5(assessed) && (assessed["level"] === "high" || assessed["level"] === "normal") ? assessed : null;
   const assessedRisk = complexity === null ? "unknown" : complexity.level;
@@ -21677,7 +21903,7 @@ function failureOf(run, code2) {
   const [sizeCrossings, branchGrowth, typeEscapes] = [size("sizeCrossings"), size("branchGrowth"), size("typeEscapes")];
   const note = run.summary["humanReviewNote"];
   return {
-    code: code2,
+    code: code3,
     stage: run.stage,
     mode: risk === "normal" ? "failed_open" : "failed_closed",
     risk,
@@ -21741,6 +21967,8 @@ async function runReview(options, deps) {
     reconciled: null,
     tieBroken: false,
     scored: false,
+    promoteCall: null,
+    heldQueue: null,
     text: null,
     runId: null,
     findings: [],
@@ -21805,6 +22033,7 @@ async function runReview(options, deps) {
     plan: run.plan,
     findings: run.findings,
     held: run.held,
+    ...run.heldQueue === null ? {} : { heldQueue: run.heldQueue },
     verdict: run.verdict,
     posted: run.posted,
     carried: run.carried,
@@ -21910,12 +22139,12 @@ function readStdin() {
     try {
       read = readSync(0, buffer, 0, buffer.length, null);
     } catch (error) {
-      const code2 = error.code;
-      if (code2 === "EAGAIN") {
+      const code3 = error.code;
+      if (code3 === "EAGAIN") {
         Atomics.wait(pause, 0, 0, 5);
         continue;
       }
-      if (code2 === "EOF") break;
+      if (code3 === "EOF") break;
       return chunks.length === 0 ? "" : Buffer.concat(chunks).toString("utf8");
     }
     if (read === 0) break;
@@ -22820,6 +23049,8 @@ function contextCommand() {
           staticEvidence: config2.staticEvidence,
           // The driver reads the runners from context.json, as it reads the configured check names.
           reproduction: { enabled: config2.reproduction.enabled, runners: config2.reproduction.runners },
+          // The driver reads it here too, and lists the held findings only when it is true.
+          heldQueue: config2.verdictPolicy.heldQueue,
           // The review command needs the structural opt-ins after resolving
           // config, including the optional simplification pass.
           structure: config2.structure,
@@ -24148,7 +24379,7 @@ function checkIntentCommand(argv) {
 
 // plugins/review-voice/src/cli/recall.ts
 import { writeFileSync as writeFileSync7, mkdirSync as mkdirSync10, statSync as statSync8, lstatSync as lstatSync5, renameSync as renameSync3, rmSync as rmSync7, existsSync as existsSync15 } from "node:fs";
-import { dirname as dirname16, isAbsolute as isAbsolute4, relative as relative4, resolve as resolve8, sep as sep5 } from "node:path";
+import { dirname as dirname16, isAbsolute as isAbsolute5, relative as relative4, resolve as resolve8, sep as sep5 } from "node:path";
 
 // plugins/review-voice/src/evaluate/recall.ts
 import { execFileSync as execFileSync15 } from "node:child_process";
@@ -24812,7 +25043,7 @@ async function recallCommand(argv, runInProcess2) {
     return 2;
   }
   const inside2 = relative4(realExistingPath(resolve8(fixtures)), realExistingPath(out));
-  const outside = inside2 === ".." || inside2.startsWith(`..${sep5}`) || isAbsolute4(inside2);
+  const outside = inside2 === ".." || inside2.startsWith(`..${sep5}`) || isAbsolute5(inside2);
   if (!outside) {
     console.error(`--out ${out} is inside the fixtures; recall never writes there.`);
     return 2;
@@ -25883,12 +26114,12 @@ function computeReach(text4, changedPath, cwd, ref = null, search = gitGrepPaths
     } catch {
       return result(null, true);
     }
-    const code2 = found.filter(isCode);
-    if (source !== "diff" && !code2.some((path) => normalisePath3(path) === normalisedChangedPath)) {
+    const code3 = found.filter(isCode);
+    if (source !== "diff" && !code3.some((path) => normalisePath3(path) === normalisedChangedPath)) {
       ignored.push(symbol);
       continue;
     }
-    if (directoryCount(code2) > NON_DISCRIMINATING_DIRECTORIES) {
+    if (directoryCount(code3) > NON_DISCRIMINATING_DIRECTORIES) {
       ignored.push(symbol);
       continue;
     }
@@ -26064,12 +26295,12 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
       incomplete = true;
       break;
     }
-    const code2 = new Set(found.filter(isCode).map(normalisePath4));
-    if (directoryCount2(code2) > NON_DISCRIMINATING_DIRECTORIES) {
+    const code3 = new Set(found.filter(isCode).map(normalisePath4));
+    if (directoryCount2(code3) > NON_DISCRIMINATING_DIRECTORIES) {
       symbols.push({ symbol, common: true });
       continue;
     }
-    const others = [...code2].filter((candidate) => candidate !== normalisedPath).sort();
+    const others = [...code3].filter((candidate) => candidate !== normalisedPath).sort();
     const paths = others.filter((candidate) => !isTestPath(candidate));
     const tests = others.filter((candidate) => isTestPath(candidate));
     for (const candidate of paths) references.add(candidate);
@@ -28214,7 +28445,7 @@ function postedReviewIds(db, runId) {
   }
   return reviewIds;
 }
-function quote(text4) {
+function quote2(text4) {
   const flat = text4.replace(/\s+/g, " ").trim();
   return `"${flat.length > QUOTE_LIMIT ? `${flat.slice(0, QUOTE_LIMIT)}...` : flat}"`;
 }
@@ -28248,14 +28479,14 @@ function heldBackFindings(findings, thread, run, reviewIds) {
     const parts = [];
     if (resolved) parts.push(`its thread was resolved${comment?.resolvedBy === void 0 ? "" : ` by ${comment.resolvedBy}`}`);
     if (review2 !== void 0) {
-      parts.push(`the review was dismissed${review2.dismissalMessage === void 0 ? "" : `: ${quote(review2.dismissalMessage)}`}`);
+      parts.push(`the review was dismissed${review2.dismissalMessage === void 0 ? "" : `: ${quote2(review2.dismissalMessage)}`}`);
     }
     const replies = comment?.id === void 0 ? [] : thread.comments.filter((c) => c.inReplyTo === comment.id);
     const last = replies.reduce(
       (latest, reply) => latest === void 0 || (reply.createdAt ?? "") >= (latest.createdAt ?? "") ? reply : latest,
       void 0
     );
-    if (last !== void 0) parts.push(`${last.author} replied: ${quote(last.body)}`);
+    if (last !== void 0) parts.push(`${last.author} replied: ${quote2(last.body)}`);
     held.set(finding.findingId, parts.join("; "));
   }
   return held;
@@ -28649,7 +28880,7 @@ import { join as join26 } from "node:path";
 
 // plugins/review-voice/src/cli/check-candidates.ts
 import { readFileSync as readFileSync32 } from "node:fs";
-import { isAbsolute as isAbsolute5, posix as posix5, relative as relative5 } from "node:path";
+import { isAbsolute as isAbsolute6, posix as posix5, relative as relative5 } from "node:path";
 
 // plugins/review-voice/src/cli/score.ts
 import { readFileSync as readFileSync31 } from "node:fs";
@@ -29388,8 +29619,8 @@ function readSignals(file2, root) {
     const s = entry;
     if (typeof s !== "object" || s === null || typeof s.path !== "string" || typeof s.line !== "number" || typeof s.claim !== "string") return [];
     const spelled = s.path.split("\\").join("/");
-    const path = isAbsolute5(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix5.normalize(spelled).replace(/^\.\//, "");
-    if (path === "" || path === "." || path.startsWith("..") || isAbsolute5(path)) return [];
+    const path = isAbsolute6(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix5.normalize(spelled).replace(/^\.\//, "");
+    if (path === "" || path === "." || path.startsWith("..") || isAbsolute6(path)) return [];
     return [
       {
         kind: typeof s.kind === "string" ? s.kind : "",
@@ -30412,21 +30643,21 @@ async function runInProcess(argv, options = {}) {
     out.push(String(chunk));
     return true;
   });
-  let code2;
+  let code3;
   try {
-    code2 = await inCommand.run(true, () => dispatch(argv));
+    code3 = await inCommand.run(true, () => dispatch(argv));
   } catch (error) {
     const failure = failureOf2(error);
     err.push(`${failure.message}
 `);
-    code2 = failure.code;
+    code3 = failure.code;
   } finally {
     console.log = saved.log;
     console.error = saved.error;
     process.stdout.write = saved.write;
     setInProcess(null);
   }
-  return { code: code2, stdout: out.join(""), stderr: err.join("") };
+  return { code: code3, stdout: out.join(""), stderr: err.join("") };
 }
 async function reviewCommand(argv) {
   const pullNumber = Number(flag(argv, "--pr"));
@@ -30471,8 +30702,15 @@ async function reviewCommand(argv) {
       config: flag(argv, "--config"),
       origin: reviewOrigin
     },
-    { command: (args, stdin) => runInProcess(args, { stdin }), client: githubClient([repository]) }
+    {
+      command: (args, stdin) => runInProcess(args, { stdin }),
+      client: githubClient([repository]),
+      // The bundle `watch` spawns too; each promote command in the held queue names it.
+      cli: fileURLToPath6(import.meta.url)
+    }
   );
+  const summaryWarning = writeJobSummary(report, process.env);
+  if (summaryWarning !== null) console.error(summaryWarning);
   if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
   else console.log(reportText(report));
   return report.exitCode;

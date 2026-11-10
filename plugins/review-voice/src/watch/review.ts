@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
+import { isHeldQueueEntry, type HeldQueueEntry } from '../review/held-queue.ts';
 import { formatDuration } from './config.ts';
 
 /** What one `review` run reported, read from its exit code and JSON. */
@@ -12,6 +13,8 @@ export interface ReviewResult {
   carried?: boolean;
   /** The review JSON named a failure mode; absent for a timeout, unparseable output or a review that reported none. */
   failureMode?: 'failed_open' | 'failed_closed';
+  /** The review JSON's held queue (`verdict.held_queue`), its well-formed entries only; absent when there are none. */
+  heldQueue?: HeldQueueEntry[];
 }
 
 export type ReviewPullRequest = (args: {
@@ -58,6 +61,7 @@ export function reviewResult(exitCode: number, stdout: string, stderr: string): 
   const carried = doc['carried'] === true || verdict['action'] === 'carry';
   const failure = typeof doc['failure'] === 'object' && doc['failure'] !== null ? (doc['failure'] as Record<string, unknown>) : {};
   const failureMode = failure['mode'] === 'failed_open' || failure['mode'] === 'failed_closed' ? failure['mode'] : null;
+  const heldQueue = Array.isArray(doc['heldQueue']) ? doc['heldQueue'].filter(isHeldQueueEntry) : [];
   // The key is omitted, not undefined, when the child named no mode, so results without a failure keep their shape.
   return {
     exitCode,
@@ -67,6 +71,7 @@ export function reviewResult(exitCode: number, stdout: string, stderr: string): 
     detail,
     carried,
     ...(failureMode === null ? {} : { failureMode }),
+    ...(heldQueue.length === 0 ? {} : { heldQueue }),
   };
 }
 

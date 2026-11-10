@@ -47,13 +47,22 @@ change some of the rules below; the defaults are the rules as written:
   change approve; `humanReviewNote` and the would-have fields still come back.
 - `never_approve: true` turns every APPROVE into COMMENT, so approval is
   left to a person. REQUEST_CHANGES is unchanged.
+- `never_approve_paths: [<globs>]` leaves approval to a person when the pull
+  request changes a matching path (a rename by either name, a deleted file
+  too); `only_approve_paths: [<globs>]` does the same when a changed path is
+  outside every glob. The pull request's whole file list is read, so a later
+  commit cannot approve what an earlier one touched. The posted summary ends
+  with one fixed sentence naming the setting, never a path, and `reasons`
+  names the paths. Prefer `review.human_review.sensitive_paths` for code that
+  needs a person's eyes and a thorough review; these lists are an approval
+  rule and cost nothing. A list that does not load holds every approval.
 - `carry_approval_on_unchanged: true` carries the owner's standing approval
   (below).
 - `recheck_thread_before_post: true` makes every `post` re-check the thread
   (step 3).
 
-`--recheck` still asks only whether CI is green. Under `never_approve` it
-refuses with exit 2, because there is no approval to re-check.
+`--recheck` still asks only whether CI is green. Under `never_approve` or a
+path hold it refuses with exit 2, because there is no approval to re-check.
 
 - **Annotations.** Under an `annotate` setting, `annotations` holds a line
   such as ``Heads up: `build` failing on this head.``, naming at most five
