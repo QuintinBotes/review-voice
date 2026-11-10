@@ -91,8 +91,11 @@ the logic belongs in the validator instead. See
 ## Scope
 
 This is a focused tool with a small maintainer. Features that make it a general
-code review platform - dashboards, multi-provider support, IDE integrations,
-auto-fixing - are out of scope unless discussed in an issue first. The
+code review platform - live dashboards, multi-provider support, IDE
+integrations, auto-fixing - are out of scope unless discussed in an issue
+first. The one rendered view is the static analytics report that
+`review-voice evaluate --html` produces from `evaluate --json`, a file or a
+job-summary fragment with no server, script or interactivity. The
 [non-goals](docs/PLAN.md) are deliberate.
 
 Significant design changes need an ADR in `docs/adr/`. Copy the format of an

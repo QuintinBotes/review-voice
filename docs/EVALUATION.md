@@ -69,6 +69,48 @@ Each figure below is reported and never a gate. A figure with no data prints
 to `{ median, p95, runs }`, beside `metrics` and `posted_breakdown`. It is not a
 metric, because its value is a map, and the text output does not print it.
 
+The whole JSON document is one object, `EvaluationReport`, built by one
+function so the JSON and the rendered report (see "The rendered report") cannot
+disagree. Its keys are `generated_at`, `window_days` (the window the `_recent`
+rates use), `metrics`, `posted_breakdown` (by severity, lane, rule and
+evidence block), `precision_breakdown` (below), `stage_seconds` and
+`rule_effectiveness` (below). The text output is unchanged.
+
+#### Precision by lane and rule
+
+`precision_breakdown` carries `by_lane` and `by_rule`, each a map of key to
+`{ kept, dismissed, precision }`. The rows are the owner's labels from the
+`feedback` table. `keep` and `rewrite` count as kept and `dismiss` as
+dismissed, exactly as `owner_accepted_precision` counts them; `never_flag` and
+any later action are not labels for this figure, and an unlabelled finding
+appears nowhere, because silence is never a label. Each label is placed by its
+finding's lane (`diff` when none) and rule id (the stored `ruleId`, else the
+one derived from its category and lane, else `unknown`), through the same
+lookup `posted_breakdown` uses, so the two breakdowns can never place one
+finding differently. `precision` is `kept / (kept + dismissed)` and null with
+no labelled finding.
+
+#### Suppressions since approval
+
+`rule_effectiveness` answers the question an approved suppression raises
+afterwards, whether it is still right. It lists one entry per rule id named by
+an active suppression, with the suppressions themselves (`glob`, null for
+everywhere, and `policy_version`), the earliest `approved_at` among them, and
+three figures from the runs created at or after that approval. `held` counts
+the verified findings the suppression held, from the `scores[]` entries whose
+`rejectedBecause` names the rule; `runs` counts those runs; `posted` carries
+the strong outcomes of the rule's findings that were posted anyway (promoted
+with `score --promote`, or on a path outside the glob); and `feedback` carries
+the owner's `keep`, `rewrite` and `dismiss` labels on them. A run created
+before the approval contributes to none of them. With no run since approval
+`held` is null, because a count over no run is no data, not zero, and the
+basis says `no run recorded since`; an active row with no approval time
+recorded gives null for every figure and a basis naming the version. A version
+reactivated by `RV policy rollback` keeps its first `approved_at`, so its window
+starts at that approval and includes the time it was inactive. Nothing here
+deactivates, demotes or proposes anything; a suppression that looks wrong is
+the owner's `RV policy rollback`.
+
 #### Cost per review
 
 A run is costed when it recorded at least one stage and every recorded stage
@@ -603,6 +645,36 @@ zero samples is how a dashboard starts lying.
 Contract compliance is measured by running recorded output back through the
 validator, not asserted from the fact that validation happened. If output ever
 reaches the store by a path that skipped the gate, this is what notices.
+
+### The rendered report
+
+`review-voice evaluate --html` renders the same object `--json` prints as an
+HTML fragment on stdout, and `--html --out <path>` writes a complete static
+page instead (a directory gets `evaluation.html`; a missing parent is
+created). `--json` with `--html` and `--out` without `--html` are bad
+invocations, exit 2, checked before the store opens. `--since` and `--recall`
+apply as they do to text and JSON.
+
+The fragment has eight fixed sections, always present and in this order. First
+the heading with the time it was generated and the window the recent rates
+cover, then Gates, Goals, Reported, not scored (the three tables partition the
+metrics, so no figure prints twice), Seconds by stage, Posted findings, Owner
+labels, and Suppressions since approval. Every metric row prints its value,
+mark, target and basis exactly as the text output does. A figure with no data
+prints `no data`, never zero, and a section with nothing to show prints one
+paragraph saying so and no table.
+
+The fragment uses only `h2`, `h3`, `p`, `table`, `thead`, `tbody`, `tr`, `th`,
+`td`, `code`, `details` and `summary`, with no attribute, no script, no style
+and no link, the subset GitHub renders in a job summary, so the same bytes
+work appended to `$GITHUB_STEP_SUMMARY` and saved in a file. The page `--out`
+writes adds only a `<title>` and a stylesheet for table borders, loads nothing
+and opens offline. Every string from the store or the configuration (a lane,
+rule id, stage name, glob, severity or basis) is cut at 120 code points with
+`...`, has its line endings replaced by spaces (a blank line would end the HTML
+block GitHub renders and the rest of the cell would be read as Markdown), and
+is then HTML-escaped, so a cut can never split an entity. Two renders of one
+report are identical.
 
 ## Measuring opt-in simplification-pass cost
 
