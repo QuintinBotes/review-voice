@@ -1,0 +1,98 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Semgrep OSS",
+          "semanticVersion": "1.90.0",
+          "rules": [
+            {
+              "id": "python.lang.security.audit.eval-detected",
+              "name": "python.lang.security.audit.eval-detected",
+              "shortDescription": { "text": "Detected the use of eval()" },
+              "fullDescription": { "text": "Detected the use of eval(). eval() can be dangerous if used to evaluate dynamic content." },
+              "defaultConfiguration": { "level": "error" },
+              "properties": { "precision": "very-high", "tags": ["security"] }
+            },
+            {
+              "id": "python.lang.best-practice.open-never-closed",
+              "name": "python.lang.best-practice.open-never-closed",
+              "shortDescription": { "text": "file object opened without corresponding close" },
+              "fullDescription": { "text": "file object opened without corresponding close" },
+              "defaultConfiguration": { "level": "warning" },
+              "properties": { "precision": "medium", "tags": ["best-practice"] }
+            },
+            {
+              "id": "python.lang.maintainability.useless-ifelse",
+              "name": "python.lang.maintainability.useless-ifelse",
+              "shortDescription": { "text": "Detected an if block that checks for the same condition on both branches" },
+              "fullDescription": { "text": "Detected an if block that checks for the same condition on both branches" },
+              "defaultConfiguration": { "level": "note" },
+              "properties": { "precision": "medium", "tags": ["maintainability"] }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "python.lang.security.audit.eval-detected",
+          "message": { "text": "Detected the use of eval(). eval() can be dangerous if used to evaluate dynamic content." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/app.py", "uriBaseId": "%SRCROOT%" },
+                "region": { "startLine": 12, "startColumn": 12, "endLine": 12, "endColumn": 30, "snippet": { "text": "result = eval(expression)" } }
+              }
+            }
+          ],
+          "fingerprints": { "matchBasedId/v1": "0000000000000000000000000000000000000000000000000000000000000000_0" },
+          "properties": {}
+        },
+        {
+          "ruleId": "python.lang.best-practice.open-never-closed",
+          "message": { "text": "file object opened without corresponding close" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/io.py", "uriBaseId": "%SRCROOT%" },
+                "region": { "startLine": 30, "startColumn": 5, "endLine": 30, "endColumn": 28, "snippet": { "text": "handle = open(path)" } }
+              }
+            }
+          ],
+          "fingerprints": { "matchBasedId/v1": "1111111111111111111111111111111111111111111111111111111111111111_0" },
+          "properties": {}
+        },
+        {
+          "ruleId": "python.lang.maintainability.useless-ifelse",
+          "message": { "text": "Detected an if block that checks for the same condition on both branches" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/flow.py", "uriBaseId": "%SRCROOT%" },
+                "region": { "startLine": 5, "startColumn": 1, "endLine": 8, "endColumn": 14, "snippet": { "text": "if ready:" } }
+              }
+            }
+          ],
+          "fingerprints": { "matchBasedId/v1": "2222222222222222222222222222222222222222222222222222222222222222_0" },
+          "properties": {}
+        },
+        {
+          "ruleId": "python.lang.security.audit.eval-detected",
+          "message": { "text": "Detected the use of eval(). eval() can be dangerous if used to evaluate dynamic content." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/legacy.py", "uriBaseId": "%SRCROOT%" },
+                "region": { "startLine": 8, "startColumn": 5, "endLine": 8, "endColumn": 21, "snippet": { "text": "eval(formula)  # nosemgrep" } }
+              }
+            }
+          ],
+          "fingerprints": { "matchBasedId/v1": "3333333333333333333333333333333333333333333333333333333333333333_0" },
+          "suppressions": [{ "kind": "inSource" }],
+          "properties": {}
+        }
+      ]
+    }
+  ]
+}

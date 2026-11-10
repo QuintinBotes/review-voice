@@ -130,3 +130,24 @@ recorded and shown but never holds. `REVIEW_VOICE_NO_COMMANDS` turns it off
 like every other command. "Ship an execution sandbox" stays rejected for
 anything broader than one configured command running one verifier-written file
 through one platform mechanism behind a probe.
+
+One format adapter covers many tools. A `sarif` adapter, first in the list,
+parses any configured command's output that holds a SARIF 2.1.0 document,
+whatever the tool's name, so the adapters the decision lists (`tsc`,
+`eslint`, `pytest`, `go vet`) are illustrative, not the set. The recorded
+SARIF documents under `fixtures/sarif/` are the "recorded tool output" the
+consequences name.
+
+The adapter reads only what a configured and enabled command printed. A
+version read from the document's own `tool.driver` is not a run of anything,
+so "detection suggests, configuration enables" holds; a configured `version`
+command's line still wins over it, and the document's stands in when that
+command is not set or failed. The exposure is unchanged. The configured
+scanner runs with the host's network, so a rule or database download
+(`semgrep --config auto`, trivy's database) is that command's choice, and the
+example configuration avoids both. A result's snippet, code flows, fixes,
+fingerprints and properties are never copied, because a snippet is the
+matched text and for a secrets scanner that is the secret. A passed-through
+value is masked in a message before the adapter collapses, redacts and cuts
+it, because a value changed or cut no longer matches, so the issue 279 mask
+holds for SARIF output as it does for text.

@@ -175,15 +175,20 @@ export async function collectEvidence(
 
     const mask = (text: string): string => maskPassthrough(text, process.env, options.envPassthrough ?? []);
     const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-    const version = command.version === undefined ? undefined : await readVersion(spawn, command.version, options.cwd, timeoutMs, env, mask);
+    const configuredVersion = command.version === undefined ? undefined : await readVersion(spawn, command.version, options.cwd, timeoutMs, env, mask);
     // Parsed from the true output, so a passed-through directory in a path does
     // not break the location; then the text a reader sees is masked. The path
     // and line stay as printed, because matching a finding to a signal reads them.
-    const signals = parseOutput(command.name, command.run, output).map((signal) => ({
+    // An adapter that rewrites the tool's text masks it first, as it decodes it.
+    const parsed = parseOutput(command.name, command.run, output, options.cwd, mask);
+    const signals = parsed.signals.map((signal) => ({
       ...signal,
       claim: mask(signal.claim),
       evidence: signal.evidence.map(mask),
     }));
+    // A version the output itself states (a SARIF document names its producer)
+    // is recorded like a version command's line; a command the user wrote wins.
+    const version = configuredVersion ?? (parsed.version === undefined ? undefined : sanitisedVersion(mask(parsed.version)));
     outcomes.push({
       name: command.name,
       command: command.run,

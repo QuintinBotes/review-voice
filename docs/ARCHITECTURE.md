@@ -576,6 +576,30 @@ command's `unavailable` reason or the report's `skipped` reason when commands
 are disabled by the environment. An optional configured `version` command
 records the tool's sanitised first stdout line, capped at 80 code points.
 
+A `sarif` adapter, first in the list, parses any output holding a SARIF 2.1.0
+document, whatever the check's name or command, so semgrep, opengrep,
+gitleaks, trivy, CodeQL, ruff, golangci-lint and any tool that adopts the
+format share one parser and one set of fixtures (`fixtures/sarif/`). Output
+carrying a SARIF `version` or `$schema`, in its text or once decoded, is this
+adapter's, and yields nothing unless it is a whole 2.1.0 document, rather than
+reaching a text adapter, which redacts nothing. Each
+unsuppressed `fail` result at `error` or `warning` becomes a signal carrying
+the rule id, redacted, held to one line and cut at 200 code points, and the tool's own
+message, redacted and cut at 500 code points, its path (percent-decoded, `file://` removed, normalised and made relative to the directory
+the command ran in, or dropped with its line when it lies outside that
+directory or names another scheme or host) and start line, with a `kind` led by the producer's name
+(`secret`, `vulnerability`, `sast_finding`, `lint_error` or
+`static_finding`). Warnings are kept here, unlike the text adapters, because
+most semgrep rules and trivy's MEDIUM arrive as warnings and a signal is a
+lead, not a finding. `note` results, non-`fail` kinds, suppressed results and
+duplicates produce nothing. Snippets, code flows, fixes, fingerprints and
+properties are never copied, because a snippet is repository content, and for
+a secrets scanner it is the secret itself, which would otherwise land in the
+cached run directory. The driver's name and version are recorded as the
+check's `version`, sanitised as a version command's line is, unless a
+configured `version` command recorded one. A scanner run over a vendored tree
+floods the analyst with leads; scoping it is the configuration's job.
+
 A configured command, its `version` command and the second-pass verification
 command run with a minimal environment, never the review process's own
 (`commandEnvironment` in `src/evidence/run.ts`, issue 279). They get `PATH`,

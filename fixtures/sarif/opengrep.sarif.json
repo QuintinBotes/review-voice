@@ -1,0 +1,86 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Opengrep",
+          "semanticVersion": "1.4.0",
+          "rules": [
+            {
+              "id": "javascript.express.security.audit.xss.direct-response-write",
+              "name": "javascript.express.security.audit.xss.direct-response-write",
+              "shortDescription": { "text": "Detected directly writing to a Response object from user-defined input" },
+              "fullDescription": { "text": "Detected directly writing to a Response object from user-defined input. This bypasses any HTML escaping." },
+              "defaultConfiguration": { "level": "error" },
+              "properties": { "precision": "medium", "tags": ["security"] }
+            },
+            {
+              "id": "javascript.lang.best-practice.leftover-debugging",
+              "name": "javascript.lang.best-practice.leftover-debugging",
+              "shortDescription": { "text": "Leftover debugging statement" },
+              "fullDescription": { "text": "Leftover debugging statement: console.log" },
+              "defaultConfiguration": { "level": "warning" },
+              "properties": { "precision": "high", "tags": ["best-practice"] }
+            },
+            {
+              "id": "javascript.lang.maintainability.unused-import",
+              "name": "javascript.lang.maintainability.unused-import",
+              "shortDescription": { "text": "Unused import" },
+              "fullDescription": { "text": "An imported name is never used." },
+              "defaultConfiguration": { "level": "note" },
+              "properties": { "precision": "high", "tags": ["maintainability"] }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "javascript.express.security.audit.xss.direct-response-write",
+          "level": "error",
+          "message": { "text": "Detected directly writing to a Response object from user-defined input." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "server/routes.js", "uriBaseId": "%SRCROOT%" },
+                "region": { "startLine": 44, "startColumn": 3, "endLine": 44, "endColumn": 31, "snippet": { "text": "res.write(req.query.name)" } }
+              }
+            }
+          ],
+          "fingerprints": { "matchBasedId/v1": "4444444444444444444444444444444444444444444444444444444444444444_0" },
+          "properties": {}
+        },
+        {
+          "ruleId": "javascript.lang.best-practice.leftover-debugging",
+          "level": "warning",
+          "message": { "text": "Leftover debugging statement: console.log" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "server/util.js", "uriBaseId": "%SRCROOT%" },
+                "region": { "startLine": 3, "startColumn": 3, "endLine": 3, "endColumn": 22, "snippet": { "text": "console.log(payload)" } }
+              }
+            }
+          ],
+          "fingerprints": { "matchBasedId/v1": "5555555555555555555555555555555555555555555555555555555555555555_0" },
+          "properties": {}
+        },
+        {
+          "ruleId": "javascript.lang.maintainability.unused-import",
+          "level": "note",
+          "message": { "text": "Unused import" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "server/index.js", "uriBaseId": "%SRCROOT%" },
+                "region": { "startLine": 2, "startColumn": 1, "endLine": 2, "endColumn": 30, "snippet": { "text": "import { unused } from './util.js';" } }
+              }
+            }
+          ],
+          "fingerprints": { "matchBasedId/v1": "6666666666666666666666666666666666666666666666666666666666666666_0" },
+          "properties": {}
+        }
+      ]
+    }
+  ]
+}

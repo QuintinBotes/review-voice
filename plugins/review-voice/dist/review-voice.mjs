@@ -2706,13 +2706,13 @@ var Collection = class extends NodeBase {
 };
 
 // node_modules/yaml/browser/dist/stringify/stringifyComment.js
-var stringifyComment = (str) => str.replace(/^(?!$)(?: $)?/gm, "#");
+var stringifyComment = (str2) => str2.replace(/^(?!$)(?: $)?/gm, "#");
 function indentComment(comment, indent) {
   if (/^\n+$/.test(comment))
     return comment.substring(1);
   return indent ? comment.replace(/^(?! *$)/gm, indent) : comment;
 }
-var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str.endsWith(" ") ? "" : " ") + comment;
+var lineComment = (str2, indent, comment) => str2.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str2.endsWith(" ") ? "" : " ") + comment;
 
 // node_modules/yaml/browser/dist/stringify/foldFlowLines.js
 var FOLD_FLOW = "flow";
@@ -2847,16 +2847,16 @@ var getFoldOptions = (ctx, isBlock2) => ({
   lineWidth: ctx.options.lineWidth,
   minContentWidth: ctx.options.minContentWidth
 });
-var containsDocumentMarker = (str) => /^(%|---|\.\.\.)/m.test(str);
-function lineLengthOverLimit(str, lineWidth, indentLength) {
+var containsDocumentMarker = (str2) => /^(%|---|\.\.\.)/m.test(str2);
+function lineLengthOverLimit(str2, lineWidth, indentLength) {
   if (!lineWidth || lineWidth < 0)
     return false;
   const limit = lineWidth - indentLength;
-  const strLen = str.length;
+  const strLen = str2.length;
   if (strLen <= limit)
     return false;
   for (let i = 0, start = 0; i < strLen; ++i) {
-    if (str[i] === "\n") {
+    if (str2[i] === "\n") {
       if (i - start > limit)
         return true;
       start = i + 1;
@@ -2873,11 +2873,11 @@ function doubleQuotedString(value, ctx) {
   const { implicitKey } = ctx;
   const minMultiLineLength = ctx.options.doubleQuotedMinMultiLineLength;
   const indent = ctx.indent || (containsDocumentMarker(value) ? "  " : "");
-  let str = "";
+  let str2 = "";
   let start = 0;
   for (let i = 0, ch = json2[i]; ch; ch = json2[++i]) {
     if (ch === " " && json2[i + 1] === "\\" && json2[i + 2] === "n") {
-      str += json2.slice(start, i) + "\\ ";
+      str2 += json2.slice(start, i) + "\\ ";
       i += 1;
       start = i;
       ch = "\\";
@@ -2886,38 +2886,38 @@ function doubleQuotedString(value, ctx) {
       switch (json2[i + 1]) {
         case "u":
           {
-            str += json2.slice(start, i);
+            str2 += json2.slice(start, i);
             const code2 = json2.substr(i + 2, 4);
             switch (code2) {
               case "0000":
-                str += "\\0";
+                str2 += "\\0";
                 break;
               case "0007":
-                str += "\\a";
+                str2 += "\\a";
                 break;
               case "000b":
-                str += "\\v";
+                str2 += "\\v";
                 break;
               case "001b":
-                str += "\\e";
+                str2 += "\\e";
                 break;
               case "0085":
-                str += "\\N";
+                str2 += "\\N";
                 break;
               case "00a0":
-                str += "\\_";
+                str2 += "\\_";
                 break;
               case "2028":
-                str += "\\L";
+                str2 += "\\L";
                 break;
               case "2029":
-                str += "\\P";
+                str2 += "\\P";
                 break;
               default:
                 if (code2.substr(0, 2) === "00")
-                  str += "\\x" + code2.substr(2);
+                  str2 += "\\x" + code2.substr(2);
                 else
-                  str += json2.substr(i, 6);
+                  str2 += json2.substr(i, 6);
             }
             i += 5;
             start = i + 1;
@@ -2927,14 +2927,14 @@ function doubleQuotedString(value, ctx) {
           if (implicitKey || json2[i + 2] === '"' || json2.length < minMultiLineLength) {
             i += 1;
           } else {
-            str += json2.slice(start, i) + "\n\n";
+            str2 += json2.slice(start, i) + "\n\n";
             while (json2[i + 2] === "\\" && json2[i + 3] === "n" && json2[i + 4] !== '"') {
-              str += "\n";
+              str2 += "\n";
               i += 2;
             }
-            str += indent;
+            str2 += indent;
             if (json2[i + 2] === " ")
-              str += "\\";
+              str2 += "\\";
             i += 1;
             start = i + 1;
           }
@@ -2943,8 +2943,8 @@ function doubleQuotedString(value, ctx) {
           i += 1;
       }
   }
-  str = start ? str + json2.slice(start) : json2;
-  return implicitKey ? str : foldFlowLines(str, indent, FOLD_QUOTED, getFoldOptions(ctx, false));
+  str2 = start ? str2 + json2.slice(start) : json2;
+  return implicitKey ? str2 : foldFlowLines(str2, indent, FOLD_QUOTED, getFoldOptions(ctx, false));
 }
 function singleQuotedString(value, ctx) {
   if (ctx.options.singleQuote === false || ctx.implicitKey && value.includes("\n") || /[ \t]\n|\n[ \t]/.test(value))
@@ -3072,15 +3072,15 @@ function plainString(item, ctx, onComment, onChompKeep) {
       return quotedString(value, ctx);
     }
   }
-  const str = value.replace(/\n+/g, `$&
+  const str2 = value.replace(/\n+/g, `$&
 ${indent}`);
   if (actualString) {
-    const test = (tag) => tag.default && tag.tag !== "tag:yaml.org,2002:str" && tag.test?.test(str);
+    const test = (tag) => tag.default && tag.tag !== "tag:yaml.org,2002:str" && tag.test?.test(str2);
     const { compat, tags } = ctx.doc.schema;
     if (tags.some(test) || compat?.some(test))
       return quotedString(value, ctx);
   }
-  return implicitKey ? str : foldFlowLines(str, indent, FOLD_FLOW, getFoldOptions(ctx, false));
+  return implicitKey ? str2 : foldFlowLines(str2, indent, FOLD_FLOW, getFoldOptions(ctx, false));
 }
 function stringifyString(item, ctx, onComment, onChompKeep) {
   const { implicitKey, inFlow } = ctx;
@@ -3222,11 +3222,11 @@ function stringify(item, ctx, onComment, onChompKeep) {
   const props = stringifyProps(node, tagObj, ctx);
   if (props.length > 0)
     ctx.indentAtStart = (ctx.indentAtStart ?? 0) + props.length + 1;
-  const str = typeof tagObj.stringify === "function" ? tagObj.stringify(node, ctx, onComment, onChompKeep) : isScalar(node) ? stringifyString(node, ctx, onComment, onChompKeep) : node.toString(ctx, onComment, onChompKeep);
+  const str2 = typeof tagObj.stringify === "function" ? tagObj.stringify(node, ctx, onComment, onChompKeep) : isScalar(node) ? stringifyString(node, ctx, onComment, onChompKeep) : node.toString(ctx, onComment, onChompKeep);
   if (!props)
-    return str;
-  return isScalar(node) || str[0] === "{" || str[0] === "[" ? `${props} ${str}` : `${props}
-${ctx.indent}${str}`;
+    return str2;
+  return isScalar(node) || str2[0] === "{" || str2[0] === "[" ? `${props} ${str2}` : `${props}
+${ctx.indent}${str2}`;
 }
 
 // node_modules/yaml/browser/dist/stringify/stringifyPair.js
@@ -3250,8 +3250,8 @@ function stringifyPair({ key: key2, value }, ctx, onComment, onChompKeep) {
   });
   let keyCommentDone = false;
   let chompKeep = false;
-  let str = stringify(key2, ctx, () => keyCommentDone = true, () => chompKeep = true);
-  if (!explicitKey && !ctx.inFlow && str.length > 1024) {
+  let str2 = stringify(key2, ctx, () => keyCommentDone = true, () => chompKeep = true);
+  if (!explicitKey && !ctx.inFlow && str2.length > 1024) {
     if (simpleKeys)
       throw new Error("With simple keys, single line scalar must not span more than 1024 characters");
     explicitKey = true;
@@ -3260,27 +3260,27 @@ function stringifyPair({ key: key2, value }, ctx, onComment, onChompKeep) {
     if (allNullValues || value == null) {
       if (keyCommentDone && onComment)
         onComment();
-      return str === "" ? "?" : explicitKey ? `? ${str}` : str;
+      return str2 === "" ? "?" : explicitKey ? `? ${str2}` : str2;
     }
   } else if (allNullValues && !simpleKeys || value == null && explicitKey) {
-    str = `? ${str}`;
+    str2 = `? ${str2}`;
     if (keyComment && !keyCommentDone) {
-      str += lineComment(str, ctx.indent, commentString(keyComment));
+      str2 += lineComment(str2, ctx.indent, commentString(keyComment));
     } else if (chompKeep && onChompKeep)
       onChompKeep();
-    return str;
+    return str2;
   }
   if (keyCommentDone)
     keyComment = null;
   if (explicitKey) {
     if (keyComment)
-      str += lineComment(str, ctx.indent, commentString(keyComment));
-    str = `? ${str}
+      str2 += lineComment(str2, ctx.indent, commentString(keyComment));
+    str2 = `? ${str2}
 ${indent}:`;
   } else {
-    str = `${str}:`;
+    str2 = `${str2}:`;
     if (keyComment)
-      str += lineComment(str, ctx.indent, commentString(keyComment));
+      str2 += lineComment(str2, ctx.indent, commentString(keyComment));
   }
   let vsb, vcb, valueComment;
   if (isNode(value)) {
@@ -3296,7 +3296,7 @@ ${indent}:`;
   }
   ctx.implicitKey = false;
   if (!explicitKey && !keyComment && isScalar(value))
-    ctx.indentAtStart = str.length + 1;
+    ctx.indentAtStart = str2.length + 1;
   chompKeep = false;
   if (!indentSeq && indentStep.length >= 2 && !ctx.inFlow && !explicitKey && isSeq(value) && !value.flow && !value.tag && !value.anchor) {
     ctx.indent = ctx.indent.substring(2);
@@ -3340,16 +3340,16 @@ ${ctx.indent}`;
   } else if (valueStr === "" || valueStr[0] === "\n") {
     ws = "";
   }
-  str += ws + valueStr;
+  str2 += ws + valueStr;
   if (ctx.inFlow) {
     if (valueCommentDone && onComment)
       onComment();
   } else if (valueComment && !valueCommentDone) {
-    str += lineComment(str, ctx.indent, commentString(valueComment));
+    str2 += lineComment(str2, ctx.indent, commentString(valueComment));
   } else if (chompKeep && onChompKeep) {
     onChompKeep();
   }
-  return str;
+  return str2;
 }
 
 // node_modules/yaml/browser/dist/log.js
@@ -3520,31 +3520,31 @@ function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, fl
       }
     }
     chompKeep = false;
-    let str2 = stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
+    let str3 = stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
     if (comment2)
-      str2 += lineComment(str2, itemIndent, commentString(comment2));
+      str3 += lineComment(str3, itemIndent, commentString(comment2));
     if (chompKeep && comment2)
       chompKeep = false;
-    lines2.push(blockItemPrefix + str2);
+    lines2.push(blockItemPrefix + str3);
   }
-  let str;
+  let str2;
   if (lines2.length === 0) {
-    str = flowChars.start + flowChars.end;
+    str2 = flowChars.start + flowChars.end;
   } else {
-    str = lines2[0];
+    str2 = lines2[0];
     for (let i = 1; i < lines2.length; ++i) {
       const line3 = lines2[i];
-      str += line3 ? `
+      str2 += line3 ? `
 ${indent}${line3}` : "\n";
     }
   }
   if (comment) {
-    str += "\n" + indentComment(commentString(comment), indent);
+    str2 += "\n" + indentComment(commentString(comment), indent);
     if (onComment)
       onComment();
   } else if (chompKeep && onChompKeep)
     onChompKeep();
-  return str;
+  return str2;
 }
 function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
   const { indent, indentStep, flowCollectionPadding: fcPadding, options: { commentString } } = ctx;
@@ -3587,21 +3587,21 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
     }
     if (comment)
       reqNewline = true;
-    let str = stringify(item, itemCtx, () => comment = null);
-    reqNewline || (reqNewline = lines2.length > linesAtValue || str.includes("\n"));
+    let str2 = stringify(item, itemCtx, () => comment = null);
+    reqNewline || (reqNewline = lines2.length > linesAtValue || str2.includes("\n"));
     if (i < items.length - 1) {
-      str += ",";
+      str2 += ",";
     } else if (ctx.options.trailingComma) {
       if (ctx.options.lineWidth > 0) {
-        reqNewline || (reqNewline = lines2.reduce((sum, line3) => sum + line3.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
+        reqNewline || (reqNewline = lines2.reduce((sum, line3) => sum + line3.length + 2, 2) + (str2.length + 2) > ctx.options.lineWidth);
       }
       if (reqNewline) {
-        str += ",";
+        str2 += ",";
       }
     }
     if (comment)
-      str += lineComment(str, itemIndent, commentString(comment));
-    lines2.push(str);
+      str2 += lineComment(str2, itemIndent, commentString(comment));
+    lines2.push(str2);
     linesAtValue = lines2.length;
   }
   const { start, end } = flowChars;
@@ -3613,11 +3613,11 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
       reqNewline = ctx.options.lineWidth > 0 && len > ctx.options.lineWidth;
     }
     if (reqNewline) {
-      let str = start;
+      let str2 = start;
       for (const line3 of lines2)
-        str += line3 ? `
+        str2 += line3 ? `
 ${indentStep}${indent}${line3}` : "\n";
-      return `${str}
+      return `${str2}
 ${indent}${end}`;
     } else {
       return `${start}${fcPadding}${lines2.join(" ")}${fcPadding}${end}`;
@@ -3901,7 +3901,7 @@ var string = {
   identify: (value) => typeof value === "string",
   default: true,
   tag: "tag:yaml.org,2002:str",
-  resolve: (str) => str,
+  resolve: (str2) => str2,
   stringify(item, ctx, onComment, onChompKeep) {
     ctx = Object.assign({ actualString: true }, ctx);
     return stringifyString(item, ctx, onComment, onChompKeep);
@@ -3925,7 +3925,7 @@ var boolTag = {
   default: true,
   tag: "tag:yaml.org,2002:bool",
   test: /^(?:[Tt]rue|TRUE|[Ff]alse|FALSE)$/,
-  resolve: (str) => new Scalar(str[0] === "t" || str[0] === "T"),
+  resolve: (str2) => new Scalar(str2[0] === "t" || str2[0] === "T"),
   stringify({ source, value }, ctx) {
     if (source && boolTag.test.test(source)) {
       const sv = source[0] === "t" || source[0] === "T";
@@ -3963,7 +3963,7 @@ var floatNaN = {
   default: true,
   tag: "tag:yaml.org,2002:float",
   test: /^(?:[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN)$/,
-  resolve: (str) => str.slice(-3).toLowerCase() === "nan" ? NaN : str[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
+  resolve: (str2) => str2.slice(-3).toLowerCase() === "nan" ? NaN : str2[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
   stringify: stringifyNumber
 };
 var floatExp = {
@@ -3972,7 +3972,7 @@ var floatExp = {
   tag: "tag:yaml.org,2002:float",
   format: "EXP",
   test: /^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)[eE][-+]?[0-9]+$/,
-  resolve: (str) => parseFloat(str),
+  resolve: (str2) => parseFloat(str2),
   stringify(node) {
     const num = Number(node.value);
     return isFinite(num) ? num.toExponential() : stringifyNumber(node);
@@ -3983,11 +3983,11 @@ var float = {
   default: true,
   tag: "tag:yaml.org,2002:float",
   test: /^[-+]?(?:\.[0-9]+|[0-9]+\.[0-9]*)$/,
-  resolve(str) {
-    const node = new Scalar(parseFloat(str));
-    const dot = str.indexOf(".");
-    if (dot !== -1 && str[str.length - 1] === "0")
-      node.minFractionDigits = str.length - dot - 1;
+  resolve(str2) {
+    const node = new Scalar(parseFloat(str2));
+    const dot = str2.indexOf(".");
+    if (dot !== -1 && str2[str2.length - 1] === "0")
+      node.minFractionDigits = str2.length - dot - 1;
     return node;
   },
   stringify: stringifyNumber
@@ -3995,7 +3995,7 @@ var float = {
 
 // node_modules/yaml/browser/dist/schema/core/int.js
 var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
-var intResolve = (str, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset), radix);
+var intResolve = (str2, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str2) : parseInt(str2.substring(offset), radix);
 function intStringify(node, radix, prefix) {
   const { value } = node;
   if (intIdentify(value) && value >= 0)
@@ -4008,7 +4008,7 @@ var intOct = {
   tag: "tag:yaml.org,2002:int",
   format: "OCT",
   test: /^0o[0-7]+$/,
-  resolve: (str, _onError, opt) => intResolve(str, 2, 8, opt),
+  resolve: (str2, _onError, opt) => intResolve(str2, 2, 8, opt),
   stringify: (node) => intStringify(node, 8, "0o")
 };
 var int = {
@@ -4016,7 +4016,7 @@ var int = {
   default: true,
   tag: "tag:yaml.org,2002:int",
   test: /^[-+]?[0-9]+$/,
-  resolve: (str, _onError, opt) => intResolve(str, 0, 10, opt),
+  resolve: (str2, _onError, opt) => intResolve(str2, 0, 10, opt),
   stringify: stringifyNumber
 };
 var intHex = {
@@ -4025,7 +4025,7 @@ var intHex = {
   tag: "tag:yaml.org,2002:int",
   format: "HEX",
   test: /^0x[0-9a-fA-F]+$/,
-  resolve: (str, _onError, opt) => intResolve(str, 2, 16, opt),
+  resolve: (str2, _onError, opt) => intResolve(str2, 2, 16, opt),
   stringify: (node) => intStringify(node, 16, "0x")
 };
 
@@ -4054,7 +4054,7 @@ var jsonScalars = [
     identify: (value) => typeof value === "string",
     default: true,
     tag: "tag:yaml.org,2002:str",
-    resolve: (str) => str,
+    resolve: (str2) => str2,
     stringify: stringifyJSON
   },
   {
@@ -4071,7 +4071,7 @@ var jsonScalars = [
     default: true,
     tag: "tag:yaml.org,2002:bool",
     test: /^true$|^false$/,
-    resolve: (str) => str === "true",
+    resolve: (str2) => str2 === "true",
     stringify: stringifyJSON
   },
   {
@@ -4079,7 +4079,7 @@ var jsonScalars = [
     default: true,
     tag: "tag:yaml.org,2002:int",
     test: /^-?(?:0|[1-9][0-9]*)$/,
-    resolve: (str, _onError, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str, 10),
+    resolve: (str2, _onError, { intAsBigInt }) => intAsBigInt ? BigInt(str2) : parseInt(str2, 10),
     stringify: ({ value }) => intIdentify2(value) ? value.toString() : JSON.stringify(value)
   },
   {
@@ -4087,7 +4087,7 @@ var jsonScalars = [
     default: true,
     tag: "tag:yaml.org,2002:float",
     test: /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?$/,
-    resolve: (str) => parseFloat(str),
+    resolve: (str2) => parseFloat(str2),
     stringify: stringifyJSON
   }
 ];
@@ -4095,9 +4095,9 @@ var jsonError = {
   default: true,
   tag: "",
   test: /^/,
-  resolve(str, onError) {
-    onError(`Unresolved plain scalar ${JSON.stringify(str)}`);
-    return str;
+  resolve(str2, onError) {
+    onError(`Unresolved plain scalar ${JSON.stringify(str2)}`);
+    return str2;
   }
 };
 var schema2 = [map, seq].concat(jsonScalars, jsonError);
@@ -4118,10 +4118,10 @@ var binary = {
    */
   resolve(src, onError) {
     if (typeof atob === "function") {
-      const str = atob(src.replace(/[\n\r]/g, ""));
-      const buffer = new Uint8Array(str.length);
-      for (let i = 0; i < str.length; ++i)
-        buffer[i] = str.charCodeAt(i);
+      const str2 = atob(src.replace(/[\n\r]/g, ""));
+      const buffer = new Uint8Array(str2.length);
+      for (let i = 0; i < str2.length; ++i)
+        buffer[i] = str2.charCodeAt(i);
       return buffer;
     } else {
       onError("This environment does not support reading binary tags; either Buffer or atob is required");
@@ -4132,26 +4132,26 @@ var binary = {
     if (!value)
       return "";
     const buf = value;
-    let str;
+    let str2;
     if (typeof btoa === "function") {
       let s = "";
       for (let i = 0; i < buf.length; ++i)
         s += String.fromCharCode(buf[i]);
-      str = btoa(s);
+      str2 = btoa(s);
     } else {
       throw new Error("This environment does not support writing binary tags; either Buffer or btoa is required");
     }
     type ?? (type = Scalar.BLOCK_LITERAL);
     if (type !== Scalar.QUOTE_DOUBLE) {
       const lineWidth = Math.max(ctx.options.lineWidth - ctx.indent.length, ctx.options.minContentWidth);
-      const n = Math.ceil(str.length / lineWidth);
+      const n = Math.ceil(str2.length / lineWidth);
       const lines2 = new Array(n);
       for (let i = 0, o = 0; i < n; ++i, o += lineWidth) {
-        lines2[i] = str.substr(o, lineWidth);
+        lines2[i] = str2.substr(o, lineWidth);
       }
-      str = lines2.join(type === Scalar.BLOCK_LITERAL ? "\n" : " ");
+      str2 = lines2.join(type === Scalar.BLOCK_LITERAL ? "\n" : " ");
     }
-    return stringifyString({ comment, type, value: str }, ctx, onComment, onChompKeep);
+    return stringifyString({ comment, type, value: str2 }, ctx, onComment, onChompKeep);
   }
 };
 
@@ -4317,7 +4317,7 @@ var floatNaN2 = {
   default: true,
   tag: "tag:yaml.org,2002:float",
   test: /^(?:[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN)$/,
-  resolve: (str) => str.slice(-3).toLowerCase() === "nan" ? NaN : str[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
+  resolve: (str2) => str2.slice(-3).toLowerCase() === "nan" ? NaN : str2[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
   stringify: stringifyNumber
 };
 var floatExp2 = {
@@ -4326,7 +4326,7 @@ var floatExp2 = {
   tag: "tag:yaml.org,2002:float",
   format: "EXP",
   test: /^[-+]?(?:[0-9][0-9_]*)?(?:\.[0-9_]*)?[eE][-+]?[0-9]+$/,
-  resolve: (str) => parseFloat(str.replace(/_/g, "")),
+  resolve: (str2) => parseFloat(str2.replace(/_/g, "")),
   stringify(node) {
     const num = Number(node.value);
     return isFinite(num) ? num.toExponential() : stringifyNumber(node);
@@ -4337,11 +4337,11 @@ var float2 = {
   default: true,
   tag: "tag:yaml.org,2002:float",
   test: /^[-+]?(?:[0-9][0-9_]*)?\.[0-9_]*$/,
-  resolve(str) {
-    const node = new Scalar(parseFloat(str.replace(/_/g, "")));
-    const dot = str.indexOf(".");
+  resolve(str2) {
+    const node = new Scalar(parseFloat(str2.replace(/_/g, "")));
+    const dot = str2.indexOf(".");
     if (dot !== -1) {
-      const f = str.substring(dot + 1).replace(/_/g, "");
+      const f = str2.substring(dot + 1).replace(/_/g, "");
       if (f[f.length - 1] === "0")
         node.minFractionDigits = f.length;
     }
@@ -4352,34 +4352,34 @@ var float2 = {
 
 // node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
 var intIdentify3 = (value) => typeof value === "bigint" || Number.isInteger(value);
-function intResolve2(str, offset, radix, { intAsBigInt }) {
-  const sign = str[0];
+function intResolve2(str2, offset, radix, { intAsBigInt }) {
+  const sign = str2[0];
   if (sign === "-" || sign === "+")
     offset += 1;
-  str = str.substring(offset).replace(/_/g, "");
+  str2 = str2.substring(offset).replace(/_/g, "");
   if (intAsBigInt) {
     switch (radix) {
       case 2:
-        str = `0b${str}`;
+        str2 = `0b${str2}`;
         break;
       case 8:
-        str = `0o${str}`;
+        str2 = `0o${str2}`;
         break;
       case 16:
-        str = `0x${str}`;
+        str2 = `0x${str2}`;
         break;
     }
-    const n2 = BigInt(str);
+    const n2 = BigInt(str2);
     return sign === "-" ? BigInt(-1) * n2 : n2;
   }
-  const n = parseInt(str, radix);
+  const n = parseInt(str2, radix);
   return sign === "-" ? -1 * n : n;
 }
 function intStringify2(node, radix, prefix) {
   const { value } = node;
   if (intIdentify3(value)) {
-    const str = value.toString(radix);
-    return value < 0 ? "-" + prefix + str.substr(1) : prefix + str;
+    const str2 = value.toString(radix);
+    return value < 0 ? "-" + prefix + str2.substr(1) : prefix + str2;
   }
   return stringifyNumber(node);
 }
@@ -4389,7 +4389,7 @@ var intBin = {
   tag: "tag:yaml.org,2002:int",
   format: "BIN",
   test: /^[-+]?0b[0-1_]+$/,
-  resolve: (str, _onError, opt) => intResolve2(str, 2, 2, opt),
+  resolve: (str2, _onError, opt) => intResolve2(str2, 2, 2, opt),
   stringify: (node) => intStringify2(node, 2, "0b")
 };
 var intOct2 = {
@@ -4398,7 +4398,7 @@ var intOct2 = {
   tag: "tag:yaml.org,2002:int",
   format: "OCT",
   test: /^[-+]?0[0-7_]+$/,
-  resolve: (str, _onError, opt) => intResolve2(str, 1, 8, opt),
+  resolve: (str2, _onError, opt) => intResolve2(str2, 1, 8, opt),
   stringify: (node) => intStringify2(node, 8, "0")
 };
 var int2 = {
@@ -4406,7 +4406,7 @@ var int2 = {
   default: true,
   tag: "tag:yaml.org,2002:int",
   test: /^[-+]?[0-9][0-9_]*$/,
-  resolve: (str, _onError, opt) => intResolve2(str, 0, 10, opt),
+  resolve: (str2, _onError, opt) => intResolve2(str2, 0, 10, opt),
   stringify: stringifyNumber
 };
 var intHex2 = {
@@ -4415,7 +4415,7 @@ var intHex2 = {
   tag: "tag:yaml.org,2002:int",
   format: "HEX",
   test: /^[-+]?0x[0-9a-fA-F_]+$/,
-  resolve: (str, _onError, opt) => intResolve2(str, 2, 16, opt),
+  resolve: (str2, _onError, opt) => intResolve2(str2, 2, 16, opt),
   stringify: (node) => intStringify2(node, 16, "0x")
 };
 
@@ -4499,9 +4499,9 @@ var set = {
 };
 
 // node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
-function parseSexagesimal(str, asBigInt) {
-  const sign = str[0];
-  const parts = sign === "-" || sign === "+" ? str.substring(1) : str;
+function parseSexagesimal(str2, asBigInt) {
+  const sign = str2[0];
+  const parts = sign === "-" || sign === "+" ? str2.substring(1) : str2;
   const num = (n) => asBigInt ? BigInt(n) : Number(n);
   const res = parts.replace(/_/g, "").split(":").reduce((res2, p) => res2 * num(60) + num(p), num(0));
   return sign === "-" ? num(-1) * res : res;
@@ -4538,7 +4538,7 @@ var intTime = {
   tag: "tag:yaml.org,2002:int",
   format: "TIME",
   test: /^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+$/,
-  resolve: (str, _onError, { intAsBigInt }) => parseSexagesimal(str, intAsBigInt),
+  resolve: (str2, _onError, { intAsBigInt }) => parseSexagesimal(str2, intAsBigInt),
   stringify: stringifySexagesimal
 };
 var floatTime = {
@@ -4547,7 +4547,7 @@ var floatTime = {
   tag: "tag:yaml.org,2002:float",
   format: "TIME",
   test: /^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*$/,
-  resolve: (str) => parseSexagesimal(str, false),
+  resolve: (str2) => parseSexagesimal(str2, false),
   stringify: stringifySexagesimal
 };
 var timestamp = {
@@ -4558,8 +4558,8 @@ var timestamp = {
   // may be omitted altogether, resulting in a date format. In such a case, the time part is
   // assumed to be 00:00:00Z (start of day, UTC).
   test: RegExp("^([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})(?:(?:t|T|[ \\t]+)([0-9]{1,2}):([0-9]{1,2}):([0-9]{1,2}(\\.[0-9]+)?)(?:[ \\t]*(Z|[-+][012]?[0-9](?::[0-9]{2})?))?)?$"),
-  resolve(str) {
-    const match = str.match(timestamp.test);
+  resolve(str2) {
+    const match = str2.match(timestamp.test);
     if (!match)
       throw new Error("!!timestamp expects a date, starting with yyyy-mm-dd");
     const [, year, month, day, hour, minute, second] = match.map(Number);
@@ -7236,15 +7236,15 @@ var LineCounter = class {
 };
 
 // node_modules/yaml/browser/dist/parse/parser.js
-function includesToken(list2, type) {
-  for (let i = 0; i < list2.length; ++i)
-    if (list2[i].type === type)
+function includesToken(list3, type) {
+  for (let i = 0; i < list3.length; ++i)
+    if (list3[i].type === type)
       return true;
   return false;
 }
-function findNonEmptyIndex(list2) {
-  for (let i = 0; i < list2.length; ++i) {
-    switch (list2[i].type) {
+function findNonEmptyIndex(list3) {
+  for (let i = 0; i < list3.length; ++i) {
+    switch (list3[i].type) {
       case "space":
       case "comment":
       case "newline":
@@ -8910,8 +8910,8 @@ function partlyAddressedProblem(value) {
   }
   const v = value;
   for (const key2 of ["remaining", "addressed"]) {
-    const list2 = v[key2];
-    if (!Array.isArray(list2) || list2.length === 0 || !list2.every((item) => typeof item === "string" && item.trim().length > 0)) {
+    const list3 = v[key2];
+    if (!Array.isArray(list3) || list3.length === 0 || !list3.every((item) => typeof item === "string" && item.trim().length > 0)) {
       return `${key2} must be a non-empty array of non-empty strings`;
     }
   }
@@ -9873,9 +9873,9 @@ var GitHubClient = class {
     let next = path;
     while (next !== null && items.length < limit) {
       const page = await this.get(next);
-      const list2 = page.data?.[key2];
-      if (!Array.isArray(list2)) break;
-      items.push(...list2);
+      const list3 = page.data?.[key2];
+      if (!Array.isArray(list3)) break;
+      items.push(...list3);
       next = page.linkNext;
     }
     return items.slice(0, limit);
@@ -12099,23 +12099,130 @@ function removeHeadWorktree(headDir, cwd = process.cwd()) {
 import { spawn as spawnChild } from "node:child_process";
 
 // plugins/review-voice/src/evidence/parsers.ts
-function signal(tool, kind, path, line3, claim, raw) {
+import { posix as posix3 } from "node:path";
+function signal(tool, kind, path, line3, claim, raw, confidence = 0.95) {
   return {
     kind,
     path,
     line: line3,
     claim,
     evidence: [raw.trim()],
-    // A compiler or type checker reporting a concrete diagnostic is about as
-    // reliable as static evidence gets; it is still not a finding on its own.
-    confidence: 0.95,
+    confidence,
     tool
   };
+}
+var SARIF_KINDS = [
+  [/gitleaks/, "secret"],
+  [/trivy/, "vulnerability"],
+  [/semgrep|opengrep|codeql/, "sast_finding"],
+  [/ruff|golangci-lint/, "lint_error"]
+];
+var str = (value) => typeof value === "string" ? value : void 0;
+var list = (value) => Array.isArray(value) ? value.filter((entry) => typeof entry === "object" && entry !== null) : [];
+function indexed(value, index) {
+  const entry = Array.isArray(value) && typeof index === "number" ? value[index] : void 0;
+  return typeof entry === "object" && entry !== null ? entry : void 0;
+}
+var MAX_SARIF_MESSAGE_POINTS = 500;
+var MAX_SARIF_RULE_POINTS = 200;
+function sarifDocument(output) {
+  const start = output.indexOf("{");
+  const end = output.lastIndexOf("}");
+  if (start === -1 || end < start) return void 0;
+  try {
+    return JSON.parse(output.slice(start, end + 1));
+  } catch {
+    return void 0;
+  }
+}
+function sarifRuns(output) {
+  const document = sarifDocument(output);
+  return document?.version === "2.1.0" && Array.isArray(document.runs) ? list(document.runs) : void 0;
+}
+var SARIF_MARKER = /"version"\s*:\s*"2\.1\.0"|"\$schema"\s*:\s*"[^"]*sarif/i;
+function isSarif(output) {
+  if (SARIF_MARKER.test(output)) return true;
+  const document = sarifDocument(output);
+  return document !== void 0 && (document.version === "2.1.0" || /sarif/i.test(str(document.$schema) ?? ""));
+}
+function sarifPath(uri, root) {
+  let path = uri;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(uri)) {
+    const url = URL.canParse(uri) ? new URL(uri) : void 0;
+    if (url?.protocol !== "file:" || url.host !== "") return null;
+    path = url.pathname;
+  }
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+  }
+  path = posix3.normalize(path);
+  if (root === void 0) return path;
+  const relative6 = posix3.relative(root, posix3.resolve(root, path));
+  return relative6 === "" || relative6 === ".." || relative6.startsWith("../") ? null : relative6;
+}
+function sarifSignals(output, tool, root, mask = (text4) => text4) {
+  const signals = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const run of sarifRuns(output) ?? []) {
+    const driver = run.tool?.driver;
+    const driverName = (str(driver?.name) ?? "").toLowerCase();
+    const kind = SARIF_KINDS.find(([pattern]) => pattern.test(driverName))?.[1] ?? "static_finding";
+    const rules = [
+      ...list(driver?.rules),
+      ...list(run.tool?.extensions).flatMap((extension) => list(extension.rules))
+    ];
+    for (const result of list(run.results)) {
+      if (result.kind !== void 0 && result.kind !== "fail") continue;
+      if (list(result.suppressions).some((entry) => entry.status === void 0 || entry.status === "accepted")) continue;
+      const reference = result.rule?.toolComponent;
+      const component = reference === void 0 || reference === null ? driver : indexed(run.tool?.extensions, reference.index);
+      const referenced = indexed(component?.rules, typeof result.ruleIndex === "number" ? result.ruleIndex : result.rule?.index);
+      const ruleId = str(result.ruleId) ?? str(result.rule?.id) ?? str(referenced?.id);
+      if (ruleId === void 0) continue;
+      const spaced = redact(mask(ruleId)).text.replace(/[\s\p{Cc}\p{Cf}]+/gu, " ").trim();
+      const id = [...redact(spaced).text].slice(0, MAX_SARIF_RULE_POINTS).join("").trimEnd();
+      if (id === "") continue;
+      const rule = referenced ?? rules.find((candidate) => candidate.id === ruleId);
+      const level = str(result.level) ?? str(rule?.defaultConfiguration?.level) ?? "warning";
+      if (level !== "error" && level !== "warning") continue;
+      const text4 = str(result.message?.text) ?? str(rule?.shortDescription?.text);
+      const message = text4 === void 0 ? void 0 : [...redact(mask(text4).replace(/\s+/g, " ").trim()).text].slice(0, MAX_SARIF_MESSAGE_POINTS).join("").trimEnd();
+      const location = list(result.locations)[0]?.physicalLocation;
+      const uri = str(location?.artifactLocation?.uri);
+      const path = uri === void 0 ? null : sarifPath(uri, root);
+      const startLine = location?.region?.startLine;
+      const line3 = path !== null && typeof startLine === "number" && Number.isInteger(startLine) && startLine > 0 ? startLine : null;
+      const claim = message === void 0 || message === "" ? id : `${id}: ${message}`;
+      const key2 = `${path}\0${line3}\0${claim}`;
+      if (seen.has(key2)) continue;
+      seen.add(key2);
+      signals.push(signal(tool, kind, path, line3, claim, message === void 0 || message === "" ? id : message, level === "error" ? 0.95 : 0.8));
+    }
+  }
+  return signals;
 }
 var TSC = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.*)$/;
 var PYTHON3 = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/;
 var DOTNET = /^\s*(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+([A-Z]+\d+):\s+(.*?)(?:\s+\[.*\])?$/;
 var ADAPTERS = [
+  {
+    // First, because the per-tool adapters match on command text and a `ruff`
+    // or `eslint` command may print SARIF; the command plays no part here, so
+    // a wrapper script named anything is covered. Snippets, code flows, fixes,
+    // fingerprints and properties are never copied, because a snippet is
+    // repository content, and for a secrets scanner it is the secret itself.
+    name: "sarif",
+    matches: (_command, output) => isSarif(output),
+    parse: sarifSignals,
+    // shortcut: matches, parse and version each parse the document, slow only for output near the 16 MB cap.
+    version: (output) => {
+      const driver = sarifRuns(output)?.[0]?.tool?.driver;
+      const name = str(driver?.name);
+      const version = str(driver?.version) ?? str(driver?.semanticVersion);
+      return name === void 0 || version === void 0 ? void 0 : `${name} ${version}`;
+    }
+  },
   {
     name: "typescript",
     matches: (command, output) => /tsc|typecheck|tsgo/i.test(command) || TSC.test(output.split("\n")[0] ?? ""),
@@ -12157,10 +12264,12 @@ var ADAPTERS = [
     }
   }
 ];
-function parseOutput(name, command, output) {
+function parseOutput(name, command, output, root, mask) {
   const haystack = `${name} ${command}`;
   const adapter = ADAPTERS.find((candidate) => candidate.matches(haystack, output));
-  return adapter === void 0 ? [] : adapter.parse(output, name);
+  if (adapter === void 0) return { signals: [] };
+  const version = adapter.version?.(output);
+  return { signals: adapter.parse(output, name, root, mask), ...version === void 0 ? {} : { version } };
 }
 
 // plugins/review-voice/src/evidence/run.ts
@@ -12247,12 +12356,14 @@ async function collectEvidence(commands, options) {
     const mask = (text4) => maskPassthrough(text4, process.env, options.envPassthrough ?? []);
     const output = `${result.stdout ?? ""}
 ${result.stderr ?? ""}`;
-    const version = command.version === void 0 ? void 0 : await readVersion(spawn3, command.version, options.cwd, timeoutMs, env, mask);
-    const signals = parseOutput(command.name, command.run, output).map((signal2) => ({
+    const configuredVersion = command.version === void 0 ? void 0 : await readVersion(spawn3, command.version, options.cwd, timeoutMs, env, mask);
+    const parsed2 = parseOutput(command.name, command.run, output, options.cwd, mask);
+    const signals = parsed2.signals.map((signal2) => ({
       ...signal2,
       claim: mask(signal2.claim),
       evidence: signal2.evidence.map(mask)
     }));
+    const version = configuredVersion ?? (parsed2.version === void 0 ? void 0 : sanitisedVersion(mask(parsed2.version)));
     outcomes.push({
       name: command.name,
       command: command.run,
@@ -12815,12 +12926,12 @@ async function runReproduction(record3, content, runner, layout, ctx) {
 var isRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var RESERVED = /* @__PURE__ */ new Set(["scratch", "probe", "stage", "sandbox.sb", "probe-escape", "trees"]);
 async function reproduce(verification2, candidates, ctx) {
-  const list2 = isRecord2(verification2) && Array.isArray(verification2["verifications"]) ? verification2["verifications"] : Array.isArray(verification2) ? verification2 : [];
+  const list3 = isRecord2(verification2) && Array.isArray(verification2["verifications"]) ? verification2["verifications"] : Array.isArray(verification2) ? verification2 : [];
   const reproductions = [];
   const seen = /* @__PURE__ */ new Set();
   let sandbox = null;
   const text4 = (value) => typeof value === "string" ? value : "";
-  for (const entry of list2.filter(isRecord2)) {
+  for (const entry of list3.filter(isRecord2)) {
     const repro = entry["reproduction"];
     const id = entry["candidate_id"] ?? entry["candidateId"];
     if (!isRecord2(repro) || typeof id !== "string") continue;
@@ -13353,14 +13464,14 @@ var TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 function readQueue(block, result) {
   if (block === null) return;
   const queue = result.queue;
-  const list2 = (value, key2) => {
+  const list3 = (value, key2) => {
     if (value === void 0) return void 0;
     if (Array.isArray(value)) return value;
     result.warnings.push(`queue.${key2} must be a list; using the default.`);
     return void 0;
   };
   const logins = (value, key2) => {
-    const entries = list2(value, key2);
+    const entries = list3(value, key2);
     if (entries === void 0) return void 0;
     const kept = [];
     for (const entry of entries) {
@@ -13370,7 +13481,7 @@ function readQueue(block, result) {
     return kept;
   };
   const sourceList = (value, key2) => {
-    const entries = list2(value, key2);
+    const entries = list3(value, key2);
     if (entries === void 0) return void 0;
     const kept = [];
     for (const entry of entries) {
@@ -13394,7 +13505,7 @@ function readQueue(block, result) {
     return void 0;
   };
   queue.sources = sourceList(block["sources"], "sources") ?? queue.sources;
-  const teams = list2(block["teams"], "teams");
+  const teams = list3(block["teams"], "teams");
   if (teams !== void 0) {
     queue.teams = [];
     for (const entry of teams) {
@@ -13412,7 +13523,7 @@ function readQueue(block, result) {
   }
   queue.skip.authors = logins(skip2["authors"], "skip.authors") ?? queue.skip.authors;
   queue.skip.assignedTo = logins(skip2["assigned_to"], "skip.assigned_to") ?? queue.skip.assignedTo;
-  const patterns = list2(skip2["author_patterns"], "skip.author_patterns");
+  const patterns = list3(skip2["author_patterns"], "skip.author_patterns");
   if (patterns !== void 0) {
     queue.skip.authorPatterns = [];
     for (const entry of patterns) {
@@ -14145,7 +14256,7 @@ import { join as join11 } from "node:path";
 
 // plugins/review-voice/src/store/runs.ts
 import { randomUUID as randomUUID3, createHash as createHash4 } from "node:crypto";
-import { posix as posix3 } from "node:path";
+import { posix as posix4 } from "node:path";
 
 // plugins/review-voice/src/diff/incremental.ts
 import { execFileSync as execFileSync7 } from "node:child_process";
@@ -14154,7 +14265,7 @@ var UNCHANGED_REASONS = /* @__PURE__ */ new Set(["base-merged", "history-rewritt
 function parseReviewScope(value) {
   if (typeof value !== "object" || value === null) return null;
   const scope = value;
-  const strings = (list2) => Array.isArray(list2) && list2.every((item) => typeof item === "string");
+  const strings = (list3) => Array.isArray(list3) && list3.every((item) => typeof item === "string");
   const prior = typeof scope.since === "string" && nullableString(scope.priorRunId) && nullableString(scope.priorReviewedAt);
   if (scope.kind === "incremental" && prior && Number.isInteger(scope.commits) && strings(scope.files)) {
     return scope;
@@ -14576,7 +14687,7 @@ function hasReplayMarkers(section2) {
 }
 function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedReason, conflicts = [], withdrawn = [], priorMergeBase = mergeBase) {
   const diffText = git6.diffText;
-  const read = (left, list2) => list2.length === 0 ? "" : diffText(left, options.head, list2, options.cwd);
+  const read = (left, list3) => list3.length === 0 ? "" : diffText(left, options.head, list3, options.cwd);
   const wanted = new Set(paths);
   const conflicted = conflicts.filter((path) => wanted.has(path));
   const own = patchSections(read(mergeBase, conflicted));
@@ -14710,10 +14821,10 @@ function reanchorScores(scores, candidateId, target, hunks) {
   return { ok: true, updated, from, to, anchorCheck: check };
 }
 function reanchorCandidates(parsed2, candidateId, to) {
-  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord3(parsed2) && Array.isArray(parsed2["candidates"]) ? parsed2["candidates"] : null;
-  if (list2 === null) return null;
-  if (!list2.some((c) => isRecord3(c) && idOf(c) === candidateId)) return null;
-  const rewritten = list2.map((c) => {
+  const list3 = Array.isArray(parsed2) ? parsed2 : isRecord3(parsed2) && Array.isArray(parsed2["candidates"]) ? parsed2["candidates"] : null;
+  if (list3 === null) return null;
+  if (!list3.some((c) => isRecord3(c) && idOf(c) === candidateId)) return null;
+  const rewritten = list3.map((c) => {
     if (!(isRecord3(c) && idOf(c) === candidateId)) return c;
     const moved = c["path"] !== to.path || c["line"] !== to.line;
     const { suggested_patch: _patch, ...rest } = c;
@@ -14952,7 +15063,7 @@ function partlyAddressedOf(value) {
   if (typeof value !== "object" || value === null) return void 0;
   const v = value;
   if (v["kind"] !== "own-comment" || v["status"] !== "partly-addressed") return void 0;
-  const strings = (list2) => Array.isArray(list2) && list2.length > 0 && list2.every((item) => typeof item === "string") ? list2 : null;
+  const strings = (list3) => Array.isArray(list3) && list3.length > 0 && list3.every((item) => typeof item === "string") ? list3 : null;
   const remaining = strings(v["remaining"]);
   const addressed = strings(v["addressed"]);
   if (remaining === null || addressed === null) return void 0;
@@ -15238,7 +15349,7 @@ function cut(text4, max) {
   const points = [...text4];
   return points.length > max ? `${points.slice(0, max - 1).join("")}\u2026` : text4;
 }
-var plainPath = (path) => posix3.normalize(path.split("\\").join("/")).replace(/^\.\//, "");
+var plainPath = (path) => posix4.normalize(path.split("\\").join("/")).replace(/^\.\//, "");
 function toolSignalFor(finding, signals) {
   const path = plainPath(finding.path);
   const signal2 = signals.find((entry) => entry.path === path && entry.line === finding.line);
@@ -16178,7 +16289,7 @@ function postedBreakdown(db) {
     groups.rule.set(info.rule, [...groups.rule.get(info.rule) ?? [], row]);
     byBlock[blockGroups.get(row.review_run_id) ?? "unknown"].push(row);
   }
-  const collect = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list2]) => [key2, statsOf(list2)]));
+  const collect = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list3]) => [key2, statsOf(list3)]));
   return {
     bySeverity: collect(groups.severity),
     byLane: collect(groups.lane),
@@ -16564,8 +16675,8 @@ function candidateSetAgreement(db) {
     } catch {
       continue;
     }
-    const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
-    const located = list2.map((candidate) => {
+    const list3 = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
+    const located = list3.map((candidate) => {
       const line3 = Number(candidate["line"]);
       return {
         path: String(candidate["path"] ?? ""),
@@ -18108,8 +18219,10 @@ var COMMAND_HELP = {
       "Writes: JSON on stdout. Runs the commands configured under static_evidence.commands.",
       "  Each command may set version to a command whose first stdout line records the tool version,",
       "  sanitised and capped at 80 code points. It uses the check's cwd, environment, timeout and output cap;",
-      "  a failed version command records no version. REVIEW_VOICE_NO_COMMANDS=1 skips all commands,",
-      "  listing their names in didNotRun with skipped: REVIEW_VOICE_NO_COMMANDS.",
+      "  a failed version command records no version of its own. SARIF 2.1.0 output from any tool is parsed, and the",
+      "  document's own tool name and version are recorded when the version command is not set or failed;",
+      "  other output needs a known adapter (tsc, dotnet, mypy, ruff, eslint). REVIEW_VOICE_NO_COMMANDS=1 skips",
+      "  all commands, listing their names in didNotRun with skipped: REVIEW_VOICE_NO_COMMANDS.",
       "  The report records the directory the commands ran in as cwd.",
       "Exit codes: 0 ok (a failing check is evidence, not an error), 2 not in a repository or --cwd is not a directory."
     )
@@ -18982,13 +19095,13 @@ function commandHelp(command) {
   return Object.hasOwn(COMMAND_HELP, command) ? COMMAND_HELP[command].body : null;
 }
 function topLevelHelp() {
-  const list2 = COMMAND_ORDER.map((name) => `  ${name.padEnd(21)}${COMMAND_HELP[name].summary}`);
+  const list3 = COMMAND_ORDER.map((name) => `  ${name.padEnd(21)}${COMMAND_HELP[name].summary}`);
   const reference = COMMAND_ORDER.map((name) => COMMAND_HELP[name].body);
   return [
     "review-voice <command>",
     "",
     "Commands:",
-    ...list2,
+    ...list3,
     "",
     "Options:",
     "  --version           Print the plugin version",
@@ -20002,7 +20115,7 @@ function parseIntent(value, description) {
 }
 
 // plugins/review-voice/src/verify/challenge.ts
-import { posix as posix4 } from "node:path";
+import { posix as posix5 } from "node:path";
 var CHALLENGE_VERDICTS = ["confirmed", "partly", "refuted"];
 var isRecord4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var idOf2 = (entry) => {
@@ -20015,9 +20128,9 @@ function eligibleFindings(scores) {
 }
 function candidatesById(parsed2) {
   const key2 = isRecord4(parsed2) ? ["candidates", "kept"].find((k) => Array.isArray(parsed2[k])) : void 0;
-  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord4(parsed2) && key2 !== void 0 ? parsed2[key2] : [];
+  const list3 = Array.isArray(parsed2) ? parsed2 : isRecord4(parsed2) && key2 !== void 0 ? parsed2[key2] : [];
   const out = /* @__PURE__ */ new Map();
-  for (const entry of list2) {
+  for (const entry of list3) {
     if (!isRecord4(entry)) continue;
     const id = idOf2(entry);
     if (id !== null) out.set(id, entry);
@@ -20025,8 +20138,8 @@ function candidatesById(parsed2) {
   return out;
 }
 function intentStatements(parsed2) {
-  const list2 = isRecord4(parsed2) && Array.isArray(parsed2["statements"]) ? parsed2["statements"] : Array.isArray(parsed2) ? parsed2 : [];
-  return list2.filter((s) => isRecord4(s) && typeof s["id"] === "string");
+  const list3 = isRecord4(parsed2) && Array.isArray(parsed2["statements"]) ? parsed2["statements"] : Array.isArray(parsed2) ? parsed2 : [];
+  return list3.filter((s) => isRecord4(s) && typeof s["id"] === "string");
 }
 function challengePrompt(finding, candidate, statements, diffFile, reproduction) {
   const pick = (snake, camel) => text3(candidate?.[snake]) ?? text3(candidate?.[camel]) ?? text3(finding[snake]) ?? text3(finding[camel]);
@@ -20081,9 +20194,9 @@ function reproductionRows(record3) {
   ];
 }
 function reproductionsById(parsed2) {
-  const list2 = isRecord4(parsed2) && Array.isArray(parsed2["reproductions"]) ? parsed2["reproductions"] : [];
+  const list3 = isRecord4(parsed2) && Array.isArray(parsed2["reproductions"]) ? parsed2["reproductions"] : [];
   const out = /* @__PURE__ */ new Map();
-  for (const entry of list2) {
+  for (const entry of list3) {
     if (!isRecord4(entry) || typeof entry["candidateId"] !== "string" || out.has(entry["candidateId"])) continue;
     if (!Array.isArray(entry["runs"])) continue;
     out.set(entry["candidateId"], entry);
@@ -20098,11 +20211,11 @@ function challengePrompts(scores, candidates, statements, diffFile, reproduction
 }
 var DECISIVE2 = /^\S(?:.*\S)?:\d+(?:-\d+)?$/u;
 function parseChallengeVerdicts(raw) {
-  const list2 = Array.isArray(raw) ? raw : isRecord4(raw) && Array.isArray(raw["verdicts"]) ? raw["verdicts"] : null;
-  if (list2 === null) return { ok: false, problems: ['expected {"verdicts": [...]}'] };
+  const list3 = Array.isArray(raw) ? raw : isRecord4(raw) && Array.isArray(raw["verdicts"]) ? raw["verdicts"] : null;
+  if (list3 === null) return { ok: false, problems: ['expected {"verdicts": [...]}'] };
   const problems = [];
   const verdicts = [];
-  list2.forEach((entry, index) => {
+  list3.forEach((entry, index) => {
     if (!isRecord4(entry)) {
       problems.push(`verdict ${index} is not an object`);
       return;
@@ -20150,11 +20263,11 @@ function parseChallengeVerdicts(raw) {
 }
 function withoutReproductionFiles(evidence, reproductions) {
   const placed = [...reproductions.values()].filter((record3) => record3.copy !== "");
-  const local = new Set(placed.flatMap((record3) => [posix4.normalize(record3.file), posix4.basename(record3.file)]));
-  const read = (entry) => posix4.normalize(entry.replace(/[\p{Cf}`]/gu, "").trim().replace(/:\d+(?:-\d+)?$/, ""));
+  const local = new Set(placed.flatMap((record3) => [posix5.normalize(record3.file), posix5.basename(record3.file)]));
+  const read = (entry) => posix5.normalize(entry.replace(/[\p{Cf}`]/gu, "").trim().replace(/:\d+(?:-\d+)?$/, ""));
   return evidence.filter((entry) => {
     const path = read(entry);
-    return !local.has(path) && !local.has(posix4.basename(path));
+    return !local.has(path) && !local.has(posix5.basename(path));
   });
 }
 function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = /* @__PURE__ */ new Map()) {
@@ -20320,9 +20433,9 @@ function contradiction(e) {
   return null;
 }
 function parseSecondPass(parsed2) {
-  const list2 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null ? parsed2.verdicts : void 0;
-  if (!Array.isArray(list2)) throw new ReconcileInputError('expected the verify report, {"verdicts": [...]}, or an array');
-  list2.forEach((entry, index) => {
+  const list3 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null ? parsed2.verdicts : void 0;
+  if (!Array.isArray(list3)) throw new ReconcileInputError('expected the verify report, {"verdicts": [...]}, or an array');
+  list3.forEach((entry, index) => {
     const e = typeof entry === "object" && entry !== null ? entry : {};
     const who = `verdict ${index}`;
     if (!OUTCOMES2.includes(e["outcome"])) {
@@ -20341,13 +20454,13 @@ function parseSecondPass(parsed2) {
       throw new ReconcileInputError(`${who}: needs candidateId, or path and line`);
     }
   });
-  return list2;
+  return list3;
 }
 function parseTieBreaks(parsed2) {
-  const list2 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null ? parsed2.tie_breaks ?? parsed2.tieBreaks : void 0;
-  if (!Array.isArray(list2)) throw new ReconcileInputError('expected an array or {"tie_breaks": [...]}');
+  const list3 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null ? parsed2.tie_breaks ?? parsed2.tieBreaks : void 0;
+  if (!Array.isArray(list3)) throw new ReconcileInputError('expected an array or {"tie_breaks": [...]}');
   const seen = /* @__PURE__ */ new Set();
-  return list2.map((entry, index) => {
+  return list3.map((entry, index) => {
     const e = typeof entry === "object" && entry !== null ? entry : {};
     const id = candidateIdOf(e);
     const who = `entry ${index} (${id ?? "no candidate id"})`;
@@ -20762,7 +20875,7 @@ var Stop = class extends Error {
   }
 };
 var isRecord5 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-var list = (value) => Array.isArray(value) ? value.filter(isRecord5) : [];
+var list2 = (value) => Array.isArray(value) ? value.filter(isRecord5) : [];
 var idOf3 = (entry) => String(entry["candidate_id"] ?? entry["candidateId"] ?? "");
 var readJson = (path) => JSON.parse(readFileSync11(path, "utf8"));
 var writeJson = (path, value) => writeFileSync4(path, `${JSON.stringify(value, null, 2)}
@@ -20860,7 +20973,7 @@ function resolveConfig(run) {
 function noteConfigChange(run) {
   if (run.configSource === null || run.configSource.kind !== "base" && run.configSource.kind !== "default") return;
   const manifest = readJson(at(run, "files.json"));
-  const changed = list(isRecord5(manifest) ? manifest["files"] : []).some((file2) => file2["path"] === CONFIG_PATH || file2["previousPath"] === CONFIG_PATH);
+  const changed = list2(isRecord5(manifest) ? manifest["files"] : []).some((file2) => file2["path"] === CONFIG_PATH || file2["previousPath"] === CONFIG_PATH);
   if (!changed) return;
   const note = `Configuration was read from the base commit ${shortRef(run.pullBase.sha ?? "")}; the pull request's changes to ${CONFIG_PATH} were not applied to this review.`;
   if (!run.notes.includes(note)) run.notes.push(note);
@@ -20920,7 +21033,7 @@ function reproductionRunners(run) {
   if (!run.plan.stages.reproduce.run || noCommands(run)) return null;
   const context2 = readJson(at(run, "context.json"));
   const block = isRecord5(context2) && isRecord5(context2["reproduction"]) ? context2["reproduction"] : {};
-  const runners = list(block["runners"]).flatMap(
+  const runners = list2(block["runners"]).flatMap(
     (runner) => typeof runner["name"] === "string" && typeof runner["run"] === "string" && typeof runner["extension"] === "string" ? [{ name: runner["name"], run: runner["run"], extension: runner["extension"] }] : []
   );
   return runners.length === 0 ? null : runners;
@@ -20966,7 +21079,7 @@ async function prep(run) {
   if (noCommands(run)) {
     run.notes.push("REVIEW_VOICE_NO_COMMANDS=1, so the static evidence commands were not run.");
     const context2 = readJson(at(run, "context.json"));
-    const configured = isRecord5(context2) && isRecord5(context2["staticEvidence"]) ? list(context2["staticEvidence"]["commands"]) : [];
+    const configured = isRecord5(context2) && isRecord5(context2["staticEvidence"]) ? list2(context2["staticEvidence"]["commands"]) : [];
     writeJson(at(run, "evidence.json"), {
       enabled: false,
       signals: [],
@@ -20977,7 +21090,7 @@ async function prep(run) {
   } else {
     const context2 = readJson(at(run, "context.json"));
     const staticEvidence = isRecord5(context2) && isRecord5(context2["staticEvidence"]) ? context2["staticEvidence"] : {};
-    const willRun = staticEvidence["enabled"] === true && list(staticEvidence["commands"]).length > 0;
+    const willRun = staticEvidence["enabled"] === true && list2(staticEvidence["commands"]).length > 0;
     const where = willRun ? ["--cwd", prepareWorkspace(run)] : [];
     writeFileSync4(at(run, "evidence.json"), (await must(run, ["evidence", ...where])).stdout);
   }
@@ -21000,7 +21113,7 @@ async function prep(run) {
   ]);
   const followUps = (await must(run, ["follow-ups", ...pr])).stdout;
   writeFileSync4(at(run, "follow-ups.json"), followUps);
-  run.followUps = list(parsed(followUps)["followUps"]).length > 0;
+  run.followUps = list2(parsed(followUps)["followUps"]).length > 0;
   const input = ["--files", at(run, "files.json"), "--diff-file", at(run, "diff.patch")];
   const plan = (await must(run, ["plan", ...input, ...run.options.mode === void 0 ? [] : ["--mode", run.options.mode]])).stdout;
   writeFileSync4(at(run, "plan.json"), plan);
@@ -21017,7 +21130,7 @@ async function carry(run) {
   if (result.code !== 0) throw new Stop(2, `carry exited ${result.code}: ${firstLines(result.stderr)}`);
   const carried = parsed(result.stdout);
   writeJson(at(run, "carry.json"), carried);
-  const serious = seriousNotCarried(list(carried["notCarried"]));
+  const serious = seriousNotCarried(list2(carried["notCarried"]));
   if (serious.length > 0) {
     return reviewInFull(run, `Not carried: ${serious.map((f) => `${f.findingId} (${String(f.severity)})`).join(", ")}, on code that changed`);
   }
@@ -21056,7 +21169,7 @@ function prepareWorkspace(run) {
     run.cleanup.push(() => removeWorktree(run, headDir));
   }
   const manifest = readJson(at(run, "files.json"));
-  const changed = list(isRecord5(manifest) ? manifest["files"] : []).filter((f) => (f["reviewed"] === true || f["status"] === "deleted") && typeof f["path"] === "string");
+  const changed = list2(isRecord5(manifest) ? manifest["files"] : []).filter((f) => (f["reviewed"] === true || f["status"] === "deleted") && typeof f["path"] === "string");
   const baseRoot = at(run, "base");
   rmSync4(baseRoot, { recursive: true, force: true });
   rmSync4(at(run, "history"), { recursive: true, force: true });
@@ -21143,7 +21256,7 @@ async function lanes(run) {
   results.forEach((result2, index) => {
     const lane = running[index];
     if (!result2.ok) throw new Stop(7, `The ${lane.name} lane failed twice: ${firstLines(result2.error)}`);
-    output.set(lane.name, list(withoutCounts(result2.output)["candidates"]));
+    output.set(lane.name, list2(withoutCounts(result2.output)["candidates"]));
   });
   const prior = isRecord5(run.summary["prior"]) ? run.summary["prior"]["runId"] : null;
   const args = [
@@ -21169,7 +21282,7 @@ async function lanes(run) {
     const report = parsed(checked.stdout);
     const produced = running.flatMap((lane) => (output.get(lane.name) ?? []).map((candidate) => ({ lane, candidate })));
     const failing = /* @__PURE__ */ new Map();
-    for (const failure of [...list(report["anchorFailures"]), ...list(report["laneFailures"]), ...list(report["intentFailures"])]) {
+    for (const failure of [...list2(report["anchorFailures"]), ...list2(report["laneFailures"]), ...list2(report["intentFailures"])]) {
       const owner = produced.find((entry2) => idOf3(entry2.candidate) === String(failure["candidateId"])) ?? produced.find((entry2) => entry2.candidate["path"] === failure["path"] && entry2.candidate["line"] === failure["line"]);
       const candidate = owner?.candidate ?? failure;
       const entry = failing.get(candidate) ?? { lane: owner?.lane ?? running[0], reasons: [] };
@@ -21192,16 +21305,16 @@ async function lanes(run) {
       );
       if (!result2.ok) throw new Stop(7, `The ${lane.name} lane failed twice to re-anchor: ${firstLines(result2.error)}`);
       const kept = (output.get(lane.name) ?? []).filter((candidate) => !failing.has(candidate));
-      output.set(lane.name, [...kept, ...list(withoutCounts(result2.output)["candidates"])]);
+      output.set(lane.name, [...kept, ...list2(withoutCounts(result2.output)["candidates"])]);
     }
     checked = await check();
   }
   if (checked.code !== 0) throw new Stop(7, `check-candidates refused the candidates again: ${firstLines(checked.stderr || checked.stdout)}`);
   writeFileSync4(at(run, "checked.json"), checked.stdout);
   const result = parsed(checked.stdout);
-  run.kept = list(result["kept"]);
+  run.kept = list2(result["kept"]);
   const claims = new Map(merged().map((candidate) => [idOf3(candidate), candidate["claim"]]));
-  for (const drop of list(result["droppedAsRepeat"])) {
+  for (const drop of list2(result["droppedAsRepeat"])) {
     const claim = claims.get(idOf3(drop));
     run.held.push({
       path: String(drop["path"]),
@@ -21213,7 +21326,7 @@ async function lanes(run) {
       ...typeof claim === "string" ? { text: claim } : {}
     });
   }
-  for (const drop of list(result["droppedAsTool"])) {
+  for (const drop of list2(result["droppedAsTool"])) {
     const claim = claims.get(idOf3(drop));
     run.held.push({
       path: String(drop["path"]),
@@ -21225,7 +21338,7 @@ async function lanes(run) {
       ...typeof claim === "string" ? { text: claim } : {}
     });
   }
-  const dropped = list(result["droppedAsHeld"]).length;
+  const dropped = list2(result["droppedAsHeld"]).length;
   if (dropped > 0) run.notes.push(`${dropped} candidate(s) restated a finding an earlier run held back, and were dropped.`);
 }
 async function verify(run) {
@@ -21240,7 +21353,7 @@ async function verify(run) {
   if (!result.ok) throw new Stop(7, `The evidence-verifier failed twice: ${firstLines(result.error)}`);
   const output = withoutCounts(result.output);
   run.followUps = run.followUps && Array.isArray(output["follow_ups"]);
-  const verdicts = new Map(list(output["verifications"]).map((entry) => [idOf3(entry), entry]));
+  const verdicts = new Map(list2(output["verifications"]).map((entry) => [idOf3(entry), entry]));
   for (const candidate of run.kept) {
     const verdict2 = verdicts.get(idOf3(candidate));
     if (verdict2?.["verified"] === true || candidate["severity"] === "question" && verdict2?.["premises_verified"] === true) {
@@ -21252,7 +21365,7 @@ async function verify(run) {
 }
 var firstOutputLine = (text4) => text4.split("\n").map((line3) => line3.trim()).find((line3) => line3 !== "") ?? "";
 function applyReproductions(survivors, report) {
-  const records = isRecord5(report) ? list(report["reproductions"]) : [];
+  const records = isRecord5(report) ? list2(report["reproductions"]) : [];
   const held = [];
   const notes = [];
   const holding = /* @__PURE__ */ new Set();
@@ -21272,7 +21385,7 @@ function applyReproductions(survivors, report) {
       continue;
     }
     holding.add(id);
-    const runs = list(record3["runs"]);
+    const runs = list2(record3["runs"]);
     const output = firstOutputLine(String(runs.at(-1)?.["output"] ?? "")).slice(0, 120);
     held.push({
       path: String(candidate["path"]),
@@ -21349,8 +21462,8 @@ async function secondPass(run) {
   const first = await must(run, ["reconcile", "--verification", at(run, "verification.json"), "--second-pass", at(run, "second-pass.json")], candidates, 1);
   writeFileSync4(at(run, "reconcile.json"), first.stdout);
   const reconciled = parsed(first.stdout);
-  run.reconciled = list(reconciled["candidates"]);
-  run.disputes = list(reconciled["disputes"]);
+  run.reconciled = list2(reconciled["candidates"]);
+  run.disputes = list2(reconciled["disputes"]);
 }
 async function tieBreak(run) {
   if (run.disputes.length === 0) return skip(run, "tie-break", "no disputes");
@@ -21380,7 +21493,7 @@ async function tieBreak(run) {
     1
   );
   writeFileSync4(at(run, "reconciled.json"), reconciled.stdout);
-  run.reconciled = list(parsed(reconciled.stdout)["candidates"]);
+  run.reconciled = list2(parsed(reconciled.stdout)["candidates"]);
   run.tieBroken = true;
 }
 async function score(run) {
@@ -21422,8 +21535,8 @@ async function score(run) {
       ...typeof entry["claim"] === "string" && entry["claim"] !== "" ? { text: entry["claim"] } : {}
     });
   };
-  for (const entry of list(scores["belowGate"])) hold(entry, "below-gate", "score", `below the ${String(entry["gate"])} gate`);
-  for (const entry of list(scores["suppressed"])) {
+  for (const entry of list2(scores["belowGate"])) hold(entry, "below-gate", "score", `below the ${String(entry["gate"])} gate`);
+  for (const entry of list2(scores["suppressed"])) {
     const version = entry["policyVersion"];
     hold(
       entry,
@@ -21432,7 +21545,7 @@ async function score(run) {
       `held by approved policy${typeof version === "number" ? ` version ${version}` : ""} (rule ${String(entry["ruleId"] ?? "")})`
     );
   }
-  for (const entry of list(scores["unverified"])) {
+  for (const entry of list2(scores["unverified"])) {
     const missing = Array.isArray(entry["requiredContextMissing"]) ? entry["requiredContextMissing"].join("; ") : "context";
     hold(entry, "unverified", "verifier", `could not check: ${missing}`);
   }
@@ -21440,7 +21553,7 @@ async function score(run) {
 async function challenge(run) {
   if (!run.scored) return skip(run, "challenge", "nothing scored");
   const scores = parsed(readFileSync11(at(run, "scores.json"), "utf8"));
-  const eligible = list(scores["eligible"]);
+  const eligible = list2(scores["eligible"]);
   const out = at(run, "scores.challenged.json");
   const plan = run.plan;
   const challenged = eligible.filter((finding) => modelForFinding(plan, "challenge", finding["severity"]).run);
@@ -21468,7 +21581,7 @@ async function challenge(run) {
       1
     )).stdout
   );
-  const promptOf = new Map(list(emitted["prompts"]).map((entry) => [idOf3(entry), String(entry["prompt"])]));
+  const promptOf = new Map(list2(emitted["prompts"]).map((entry) => [idOf3(entry), String(entry["prompt"])]));
   const results = await inParallel(challenged, (finding) => {
     const id = idOf3(finding);
     const { model } = modelForFinding(plan, "challenge", finding["severity"]);
@@ -21479,22 +21592,22 @@ async function challenge(run) {
     });
   });
   const verdicts = results.map(
-    (result, index) => result.ok ? list(result.output["verdicts"])[0] : { candidate_id: idOf3(challenged[index]), verdict: "partly", line_ok: true, decisive_evidence: [], reason: `challenger failed: ${firstLines(result.error)}` }
+    (result, index) => result.ok ? list2(result.output["verdicts"])[0] : { candidate_id: idOf3(challenged[index]), verdict: "partly", line_ok: true, decisive_evidence: [], reason: `challenger failed: ${firstLines(result.error)}` }
   );
   writeJson(at(run, "challenge-verdicts.json"), { verdicts });
   await must(run, ["challenge", ...base, "--out", out], JSON.stringify({ verdicts }), 1);
   const document = parsed(readFileSync11(out, "utf8"));
   if (challenged.length < eligible.length) {
-    const after = new Map(list(document["eligible"]).map((entry) => [idOf3(entry), entry]));
+    const after = new Map(list2(document["eligible"]).map((entry) => [idOf3(entry), entry]));
     const asked = new Set(challenged.map(idOf3));
     document["eligible"] = eligible.flatMap((entry) => after.get(idOf3(entry)) ?? (asked.has(idOf3(entry)) ? [] : [entry]));
     writeJson(out, document);
   }
-  run.held.push(...list(document["challengeHeld"]));
+  run.held.push(...list2(document["challengeHeld"]));
 }
 async function edit(run) {
   const scoresFile = at(run, "scores.challenged.json");
-  const eligible = existsSync8(scoresFile) ? list(parsed(readFileSync11(scoresFile, "utf8"))["eligible"]) : [];
+  const eligible = existsSync8(scoresFile) ? list2(parsed(readFileSync11(scoresFile, "utf8"))["eligible"]) : [];
   const policy = parsed(readFileSync11(at(run, "context.json"), "utf8"))["policy"];
   const limits = isRecord5(policy) ? policy : {};
   const validate = [
@@ -21532,7 +21645,7 @@ ${checked.stderr.trim()}`;
 async function recordStage(run) {
   const scores = at(run, "scores.challenged.json");
   const scored = existsSync8(scores);
-  if (scored) writeJson(at(run, "record-candidates.json"), { candidates: list(parsed(readFileSync11(scores, "utf8"))["eligible"]) });
+  if (scored) writeJson(at(run, "record-candidates.json"), { candidates: list2(parsed(readFileSync11(scores, "utf8"))["eligible"]) });
   await record2(run, [
     ...scored ? ["--scores", scores, "--candidates", at(run, "record-candidates.json")] : [],
     ...run.secondPass ? ["--verdicts", at(run, "second-pass.json")] : [],
@@ -21596,7 +21709,7 @@ async function record2(run, extra) {
   );
   const result = parsed(recorded2.stdout);
   run.runId = typeof result["reviewRunId"] === "string" ? result["reviewRunId"] : null;
-  run.findings = list(result["findings"]);
+  run.findings = list2(result["findings"]);
   run.provenance = isRecord5(result["provenance"]) ? result["provenance"] : null;
   for (const warning of Array.isArray(result["warnings"]) ? result["warnings"] : []) run.notes.push(String(warning));
   const target = ["--repository", run.options.repository, "--pr", String(run.options.pullNumber), "--head", run.head, "--run", run.runId ?? ""];
@@ -21650,7 +21763,7 @@ function staticChecksOf(run) {
     return null;
   }
   if (!isRecord5(document)) return null;
-  const commands = list(document["commands"]);
+  const commands = list2(document["commands"]);
   const ran = commands.filter((entry) => typeof entry["exitCode"] === "number" && entry["unavailable"] === void 0);
   return {
     ran: ran.map((entry) => String(entry["name"])),
@@ -22084,8 +22197,8 @@ function refExists(ref, cwd) {
   }
 }
 var VERDICT_KEYS = ["results", "verifications", "verdicts", "candidates"];
-function verificationProblem(list2) {
-  for (const [index, raw] of list2.entries()) {
+function verificationProblem(list3) {
+  for (const [index, raw] of list3.entries()) {
     const entry = typeof raw === "object" && raw !== null ? raw : {};
     const id = entry["candidate_id"] ?? entry["candidateId"];
     const who = `entry ${index} (${typeof id === "string" ? id : "no candidate id"})`;
@@ -22769,8 +22882,8 @@ function anchorsCommand(argv) {
     if (diffFile !== null) hunks = parseHunks(readFileSync14(diffFile, "utf8"));
     if (scoresFile !== null) {
       const parsed2 = JSON.parse(readFileSync14(scoresFile, "utf8"));
-      const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.scores;
-      scores = Array.isArray(list2) ? list2 : [];
+      const list3 = Array.isArray(parsed2) ? parsed2 : parsed2.scores;
+      scores = Array.isArray(list3) ? list3 : [];
     }
   } catch (error) {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
@@ -23109,10 +23222,10 @@ function openFollowUps(db, repository, pullNumber) {
   return [...followUpHistory(db, repository, pullNumber).values()].filter((entry) => entry.state?.status !== "resolved").map((entry) => entry.followUp);
 }
 function parseFollowUpRulings(parsed2) {
-  const list2 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null ? parsed2["follow_ups"] ?? parsed2["followUps"] : void 0;
-  if (!Array.isArray(list2)) throw new FollowUpRulingError("expected an array, or an object with follow_ups");
+  const list3 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null ? parsed2["follow_ups"] ?? parsed2["followUps"] : void 0;
+  if (!Array.isArray(list3)) throw new FollowUpRulingError("expected an array, or an object with follow_ups");
   const strings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string" && item.trim().length > 0);
-  return list2.map((entry, index) => {
+  return list3.map((entry, index) => {
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
       throw new FollowUpRulingError(`entry ${index}: not an object`);
     }
@@ -23662,8 +23775,8 @@ function gitTreeReader(root, ref) {
     }
   }
   const key2 = (path) => {
-    const posix6 = path.split(sep2).join("/");
-    return posix6 === "." ? "" : posix6;
+    const posix7 = path.split(sep2).join("/");
+    return posix7 === "." ? "" : posix7;
   };
   const file2 = (path) => {
     const entry = files2.get(key2(path));
@@ -27157,8 +27270,8 @@ async function outcomesCommand(argv) {
 import { readFileSync as readFileSync24 } from "node:fs";
 function keptCandidateIds(value) {
   const record3 = value;
-  const list2 = Array.isArray(value) ? value : Array.isArray(record3?.kept) ? record3.kept : Array.isArray(record3?.candidates) ? record3.candidates : [];
-  return list2.map((entry) => entry?.candidate_id).filter((id) => typeof id === "string");
+  const list3 = Array.isArray(value) ? value : Array.isArray(record3?.kept) ? record3.kept : Array.isArray(record3?.candidates) ? record3.candidates : [];
+  return list3.map((entry) => entry?.candidate_id).filter((id) => typeof id === "string");
 }
 function checkVerificationCommand(argv) {
   const candidatesFile = flag(argv, "--candidates");
@@ -27178,21 +27291,21 @@ function checkVerificationCommand(argv) {
     console.error("Expected the evidence-verifier output as JSON on stdin.");
     return 2;
   }
-  const list2 = verdictList(parsed2);
-  if (list2.length === 0) {
+  const list3 = verdictList(parsed2);
+  if (list3.length === 0) {
     console.error(
       `No verifications found. Expected an array, or an object with one of: ${VERDICT_KEYS.join(", ")}, each entry carrying candidate_id.`
     );
     return 2;
   }
-  const problem = verificationProblem(list2);
+  const problem = verificationProblem(list3);
   if (problem !== null) {
     console.error(`Malformed verification - ${problem}`);
     console.error("Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.");
     return 2;
   }
   if (keptIds !== null) {
-    const verified = new Set(list2.map((entry) => entry.candidate_id));
+    const verified = new Set(list3.map((entry) => entry.candidate_id));
     const missing = keptIds.filter((id) => !verified.has(id));
     if (missing.length > 0) {
       for (const id of missing) console.error(`No verification for kept candidate ${id}.`);
@@ -27200,7 +27313,7 @@ function checkVerificationCommand(argv) {
       return 2;
     }
   }
-  console.log(JSON.stringify({ valid: true, verifications: list2.length }, null, 2));
+  console.log(JSON.stringify({ valid: true, verifications: list3.length }, null, 2));
   return 0;
 }
 
@@ -27312,9 +27425,9 @@ function downgrade(severity) {
 }
 var MAX_DECISIVE_EVIDENCE = 10;
 function decisiveEvidence(raw) {
-  const list2 = raw.decisive_evidence ?? raw.decisiveEvidence;
-  if (!Array.isArray(list2)) return [];
-  return list2.filter((entry) => {
+  const list3 = raw.decisive_evidence ?? raw.decisiveEvidence;
+  if (!Array.isArray(list3)) return [];
+  return list3.filter((entry) => {
     const e = typeof entry === "object" && entry !== null ? entry : {};
     return typeof e["path"] === "string" && e["path"].length > 0 && Number.isInteger(e["line"]) && e["line"] > 0 && typeof e["why"] === "string" && e["why"].trim().length > 0;
   }).slice(0, MAX_DECISIVE_EVIDENCE).map((entry) => ({ path: entry.path, line: entry.line, why: entry.why }));
@@ -27554,9 +27667,9 @@ function reconcileCommand(argv) {
   let candidates;
   try {
     const parsed2 = JSON.parse(readStdin());
-    const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.candidates;
-    if (!Array.isArray(list2)) throw new Error("no candidates");
-    candidates = list2;
+    const list3 = Array.isArray(parsed2) ? parsed2 : parsed2.candidates;
+    if (!Array.isArray(list3)) throw new Error("no candidates");
+    candidates = list3;
   } catch {
     console.error('Expected {"candidates": [...]} on stdin, as they were before the second pass.');
     return 2;
@@ -27871,11 +27984,11 @@ var STAGE_FIELDS = {
 };
 function parseStagesFile(parsed2, warn2 = () => void 0) {
   const keyed = typeof parsed2 === "object" && parsed2 !== null && !Array.isArray(parsed2) ? Object.keys(parsed2).filter((key2) => key2 !== "stages") : [];
-  const list2 = Array.isArray(parsed2) ? parsed2 : parsed2?.stages;
-  if (!Array.isArray(list2) || keyed.length > 0) {
+  const list3 = Array.isArray(parsed2) ? parsed2 : parsed2?.stages;
+  if (!Array.isArray(list3) || keyed.length > 0) {
     throw new Error(`expected an array or {"stages": [...]}${keyed.length === 0 ? "" : `, not keys ${keyed.map((key2) => JSON.stringify(key2)).join(", ")}`}`);
   }
-  list2.forEach((stage, index) => {
+  list3.forEach((stage, index) => {
     const problem = (() => {
       if (typeof stage !== "object" || stage === null || Array.isArray(stage)) return "not an object";
       const unknown = Object.keys(stage).filter((key2) => !Object.hasOwn(STAGE_FIELDS, key2));
@@ -27886,7 +27999,7 @@ function parseStagesFile(parsed2, warn2 = () => void 0) {
     })();
     if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
   });
-  return list2;
+  return list3;
 }
 function cleanStages(stages, diff) {
   const diffLines = diff === null ? void 0 : changedLineCount(diff);
@@ -28417,12 +28530,12 @@ function carryCommand(argv) {
   }
 }
 function listIn(parsed2, keys) {
-  if (Array.isArray(parsed2)) return { list: parsed2, rebuild: (list2) => list2 };
+  if (Array.isArray(parsed2)) return { list: parsed2, rebuild: (list3) => list3 };
   if (typeof parsed2 !== "object" || parsed2 === null) return null;
   const record3 = parsed2;
   const key2 = keys.find((k) => Array.isArray(record3[k]));
   if (key2 === void 0) return null;
-  return { list: record3[key2], rebuild: (list2) => ({ ...record3, [key2]: list2 }) };
+  return { list: record3[key2], rebuild: (list3) => ({ ...record3, [key2]: list3 }) };
 }
 function stringsIn(value) {
   if (typeof value === "string") return [value];
@@ -28686,7 +28799,7 @@ import { join as join26 } from "node:path";
 
 // plugins/review-voice/src/cli/check-candidates.ts
 import { readFileSync as readFileSync32 } from "node:fs";
-import { isAbsolute as isAbsolute5, posix as posix5, relative as relative5 } from "node:path";
+import { isAbsolute as isAbsolute5, posix as posix6, relative as relative5 } from "node:path";
 
 // plugins/review-voice/src/cli/score.ts
 import { readFileSync as readFileSync31 } from "node:fs";
@@ -28924,14 +29037,14 @@ function scoreCommand(argv) {
   if (verificationFlag !== null) {
     try {
       const parsed2 = JSON.parse(readFileSync31(verificationFlag, "utf8"));
-      const list2 = verdictList(parsed2);
-      const problem = verificationProblem(list2);
+      const list3 = verdictList(parsed2);
+      const problem = verificationProblem(list3);
       if (problem !== null) {
         console.error(`Malformed verification - ${problem}`);
         console.error("Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.");
         return 2;
       }
-      for (const raw of list2) {
+      for (const raw of list3) {
         const id = raw["candidate_id"] ?? raw["candidateId"];
         const fixVerdict = raw["fix_verdict"] ?? raw["fixVerdict"];
         const fixConfidence = raw["fix_confidence"] ?? raw["fixConfidence"];
@@ -29425,7 +29538,7 @@ function readSignals(file2, root) {
     const s = entry;
     if (typeof s !== "object" || s === null || typeof s.path !== "string" || typeof s.line !== "number" || typeof s.claim !== "string") return [];
     const spelled = s.path.split("\\").join("/");
-    const path = isAbsolute5(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix5.normalize(spelled).replace(/^\.\//, "");
+    const path = isAbsolute5(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix6.normalize(spelled).replace(/^\.\//, "");
     if (path === "" || path === "." || path.startsWith("..") || isAbsolute5(path)) return [];
     return [
       {
@@ -29445,7 +29558,7 @@ function matchSignal(candidate, signals) {
   if (isSuppressionExempt(candidate.category)) return null;
   const text4 = `${candidate.claim} ${candidate.failureMode}`;
   const mine = significantWords(text4);
-  const path = posix5.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
+  const path = posix6.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
   for (const signal2 of signals) {
     if (signal2.path !== path || signal2.line === null || Math.abs(signal2.line - candidate.line) > 2) continue;
     const message = `${signal2.claim} ${signal2.evidence.join(" ")}`;
@@ -29834,11 +29947,11 @@ function recordCommand(argv) {
     }
     try {
       const parsed2 = JSON.parse(readFileSync33(bodyFindingsFile, "utf8"));
-      const list2 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null && Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : null;
-      if (list2 === null) throw new Error('expected an array or {"bodyFindings": [...]}');
-      if (list2.length > 1) throw new Error("at most one body-only simplification is allowed per review");
+      const list3 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null && Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : null;
+      if (list3 === null) throw new Error('expected an array or {"bodyFindings": [...]}');
+      if (list3.length > 1) throw new Error("at most one body-only simplification is allowed per review");
       const hunks = parseHunks(diff);
-      bodyFindings = list2.map((entry, index) => {
+      bodyFindings = list3.map((entry, index) => {
         const checked = parseVerifiedSimplification(entry, hunks);
         if (checked.problem !== null || checked.value === null) {
           throw new Error(`entry ${index}: ${checked.problem ?? "not a verified simplification"}`);
@@ -29931,13 +30044,13 @@ function recordCommand(argv) {
   if (heldFile !== null) {
     try {
       const parsed2 = JSON.parse(readFileSync33(heldFile, "utf8"));
-      const list2 = Array.isArray(parsed2) ? parsed2 : parsed2?.held;
-      if (!Array.isArray(list2)) throw new Error('expected an array or {"held": [...]}');
-      list2.forEach((entry, index) => {
+      const list3 = Array.isArray(parsed2) ? parsed2 : parsed2?.held;
+      if (!Array.isArray(list3)) throw new Error('expected an array or {"held": [...]}');
+      list3.forEach((entry, index) => {
         const problem = heldProblem(entry);
         if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
       });
-      held = list2;
+      held = list3;
       for (const candidate of candidates) knownPaths.add(candidate.path);
       const heldHead = flag(argv, "--head");
       const atHead = manifestMode !== "worktree" && manifestMode !== "staged" && heldHead !== null;
@@ -30053,9 +30166,9 @@ function recordCommand(argv) {
     }
     try {
       const parsed2 = JSON.parse(readFileSync33(followUpThreadFile, "utf8"));
-      const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.comments;
-      if (!Array.isArray(list2)) throw new Error("comments is not a list");
-      followUpThread = list2;
+      const list3 = Array.isArray(parsed2) ? parsed2 : parsed2.comments;
+      if (!Array.isArray(list3)) throw new Error("comments is not a list");
+      followUpThread = list3;
       followUpThreadFor = Array.isArray(parsed2) ? { repository: void 0, pullNumber: void 0 } : { repository: parsed2.repository, pullNumber: parsed2.pullNumber };
     } catch (error) {
       console.error(`Cannot read ${followUpThreadFile}: ${error instanceof Error ? error.message : String(error)}`);

@@ -206,6 +206,14 @@ static_evidence:
   #     timeout_seconds: 120
   #     # An optional version command records which tool ran without guessing how to ask it.
   #     version: tsc --version
+  # Any tool that prints SARIF 2.1.0 to stdout is parsed, whatever its name.
+  # Use local rules with metrics off, so the scanner does not reach the
+  # network, and scope the scan to your own files, since a scan of a vendored
+  # tree floods the analyst with leads.
+  #   - name: semgrep
+  #     run: semgrep scan --config .semgrep --metrics=off --sarif --quiet .
+  #   - name: ruff
+  #     run: ruff check --output-format sarif .
   # Commands get only PATH, HOME, LANG, LC_ALL, TMPDIR, CI and TERM, never the
   # reviewer's GITHUB_TOKEN, ANTHROPIC_API_KEY or REVIEW_VOICE_* settings. List
   # any other variable a command needs by name (issue 279). Example:

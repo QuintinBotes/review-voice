@@ -1,0 +1,78 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "golangci-lint",
+          "version": "1.62.0",
+          "rules": [
+            { "id": "errcheck", "shortDescription": { "text": "errcheck: unchecked errors" } },
+            { "id": "unused", "shortDescription": { "text": "unused: unused constants, variables, functions and types" } },
+            { "id": "godot", "shortDescription": { "text": "godot: comments end in a period" } },
+            { "id": "typecheck", "shortDescription": { "text": "typecheck: type-checking errors" } }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "errcheck",
+          "level": "error",
+          "message": { "text": "Error return value of `f.Close` is not checked" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "cmd/main.go" },
+                "region": { "startLine": 42, "startColumn": 11 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "errcheck",
+          "level": "error",
+          "message": { "text": "Error return value of `f.Close` is not checked" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "cmd/main.go" },
+                "region": { "startLine": 42, "startColumn": 11 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "unused",
+          "level": "warning",
+          "message": { "text": "func helper is unused" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "pkg/util.go" },
+                "region": { "startLine": 7, "startColumn": 6 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "godot",
+          "level": "note",
+          "message": { "text": "Comment should end in a period" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "pkg/util.go" },
+                "region": { "startLine": 5, "startColumn": 1 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "typecheck",
+          "level": "error",
+          "message": { "text": "could not import example.com/app/internal/missing (no package found)" }
+        }
+      ]
+    }
+  ]
+}
