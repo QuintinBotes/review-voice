@@ -126,7 +126,9 @@ It exits 0 when at least one fixture was written and 1 when every item was
 refused (the manifest is still written). It exits 2 for a bad invocation,
 which is a missing required flag, an unreadable file, a document that is not
 the shape D2 recorded, a bad `--set-version`, an unknown `--set-licence`, or
-an `--out` that is not empty or is inside a git working tree.
+an `--out` that is not empty, is inside a git working tree, or cannot be
+created or written (a failed write leaves `--out` as it was; see "Nothing
+imported enters the repository").
 
 #### What the importer reads from the set
 
@@ -206,10 +208,16 @@ set's list so that a refusal never renumbers the rest:
   `case.yaml` line by line and strips one pair of quotes without unescaping
   (`scalar` in `recall.ts`), and its `.` never crosses a line terminator, so a
   path with any of them would not read back as written.
-- `off-diff` when no added line or deletion site of `path` in
-  `parseHunks(normalisePatch(diff))` lies within `AGREEMENT_LINE_TOLERANCE` of
-  `line`. A finding off the diff is sent back to the analyst, so such an issue
-  cannot be hit by design. It is refused and counted, never scored as a miss,
+- `off-diff` when no added line or deletion site of `path` in the `parseHunks`
+  of the probe build's base-to-head diff, taken with the arguments `shimFiles`
+  in `recall.ts` uses to serve the review its patch and kept to the files the
+  review keeps (a source file, or a generated file it judges hand edited, as
+  `acquirePullRequestDiff` decides), lies within
+  `AGREEMENT_LINE_TOLERANCE` of `line`. The patch's own hunk headers are not
+  read for this, because `git apply` places a hunk by its old side, so a
+  new-side start that disagrees names lines recall never shows. A finding off
+  the diff is sent back to the analyst, so such an issue cannot be hit by
+  design. It is refused and counted, never scored as a miss,
   and the count is published so a reader can compute the stricter figure.
 
 `REFUSAL_REASONS` is the closed list of the nine codes above. The detail of
@@ -304,8 +312,17 @@ git's "not a git repository (or any of the parent directories)" (exit 128)
 means outside; any other git failure (a repository git refuses to read,
 dubious ownership, a gitfile git cannot follow, which git reports as "not a
 git repository: <gitdir>") also exits 2, quoting git, because a repository
-git cannot read is still a repository. It writes
-nothing outside `--out` apart from the temporary directories it removes.
+git cannot read is still a repository. The import is staged in a hidden
+directory created inside `--out`, so it is on `--out`'s file system and
+`--out` itself (a mount point, or the directory the caller stands in) is never
+replaced; git must also place it outside any working tree. Once every fixture
+and the manifest are written, its entries are moved up into `--out`, the
+manifest first and never over an existing file, so of two imports racing into
+one `--out` only one moves anything in. On any failure the staging directory,
+anything already moved, and `--out` and its parents when this run created
+them are removed, each only while it is empty, so `--out` is left as it was
+for a retry, another run's import in it is kept, and the command exits 2. It
+writes nothing outside `--out` apart from the temporary directories it removes.
 `fixtures/README.md` gains one sentence saying an external benchmark is
 imported outside the repository (`docs/EVALUATION.md`, "External benchmark")
 and never placed under `fixtures/`.

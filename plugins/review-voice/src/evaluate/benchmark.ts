@@ -1,9 +1,11 @@
+import { execFileSync } from 'node:child_process';
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { classify, findHandEdited, isReviewable } from '../diff/classify.ts';
 import { parseHunks, type FileHunks } from '../diff/hunks.ts';
 import { pluginVersion } from '../version.ts';
-import { materializeFixture, normalisePatch } from './fixtures.ts';
+import { materializeFixture } from './fixtures.ts';
 import { AGREEMENT_LINE_TOLERANCE } from './metrics.ts';
 
 /**
@@ -190,10 +192,18 @@ function isRegularFile(path: string): boolean {
   }
 }
 
+/** The environment without any GIT_ variable or the operator's git configuration, as `runRecall` runs git. */
+export function gitEnvironment(): NodeJS.ProcessEnv {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+  return { ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+}
+
 /**
  * Builds the diff once, as the only file of a probe fixture, so a recall run
  * never fails on materialisation and puts an error quoting third-party code
- * into the committed results. Both directories are removed afterwards.
+ * into the committed results. The hunks are those of the diff recall serves
+ * from the built commits, since git apply places a hunk by its old side and
+ * ignores a new-side start that disagrees. Both directories are removed afterwards.
  */
 function probeBuild(scratch: string, slug: string, diff: Buffer): { hunks: Map<string, FileHunks> } | { error: string } {
   const fixture = join(scratch, 'fixture');
@@ -201,8 +211,22 @@ function probeBuild(scratch: string, slug: string, diff: Buffer): { hunks: Map<s
   try {
     mkdirSync(fixture, { recursive: true });
     writeFileSync(join(fixture, 'diff.patch'), diff);
-    materializeFixture(fixture, repo, { name: slug });
-    return { hunks: parseHunks(normalisePatch(diff.toString('utf8'))) };
+    const { base, head, files } = materializeFixture(fixture, repo, { name: slug });
+    const git = (args: string[]): string => execFileSync('git', args, { cwd: repo, env: gitEnvironment(), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    // The arguments of `shimFiles` in recall.ts, which serves each file's patch to the review.
+    const hunks = parseHunks(git(['-c', 'core.quotepath=off', 'diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-color', base, head, '--', ...files]));
+    // The review keeps only source files and a generated file it judges hand edited, as acquirePullRequestDiff does, so an issue on any other file cannot be hit.
+    // It counts only files served a patch, and parseHunks keeps a last file with no hunk (a mode change), which would make a lone hand edit look like a regeneration.
+    const handEdited = findHandEdited([...hunks].filter(([, file]) => file.ranges.length > 0).map(([path]) => path), (path) => {
+      try {
+        return git(['show', `${head}:${path}`]);
+      } catch {
+        return null;
+      }
+    });
+    // Recall names each file as the patch spells it, and the review drops one git spells otherwise (macOS precomposes an NFD name) as already on the base.
+    for (const path of hunks.keys()) if (!files.includes(path) || (!handEdited.has(path) && !isReviewable(path, false))) hunks.delete(path);
+    return { hunks };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   } finally {
@@ -342,7 +366,7 @@ export function importBenchmark(options: ImportOptions): ImportManifest {
         const file = built.hunks.get(path);
         const changed = file === undefined ? [] : [...file.added, ...file.deletionSites];
         if (!changed.some((at) => Math.abs(at - line) <= AGREEMENT_LINE_TOLERANCE)) {
-          refuse(number, 'off-diff', file === undefined ? `${path} is not in the diff` : `no added line or deletion site of ${path} is within ${AGREEMENT_LINE_TOLERANCE} of line ${line}`);
+          refuse(number, 'off-diff', file === undefined ? `${path} is not in the diff the review is served${classify(path) === 'source' ? '' : `, which leaves out ${classify(path)} files`}` : `no added line or deletion site of ${path} is within ${AGREEMENT_LINE_TOLERANCE} of line ${line}`);
           continue;
         }
 

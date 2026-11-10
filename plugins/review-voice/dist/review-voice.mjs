@@ -18765,12 +18765,13 @@ var COMMAND_HELP = {
       "  --diffs <dir>          <slug>.patch per item, and <slug>.md for its description, made offline",
       "  --first <n>            Import only the first n items in the set's order; recorded in the manifest",
       "Reads: the set file, --licences and --diffs; nothing on stdin and nothing from the network.",
-      "Writes: positive/<slug>-<n>/ fixtures and import.json under --out; each refusal and its detail on",
-      "  stderr; temporary build directories, removed.",
+      "Writes: positive/<slug>-<n>/ fixtures and import.json, staged in a hidden directory inside --out;",
+      "  each refusal and its detail on stderr; temporary build directories, removed.",
       "Exit codes: 0 at least one fixture written, 1 every item refused (the manifest is still written),",
       "  2 bad invocation (a missing flag, an unreadable --from or --licences, a document not in the recorded",
-      "  shape, a bad version or licence, an --out that is not empty or is inside a git working tree). A",
-      "  --diffs file that cannot be read refuses its item no-diff."
+      "  shape, a bad version or licence, an --out that is not empty, is inside a git working tree, or cannot",
+      "  be created or written, which leaves --out as it was). A --diffs file that cannot be read refuses its",
+      "  item no-diff."
     )
   },
   outcomes: {
@@ -25680,12 +25681,13 @@ async function recallCommand(argv, runInProcess2) {
 }
 
 // plugins/review-voice/src/cli/import-benchmark.ts
-import { execFileSync as execFileSync16 } from "node:child_process";
-import { createHash as createHash6 } from "node:crypto";
-import { existsSync as existsSync18, lstatSync as lstatSync7, mkdirSync as mkdirSync12, readdirSync as readdirSync7, readFileSync as readFileSync25, statSync as statSync9 } from "node:fs";
+import { execFileSync as execFileSync17 } from "node:child_process";
+import { createHash as createHash6, randomBytes as randomBytes2 } from "node:crypto";
+import { constants as constants3, copyFileSync as copyFileSync3, existsSync as existsSync18, lstatSync as lstatSync7, mkdirSync as mkdirSync12, readdirSync as readdirSync7, readFileSync as readFileSync25, renameSync as renameSync4, rmdirSync, rmSync as rmSync11, statSync as statSync9 } from "node:fs";
 import { dirname as dirname17, join as join26, resolve as resolve10 } from "node:path";
 
 // plugins/review-voice/src/evaluate/benchmark.ts
+import { execFileSync as execFileSync16 } from "node:child_process";
 import { lstatSync as lstatSync6, mkdirSync as mkdirSync11, mkdtempSync as mkdtempSync6, readFileSync as readFileSync24, rmSync as rmSync10, writeFileSync as writeFileSync10 } from "node:fs";
 import { tmpdir as tmpdir5 } from "node:os";
 import { join as join25 } from "node:path";
@@ -25751,14 +25753,28 @@ function isRegularFile(path) {
     return false;
   }
 }
+function gitEnvironment2() {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key2]) => !key2.startsWith("GIT_")));
+  return { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+}
 function probeBuild(scratch, slug, diff) {
   const fixture = join25(scratch, "fixture");
   const repo = join25(scratch, "repo");
   try {
     mkdirSync11(fixture, { recursive: true });
     writeFileSync10(join25(fixture, "diff.patch"), diff);
-    materializeFixture(fixture, repo, { name: slug });
-    return { hunks: parseHunks(normalisePatch(diff.toString("utf8"))) };
+    const { base, head, files: files2 } = materializeFixture(fixture, repo, { name: slug });
+    const git6 = (args) => execFileSync16("git", args, { cwd: repo, env: gitEnvironment2(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const hunks = parseHunks(git6(["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", ...files2]));
+    const handEdited = findHandEdited([...hunks].filter(([, file2]) => file2.ranges.length > 0).map(([path]) => path), (path) => {
+      try {
+        return git6(["show", `${head}:${path}`]);
+      } catch {
+        return null;
+      }
+    });
+    for (const path of hunks.keys()) if (!files2.includes(path) || !handEdited.has(path) && !isReviewable(path, false)) hunks.delete(path);
+    return { hunks };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   } finally {
@@ -25877,7 +25893,7 @@ function importBenchmark(options) {
         const file2 = built.hunks.get(path);
         const changed = file2 === void 0 ? [] : [...file2.added, ...file2.deletionSites];
         if (!changed.some((at2) => Math.abs(at2 - line3) <= AGREEMENT_LINE_TOLERANCE)) {
-          refuse(number, "off-diff", file2 === void 0 ? `${path} is not in the diff` : `no added line or deletion site of ${path} is within ${AGREEMENT_LINE_TOLERANCE} of line ${line3}`);
+          refuse(number, "off-diff", file2 === void 0 ? `${path} is not in the diff the review is served${classify(path) === "source" ? "" : `, which leaves out ${classify(path)} files`}` : `no added line or deletion site of ${path} is within ${AGREEMENT_LINE_TOLERANCE} of line ${line3}`);
           continue;
         }
         const entry = {
@@ -25913,25 +25929,26 @@ function importBenchmark(options) {
 // plugins/review-voice/src/cli/import-benchmark.ts
 var SET_VERSION = /^[A-Za-z0-9._-]{1,64}$/;
 function insideGit(dir) {
-  const env = {};
-  for (const [key2, value] of Object.entries(process.env)) {
-    if (!key2.startsWith("GIT_")) env[key2] = value;
-  }
-  Object.assign(env, {
-    GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_CONFIG_NOSYSTEM: "1",
+  const env = {
+    ...gitEnvironment2(),
     // Discovery otherwise stops at a mount point and says "not a git repository" for a volume mounted inside a working tree.
     GIT_DISCOVERY_ACROSS_FILESYSTEM: "1",
     // The outside test below reads git's English message, and git translates it in any other locale.
     LC_ALL: "C"
-  });
+  };
   try {
-    const answer2 = execFileSync16("git", ["rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const answer2 = execFileSync17("git", ["rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return answer2.split("\n").some((line3) => line3.trim() === "true");
   } catch (error) {
     const { status, stderr } = error;
     const message = typeof stderr === "string" && stderr.trim() !== "" ? stderr.trim() : error.message;
     return status === 128 && /not a git repository \(or any of the parent directories\)/.test(message) ? false : message;
+  }
+}
+function removeMade(made) {
+  try {
+    for (const dir of [...made].reverse()) rmdirSync(dir);
+  } catch {
   }
 }
 function importBenchmarkCommand(argv) {
@@ -25988,7 +26005,11 @@ function importBenchmarkCommand(argv) {
     return 2;
   }
   let ancestor = out;
-  while (!existsSync18(ancestor)) ancestor = dirname17(ancestor);
+  const missing = [];
+  while (!existsSync18(ancestor)) {
+    missing.unshift(ancestor);
+    ancestor = dirname17(ancestor);
+  }
   if (!statSync9(ancestor).isDirectory()) {
     console.error(`--out ${out} is not an empty directory (${ancestor} is a file).`);
     return 2;
@@ -26047,32 +26068,59 @@ function importBenchmarkCommand(argv) {
     }
     for (const [repository, licence] of entries2) licences.set(repository, licence);
   }
+  const made = [];
   try {
-    mkdirSync12(out, { recursive: true });
+    for (const dir of missing) {
+      mkdirSync12(dir);
+      made.push(dir);
+    }
   } catch (error) {
+    removeMade(made);
     console.error(`--out ${out} cannot be created: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
-  const { counts } = importBenchmark({
-    items,
-    setVersion,
-    setSha256: createHash6("sha256").update(bytes).digest("hex"),
-    setLicence,
-    licences,
-    diffs,
-    first,
-    out,
-    onRefusal: (detail) => console.error(detail)
-  });
+  const staging = join26(out, `.rv-import-${randomBytes2(6).toString("hex")}`);
+  const moved = [];
+  let counts;
+  try {
+    mkdirSync12(staging);
+    const stagedInside = insideGit(staging);
+    if (stagedInside !== false) throw new Error(`git does not say that ${staging} is outside every working tree${stagedInside === true ? "" : ` (${stagedInside})`}`);
+    ({ counts } = importBenchmark({
+      items,
+      setVersion,
+      setSha256: createHash6("sha256").update(bytes).digest("hex"),
+      setLicence,
+      licences,
+      diffs,
+      first,
+      out: staging,
+      onRefusal: (detail) => console.error(detail)
+    }));
+    copyFileSync3(join26(staging, "import.json"), join26(out, "import.json"), constants3.COPYFILE_EXCL);
+    moved.push("import.json");
+    for (const entry of readdirSync7(staging)) {
+      if (entry === "import.json") continue;
+      renameSync4(join26(staging, entry), join26(out, entry));
+      moved.push(entry);
+    }
+    rmSync11(staging, { recursive: true });
+  } catch (error) {
+    for (const entry of moved) rmSync11(join26(out, entry), { recursive: true, force: true });
+    rmSync11(staging, { recursive: true, force: true });
+    removeMade(made);
+    console.error(`--out ${out} cannot be written, and is left as it was: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
   console.log(`${counts.fixtures} fixture(s) from ${counts.items} item(s); refused ${counts.refusedItems} item(s) and ${counts.refusedIssues} issue(s).`);
   console.log(`Manifest: ${join26(out, "import.json")}`);
   return counts.fixtures > 0 ? 0 : 1;
 }
 
 // plugins/review-voice/src/cli/worktree.ts
-import { statSync as statSync10, lstatSync as lstatSync8, rmSync as rmSync11 } from "node:fs";
+import { statSync as statSync10, lstatSync as lstatSync8, rmSync as rmSync12 } from "node:fs";
 import { join as join27, resolve as resolve11 } from "node:path";
-import { execFileSync as execFileSync17 } from "node:child_process";
+import { execFileSync as execFileSync18 } from "node:child_process";
 function worktreeCommand(argv) {
   const action = argv[0];
   const dir = flag(argv, "--dir");
@@ -26097,7 +26145,7 @@ function worktreeCommand(argv) {
   const headDir = join27(resolve11(dir), "head");
   if (action === "remove") {
     const present = lstatSync8(headDir, { throwIfNoEntry: false });
-    if (present?.isSymbolicLink()) rmSync11(headDir, { force: true });
+    if (present?.isSymbolicLink()) rmSync12(headDir, { force: true });
     if (present === void 0 || present.isSymbolicLink()) {
       console.log(JSON.stringify({ path: headDir, removed: false }));
       return 0;
@@ -26116,7 +26164,7 @@ function worktreeCommand(argv) {
   }
   let sha;
   try {
-    sha = execFileSync17("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    sha = execFileSync18("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     console.error(`--head ${head} is not a commit in this clone. Fetch it and run again.`);
     return 2;
@@ -26136,9 +26184,9 @@ import { readFileSync as readFileSync26, writeFileSync as writeFileSync11, mkdir
 import { join as join28 } from "node:path";
 
 // plugins/review-voice/src/diff/prior.ts
-import { execFileSync as execFileSync18 } from "node:child_process";
+import { execFileSync as execFileSync19 } from "node:child_process";
 function git4(args, cwd) {
-  return execFileSync18("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
+  return execFileSync19("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
 }
 function resolveCommit(ref, cwd) {
   try {
@@ -26176,7 +26224,7 @@ function fetchPriorHead(sha, repository, cwd) {
   }
   const args = ["fetch", "--no-tags", "--quiet", "origin", sha];
   try {
-    execFileSync18("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
+    execFileSync19("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
     return null;
   } catch (error) {
     return gitFailure(args, error);
@@ -26510,7 +26558,7 @@ async function threadCommand(argv) {
 import { readFileSync as readFileSync27, writeFileSync as writeFileSync13 } from "node:fs";
 
 // plugins/review-voice/src/scoring/existence.ts
-import { execFileSync as execFileSync19 } from "node:child_process";
+import { execFileSync as execFileSync20 } from "node:child_process";
 var ASSERTS_ABSENCE = [
   /\b(?:does|do)\s+not\s+exist\b/i,
   /\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)\b/i,
@@ -26578,7 +26626,7 @@ function namedSymbols(text4) {
 var gitGrep = (symbol, cwd, ref) => {
   const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "-e", symbol] : ["grep", "--fixed-strings", "--quiet", "-e", symbol, ref];
   try {
-    execFileSync19("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
+    execFileSync20("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
     return true;
   } catch (error) {
     if (error.status === 1) return false;
@@ -26601,7 +26649,7 @@ function grepPaths(wholeIdentifier, ...[symbol, cwd, ref, timeoutMs]) {
     ...ref === null ? [] : [ref]
   ];
   try {
-    const output = execFileSync19("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
+    const output = execFileSync20("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
     const prefix = ref === null ? "" : `${ref}:`;
     return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
   } catch (error) {
@@ -26613,7 +26661,7 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
   const [first, second] = patterns;
   const args = ref === null ? ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second] : ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second, ref];
   try {
-    const output = execFileSync19("git", args, {
+    const output = execFileSync20("git", args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -26641,7 +26689,7 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
 };
 var gitTrackedPaths = (cwd, ref) => {
   const args = ref === null ? ["ls-files", "-z", "--full-name", "--", ":/"] : ["ls-tree", "-r", "-z", "--name-only", "--full-tree", ref];
-  const output = execFileSync19("git", args, {
+  const output = execFileSync20("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -26662,7 +26710,7 @@ var RESOURCE_PATHSPECS = [
 ];
 var gitResourceSources = (cwd) => {
   try {
-    const output = execFileSync19("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
+    const output = execFileSync20("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -28488,7 +28536,7 @@ function checkSimplificationCommand(argv) {
 // plugins/review-voice/src/cli/verify.ts
 import { statSync as statSync11 } from "node:fs";
 import { resolve as resolve12 } from "node:path";
-import { execFileSync as execFileSync20 } from "node:child_process";
+import { execFileSync as execFileSync21 } from "node:child_process";
 async function verifyCommand(argv) {
   const cwdFlag = flag(argv, "--cwd");
   if (argv.includes("--cwd") && cwdFlag === null) {
@@ -28531,7 +28579,7 @@ async function verifyCommand(argv) {
     const commitOf = (ref) => {
       if (ref === null) return null;
       try {
-        return execFileSync20("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        return execFileSync21("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
         console.error(`${ref} does not resolve to a commit here, so the verification command is not told about it.`);
         return null;
@@ -28728,7 +28776,7 @@ function challengeCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/reanchor.ts
-import { readFileSync as readFileSync33, writeFileSync as writeFileSync15, renameSync as renameSync4, rmSync as rmSync12 } from "node:fs";
+import { readFileSync as readFileSync33, writeFileSync as writeFileSync15, renameSync as renameSync5, rmSync as rmSync13 } from "node:fs";
 function reanchorCommand(argv) {
   const candidateId = flag(argv, "--candidate");
   const line3 = Number(flag(argv, "--line"));
@@ -28781,9 +28829,9 @@ function reanchorCommand(argv) {
     staged.push([`${scoresFile}.reanchor-${process.pid}`, scoresFile]);
     writeFileSync15(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
 `);
-    for (const [temporary, target] of staged) renameSync4(temporary, target);
+    for (const [temporary, target] of staged) renameSync5(temporary, target);
   } catch (error) {
-    for (const [temporary] of staged) rmSync12(temporary, { force: true });
+    for (const [temporary] of staged) rmSync13(temporary, { force: true });
     console.error(`Cannot write: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
@@ -29700,7 +29748,7 @@ function carryCandidatesCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/record.ts
-import { execFileSync as execFileSync23 } from "node:child_process";
+import { execFileSync as execFileSync24 } from "node:child_process";
 import { readFileSync as readFileSync38 } from "node:fs";
 import { join as join30, posix as posix6 } from "node:path";
 
@@ -29710,12 +29758,12 @@ import { isAbsolute as isAbsolute5, posix as posix5, relative as relative5 } fro
 
 // plugins/review-voice/src/cli/score.ts
 import { readFileSync as readFileSync36 } from "node:fs";
-import { execFileSync as execFileSync22 } from "node:child_process";
+import { execFileSync as execFileSync23 } from "node:child_process";
 
 // plugins/review-voice/src/scoring/citation.ts
-import { execFileSync as execFileSync21 } from "node:child_process";
+import { execFileSync as execFileSync22 } from "node:child_process";
 function git5(args, cwd) {
-  return execFileSync21("git", args, {
+  return execFileSync22("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -29772,7 +29820,7 @@ function deletedFileCheck(argv) {
   const head = flag(argv, "--head");
   const cwd = process.cwd();
   if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
-  const git6 = (args) => execFileSync22("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync23("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
   let deleted;
   const deletions = () => {
     if (deleted !== void 0) return deleted;
@@ -30980,7 +31028,7 @@ function recordCommand(argv) {
           }
           if (atHead && heldRevision === null) continue;
           try {
-            const content = heldRevision === null ? readFileSync38(join30(repositoryRoot(process.cwd()), entry.path), "utf8") : execFileSync23("git", [...SAFE_GIT, "show", `${heldRevision}:${entry.path}`], {
+            const content = heldRevision === null ? readFileSync38(join30(repositoryRoot(process.cwd()), entry.path), "utf8") : execFileSync24("git", [...SAFE_GIT, "show", `${heldRevision}:${entry.path}`], {
               encoding: "utf8",
               stdio: ["ignore", "pipe", "ignore"],
               maxBuffer: 64 * 1024 * 1024

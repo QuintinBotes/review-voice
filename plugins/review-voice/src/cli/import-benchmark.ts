@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { BenchmarkShapeError, importBenchmark, isKnownLicence, readSet } from '../evaluate/benchmark.ts';
+import { BenchmarkShapeError, gitEnvironment, importBenchmark, isKnownLicence, readSet } from '../evaluate/benchmark.ts';
 import { flag } from './shared.ts';
 
 /** `--set-version` names a directory under docs/benchmarks/, so it is a plain token. */
@@ -17,18 +17,13 @@ const SET_VERSION = /^[A-Za-z0-9._-]{1,64}$/;
  * instead of this directory.
  */
 function insideGit(dir: string): boolean | string {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (!key.startsWith('GIT_')) env[key] = value;
-  }
-  Object.assign(env, {
-    GIT_CONFIG_GLOBAL: '/dev/null',
-    GIT_CONFIG_NOSYSTEM: '1',
+  const env: NodeJS.ProcessEnv = {
+    ...gitEnvironment(),
     // Discovery otherwise stops at a mount point and says "not a git repository" for a volume mounted inside a working tree.
     GIT_DISCOVERY_ACROSS_FILESYSTEM: '1',
     // The outside test below reads git's English message, and git translates it in any other locale.
     LC_ALL: 'C',
-  });
+  };
   try {
     const answer = execFileSync('git', ['rev-parse', '--is-inside-work-tree', '--is-inside-git-dir'], { cwd: dir, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     return answer.split('\n').some((line) => line.trim() === 'true');
@@ -39,6 +34,15 @@ function insideGit(dir: string): boolean | string {
     // other fatal error too, a gitfile it cannot follow included ("not a git repository: <gitdir>"),
     // and a repository git cannot read is still a repository.
     return status === 128 && /not a git repository \(or any of the parent directories\)/.test(message) ? false : message;
+  }
+}
+
+/** Removes the directories this run made, deepest first, and stops at one that is not empty, which holds another run's import. */
+function removeMade(made: readonly string[]): void {
+  try {
+    for (const dir of [...made].reverse()) rmdirSync(dir);
+  } catch {
+    // Not empty, so neither is any parent; nothing this run did not write is removed.
   }
 }
 
@@ -99,7 +103,11 @@ export function importBenchmarkCommand(argv: string[]): number {
     return 2;
   }
   let ancestor = out;
-  while (!existsSync(ancestor)) ancestor = dirname(ancestor);
+  const missing: string[] = [];
+  while (!existsSync(ancestor)) {
+    missing.unshift(ancestor);
+    ancestor = dirname(ancestor);
+  }
   if (!statSync(ancestor).isDirectory()) {
     console.error(`--out ${out} is not an empty directory (${ancestor} is a file).`);
     return 2;
@@ -162,23 +170,53 @@ export function importBenchmarkCommand(argv: string[]): number {
     for (const [repository, licence] of entries) licences.set(repository, licence as string);
   }
 
+  // Staged inside --out, so it shares its file system and --out itself is never replaced; a failure removes only what this run made, leaving --out as it was for a retry.
+  // One level at a time, because a recursive mkdir that fails part way does not say which parents it made.
+  const made: string[] = [];
   try {
-    mkdirSync(out, { recursive: true });
+    for (const dir of missing) {
+      mkdirSync(dir);
+      made.push(dir);
+    }
   } catch (error) {
+    removeMade(made);
     console.error(`--out ${out} cannot be created: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
-  const { counts } = importBenchmark({
-    items,
-    setVersion,
-    setSha256: createHash('sha256').update(bytes).digest('hex'),
-    setLicence,
-    licences,
-    diffs,
-    first,
-    out,
-    onRefusal: (detail) => console.error(detail),
-  });
+  const staging = join(out, `.rv-import-${randomBytes(6).toString('hex')}`);
+  const moved: string[] = [];
+  let counts;
+  try {
+    mkdirSync(staging);
+    const stagedInside = insideGit(staging);
+    if (stagedInside !== false) throw new Error(`git does not say that ${staging} is outside every working tree${stagedInside === true ? '' : ` (${stagedInside})`}`);
+    ({ counts } = importBenchmark({
+      items,
+      setVersion,
+      setSha256: createHash('sha256').update(bytes).digest('hex'),
+      setLicence,
+      licences,
+      diffs,
+      first,
+      out: staging,
+      onRefusal: (detail) => console.error(detail),
+    }));
+    // The manifest goes first and never replaces a file, so of two runs racing into one --out only one moves anything in.
+    copyFileSync(join(staging, 'import.json'), join(out, 'import.json'), constants.COPYFILE_EXCL);
+    moved.push('import.json');
+    for (const entry of readdirSync(staging)) {
+      if (entry === 'import.json') continue;
+      renameSync(join(staging, entry), join(out, entry));
+      moved.push(entry);
+    }
+    rmSync(staging, { recursive: true });
+  } catch (error) {
+    for (const entry of moved) rmSync(join(out, entry), { recursive: true, force: true });
+    rmSync(staging, { recursive: true, force: true });
+    removeMade(made);
+    console.error(`--out ${out} cannot be written, and is left as it was: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
   console.log(`${counts.fixtures} fixture(s) from ${counts.items} item(s); refused ${counts.refusedItems} item(s) and ${counts.refusedIssues} issue(s).`);
   console.log(`Manifest: ${join(out, 'import.json')}`);
   // Every item refused is a failed import; the manifest still says why.

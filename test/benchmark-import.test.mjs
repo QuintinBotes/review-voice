@@ -9,9 +9,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import fs, { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInProcess } from '../plugins/review-voice/src/cli.ts';
 import { BENCHMARK_SET, importBenchmark, isKnownLicence, readSet, REFUSAL_REASONS, SET_LICENCE_SOURCE } from '../plugins/review-voice/src/evaluate/benchmark.ts';
@@ -307,6 +308,54 @@ test('bad-id: an empty slug, a repeated slug, and an id, repository or reference
   assert.doesNotMatch(details.join('\n'), /[\u001b\u2028\u2029]/u, 'no refused string reaches the detail');
 });
 
+test('an issue is checked against the diff recall serves from the built commits, not the hunk headers the patch gives', (t) => {
+  // git apply places a hunk by its old side, so this change lands on line 1 and recall's diff of the built commits shows it there.
+  const shifted = ['--- a/src/app.ts', '+++ b/src/app.ts', '@@ -1 +100 @@', '-old', '+new', ''].join('\n');
+  const issues = [100, 1].map((line) => ({ path: 'src/app.ts', line, severity: null, note: null }));
+  const { manifest, details } = importItems(t, [item('shifted', 'MIT', { diff: shifted, issues })]);
+  assert.deepEqual(manifest.refused, [{ item: 'shifted', issue: 1, reason: 'off-diff' }]);
+  assert.deepEqual(manifest.items.map((entry) => [entry.fixture, entry.line]), [['positive/shifted-2', 1]]);
+  assert.match(details.join('\n'), /^shifted-1: off-diff: /m);
+});
+
+test('an issue on a file the review leaves out (vendored, generated, lock or minified) is refused off-diff, and a generated file it judges hand edited is kept', (t) => {
+  const section = (path, first = 'one') => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, '@@ -1,5 +1,5 @@', ` ${first}`, ' two', '-sum += item.price;', '+sum += item.price * item.qty;', ' four', ' five', ''].join('\n');
+  const paths = ['src/app.ts', 'vendor/app.ts', 'package-lock.json', 'src/app.min.js', 'src/build/app.ts'];
+  const issues = paths.map((path) => ({ path, line: 3, severity: null, note: null }));
+  // A lone generated file whose header says not to edit it is the hand edit the review keeps.
+  const handEdited = section('gen/build/client.ts', '// @generated, do not edit');
+  const { manifest, details } = importItems(t, [
+    item('excluded', 'MIT', { diff: paths.map((path) => section(path)).join(''), issues }),
+    item('hand', 'MIT', { diff: handEdited, issues: [{ path: 'gen/build/client.ts', line: 3, severity: null, note: null }] }),
+  ]);
+  assert.deepEqual(manifest.items.map((entry) => entry.fixture), ['positive/excluded-1', 'positive/hand-1']);
+  assert.deepEqual(manifest.refused, [2, 3, 4, 5].map((issue) => ({ item: 'excluded', issue, reason: 'off-diff' })));
+  assert.match(details.join('\n'), /^excluded-2: off-diff: vendor\/app\.ts is not in the diff the review is served, which leaves out vendored files$/m);
+});
+
+test('a hand edit beside a generated sibling that only changes mode is kept, since the review counts only the files it is served a patch for', (t) => {
+  const diff = [
+    'diff --git a/generated/api.ts b/generated/api.ts', '--- a/generated/api.ts', '+++ b/generated/api.ts', '@@ -1,3 +1,3 @@',
+    ' // @generated do not edit', '-export const total = (a, b) => a + b;', '+export const total = (a, b) => a - b;', ' export const x = 1;',
+    // git writes no header and no hunk for a mode change, so only a hand-written patch leaves the built diff ending in a file with no hunk.
+    'diff --git a/generated/zz.sh b/generated/zz.sh', 'old mode 100644', 'new mode 100755', '--- a/generated/zz.sh', '+++ b/generated/zz.sh', '@@ -1 +1 @@', '-echo hi', '+echo hi', '',
+  ].join('\n');
+  const { manifest, details } = importItems(t, [item('modeonly', 'MIT', { diff, issues: [{ path: 'generated/api.ts', line: 2, severity: null, note: null }] })]);
+  assert.deepEqual(manifest.refused, [], details.join('\n'));
+  assert.deepEqual(manifest.items.map((entry) => entry.fixture), ['positive/modeonly-1']);
+});
+
+test('an issue spelling its path otherwise than the patch does is refused off-diff, because the review drops a file git spells another way', (t) => {
+  const nfd = 'src/café.ts';
+  const nfc = 'src/café.ts';
+  const diff = [`--- a/${nfd}`, `+++ b/${nfd}`, '@@ -1,3 +1,3 @@', ' one', '-two', '+TWO', ' three', ''].join('\n');
+  const issues = [nfd, nfc].map((path) => ({ path, line: 2, severity: null, note: null }));
+  const { manifest } = importItems(t, [item('nfd', 'MIT', { diff, issues })]);
+  // git on macOS precomposes the NFD name, so recall serves the file to nobody and issue 1 is refused as well; elsewhere git keeps the spelling.
+  assert.deepEqual(manifest.refused.filter((entry) => entry.issue === 2), [{ item: 'nfd', issue: 2, reason: 'off-diff' }]);
+  for (const entry of manifest.items) assert.equal(entry.path, nfd, 'only the spelling of the patch is accepted');
+});
+
 test('a rule name holding a line terminator or control character is left out of case.yaml, so recall reads every imported fixture with no skip', (t) => {
   const out = join(scratch(t), 'out');
   const issue = (line, note) => ({ path: 'src/app.ts', line, severity: null, note });
@@ -454,6 +503,8 @@ test('exit 1 when every item is refused, with the manifest written; exit 2 for e
     ['an --out inside a git directory', ['import-benchmark', '--from', setFile, ...FLAGS, '--out', join(repo, '.git', 'out')], /inside a git working tree/],
     ['an --out that is a dangling link', ['import-benchmark', '--from', setFile, ...FLAGS, '--out', dangling], /--out .*dangling is a symbolic link/],
     ['an --out under a dangling link', ['import-benchmark', '--from', setFile, ...FLAGS, '--out', join(dangling, 'sub')], /--out .*dangling\/sub cannot be created/],
+    // The parent is made before the name too long for any file system fails, so it shows in the listing below unless it is removed.
+    ['an --out whose creation fails part way', ['import-benchmark', '--from', setFile, ...FLAGS, '--out', join(dir, 'made-by-run', 'x'.repeat(300), 'out')], /--out .* cannot be created: ENAMETOOLONG/],
     // Root lists a directory of mode 000.
     ...(process.getuid?.() === 0 ? [] : [['an --out the process cannot list', ['import-benchmark', '--from', setFile, ...FLAGS, '--out', unlisted], /--out .*unlisted cannot be listed/]]),
   ];
@@ -473,6 +524,160 @@ test('exit 1 when every item is refused, with the manifest written; exit 2 for e
   assert.equal(existsSync(join(repo, 'nested')), false);
   assert.equal(existsSync(join(unreadable, 'out')), false);
   assert.deepEqual(readdirSync(brokenWorktree), ['.git']);
+});
+
+test('a write that fails part way leaves --out as it was, with nothing left beside or above it, and a retry into the same --out succeeds', async (t) => {
+  for (const before of ['absent', 'empty', 'nested']) {
+    const dir = scratch(t);
+    const out = before === 'nested' ? join(dir, 'a', 'b', 'out') : join(dir, 'out');
+    if (before === 'empty') mkdirSync(out);
+    // The importer imports writeFileSync by name, so the builtin named exports are synced each way.
+    const real = fs.writeFileSync;
+    fs.writeFileSync = (path, ...rest) => {
+      if (String(path).endsWith(join('widget-pull-7-2', 'case.yaml'))) throw Object.assign(new Error(`ENOSPC: no space left on device, open '${path}'`), { code: 'ENOSPC' });
+      return real(path, ...rest);
+    };
+    syncBuiltinESMExports();
+    let failed;
+    try {
+      failed = await run(out);
+    } finally {
+      fs.writeFileSync = real;
+      syncBuiltinESMExports();
+    }
+    assert.equal(failed.code, 2, `${before}: ${failed.stderr}`);
+    assert.match(failed.stderr, /ENOSPC/, before);
+    assert.deepEqual(readdirSync(dir), before === 'empty' ? ['out'] : [], `${before}: nothing is left beside or above --out`);
+    if (before === 'empty') assert.deepEqual(readdirSync(out), [], 'the empty --out is still empty');
+
+    const retry = await run(out);
+    assert.equal(retry.code, 0, `${before}: ${retry.stderr}`);
+    assert.equal(manifestOf(out).counts.fixtures, 5, before);
+    assert.deepEqual(readdirSync(dir), [before === 'nested' ? 'a' : 'out'], before);
+  }
+});
+
+test('the staging directory inside --out is checked with git too, and one git puts inside a working tree is removed with --out left as it was', async (t) => {
+  shimGit(t, 'case "$(pwd)" in */.rv-import-*) printf "true\\nfalse\\n"; exit 0;; esac');
+  const dir = scratch(t);
+  const out = join(dir, 'out');
+  mkdirSync(out);
+  const result = await run(out);
+  assert.equal(result.code, 2, result.stderr);
+  assert.match(result.stderr, /left as it was: git does not say that .*\.rv-import-[0-9a-f]+ is outside every working tree/);
+  assert.deepEqual(readdirSync(dir), ['out']);
+  assert.deepEqual(readdirSync(out), []);
+});
+
+test('an import that lands in --out while this one runs is neither replaced nor removed: the manifest moves in first and never over a file', async (t) => {
+  // A test cannot time two processes, so the git check of the staging directory stands in for the moment another run moves its import in.
+  shimGit(t, `case "$(pwd)" in */.rv-import-*) printf '{"other":true}\\n' > ../import.json; [ -z "$OTHER_RUN_FIXTURES" ] || { mkdir -p ../positive/other-1 && printf 'other\\n' > ../positive/other-1/case.yaml; };; esac`);
+  const saved = process.env.OTHER_RUN_FIXTURES;
+  t.after(() => {
+    if (saved === undefined) delete process.env.OTHER_RUN_FIXTURES;
+    else process.env.OTHER_RUN_FIXTURES = saved;
+  });
+  for (const [before, fixtures] of [['absent', false], ['empty', false], ['absent', true]]) {
+    const name = `${before} --out${fixtures ? ', other run with fixtures' : ''}`;
+    const out = join(scratch(t), 'out');
+    if (before === 'empty') mkdirSync(out);
+    if (fixtures) process.env.OTHER_RUN_FIXTURES = '1';
+    else delete process.env.OTHER_RUN_FIXTURES;
+    const result = await run(out, '--first', '1');
+    assert.equal(result.code, 2, `${name}: ${result.stderr}`);
+    assert.match(result.stderr, /left as it was: EEXIST/, name);
+    assert.equal(readFileSync(join(out, 'import.json'), 'utf8'), '{"other":true}\n', `${name}: the manifest of the other run is not replaced`);
+    assert.deepEqual(readdirSync(out).sort(), fixtures ? ['import.json', 'positive'] : ['import.json'], `${name}: nothing of this run is left and nothing of the other is removed`);
+    if (fixtures) assert.deepEqual(readdirSync(join(out, 'positive')), ['other-1'], name);
+  }
+});
+
+test('an existing empty --out is filled in place, keeping its inode and mode, so --out . leaves the caller in the imported directory', async (t) => {
+  const out = join(scratch(t), 'out');
+  mkdirSync(out);
+  chmodSync(out, 0o700);
+  const before = statSync(out);
+  const saved = process.cwd();
+  let result;
+  let listed;
+  process.chdir(out);
+  try {
+    result = await run('.');
+    listed = readdirSync('.').sort();
+  } finally {
+    process.chdir(saved);
+  }
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(listed, ['import.json', 'positive'], 'the directory the caller stands in holds the import');
+  const after = statSync(out);
+  assert.equal(after.ino, before.ino, 'the person made --out, so it is never replaced');
+  assert.equal(after.mode & 0o777, 0o700, 'a private --out stays private');
+});
+
+test('an empty --out that is a mount point is imported into: nothing is renamed onto it or across its file system boundary', async (t) => {
+  const dir = scratch(t);
+  const out = join(dir, 'mnt');
+  mkdirSync(out);
+  // A test cannot mount a volume, so rename refuses what it refuses at a mount point: crossing into it (EXDEV) or replacing it (EBUSY).
+  const within = (path) => String(path) === out || String(path).startsWith(`${out}${sep}`);
+  const real = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    if (within(from) !== within(to)) throw Object.assign(new Error(`EXDEV: cross-device link not permitted, rename '${from}' -> '${to}'`), { code: 'EXDEV' });
+    if (String(to) === out) throw Object.assign(new Error(`EBUSY: resource busy or locked, rename '${from}' -> '${to}'`), { code: 'EBUSY' });
+    return real(from, to);
+  };
+  syncBuiltinESMExports();
+  let result;
+  try {
+    result = await run(out);
+  } finally {
+    fs.renameSync = real;
+    syncBuiltinESMExports();
+  }
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(readdirSync(out).sort(), ['import.json', 'positive']);
+  assert.deepEqual(readdirSync(dir), ['mnt']);
+});
+
+test('an empty --out the process can write is imported into when its parent cannot be written', { skip: process.getuid?.() === 0 && 'root writes a directory of mode 555' }, async (t) => {
+  const shared = join(scratch(t), 'shared');
+  const out = join(shared, 'mine');
+  mkdirSync(out, { recursive: true });
+  chmodSync(shared, 0o555);
+  let result;
+  try {
+    result = await run(out);
+  } finally {
+    chmodSync(shared, 0o755);
+  }
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(readdirSync(out).sort(), ['import.json', 'positive']);
+  assert.deepEqual(readdirSync(shared), ['mine']);
+});
+
+test('the probe reads the built diff as recall does, ignoring an exported GIT_DIR and the global git configuration', async (t) => {
+  const dir = scratch(t);
+  const other = join(dir, 'other');
+  execFileSync('git', ['init', '-q', other], { env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+  const config = join(dir, 'gitconfig');
+  writeFileSync(config, '[diff]\n\tdstPrefix = new/\n');
+  // A git hook exports GIT_DIR, and an ordinary global setting changes the header paths the probe reads.
+  for (const [name, env] of [['gitdir', { GIT_DIR: join(other, '.git') }], ['config', { GIT_CONFIG_GLOBAL: config }]]) {
+    const saved = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+    Object.assign(process.env, env);
+    const out = join(dir, name);
+    let result;
+    try {
+      result = await run(out, '--first', '1');
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    assert.equal(result.code, 0, `${name}: ${result.stderr}`);
+    assert.deepEqual(manifestOf(out).counts, { items: 1, issues: 2, fixtures: 2, refusedItems: 0, refusedIssues: 0 }, name);
+  }
 });
 
 test('an --out on a volume mounted inside a working tree is refused: git looks past the mount point', async (t) => {
