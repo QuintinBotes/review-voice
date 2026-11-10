@@ -269,7 +269,7 @@ The stage graph, in order. A stage the plan turns off is recorded as skipped.
 | 7 | `second-pass` (`verify` with the configured command) | CLI | as today |
 | 8 | `tie-break`, once per `reconcile` dispute | agent | dispute stays unsettled |
 | 9 | `score`, then lane severity rules | CLI | stop |
-| 10 | `challenge`, one challenger per eligible finding | agent | the finding is held |
+| 10 | `challenge`, one challenger per eligible finding, on the plan's challenge family | agent | the finding is held; a configured family that cannot run holds every challenged finding and caps the event at COMMENT |
 | 11 | `edit` (concise-editor), `validate-output` (one retry) | agent | relaunch once, then exit 7 |
 | 12 | `record`, then `verdict` | CLI | stop |
 | 13 | `post`, only with `--post` and posting enabled | CLI | per `post` exit codes |
@@ -379,7 +379,7 @@ claim during the run. That is the same repeat rule `check-candidates` applies.
 | reproduce | off | off | when configured |
 | second-pass | off | when configured | when configured |
 | tie-break | sonnet | opus | opus |
-| challenge | off | sonnet; opus for important or above | opus |
+| challenge | off | sonnet; opus for important or above; the `runners.<family>` label on a configured family | opus; the `runners.<family>` label on a configured family |
 | edit | sonnet | sonnet | sonnet |
 
 `auto` picks `fast` when no production source changed (documentation, tests,

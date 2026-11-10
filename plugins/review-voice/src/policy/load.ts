@@ -20,6 +20,22 @@ import { defaultQueueConfig, QUEUE_SOURCES, type QueueConfig, type QueueSource }
 import { defaultWatchConfig, MAX_REVIEW_TIMEOUT_MS, parseDuration, type WatchConfig } from '../watch/config.ts';
 import { DEFAULT_RETENTION, type RetentionConfig } from '../store/retention.ts';
 import { defaultReproduction, type ReproductionConfig, type ReproductionRunner } from '../evidence/reproduce.ts';
+import { DEFAULT_AGENT_TIMEOUT_MS, FAMILIES, type ExternalFamily, type Family } from '../agents/types.ts';
+
+/** One `runners.<family>` block: the argv that runs an agent on that family (docs/adr/0021, amended). */
+export interface ConfiguredRunner {
+  command: string[];
+  timeoutSeconds: number;
+  label: string;
+  /** The `env_passthrough` names the command gets beyond the minimal environment (issue 279). */
+  envPassthrough: string[];
+}
+
+/** `runners:`, the external families a review may run on and which one challenges. */
+export interface RunnersConfig {
+  external: Partial<Record<ExternalFamily, ConfiguredRunner>>;
+  use: { challenge: Family; agentAuthoredChallenge: Family | null };
+}
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
@@ -54,11 +70,20 @@ export interface LoadedConfig {
   };
   /** `reproduction:`, the confined runner for verifier-written reproductions. Off by default. */
   reproduction: ReproductionConfig;
+  /**
+   * `runners:`, read only from the operator's own configuration, never a
+   * repository's base commit, because a runner is a command this machine
+   * executes. With no block nothing changes: every stage runs on Claude.
+   */
+  runners: RunnersConfig;
   /** A second, ideally different-model, verification pass. Off by default. */
   verification: {
     enabled: boolean;
-    command: string;
+    /** A shell string, or the argv of the runner `verification.runner` names. */
+    command: string | readonly string[];
     name?: string | undefined;
+    /** The verifier's model family, from `verification.family` or implied by `verification.runner`. */
+    family?: Family | undefined;
     timeoutSeconds?: number | undefined;
     dropThreshold?: number | undefined;
     /** The `env_passthrough` names the command gets beyond the minimal environment (issue 279). */
@@ -122,7 +147,7 @@ function positiveInt(value: unknown): number | undefined {
  * exactly these. review.models is a map of stages, checked against MODEL_KEYS.
  */
 export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
-  '': ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'reproduction', 'verification', 'queue', 'watch', 'retention', 'writes'],
+  '': ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'reproduction', 'runners', 'verification', 'queue', 'watch', 'retention', 'writes'],
   identity: ['owner_reviewer', 'reviewers'],
   repositories: ['include'],
   review: [
@@ -150,7 +175,11 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   'static_evidence.commands[]': ['name', 'run', 'timeout_seconds', 'version'],
   reproduction: ['enabled', 'runners', 'link_paths', 'memory_mb', 'cpu_seconds'],
   'reproduction.runners[]': ['name', 'run', 'extension', 'timeout_seconds'],
-  verification: ['enabled', 'command', 'name', 'timeout_seconds', 'drop_threshold', 'env_passthrough'],
+  runners: ['codex', 'gemini', 'use'],
+  'runners.codex': ['command', 'timeout_seconds', 'label', 'env_passthrough'],
+  'runners.gemini': ['command', 'timeout_seconds', 'label', 'env_passthrough'],
+  'runners.use': ['challenge', 'agent_authored_challenge'],
+  verification: ['enabled', 'command', 'runner', 'family', 'name', 'timeout_seconds', 'drop_threshold', 'env_passthrough'],
   queue: ['sources', 'teams', 'max_per_pass', 'follow_up_days', 'skip'],
   'queue.skip': ['authors', 'assigned_to', 'author_patterns', 'allow_bots_when_requested', 'drafts', 'approved_at_head_by'],
   'queue.skip.approved_at_head_by': ['logins', 'sources'],
@@ -443,6 +472,107 @@ function readReproduction(value: unknown, result: LoadedConfig): void {
   };
   limit('memory_mb', 'memoryMb', 64, 16384);
   limit('cpu_seconds', 'cpuSeconds', 1, 600);
+}
+
+const EXTERNAL_FAMILIES: readonly ExternalFamily[] = ['codex', 'gemini'];
+/** The tokens a runner command may carry; `expandCommand` replaces exactly these. */
+const RUNNER_TOKENS = ['{schema}', '{output}', '{cwd}'];
+/** The model-name pattern `cleanStages` applies, so a label survives being recorded. */
+const RUNNER_LABEL = /^[\w.:\[\]-]{1,100}$/;
+
+/**
+ * `runners:` (docs/adr/0021, amended). Each failure is named and the entry
+ * dropped, in the style of readCostMode, so a typo never runs something else.
+ */
+function readRunners(value: unknown, result: LoadedConfig): void {
+  const block = asRecord(value);
+  if (block === null) {
+    result.warnings.push('runners must be a mapping; ignoring it.');
+    return;
+  }
+  for (const [key, entry] of Object.entries(block)) {
+    if (key === 'use') continue;
+    if (key === 'claude') {
+      result.warnings.push('runners.claude: claude is the built-in runner and takes no command; ignoring it.');
+      continue;
+    }
+    const family = EXTERNAL_FAMILIES.find((known) => known === key);
+    if (family === undefined) {
+      result.warnings.push(`runners.${key} is not a setting Review Voice reads; ignoring it.`);
+      continue;
+    }
+    const runner = section(entry, `runners.${family}`, result.warnings);
+    if (runner === null) {
+      result.warnings.push(`runners.${family} must be a mapping; ignoring it.`);
+      continue;
+    }
+    const command = runner['command'];
+    const timeout = runner['timeout_seconds'];
+    const label = runner['label'];
+    const envPassthrough = readEnvPassthrough(runner['env_passthrough'], `runners.${family}.env_passthrough`, result);
+    if (typeof command === 'string') {
+      result.warnings.push(`runners.${family}.command must be a list of arguments, not a shell string; ignoring it.`);
+      continue;
+    }
+    if (!Array.isArray(command) || command.length === 0 || !command.every((argument) => typeof argument === 'string' && argument.length > 0)) {
+      result.warnings.push(`runners.${family}.command must be a non-empty list of non-empty strings; ignoring it.`);
+      continue;
+    }
+    const token = (command as string[]).find((argument) => /^\{[^{}]*\}$/.test(argument) && !RUNNER_TOKENS.includes(argument));
+    if (token !== undefined) {
+      result.warnings.push(`runners.${family}.command: ${token} is not a token Review Voice replaces (only ${RUNNER_TOKENS.join(', ')}); ignoring it.`);
+      continue;
+    }
+    let timeoutSeconds = DEFAULT_AGENT_TIMEOUT_MS / 1000;
+    if (timeout !== undefined) {
+      if (typeof timeout === 'number' && Number.isInteger(timeout) && timeout > 0) timeoutSeconds = timeout;
+      else result.warnings.push(`runners.${family}.timeout_seconds must be a whole number above zero; using ${timeoutSeconds}.`);
+    }
+    let labelText: string = family;
+    if (label !== undefined) {
+      if (typeof label === 'string' && RUNNER_LABEL.test(label)) labelText = label;
+      else result.warnings.push(`runners.${family}.label must be a model name of up to 100 letters, digits, dots, colons, brackets, dashes or underscores; using ${family}.`);
+    }
+    result.runners.external[family] = { command: command as string[], timeoutSeconds, label: labelText, envPassthrough };
+  }
+  if (block['use'] === undefined) return;
+  const use = section(block['use'], 'runners.use', result.warnings);
+  if (use === null) {
+    result.warnings.push('runners.use must be a mapping; using the defaults.');
+    return;
+  }
+  const chosen = (key: 'challenge' | 'agent_authored_challenge', fallback: Family | null): Family | null => {
+    const value = use[key];
+    if (value === undefined) return fallback;
+    const family = FAMILIES.find((known) => known === value);
+    if (family === undefined) {
+      result.warnings.push(`runners.use.${key} must be one of ${FAMILIES.join(', ')}; using ${fallback ?? 'none'}.`);
+      return fallback;
+    }
+    if (family !== 'claude' && result.runners.external[family] === undefined) {
+      result.warnings.push(`runners.use.${key} names ${family}, but there is no runners.${family} block; using ${fallback ?? 'none'}.`);
+      return fallback;
+    }
+    return family;
+  };
+  result.runners.use.challenge = chosen('challenge', 'claude') ?? 'claude';
+  result.runners.use.agentAuthoredChallenge = chosen('agent_authored_challenge', null);
+}
+
+/**
+ * Whether `runners:` is read at all. Only the operator's own configuration
+ * counts: the file --config names, an absolute REVIEW_VOICE_CONFIG, or the
+ * Action's config input, which arrives as --config. The review driver records
+ * the source it chose in REVIEW_VOICE_CONFIG_SOURCE; elsewhere the file is
+ * the operator's only when the caller passed it (`watch` passes its own copy)
+ * or an absolute REVIEW_VOICE_CONFIG named it. A repository's own file, at a
+ * base commit or checked out, is repository content, while a runner is a
+ * command this machine executes.
+ */
+function runnersHonoured(path: string | undefined, configPath: string): boolean {
+  const source = process.env['REVIEW_VOICE_CONFIG_SOURCE'];
+  if (source !== undefined) return source === 'flag' || source === 'env';
+  return path !== undefined || configPath === process.env['REVIEW_VOICE_CONFIG'];
 }
 
 /** Words that appear in nearly every failure, so alone they would turn every failure into a rerun. */
@@ -914,9 +1044,10 @@ export function configFile(repositoryRoot: string, warnings: string[] = []): str
 
 /**
  * Reads a parsed config document into `result`. Split from `loadConfig` so a
- * test can see every key it reads (issue 318).
+ * test can see every key it reads (issue 318). `honourRunners` is
+ * `runnersHonoured` for the file the document came from.
  */
-export function readConfigDocument(value: unknown, repositoryRoot: string, result: LoadedConfig): void {
+export function readConfigDocument(value: unknown, repositoryRoot: string, result: LoadedConfig, honourRunners: boolean): void {
   const doc = section(value, '', result.warnings);
   if (doc === null) return;
   const identity = section(doc['identity'], 'identity', result.warnings);
@@ -996,19 +1127,71 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
     readVerdictPolicy(verdict, result);
   }
 
+  if (doc['runners'] !== undefined) {
+    if (honourRunners) readRunners(doc['runners'], result);
+    else {
+      result.warnings.push(
+        'runners is read only from the operator\'s own configuration (the file --config names, an absolute REVIEW_VOICE_CONFIG, ' +
+          'or the Action\'s config input), never from a repository\'s own file, checked out or at a base commit, ' +
+          'because a runner is a command this machine executes; ignoring it.',
+      );
+    }
+  }
+
   const verification = section(doc['verification'], 'verification', result.warnings);
+  // The external family the second pass runs on, for the watcher warning below.
+  let secondPassRunner: ExternalFamily | null = null;
   if (verification !== null) {
     const command = verification['command'];
+    const runnerName = verification['runner'];
+    const familyName = verification['family'];
+    let argv: string | readonly string[] = typeof command === 'string' ? command : '';
+    let family = FAMILIES.find((known) => known === familyName);
+    if (familyName !== undefined && family === undefined) {
+      result.warnings.push(`verification.family must be one of ${FAMILIES.join(', ')}; ignoring it.`);
+    }
+    let timeoutSeconds = positiveInt(verification['timeout_seconds']);
+    let envPassthrough = readEnvPassthrough(verification['env_passthrough'], 'verification.env_passthrough', result);
+    if (runnerName !== undefined) {
+      const runner = EXTERNAL_FAMILIES.find((known) => known === runnerName);
+      const configured = runner === undefined ? undefined : result.runners.external[runner];
+      if (runner === undefined) {
+        result.warnings.push(`verification.runner must be one of ${EXTERNAL_FAMILIES.join(', ')}; ignoring it.`);
+      } else if (configured === undefined) {
+        result.warnings.push(`verification.runner names ${runner}, but there is no runners.${runner} block; the second pass stays off.`);
+        argv = '';
+      } else {
+        if (typeof command === 'string' && command.trim() !== '') {
+          result.warnings.push(`verification.command is ignored because verification.runner names the ${runner} runner.`);
+        }
+        argv = configured.command;
+        timeoutSeconds ??= configured.timeoutSeconds;
+        family = runner;
+        secondPassRunner = runner;
+        // The runner's own list applies too, so one block names what its command needs.
+        envPassthrough = [...new Set([...envPassthrough, ...configured.envPassthrough])];
+      }
+    }
     result.verification = {
-      enabled: verification['enabled'] === true && typeof command === 'string' && command.length > 0,
-      command: typeof command === 'string' ? command : '',
+      enabled: verification['enabled'] === true && argv.length > 0,
+      command: argv,
       name: typeof verification['name'] === 'string' ? verification['name'] : undefined,
-      timeoutSeconds: positiveInt(verification['timeout_seconds']),
+      family,
+      timeoutSeconds,
       dropThreshold:
         typeof verification['drop_threshold'] === 'number' ? verification['drop_threshold'] : undefined,
-      envPassthrough: readEnvPassthrough(verification['env_passthrough'], 'verification.env_passthrough', result),
+      envPassthrough,
       blockPresent: true,
     };
+  }
+  const external = [result.runners.use.challenge, result.runners.use.agentAuthoredChallenge, secondPassRunner].filter(
+    (family): family is ExternalFamily => family !== null && family !== 'claude',
+  );
+  if (external.length > 0 && !result.watch.runRepositoryCommands) {
+    result.warnings.push(
+      `runners: ${[...new Set(external)].join(', ')} in use with watch.run_repository_commands false, so watched reviews run with ` +
+        'REVIEW_VOICE_NO_COMMANDS=1, which keeps a configured runner from running: they skip the second pass and hold every challenged finding.',
+    );
   }
 
   const review = section(doc['review'], 'review', result.warnings);
@@ -1061,6 +1244,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     retention: { ...DEFAULT_RETENTION },
     staticEvidence: { enabled: false, commands: [], envPassthrough: [] },
     reproduction: defaultReproduction(),
+    runners: { external: {}, use: { challenge: 'claude', agentAuthoredChallenge: null } },
     verification: { enabled: false, command: '', envPassthrough: [], blockPresent: false },
     humanReview: {
       ...DEFAULT_HUMAN_REVIEW,
@@ -1085,7 +1269,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
   const configPath = path ?? configFile(repositoryRoot, result.warnings);
   if (existsSync(configPath)) {
     try {
-      readConfigDocument(parseYaml(readFileSync(configPath, 'utf8')), repositoryRoot, result);
+      readConfigDocument(parseYaml(readFileSync(configPath, 'utf8')), repositoryRoot, result, runnersHonoured(path, configPath));
     } catch (error) {
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }

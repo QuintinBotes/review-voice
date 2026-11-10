@@ -2,6 +2,9 @@ import type { ChangedFile } from '../diff/acquire.ts';
 import { reviewedFileKinds, type HumanReviewConfigInput, type Kind } from '../diff/complexity.ts';
 import { isConfiguration } from '../diff/classify.ts';
 import { unquoteGitPath } from '../diff/hunks.ts';
+import type { Family } from '../agents/types.ts';
+import type { LoadedConfig } from '../policy/load.ts';
+import type { Authorship } from './authorship.ts';
 
 /** Cost modes and the stage plan (docs/adr/0025). Pure: nothing here reads a file or calls a model. */
 export type Mode = 'fast' | 'standard' | 'thorough';
@@ -25,6 +28,10 @@ export interface StagePlan {
   laneModels: { diff: string; others: string | null };
   /** The configured overrides, kept so a per-finding model honours them. */
   overrides: ModelOverrides;
+  /** The family the challenger runs on, and the rule that chose it (docs/adr/0034). */
+  families: { challenge: Family; reason: string };
+  /** The configured external runners, echoed as `overrides` is, so the driver needs no second config read. */
+  runners: LoadedConfig['runners']['external'];
 }
 
 export interface PlanInput {
@@ -44,6 +51,9 @@ export interface PlanInput {
    * caller that does not read it is read as off; `planCommand` always sets it.
    */
   reproductionConfigured?: boolean;
+  runners?: LoadedConfig['runners'] | undefined;
+  /** Who wrote the change, from `--authorship`; absent means not known. */
+  authorship?: Authorship | undefined;
 }
 
 const SONNET = 'sonnet';
@@ -69,6 +79,22 @@ function autoMode(input: PlanInput): { mode: Mode; reason: string } {
     };
   }
   return { mode: 'standard', reason: 'auto: production source changed within the standard limits' };
+}
+
+/**
+ * The base family is `runners.use.challenge`. A change an agent of that same
+ * family wrote is challenged on `runners.use.agent_authored_challenge` instead.
+ * A change from an agent of another family already has a cross-family
+ * challenge, and "different from" an unknown family (`other`) is undefined,
+ * so neither triggers the rule.
+ */
+function challengeFamily(input: PlanInput): { challenge: Family; reason: string } {
+  const base = input.runners?.use.challenge ?? 'claude';
+  const other = input.runners?.use.agentAuthoredChallenge ?? null;
+  if (other !== null && other !== base && input.authorship?.agent === true && input.authorship.family === base) {
+    return { challenge: other, reason: `agent-authored by ${base}; challenged on ${other} (runners.use.agent_authored_challenge)` };
+  }
+  return { challenge: base, reason: base === 'claude' ? 'default' : 'runners.use.challenge' };
 }
 
 export function resolvePlan(input: PlanInput): StagePlan {
@@ -107,6 +133,8 @@ export function resolvePlan(input: PlanInput): StagePlan {
     },
     laneModels: { diff: diffLane, others: otherLanes },
     overrides,
+    families: challengeFamily(input),
+    runners: input.runners?.external ?? {},
   };
 }
 

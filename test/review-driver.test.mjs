@@ -16,6 +16,7 @@ import { heldForRecord, historyName, reportText, runReview, NO_FINDINGS } from '
 import { STAGES } from '../plugins/review-voice/src/review/stages.ts';
 import { SCHEMAS } from '../plugins/review-voice/src/review/prompts.ts';
 import { RUNNER_PREAMBLE, schemaForRunner, schemasDir } from '../plugins/review-voice/src/agents/runner.ts';
+import { COMMAND_RUNNER_PREAMBLE } from '../plugins/review-voice/src/agents/runner.ts';
 import { GitHubClient } from '../plugins/review-voice/src/github/client.ts';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
 import { runDetail } from '../plugins/review-voice/src/store/runs.ts';
@@ -1574,4 +1575,265 @@ test('issue 275: with no readable base, a pull request review reads no conventio
   assert.match(conventions.warnings[0], /Conventions were not read: the base commit is not in this clone/);
   assert.doesNotMatch(readFileSync(join(report.runDir, 'commands.log'), 'utf8'), /^\$ review-voice conventions/m);
   assert.ok(report.notes.some((note) => /Conventions were not read/.test(note)));
+});
+
+// ---------------------------------------------------------------- S17: a configured runner comes from the operator's configuration only
+
+/** A runner stub for the second pass: writes a confirmed verdict to {output} and leaves its argv beside it. */
+function runnerStub(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-driver-runner-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stub = join(dir, 'runner.mjs');
+  const marker = join(dir, 'ran');
+  writeFileSync(
+    stub,
+    `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, process.argv.slice(2).join(' '));\nwriteFileSync(process.argv[2], JSON.stringify({ verdict: 'confirmed', confidence: 0.9, reason: 'holds' }));\n`,
+  );
+  return { stub, marker };
+}
+
+const RUNNER_CONFIG = (stub) =>
+  ['runners:', '  codex:', `    command: ["${process.execPath}", "${stub}", "{output}", "{schema}"]`, 'verification:', '  enabled: true', '  runner: codex', 'watch:', '  run_repository_commands: true', ''].join('\n');
+
+test('S17: a runners block at the base commit is ignored, the second pass stays off and the rule is named', async (t) => {
+  const { stub, marker } = runnerStub(t);
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, { [CONFIG_FILE]: RUNNER_CONFIG(stub) });
+  const { report } = await review(t, repo, fakes(t, fullRun()), fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.configSource.kind, 'base');
+  assert.equal(report.plan.stages['second-pass'].run, false, 'the plan saw no second pass');
+  assert.equal(existsSync(marker), false, 'the configured runner never ran');
+  assert.match(readFileSync(join(report.runDir, 'commands.log'), 'utf8'), /runners is read only from the operator's own configuration/);
+  assert.deepEqual(report.families, { secondPass: null, challenge: 'claude' });
+  assert.equal(process.env.REVIEW_VOICE_CONFIG_SOURCE, undefined, 'restored after the run');
+});
+
+test('S17: the same block through an absolute REVIEW_VOICE_CONFIG, as watch hands it over, runs the second pass', async (t) => {
+  const { stub, marker } = runnerStub(t);
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const config = scratch(t, 'runners.yaml', RUNNER_CONFIG(stub));
+  const { report } = await withEnv({ REVIEW_VOICE_CONFIG: config }, () => review(t, repo, fakes(t, fullRun()), fakeGitHub(repo)));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(report.configSource, { kind: 'env', path: config });
+  assert.equal(JSON.parse(readFileSync(join(report.runDir, 'second-pass.json'), 'utf8')).enabled, true, 'the second pass ran');
+  assert.ok(existsSync(marker), 'the configured runner ran');
+  assert.deepEqual(report.families, { secondPass: 'codex', challenge: 'claude' });
+  assert.equal(process.env.REVIEW_VOICE_CONFIG_SOURCE, undefined, 'restored after the run');
+});
+
+test('S17: the same block through --config runs the second pass on the configured argv and records the family', async (t) => {
+  const { stub, marker } = runnerStub(t);
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const config = scratch(t, 'runners.yaml', RUNNER_CONFIG(stub));
+  const { report, data } = await review(t, repo, fakes(t, fullRun()), fakeGitHub(repo), { config });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.configSource.kind, 'flag');
+  assert.equal(JSON.parse(readFileSync(join(report.runDir, 'second-pass.json'), 'utf8')).enabled, true, 'the second pass ran');
+  assert.ok(existsSync(marker), 'the configured runner ran');
+  assert.doesNotMatch(readFileSync(marker, 'utf8'), /[{}]/, 'both tokens were replaced');
+  assert.deepEqual(report.families, { secondPass: 'codex', challenge: 'claude' });
+  assert.deepEqual(storedRun(data, report.runId).families, { secondPass: 'codex', challenge: 'claude' });
+  const stages = JSON.parse(readFileSync(join(report.runDir, 'stages.json'), 'utf8'));
+  assert.ok(stages.length > 0 && stages.every((stage) => stage.family === 'claude'), JSON.stringify(stages));
+  const lines = reportText(report).split('\n');
+  assert.equal(lines[lines.findIndex((line) => line.startsWith('Provenance ')) + 1], 'Families second-pass codex, challenge claude');
+  assert.equal(process.env.REVIEW_VOICE_CONFIG_SOURCE, undefined, 'restored after the run');
+});
+
+// ---------------------------------------------------------------- S17 part B: who wrote the change, and the challenger's family
+
+/** Gives the head commit a message carrying `trailer`; the tree, and so every patch, is unchanged. */
+function withTrailer(repo, trailer) {
+  const git = (...args) => execFileSync('git', args, { cwd: repo.dir, encoding: 'utf8' });
+  git('checkout', '-q', 'feature');
+  git('commit', '-q', '--amend', '-m', `head\n\n${trailer}`);
+  const head = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', 'main');
+  return { ...repo, head };
+}
+
+/** GitHub as fakeGitHub serves it, with the pull request opened by `user`. */
+function openedBy(github, user) {
+  const impl = async (url, init = {}) => {
+    const response = await github(url, init);
+    if ((init.method ?? 'GET') !== 'GET' || new URL(String(url)).pathname !== `/repos/${REPO}/pulls/${PR}`) return response;
+    return json({ ...(await response.json()), user });
+  };
+  impl.calls = github.calls;
+  return impl;
+}
+
+const authorshipOf = (report) => JSON.parse(readFileSync(join(report.runDir, 'authorship.json'), 'utf8'));
+const CLAUDE_TRAILER = 'Co-authored-by: Claude Example <noreply@example.com>';
+
+test('S17 AC-8: a Co-authored-by trailer on the head commit is written to authorship.json and handed to plan', async (t) => {
+  const repo = withTrailer(repository(t, { 'src/app.ts': APP_HEAD }), CLAUDE_TRAILER);
+  const { report } = await review(t, repo, fakes(t, NO_FINDING_RUN), fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(authorshipOf(report), {
+    agent: true,
+    family: 'claude',
+    evidence: ['Co-authored-by: Claude Example <noreply@example.com> (claude)'],
+  });
+  assert.match(readFileSync(join(report.runDir, 'commands.log'), 'utf8'), /^\$ review-voice plan .*--authorship \S*authorship\.json/m);
+  assert.deepEqual(report.plan.families, { challenge: 'claude', reason: 'default' }, 'with no rule configured nothing changes');
+});
+
+test('S17 AC-8: with no readable base no trailers are read and the evidence says so', async (t) => {
+  const repo = withTrailer(repository(t, { 'src/app.ts': APP_HEAD }), CLAUDE_TRAILER);
+  const github = fakeGitHub({ ...repo, base: 'e'.repeat(40) });
+  const { report } = await review(t, repo, fakes(t, NO_FINDING_RUN), github);
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(authorshipOf(report), { agent: false, family: null, evidence: ['base not readable, trailers not read'] });
+});
+
+test('S17 AC-8: headOf keeps the pull request author, so a Bot author is agent-authored', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const github = openedBy(fakeGitHub(repo), { login: 'helper-agent[bot]', type: 'Bot' });
+  const { report } = await review(t, repo, fakes(t, NO_FINDING_RUN), github);
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(authorshipOf(report), { agent: true, family: 'other', evidence: ['pull request author helper-agent[bot] is a Bot (other)'] });
+  // The stub's own author is a person, which is no signal.
+  const human = await review(t, repo, fakes(t, NO_FINDING_RUN), fakeGitHub(repo));
+  assert.deepEqual(authorshipOf(human.report), { agent: false, family: null, evidence: [] });
+});
+
+const CHALLENGE_CONFIG = (use) =>
+  ['runners:', '  codex:', '    command: [codex, exec, "{schema}"]', '    label: codex-cli', '  use:', `    ${use}`, 'watch:', '  run_repository_commands: true', ''].join('\n');
+const challengeHeld = (report) => report.held.filter((entry) => entry.source === 'challenge').map((entry) => [entry.verdict, entry.reason]);
+
+test('S17 AC-10: runners.use.challenge runs the challenger on the configured family and records it', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const fakeDir = fakes(t, fullRun());
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('challenge: codex'));
+  const { report, data } = await review(t, repo, fakeDir, fakeGitHub(repo), { config });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  const calls = callsOf(fakeDir, 'challenger');
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].spec.runner, { family: 'codex', label: 'codex-cli' });
+  assert.equal(calls[0].spec.model, 'codex-cli');
+  assert.ok(calls[0].prompt.startsWith(COMMAND_RUNNER_PREAMBLE), 'the text the command backend would have sent');
+  for (const agent of ['diff-analyst', 'evidence-verifier', 'concise-editor']) {
+    assert.ok(callsOf(fakeDir, agent).every((call) => call.spec.runner === undefined), `${agent} stays on Claude`);
+  }
+  const stage = storedRun(data, report.runId).stages.find((entry) => entry.name === 'challenge');
+  assert.equal(stage.family, 'codex');
+  assert.equal(stage.model, 'codex-cli');
+  assert.deepEqual(report.families, { secondPass: null, challenge: 'codex' });
+  assert.deepEqual(report.plan.families, { challenge: 'codex', reason: 'runners.use.challenge' });
+  assert.equal(report.findings.length, 1, 'a confirmed finding still posts');
+});
+
+test('S17 AC-10: under REVIEW_VOICE_NO_COMMANDS=1 a configured challenger holds every finding and the review cannot approve', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  // The same fixture with a Claude challenger that refutes every finding approves (green CI, normal complexity).
+  const claude = await review(t, repo, fakes(t, fullRun({ challenger: [{ verdicts: [refuted] }] })), fakeGitHub(repo));
+  assert.equal(claude.report.exitCode, 0, claude.report.error);
+  assert.deepEqual(claude.report.findings, []);
+  assert.equal(claude.report.verdict.event, 'APPROVE');
+
+  const fakeDir = fakes(t, fullRun());
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('challenge: codex'));
+  const { report } = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => review(t, repo, fakeDir, fakeGitHub(repo), { config }));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(callsOf(fakeDir, 'challenger'), [], 'the configured runner never started');
+  assert.deepEqual(challengeHeld(report), [['challenge-partly', 'challenger not run: REVIEW_VOICE_NO_COMMANDS=1 keeps the configured codex runner from running']]);
+  assert.deepEqual(report.findings, [], 'nothing above a nit posts');
+  assert.equal(readFileSync(join(report.runDir, 'review.txt'), 'utf8'), `${NO_FINDINGS}\n`);
+  assert.equal(report.notes.filter((note) => note.includes('keeps the configured codex runner from running')).length, 1, JSON.stringify(report.notes));
+  assert.equal(report.notes.some((note) => note.includes('challenger failed')), false, 'one note, not a second one for a failure');
+  assert.equal(report.verdict.event, 'COMMENT');
+  assert.deepEqual(report.families, { secondPass: null, challenge: null }, 'no challenger ran');
+});
+
+test('S17 AC-10: an unchanged-scope carry of a run capped for a challenger that did not run keeps the cap', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const github = fakeGitHub(repo);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-shared-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('challenge: codex'));
+  const one = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => reviewIn(repo, fakes(t, fullRun()), github, data, { config }));
+  assert.equal(one.verdict.event, 'COMMENT', `${one.error} ${JSON.stringify(one.notes)}`);
+
+  // The base branch moves on and is merged in: a new head with the same own diff.
+  const git = (...args) => execFileSync('git', args, { cwd: repo.dir, encoding: 'utf8' });
+  writeFileSync(join(repo.dir, 'README.md'), '# Api\n\nSums prices, now documented.\n');
+  git('commit', '-q', '-am', 'docs on main');
+  repo.base = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', 'feature');
+  git('merge', '-q', '--no-edit', 'main');
+  repo.head = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', 'main');
+
+  const two = await reviewIn(repo, fakes(t, {}), github, data, { config });
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  assert.equal(two.carried, true);
+  assert.equal(readFileSync(join(two.runDir, 'review.txt'), 'utf8'), `${NO_FINDINGS}\n`);
+  assert.deepEqual(
+    storedRun(data, two.runId).held.map((entry) => [entry.verdict, entry.reason]),
+    [['challenge-partly', 'challenger not run: REVIEW_VOICE_NO_COMMANDS=1 keeps the configured codex runner from running']],
+    'the hold travels with the carry',
+  );
+  assert.equal(two.verdict.event, 'COMMENT', 'no challenge has run on these findings, so the carry cannot approve');
+});
+
+test('S17 AC-10: a full re-review that drops a re-raised finding held for a challenger that did not run keeps the hold and the cap', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const github = fakeGitHub(repo);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-shared-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('challenge: codex'));
+  const one = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => reviewIn(repo, fakes(t, fullRun()), github, data, { config }));
+  assert.equal(one.verdict.event, 'COMMENT', `${one.error} ${JSON.stringify(one.notes)}`);
+
+  // The same head reviewed in full: the analyst raises the same finding, which --held-from drops as a repeat.
+  const fakeDir = fakes(t, fullRun());
+  const two = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => reviewIn(repo, fakeDir, github, data, { config, full: true }));
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  assert.equal(two.carried, false);
+  assert.ok(two.notes.some((note) => note.includes('restated a finding an earlier run held back')), JSON.stringify(two.notes));
+  assert.deepEqual(callsOf(fakeDir, 'evidence-verifier'), [], 'the repeat never reached the verifier or the challenger');
+  assert.equal(two.verdict.event, 'COMMENT', 'no challenge has run on this finding, so the review cannot approve');
+  assert.deepEqual(
+    storedRun(data, two.runId).held.map((entry) => [entry.verdict, entry.reason, entry.path, entry.line]),
+    [['challenge-partly', 'challenger not run: REVIEW_VOICE_NO_COMMANDS=1 keeps the configured codex runner from running', 'src/app.ts', 3]],
+    'the hold is kept, so the next review drops the repeat for the same reason',
+  );
+});
+
+test('S17 AC-10: a configured runner that fails twice holds the same way, with its error, and caps the event', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const fakeDir = fakes(t, fullRun({ challenger: [] }));
+  writeFileSync(join(fakeDir, 'challenger.json'), JSON.stringify({ error: 'codex exited with code 1' }));
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('challenge: codex'));
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo), { config });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(callsOf(fakeDir, 'challenger').length, 2, 'relaunched once, never on another family');
+  assert.ok(callsOf(fakeDir, 'challenger').every((call) => call.spec.runner.family === 'codex'));
+  assert.deepEqual(challengeHeld(report), [['challenge-partly', 'challenger not run: the configured codex runner failed: the call failed: codex exited with code 1']]);
+  assert.deepEqual(report.findings, []);
+  assert.ok(report.notes.some((note) => note.includes('The configured codex challenger failed')), JSON.stringify(report.notes));
+  assert.equal(report.verdict.event, 'COMMENT');
+  assert.deepEqual(report.families, { secondPass: null, challenge: 'codex' });
+});
+
+test('S17 AC-10: a Claude challenger that fails twice keeps its reason and its event', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const fakeDir = fakes(t, fullRun({ challenger: [] }));
+  writeFileSync(join(fakeDir, 'challenger.json'), JSON.stringify({ error: 'claude exited with code 1' }));
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(challengeHeld(report), [['challenge-partly', 'challenger failed: the call failed: claude exited with code 1']]);
+  assert.equal(report.verdict.event, 'APPROVE', 'a held finding does not change the event (docs/adr/0024)');
+});
+
+test('S17 AC-10: a change Claude co-authored is challenged on the configured alternative family', async (t) => {
+  const repo = withTrailer(repository(t, { 'src/app.ts': APP_HEAD }), CLAUDE_TRAILER);
+  const fakeDir = fakes(t, fullRun());
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('agent_authored_challenge: codex'));
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo), { config });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(report.plan.families, { challenge: 'codex', reason: 'agent-authored by claude; challenged on codex (runners.use.agent_authored_challenge)' });
+  assert.deepEqual(callsOf(fakeDir, 'challenger').map((call) => call.spec.runner), [{ family: 'codex', label: 'codex-cli' }]);
+  assert.deepEqual(report.families, { secondPass: null, challenge: 'codex' });
 });

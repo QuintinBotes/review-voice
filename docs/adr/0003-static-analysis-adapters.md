@@ -130,3 +130,34 @@ recorded and shown but never holds. `REVIEW_VOICE_NO_COMMANDS` turns it off
 like every other command. "Ship an execution sandbox" stays rejected for
 anything broader than one configured command running one verifier-written file
 through one platform mechanism behind a probe.
+
+## Amendment - 2026-11-10
+
+A configured runner, `runners.<family>.command`, is a configured command in
+the sense of this record (S17). It runs an agent, the second pass or the
+challenger, on another model family, `codex` or `gemini`, as an argv list and
+never a shell string; `{schema}`, `{output}` and `{cwd}` are the only tokens
+Review Voice replaces. Its sandbox is the external CLI's own, chosen by the
+flags the configuration names, which the runner cannot narrow. The exposure is
+that an external agent may run repository code or reach the network whenever
+those flags allow it, so the configuration names a read-only, no-network
+sandbox and the operator checks it against the installed version. It runs only
+when named in configuration, in the detached head worktree, with the minimal
+environment of issue 279 plus the names `runners.<family>.env_passthrough`
+lists, and never under `REVIEW_VOICE_NO_COMMANDS=1`. A second-pass runner that
+is refused or cannot run does not hold. The second pass is skipped, or its
+verdicts are unverified, and the findings go on unchanged, as with a shell
+verification command. A configured challenger that cannot run holds the
+challenged findings rather than passing them.
+
+Unlike the other configured commands, `runners:` is read only from the
+operator's own configuration: the file `--config` names, an absolute
+`REVIEW_VOICE_CONFIG`, or the Action's `config` input, which arrives as
+`--config`. A `runners:` block in a repository's own file, at a pull request's
+base commit or in a checkout, is ignored with one warning that names the rule,
+because a runner is a command the operator's machine executes and a repository
+must not choose it. The review driver tells the loader which source it chose
+through `REVIEW_VOICE_CONFIG_SOURCE`; elsewhere only a path the caller passed
+(`watch` passes its own copy) or an absolute `REVIEW_VOICE_CONFIG` counts.
+`doctor` reports whether `codex` and `gemini` are on `PATH` as information and
+never runs a configured command: detection suggests, configuration enables.

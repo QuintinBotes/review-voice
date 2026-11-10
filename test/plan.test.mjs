@@ -314,3 +314,111 @@ test('plan command: help is available', () => {
   const out = execFileSync(process.execPath, [bundle, 'plan', '--help'], { encoding: 'utf8' });
   assert.match(out, /review-voice plan --files/);
 });
+
+// ---------------------------------------------------------------- S17 part B: the plan names the challenge family
+
+const CODEX = { command: ['codex', 'exec', '{schema}'], timeoutSeconds: 600, label: 'codex', envPassthrough: [] };
+const runnersOf = (use) => ({ external: { codex: CODEX }, use: { challenge: 'claude', agentAuthoredChallenge: null, ...use } });
+const authoredBy = (family) => ({ agent: family !== null, family, evidence: family === null ? [] : ['a trailer'] });
+
+test('S17 AC-9: with no runners the challenge runs on claude for the default reason, and nothing is echoed', () => {
+  const plan = resolvePlan({ requested: 'standard', ...SMALL, secondPassConfigured: false });
+  assert.deepEqual(plan.families, { challenge: 'claude', reason: 'default' });
+  assert.deepEqual(plan.runners, {});
+});
+
+test('S17 AC-9: runners.use.challenge names the base family and plan.runners echoes the configured blocks', () => {
+  const plan = resolvePlan({ requested: 'standard', ...SMALL, secondPassConfigured: false, runners: runnersOf({ challenge: 'codex' }) });
+  assert.deepEqual(plan.families, { challenge: 'codex', reason: 'runners.use.challenge' });
+  assert.deepEqual(plan.runners, { codex: CODEX });
+});
+
+test('S17 AC-9: a change an agent of the base family wrote is challenged on the configured alternative', () => {
+  const plan = resolvePlan({
+    requested: 'standard', ...SMALL, secondPassConfigured: false,
+    runners: runnersOf({ agentAuthoredChallenge: 'codex' }), authorship: authoredBy('claude'),
+  });
+  assert.deepEqual(plan.families, {
+    challenge: 'codex',
+    reason: 'agent-authored by claude; challenged on codex (runners.use.agent_authored_challenge)',
+  });
+});
+
+test('S17 AC-9: an authorship of another family, other, none or unknown keeps the base family', () => {
+  for (const authorship of [authoredBy('codex'), authoredBy('other'), authoredBy(null), undefined]) {
+    const plan = resolvePlan({
+      requested: 'standard', ...SMALL, secondPassConfigured: false,
+      runners: runnersOf({ agentAuthoredChallenge: 'codex' }), ...(authorship === undefined ? {} : { authorship }),
+    });
+    assert.deepEqual(plan.families, { challenge: 'claude', reason: 'default' }, JSON.stringify(authorship));
+  }
+});
+
+test('S17 AC-9: the rule is off unless agent_authored_challenge is set', () => {
+  const plan = resolvePlan({ requested: 'standard', ...SMALL, secondPassConfigured: false, runners: runnersOf({}), authorship: authoredBy('claude') });
+  assert.deepEqual(plan.families, { challenge: 'claude', reason: 'default' });
+});
+
+test('S17 AC-9: fast mode still names the family the challenge of a finding above a nit runs on', () => {
+  const plan = resolvePlan({ requested: 'fast', ...DOCS, secondPassConfigured: false, runners: runnersOf({ challenge: 'codex' }) });
+  assert.equal(plan.families.challenge, 'codex');
+  assert.deepEqual(modelForFinding(plan, 'challenge', 'minor'), { run: true, model: S });
+});
+
+function planCliWith(t, config, extra) {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-plan-runners-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // The command reads configuration only inside a repository.
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  const configPath = join(dir, 'operator.yaml');
+  writeFileSync(configPath, config);
+  writeFileSync(join(dir, 'files.json'), JSON.stringify({ files: [file('src/a.ts')], complexity: { level: 'normal' } }));
+  writeFileSync(join(dir, 'diff.patch'), '');
+  const run = spawnSync(process.execPath, [bundle, 'plan', '--files', join(dir, 'files.json'), '--diff-file', join(dir, 'diff.patch'), ...extra(dir)], {
+    cwd: dir, encoding: 'utf8', env: { ...process.env, REVIEW_VOICE_DATA_DIR: dir, REVIEW_VOICE_CONFIG: configPath },
+  });
+  return { run, dir };
+}
+
+const RUNNERS_YAML = ['runners:', '  codex:', '    command: [codex, exec, "{schema}"]', '  use:', '    agent_authored_challenge: codex', 'watch:', '  run_repository_commands: true', ''].join('\n');
+
+test('S17 AC-9: plan --authorship reads the file and applies the rule from the operator configuration', (t) => {
+  const { run } = planCliWith(t, RUNNERS_YAML, (dir) => {
+    writeFileSync(join(dir, 'authorship.json'), JSON.stringify(authoredBy('claude')));
+    return ['--authorship', join(dir, 'authorship.json')];
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const plan = JSON.parse(run.stdout);
+  assert.deepEqual(plan.families, { challenge: 'codex', reason: 'agent-authored by claude; challenged on codex (runners.use.agent_authored_challenge)' });
+  assert.deepEqual(plan.runners.codex.command, ['codex', 'exec', '{schema}']);
+});
+
+test('S17 AC-9: plan without --authorship names the base family', (t) => {
+  const { run } = planCliWith(t, RUNNERS_YAML, () => []);
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout).families, { challenge: 'claude', reason: 'default' });
+});
+
+test('S17 AC-9: an unreadable --authorship file, or the flag with no file, exits 2', (t) => {
+  for (const extra of [
+    (dir) => ['--authorship', join(dir, 'missing.json')],
+    (dir) => {
+      writeFileSync(join(dir, 'broken.json'), '{not json');
+      return ['--authorship', join(dir, 'broken.json')];
+    },
+    (dir) => {
+      writeFileSync(join(dir, 'list.json'), '[]');
+      return ['--authorship', join(dir, 'list.json')];
+    },
+    () => ['--authorship'],
+  ]) {
+    const { run } = planCliWith(t, RUNNERS_YAML, extra);
+    assert.equal(run.status, 2, run.stdout);
+    assert.equal(run.stdout, '');
+  }
+});
+
+test('S17 AC-9: plan --help documents --authorship', () => {
+  const out = execFileSync(process.execPath, [bundle, 'plan', '--help'], { encoding: 'utf8' });
+  assert.match(out, /--authorship <file>/);
+});

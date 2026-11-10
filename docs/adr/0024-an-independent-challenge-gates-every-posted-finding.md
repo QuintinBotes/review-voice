@@ -89,3 +89,29 @@ absolute path. Applying the verdicts drops an entry that names the
 reproduction file by its worktree path or its basename, since that file exists
 only in the copy and the block would otherwise post it. A reproduction that did not fail reaches the challenger only for
 a category no suppression may reach, since there it does not hold the finding.
+
+## Amendment - 2026-11-10
+
+The challenger may run on a configured model family
+([0034](0034-a-cross-family-runner-is-configured-never-detected-into-use.md)).
+`runners.use.challenge` names the family every challenge runs on (`claude` by
+default), and `runners.use.agent_authored_challenge` names the family a change
+is challenged on when an agent of that same family wrote it, read from its
+`Co-authored-by` trailers and a `Bot` author. The challenger's inputs, its
+verdict and the rule that only `confirmed` with the line confirmed or moved
+passes are unchanged.
+
+A challenge the configuration required and could not get holds the finding.
+When the configured family cannot run (`REVIEW_VOICE_NO_COMMANDS=1` or no
+`runners.<family>` block), every challenged finding is held as
+`challenge-partly` with a reason starting `challenger not run:`. A runner that
+starts and fails twice on a finding holds that finding the same way, and a
+finding it judged keeps its verdict. Nothing falls back to another family on
+its own.
+Such a held finding keeps the review from approving, so the event is COMMENT
+at most. A carry to an unchanged scope keeps the hold unless the pull request
+no longer changes its file, and a later review that drops the finding as a
+repeat of the hold keeps the hold as well, since no challenge has run there
+either. It is the one held finding that changes the event; every other held
+finding still leaves it alone, and a Claude challenger that fails twice keeps
+its `challenger failed:` reason and its event as before.

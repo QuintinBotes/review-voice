@@ -94,6 +94,22 @@ leads its group and kills it within two seconds of the CLI's pid going away.
 one test share the numbering. `review-voice agent` runs a single call, which
 is how the runner is exercised on its own.
 
+A configured runner is the seam's second backend (ADR 0021, amended
+2026-11-09). `AgentSpec.runner` names a `runners.<family>` block from the
+operator's configuration: `codex` or `gemini`, an argv list with `{schema}`,
+`{output}` and `{cwd}` replaced and never a shell string. The command backend
+in `src/agents/command-cli.ts` runs it under the same watchdog, process group,
+timeout and output cap, with the minimal environment of configured commands
+plus the block's `env_passthrough`, the agent file's body and
+`COMMAND_RUNNER_PREAMBLE` on stdin ahead of the prompt, and the last JSON
+object of `{output}` or stdout as the answer. The sandbox is the external CLI's
+own, and the preamble states the confinement the configured flags enforce.
+`REVIEW_VOICE_NO_COMMANDS=1` fails such a call instead of running it, and the
+fake backend records the family and label. `runners:` is read only from
+`--config`, an absolute `REVIEW_VOICE_CONFIG` or the Action's `config` input,
+never a base commit; `doctor` reports whether `codex` and `gemini` are on
+`PATH` as information only.
+
 ### The review driver
 
 `review-voice review --pr <n>` runs a whole review in a clone
@@ -142,6 +158,19 @@ summed into its stage; a stage whose calls reported none has no `tokens`, never
 zero. `src/review/prompts.ts` holds each agent's
 prompt and output envelope; a test holds `commands/review.md` to the agents in
 the stage table.
+
+In prep, after `thread` and before `plan`, the driver writes `authorship.json`
+(`src/review/authorship.ts`, ADR 0034). It keeps the pull request's author
+login and type from the same response that names the head, and reads the
+`Co-authored-by` trailers of the commits over `base..head` with SAFE_GIT, at
+most 500 of them; with no readable base none are read and the evidence says
+so. A trailer or a `Bot` author naming a family in the shipped table marks the
+change agent-authored by that family, `other` when a bot names none. `plan
+--authorship` reads the file, and the plan's `families.challenge` names the
+family the challenger runs on, echoing the configured `runners` blocks so the
+driver needs no second configuration read. The slash command passes no
+authorship; its origin is `interactive` already. Each agent call records its
+stage's `family`, `claude` unless a configured runner ran it.
 
 The `reproduce` stage (S16) runs only when the plan turns it on, which is
 `thorough` with the `reproduction` block enabled and a runner configured, and
@@ -542,6 +571,13 @@ the column leaves the caller's flags in force.
 `explain` prints it as a `Provenance` line, `status` appends the origin to its
 last-review line, and the review driver report prints the same line. A row
 recorded before the column, or with unreadable JSON, reads as not recorded.
+Beside the provenance in the same column, a `families` key records which model
+family ran the second pass (`codex`, `unknown` when verdicts name none, null
+without one) and the challenge (`claude` when the stage names no family, null
+without one), derived at record time from the verdicts and the `challenge`
+stage and never trusted from a caller. `record` prints it as a top-level key,
+and `explain` and the driver report print a `Families` line. A row from before
+it reads as not recorded, and the independence label keeps its two values.
 
 ### Finding identifiers
 
@@ -976,6 +1012,12 @@ its own API key gets it only by name. A verifier that cannot run never confirms
 a finding, and verification may only weaken a severity on its own; a stronger
 tier it traced is a proposal the tie-break settles.
 
+`verification.runner: codex` runs the second pass on a `runners.<family>` block
+instead of a shell string: the argv runs without a shell, `{schema}` holds the
+verdict schema, `{output}` is read in place of stdout, and every verdict
+carries the family. `verification.family` labels a hand-written command the
+same way, so verdicts can be grouped by family.
+
 It is opt-in, and a config written before it existed has no block for it at all,
 so `RV context` reports whether yours does.
 
@@ -1056,6 +1098,22 @@ finding to it. A challenger cannot raise a tier. Under `verdict.evidence_block`
 its verdict and decisive lines are posted in each inline comment's Evidence
 block, and its `reason` never is. See
 [ADR 0024](adr/0024-an-independent-challenge-gates-every-posted-finding.md).
+
+The challenger runs on the family the plan names (ADR 0034).
+`runners.use.challenge` is the base, `claude` by default, and
+`runners.use.agent_authored_challenge` moves the challenge of a change an agent
+of the base family wrote to the configured alternative. For an external family
+the driver hands `runAgent` the `runners.<family>` block as the spec's `runner`
+and records the block's `label` as the stage's model. When that family cannot
+run, because `REVIEW_VOICE_NO_COMMANDS=1` is set or no `runners.<family>`
+block is configured, every challenged finding is held as `challenge-partly`
+through the same path a failed challenger takes, with a reason starting
+`challenger not run:` and one note on the run. A runner that starts and fails
+twice on a finding holds that finding the same way, and a finding it judged
+keeps its verdict. Nothing falls back to Claude. `planFindings` then keeps the event at COMMENT at most, the one
+held finding that changes it. With `verdict.scope_block_models: true` the scope
+block's origin sentence names a challenge family other than Claude and its
+trailer carries `families`.
 
 ### Fixes are verified separately
 

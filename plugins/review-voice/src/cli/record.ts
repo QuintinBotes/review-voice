@@ -22,6 +22,7 @@ import {
   recordRun,
   runDetail,
   heldProblem,
+  challengeNotRun,
   type CarryMarker,
   CarryMismatch,
   type CandidateHint,
@@ -498,6 +499,11 @@ export function recordCommand(argv: string[]): number {
         const source = runDetail(db, carriedFrom);
         const prior = source?.carry ?? null;
         if (prior !== null && !prior.covered) carry = { ...prior, inheritedFrom: prior.inheritedFrom ?? carriedFrom };
+        // Like the marker above: a finding no configured challenger judged is
+        // still unjudged on this head, and dropping its hold would let the carry approve.
+        // One on a file the pull request no longer changes is settled like its findings.
+        const settled = scope !== undefined && 'noLongerChanged' in scope ? (scope.noLongerChanged ?? []) : [];
+        held = [...held, ...(source?.held ?? []).filter((entry) => challengeNotRun(entry) && !settled.includes(entry.path))];
         // Nothing re-reviewed the carried findings, so the record keeps the
         // provenance of the run that produced them: a carry by the driver must
         // not turn an interactive review into an independent one. A source from
@@ -588,7 +594,7 @@ export function recordCommand(argv: string[]): number {
       console.error('Warning: --thread and --follow-ups need --repository and a pull request in --files; ignored.');
     }
 
-    const { reviewRunId, findings, provenance } = recordRun(db, {
+    const { reviewRunId, findings, provenance, families } = recordRun(db, {
       repository,
       baseRef: flag(argv, '--base'),
       headRef,
@@ -633,8 +639,9 @@ export function recordCommand(argv: string[]): number {
         {
           reviewRunId,
           findings,
-          // So the review driver can print the line without a second command.
+          // So the review driver can print the lines without a second command.
           provenance,
+          families,
           ...(followUps.length === 0 ? {} : { followUps }),
           ...(warning === null ? {} : { warnings: [warning] }),
         },
