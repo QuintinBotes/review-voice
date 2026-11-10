@@ -497,3 +497,226 @@ test('AC-6: ADR 0003, its index row, the architecture note, the help and the exa
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/** A configured check run through collectEvidence with no process, printing `output` and, for its version command, `version`. */
+const collected = (output, { command = 'scan', version, envPassthrough = [] } = {}) => collectEvidence(
+  [{ name: 'scan', run: command, ...(version === undefined ? {} : { version: 'tool --version' }) }],
+  {
+    cwd: '/synthetic/repository', enabled: true, envPassthrough,
+    spawn: (run) => (run === 'tool --version' ? { status: 0, stdout: version, stderr: '' } : { status: 1, stdout: output, stderr: '' }),
+  },
+);
+
+test('AC-3: every adapter is redacted where its signals enter the report, a path redaction would change is dropped with its line, and both versions are redacted', async () => {
+  // Built at run time so no token-shaped string sits in the repository.
+  const token = 'ghp_' + 'a9'.repeat(18);
+  const text = await collected(`a.py:12: error: leaked ${token}\n`, { command: 'ruff check .', version: `ruff 0.8.0 ${token}\n` });
+  assert.deepEqual(text.signals.map((signal) => [signal.path, signal.line, signal.claim, signal.evidence[0]]), [
+    ['a.py', 12, 'error: leaked [REDACTED:GITHUB_TOKEN]', 'a.py:12: error: leaked [REDACTED:GITHUB_TOKEN]'],
+  ]);
+  assert.equal(text.commands[0].version, 'ruff 0.8.0 [REDACTED:GITHUB_TOKEN]');
+  const sarif = await collected(doc([result({ locations: at(`src/${token}.py`, 3) }), result({ locations: at('src/kept.py', 4) })], { name: 'tool', version: token }));
+  assert.deepEqual(sarif.signals.map((signal) => [signal.path, signal.line, signal.claim]), [[null, null, 'r: m'], ['src/kept.py', 4, 'r: m']]);
+  assert.equal(sarif.commands[0].version, 'tool [REDACTED:GITHUB_TOKEN]');
+  assert.ok(!JSON.stringify([text, sarif]).includes(token.slice(0, 8)));
+});
+
+test('AC-1: only a SARIF document, decoded or in text with its escapes decoded, is claimed, so a version string leaves text diagnostics to their adapter', () => {
+  const token = 'ghp_' + 'a9'.repeat(18);
+  // An escaped key and a brace in the noise, so neither the raw text nor the parse shows the document.
+  const escaped = JSON.stringify({ version: '2.1.0', runs: [], properties: { snippet: `a.py:12: error: ${token}` } }, null, 2).replace('"version"', '"\\u0076ersion"');
+  assert.deepEqual(parseOutput('ruff', 'ruff check --output-format sarif .', `{ warning: rules loaded }\n${escaped}`), { signals: [] });
+  const claims = (name, command, output) => parseOutput(name, command, output).signals.map((signal) => signal.claim);
+  assert.deepEqual(claims('tsc', 'tsc --noEmit', '{"version":"2.1.0"}\nsrc/a.ts(1,1): error TS2322: bad'), ['TS2322: bad']);
+  assert.deepEqual(claims('mypy', 'mypy .', 'a.py:12: error: bad\nreport "version": "2.1.0" written'), ['error: bad']);
+  assert.deepEqual(claims('build', 'dotnet build', '{"version":"2.1.0"}\nProgram.cs(1,1): error CS1002: bad'), ['CS1002: bad']);
+});
+
+test('AC-2: a rule reference names its component by index, else by guid, else the driver (SARIF 3.54)', () => {
+  const driverRules = [{ id: 'r', defaultConfiguration: { level: 'note' } }, { id: 'r', defaultConfiguration: { level: 'error' } }];
+  const extension = { name: 'pack', guid: 'pack-guid', rules: [{ id: 'other' }, { id: 'r', defaultConfiguration: { level: 'warning' } }] };
+  const confidence = (toolComponent) => parse(JSON.stringify({
+    version: '2.1.0',
+    runs: [{
+      tool: { driver: { name: 'tool', guid: 'driver-guid', rules: driverRules }, extensions: [extension] },
+      results: [result({ level: undefined, message: { text: 'defect' }, rule: { index: 1, toolComponent }, locations: at('a.py') })],
+    }],
+  })).signals.map((signal) => signal.confidence);
+  assert.deepEqual(confidence({ name: 'tool' }), [0.95]);
+  assert.deepEqual(confidence({ guid: 'driver-guid' }), [0.95]);
+  assert.deepEqual(confidence({ guid: 'pack-guid' }), [0.8]);
+  assert.deepEqual(confidence({ index: 0, guid: 'driver-guid' }), [0.8]);
+  assert.deepEqual(confidence({ index: -1 }), [0.95]);
+});
+
+test('AC-2: rules and components are found once per run, so a run with many of each parses about as fast as one with none', () => {
+  const results = Array.from({ length: 40000 }, (_, index) => ({ ruleId: `missing-${index}`, rule: { toolComponent: { guid: `g-${index}` } }, message: { text: 'm' } }));
+  const timed = (rules, extensions) => {
+    const output = JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: { name: 'tool', version: '1.0', rules }, extensions }, results }] });
+    const started = performance.now();
+    assert.equal(parse(output).signals.length, results.length);
+    return performance.now() - started;
+  };
+  // Against the same parse with none, so the bound holds on a slower machine; a scan per result took over ten times as long.
+  const none = timed([], []);
+  const many = timed(
+    Array.from({ length: 40000 }, (_, index) => ({ id: `rule-${index}` })),
+    Array.from({ length: 40000 }, (_, index) => ({ guid: `g-${index}` })),
+  );
+  assert.ok(many < 4 * none + 250, `${Math.round(many)} ms with 40000 of each, ${Math.round(none)} ms with none`);
+});
+
+test('AC-3: a rule id is masked and redacted before it is spaced and cut, so a value or token across the cut leaves nothing behind (issue 279)', async (t) => {
+  // Built at run time. Each is a value the spacing or the cut would change before a later mask or redaction saw it.
+  const values = { S20_PROBE_RULE_CUT: 'qzqzqzqzwvwvwvwv', S20_PROBE_RULE_SPACED: 'alpha  beta\tgamma' };
+  for (const [name, value] of Object.entries(values)) process.env[name] = value;
+  t.after(() => {
+    for (const name of Object.keys(values)) delete process.env[name];
+  });
+  const token = 'ghp_' + 'a9'.repeat(18);
+  const output = doc([
+    // The value starts at point 197, so a cut before the mask keeps its first four characters.
+    `${'x'.repeat(195)} ${values.S20_PROBE_RULE_CUT}`,
+    `found ${values.S20_PROBE_RULE_SPACED} here`,
+    // The token starts at point 192, so a cut before redaction keeps nine of its characters, which match no pattern.
+    `${'y'.repeat(190)} ${token}`,
+  ].map((ruleId, index) => result({ ruleId, locations: at('a.py', index + 1) })));
+  const report = await collected(output, { envPassthrough: Object.keys(values) });
+  assert.deepEqual(report.signals.map((signal) => signal.claim), [
+    `${'x'.repeat(195)} [red: m`,
+    'found [redacted:S20_PROBE_RULE_SPACED] here: m',
+    `${'y'.repeat(190)} [REDACTED: m`,
+  ]);
+  const stored = JSON.stringify(report);
+  for (const leak of ['qzqz', 'alpha beta', 'ghp_']) assert.ok(!stored.includes(leak), leak);
+});
+
+test('AC-4: a version from the document or a version command is masked and redacted on both sides of its stripping and before its cap, so no part of a value or token is stored', async (t) => {
+  // Built at run time so no token-shaped string sits in the repository.
+  const token = 'ghp_' + 'a9'.repeat(18);
+  const value = 'Zq7w' + 'Xv9pLm3n';
+  process.env.S20_PROBE_VERSION = value;
+  t.after(() => {
+    delete process.env.S20_PROBE_VERSION;
+  });
+  const cases = [];
+  // Each separator is stripped from the line, which joins what it split after a single redaction saw it apart.
+  for (const separator of ['​', '‮', '\u0007', '­', ' ']) {
+    cases.push([`${token.slice(0, 8)}${separator}${token.slice(8)}`, 'tool [REDACTED:GITHUB_TOKEN]']);
+    cases.push([`${value.slice(0, 5)}${separator}${value.slice(5)}`, 'tool [redacted:S20_PROBE_VERSION]']);
+  }
+  // The token crosses the 80-point cap, so a redaction after the cut would keep its prefix.
+  cases.push([`${'1'.repeat(60)} ${token}`, `tool ${'1'.repeat(60)} [REDACTED:GITH`]);
+  for (const [version, expected] of cases) {
+    const fromDocument = await collected(doc([], { name: 'tool', version }), { envPassthrough: ['S20_PROBE_VERSION'] });
+    const fromCommand = await collected('', { version: `tool ${version}\n`, envPassthrough: ['S20_PROBE_VERSION'] });
+    assert.deepEqual([fromDocument.commands[0].version, fromCommand.commands[0].version], [expected, expected], JSON.stringify(version));
+  }
+});
+
+test('AC-1: an escape with an upper case hex letter, a SARIF $schema in the text and a $schema only the parse can read each claim the document', () => {
+  const noise = '{ warning: rules loaded }\n';
+  const pretty = (document) => JSON.stringify(document, null, 2);
+  const claimed = (output) => parseOutput('ruff', 'ruff check --output-format sarif .', output);
+  // A brace in the noise defeats the parse for the first two, so only the text can show the document.
+  const documents = [
+    [noise + pretty({ version: '2.1.0', runs: [], properties: { snippet: 'a.py:12: error: escaped' } }).replace('"version"', '"versi\\u006Fn"'), '\\u006F'],
+    [noise + pretty({ $schema: 'schemas/sarif-2.1.0.json', version: '2.1.0-rtm.5', runs: [{ results: [], properties: { note: 'a.py:12: error: schema' } }] }), 'sarif-'],
+    // The escaped quote ends the text match before the word, so only the parsed value names SARIF.
+    [pretty({ $schema: 'x"sarif', version: '2.1.0-rtm.5', runs: [{ results: [], properties: { note: 'a.py:12: error: parsed' } }] }), 'sarif'],
+  ];
+  for (const [output, marker] of documents) {
+    assert.deepEqual(claimed(output), { signals: [] }, output);
+    // Without its marker the same output reaches the python adapter, so the marker alone decides.
+    assert.equal(claimed(output.replace(marker, 'other')).signals.length, 1, output);
+  }
+});
+
+test('AC-3: a path carrying a passed-through value, token-shaped or not, is dropped with its line from every adapter, and the value is stored nowhere (issue 279)', async (t) => {
+  // Built at run time. The underscore before the token takes away the word boundary its pattern needs, so only the mask finds it.
+  const values = { S20_PROBE_GH: 'ghp_' + 'a9'.repeat(18), S20_PROBE_DB_PASSWORD: ['Hunter2', 'Corr3ct', 'Horse'].join('-') };
+  for (const [name, value] of Object.entries(values)) process.env[name] = value;
+  t.after(() => {
+    for (const name of Object.keys(values)) delete process.env[name];
+  });
+  const envPassthrough = Object.keys(values);
+  const tsc = await collected([
+    `src/cache_${values.S20_PROBE_GH}/a.ts(3,1): error TS2345: bad`,
+    `src/${values.S20_PROBE_DB_PASSWORD}/a.ts(4,1): error TS2345: bad`,
+    'src/kept.ts(5,1): error TS2345: bad',
+  ].join('\n'), { command: 'tsc --noEmit', envPassthrough });
+  assert.deepEqual(tsc.signals.map((signal) => [signal.path, signal.line, signal.evidence[0]]), [
+    [null, null, 'src/cache_[redacted:S20_PROBE_GH]/a.ts(3,1): error TS2345: bad'],
+    [null, null, 'src/[redacted:S20_PROBE_DB_PASSWORD]/a.ts(4,1): error TS2345: bad'],
+    ['src/kept.ts', 5, 'src/kept.ts(5,1): error TS2345: bad'],
+  ]);
+  const sarif = await collected(doc([
+    result({ locations: at(`build/cache_${values.S20_PROBE_GH}/a.py`, 3) }),
+    result({ locations: at(`src/${values.S20_PROBE_DB_PASSWORD}.py`, 4) }),
+    result({ locations: at('src/kept.py', 5) }),
+  ]), { envPassthrough });
+  assert.deepEqual(sarif.signals.map((signal) => [signal.path, signal.line]), [[null, null], [null, null], ['src/kept.py', 5]]);
+  const stored = JSON.stringify([tsc, sarif]);
+  for (const [name, value] of Object.entries(values)) assert.ok(!stored.includes(value.slice(0, 8)), name);
+});
+
+test('AC-3: text is cut before it is redacted, so a long run that one secret pattern rescans cannot stall the review', async () => {
+  // Word boundaries inside a run of URL-scheme characters, which the connection string pattern rescans from each one.
+  const timed = async (filler) => {
+    const started = performance.now();
+    const text = await collected(`a.py:1: error: ${filler}\n`, { command: 'ruff check .', version: `tool ${filler}\n` });
+    await collected(doc([result({ ruleId: filler, message: { text: filler }, locations: at('a.py') })]));
+    return { elapsed: performance.now() - started, text };
+  };
+  // Against the same length with no such run, so the bound holds on a slower machine; uncut, the run took seconds.
+  const plain = await timed('a '.repeat(20000));
+  const run = await timed('a.'.repeat(20000));
+  assert.ok(run.elapsed < 10 * plain.elapsed + 2000, `${Math.round(run.elapsed)} ms against ${Math.round(plain.elapsed)} ms`);
+  assert.equal([...run.text.signals[0].evidence[0]].length, 4096);
+});
+
+test('AC-2: a reference that names a component with no rule index finds the id in that component before any other', () => {
+  const component = (guid, level) => ({ name: guid, version: '1.0', guid, rules: [{ id: 'r', defaultConfiguration: { level } }] });
+  const confidence = (driverLevel, extensionLevel, toolComponent) => parse(JSON.stringify({
+    version: '2.1.0',
+    runs: [{
+      tool: { driver: component('d-guid', driverLevel), extensions: [component('p-guid', extensionLevel)] },
+      results: [result({ level: undefined, message: { text: 'defect' }, rule: { id: 'r', toolComponent }, locations: at('a.py') })],
+    }],
+  })).signals.map((signal) => signal.confidence);
+  for (const toolComponent of [{ index: 0 }, { guid: 'p-guid' }]) {
+    assert.deepEqual(confidence('note', 'error', toolComponent), [0.95], JSON.stringify(toolComponent));
+    assert.deepEqual(confidence('error', 'note', toolComponent), [], JSON.stringify(toolComponent));
+  }
+  assert.deepEqual(confidence('error', 'note', undefined), [0.95]);
+});
+
+test('AC-2: an id alone finds the first rule with it, in the driver and then in each extension, and a guid two components share names the first', () => {
+  const rule = (level) => ({ id: 'r', defaultConfiguration: { level } });
+  const confidence = (driver, extensions, reference = {}) => parse(JSON.stringify({
+    version: '2.1.0',
+    runs: [{ tool: { driver: { name: 'tool', version: '1.0', ...driver }, extensions }, results: [result({ level: undefined, locations: at('a.py'), ...reference })] }],
+  })).signals.map((signal) => signal.confidence);
+  // Only the extensions carry the id, and the first of them decides.
+  assert.deepEqual(confidence({ rules: [] }, [{ rules: [rule('error')] }, { rules: [rule('note')] }]), [0.95]);
+  // The driver carries the id twice, and its first rule decides.
+  assert.deepEqual(confidence({ rules: [rule('note'), rule('error')] }, []), []);
+  // The driver, listed first, is the component the shared guid names.
+  assert.deepEqual(confidence({ guid: 'g', rules: [rule('error')] }, [{ guid: 'g', rules: [rule('warning')] }], { rule: { index: 0, toolComponent: { guid: 'g' } } }), [0.95]);
+});
+
+test('AC-4: a version is masked and redacted before its first line is taken, so a value or key across lines leaves no first line behind', async (t) => {
+  // Built at run time so no key-shaped string sits in the repository.
+  const value = 'Zq7wXv9p' + '\n' + 'Lm3nRt5k';
+  process.env.S20_PROBE_MULTI = value;
+  t.after(() => {
+    delete process.env.S20_PROBE_MULTI;
+  });
+  const marker = (edge) => `-----${edge} ${['PRIVATE', 'KEY'].join(' ')}-----`;
+  const key = `${marker('BEGIN')}${'QUJD'.repeat(8)}\n${marker('END')}`;
+  for (const [version, expected] of [[value, 'tool [redacted:S20_PROBE_MULTI]'], [key, 'tool [REDACTED:PRIVATE_KEY]']]) {
+    const fromDocument = await collected(doc([], { name: 'tool', version }), { envPassthrough: ['S20_PROBE_MULTI'] });
+    const fromCommand = await collected('', { version: `tool ${version}\n`, envPassthrough: ['S20_PROBE_MULTI'] });
+    assert.deepEqual([fromDocument.commands[0].version, fromCommand.commands[0].version], [expected, expected], expected);
+  }
+});

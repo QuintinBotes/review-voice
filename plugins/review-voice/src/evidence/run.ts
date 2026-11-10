@@ -1,5 +1,5 @@
 import { spawn as spawnChild } from 'node:child_process';
-import { parseOutput } from './parsers.ts';
+import { parseOutput, redactBounded } from './parsers.ts';
 import type { CommandOutcome, EvidenceReport } from './types.ts';
 
 export interface ConfiguredCommand {
@@ -96,17 +96,18 @@ export function notRunReport(names: readonly string[], skipped?: string): Eviden
  * A version line comes from a tool run on a repository whose contents are
  * untrusted, and lands in a stored record. Control, bidi and zero-width
  * characters can reorder or hide text, so they go; the cap is by code point so
- * a surrogate pair is never split.
+ * a surrogate pair is never split. It is masked and redacted before its first
+ * line is taken, so a multiline value does not leave that line behind, and again once
+ * stripped, since removing an invisible character can join a secret the text
+ * split; both before the cap, since a cut value no longer matches.
  */
-function sanitisedVersion(stdout: string): string | undefined {
-  const firstLine = stdout.split('\n')[0] ?? '';
-  const clean = firstLine
-    // Control (Cc) and format (Cf) characters: the format class holds the bidi
-    // controls and the zero-width characters, and line and paragraph separators
-    // would break the one-line record.
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '')
-    .trim();
-  const capped = [...clean].slice(0, MAX_VERSION_POINTS).join('').trim();
+function sanitisedVersion(stdout: string, clean: (text: string) => string): string | undefined {
+  const firstLine = clean(stdout).split('\n')[0] ?? '';
+  // Control (Cc) and format (Cf) characters: the format class holds the bidi
+  // controls and the zero-width characters, and line and paragraph separators
+  // would break the one-line record.
+  const stripped = clean(firstLine.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '')).trim();
+  const capped = [...stripped].slice(0, MAX_VERSION_POINTS).join('').trim();
   return capped === '' ? undefined : capped;
 }
 
@@ -174,21 +175,28 @@ export async function collectEvidence(
     }
 
     const mask = (text: string): string => maskPassthrough(text, process.env, options.envPassthrough ?? []);
+    // A tool's text can quote a secret it read, and every adapter's signals pass here, so this is where they are cleaned.
+    const clean = (text: string): string => redactBounded(mask(text));
     const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-    const configuredVersion = command.version === undefined ? undefined : await readVersion(spawn, command.version, options.cwd, timeoutMs, env, mask);
-    // Parsed from the true output, so a passed-through directory in a path does
-    // not break the location; then the text a reader sees is masked. The path
-    // and line stay as printed, because matching a finding to a signal reads them.
-    // An adapter that rewrites the tool's text masks it first, as it decodes it.
+    const configuredVersion = command.version === undefined ? undefined : await readVersion(spawn, command.version, options.cwd, timeoutMs, env, clean);
+    // Parsed from the true output, so a passed-through value cannot break a
+    // diagnostic's shape; then the text a reader sees is masked and redacted.
+    // A path is a location, so it is kept as printed or dropped with its line,
+    // since a rewritten path would name another file. It is dropped when
+    // masking or redaction would change it, because it then carries a secret
+    // or a value the repository listed as one, or when it is too long to
+    // redact whole. An adapter that rewrites the tool's text masks it first,
+    // as it decodes it.
     const parsed = parseOutput(command.name, command.run, output, options.cwd, mask);
     const signals = parsed.signals.map((signal) => ({
       ...signal,
-      claim: mask(signal.claim),
-      evidence: signal.evidence.map(mask),
+      ...(signal.path !== null && clean(signal.path) !== signal.path ? { path: null, line: null } : {}),
+      claim: clean(signal.claim),
+      evidence: signal.evidence.map(clean),
     }));
     // A version the output itself states (a SARIF document names its producer)
     // is recorded like a version command's line; a command the user wrote wins.
-    const version = configuredVersion ?? (parsed.version === undefined ? undefined : sanitisedVersion(mask(parsed.version)));
+    const version = configuredVersion ?? (parsed.version === undefined ? undefined : sanitisedVersion(parsed.version, clean));
     outcomes.push({
       name: command.name,
       command: command.run,
@@ -218,13 +226,11 @@ async function readVersion(
   cwd: string,
   timeout: number,
   env: NodeJS.ProcessEnv,
-  mask: (text: string) => string,
+  clean: (text: string) => string,
 ): Promise<string | undefined> {
   const result = await spawnInGroup(spawn, run, cwd, timeout, env);
   if (result.error !== undefined || result.status !== 0) return undefined;
-  // Masked whole, before the first line is taken and capped: a cut value no
-  // longer matches, and a multiline one would leave its first line behind.
-  return sanitisedVersion(mask(String(result.stdout ?? '')));
+  return sanitisedVersion(String(result.stdout ?? ''), clean);
 }
 
 /**

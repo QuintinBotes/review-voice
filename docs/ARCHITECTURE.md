@@ -580,9 +580,19 @@ A `sarif` adapter, first in the list, parses any output holding a SARIF 2.1.0
 document, whatever the check's name or command, so semgrep, opengrep,
 gitleaks, trivy, CodeQL, ruff, golangci-lint and any tool that adopts the
 format share one parser and one set of fixtures (`fixtures/sarif/`). Output
-carrying a SARIF `version` or `$schema`, in its text or once decoded, is this
-adapter's, and yields nothing unless it is a whole 2.1.0 document, rather than
-reaching a text adapter, which redacts nothing. Each
+is this adapter's when it is a SARIF document, parsed or in its text read with
+`\u00XX` escapes decoded, which means a SARIF `$schema`, or a 2.1.0 `version`
+beside a `runs` key. A version string alone is not one, so a text diagnostic
+printed beside it keeps its adapter. Claimed output yields nothing unless it
+is a whole 2.1.0 document. A mangled document that neither test recognises can
+reach a text adapter, which may make a false lead of one of its lines. That is
+the accepted risk, and it is not a leak, because every adapter's claim and
+evidence are masked and redacted where signals enter the report
+(`collectEvidence`), and a path that masking or redaction would change is
+dropped with its line, since a rewritten path would name another file. Text is
+cut to 4096 code points before it is redacted, far above the later cuts,
+because one secret pattern backtracks quadratically over a long run of
+characters and the output is the pull request's to shape. Each
 unsuppressed `fail` result at `error` or `warning` becomes a signal carrying
 the rule id, redacted, held to one line and cut at 200 code points, and the tool's own
 message, redacted and cut at 500 code points, its path (percent-decoded, `file://` removed, normalised and made relative to the directory
@@ -596,8 +606,10 @@ duplicates produce nothing. Snippets, code flows, fixes, fingerprints and
 properties are never copied, because a snippet is repository content, and for
 a secrets scanner it is the secret itself, which would otherwise land in the
 cached run directory. The driver's name and version are recorded as the
-check's `version`, sanitised as a version command's line is, unless a
-configured `version` command recorded one. A scanner run over a vendored tree
+check's `version`, unless a configured `version` command recorded one, and a
+version from either is masked and redacted before and after its invisible
+characters are stripped, since stripping one can join a secret, and before it
+is cut. A scanner run over a vendored tree
 floods the analyst with leads; scoping it is the configuration's job.
 
 A configured command, its `version` command and the second-pass verification

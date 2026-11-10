@@ -12125,6 +12125,10 @@ function indexed(value, index) {
 }
 var MAX_SARIF_MESSAGE_POINTS = 500;
 var MAX_SARIF_RULE_POINTS = 200;
+var MAX_REDACTED_POINTS = 4096;
+function redactBounded(text4) {
+  return redact([...text4.slice(0, 2 * MAX_REDACTED_POINTS)].slice(0, MAX_REDACTED_POINTS).join("")).text;
+}
 function sarifDocument(output) {
   const start = output.indexOf("{");
   const end = output.lastIndexOf("}");
@@ -12139,11 +12143,14 @@ function sarifRuns(output) {
   const document = sarifDocument(output);
   return document?.version === "2.1.0" && Array.isArray(document.runs) ? list(document.runs) : void 0;
 }
-var SARIF_MARKER = /"version"\s*:\s*"2\.1\.0"|"\$schema"\s*:\s*"[^"]*sarif/i;
+var SARIF_SCHEMA = /"\$schema"\s*:\s*"[^"]*sarif/i;
+var SARIF_VERSION = /"version"\s*:\s*"2\.1\.0"/;
+var SARIF_RUNS = /"runs"\s*:/;
 function isSarif(output) {
-  if (SARIF_MARKER.test(output)) return true;
   const document = sarifDocument(output);
-  return document !== void 0 && (document.version === "2.1.0" || /sarif/i.test(str(document.$schema) ?? ""));
+  if (document !== void 0 && (document.version === "2.1.0" && "runs" in document || /sarif/i.test(str(document.$schema) ?? ""))) return true;
+  const text4 = output.replace(/\\u00([0-7][0-9a-f])/gi, (_escape, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+  return SARIF_SCHEMA.test(text4) || SARIF_VERSION.test(text4) && SARIF_RUNS.test(text4);
 }
 function sarifPath(uri, root) {
   let path = uri;
@@ -12168,26 +12175,37 @@ function sarifSignals(output, tool, root, mask = (text4) => text4) {
     const driver = run.tool?.driver;
     const driverName = (str(driver?.name) ?? "").toLowerCase();
     const kind = SARIF_KINDS.find(([pattern]) => pattern.test(driverName))?.[1] ?? "static_finding";
-    const rules = [
-      ...list(driver?.rules),
-      ...list(run.tool?.extensions).flatMap((extension) => list(extension.rules))
-    ];
+    const extensions = list(run.tool?.extensions);
+    const byGuid = /* @__PURE__ */ new Map();
+    const idsOf = /* @__PURE__ */ new Map();
+    const byId = /* @__PURE__ */ new Map();
+    for (const component of [driver, ...extensions]) {
+      if (!byGuid.has(component?.guid)) byGuid.set(component?.guid, component);
+      const ids = /* @__PURE__ */ new Map();
+      for (const rule of list(component?.rules)) {
+        if (!ids.has(rule.id)) ids.set(rule.id, rule);
+        if (!byId.has(rule.id)) byId.set(rule.id, rule);
+      }
+      idsOf.set(component, ids);
+    }
     for (const result of list(run.results)) {
       if (result.kind !== void 0 && result.kind !== "fail") continue;
       if (list(result.suppressions).some((entry) => entry.status === void 0 || entry.status === "accepted")) continue;
       const reference = result.rule?.toolComponent;
-      const component = reference === void 0 || reference === null ? driver : indexed(run.tool?.extensions, reference.index);
+      const componentIndex = reference?.index;
+      const guid = str(reference?.guid);
+      const component = typeof componentIndex === "number" && Number.isInteger(componentIndex) && componentIndex >= 0 ? indexed(run.tool?.extensions, componentIndex) : guid === void 0 ? driver : byGuid.get(guid);
       const referenced = indexed(component?.rules, typeof result.ruleIndex === "number" ? result.ruleIndex : result.rule?.index);
       const ruleId = str(result.ruleId) ?? str(result.rule?.id) ?? str(referenced?.id);
       if (ruleId === void 0) continue;
-      const spaced = redact(mask(ruleId)).text.replace(/[\s\p{Cc}\p{Cf}]+/gu, " ").trim();
-      const id = [...redact(spaced).text].slice(0, MAX_SARIF_RULE_POINTS).join("").trimEnd();
+      const spaced = redactBounded(mask(ruleId)).replace(/[\s\p{Cc}\p{Cf}]+/gu, " ").trim();
+      const id = [...redactBounded(spaced)].slice(0, MAX_SARIF_RULE_POINTS).join("").trimEnd();
       if (id === "") continue;
-      const rule = referenced ?? rules.find((candidate) => candidate.id === ruleId);
+      const rule = referenced ?? idsOf.get(component)?.get(ruleId) ?? byId.get(ruleId);
       const level = str(result.level) ?? str(rule?.defaultConfiguration?.level) ?? "warning";
       if (level !== "error" && level !== "warning") continue;
       const text4 = str(result.message?.text) ?? str(rule?.shortDescription?.text);
-      const message = text4 === void 0 ? void 0 : [...redact(mask(text4).replace(/\s+/g, " ").trim()).text].slice(0, MAX_SARIF_MESSAGE_POINTS).join("").trimEnd();
+      const message = text4 === void 0 ? void 0 : [...redactBounded(mask(text4).replace(/\s+/g, " ").trim())].slice(0, MAX_SARIF_MESSAGE_POINTS).join("").trimEnd();
       const location = list(result.locations)[0]?.physicalLocation;
       const uri = str(location?.artifactLocation?.uri);
       const path = uri === void 0 ? null : sarifPath(uri, root);
@@ -12309,10 +12327,10 @@ function notRunReport(names, skipped) {
     ...skipped === void 0 ? {} : { skipped }
   };
 }
-function sanitisedVersion(stdout) {
-  const firstLine3 = stdout.split("\n")[0] ?? "";
-  const clean2 = firstLine3.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "").trim();
-  const capped = [...clean2].slice(0, MAX_VERSION_POINTS).join("").trim();
+function sanitisedVersion(stdout, clean2) {
+  const firstLine3 = clean2(stdout).split("\n")[0] ?? "";
+  const stripped = clean2(firstLine3.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")).trim();
+  const capped = [...stripped].slice(0, MAX_VERSION_POINTS).join("").trim();
   return capped === "" ? void 0 : capped;
 }
 async function collectEvidence(commands, options) {
@@ -12354,16 +12372,18 @@ async function collectEvidence(commands, options) {
       continue;
     }
     const mask = (text4) => maskPassthrough(text4, process.env, options.envPassthrough ?? []);
+    const clean2 = (text4) => redactBounded(mask(text4));
     const output = `${result.stdout ?? ""}
 ${result.stderr ?? ""}`;
-    const configuredVersion = command.version === void 0 ? void 0 : await readVersion(spawn3, command.version, options.cwd, timeoutMs, env, mask);
+    const configuredVersion = command.version === void 0 ? void 0 : await readVersion(spawn3, command.version, options.cwd, timeoutMs, env, clean2);
     const parsed2 = parseOutput(command.name, command.run, output, options.cwd, mask);
     const signals = parsed2.signals.map((signal2) => ({
       ...signal2,
-      claim: mask(signal2.claim),
-      evidence: signal2.evidence.map(mask)
+      ...signal2.path !== null && clean2(signal2.path) !== signal2.path ? { path: null, line: null } : {},
+      claim: clean2(signal2.claim),
+      evidence: signal2.evidence.map(clean2)
     }));
-    const version = configuredVersion ?? (parsed2.version === void 0 ? void 0 : sanitisedVersion(mask(parsed2.version)));
+    const version = configuredVersion ?? (parsed2.version === void 0 ? void 0 : sanitisedVersion(parsed2.version, clean2));
     outcomes.push({
       name: command.name,
       command: command.run,
@@ -12380,10 +12400,10 @@ ${result.stderr ?? ""}`;
     didNotRun
   };
 }
-async function readVersion(spawn3, run, cwd, timeout, env, mask) {
+async function readVersion(spawn3, run, cwd, timeout, env, clean2) {
   const result = await spawnInGroup(spawn3, run, cwd, timeout, env);
   if (result.error !== void 0 || result.status !== 0) return void 0;
-  return sanitisedVersion(mask(String(result.stdout ?? "")));
+  return sanitisedVersion(String(result.stdout ?? ""), clean2);
 }
 function spawnInGroup(spawn3, run, cwd, timeout, env, args) {
   return spawn3(run, {

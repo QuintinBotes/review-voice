@@ -66,16 +66,20 @@ interface SarifRule {
 interface SarifResult {
   ruleId?: unknown;
   ruleIndex?: unknown;
-  rule?: { id?: unknown; index?: unknown; toolComponent?: { index?: unknown } | null };
+  rule?: { id?: unknown; index?: unknown; toolComponent?: { index?: unknown; guid?: unknown } | null };
   level?: unknown;
   kind?: unknown;
   message?: { text?: unknown };
   locations?: unknown;
   suppressions?: unknown;
 }
+interface SarifComponent {
+  guid?: unknown;
+  rules?: unknown;
+}
 interface SarifRun {
   tool?: {
-    driver?: { name?: unknown; version?: unknown; semanticVersion?: unknown; rules?: unknown };
+    driver?: SarifComponent & { name?: unknown; version?: unknown; semanticVersion?: unknown };
     extensions?: unknown;
   };
   results?: unknown;
@@ -91,6 +95,19 @@ function indexed<T>(value: unknown, index: unknown): T | undefined {
 }
 const MAX_SARIF_MESSAGE_POINTS = 500;
 const MAX_SARIF_RULE_POINTS = 200;
+/**
+ * Far above every later cut and a PEM-encoded 4096-bit key, so a secret a
+ * later cut would split is still redacted whole, while one secret pattern,
+ * which backtracks quadratically over a long run of URL-scheme characters,
+ * stays fast on output a pull request controls.
+ */
+const MAX_REDACTED_POINTS = 4096;
+
+/** The text cut to MAX_REDACTED_POINTS code points, then redacted. */
+export function redactBounded(text: string): string {
+  // Cut by UTF-16 unit first so a long output is never spread whole; the points kept fit in twice as many units.
+  return redact([...text.slice(0, 2 * MAX_REDACTED_POINTS)].slice(0, MAX_REDACTED_POINTS).join('')).text;
+}
 
 /**
  * The decoded document between the first `{` and the last `}`, since tools
@@ -114,19 +131,24 @@ function sarifRuns(output: string): SarifRun[] | undefined {
   return document?.version === '2.1.0' && Array.isArray(document.runs) ? list<SarifRun>(document.runs) : undefined;
 }
 
-const SARIF_MARKER = /"version"\s*:\s*"2\.1\.0"|"\$schema"\s*:\s*"[^"]*sarif/i;
+const SARIF_SCHEMA = /"\$schema"\s*:\s*"[^"]*sarif/i;
+const SARIF_VERSION = /"version"\s*:\s*"2\.1\.0"/;
+const SARIF_RUNS = /"runs"\s*:/;
 
 /**
- * Output that looks like SARIF anywhere is claimed, whether or not it parses,
- * and the decoded fields are read too, so an escaped key cannot hide a
- * document. A text adapter redacts nothing, so a partial or malformed
- * document reaching one would carry the tool's raw text, a matched secret
- * included, into the evidence.
+ * Output is claimed when it is a SARIF document, decoded or in its text,
+ * which means a SARIF `$schema`, or a 2.1.0 version beside a `runs` key. A version string
+ * alone is not one, so a text diagnostic printed beside it keeps its adapter.
+ * The text is read with its `\u00XX` escapes decoded, since a writer may
+ * escape any character of a key, and it is read as well as the parse because
+ * noise around a document can defeat the slice.
+ * shortcut: a mangled document that neither test recognises reaches a text adapter, which may invent a diagnostic from one of its lines (redacted where signals enter the report, so a false lead, not a leak); upgrade if a real tool's output is seen doing it.
  */
 function isSarif(output: string): boolean {
-  if (SARIF_MARKER.test(output)) return true;
   const document = sarifDocument(output);
-  return document !== undefined && (document.version === '2.1.0' || /sarif/i.test(str(document.$schema) ?? ''));
+  if (document !== undefined && ((document.version === '2.1.0' && 'runs' in document) || /sarif/i.test(str(document.$schema) ?? ''))) return true;
+  const text = output.replace(/\\u00([0-7][0-9a-f])/gi, (_escape, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+  return SARIF_SCHEMA.test(text) || (SARIF_VERSION.test(text) && SARIF_RUNS.test(text));
 }
 
 /**
@@ -162,21 +184,38 @@ function sarifSignals(output: string, tool: string, root: string | undefined, ma
     const driver = run.tool?.driver;
     const driverName = (str(driver?.name) ?? '').toLowerCase();
     const kind = SARIF_KINDS.find(([pattern]) => pattern.test(driverName))?.[1] ?? 'static_finding';
-    const rules = [
-      ...list<SarifRule>(driver?.rules),
-      ...list<{ rules?: unknown }>(run.tool?.extensions).flatMap((extension) => list<SarifRule>(extension.rules)),
-    ];
+    const extensions = list<SarifComponent>(run.tool?.extensions);
+    // Built once per run, since a scan per result is quadratic in a large
+    // document; the first entry with a key wins, as a scan in order finds it.
+    // Each component's rules by id, and every rule by id, driver first.
+    const byGuid = new Map<unknown, SarifComponent | undefined>();
+    const idsOf = new Map<SarifComponent | undefined, Map<unknown, SarifRule>>();
+    const byId = new Map<unknown, SarifRule>();
+    for (const component of [driver, ...extensions]) {
+      if (!byGuid.has(component?.guid)) byGuid.set(component?.guid, component);
+      const ids = new Map<unknown, SarifRule>();
+      for (const rule of list<SarifRule>(component?.rules)) {
+        if (!ids.has(rule.id)) ids.set(rule.id, rule);
+        if (!byId.has(rule.id)) byId.set(rule.id, rule);
+      }
+      idsOf.set(component, ids);
+    }
     for (const result of list<SarifResult>(run.results)) {
       // The tool itself says a result that is not a failure, or one suppressed
       // in source, is not to be reported (nosemgrep and CodeQL's in-source
       // suppressions arrive with no status).
       if (result.kind !== undefined && result.kind !== 'fail') continue;
       if (list<{ status?: unknown }>(result.suppressions).some((entry) => entry.status === undefined || entry.status === 'accepted')) continue;
-      // A result's index points into the driver's rules, or into those of the
-      // extension `rule.toolComponent` names. SARIF lets two rules share an id
+      // A result's index points into the rules of the component its reference
+      // names, which is an extension by index, else the driver or extension
+      // with the given guid, else the driver (3.54). SARIF lets two rules share an id
       // (3.19.23), so the reference decides before the id does.
       const reference = result.rule?.toolComponent;
-      const component = reference === undefined || reference === null ? driver : indexed<{ rules?: unknown }>(run.tool?.extensions, reference.index);
+      const componentIndex = reference?.index;
+      const guid = str(reference?.guid);
+      const component = typeof componentIndex === 'number' && Number.isInteger(componentIndex) && componentIndex >= 0
+        ? indexed<SarifComponent>(run.tool?.extensions, componentIndex)
+        : guid === undefined ? driver : byGuid.get(guid);
       const referenced = indexed<SarifRule>(component?.rules, typeof result.ruleIndex === 'number' ? result.ruleIndex : result.rule?.index);
       const ruleId = str(result.ruleId) ?? str(result.rule?.id) ?? str(referenced?.id);
       if (ruleId === undefined) continue;
@@ -187,10 +226,11 @@ function sarifSignals(output: string, tool: string, root: string | undefined, ma
       // or cut no longer matches; redacted on both sides of the spacing, since a
       // control character can sit inside a quoted value or stand where a
       // header's space goes. The raw id still finds the rule.
-      const spaced = redact(mask(ruleId)).text.replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim();
-      const id = [...redact(spaced).text].slice(0, MAX_SARIF_RULE_POINTS).join('').trimEnd();
+      const spaced = redactBounded(mask(ruleId)).replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim();
+      const id = [...redactBounded(spaced)].slice(0, MAX_SARIF_RULE_POINTS).join('').trimEnd();
       if (id === '') continue;
-      const rule = referenced ?? rules.find((candidate) => candidate.id === ruleId);
+      // An id the reference gives is looked up in the component it names, then anywhere.
+      const rule = referenced ?? idsOf.get(component)?.get(ruleId) ?? byId.get(ruleId);
       // The level defaults to the rule's, then to `warning`, the SARIF default.
       // Warnings are kept where the text adapters drop them: most semgrep rules
       // and trivy's MEDIUM arrive as warnings, and a signal is a lead the
@@ -203,7 +243,7 @@ function sarifSignals(output: string, tool: string, root: string | undefined, ma
       // redacted before the cut, since a value changed or cut no longer
       // matches; trimmed after it, so claim and evidence carry one message.
       const text = str(result.message?.text) ?? str(rule?.shortDescription?.text);
-      const message = text === undefined ? undefined : [...redact(mask(text).replace(/\s+/g, ' ').trim()).text].slice(0, MAX_SARIF_MESSAGE_POINTS).join('').trimEnd();
+      const message = text === undefined ? undefined : [...redactBounded(mask(text).replace(/\s+/g, ' ').trim())].slice(0, MAX_SARIF_MESSAGE_POINTS).join('').trimEnd();
       const location = list<{ physicalLocation?: { artifactLocation?: { uri?: unknown }; region?: { startLine?: unknown } } }>(result.locations)[0]?.physicalLocation;
       const uri = str(location?.artifactLocation?.uri);
       const path = uri === undefined ? null : sarifPath(uri, root);
