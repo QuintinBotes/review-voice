@@ -1121,7 +1121,10 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     try {
       readConfigDocument(parseYaml(readFileSync(configPath, 'utf8')), repositoryRoot, result);
     } catch (error) {
-      result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
+      // A read that stops partway may have turned posting on without reaching the
+      // verdict and review rules that cap it, so a half-read document posts nothing.
+      result.postingEnabled = false;
+      result.warnings.push(`.review-voice/config.yaml could not be parsed, so posting is off until it is fixed: ${String(error)}`);
     }
   }
 

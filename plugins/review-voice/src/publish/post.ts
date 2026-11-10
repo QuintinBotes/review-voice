@@ -150,25 +150,43 @@ const MAX_LISTED_FILES = 3000;
  * These are the pull request's paths, not the review scope's: a later commit
  * must not approve a pull request whose first commit touched a guarded path.
  * A failed read, or a page that is not a list, throws, as `readHead` does, so
- * nothing is posted.
+ * nothing is posted. `untied` is true when a page is not shown to be `head`'s.
  */
 export async function readChangedPaths(
   client: GitHubClient,
   repository: string,
   pullNumber: number,
-): Promise<{ paths: string[]; truncated: boolean }> {
-  const files: { filename?: unknown; previous_filename?: unknown }[] = [];
+  head: string,
+): Promise<{ paths: string[]; truncated: boolean; malformed: boolean; untied: boolean }> {
+  const listed: Record<string, unknown>[] = [];
+  let untied = false;
   let next: string | null = `/repos/${repository}/pulls/${pullNumber}/files?per_page=100`;
-  while (next !== null && files.length < MAX_LISTED_FILES) {
+  while (next !== null && listed.length < MAX_LISTED_FILES) {
     const page: { data: unknown; linkNext: string | null } = await client.get<unknown>(next);
     // Not client.paginate, which reads a page that is not an array as the end
     // of the list; an empty list here would approve.
     if (!Array.isArray(page.data)) throw new GitHubError(`GitHub returned no file list for ${next}`, 200);
-    files.push(...page.data);
+    const entries = page.data.map((file: unknown) =>
+      typeof file === 'object' && file !== null && !Array.isArray(file) ? (file as Record<string, unknown>) : {},
+    );
+    // GitHub lists the pull request as it is when each page is read, so a
+    // force push between reads would lend this approval another commit's
+    // paths. Every entry but a deletion names the commit it shows in its
+    // contents_url (a deletion names the base), so a page is the head's only
+    // when one entry names it and none names another.
+    const refs = entries
+      .filter((file) => file['status'] !== 'removed')
+      .map((file) => (typeof file['contents_url'] === 'string' ? /[?&]ref=([^&#]*)/.exec(file['contents_url'])?.[1]?.toLowerCase() : undefined));
+    if (refs.length === 0 || refs.some((ref) => ref !== head)) untied = true;
+    listed.push(...entries);
     next = page.linkNext;
   }
-  const paths = files.flatMap((file) => [file.filename, file.previous_filename].filter((name): name is string => typeof name === 'string'));
-  return { paths, truncated: files.length >= MAX_LISTED_FILES };
+  // An entry that cannot be named leaves the set incomplete, and an unchecked
+  // path must hold the approval as a cut list does rather than drop out.
+  const named = (name: unknown): name is string => typeof name === 'string' && name !== '';
+  const malformed = listed.some((file) => !named(file['filename']) || (file['status'] === 'renamed' && !named(file['previous_filename'])));
+  const paths = listed.flatMap((file) => [file['filename'], file['previous_filename']].filter(named));
+  return { paths, truncated: listed.length >= MAX_LISTED_FILES, malformed, untied };
 }
 
 function refusal(head: string, reason: string): { exitCode: number; output: VerdictOutput; run: null } {
@@ -515,7 +533,7 @@ export async function computeVerdict(
     pathRule && mayApprove
       ? approvalPathHold(
           policy.malformedApprovalPaths === null
-            ? await readChangedPaths(options.client, options.repository, options.pullNumber)
+            ? await readChangedPaths(options.client, options.repository, options.pullNumber, head)
             : { paths: [], truncated: false },
           policy,
         )

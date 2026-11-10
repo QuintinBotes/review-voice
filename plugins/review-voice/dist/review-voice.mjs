@@ -1274,7 +1274,7 @@ function globToRegExp(glob) {
     }
     source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   }
-  return new RegExp(`^${source}$`);
+  return new RegExp(`^${source}$`, "su");
 }
 function governsCount(globs, changedPaths) {
   if (globs.length === 0 || changedPaths.length === 0) return 0;
@@ -11367,9 +11367,10 @@ function approvalPathHold(changed, policy) {
     };
   }
   if (policy.neverApprovePaths.length === 0 && policy.onlyApprovePaths.length === 0) return null;
-  if (changed.truncated) {
+  const unreadable = changed.truncated ? "the pull request lists more files than GitHub returns" : changed.malformed === true ? "GitHub listed a changed file without a usable name" : changed.untied === true ? "GitHub did not list the files of the commit being approved" : null;
+  if (unreadable !== null) {
     return {
-      reason: "approval is left to a person, as the pull request lists more files than GitHub returns, so the approval paths cannot be checked",
+      reason: `approval is left to a person, as ${unreadable}, so the approval paths cannot be checked`,
       posted: unchecked(policy.neverApprovePaths.length > 0 ? "never_approve_paths" : "only_approve_paths")
     };
   }
@@ -13813,7 +13814,8 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
     try {
       readConfigDocument(parse(readFileSync5(configPath, "utf8")), repositoryRoot2, result);
     } catch (error) {
-      result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
+      result.postingEnabled = false;
+      result.warnings.push(`.review-voice/config.yaml could not be parsed, so posting is off until it is fixed: ${String(error)}`);
     }
   }
   const approved = db === void 0 ? null : approvedPolicyLayers(db, result.warnings);
@@ -16698,17 +16700,25 @@ async function readHead(client, repository, pullNumber) {
   return typeof sha === "string" ? sha.toLowerCase() : null;
 }
 var MAX_LISTED_FILES = 3e3;
-async function readChangedPaths(client, repository, pullNumber) {
-  const files2 = [];
+async function readChangedPaths(client, repository, pullNumber, head) {
+  const listed = [];
+  let untied = false;
   let next = `/repos/${repository}/pulls/${pullNumber}/files?per_page=100`;
-  while (next !== null && files2.length < MAX_LISTED_FILES) {
+  while (next !== null && listed.length < MAX_LISTED_FILES) {
     const page = await client.get(next);
     if (!Array.isArray(page.data)) throw new GitHubError(`GitHub returned no file list for ${next}`, 200);
-    files2.push(...page.data);
+    const entries = page.data.map(
+      (file2) => typeof file2 === "object" && file2 !== null && !Array.isArray(file2) ? file2 : {}
+    );
+    const refs = entries.filter((file2) => file2["status"] !== "removed").map((file2) => typeof file2["contents_url"] === "string" ? /[?&]ref=([^&#]*)/.exec(file2["contents_url"])?.[1]?.toLowerCase() : void 0);
+    if (refs.length === 0 || refs.some((ref) => ref !== head)) untied = true;
+    listed.push(...entries);
     next = page.linkNext;
   }
-  const paths = files2.flatMap((file2) => [file2.filename, file2.previous_filename].filter((name) => typeof name === "string"));
-  return { paths, truncated: files2.length >= MAX_LISTED_FILES };
+  const named = (name) => typeof name === "string" && name !== "";
+  const malformed = listed.some((file2) => !named(file2["filename"]) || file2["status"] === "renamed" && !named(file2["previous_filename"]));
+  const paths = listed.flatMap((file2) => [file2["filename"], file2["previous_filename"]].filter(named));
+  return { paths, truncated: listed.length >= MAX_LISTED_FILES, malformed, untied };
 }
 function refusal(head, reason2) {
   return {
@@ -16930,7 +16940,7 @@ async function computeVerdict(options) {
   const pathRule = policy.malformedApprovalPaths !== null || policy.neverApprovePaths.length > 0 || policy.onlyApprovePaths.length > 0;
   const mayApprove = !headMoved && planned.mapped === "APPROVE" && !policy.neverApprove && carriedReviewUrl === null;
   const pathHold = pathRule && mayApprove ? approvalPathHold(
-    policy.malformedApprovalPaths === null ? await readChangedPaths(options.client, options.repository, options.pullNumber) : { paths: [], truncated: false },
+    policy.malformedApprovalPaths === null ? await readChangedPaths(options.client, options.repository, options.pullNumber, head) : { paths: [], truncated: false },
     policy
   ) : null;
   const decision = decide({

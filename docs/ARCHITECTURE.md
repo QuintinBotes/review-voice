@@ -1278,9 +1278,10 @@ needs a rerun holds every event (exit 6, ADR 0013) unless `ci_needs_rerun` is
 (ADR 0017); `verdict.never_approve`, when on, caps an approval at COMMENT, and
 so does a path hold, when the pull request's whole file list (read from GitHub
 only then, renames by both names and deleted files included, 3000 entries
-holding as possibly cut) touches `verdict.never_approve_paths` or falls outside
-`verdict.only_approve_paths`; a
-high-complexity change caps an approval at COMMENT (ADR 0012)
+holding as possibly cut, as does a page whose entries do not name the head
+being approved in their `contents_url`) touches `verdict.never_approve_paths`
+or falls outside `verdict.only_approve_paths`; a high-complexity change caps
+an approval at COMMENT (ADR 0012)
 unless `review.human_review.cap_approval` is false; then red CI caps an
 approval at COMMENT, and pending CI makes an approval wait (exit 4). COMMENT and
 REQUEST_CHANGES never wait on CI. `verdict --recheck` asks only whether the

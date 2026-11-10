@@ -135,10 +135,17 @@ The paths are the pull request's, read live from GitHub's file list (renames
 by both names, deleted files included) only when a list is set and the answer
 could still change the event; under the defaults no request is made. The list
 fails closed. 3000 entries, GitHub's own ceiling, hold approval as possibly
-cut, and a list that does not load (not a list of globs, or an entry that is
-not one) holds every approval until it is fixed, with a warning naming the key
-and the entry. The local reasons name up to three paths; the posted summary
-ends with one fixed sentence naming the setting and never a path, such as
+cut, as does an entry without a usable name (no filename, or a rename
+without its previous one). GitHub lists the pull request as it stands when
+each page is read, so a page holds approval too unless an entry names the
+head being approved in its `contents_url` and none names another commit. A
+deletion names the base, so a page of only deletions holds, and a force push
+between the reads cannot lend another commit's paths to the approval. A list
+that does not load (not a list of globs, or an entry that is not one) holds
+every approval until it is fixed, with a warning naming the key and the
+entry. The local reasons name up to
+three paths; the posted summary ends with one fixed sentence naming the
+setting and never a path, such as
 `Approval is held because a changed file is outside only_approve_paths.`
 `review.human_review.sensitive_paths` stays the setting for code that needs a
 person's eyes and a thorough review; these lists are an approval rule and

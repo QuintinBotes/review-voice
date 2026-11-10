@@ -409,11 +409,12 @@ function namedPaths(paths: readonly string[]): string {
 /**
  * Why the pull request's changed paths leave this approval to a person
  * (docs/adr/0028 amendment), or null. Pure. A list that did not load and a
- * file list GitHub may have cut both hold, because an approval rule that
- * cannot be checked is not one to apply.
+ * file list GitHub may have cut, did not name in full or did not tie to the
+ * commit being approved all hold, because an approval rule that cannot be
+ * checked is not one to apply.
  */
 export function approvalPathHold(
-  changed: { paths: readonly string[]; truncated: boolean },
+  changed: { paths: readonly string[]; truncated: boolean; malformed?: boolean; untied?: boolean },
   policy: Pick<VerdictPolicy, 'neverApprovePaths' | 'onlyApprovePaths' | 'malformedApprovalPaths'>,
 ): ApprovalPathHold | null {
   const unchecked = (setting: string): string => `Approval is held because the changed files could not be checked against ${setting}.`;
@@ -424,9 +425,16 @@ export function approvalPathHold(
     };
   }
   if (policy.neverApprovePaths.length === 0 && policy.onlyApprovePaths.length === 0) return null;
-  if (changed.truncated) {
+  const unreadable = changed.truncated
+    ? 'the pull request lists more files than GitHub returns'
+    : changed.malformed === true
+      ? 'GitHub listed a changed file without a usable name'
+      : changed.untied === true
+        ? 'GitHub did not list the files of the commit being approved'
+        : null;
+  if (unreadable !== null) {
     return {
-      reason: 'approval is left to a person, as the pull request lists more files than GitHub returns, so the approval paths cannot be checked',
+      reason: `approval is left to a person, as ${unreadable}, so the approval paths cannot be checked`,
       posted: unchecked(policy.neverApprovePaths.length > 0 ? 'never_approve_paths' : 'only_approve_paths'),
     };
   }

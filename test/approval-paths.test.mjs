@@ -19,7 +19,8 @@ import { recordRun } from '../plugins/review-voice/src/store/runs.ts';
 import { GitHubClient, GitHubError } from '../plugins/review-voice/src/github/client.ts';
 import { loadConfig } from '../plugins/review-voice/src/policy/load.ts';
 import { approvalPathHold, decide, DEFAULT_VERDICT_POLICY } from '../plugins/review-voice/src/publish/verdict.ts';
-import { computeVerdict } from '../plugins/review-voice/src/publish/post.ts';
+import { computeVerdict, postReview } from '../plugins/review-voice/src/publish/post.ts';
+import { globToRegExp } from '../plugins/review-voice/src/conventions/globs.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const HEAD = 'a'.repeat(40);
@@ -186,7 +187,16 @@ const run = (name, status, conclusion = null, id = 1) => ({
 });
 const GREEN = [run('build', 'completed', 'success')];
 const RED = [run('build', 'completed', 'failure')];
-const file = (filename, previous) => ({ filename, status: previous === undefined ? 'modified' : 'renamed', ...(previous === undefined ? {} : { previous_filename: previous }) });
+const BASE = 'c'.repeat(40);
+// As GitHub names it: the commit the entry shows, the head, and the base for a deletion.
+const contents = (filename, ref) => `https://api.github.com/repos/${REPO}/contents/${encodeURIComponent(filename)}?ref=${ref}`;
+const file = (filename, previous, ref = HEAD) => ({
+  filename,
+  status: previous === undefined ? 'modified' : 'renamed',
+  ...(previous === undefined ? {} : { previous_filename: previous }),
+  contents_url: contents(filename, ref),
+});
+const removed = (filename) => ({ filename, status: 'removed', contents_url: contents(filename, BASE) });
 
 /** The fake at test/never-approve.test.mjs, which also serves the files list and records every path it was asked for. */
 function fakeGitHub({ checks = [GREEN], files = [], head = HEAD } = {}) {
@@ -498,4 +508,263 @@ test('documentation: help, the example config, draft-review.md, WATCHER.md, ADR 
     assert.ok(text.includes('never_approve_paths'), doc);
     assert.ok(text.includes('only_approve_paths'), doc);
   }
+});
+
+const TERMINATORS = [
+  ['a line feed', '\n'],
+  ['a carriage return', '\r'],
+  ['a line separator', '\u2028'],
+  ['a paragraph separator', '\u2029'],
+];
+
+test('globToRegExp: every wildcard matches a line terminator in a name, and * and ? still stop at a slash', () => {
+  for (const [name, t] of TERMINATORS) {
+    const cases = [
+      ['db/migrate/**', `db/migrate/a${t}b.sql`, true],
+      ['db/migrate/**', `db/migrate/${t}/b.sql`, true],
+      ['**/*.sql', `db${t}x/migrate/a.sql`, true],
+      ['**', `a${t}b/c`, true],
+      ['db/*.sql', `db/a${t}b.sql`, true],
+      ['db/?.sql', `db/${t}.sql`, true],
+      ['db/*.sql', `db/a${t}/b.sql`, false],
+      ['db/?', `db/${t}/`, false],
+      // Anchored to the whole name: a terminator is not a line boundary.
+      ['db/migrate/**', `x${t}db/migrate/a.sql`, false],
+      ['db/*.sql', `db/a.sql${t}`, false],
+    ];
+    for (const [glob, path, expected] of cases) {
+      assert.equal(globToRegExp(glob).test(path), expected, `${name}: ${glob} against ${JSON.stringify(path)}`);
+    }
+  }
+});
+
+/** postReview with an APPROVE confirmed, and a writer that records every event it is asked to send. */
+async function confirmApprove(db, impl, policy, postingEnabled = true) {
+  const sent = [];
+  const writer = {
+    submitReview: async (_repository, _pull, payload) => {
+      sent.push(payload.event);
+      return { id: 1, htmlUrl: 'https://example.com/review/1', state: payload.event };
+    },
+  };
+  const { exitCode, output } = await postReview({
+    db,
+    client: client(impl),
+    writerFor: () => writer,
+    repository: REPO,
+    pullNumber: PR,
+    head: HEAD,
+    review: CLEAN,
+    owner: OWNER,
+    confirm: true,
+    event: 'APPROVE',
+    postingEnabled,
+    policy,
+  });
+  return { exitCode, output, sent };
+}
+
+test('postReview: a guarded filename holding a line terminator cannot be approved under either list', async () => {
+  for (const [name, t] of TERMINATORS) {
+    const guarded = `db/migrate/a${t}b.sql`;
+    for (const [setting, rule, reason] of [
+      ['never_approve_paths', NEVER_DB, MATCHES(guarded)],
+      ['only_approve_paths', ONLY_DOCS, OUTSIDE(guarded)],
+    ]) {
+      await withDb(async (db) => {
+        record(db);
+        const { output, sent } = await confirmApprove(db, fakeGitHub({ files: [file('docs/a.md'), file(guarded)] }), rule);
+        assert.deepEqual(sent, [], `${name}, ${setting}`);
+        assert.equal(output.verdict.event, 'COMMENT', `${name}, ${setting}`);
+        assert.equal(output.verdict.cappedByPolicy, true, `${name}, ${setting}`);
+        assert.deepEqual(guardReasons(output.verdict), [reason], `${name}, ${setting}`);
+      });
+    }
+  }
+});
+
+const UNNAMED = 'approval is left to a person, as GitHub listed a changed file without a usable name, so the approval paths cannot be checked';
+
+test('postReview: a files list with an entry it cannot name holds the approval as a cut list does', async () => {
+  // The harness can approve: a well-formed list inside only_approve_paths sends the APPROVE.
+  await withDb(async (db) => {
+    record(db);
+    const { sent } = await confirmApprove(db, fakeGitHub({ files: [file('docs/a.md')] }), ONLY_DOCS);
+    assert.deepEqual(sent, ['APPROVE']);
+  });
+  const malformed = [
+    ['an entry without a filename', [{}]],
+    ['an empty filename', [file('docs/a.md'), { filename: '', status: 'added' }]],
+    ['a rename without its previous name', [{ filename: 'docs/a.sql', status: 'renamed', previous_filename: null }]],
+    ['a rename with an empty previous name', [{ filename: 'docs/a.sql', status: 'renamed', previous_filename: '' }]],
+    ['a string entry', [file('docs/a.md'), 'db/migrate/001.sql']],
+    ['a null entry', [file('docs/a.md'), null]],
+    ['a list entry', [file('docs/a.md'), ['db/migrate/001.sql']]],
+  ];
+  for (const [name, files] of malformed) {
+    for (const [setting, rule] of [['never_approve_paths', NEVER_DB], ['only_approve_paths', ONLY_DOCS]]) {
+      await withDb(async (db) => {
+        record(db);
+        const { output, sent } = await confirmApprove(db, fakeGitHub({ files }), rule);
+        assert.deepEqual(sent, [], `${name}, ${setting}`);
+        assert.equal(output.verdict.event, 'COMMENT', `${name}, ${setting}`);
+        assert.equal(output.verdict.cappedByPolicy, true, `${name}, ${setting}`);
+        assert.equal(output.verdict.payload.body, `No problems found. ${UNCHECKED(setting)}`, `${name}, ${setting}`);
+        assert.deepEqual(guardReasons(output.verdict), [UNNAMED], `${name}, ${setting}`);
+      });
+    }
+  }
+});
+
+const OTHER = 'b'.repeat(40);
+const UNTIED = 'approval is left to a person, as GitHub did not list the files of the commit being approved, so the approval paths cannot be checked';
+
+/**
+ * A fake GitHub where each read of the pull request, and each page of its
+ * files, sees the next head in `timeline`, as force pushes between the reads
+ * would leave it; `lists` holds each head's files list.
+ */
+function forcePushed(timeline, lists) {
+  let reads = 0;
+  const seen = [];
+  const next = () => timeline[Math.min(reads++, timeline.length - 1)];
+  const impl = async (url, init) => {
+    const { pathname } = new URL(String(url));
+    if (/\/pulls\/\d+$/.test(pathname)) {
+      const head = next();
+      seen.push(`head ${head[0]}`);
+      return json({ head: { sha: head } });
+    }
+    if (pathname.endsWith('/files')) {
+      const head = next();
+      seen.push(`files ${head[0]}`);
+      return fakeGitHub({ files: lists[head] })(url, init);
+    }
+    return fakeGitHub()(url, init);
+  };
+  impl.seen = seen;
+  return impl;
+}
+
+test('postReview: a force push away and back between the head read and the files read sends no approval', async () => {
+  const cases = [
+    ['never_approve_paths', NEVER_DB, [file('db/migrate/001.sql'), file('src/a.ts')], [file('src/a.ts', undefined, OTHER)]],
+    ['only_approve_paths', ONLY_DOCS, [file('docs/a.md'), file('src/a.ts')], [file('docs/a.md', undefined, OTHER)]],
+  ];
+  for (const [setting, rule, atHead, atOther] of cases) {
+    // Without the push the head list holds, so the push is what the guard has to see.
+    await withDb(async (db) => {
+      record(db);
+      const { sent, output } = await confirmApprove(db, forcePushed([HEAD], { [HEAD]: atHead }), rule);
+      assert.deepEqual(sent, [], setting);
+      assert.equal(output.verdict.event, 'COMMENT', setting);
+    });
+    await withDb(async (db) => {
+      record(db);
+      const github = forcePushed([HEAD, OTHER, HEAD], { [HEAD]: atHead, [OTHER]: atOther });
+      const { exitCode, output, sent } = await confirmApprove(db, github, rule);
+      assert.deepEqual(github.seen.slice(0, 2), ['head a', 'files b'], setting);
+      assert.deepEqual(sent, [], setting);
+      assert.equal(exitCode, 3, setting);
+      assert.equal(output.verdict.event, 'COMMENT', setting);
+      assert.equal(output.verdict.cappedByPolicy, true, setting);
+      assert.equal(output.verdict.payload.body, `No problems found. ${UNCHECKED(setting)}`, setting);
+      assert.deepEqual(guardReasons(output.verdict), [UNTIED], setting);
+    });
+  }
+});
+
+test('postReview: a later page read after a force push holds, even when that page names no commit', async () => {
+  const docs = Array.from({ length: 100 }, (_, i) => file(`docs/${i}.md`));
+  const elsewhere = Array.from({ length: 100 }, (_, i) => file(`docs/${i}.md`, undefined, OTHER));
+  // The second page of the head list is the guarded path; the other commit's is a deletion, or nothing.
+  for (const [name, atOther] of [
+    ['a page of deletions', [...elsewhere, removed('docs/old.md')]],
+    ['an empty page', elsewhere],
+  ]) {
+    await withDb(async (db) => {
+      record(db);
+      const github = forcePushed([HEAD, HEAD, OTHER, HEAD], { [HEAD]: [...docs, file('db/migrate/001.sql')], [OTHER]: atOther });
+      const { output, sent } = await confirmApprove(db, github, ONLY_DOCS);
+      assert.deepEqual(github.seen.slice(0, 3), ['head a', 'files a', 'files b'], name);
+      assert.deepEqual(sent, [], name);
+      assert.deepEqual(guardReasons(output.verdict), [UNTIED], name);
+    });
+  }
+});
+
+test('postReview: a files list is used only when every page names the head being approved', async () => {
+  // A deletion names the base, so a list that also names the head approves.
+  await withDb(async (db) => {
+    record(db);
+    const { sent } = await confirmApprove(db, fakeGitHub({ files: [removed('docs/old.md'), file('docs/a.md')] }), ONLY_DOCS);
+    assert.deepEqual(sent, ['APPROVE']);
+  });
+  const untied = [
+    ['an entry naming another commit', [file('docs/a.md'), file('docs/b.md', undefined, OTHER)]],
+    ['an entry without a contents_url', [file('docs/a.md'), { filename: 'docs/b.md', status: 'added' }]],
+    // Nothing in a list of deletions shows which commit it is, so it holds.
+    ['only deletions', [removed('docs/old.md')]],
+    ['no files', []],
+  ];
+  for (const [name, files] of untied) {
+    for (const [setting, rule] of [['never_approve_paths', NEVER_DB], ['only_approve_paths', ONLY_DOCS]]) {
+      await withDb(async (db) => {
+        record(db);
+        const { output, sent } = await confirmApprove(db, fakeGitHub({ files }), rule);
+        assert.deepEqual(sent, [], `${name}, ${setting}`);
+        assert.equal(output.verdict.event, 'COMMENT', `${name}, ${setting}`);
+        assert.equal(output.verdict.payload.body, `No problems found. ${UNCHECKED(setting)}`, `${name}, ${setting}`);
+        assert.deepEqual(guardReasons(output.verdict), [UNTIED], `${name}, ${setting}`);
+      });
+    }
+  }
+});
+
+test('config: a document that throws partway leaves posting off, so the approval paths it never reached cannot be bypassed', async () => {
+  const POST = 'writes:\n  github_posting_enabled: true\n';
+  // A self-referring alias in ci: throws after writes: has turned posting on and before verdict: is read.
+  const CYCLIC = 'ci:\n  rerun_signatures: &x [*x]\n';
+  for (const [setting, yaml, path] of [
+    ['never_approve_paths', 'verdict:\n  never_approve_paths: ["db/migrate/**"]\n', 'db/migrate/001.sql'],
+    ['only_approve_paths', 'verdict:\n  only_approve_paths: ["docs/**"]\n', 'src/a.ts'],
+  ]) {
+    const clean = configFrom(POST + yaml);
+    assert.equal(clean.postingEnabled, true, setting);
+
+    const config = configFrom(POST + CYCLIC + yaml);
+    assert.equal(config.postingEnabled, false, setting);
+    assert.ok(
+      config.warnings.some((warning) => warning.startsWith('.review-voice/config.yaml could not be parsed, so posting is off')),
+      setting,
+    );
+    await withDb(async (db) => {
+      record(db);
+      const github = fakeGitHub({ files: [file(path)] });
+      const { exitCode, sent } = await confirmApprove(db, github, config.verdictPolicy, config.postingEnabled);
+      assert.deepEqual(sent, [], setting);
+      assert.equal(exitCode, 2, setting);
+    });
+  }
+});
+
+test('globToRegExp: ? matches one character outside the BMP, so such a name cannot escape never_approve_paths', async () => {
+  const emoji = '\u{1F600}';
+  const cases = [
+    ['db/v?/**', `db/v${emoji}/001.sql`, true],
+    ['db/?.sql', 'db/\u{10400}.sql', true],
+    ['db/?.sql', `db/${emoji}${emoji}.sql`, false],
+  ];
+  for (const [glob, path, expected] of cases) {
+    assert.equal(globToRegExp(glob).test(path), expected, `${glob} against ${JSON.stringify(path)}`);
+  }
+
+  const guarded = `db/v${emoji}/001.sql`;
+  await withDb(async (db) => {
+    record(db);
+    const { output, sent } = await confirmApprove(db, fakeGitHub({ files: [file(guarded)] }), { neverApprovePaths: ['db/v?/**'] });
+    assert.deepEqual(sent, []);
+    assert.equal(output.verdict.event, 'COMMENT');
+    assert.deepEqual(guardReasons(output.verdict), [MATCHES(guarded)]);
+  });
 });

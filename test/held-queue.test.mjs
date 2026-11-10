@@ -260,7 +260,7 @@ test('the scope block is byte-identical with held_queue on and off, and with and
   const verdict = (policy) =>
     computeVerdict({
       db,
-      client: new GitHubClient({ allowlist: [REPO], token: 't', fetchImpl: fakeGitHub([{ filename: 'db/migrate/001.sql', status: 'added' }]), sleep: async () => {} }),
+      client: new GitHubClient({ allowlist: [REPO], token: 't', fetchImpl: fakeGitHub([{ filename: 'db/migrate/001.sql', status: 'added', contents_url: `https://api.github.com/repos/${REPO}/contents/db%2Fmigrate%2F001.sql?ref=${HEAD}` }]), sleep: async () => {} }),
       repository: REPO,
       pullNumber: PR,
       head: HEAD,

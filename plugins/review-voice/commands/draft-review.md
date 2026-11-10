@@ -55,7 +55,10 @@ change some of the rules below; the defaults are the rules as written:
   with one fixed sentence naming the setting, never a path, and `reasons`
   names the paths. Prefer `review.human_review.sensitive_paths` for code that
   needs a person's eyes and a thorough review; these lists are an approval
-  rule and cost nothing. A list that does not load holds every approval.
+  rule and cost nothing. A list that does not load holds every approval, and
+  so does a file list GitHub did not give for the head being approved, as
+  after a force push between the reads or for a change that only deletes
+  files.
 - `carry_approval_on_unchanged: true` carries the owner's standing approval
   (below).
 - `recheck_thread_before_post: true` makes every `post` re-check the thread
