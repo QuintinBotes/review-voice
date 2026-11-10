@@ -15,7 +15,7 @@ import { blockingContext, isSuppressionExempt, type MissingContext } from '../sc
 import { recordAudit } from '../store/audit.ts';
 import { openDatabase } from '../store/db.ts';
 import { dataDirectory } from '../store/paths.ts';
-import { challengeNotRun, describeFamilies, describeProvenance, heldProblem, runDetail, type HeldFinding, type HeldVerdict, type RunFamilies, type RunProvenance, type StageTiming } from '../store/runs.ts';
+import { describeFamilies, describeProvenance, heldProblem, runDetail, type HeldFinding, type RunFamilies, type RunProvenance, type StageTiming } from '../store/runs.ts';
 import { parseChallengeVerdicts } from '../verify/challenge.ts';
 import { parseTieBreaks } from '../verify/reconcile.ts';
 import { detectAuthorship, type Authorship } from './authorship.ts';
@@ -818,21 +818,6 @@ async function lanes(run: Run): Promise<void> {
       candidateId: idOf(drop),
       ...(typeof claim === 'string' ? { text: claim } : {}),
     });
-  }
-  // A repeat of a hold no challenger reached keeps that hold: nothing has judged
-  // the finding since, so dropping it alone would let this review approve (docs/adr/0024).
-  for (const drop of list(result['droppedAsHeld'])) {
-    const claim = claims.get(idOf(drop));
-    const entry: HeldFinding = {
-      path: String(drop['path']),
-      line: Number(drop['line']),
-      verdict: drop['heldVerdict'] as HeldVerdict,
-      source: 'challenge',
-      reason: String(drop['heldReason']),
-      candidateId: idOf(drop),
-      ...(typeof claim === 'string' ? { text: claim } : {}),
-    };
-    if (challengeNotRun(entry)) run.held.push(entry);
   }
   const dropped = list(result['droppedAsHeld']).length;
   if (dropped > 0) run.notes.push(`${dropped} candidate(s) restated a finding an earlier run held back, and were dropped.`);

@@ -21848,19 +21848,6 @@ async function lanes(run) {
       ...typeof claim === "string" ? { text: claim } : {}
     });
   }
-  for (const drop of list(result["droppedAsHeld"])) {
-    const claim = claims.get(idOf3(drop));
-    const entry = {
-      path: String(drop["path"]),
-      line: Number(drop["line"]),
-      verdict: drop["heldVerdict"],
-      source: "challenge",
-      reason: String(drop["heldReason"]),
-      candidateId: idOf3(drop),
-      ...typeof claim === "string" ? { text: claim } : {}
-    };
-    if (challengeNotRun(entry)) run.held.push(entry);
-  }
   const dropped = list(result["droppedAsHeld"]).length;
   if (dropped > 0) run.notes.push(`${dropped} candidate(s) restated a finding an earlier run held back, and were dropped.`);
 }
@@ -29869,7 +29856,7 @@ function carriedHeldFindings(runId, head) {
     if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
     if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head.`);
     const entries = detail.held.filter(
-      (h) => h.verdict === "refuted" || h.verdict === "partly" || h.verdict === "repeat" || h.verdict === "below-gate" || h.verdict === "owner-declined" || h.verdict === "challenge-refuted" || h.verdict === "challenge-partly"
+      (h) => !challengeNotRun(h) && (h.verdict === "refuted" || h.verdict === "partly" || h.verdict === "repeat" || h.verdict === "below-gate" || h.verdict === "owner-declined" || h.verdict === "challenge-refuted" || h.verdict === "challenge-partly")
     );
     const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: "" }));
     const result = carryFindings(inputs, detail.headRef, head, process.cwd());

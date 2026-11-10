@@ -1777,28 +1777,33 @@ test('S17 AC-10: an unchanged-scope carry of a run capped for a challenger that 
   assert.equal(two.verdict.event, 'COMMENT', 'no challenge has run on these findings, so the carry cannot approve');
 });
 
-test('S17 AC-10: a full re-review that drops a re-raised finding held for a challenger that did not run keeps the hold and the cap', async (t) => {
+test('S17 AC-10: a finding held because its challenger did not run is checked again by a later review, held while the runner cannot run and challenged once it can', async (t) => {
   const repo = repository(t, { 'src/app.ts': APP_HEAD });
   const github = fakeGitHub(repo);
   const data = mkdtempSync(join(tmpdir(), 'rv-driver-shared-'));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('challenge: codex'));
+  const notRun = ['challenge-partly', 'challenger not run: REVIEW_VOICE_NO_COMMANDS=1 keeps the configured codex runner from running', 'src/app.ts', 3];
   const one = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => reviewIn(repo, fakes(t, fullRun()), github, data, { config }));
   assert.equal(one.verdict.event, 'COMMENT', `${one.error} ${JSON.stringify(one.notes)}`);
 
-  // The same head reviewed in full: the analyst raises the same finding, which --held-from drops as a repeat.
-  const fakeDir = fakes(t, fullRun());
-  const two = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => reviewIn(repo, fakeDir, github, data, { config, full: true }));
+  // The same head reviewed in full while the runner still cannot run: nothing judged the finding, so it is not dropped as a repeat.
+  const stillOff = fakes(t, fullRun());
+  const two = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => reviewIn(repo, stillOff, github, data, { config, full: true }));
   assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
   assert.equal(two.carried, false);
-  assert.ok(two.notes.some((note) => note.includes('restated a finding an earlier run held back')), JSON.stringify(two.notes));
-  assert.deepEqual(callsOf(fakeDir, 'evidence-verifier'), [], 'the repeat never reached the verifier or the challenger');
+  assert.equal(two.notes.some((note) => note.includes('restated a finding an earlier run held back')), false, JSON.stringify(two.notes));
+  assert.equal(callsOf(stillOff, 'evidence-verifier').length, 1, 'the re-raised finding is verified again');
   assert.equal(two.verdict.event, 'COMMENT', 'no challenge has run on this finding, so the review cannot approve');
-  assert.deepEqual(
-    storedRun(data, two.runId).held.map((entry) => [entry.verdict, entry.reason, entry.path, entry.line]),
-    [['challenge-partly', 'challenger not run: REVIEW_VOICE_NO_COMMANDS=1 keeps the configured codex runner from running', 'src/app.ts', 3]],
-    'the hold is kept, so the next review drops the repeat for the same reason',
-  );
+  assert.deepEqual(storedRun(data, two.runId).held.map((entry) => [entry.verdict, entry.reason, entry.path, entry.line]), [notRun]);
+
+  // Once the runner can run, the next full review challenges the finding on codex instead of keeping the hold.
+  const working = fakes(t, fullRun());
+  const three = await reviewIn(repo, working, github, data, { config, full: true });
+  assert.equal(three.exitCode, 0, `${three.error} ${JSON.stringify(three.notes)}`);
+  assert.deepEqual(callsOf(working, 'challenger').map((call) => call.spec.runner.family), ['codex']);
+  assert.equal(storedRun(data, three.runId).held.some((entry) => entry.reason?.startsWith('challenger not run:')), false);
+  assert.deepEqual(three.families, { secondPass: null, challenge: 'codex' });
 });
 
 test('S17 AC-10: a configured runner that fails twice holds the same way, with its error, and caps the event', async (t) => {

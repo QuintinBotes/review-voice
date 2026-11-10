@@ -110,8 +110,9 @@ finding it judged keeps its verdict. Nothing falls back to another family on
 its own.
 Such a held finding keeps the review from approving, so the event is COMMENT
 at most. A carry to an unchanged scope keeps the hold unless the pull request
-no longer changes its file, and a later review that drops the finding as a
-repeat of the hold keeps the hold as well, since no challenge has run there
-either. It is the one held finding that changes the event; every other held
+no longer changes its file. A later review does not treat the hold as a
+conclusion: the finding, raised again, is verified and challenged again, so it
+holds again while the runner cannot run and is judged once it can. It is the
+one held finding that changes the event; every other held
 finding still leaves it alone, and a Claude challenger that fails twice keeps
 its `challenger failed:` reason and its event as before.
