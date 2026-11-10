@@ -2,6 +2,7 @@ import { openDatabase } from '../store/db.ts';
 import { computeMetrics, DEFAULT_WINDOW_DAYS, stageSeconds } from '../evaluate/metrics.ts';
 import { readRecallResults, recallMetrics, type RecallResults } from '../evaluate/recall-results.ts';
 import { postedBreakdown } from '../store/outcomes.ts';
+import { approvalBreakdown } from '../store/approvals.ts';
 import { flag } from './shared.ts';
 
 export function evaluateCommand(argv: string[]): number {
@@ -38,11 +39,18 @@ export function evaluateCommand(argv: string[]): number {
     const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
     if (argv.includes('--json')) {
       const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
+      const approvals = approvalBreakdown(db);
       console.log(
         JSON.stringify(
           {
             metrics,
             posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule, by_evidence_block: byEvidenceBlock },
+            approval_breakdown: {
+              by_mode: approvals.byMode,
+              by_complexity: approvals.byComplexity,
+              by_independence: approvals.byIndependence,
+              by_origin: approvals.byOrigin,
+            },
             stage_seconds: stageSeconds(db),
           },
           null,

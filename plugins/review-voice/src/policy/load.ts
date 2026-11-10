@@ -20,6 +20,7 @@ import { defaultQueueConfig, QUEUE_SOURCES, type QueueConfig, type QueueSource }
 import { defaultWatchConfig, MAX_REVIEW_TIMEOUT_MS, parseDuration, type WatchConfig } from '../watch/config.ts';
 import { DEFAULT_RETENTION, type RetentionConfig } from '../store/retention.ts';
 import { defaultReproduction, type ReproductionConfig, type ReproductionRunner } from '../evidence/reproduce.ts';
+import { DEFAULT_OUTCOMES, type OutcomesConfig } from '../store/approvals.ts';
 
 export interface LoadedConfig {
   ownerReviewer: string | null;
@@ -46,6 +47,8 @@ export interface LoadedConfig {
   watch: WatchConfig;
   /** How long run directories and audit events are kept; `watch` and `purge --runs` enforce it. */
   retention: RetentionConfig;
+  /** `outcomes:`, how sent approvals are followed and when `status` warns (docs/adr/0034). */
+  outcomes: OutcomesConfig;
   staticEvidence: {
     enabled: boolean;
     commands: { name: string; run: string; timeoutSeconds?: number; version?: string }[];
@@ -122,7 +125,7 @@ function positiveInt(value: unknown): number | undefined {
  * exactly these. review.models is a map of stages, checked against MODEL_KEYS.
  */
 export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
-  '': ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'reproduction', 'verification', 'queue', 'watch', 'retention', 'writes'],
+  '': ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'reproduction', 'verification', 'queue', 'watch', 'retention', 'outcomes', 'writes'],
   identity: ['owner_reviewer', 'reviewers'],
   repositories: ['include'],
   review: [
@@ -156,6 +159,7 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   'queue.skip.approved_at_head_by': ['logins', 'sources'],
   watch: ['workspace', 'interval', 'post', 'lock_port', 'run_repository_commands', 'review_timeout', 'max_attempts_per_head'],
   retention: ['runs_days', 'audit_days'],
+  outcomes: ['approval_window_days', 'approval_escape_warn'],
   writes: ['github_posting_enabled'],
 };
 
@@ -722,6 +726,24 @@ function readRetention(block: Record<string, unknown> | null, result: LoadedConf
   read('audit_days', 'auditDays');
 }
 
+/** `outcomes:` (docs/adr/0034). A bad value warns and keeps that setting's default. */
+function readOutcomes(block: Record<string, unknown> | null, result: LoadedConfig): void {
+  if (block === null) {
+    result.warnings.push('outcomes must be a mapping; using the defaults.');
+    return;
+  }
+  const days = block['approval_window_days'];
+  if (days !== undefined) {
+    if (typeof days === 'number' && Number.isInteger(days) && days > 0) result.outcomes.approvalWindowDays = days;
+    else result.warnings.push(`outcomes.approval_window_days must be a whole number above zero; using ${DEFAULT_OUTCOMES.approvalWindowDays}.`);
+  }
+  const warn = block['approval_escape_warn'];
+  if (warn !== undefined) {
+    if (typeof warn === 'number' && warn >= 0 && warn <= 1) result.outcomes.approvalEscapeWarn = warn;
+    else result.warnings.push(`outcomes.approval_escape_warn must be a number from 0 to 1; using ${DEFAULT_OUTCOMES.approvalEscapeWarn}.`);
+  }
+}
+
 function contentHash(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
@@ -936,6 +958,7 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
   readQueue(section(doc['queue'], 'queue', result.warnings), result);
   if (doc['watch'] !== undefined) readWatch(section(doc['watch'], 'watch', result.warnings), result);
   if (doc['retention'] !== undefined) readRetention(section(doc['retention'], 'retention', result.warnings), result);
+  if (doc['outcomes'] !== undefined) readOutcomes(section(doc['outcomes'], 'outcomes', result.warnings), result);
 
   const staticEvidence = section(doc['static_evidence'], 'static_evidence', result.warnings);
   if (staticEvidence !== null) {
@@ -1059,6 +1082,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     queue: defaultQueueConfig(),
     watch: defaultWatchConfig(),
     retention: { ...DEFAULT_RETENTION },
+    outcomes: { ...DEFAULT_OUTCOMES },
     staticEvidence: { enabled: false, commands: [], envPassthrough: [] },
     reproduction: defaultReproduction(),
     verification: { enabled: false, command: '', envPassthrough: [], blockPresent: false },

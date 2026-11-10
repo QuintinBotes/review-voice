@@ -152,14 +152,20 @@ interface SentRun {
   reviewIds: number[];
 }
 
-/** Runs with a `review_post_sent` row at or after `since`, oldest first. */
-export function sentRuns(db: Database, options: { since: string; repository?: string | undefined }): SentRun[] {
+/** The run each `review_post_attempted` row names, by audit id; a sent row points at its attempt, not its run. */
+function attemptRuns(db: Database): Map<string, string> {
   const attempts = new Map<string, string>();
   for (const row of db
     .prepare(`SELECT audit_id, json_extract(metadata_json, '$.run') AS run FROM audit_events WHERE action = 'review_post_attempted'`)
     .all() as { audit_id: string; run: string | null }[]) {
     if (typeof row.run === 'string') attempts.set(row.audit_id, row.run);
   }
+  return attempts;
+}
+
+/** Runs with a `review_post_sent` row at or after `since`, oldest first. */
+export function sentRuns(db: Database, options: { since: string; repository?: string | undefined }): SentRun[] {
+  const attempts = attemptRuns(db);
   const reviewIdsByRun = new Map<string, number[]>();
   for (const row of db
     .prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ?`)
@@ -195,9 +201,69 @@ export function sentRuns(db: Database, options: { since: string; repository?: st
   return runs;
 }
 
-const isBot = (user: RawComment['user']): boolean => user?.type === 'Bot' || (user?.login ?? '').endsWith('[bot]');
+export interface ApprovedRun {
+  runId: string;
+  repository: string;
+  pullNumber: number;
+  /** The head the approval read: the sent payload's `commit_id`, else the run's head. */
+  head: string;
+  /** The review id the audit log recorded; null when the sent row names none. */
+  reviewId: number | null;
+  /** When the approval was sent (the audit row's time). */
+  sentAt: string;
+}
 
-function sameHead(a: string, b: string): boolean {
+/**
+ * Runs whose `review_post_sent` row at or after `since` carries `event:
+ * 'APPROVE'`, oldest first (docs/adr/0034). A run sent more than once keeps its
+ * newest approval. `sentRuns` is unchanged: it follows findings, this follows
+ * the verdict.
+ */
+export function approvedRuns(db: Database, options: { since: string; repository?: string | undefined }): ApprovedRun[] {
+  const attempts = attemptRuns(db);
+  const approvals = new Map<string, Pick<ApprovedRun, 'head' | 'reviewId' | 'sentAt'>>();
+  for (const row of db
+    .prepare(`SELECT metadata_json, created_at FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ? ORDER BY created_at, rowid`)
+    .all(options.since) as { metadata_json: string; created_at: string }[]) {
+    let meta: { attempt?: unknown; event?: unknown; head?: unknown; reviewId?: unknown };
+    try {
+      meta = JSON.parse(row.metadata_json) as typeof meta;
+    } catch {
+      continue;
+    }
+    if (meta.event !== 'APPROVE') continue;
+    const run = typeof meta.attempt === 'string' ? attempts.get(meta.attempt) : undefined;
+    if (run === undefined) continue;
+    const id = Number(meta.reviewId);
+    approvals.set(run, {
+      head: typeof meta.head === 'string' ? meta.head : '',
+      reviewId: Number.isInteger(id) && id > 0 ? id : null,
+      sentAt: row.created_at,
+    });
+  }
+  const wanted = options.repository?.toLowerCase();
+  const runs: ApprovedRun[] = [];
+  for (const row of db
+    .prepare(
+      `SELECT review_run_id, repository, pull_number, head_ref FROM review_runs
+       WHERE repository IS NOT NULL AND pull_number IS NOT NULL ORDER BY created_at, rowid`,
+    )
+    .all() as { review_run_id: string; repository: string; pull_number: number; head_ref: string | null }[]) {
+    const sent = approvals.get(row.review_run_id);
+    if (sent === undefined) continue;
+    if (wanted !== undefined && row.repository.toLowerCase() !== wanted) continue;
+    const head = sent.head !== '' ? sent.head : row.head_ref;
+    // An approval with no head cannot be compared with what was merged.
+    if (head === null) continue;
+    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, head, reviewId: sent.reviewId, sentAt: sent.sentAt });
+  }
+  return runs;
+}
+
+export const isBot = (user: { login?: string; type?: string } | undefined): boolean =>
+  user?.type === 'Bot' || (user?.login ?? '').endsWith('[bot]');
+
+export function sameHead(a: string, b: string): boolean {
   const left = a.toLowerCase();
   const right = b.toLowerCase();
   return left === right || (left.length >= 7 && right.startsWith(left)) || (right.length >= 7 && left.startsWith(right));

@@ -501,7 +501,7 @@ var STATUS = {
 };
 var PATCH_OPTIONS = ["--no-ext-diff", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/"];
 function parseNameStatus(raw) {
-  const fields = raw.split("\0").filter((field) => field.length > 0);
+  const fields = raw.split("\0").filter((field2) => field2.length > 0);
   const out = [];
   for (let i = 0; i < fields.length; ) {
     const code2 = fields[i];
@@ -650,8 +650,8 @@ function unquoteGitPath(raw) {
   return Buffer.from(bytes).toString("utf8");
 }
 function headerPath(raw) {
-  const field = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
-  const path = unquoteGitPath(field.trimEnd());
+  const field2 = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
+  const path = unquoteGitPath(field2.trimEnd());
   if (path === "/dev/null") return null;
   return path.replace(/^[ab]\//, "").replace(/^\.\/+/, "");
 }
@@ -1185,6 +1185,24 @@ var MIGRATIONS = [
   // as a team signal rather than an owner one.
   `
   ALTER TABLE finding_outcomes ADD COLUMN decided_by TEXT;
+  `,
+  // v14 - what became of each approval Review Voice sent (docs/adr/0034).
+  //
+  // One row per run, replaced by a newer check, as finding_outcomes is. The
+  // evidence is JSON because an outcome rests on several facts (merged head,
+  // revert pull request, who requested changes) that a report wants apart.
+  `
+  CREATE TABLE IF NOT EXISTS approval_outcomes (
+    review_run_id TEXT PRIMARY KEY,
+    repository TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    head TEXT NOT NULL,
+    review_id INTEGER,
+    outcome TEXT NOT NULL,
+    strength TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    checked_at TEXT NOT NULL
+  );
   `
 ];
 function migrate(db) {
@@ -1868,7 +1886,7 @@ function productionChange(files2, diffText, partial, markedGenerated2 = /* @__PU
 
 // plugins/review-voice/src/policy/load.ts
 import { readFileSync as readFileSync5, existsSync as existsSync4 } from "node:fs";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { dirname as dirname6, isAbsolute, join as join8 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
@@ -6521,8 +6539,8 @@ visit2.SKIP = SKIP2;
 visit2.REMOVE = REMOVE2;
 visit2.itemAtPath = (cst, path) => {
   let item = cst;
-  for (const [field, index] of path) {
-    const tok = item?.[field];
+  for (const [field2, index] of path) {
+    const tok = item?.[field2];
     if (tok && "items" in tok) {
       item = tok.items[index];
     } else
@@ -6532,8 +6550,8 @@ visit2.itemAtPath = (cst, path) => {
 };
 visit2.parentCollection = (cst, path) => {
   const parent = visit2.itemAtPath(cst, path.slice(0, -1));
-  const field = path[path.length - 1][0];
-  const coll = parent?.[field];
+  const field2 = path[path.length - 1][0];
+  const coll = parent?.[field2];
   if (coll && "items" in coll)
     return coll;
   throw new Error("Parent collection not found");
@@ -6542,11 +6560,11 @@ function _visit(path, item, visitor) {
   let ctrl = visitor(item, path);
   if (typeof ctrl === "symbol")
     return ctrl;
-  for (const field of ["key", "value"]) {
-    const token = item[field];
+  for (const field2 of ["key", "value"]) {
+    const token = item[field2];
     if (token && "items" in token) {
       for (let i = 0; i < token.items.length; ++i) {
-        const ci = _visit(Object.freeze(path.concat([[field, i]])), token.items[i], visitor);
+        const ci = _visit(Object.freeze(path.concat([[field2, i]])), token.items[i], visitor);
         if (typeof ci === "number")
           i = ci - 1;
         else if (ci === BREAK2)
@@ -6556,7 +6574,7 @@ function _visit(path, item, visitor) {
           i -= 1;
         }
       }
-      if (typeof ctrl === "function" && field === "key")
+      if (typeof ctrl === "function" && field2 === "key")
         ctrl = ctrl(item, path);
     }
   }
@@ -9566,6 +9584,7 @@ var SEARCH_PATH = /^\/search(\/|$|\?)/i;
 var ID_REPO_PATH = /^\/repositories(\/|$|\?)/i;
 var PATH_ESCAPE = /(^|\/)\.\.?(\/|$)|%2e|%2f|%5c|\\/i;
 var GITHUB_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+var REPOSITORY_NAME = /^(?!\.\.?$)[A-Za-z0-9._-]+$/;
 function allowlistEntryProblem(entry) {
   const parts = entry.split("/");
   if (entry.includes("*")) {
@@ -9578,7 +9597,7 @@ function allowlistEntryProblem(entry) {
 var SEARCH_BASE = "is:pr is:open draft:false";
 var SEARCH_PER_PAGE = 100;
 var SEARCH_MAX_PAGES = 5;
-function searchQuery(source) {
+function searchQuery(source, allows) {
   if (source === "requested") return `${SEARCH_BASE} user-review-requested:@me`;
   if (source === "assigned") return `${SEARCH_BASE} assignee:@me`;
   if (source === "reviewed") return `${SEARCH_BASE} reviewed-by:@me`;
@@ -9586,6 +9605,12 @@ function searchQuery(source) {
     const [org, slug, ...rest] = source.slice("team:".length).split("/");
     if (org !== void 0 && slug !== void 0 && rest.length === 0 && GITHUB_NAME.test(org) && GITHUB_NAME.test(slug)) {
       return `${SEARCH_BASE} team-review-requested:${org}/${slug}`;
+    }
+  }
+  if (typeof source === "string" && source.startsWith("reverts:")) {
+    const match = /^([^/#]+)\/([^/#]+)#([1-9]\d*)$/.exec(source.slice("reverts:".length));
+    if (match !== null && GITHUB_NAME.test(match[1]) && REPOSITORY_NAME.test(match[2]) && allows(`${match[1]}/${match[2]}`)) {
+      return `is:pr is:merged repo:${match[1]}/${match[2]} "Reverts ${match[1]}/${match[2]}#${match[3]}" in:body`;
     }
   }
   throw new NotAllowlisted(`Refused a search source that is not one Review Voice builds: ${JSON.stringify(source)}.`);
@@ -9810,7 +9835,8 @@ var GitHubClient = class {
     return body.data;
   }
   /**
-   * Open, non-draft pull requests from one GitHub search (docs/adr/0026).
+   * Open, non-draft pull requests from one GitHub search (docs/adr/0026), or
+   * the merged ones a `reverts:` source names (docs/adr/0034).
    *
    * The only request this client sends outside a repository path. The query is
    * built here from `source`, never from caller text, because a query is the
@@ -9821,7 +9847,7 @@ var GitHubClient = class {
    * at five.
    */
   async searchPullRequests(source) {
-    const q = encodeURIComponent(searchQuery(source));
+    const q = encodeURIComponent(searchQuery(source, (repository) => this.allows(repository)));
     const pullRequests = [];
     let outsideAllowlist = 0;
     let truncated = false;
@@ -12883,1231 +12909,44 @@ async function reproduce(verification2, candidates, ctx) {
   return { enabled: true, sandbox, reproductions };
 }
 
-// plugins/review-voice/src/policy/load.ts
-function asRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-}
-function asStringArray(value) {
-  return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
-}
-function positiveInt(value) {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : void 0;
-}
-var CONFIG_KEYS = {
-  "": ["identity", "repositories", "review", "ci", "verdict", "static_evidence", "reproduction", "verification", "queue", "watch", "retention", "writes"],
-  identity: ["owner_reviewer", "reviewers"],
-  repositories: ["include"],
-  review: [
-    "human_review",
-    "structure",
-    "mode",
-    "models",
-    "confidence_threshold",
-    "final_score_threshold",
-    "lanes",
-    "suggestions",
-    "max_findings",
-    "max_words_per_finding",
-    "max_total_words"
-  ],
-  "review.human_review": [
-    "max_decision_points",
-    "max_hunk_decision_points",
-    "sensitive_paths",
-    "sensitive_exempt_paths",
-    "test_paths",
-    "generated_paths",
-    "cap_approval",
-    "structure"
-  ],
-  "review.human_review.structure": ["file_line_crossing", "branch_growth", "removed_controls"],
-  "review.structure": ["max_file_lines", "max_added_branches_per_function", "simplify"],
-  "review.lanes[]": ["name", "agent", "prefix", "when", "severity"],
-  "review.lanes[].when": ["min_changed_source_lines", "paths", "exclude_kinds", "signals"],
-  "review.lanes[].severity": ["cap", "escalate"],
-  "review.lanes[].severity.escalate": ["to", "requires"],
-  ci: ["gate_checks", "stuck_after_minutes", "stuck_after_overrides", "rerun_signatures", "builtin_rerun_signatures"],
-  "ci.gate_checks[]": ["name", "summary"],
-  "ci.stuck_after_overrides[]": ["name", "minutes"],
-  verdict: [
-    "ci_pending",
-    "ci_red",
-    "ci_needs_rerun",
-    "carry_approval_on_unchanged",
-    "recheck_thread_before_post",
-    "never_approve",
-    "scope_block",
-    "scope_block_models",
-    "evidence_block",
-    "evidence_block_precedents"
-  ],
-  static_evidence: ["enabled", "env_passthrough", "commands"],
-  "static_evidence.commands[]": ["name", "run", "timeout_seconds", "version"],
-  reproduction: ["enabled", "runners", "link_paths", "memory_mb", "cpu_seconds"],
-  "reproduction.runners[]": ["name", "run", "extension", "timeout_seconds"],
-  verification: ["enabled", "command", "name", "timeout_seconds", "drop_threshold", "env_passthrough"],
-  queue: ["sources", "teams", "max_per_pass", "follow_up_days", "skip"],
-  "queue.skip": ["authors", "assigned_to", "author_patterns", "allow_bots_when_requested", "drafts", "approved_at_head_by"],
-  "queue.skip.approved_at_head_by": ["logins", "sources"],
-  watch: ["workspace", "interval", "post", "lock_port", "run_repository_commands", "review_timeout", "max_attempts_per_head"],
-  retention: ["runs_days", "audit_days"],
-  writes: ["github_posting_enabled"]
-};
-function section(value, path, warnings) {
-  const block = asRecord(value);
-  if (block === null) return null;
-  const known = CONFIG_KEYS[path.replace(/\[\d+\]/g, "[]")] ?? [];
-  for (const key2 of Object.keys(block)) {
-    if (!known.includes(key2)) warnings.push(`${path === "" ? "" : `${path}.`}${key2} is not a setting Review Voice reads; ignoring it.`);
-  }
-  return block;
-}
-function readHumanReview(block, result) {
-  if (block === null) return;
-  const limit = (key2) => {
-    if (block[key2] === void 0) return void 0;
-    const value = block[key2];
-    if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
-    result.warnings.push(`review.human_review.${key2} must be a whole number above zero; using the default.`);
-    return void 0;
-  };
-  result.humanReview.maxDecisionPoints = limit("max_decision_points") ?? result.humanReview.maxDecisionPoints;
-  result.humanReview.maxHunkDecisionPoints = limit("max_hunk_decision_points") ?? result.humanReview.maxHunkDecisionPoints;
-  const globs = (key2) => {
-    const paths = block[key2];
-    if (paths === void 0) return void 0;
-    if (Array.isArray(paths)) return asStringArray(paths);
-    result.warnings.push(`review.human_review.${key2} must be a list; using the default.`);
-    return void 0;
-  };
-  result.humanReview.sensitivePaths = globs("sensitive_paths") ?? result.humanReview.sensitivePaths;
-  result.humanReview.sensitiveExemptPaths = globs("sensitive_exempt_paths") ?? result.humanReview.sensitiveExemptPaths;
-  result.humanReview.testPaths = globs("test_paths") ?? result.humanReview.testPaths;
-  result.humanReview.generatedPaths = globs("generated_paths") ?? result.humanReview.generatedPaths;
-  const cap = block["cap_approval"];
-  if (cap !== void 0) {
-    if (typeof cap === "boolean") result.verdictPolicy.capApproval = cap;
-    else result.warnings.push("review.human_review.cap_approval must be true or false; using true.");
-  }
-  const structure = block["structure"];
-  if (structure === void 0) return;
-  const signals = section(structure, "review.human_review.structure", result.warnings);
-  if (signals === null) {
-    result.warnings.push("review.human_review.structure must be a mapping; using the defaults.");
-    return;
-  }
-  const enabled2 = (key2) => {
-    const value = signals[key2];
-    if (value === void 0) return void 0;
-    if (typeof value === "boolean") return value;
-    result.warnings.push(`review.human_review.structure.${key2} must be true or false; using the default.`);
-    return void 0;
-  };
-  result.humanReview.structure.fileLineCrossing = enabled2("file_line_crossing") ?? result.humanReview.structure.fileLineCrossing;
-  result.humanReview.structure.branchGrowth = enabled2("branch_growth") ?? result.humanReview.structure.branchGrowth;
-  result.humanReview.structure.removedControls = enabled2("removed_controls") ?? result.humanReview.structure.removedControls;
-}
-function readStructure(block, result) {
-  if (block === null) return;
-  const limit = (key2) => {
-    const value = block[key2];
-    if (value === void 0) return void 0;
-    if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
-    result.warnings.push(`review.structure.${key2} must be a whole number above zero; using the default.`);
-    return void 0;
-  };
-  result.structure.maxFileLines = limit("max_file_lines") ?? result.structure.maxFileLines;
-  result.structure.maxAddedBranchesPerFunction = limit("max_added_branches_per_function") ?? result.structure.maxAddedBranchesPerFunction;
-  const simplify = block["simplify"];
-  if (simplify !== void 0) {
-    if (typeof simplify === "boolean") result.structure.simplify = simplify;
-    else result.warnings.push("review.structure.simplify must be true or false; using the default.");
-  }
-}
-function readCostMode(review2, result) {
-  const mode = review2["mode"];
-  if (mode !== void 0) {
-    const known = MODES.find((candidate) => candidate === mode);
-    if (known === void 0) result.warnings.push(`review.mode must be one of ${MODES.join(", ")}; using auto.`);
-    else result.costMode.mode = known;
-  }
-  const models = review2["models"];
-  if (models === void 0) return;
-  const block = asRecord(models);
-  if (block === null) {
-    result.warnings.push("review.models must be a map of stage to model name; ignoring it.");
-    return;
-  }
-  for (const [key2, value] of Object.entries(block)) {
-    const known = MODEL_KEYS.find((candidate) => candidate === key2);
-    if (known === void 0) {
-      result.warnings.push(`review.models.${key2} is not a stage (${MODEL_KEYS.join(", ")}); ignoring it.`);
-    } else if (typeof value !== "string" || value.trim().length === 0) {
-      result.warnings.push(`review.models.${key2} must be a model name; using the default.`);
-    } else {
-      result.costMode.models[known] = value.trim();
-    }
-  }
-}
-function parseLane(entry, taken, path, warnings) {
-  const block = section(entry, path, warnings);
-  if (block === null) return "must be a mapping";
-  const { name, agent: agent2, prefix } = block;
-  if (typeof name !== "string" || !/^[a-z][a-z0-9-]*$/.test(name)) return "name must be lower-case letters, digits and dashes";
-  if (name === DIFF_LANE.name) return "diff is built in and cannot be redefined";
-  if (taken.some((lane) => lane.name === name)) return `name ${name} is already used`;
-  if (typeof prefix !== "string" || !/^[a-z]+_$/.test(prefix)) return "prefix must be lower-case letters followed by _";
-  if (taken.some((lane) => lane.prefix === prefix)) return `prefix ${prefix} is already used`;
-  if (typeof agent2 !== "string" || !agentExists(agent2)) return `agent ${String(agent2)} is not an agent under agents/`;
-  const when = {};
-  if (block["when"] !== void 0) {
-    const rule = section(block["when"], `${path}.when`, warnings);
-    if (rule === null) return "when must be a mapping";
-    const min = rule["min_changed_source_lines"];
-    if (min !== void 0) {
-      if (typeof min !== "number" || !Number.isInteger(min) || min < 0) return "when.min_changed_source_lines must be a whole number";
-      when.minChangedSourceLines = min;
-    }
-    const paths = rule["paths"];
-    if (paths !== void 0) {
-      if (!Array.isArray(paths) || !paths.every((path2) => typeof path2 === "string" && path2.length > 0)) return "when.paths must be a list of globs";
-      when.paths = paths;
-    }
-    const kinds = rule["exclude_kinds"];
-    if (kinds !== void 0) {
-      if (!Array.isArray(kinds) || !kinds.every((kind) => CHANGE_KINDS.includes(kind))) {
-        return `when.exclude_kinds must list only ${CHANGE_KINDS.join(", ")}`;
-      }
-      when.excludeKinds = kinds;
-    }
-    const signals = rule["signals"];
-    if (signals !== void 0) {
-      if (!Array.isArray(signals) || !signals.every((signal2) => LANE_SIGNALS.includes(signal2))) {
-        return `when.signals must list only ${LANE_SIGNALS.join(", ")}`;
-      }
-      when.signals = signals;
-    }
-  }
-  const severity = {};
-  if (block["severity"] !== void 0) {
-    const rule = section(block["severity"], `${path}.severity`, warnings);
-    if (rule === null) return "severity must be a mapping";
-    const tier = (value) => LANE_TIERS.find((known) => known === value);
-    if (rule["cap"] !== void 0) {
-      const cap = tier(rule["cap"]);
-      if (cap === void 0) return `severity.cap must be one of ${LANE_TIERS.join(", ")}`;
-      severity.cap = cap;
-    }
-    if (rule["escalate"] !== void 0) {
-      const escalate = section(rule["escalate"], `${path}.severity.escalate`, warnings);
-      const to = tier(escalate?.["to"]);
-      if (to === void 0) return `severity.escalate.to must be one of ${LANE_TIERS.join(", ")}`;
-      if (escalate?.["requires"] !== "blocker_confirmed") return "severity.escalate.requires must be blocker_confirmed";
-      severity.escalate = { to, requires: "blocker_confirmed" };
-    }
-  }
-  return { name, agent: agent2, prefix, when, severity };
-}
-var ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-function readEnvPassthrough(value, key2, result) {
-  if (value === void 0) return [];
-  if (!Array.isArray(value)) {
-    result.warnings.push(`${key2} must be a list of variable names; ignoring it.`);
-    return [];
-  }
-  const names = [];
-  for (const entry of value) {
-    if (typeof entry === "string" && ENV_NAME.test(entry)) names.push(entry);
-    else result.warnings.push(`${key2}: ${JSON.stringify(entry)} is not a variable name; skipping it.`);
-  }
-  return names;
-}
-function readLanes(value, result) {
-  if (value === void 0) return;
-  if (!Array.isArray(value)) {
-    result.warnings.push("review.lanes must be a list; ignoring it.");
-    return;
-  }
-  value.forEach((entry, index) => {
-    const lane = parseLane(entry, result.lanes, `review.lanes[${index}]`, result.warnings);
-    if (typeof lane === "string") result.warnings.push(`review.lanes[${index}]: ${lane}; dropping the lane.`);
-    else result.lanes.push(lane);
-  });
-}
-function parseReproductionRunner(entry, taken, path, warnings) {
-  const block = section(entry, path, warnings);
-  if (block === null) return "must be a mapping";
-  const { name, run, extension } = block;
-  if (typeof name !== "string" || !/^[a-z][a-z0-9-]*$/.test(name)) return "name must be lower-case letters, digits and dashes";
-  if (taken.some((runner) => runner.name === name)) return `name ${name} is already used`;
-  if (typeof run !== "string" || (run.match(/\{[^{}]*\}/g) ?? []).join() !== "{file}") {
-    return "run must contain {file} exactly once and no other brace placeholder";
-  }
-  if (typeof extension !== "string" || !/^\.[A-Za-z0-9.]{1,15}$/.test(extension)) return "extension must be a dot and up to 15 letters, digits or dots";
-  const timeout = block["timeout_seconds"] ?? 120;
-  if (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < 1 || timeout > 600) {
-    return "timeout_seconds must be a whole number from 1 to 600";
-  }
-  return { name, run, extension, timeoutSeconds: timeout };
-}
-function readReproduction(value, result) {
-  const block = section(value, "reproduction", result.warnings);
-  if (block === null) {
-    result.warnings.push("reproduction must be a mapping; using the defaults.");
-    return;
-  }
-  const target = result.reproduction;
-  const enabled2 = block["enabled"];
-  if (typeof enabled2 === "boolean") target.enabled = enabled2;
-  else if (enabled2 !== void 0) result.warnings.push("reproduction.enabled must be true or false; using false.");
-  const runners = block["runners"];
-  if (runners !== void 0 && !Array.isArray(runners)) result.warnings.push("reproduction.runners must be a list; ignoring it.");
-  if (Array.isArray(runners)) {
-    runners.forEach((entry, index) => {
-      const runner = parseReproductionRunner(entry, target.runners, `reproduction.runners[${index}]`, result.warnings);
-      if (typeof runner !== "string") {
-        target.runners.push(runner);
-        return;
-      }
-      const name = asRecord(entry)?.["name"];
-      result.warnings.push(`reproduction.runners[${index}]${typeof name === "string" ? ` (${name})` : ""}: ${runner}; dropping the runner.`);
-    });
-  }
-  const links = block["link_paths"];
-  if (links !== void 0 && !Array.isArray(links)) result.warnings.push("reproduction.link_paths must be a list; ignoring it.");
-  if (Array.isArray(links)) {
-    for (const entry of links) {
-      if (typeof entry === "string" && entry !== "" && entry !== "." && entry !== ".." && !entry.includes("/")) {
-        if (!target.linkPaths.includes(entry)) target.linkPaths.push(entry);
-      } else {
-        result.warnings.push(`reproduction.link_paths: ${JSON.stringify(entry)} is not a single path segment; skipping it.`);
-      }
-    }
-  }
-  const limit = (key2, field, min, max) => {
-    const value2 = block[key2];
-    if (value2 === void 0) return;
-    if (typeof value2 === "number" && Number.isInteger(value2) && value2 >= min && value2 <= max) target[field] = value2;
-    else result.warnings.push(`reproduction.${key2} must be a whole number from ${min} to ${max}; using ${target[field]}.`);
-  };
-  limit("memory_mb", "memoryMb", 64, 16384);
-  limit("cpu_seconds", "cpuSeconds", 1, 600);
-}
-var GENERIC_SIGNATURE_WORDS = /* @__PURE__ */ new Set([
-  "error",
-  "errors",
-  "failed",
-  "failure",
-  "failures",
-  "failing",
-  "fatal",
-  "exception",
-  "exceptions",
-  "timeout",
-  "timed out",
-  "cancelled",
-  "canceled",
-  "aborted",
-  "killed",
-  "crashed",
-  "panic",
-  "unavailable",
-  "refused",
-  "denied",
-  "forbidden",
-  "unauthorized",
-  "warning",
-  "retrying",
-  "connection",
-  "network",
-  "internal",
-  "exit code",
-  "traceback",
-  "stacktrace"
-]);
-function specificSignature(signature2) {
-  if (signature2.length < 8) return false;
-  return !GENERIC_SIGNATURE_WORDS.has(signature2.toLowerCase().replace(/[^a-z ]+/g, " ").trim());
-}
-function readCiRules(block, result) {
-  if (block === null) return;
-  const minutes = (value) => typeof value === "number" && Number.isInteger(value) && value > 0 ? value : void 0;
-  if (block["stuck_after_minutes"] !== void 0) {
-    const value = minutes(block["stuck_after_minutes"]);
-    if (value === void 0) {
-      result.warnings.push("ci.stuck_after_minutes must be a whole number above zero; using 60.");
-    } else {
-      result.ciRules.stuckAfterMinutes = value;
-    }
-  }
-  const overrides = block["stuck_after_overrides"];
-  if (overrides !== void 0 && !Array.isArray(overrides)) {
-    result.warnings.push("ci.stuck_after_overrides must be a list; ignoring it.");
-  } else if (overrides !== void 0) {
-    const stuckAfter = [];
-    for (const [index, entry] of overrides.entries()) {
-      const override = section(entry, `ci.stuck_after_overrides[${index}]`, result.warnings);
-      const name = override?.["name"];
-      const value = minutes(override?.["minutes"]);
-      if (typeof name !== "string" || name.length === 0 || value === void 0) {
-        result.warnings.push("a ci.stuck_after_overrides entry needs a name and minutes above zero; skipping it.");
-        continue;
-      }
-      stuckAfter.push({ name, minutes: value });
-    }
-    if (stuckAfter.length > 0) result.ciRules.stuckAfter = stuckAfter;
-  }
-  const extra = block["rerun_signatures"];
-  if (extra !== void 0 && !Array.isArray(extra)) {
-    result.warnings.push("ci.rerun_signatures must be a list; ignoring it.");
-  }
-  const added = [];
-  for (const entry of Array.isArray(extra) ? extra : []) {
-    if (typeof entry !== "string") {
-      result.warnings.push(`ci.rerun_signatures: ${JSON.stringify(entry)} is not text; skipping it.`);
-      continue;
-    }
-    const signature2 = entry.trim();
-    if (!specificSignature(signature2)) {
-      result.warnings.push(
-        `ci.rerun_signatures: "${signature2}" is too short or too generic and would match real failures; skipping it.`
-      );
-      continue;
-    }
-    added.push(signature2);
-  }
-  const builtin = block["builtin_rerun_signatures"];
-  if (builtin !== void 0 && typeof builtin !== "boolean") {
-    result.warnings.push("ci.builtin_rerun_signatures must be true or false; keeping the built-in signatures.");
-  }
-  if (added.length > 0 || builtin === false) {
-    result.ciRules.rerunSignatures = [...builtin === false ? [] : BUILTIN_RERUN_SIGNATURES, ...added];
-  }
-}
-function readVerdictPolicy(block, result) {
-  if (block === null) return;
-  const choice = (key2, options, fallback) => {
-    const value = block[key2];
-    if (value === void 0) return fallback;
-    if (typeof value === "string" && options.includes(value)) return value;
-    result.warnings.push(`verdict.${key2} must be one of ${options.join(", ")}; using ${fallback}.`);
-    return fallback;
-  };
-  const enabled2 = (key2, fallback) => {
-    const value = block[key2];
-    if (value === void 0) return fallback;
-    if (typeof value === "boolean") return value;
-    result.warnings.push(`verdict.${key2} must be true or false; using ${String(fallback)}.`);
-    return fallback;
-  };
-  const policy = result.verdictPolicy;
-  policy.ciPending = choice("ci_pending", ["wait", "proceed"], DEFAULT_VERDICT_POLICY.ciPending);
-  policy.ciRed = choice("ci_red", ["cap", "annotate"], DEFAULT_VERDICT_POLICY.ciRed);
-  policy.ciNeedsRerun = choice("ci_needs_rerun", ["hold", "annotate"], DEFAULT_VERDICT_POLICY.ciNeedsRerun);
-  policy.carryApprovalOnUnchanged = enabled2("carry_approval_on_unchanged", DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
-  policy.recheckThreadBeforePost = enabled2("recheck_thread_before_post", DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
-  policy.neverApprove = enabled2("never_approve", DEFAULT_VERDICT_POLICY.neverApprove);
-  policy.scopeBlock = enabled2("scope_block", DEFAULT_VERDICT_POLICY.scopeBlock);
-  policy.scopeBlockModels = enabled2("scope_block_models", DEFAULT_VERDICT_POLICY.scopeBlockModels);
-  policy.evidenceBlock = enabled2("evidence_block", DEFAULT_VERDICT_POLICY.evidenceBlock);
-  policy.evidenceBlockPrecedents = enabled2("evidence_block_precedents", DEFAULT_VERDICT_POLICY.evidenceBlockPrecedents);
-}
-var TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
-function readQueue(block, result) {
-  if (block === null) return;
-  const queue = result.queue;
-  const list2 = (value, key2) => {
-    if (value === void 0) return void 0;
-    if (Array.isArray(value)) return value;
-    result.warnings.push(`queue.${key2} must be a list; using the default.`);
-    return void 0;
-  };
-  const logins = (value, key2) => {
-    const entries = list2(value, key2);
-    if (entries === void 0) return void 0;
-    const kept = [];
-    for (const entry of entries) {
-      if (typeof entry === "string" && entry.length > 0) kept.push(entry);
-      else result.warnings.push(`queue.${key2}: ${JSON.stringify(entry)} is not a login; skipping it.`);
-    }
-    return kept;
-  };
-  const sourceList = (value, key2) => {
-    const entries = list2(value, key2);
-    if (entries === void 0) return void 0;
-    const kept = [];
-    for (const entry of entries) {
-      if (typeof entry === "string" && QUEUE_SOURCES.includes(entry)) kept.push(entry);
-      else result.warnings.push(`queue.${key2}: ${JSON.stringify(entry)} is not one of ${QUEUE_SOURCES.join(", ")}; skipping it.`);
-    }
-    return kept;
-  };
-  const wholeAboveZero = (key2) => {
-    const value = block[key2];
-    if (value === void 0) return void 0;
-    if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
-    result.warnings.push(`queue.${key2} must be a whole number above zero; using the default.`);
-    return void 0;
-  };
-  const flag2 = (record3, key2) => {
-    const value = record3[key2];
-    if (value === void 0) return void 0;
-    if (typeof value === "boolean") return value;
-    result.warnings.push(`queue.skip.${key2} must be true or false; using the default.`);
-    return void 0;
-  };
-  queue.sources = sourceList(block["sources"], "sources") ?? queue.sources;
-  const teams = list2(block["teams"], "teams");
-  if (teams !== void 0) {
-    queue.teams = [];
-    for (const entry of teams) {
-      if (typeof entry === "string" && TEAM.test(entry)) queue.teams.push(entry);
-      else result.warnings.push(`queue.teams: ${JSON.stringify(entry)} is not org/team-slug; skipping it.`);
-    }
-  }
-  queue.maxPerPass = wholeAboveZero("max_per_pass") ?? queue.maxPerPass;
-  queue.followUpDays = wholeAboveZero("follow_up_days") ?? queue.followUpDays;
-  if (block["skip"] === void 0) return;
-  const skip2 = section(block["skip"], "queue.skip", result.warnings);
-  if (skip2 === null) {
-    result.warnings.push("queue.skip must be a mapping; using the defaults.");
-    return;
-  }
-  queue.skip.authors = logins(skip2["authors"], "skip.authors") ?? queue.skip.authors;
-  queue.skip.assignedTo = logins(skip2["assigned_to"], "skip.assigned_to") ?? queue.skip.assignedTo;
-  const patterns = list2(skip2["author_patterns"], "skip.author_patterns");
-  if (patterns !== void 0) {
-    queue.skip.authorPatterns = [];
-    for (const entry of patterns) {
-      try {
-        if (typeof entry !== "string" || entry.length === 0) throw new Error("not text");
-        new RegExp(entry, "i");
-        queue.skip.authorPatterns.push(entry);
-      } catch {
-        result.warnings.push(`queue.skip.author_patterns: ${JSON.stringify(entry)} is not a regular expression; skipping it.`);
-      }
-    }
-  }
-  queue.skip.allowBotsWhenRequested = flag2(skip2, "allow_bots_when_requested") ?? queue.skip.allowBotsWhenRequested;
-  queue.skip.drafts = flag2(skip2, "drafts") ?? queue.skip.drafts;
-  if (skip2["approved_at_head_by"] !== void 0) {
-    const approved = section(skip2["approved_at_head_by"], "queue.skip.approved_at_head_by", result.warnings);
-    if (approved === null) {
-      result.warnings.push("queue.skip.approved_at_head_by must be a mapping; ignoring it.");
-    } else {
-      queue.skip.approvedAtHeadBy = {
-        logins: logins(approved["logins"], "skip.approved_at_head_by.logins") ?? [],
-        sources: sourceList(approved["sources"], "skip.approved_at_head_by.sources") ?? queue.skip.approvedAtHeadBy.sources
-      };
-    }
-  }
-}
-function readWatch(block, result) {
-  if (block === null) {
-    result.warnings.push("watch must be a mapping; using the defaults.");
-    return;
-  }
-  const { workspace, interval, post } = block;
-  if (workspace !== void 0) {
-    if (typeof workspace === "string" && workspace.trim().length > 0) {
-      const path = workspace.trim();
-      result.watch.workspace = path === "~" || path.startsWith("~/") ? join8(homedir2(), path.slice(1)) : path;
-    } else {
-      result.warnings.push("watch.workspace must be a directory path; using <data directory>/clones.");
-    }
-  }
-  if (interval !== void 0) {
-    const ms = typeof interval === "string" ? parseDuration(interval) : null;
-    if (ms === null) result.warnings.push("watch.interval must be a duration such as 30m or 2h; using 2h.");
-    else result.watch.intervalMs = ms;
-  }
-  if (post !== void 0) {
-    if (typeof post === "boolean") result.watch.post = post;
-    else result.warnings.push("watch.post must be true or false; using false.");
-  }
-  const port = block["lock_port"];
-  if (port !== void 0) {
-    if (typeof port === "number" && Number.isInteger(port) && port >= 1024 && port <= 65535) result.watch.lockPort = port;
-    else result.warnings.push("watch.lock_port must be a whole number from 1024 to 65535; deriving it from the data directory.");
-  }
-  const commands = block["run_repository_commands"];
-  if (commands !== void 0) {
-    if (typeof commands === "boolean") result.watch.runRepositoryCommands = commands;
-    else result.warnings.push("watch.run_repository_commands must be true or false; using false.");
-  }
-  const timeout = block["review_timeout"];
-  if (timeout !== void 0) {
-    const ms = typeof timeout === "string" ? parseDuration(timeout) : null;
-    if (ms === null || ms > MAX_REVIEW_TIMEOUT_MS) result.warnings.push("watch.review_timeout must be a duration up to 6h, such as 45m; using 45m.");
-    else result.watch.reviewTimeoutMs = ms;
-  }
-  const attempts = block["max_attempts_per_head"];
-  if (attempts !== void 0) {
-    if (typeof attempts === "number" && Number.isInteger(attempts) && attempts > 0) result.watch.maxAttemptsPerHead = attempts;
-    else result.warnings.push("watch.max_attempts_per_head must be a whole number above zero; using 2.");
-  }
-}
-function readRetention(block, result) {
-  if (block === null) {
-    result.warnings.push("retention must be a mapping; using the defaults.");
-    return;
-  }
-  const read = (key2, field) => {
-    const value = block[key2];
-    if (value === void 0) return;
-    if (value === null || typeof value === "number" && Number.isInteger(value) && value >= 0) result.retention[field] = value;
-    else result.warnings.push(`retention.${key2} must be a whole number of days, or 0 or null to keep it forever; using ${DEFAULT_RETENTION[field]}.`);
-  };
-  read("runs_days", "runsDays");
-  read("audit_days", "auditDays");
-}
-function contentHash(text4) {
-  return createHash3("sha256").update(text4).digest("hex").slice(0, 16);
-}
-function layerFromPolicyFile(text4, source, fallbackKey) {
-  const doc = asRecord(parse(text4));
-  if (doc === null) return null;
-  const scope = asRecord(doc["scope"]);
-  const type = typeof scope?.["type"] === "string" ? scope["type"] : "repository";
-  const key2 = typeof scope?.["key"] === "string" ? scope["key"] : fallbackKey;
-  const priorities = Array.isArray(doc["priorities"]) ? doc["priorities"].map((item) => asRecord(item)).filter((item) => item !== null).filter((item) => typeof item["category"] === "string").map((item) => ({
-    category: item["category"],
-    weight: typeof item["weight"] === "string" ? item["weight"] : "normal"
-  })) : [];
-  return {
-    scope: { type, key: key2 },
-    source,
-    requiresApproval: true,
-    ...positiveInt(doc["max_findings"]) === void 0 ? {} : { maxFindings: positiveInt(doc["max_findings"]) },
-    forbiddenPhrases: asStringArray(doc["forbidden_phrases"]),
-    suppressedPatterns: asStringArray(doc["suppressed_patterns"]),
-    requiredChecks: asStringArray(doc["required_checks"]),
-    priorities
-  };
-}
-function approvedPolicyLayers(db, warnings) {
-  const layers = [];
-  const versions = [];
-  for (const row of activePolicyRows(db)) {
-    versions.push({ scopeType: row.scopeType, scopeKey: row.scopeKey, policyId: row.policyId, version: row.version });
-    const label2 = `approved policy version ${row.version}`;
-    try {
-      const doc = asRecord(parse(row.contentYaml));
-      if (doc === null) {
-        warnings.push(`${label2} is empty; ignoring it.`);
-        continue;
-      }
-      const read = readSuppressions(doc["suppressions"], row.version);
-      for (const warning of read.warnings) warnings.push(`${label2}: ${warning}`);
-      const isPath2 = row.scopeType === "path";
-      const suppressions = isPath2 ? read.suppressions.map((suppression) => {
-        if (suppression.glob !== null && suppression.glob !== row.scopeKey) {
-          warnings.push(`${label2}: suppression ${suppression.ruleId} names glob ${suppression.glob}; the policy's scope ${row.scopeKey} applies.`);
-        }
-        return { ...suppression, glob: row.scopeKey };
-      }) : read.suppressions;
-      layers.push({
-        scope: { type: isPath2 ? "path" : "global", key: row.scopeKey },
-        source: `${label2} (policies table)`,
-        requiresApproval: false,
-        suppressedPatterns: asStringArray(doc["suppressed_patterns"]),
-        suppressions
-      });
-    } catch (error) {
-      warnings.push(`${label2} could not be parsed: ${String(error)}`);
-    }
-  }
-  return { layers, versions };
-}
-function pluginRoot() {
-  let dir = dirname6(fileURLToPath3(import.meta.url));
-  while (!existsSync4(join8(dir, ".claude-plugin", "plugin.json")) && dirname6(dir) !== dir) dir = dirname6(dir);
-  return dir;
-}
-function loadBaselineLayer(owner, path = join8(pluginRoot(), "policies", "baseline-global.yaml")) {
-  if (!existsSync4(path)) return null;
+// plugins/review-voice/src/publish/suggestion.ts
+async function fileAtRef(client, repository, path, ref) {
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
   try {
-    const doc = asRecord(parse(readFileSync5(path, "utf8")));
-    if (doc === null) return null;
-    const voice = asRecord(doc["voice"]);
-    const maxFindings = positiveInt(voice?.["max_findings"]);
-    const maxWords = positiveInt(voice?.["max_words_per_finding"]);
-    const maxTotal = positiveInt(voice?.["max_total_words"]);
-    return {
-      scope: { type: "global", key: owner ?? "owner" },
-      source: "policies/baseline-global.yaml",
-      requiresApproval: false,
-      ...maxFindings === void 0 ? {} : { maxFindings },
-      ...maxWords === void 0 ? {} : { maxWordsPerFinding: maxWords },
-      ...maxTotal === void 0 ? {} : { maxTotalWords: maxTotal },
-      forbiddenPhrases: asStringArray(doc["forbidden_phrases"]),
-      suppressedPatterns: asStringArray(doc["suppressed_patterns"]),
-      priorities: asStringArray(doc["priorities"]).map((category) => ({ category, weight: "normal" }))
-    };
+    const { data } = await client.get(
+      `/repos/${repository}/contents/${encoded}?ref=${encodeURIComponent(ref)}`
+    );
+    if (data?.type !== "file" || data.encoding !== "base64" || typeof data.content !== "string") return null;
+    return Buffer.from(data.content, "base64").toString("utf8");
   } catch {
     return null;
   }
 }
-function readThresholds(review2, result) {
-  const read = (key2) => {
-    const value = review2[key2];
-    if (value === void 0) return void 0;
-    if (typeof value === "number" && value > 0 && value <= 1) return value;
-    result.warnings.push(`review.${key2} must be a number above 0 and at most 1; using the default.`);
-    return void 0;
-  };
-  const confidence = read("confidence_threshold");
-  const score2 = read("final_score_threshold");
-  if (confidence !== void 0) result.thresholds.technicalConfidence = confidence;
-  if (score2 !== void 0) result.thresholds.finalScore = score2;
+function linesAt(text4, start, count3) {
+  const lines2 = text4.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+  if (start < 1 || start - 1 + count3 > lines2.length) return null;
+  return lines2.slice(start - 1, start - 1 + count3).join("\n");
 }
-function readReviewers(identity2, result) {
-  const raw = identity2?.["reviewers"];
-  const listed = [];
-  if (raw !== void 0) {
-    if (!Array.isArray(raw)) {
-      result.warnings.push("identity.reviewers must be a list of GitHub logins; ignoring it.");
-    } else {
-      for (const entry of raw) {
-        if (typeof entry !== "string" || entry.trim() === "") {
-          result.warnings.push("identity.reviewers: skipped an entry that is not a login.");
-          continue;
-        }
-        const login = entry.trim();
-        if (!listed.some((existing) => existing.toLowerCase() === login.toLowerCase())) listed.push(login);
-      }
-    }
-  }
-  if (result.ownerReviewer === null && listed.length > 0) result.ownerReviewer = listed[0];
-  const owner = result.ownerReviewer;
-  if (owner !== null && !listed.some((login) => login.toLowerCase() === owner.toLowerCase())) {
-    listed.unshift(owner);
-  }
-  result.reviewers = listed;
+function suggestionApplied(reviewed, current, patch) {
+  const before = reviewed.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+  const after = current.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+  const start = patch.start_line - 1;
+  const original = unixLines(patch.original);
+  const replacement = unixLines(patch.replacement);
+  const replaced = replacement.split("\n");
+  if (original === replacement || before.join("\n") === after.join("\n")) return false;
+  if (after.slice(start, patch.end_line).join("\n") === original) return false;
+  if (before.slice(start, patch.end_line).join("\n") !== original) return false;
+  if (after.slice(start, start + replaced.length).join("\n") !== replacement) return false;
+  if (before.slice(0, start).join("\n") !== after.slice(0, start).join("\n")) return false;
+  return after[start + replaced.length] === before[patch.end_line];
 }
-function configFile(repositoryRoot2, warnings = []) {
-  const override = process.env["REVIEW_VOICE_CONFIG"];
-  if (override !== void 0 && override.length > 0) {
-    if (isAbsolute(override)) return override;
-    warnings.push(`REVIEW_VOICE_CONFIG must be an absolute path; reading .review-voice/config.yaml instead.`);
-  }
-  return join8(repositoryRoot2, ".review-voice", "config.yaml");
+function unixLines(text4) {
+  return text4.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3).join("\n");
 }
-function readConfigDocument(value, repositoryRoot2, result) {
-  const doc = section(value, "", result.warnings);
-  if (doc === null) return;
-  const identity2 = section(doc["identity"], "identity", result.warnings);
-  if (typeof identity2?.["owner_reviewer"] === "string") {
-    result.ownerReviewer = identity2["owner_reviewer"];
-  }
-  readReviewers(identity2, result);
-  const repositories = section(doc["repositories"], "repositories", result.warnings);
-  for (const entry of asStringArray(repositories?.["include"])) {
-    const problem = allowlistEntryProblem(entry);
-    if (problem === null) result.allowlist.push(entry);
-    else result.warnings.push(`repositories.include: ${problem} Skipping it.`);
-  }
-  if (doc["queue"] !== void 0 && asRecord(doc["queue"]) === null) {
-    result.warnings.push("queue must be a mapping; using the defaults.");
-  }
-  readQueue(section(doc["queue"], "queue", result.warnings), result);
-  if (doc["watch"] !== void 0) readWatch(section(doc["watch"], "watch", result.warnings), result);
-  if (doc["retention"] !== void 0) readRetention(section(doc["retention"], "retention", result.warnings), result);
-  const staticEvidence = section(doc["static_evidence"], "static_evidence", result.warnings);
-  if (staticEvidence !== null) {
-    result.staticEvidence.enabled = staticEvidence["enabled"] === true;
-    result.staticEvidence.envPassthrough = readEnvPassthrough(
-      staticEvidence["env_passthrough"],
-      "static_evidence.env_passthrough",
-      result
-    );
-    const commands = Array.isArray(staticEvidence["commands"]) ? staticEvidence["commands"] : [];
-    for (const [index, entry] of commands.entries()) {
-      const command = section(entry, `static_evidence.commands[${index}]`, result.warnings);
-      if (command === null) continue;
-      const name = command["name"];
-      const run = command["run"];
-      if (typeof name !== "string" || typeof run !== "string") continue;
-      const timeout = positiveInt(command["timeout_seconds"]);
-      const version = command["version"];
-      result.staticEvidence.commands.push({
-        name,
-        run,
-        ...timeout === void 0 ? {} : { timeoutSeconds: timeout },
-        ...typeof version === "string" && version.trim() !== "" ? { version } : {}
-      });
-    }
-  }
-  if (doc["reproduction"] !== void 0) readReproduction(doc["reproduction"], result);
-  const writes = section(doc["writes"], "writes", result.warnings);
-  result.postingEnabled = writes?.["github_posting_enabled"] === true;
-  const ci = section(doc["ci"], "ci", result.warnings);
-  const gateChecks = Array.isArray(ci?.["gate_checks"]) ? ci["gate_checks"] : [];
-  for (const [index, entry] of gateChecks.entries()) {
-    if (typeof entry === "string" && entry.length > 0) {
-      result.ciGateChecks.push({ name: entry });
-      continue;
-    }
-    const gate = section(entry, `ci.gate_checks[${index}]`, result.warnings);
-    const name = gate?.["name"];
-    if (typeof name !== "string" || name.length === 0) continue;
-    const summary = gate?.["summary"];
-    result.ciGateChecks.push({
-      name,
-      ...typeof summary === "string" && summary.length > 0 ? { summary } : {}
-    });
-  }
-  readCiRules(ci, result);
-  if (doc["verdict"] !== void 0) {
-    const verdict2 = section(doc["verdict"], "verdict", result.warnings);
-    if (verdict2 === null) result.warnings.push("verdict must be a mapping; using the defaults.");
-    readVerdictPolicy(verdict2, result);
-  }
-  const verification2 = section(doc["verification"], "verification", result.warnings);
-  if (verification2 !== null) {
-    const command = verification2["command"];
-    result.verification = {
-      enabled: verification2["enabled"] === true && typeof command === "string" && command.length > 0,
-      command: typeof command === "string" ? command : "",
-      name: typeof verification2["name"] === "string" ? verification2["name"] : void 0,
-      timeoutSeconds: positiveInt(verification2["timeout_seconds"]),
-      dropThreshold: typeof verification2["drop_threshold"] === "number" ? verification2["drop_threshold"] : void 0,
-      envPassthrough: readEnvPassthrough(verification2["env_passthrough"], "verification.env_passthrough", result),
-      blockPresent: true
-    };
-  }
-  const review2 = section(doc["review"], "review", result.warnings);
-  if (review2 !== null) {
-    readHumanReview(section(review2["human_review"], "review.human_review", result.warnings), result);
-    readStructure(section(review2["structure"], "review.structure", result.warnings), result);
-    readCostMode(review2, result);
-    readThresholds(review2, result);
-    readLanes(review2["lanes"], result);
-    const suggestions = review2["suggestions"];
-    if (typeof suggestions === "boolean") result.verdictPolicy.suggestions = suggestions;
-    else if (suggestions !== void 0) result.warnings.push("review.suggestions must be true or false; using false.");
-    result.layers.push({
-      scope: { type: "repository", key: repositoryRoot2 },
-      source: ".review-voice/config.yaml",
-      requiresApproval: false,
-      ...positiveInt(review2["max_findings"]) === void 0 ? {} : { maxFindings: positiveInt(review2["max_findings"]) },
-      ...positiveInt(review2["max_words_per_finding"]) === void 0 ? {} : { maxWordsPerFinding: positiveInt(review2["max_words_per_finding"]) },
-      ...positiveInt(review2["max_total_words"]) === void 0 ? {} : { maxTotalWords: positiveInt(review2["max_total_words"]) }
-    });
-  }
-}
-function loadConfig(repositoryRoot2, baselinePath, path, db) {
-  const result = {
-    ownerReviewer: null,
-    reviewers: [],
-    postingEnabled: false,
-    ciGateChecks: [],
-    ciRules: {},
-    allowlist: [],
-    queue: defaultQueueConfig(),
-    watch: defaultWatchConfig(),
-    retention: { ...DEFAULT_RETENTION },
-    staticEvidence: { enabled: false, commands: [], envPassthrough: [] },
-    reproduction: defaultReproduction(),
-    verification: { enabled: false, command: "", envPassthrough: [], blockPresent: false },
-    humanReview: {
-      ...DEFAULT_HUMAN_REVIEW,
-      sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths],
-      sensitiveExemptPaths: [...DEFAULT_HUMAN_REVIEW.sensitiveExemptPaths],
-      testPaths: [...DEFAULT_HUMAN_REVIEW.testPaths],
-      generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths],
-      structure: { ...DEFAULT_HUMAN_REVIEW.structure }
-    },
-    structure: { ...DEFAULT_STRUCTURE },
-    costMode: { mode: "auto", models: {} },
-    verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
-    lanes: [DIFF_LANE],
-    thresholds: {},
-    layers: [],
-    suppressions: [],
-    activePolicyVersions: [],
-    unapproved: [],
-    warnings: []
-  };
-  const configPath = path ?? configFile(repositoryRoot2, result.warnings);
-  if (existsSync4(configPath)) {
-    try {
-      readConfigDocument(parse(readFileSync5(configPath, "utf8")), repositoryRoot2, result);
-    } catch (error) {
-      result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
-    }
-  }
-  const approved = db === void 0 ? null : approvedPolicyLayers(db, result.warnings);
-  if (approved !== null) {
-    result.layers.unshift(...approved.layers);
-    result.activePolicyVersions = approved.versions;
-  }
-  const baseline = loadBaselineLayer(result.ownerReviewer, baselinePath);
-  if (baseline !== null) result.layers.unshift(baseline);
-  result.suppressions = result.layers.flatMap((layer) => layer.suppressions ?? []);
-  const policyPath = join8(repositoryRoot2, ".review-voice", "policy.yaml");
-  if (existsSync4(policyPath)) {
-    try {
-      const text4 = readFileSync5(policyPath, "utf8");
-      const layer = layerFromPolicyFile(text4, ".review-voice/policy.yaml", repositoryRoot2);
-      if (layer !== null) {
-        result.unapproved.push({ source: ".review-voice/policy.yaml", contentHash: contentHash(text4) });
-      }
-    } catch (error) {
-      result.warnings.push(`.review-voice/policy.yaml could not be parsed: ${String(error)}`);
-    }
-  }
-  return result;
-}
-
-// plugins/review-voice/src/store/watch.ts
-var isFailure2 = (status) => status === "failed" || status === "failed-open" || status === "failed-closed";
-var fromRow = (row) => ({
-  repository: row.repository,
-  pull: row.pull_number,
-  head: row.head_sha,
-  runId: row.run_id,
-  event: row.event,
-  reviewUrl: row.review_url,
-  status: row.status,
-  detail: row.detail,
-  attempts: row.attempts,
-  updatedAt: row.updated_at
-});
-var key = (repository, head) => [repository.toLowerCase(), head.toLowerCase()];
-function watchHead(db, repository, pull, head) {
-  const [name, sha] = key(repository, head);
-  const row = db.prepare("SELECT * FROM watch_heads WHERE repository = ? AND pull_number = ? AND head_sha = ?").get(name, pull, sha);
-  return row === void 0 ? null : fromRow(row);
-}
-function saveWatchHead(db, row, now) {
-  const [name, sha] = key(row.repository, row.head);
-  const attempts = (watchHead(db, name, row.pull, sha)?.attempts ?? 0) + (isFailure2(row.status) ? 1 : 0);
-  const saved = { ...row, repository: name, head: sha, attempts, updatedAt: now.toISOString() };
-  db.prepare(
-    `INSERT INTO watch_heads (repository, pull_number, head_sha, run_id, event, review_url, status, detail, attempts, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (repository, pull_number, head_sha) DO UPDATE SET
-       run_id = excluded.run_id, event = excluded.event, review_url = excluded.review_url, status = excluded.status,
-       detail = excluded.detail, attempts = excluded.attempts, updated_at = excluded.updated_at`
-  ).run(name, row.pull, sha, row.runId, row.event, row.reviewUrl, row.status, row.detail, attempts, saved.updatedAt);
-  return saved;
-}
-function recentlySentPulls(db, since, limit) {
-  const rows = db.prepare(
-    `SELECT subject_id, MAX(created_at) AS sent_at FROM audit_events
-       WHERE action = 'review_post_sent' AND created_at >= ?
-       GROUP BY subject_id ORDER BY sent_at DESC LIMIT ?`
-  ).all(since, limit);
-  const pulls = [];
-  for (const row of rows) {
-    const match = /^([^#\s]+\/[^#\s]+)#(\d+)$/.exec(row.subject_id);
-    if (match !== null) pulls.push({ repository: match[1], pull: Number(match[2]), sentAt: row.sent_at });
-  }
-  return pulls;
-}
-function watchSummary(db) {
-  const counts = db.prepare("SELECT status, COUNT(*) AS n FROM watch_heads GROUP BY status ORDER BY status").all();
-  if (counts.length === 0) return [];
-  const recent = db.prepare("SELECT * FROM watch_heads ORDER BY updated_at DESC, rowid DESC LIMIT 5").all();
-  return [
-    `watcher          ${counts.map((row) => `${row.n} ${row.status}`).join(", ")}`,
-    ...recent.map((row) => `  ${row.repository}#${row.pull_number} ${row.head_sha.slice(0, 7)} ${row.status}${row.detail === null ? "" : ` ${row.detail}`}`)
-  ];
-}
-function settledHeads(db, maxAttemptsPerHead) {
-  const rows = db.prepare(
-    `SELECT * FROM watch_heads
-       WHERE status IN ('held', 'skipped') OR (status IN ('failed', 'failed-open', 'failed-closed') AND attempts >= ?)
-       ORDER BY updated_at DESC, rowid DESC`
-  ).all(maxAttemptsPerHead);
-  return rows.map(fromRow);
-}
-
-// plugins/review-voice/src/queue/store.ts
-function recentlyReviewedPulls(db, since) {
-  const rows = db.prepare(
-    `SELECT repository, pull_number, head_ref
-       FROM review_runs
-       WHERE repository IS NOT NULL AND pull_number IS NOT NULL AND head_ref IS NOT NULL
-         AND created_at >= ?
-       ORDER BY created_at DESC, rowid DESC`
-  ).all(since);
-  const latest = /* @__PURE__ */ new Map();
-  for (const row of rows) {
-    const key2 = `${row.repository.toLowerCase()}#${row.pull_number}`;
-    if (!latest.has(key2)) latest.set(key2, { repository: row.repository, pull: row.pull_number, head: row.head_ref });
-  }
-  return [...latest.values()];
-}
-function runRecordedAtHead(db, repository, pull, head) {
-  const row = db.prepare(
-    `SELECT 1 FROM review_runs
-       WHERE LOWER(repository) = LOWER(?) AND pull_number = ? AND LOWER(head_ref) = LOWER(?)
-       LIMIT 1`
-  ).get(repository, pull, head);
-  return row !== void 0;
-}
-function settledByWatcher(db, repository, pull, head, maxAttemptsPerHead = 2) {
-  const row = watchHead(db, repository, pull, head);
-  if (row === null) return null;
-  if (isFailure2(row.status)) return row.attempts >= maxAttemptsPerHead ? row : null;
-  return ["posted", "carried", "skipped", "held"].includes(row.status) ? row : null;
-}
-function lastSentAtHead(db, repository, pull, head, maxAttemptsPerHead = 2) {
-  const sent = lastSentRow(db, repository, pull, head);
-  if (sent !== null && !sent.cappedByCi) return sent;
-  const settled = settledByWatcher(db, repository, pull, head, maxAttemptsPerHead);
-  if (settled === null) return sent;
-  if (sent !== null) return settled.status === "posted" && settled.detail === null ? sent : { ...sent, cappedByCi: false };
-  return { event: settled.event, cappedByCi: false };
-}
-function lastSentRow(db, repository, pull, head) {
-  const rows = db.prepare(
-    `SELECT metadata_json FROM audit_events
-       WHERE action = 'review_post_sent' AND subject_id = ?
-       ORDER BY created_at DESC, rowid DESC`
-  ).all(`${repository.toLowerCase()}#${pull}`);
-  for (const row of rows) {
-    let meta;
-    try {
-      meta = JSON.parse(row.metadata_json);
-    } catch {
-      continue;
-    }
-    if (typeof meta["head"] !== "string" || meta["head"].toLowerCase() !== head.toLowerCase()) continue;
-    const event = typeof meta["event"] === "string" ? meta["event"] : null;
-    return { event, cappedByCi: event === "COMMENT" && (meta["cappedByCi"] === true || meta["cappedBy"] === "ci") };
-  }
-  return null;
-}
-
-// plugins/review-voice/src/queue/queue.ts
-var SOURCE_ORDER = ["requested", "assigned", "team", "follow-up", "dismissed"];
-var MAX_REVIEWS = 1e3;
-var lower = (value) => value.toLowerCase();
-function reviewsOf(client, repository, pull) {
-  return client.paginate(`/repos/${repository}/pulls/${pull}/reviews?per_page=100`, MAX_REVIEWS);
-}
-async function buildQueue(deps) {
-  const { client, db, config: config2, me } = deps;
-  const candidates = /* @__PURE__ */ new Map();
-  let outsideAllowlist = 0;
-  let truncated = false;
-  const add = (repository, pull, source) => {
-    const key2 = `${lower(repository)}#${pull}`;
-    let candidate = candidates.get(key2);
-    if (candidate === void 0) {
-      candidate = { repository, pull, sources: /* @__PURE__ */ new Set() };
-      candidates.set(key2, candidate);
-    }
-    candidate.sources.add(source);
-    return candidate;
-  };
-  const search = async (source) => {
-    const result = await client.searchPullRequests(source);
-    outsideAllowlist += result.outsideAllowlist;
-    truncated ||= result.truncated;
-    return result.pullRequests;
-  };
-  const enabled2 = new Set(config2.sources);
-  if (enabled2.has("requested")) for (const pr of await search("requested")) add(pr.repository, pr.number, "requested");
-  if (enabled2.has("assigned")) for (const pr of await search("assigned")) add(pr.repository, pr.number, "assigned");
-  if (enabled2.has("team")) {
-    for (const team of config2.teams) {
-      for (const pr of await search(`team:${team}`)) add(pr.repository, pr.number, "team");
-    }
-  }
-  if (enabled2.has("dismissed")) {
-    for (const pr of await search("reviewed")) {
-      if (await latestOwnReviewDismissed(client, pr.repository, pr.number, me)) add(pr.repository, pr.number, "dismissed");
-    }
-  }
-  if (enabled2.has("follow-up")) {
-    const since = new Date(deps.now.getTime() - config2.followUpDays * 864e5).toISOString();
-    for (const recent of recentlyReviewedPulls(db, since)) {
-      if (!client.allows(recent.repository)) continue;
-      add(recent.repository, recent.pull, "follow-up").followUpFrom = recent.head;
-    }
-  }
-  const listed = [];
-  for (const candidate of candidates.values()) {
-    const entry = await classify2(deps, candidate);
-    if (entry !== null) listed.push(entry);
-  }
-  listed.sort(
-    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.repository.localeCompare(b.repository) || a.pull - b.pull
-  );
-  const entries = [];
-  const notReached = [];
-  let reviews = 0;
-  for (const entry of listed) {
-    if (entry.action.kind === "review") {
-      if (reviews >= config2.maxPerPass) {
-        notReached.push(entry);
-        continue;
-      }
-      reviews += 1;
-    }
-    entries.push(entry);
-  }
-  return { entries, notReached, outsideAllowlist, truncated };
-}
-async function latestOwnReviewDismissed(client, repository, pull, me) {
-  const own = (await reviewsOf(client, repository, pull)).filter(
-    (review2) => lower(review2.user?.login ?? "") === lower(me) && review2.state !== "PENDING"
-  );
-  return own.at(-1)?.state === "DISMISSED";
-}
-async function classify2(deps, candidate) {
-  const { client, db } = deps;
-  const { data: pull } = await client.get(`/repos/${candidate.repository}/pulls/${candidate.pull}`);
-  const head = pull.head?.sha;
-  if (pull.state !== "open" || typeof head !== "string" || head.length === 0) return null;
-  if (candidate.followUpFrom !== void 0 && lower(candidate.followUpFrom) === lower(head)) {
-    candidate.sources.delete("follow-up");
-    if (candidate.sources.size === 0) return null;
-  }
-  const sources = SOURCE_ORDER.filter((source) => candidate.sources.has(source));
-  const sent = lastSentAtHead(db, candidate.repository, candidate.pull, head, deps.maxAttemptsPerHead);
-  if (sent !== null && !sent.cappedByCi) return null;
-  const author = pull.user?.login ?? "";
-  const entry = (action) => ({
-    repository: candidate.repository,
-    pull: candidate.pull,
-    head,
-    author,
-    sources,
-    action,
-    createdAt: pull.created_at ?? ""
-  });
-  const rule = await skipRule(deps, candidate, pull, head, sources);
-  if (rule !== null) return entry({ kind: "skip", rule });
-  if (sent !== null) return entry({ kind: "recheck-ci" });
-  if (runRecordedAtHead(db, candidate.repository, candidate.pull, head)) return entry({ kind: "verdict-only" });
-  return entry({ kind: "review" });
-}
-async function skipRule(deps, candidate, pull, head, sources) {
-  const { client, me } = deps;
-  const skip2 = deps.config.skip;
-  const author = lower(pull.user?.login ?? "");
-  if (author === lower(me)) return "own";
-  if (skip2.drafts && pull.draft === true) return "drafts";
-  if (skip2.authors.some((login) => lower(login) === author)) return "authors";
-  const botLike = lower(pull.user?.type ?? "") === "bot" || skip2.authorPatterns.some((pattern) => new RegExp(pattern, "i").test(author));
-  if (botLike && !(skip2.allowBotsWhenRequested && sources.includes("requested"))) return "author_patterns";
-  const assignees = (pull.assignees ?? []).map((assignee) => lower(assignee.login ?? ""));
-  if (skip2.assignedTo.some((login) => assignees.includes(lower(login)))) return "assigned_to";
-  const approvers = skip2.approvedAtHeadBy.logins.map(lower);
-  if (approvers.length > 0 && sources.some((source) => skip2.approvedAtHeadBy.sources.includes(source))) {
-    const standing = /* @__PURE__ */ new Map();
-    for (const review2 of await reviewsOf(client, candidate.repository, candidate.pull)) {
-      const login = lower(review2.user?.login ?? "");
-      if (approvers.includes(login) && review2.state !== "PENDING" && review2.state !== "COMMENTED") standing.set(login, review2);
-    }
-    const approved = [...standing.values()].some(
-      (review2) => review2.state === "APPROVED" && lower(review2.commit_id ?? "") === lower(head)
-    );
-    if (approved) return "approved_at_head_by";
-  }
-  return null;
-}
-
-// plugins/review-voice/src/queue/command.ts
-var LABEL = {
-  review: "REVIEW",
-  "verdict-only": "VERDICT-ONLY",
-  "recheck-ci": "RECHECK-CI",
-  skip: "SKIP"
-};
-function line2(entry) {
-  const rule = entry.action.kind === "skip" ? ` (${entry.action.rule})` : "";
-  return `${LABEL[entry.action.kind]} ${entry.repository}#${entry.pull} ${entry.head.slice(0, 7)} @${entry.author} [${entry.sources.join(", ")}]${rule}`;
-}
-function renderQueue(result) {
-  return [
-    ...result.entries.map(line2),
-    `${result.entries.length} listed, ${result.notReached.length} not reached, ${result.outsideAllowlist} outside the allowlist, truncated: ${result.truncated ? "yes" : "no"}`
-  ].join("\n");
-}
-function renderSettled(heads) {
-  return [
-    ...heads.map(
-      (head) => `${head.status.toUpperCase()} ${head.repository}#${head.pull} ${head.head.slice(0, 7)}` + (isFailure2(head.status) ? ` (${head.attempts} attempts)` : "") + (head.detail === null ? "" : ` ${head.detail}`)
-    ),
-    `${heads.length} left for a person`
-  ].join("\n");
-}
-async function queueCommand(argv, deps) {
-  const sources = [];
-  for (const [index, arg] of argv.entries()) {
-    if (arg !== "--source") continue;
-    const value = argv[index + 1];
-    if (value === void 0 || !QUEUE_SOURCES.includes(value)) {
-      deps.err(`--source takes one of ${QUEUE_SOURCES.join(", ")}.`);
-      return 2;
-    }
-    sources.push(value);
-  }
-  let max;
-  const maxIndex = argv.indexOf("--max");
-  if (maxIndex !== -1) {
-    max = Number(argv[maxIndex + 1]);
-    if (!Number.isInteger(max) || max <= 0) {
-      deps.err("--max takes a whole number above zero.");
-      return 2;
-    }
-  }
-  const config2 = deps.config;
-  for (const warning of config2?.warnings ?? []) deps.err(`Warning: ${warning}`);
-  const maxAttemptsPerHead = config2?.watch?.maxAttemptsPerHead ?? 2;
-  if (argv.includes("--settled")) {
-    const db2 = deps.openDb();
-    try {
-      const heads = settledHeads(db2, maxAttemptsPerHead);
-      deps.out(argv.includes("--json") ? JSON.stringify(heads, null, 2) : renderSettled(heads));
-      return 0;
-    } finally {
-      db2.close();
-    }
-  }
-  if (config2 === null || config2.allowlist.length === 0) {
-    deps.err("No repositories are allowlisted. Run /review-voice:init first.");
-    return 2;
-  }
-  const queue = {
-    ...config2.queue,
-    // Teams turn the team search on whether or not `team` is listed; an
-    // explicit --source list is taken as it is.
-    sources: sources.length > 0 ? [...new Set(sources)] : [.../* @__PURE__ */ new Set([...config2.queue.sources, ...config2.queue.teams.length > 0 ? ["team"] : []])],
-    maxPerPass: max ?? config2.queue.maxPerPass
-  };
-  if (sources.includes("team") && queue.teams.length === 0) {
-    deps.err("--source team needs queue.teams in the config.");
-    return 2;
-  }
-  const client = deps.client(config2.allowlist);
-  const { data: viewer } = await client.get("/user");
-  if (typeof viewer?.login !== "string" || viewer.login.length === 0) {
-    deps.err("Could not read the authenticated GitHub user.");
-    return 1;
-  }
-  const db = deps.openDb();
-  try {
-    const result = await buildQueue({ client, db, config: queue, me: viewer.login, now: deps.now, maxAttemptsPerHead });
-    deps.out(argv.includes("--json") ? JSON.stringify(result, null, 2) : renderQueue(result));
-    return 0;
-  } finally {
-    db.close();
-  }
-}
-
-// plugins/review-voice/src/watch/command.ts
-import { closeSync, constants as constants2, fsyncSync, mkdirSync as mkdirSync4, openSync, readFileSync as readFileSync7, renameSync as renameSync2, unlinkSync as unlinkSync4, writeSync } from "node:fs";
-import { join as join11 } from "node:path";
 
 // plugins/review-voice/src/store/runs.ts
-import { randomUUID as randomUUID3, createHash as createHash4 } from "node:crypto";
+import { randomUUID as randomUUID3, createHash as createHash3 } from "node:crypto";
 import { posix as posix3 } from "node:path";
 
 // plugins/review-voice/src/diff/incremental.ts
@@ -15052,13 +13891,13 @@ function storedProvenance(raw, reviewRunId) {
 }
 var OUTCOMES = ["reproduced", "did-not-fail", "did-not-run"];
 function reproductionOf(entry) {
-  const r = asRecord2(entry);
+  const r = asRecord(entry);
   if (r === null || !Array.isArray(r["runs"]) || !OUTCOMES.includes(r["outcome"])) return null;
   const texts = ["candidateId", "path", "runner", "file", "copy", "expected"];
   if (texts.some((key2) => typeof r[key2] !== "string") || !Number.isInteger(r["line"])) return null;
   const runs = [];
   for (const raw of r["runs"]) {
-    const run = asRecord2(raw);
+    const run = asRecord(raw);
     if (run === null || typeof run["reached"] !== "boolean" || typeof run["durationMs"] !== "number") return null;
     runs.push({ exitCode: Number.isInteger(run["exitCode"]) ? run["exitCode"] : null, durationMs: run["durationMs"], reached: run["reached"] });
   }
@@ -15076,7 +13915,7 @@ function reproductionOf(entry) {
   };
 }
 function recordedReproductions(report) {
-  const value = asRecord2(report);
+  const value = asRecord(report);
   if (value === null || !Array.isArray(value["reproductions"])) throw new Error("the reproductions report has no reproductions list");
   return value["reproductions"].map((entry, index) => {
     const record3 = reproductionOf(entry);
@@ -15092,9 +13931,9 @@ function storedReproductions(raw) {
   if (!Array.isArray(raw)) return null;
   return raw.map(reproductionOf).filter((record3) => record3 !== null);
 }
-var asRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+var asRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
 function recordedChecks(evidence, symbols) {
-  const report = asRecord2(evidence);
+  const report = asRecord(evidence);
   if (report === null) throw new Error("the evidence report is not an object");
   const commands = report["commands"];
   const didNotRun = report["didNotRun"];
@@ -15104,7 +13943,7 @@ function recordedChecks(evidence, symbols) {
   }
   const skipped = typeof report["skipped"] === "string" && report["skipped"].trim() !== "" ? report["skipped"] : null;
   const entries = commands.map((entry, index) => {
-    const command = asRecord2(entry);
+    const command = asRecord(entry);
     if (command === null || typeof command["name"] !== "string") throw new Error(`commands entry ${index} has no name`);
     return command;
   });
@@ -15122,23 +13961,23 @@ function recordedChecks(evidence, symbols) {
       reason: typeof unavailable === "string" && unavailable.trim() !== "" ? unavailable : skipped ?? "not run"
     };
   });
-  const search = asRecord2(symbols);
+  const search = asRecord(symbols);
   if (search === null || !Array.isArray(search["files"])) throw new Error("the symbols report has no files list");
-  const budget = asRecord2(search["budget"]);
+  const budget = asRecord(search["budget"]);
   return {
     staticRan,
     staticDidNotRun,
-    symbolsInconclusive: search["files"].filter((file2) => asRecord2(file2)?.["inconclusive"] === true).length,
+    symbolsInconclusive: search["files"].filter((file2) => asRecord(file2)?.["inconclusive"] === true).length,
     symbolsBudgetExhausted: budget?.["exhausted"] === true
   };
 }
 function storedChecks(raw) {
-  const value = asRecord2(raw);
+  const value = asRecord(raw);
   if (value === null || !Array.isArray(value["staticRan"]) || !Array.isArray(value["staticDidNotRun"])) return null;
   if (!Number.isInteger(value["symbolsInconclusive"]) || typeof value["symbolsBudgetExhausted"] !== "boolean") return null;
   const ran = [];
   for (const entry of value["staticRan"]) {
-    const c = asRecord2(entry);
+    const c = asRecord(entry);
     if (c === null || typeof c["name"] !== "string" || !Number.isInteger(c["signals"])) return null;
     ran.push({
       name: c["name"],
@@ -15149,7 +13988,7 @@ function storedChecks(raw) {
   }
   const didNot = [];
   for (const entry of value["staticDidNotRun"]) {
-    const c = asRecord2(entry);
+    const c = asRecord(entry);
     if (c === null || typeof c["name"] !== "string" || typeof c["reason"] !== "string") return null;
     didNot.push({ name: c["name"], reason: c["reason"] });
   }
@@ -15279,7 +14118,7 @@ function assignIds(output, hints, facts = {}) {
   });
 }
 function hashDiff(diff) {
-  return createHash4("sha256").update(diff).digest("hex").slice(0, 32);
+  return createHash3("sha256").update(diff).digest("hex").slice(0, 32);
 }
 function recordRun(db, input) {
   if ((input.bodyFindings?.length ?? 0) > 1) {
@@ -15467,286 +14306,6 @@ function latestRun(db) {
   return { reviewRunId: row.review_run_id, findings: parsed2.findings };
 }
 
-// plugins/review-voice/src/github/writer.ts
-var WriteViolation = class extends Error {
-};
-var REVIEW_EVENTS = ["APPROVE", "COMMENT", "REQUEST_CHANGES"];
-var REVIEW_PATH = /^\/repos\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)\/pulls\/([1-9][0-9]*)\/reviews$/;
-var SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-var ReviewWriter = class {
-  allowlist;
-  baseUrl;
-  doFetch;
-  token;
-  constructor(options) {
-    this.allowlist = new Set(options.allowlist.map((name) => name.toLowerCase()));
-    this.baseUrl = options.baseUrl ?? "https://api.github.com";
-    this.doFetch = options.fetchImpl ?? fetch;
-    this.token = options.token ?? null;
-  }
-  /** Submits a review with its event in one request. Never a pending review. */
-  async submitReview(repository, pullNumber, payload) {
-    if (!Number.isInteger(pullNumber) || pullNumber < 1) {
-      throw new WriteViolation(`Refused a review on pull request ${String(pullNumber)}: not a pull request number.`);
-    }
-    assertPayload(payload);
-    const data = await this.request("POST", `/repos/${repository}/pulls/${pullNumber}/reviews`, payload);
-    const record3 = typeof data === "object" && data !== null ? data : {};
-    return {
-      id: typeof record3["id"] === "number" ? record3["id"] : null,
-      htmlUrl: typeof record3["html_url"] === "string" ? record3["html_url"] : null,
-      state: typeof record3["state"] === "string" ? record3["state"] : null
-    };
-  }
-  /**
-   * Every request goes through here, and here admits one method and one path.
-   * Public so the refusal can be tested directly rather than inferred.
-   */
-  async request(method, path, body) {
-    if (method !== "POST") {
-      throw new WriteViolation(`Review Voice writes one thing; refused a ${method} to ${path}.`);
-    }
-    const match = REVIEW_PATH.exec(path);
-    if (match === null) {
-      throw new WriteViolation(`Review Voice writes one thing; refused a POST to ${path}.`);
-    }
-    const repository = `${match[1]}/${match[2]}`;
-    if (!this.allowlist.has(repository.toLowerCase())) {
-      throw new NotAllowlisted(`${repository} is not a repository this writer may post to.`);
-    }
-    const response = await this.doFetch(`${this.baseUrl}${path}`, {
-      method: "POST",
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${this.token ??= githubToken()}`,
-        "content-type": "application/json",
-        "x-github-api-version": "2022-11-28",
-        "user-agent": "review-voice"
-      },
-      body: JSON.stringify(body)
-    });
-    if (!response.ok) {
-      throw new GitHubError(
-        `GitHub returned ${response.status} for ${path}: ${(await response.text()).slice(0, 300)}`,
-        response.status
-      );
-    }
-    try {
-      return await response.json();
-    } catch {
-      return null;
-    }
-  }
-};
-function assertPayload(payload) {
-  if (!REVIEW_EVENTS.includes(payload.event)) {
-    throw new WriteViolation(`Refused a review with event ${String(payload.event)}; it must be one of ${REVIEW_EVENTS.join(", ")}.`);
-  }
-  if (typeof payload.commit_id !== "string" || !SHA.test(payload.commit_id)) {
-    throw new WriteViolation("Refused a review without the full commit it was written against.");
-  }
-  if (typeof payload.body !== "string") {
-    throw new WriteViolation("Refused a review without a body.");
-  }
-  if (!Array.isArray(payload.comments)) {
-    throw new WriteViolation("Refused a review whose comments are not a list.");
-  }
-  for (const comment of payload.comments) {
-    if (typeof comment.path !== "string" || comment.path.length === 0 || !Number.isInteger(comment.line) || comment.line < 1 || comment.side !== "RIGHT" || typeof comment.body !== "string" || comment.body.length === 0) {
-      throw new WriteViolation("Refused a review with a comment that is not anchored to a line.");
-    }
-    if ((comment.start_line !== void 0 || comment.start_side !== void 0) && (!Number.isInteger(comment.start_line) || comment.start_line < 1 || comment.start_line > comment.line || comment.start_side !== "RIGHT")) {
-      throw new WriteViolation("Refused a review with a comment whose range does not end at its line on the new side.");
-    }
-  }
-  const keys = Object.keys(payload).sort().join(",");
-  if (keys !== "body,comments,commit_id,event") {
-    throw new WriteViolation(`Refused a review with unexpected fields: ${keys}.`);
-  }
-}
-
-// plugins/review-voice/src/diff/thread.ts
-var MAX_COMMENTS = 300;
-function clean(body, author) {
-  if (body === void 0 || body.trim().length === 0) return null;
-  return { body: redact(stripEvidenceBlock(body)).text, author: author ?? "unknown" };
-}
-async function readThread(options) {
-  const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
-  const comments = [];
-  const pull = await client.get(
-    `/repos/${options.repository}/pulls/${options.pullNumber}`
-  );
-  const description = clean(pull.data.body ?? void 0, pull.data.user?.login);
-  if (description !== null) {
-    comments.push({ path: null, line: null, author: description.author, body: description.body, kind: "description" });
-  }
-  const inline = await client.paginate(
-    `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,
-    MAX_COMMENTS
-  );
-  const warnings = [];
-  let states = /* @__PURE__ */ new Map();
-  if (inline.length > 0) {
-    try {
-      states = await readThreadStates(client, options.repository, options.pullNumber);
-    } catch (error) {
-      warnings.push(
-        `Could not read which review threads are resolved (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing with the REST data, so no comment is marked resolved.`
-      );
-    }
-  }
-  for (const raw of inline) {
-    const kept = clean(raw.body, raw.user?.login);
-    if (kept === null) continue;
-    const state = typeof raw.id === "number" ? states.get(raw.id) : void 0;
-    const outdated = (raw.line ?? null) === null && (raw.original_line ?? null) !== null || state?.outdated === true;
-    comments.push({
-      path: raw.path ?? null,
-      line: raw.line ?? raw.original_line ?? null,
-      author: kept.author,
-      body: kept.body,
-      kind: "review-comment",
-      ...outdated ? { outdated: true } : {},
-      ...typeof raw.id === "number" ? { id: raw.id } : {},
-      ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
-      ...typeof raw.pull_request_review_id === "number" ? { reviewId: raw.pull_request_review_id } : {},
-      ...typeof raw.in_reply_to_id === "number" ? { inReplyTo: raw.in_reply_to_id } : {},
-      ...state?.resolved === true ? { resolved: true } : {},
-      ...state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {},
-      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
-    });
-  }
-  const reviews = await client.paginate(
-    `/repos/${options.repository}/pulls/${options.pullNumber}/reviews?per_page=100`,
-    MAX_COMMENTS
-  );
-  const threadReviews = [];
-  for (const raw of reviews) {
-    if (typeof raw.id === "number") {
-      threadReviews.push({
-        id: raw.id,
-        author: raw.user?.login ?? "unknown",
-        state: raw.state ?? "UNKNOWN",
-        ...typeof raw.submitted_at === "string" ? { submittedAt: raw.submitted_at } : {}
-      });
-    }
-    const kept = clean(raw.body, raw.user?.login);
-    if (kept === null) continue;
-    comments.push({
-      path: null,
-      line: null,
-      author: kept.author,
-      body: kept.body,
-      kind: "review-body",
-      ...typeof raw.submitted_at === "string" ? { createdAt: raw.submitted_at } : {},
-      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
-    });
-  }
-  if (threadReviews.some((review2) => review2.state === "DISMISSED")) {
-    try {
-      const events = await client.paginate(
-        `/repos/${options.repository}/issues/${options.pullNumber}/events?per_page=100`,
-        MAX_COMMENTS
-      );
-      for (const event of events) {
-        const dismissed = event.event === "review_dismissed" ? event.dismissed_review : null;
-        if (typeof dismissed?.review_id !== "number") continue;
-        const message = clean(dismissed.dismissal_message ?? void 0, void 0);
-        const review2 = threadReviews.find((candidate) => candidate.id === dismissed.review_id);
-        if (review2 !== void 0 && message !== null) review2.dismissalMessage = message.body;
-      }
-    } catch (error) {
-      warnings.push(
-        `Could not read why a review was dismissed (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing, so no dismissal message is recorded.`
-      );
-    }
-  }
-  const conversation = await client.paginate(
-    `/repos/${options.repository}/issues/${options.pullNumber}/comments?per_page=100`,
-    MAX_COMMENTS
-  );
-  for (const raw of conversation) {
-    const kept = clean(raw.body, raw.user?.login);
-    if (kept === null) continue;
-    comments.push({
-      path: null,
-      line: null,
-      author: kept.author,
-      body: kept.body,
-      kind: "conversation",
-      ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
-      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
-    });
-  }
-  return {
-    repository: options.repository,
-    pullNumber: options.pullNumber,
-    comments,
-    reviews: threadReviews,
-    truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
-    ...warnings.length > 0 ? { warnings } : {}
-  };
-}
-async function readThreadStates(client, repository, pullNumber) {
-  const states = /* @__PURE__ */ new Map();
-  let cursor = null;
-  for (let read = 0; read < MAX_COMMENTS; read += 100) {
-    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
-    const threads = data?.repository?.pullRequest?.reviewThreads;
-    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
-    for (const thread of threads.nodes) {
-      const state = {
-        resolved: thread?.isResolved === true,
-        outdated: thread?.isOutdated === true,
-        resolvedBy: typeof thread?.resolvedBy?.login === "string" ? thread.resolvedBy.login : null
-      };
-      for (const comment of thread?.comments?.nodes ?? []) {
-        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
-      }
-    }
-    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
-    cursor = threads.pageInfo.endCursor;
-  }
-  return states;
-}
-
-// plugins/review-voice/src/publish/suggestion.ts
-async function fileAtRef(client, repository, path, ref) {
-  const encoded = path.split("/").map(encodeURIComponent).join("/");
-  try {
-    const { data } = await client.get(
-      `/repos/${repository}/contents/${encoded}?ref=${encodeURIComponent(ref)}`
-    );
-    if (data?.type !== "file" || data.encoding !== "base64" || typeof data.content !== "string") return null;
-    return Buffer.from(data.content, "base64").toString("utf8");
-  } catch {
-    return null;
-  }
-}
-function linesAt(text4, start, count3) {
-  const lines2 = text4.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
-  if (start < 1 || start - 1 + count3 > lines2.length) return null;
-  return lines2.slice(start - 1, start - 1 + count3).join("\n");
-}
-function suggestionApplied(reviewed, current, patch) {
-  const before = reviewed.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
-  const after = current.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
-  const start = patch.start_line - 1;
-  const original = unixLines(patch.original);
-  const replacement = unixLines(patch.replacement);
-  const replaced = replacement.split("\n");
-  if (original === replacement || before.join("\n") === after.join("\n")) return false;
-  if (after.slice(start, patch.end_line).join("\n") === original) return false;
-  if (before.slice(start, patch.end_line).join("\n") !== original) return false;
-  if (after.slice(start, start + replaced.length).join("\n") !== replacement) return false;
-  if (before.slice(0, start).join("\n") !== after.slice(0, start).join("\n")) return false;
-  return after[start + replaced.length] === before[patch.end_line];
-}
-function unixLines(text4) {
-  return text4.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3).join("\n");
-}
-
 // plugins/review-voice/src/store/outcomes.ts
 var NEGATED_ACK = /\bnot (?:yet )?(?:fixed|done|addressed|changed|updated)\b/i;
 var REJECT = /\b(?:won'?t fix|wontfix|not a (?:bug|issue|problem)|false positive|by design|intentional(?:ly)?|working as (?:intended|designed)|disagree|(?:does not|doesn'?t) apply|not applicable|not needed|unnecessary|incorrect|this is wrong|that'?s wrong)\b/i;
@@ -15796,11 +14355,15 @@ async function readStates(client, repository, pullNumber) {
   }
   return states;
 }
-function sentRuns(db, options) {
+function attemptRuns(db) {
   const attempts = /* @__PURE__ */ new Map();
   for (const row of db.prepare(`SELECT audit_id, json_extract(metadata_json, '$.run') AS run FROM audit_events WHERE action = 'review_post_attempted'`).all()) {
     if (typeof row.run === "string") attempts.set(row.audit_id, row.run);
   }
+  return attempts;
+}
+function sentRuns(db, options) {
+  const attempts = attemptRuns(db);
   const reviewIdsByRun = /* @__PURE__ */ new Map();
   for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ?`).all(options.since)) {
     let meta;
@@ -15827,6 +14390,41 @@ function sentRuns(db, options) {
     if (reviewIds === void 0) continue;
     if (wanted !== void 0 && row.repository.toLowerCase() !== wanted) continue;
     runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, headRef: row.head_ref, reviewIds });
+  }
+  return runs;
+}
+function approvedRuns(db, options) {
+  const attempts = attemptRuns(db);
+  const approvals = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(`SELECT metadata_json, created_at FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ? ORDER BY created_at, rowid`).all(options.since)) {
+    let meta;
+    try {
+      meta = JSON.parse(row.metadata_json);
+    } catch {
+      continue;
+    }
+    if (meta.event !== "APPROVE") continue;
+    const run = typeof meta.attempt === "string" ? attempts.get(meta.attempt) : void 0;
+    if (run === void 0) continue;
+    const id = Number(meta.reviewId);
+    approvals.set(run, {
+      head: typeof meta.head === "string" ? meta.head : "",
+      reviewId: Number.isInteger(id) && id > 0 ? id : null,
+      sentAt: row.created_at
+    });
+  }
+  const wanted = options.repository?.toLowerCase();
+  const runs = [];
+  for (const row of db.prepare(
+    `SELECT review_run_id, repository, pull_number, head_ref FROM review_runs
+       WHERE repository IS NOT NULL AND pull_number IS NOT NULL ORDER BY created_at, rowid`
+  ).all()) {
+    const sent = approvals.get(row.review_run_id);
+    if (sent === void 0) continue;
+    if (wanted !== void 0 && row.repository.toLowerCase() !== wanted) continue;
+    const head = sent.head !== "" ? sent.head : row.head_ref;
+    if (head === null) continue;
+    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, head, reviewId: sent.reviewId, sentAt: sent.sentAt });
   }
   return runs;
 }
@@ -16150,6 +14748,1706 @@ function postedBreakdown(db) {
   };
 }
 
+// plugins/review-voice/src/store/approvals.ts
+var DEFAULT_OUTCOMES = { approvalWindowDays: 14, approvalEscapeWarn: 0.05 };
+var APPROVAL_WARN_MIN_SETTLED = 30;
+var READ_LIMIT2 = 1e3;
+var EPOCH = "0000-01-01T00:00:00.000Z";
+async function checkApprovals(options) {
+  const result = { outcomes: [], skipped: [], warnings: [] };
+  const settled = settledRuns(options.db, (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString());
+  const runs = approvedRuns(options.db, { since: EPOCH, repository: options.repository }).filter(
+    (run) => run.sentAt >= options.since || !settled.has(run.runId)
+  );
+  const reads = /* @__PURE__ */ new Map();
+  for (const run of runs) {
+    if (!options.client.allows(run.repository)) {
+      result.skipped.push({ repository: run.repository, pullNumber: run.pullNumber, reason: "not in the allowlist" });
+      continue;
+    }
+    try {
+      const key2 = `${run.repository.toLowerCase()}#${run.pullNumber}`;
+      let read = reads.get(key2);
+      if (read === void 0) {
+        read = readPull2(options.client, run.repository, run.pullNumber);
+        reads.set(key2, read);
+      }
+      const outcome = await followApproval(options, run, await read);
+      saveApprovalOutcome(options.db, outcome);
+      result.outcomes.push(outcome);
+    } catch (error) {
+      result.warnings.push(
+        `${run.repository}#${run.pullNumber}: approval not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`
+      );
+    }
+  }
+  return result;
+}
+async function readPull2(client, repository, pullNumber) {
+  const { data: pull } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
+  const reviews = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`, READ_LIMIT2);
+  return { pull, reviews, commits: null, revert: null };
+}
+function settledRuns(db, now) {
+  const rows = db.prepare(
+    `SELECT review_run_id FROM approval_outcomes
+       WHERE outcome IN ('reverted', 'changes_requested', 'survived')
+          OR (outcome IN ('merged_other_head', 'closed')
+              AND CASE WHEN json_valid(evidence_json) THEN json_extract(evidence_json, '$.windowEndsAt') END <= ?)`
+  ).all(now);
+  return new Set(rows.map((row) => row.review_run_id));
+}
+var escapeRegExp3 = (text4) => text4.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+async function findRevert(client, run, mergedAt, windowEndsAt) {
+  const found = await client.searchPullRequests(`reverts:${run.repository}#${run.pullNumber}`);
+  const reverts = new RegExp(`\\bReverts ${escapeRegExp3(run.repository)}#${run.pullNumber}\\b`, "i");
+  for (const candidate of found.pullRequests) {
+    if (candidate.repository.toLowerCase() !== run.repository.toLowerCase() || candidate.number === run.pullNumber) continue;
+    const { data: revert } = await client.get(`/repos/${run.repository}/pulls/${candidate.number}`);
+    if (typeof revert.merged_at !== "string" || typeof revert.body !== "string" || !reverts.test(revert.body)) continue;
+    if (revert.merged_at < mergedAt || revert.merged_at > windowEndsAt) continue;
+    return candidate.number;
+  }
+  if (found.truncated) throw new Error("the revert search was incomplete");
+  return null;
+}
+async function commitsAfter(client, run, reads) {
+  reads.commits ??= client.paginate(`/repos/${run.repository}/pulls/${run.pullNumber}/commits?per_page=100`, READ_LIMIT2);
+  const commits = await reads.commits;
+  const index = commits.findIndex((commit) => typeof commit.sha === "string" && sameHead(commit.sha, run.head));
+  return index === -1 ? null : commits.length - index - 1;
+}
+async function followApproval(options, run, reads) {
+  const windowDays = options.windowDays ?? DEFAULT_OUTCOMES.approvalWindowDays;
+  const now = options.now?.() ?? /* @__PURE__ */ new Date();
+  const { pull, reviews } = reads;
+  const state = typeof pull.state === "string" ? pull.state : null;
+  const mergedAt = typeof pull.merged_at === "string" ? pull.merged_at : null;
+  const currentHead = typeof pull.head?.sha === "string" ? pull.head.sha : null;
+  const windowEnd = (from) => new Date(Date.parse(from) + windowDays * 864e5).toISOString();
+  const row = (outcome, strength, evidence) => ({
+    reviewRunId: run.runId,
+    repository: run.repository,
+    pullNumber: run.pullNumber,
+    head: run.head,
+    reviewId: run.reviewId,
+    outcome,
+    strength,
+    evidence: { state, mergedAt, currentHead, ...evidence },
+    checkedAt: now.toISOString()
+  });
+  if (typeof pull.merged !== "boolean" || state === null) {
+    return row("unknown", "weak", { summary: "the pull request state could not be read" });
+  }
+  const own = reviews.find((review2) => review2.id === run.reviewId);
+  const poster = own?.user?.login?.toLowerCase() ?? null;
+  const approvedAt = typeof own?.submitted_at === "string" ? own.submitted_at : run.sentAt;
+  const requestedBy = reviews.find(
+    (review2) => review2.state === "CHANGES_REQUESTED" && typeof review2.user?.login === "string" && !isBot(review2.user) && review2.user.login.toLowerCase() !== poster && typeof review2.commit_id === "string" && sameHead(review2.commit_id, run.head) && typeof review2.submitted_at === "string" && review2.submitted_at > approvedAt
+  )?.user?.login;
+  const changesRequested = (by) => row("changes_requested", "strong", { summary: `${by} requested changes on the approved head after the approval`, changesRequestedBy: by });
+  if (pull.merged) {
+    if (currentHead === null || mergedAt === null) {
+      return row("unknown", "weak", { summary: "the merged head or the merge time could not be read" });
+    }
+    const windowEndsAt = windowEnd(mergedAt);
+    reads.revert ??= findRevert(options.client, run, mergedAt, windowEndsAt);
+    const revert = await reads.revert;
+    if (revert !== null) return row("reverted", "strong", { summary: `reverted by #${revert} inside the window`, windowEndsAt, revertPull: revert });
+    if (requestedBy !== void 0) return changesRequested(requestedBy);
+    if (!sameHead(currentHead, run.head)) {
+      const after = await commitsAfter(options.client, run, reads);
+      return row("merged_other_head", "weak", {
+        summary: after === null ? `merged at ${currentHead.slice(0, 8)}; the approved head is not among the pull request's commits` : `merged at ${currentHead.slice(0, 8)}, ${after} commit(s) after the approved head`,
+        commitsAfterHead: after,
+        // Kept so the row is read again until a revert can no longer count.
+        windowEndsAt
+      });
+    }
+    if (now.toISOString() >= windowEndsAt) {
+      return row("survived", "strong", { summary: `merged at the approved head and not reverted in ${windowDays} days`, windowEndsAt });
+    }
+    return row("pending", "weak", { summary: `merged at the approved head; the window ends ${windowEndsAt}`, windowEndsAt });
+  }
+  if (requestedBy !== void 0) return changesRequested(requestedBy);
+  if (state === "closed") {
+    return row("closed", "weak", { summary: "closed without merging", ...typeof pull.closed_at === "string" ? { windowEndsAt: windowEnd(pull.closed_at) } : {} });
+  }
+  if (state === "open") return row("open", "weak", { summary: "still open" });
+  return row("unknown", "weak", { summary: `the pull request state is ${state}` });
+}
+function saveApprovalOutcome(db, outcome) {
+  db.prepare(
+    `INSERT INTO approval_outcomes
+       (review_run_id, repository, pull_number, head, review_id, outcome, strength, evidence_json, checked_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (review_run_id) DO UPDATE SET
+       repository = excluded.repository, pull_number = excluded.pull_number, head = excluded.head, review_id = excluded.review_id,
+       outcome = excluded.outcome, strength = excluded.strength, evidence_json = excluded.evidence_json, checked_at = excluded.checked_at`
+  ).run(
+    outcome.reviewRunId,
+    outcome.repository,
+    outcome.pullNumber,
+    outcome.head,
+    outcome.reviewId,
+    outcome.outcome,
+    outcome.strength,
+    JSON.stringify(outcome.evidence),
+    outcome.checkedAt
+  );
+}
+function wilsonUpper(k, n, z = 1.96) {
+  if (n <= 0) return 1;
+  const p = k / n;
+  const z2 = z * z;
+  const centre = p + z2 / (2 * n);
+  const margin = z * Math.sqrt(p * (1 - p) / n + z2 / (4 * n * n));
+  return Math.min(1, (centre + margin) / (1 + z2 / n));
+}
+function statsOf2(rows) {
+  const strong = rows.filter((row) => row.strength === "strong");
+  const escaped = strong.filter((row) => row.outcome === "reverted" || row.outcome === "changes_requested").length;
+  const survived = strong.filter((row) => row.outcome === "survived").length;
+  const settled = escaped + survived;
+  const pending = rows.filter((row) => row.outcome === "pending").length;
+  return {
+    tracked: rows.length,
+    escaped,
+    survived,
+    settled,
+    pending,
+    weak: rows.length - settled - pending,
+    rate: settled === 0 ? null : escaped / settled,
+    upperBound: settled === 0 ? null : wilsonUpper(escaped, settled)
+  };
+}
+function approvalBasis(stats) {
+  const basis = `${stats.escaped} escaped / ${stats.settled} settled approvals; ${stats.pending} pending, ${stats.weak} weak excluded`;
+  return stats.upperBound === null ? basis : `${basis}; Wilson 95% upper bound ${stats.upperBound.toFixed(2)}`;
+}
+function approvalStats(db) {
+  return statsOf2(db.prepare("SELECT outcome, strength FROM approval_outcomes").all());
+}
+function field(raw, key2) {
+  if (typeof raw !== "string") return "unknown";
+  try {
+    const value = JSON.parse(raw)?.[key2];
+    return typeof value === "string" ? value : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+function approvalBreakdown(db) {
+  const rows = db.prepare(
+    `SELECT o.outcome AS outcome, o.strength AS strength, r.provenance_json AS provenance, r.complexity_json AS complexity
+       FROM approval_outcomes o LEFT JOIN review_runs r ON r.review_run_id = o.review_run_id`
+  ).all();
+  const groups = { mode: /* @__PURE__ */ new Map(), complexity: /* @__PURE__ */ new Map(), independence: /* @__PURE__ */ new Map(), origin: /* @__PURE__ */ new Map() };
+  const add = (map2, key2, row) => {
+    map2.set(key2, [...map2.get(key2) ?? [], row]);
+  };
+  for (const row of rows) {
+    const origin = ORIGINS.find((known) => known === field(row.provenance, "origin"));
+    add(groups.mode, field(row.provenance, "mode"), row);
+    add(groups.complexity, field(row.complexity, "level"), row);
+    add(groups.independence, origin === void 0 ? "unknown" : independenceOf(origin), row);
+    add(groups.origin, origin ?? "unknown", row);
+  }
+  const collect = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list2]) => [key2, statsOf2(list2)]));
+  return { byMode: collect(groups.mode), byComplexity: collect(groups.complexity), byIndependence: collect(groups.independence), byOrigin: collect(groups.origin) };
+}
+function approvalEscapeWarning(input) {
+  const { escaped, settled, upperBound, threshold } = input;
+  if (settled < APPROVAL_WARN_MIN_SETTLED || upperBound === null || !(upperBound > threshold)) return null;
+  return `Warning: ${escaped} of ${settled} settled approvals escaped (reverted or changes requested); the 95% upper bound ${upperBound.toFixed(2)} is above outcomes.approval_escape_warn ${threshold}. Run \`review-voice outcomes --approvals\` to see them.`;
+}
+
+// plugins/review-voice/src/policy/load.ts
+function asRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function asStringArray(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+}
+function positiveInt(value) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : void 0;
+}
+var CONFIG_KEYS = {
+  "": ["identity", "repositories", "review", "ci", "verdict", "static_evidence", "reproduction", "verification", "queue", "watch", "retention", "outcomes", "writes"],
+  identity: ["owner_reviewer", "reviewers"],
+  repositories: ["include"],
+  review: [
+    "human_review",
+    "structure",
+    "mode",
+    "models",
+    "confidence_threshold",
+    "final_score_threshold",
+    "lanes",
+    "suggestions",
+    "max_findings",
+    "max_words_per_finding",
+    "max_total_words"
+  ],
+  "review.human_review": [
+    "max_decision_points",
+    "max_hunk_decision_points",
+    "sensitive_paths",
+    "sensitive_exempt_paths",
+    "test_paths",
+    "generated_paths",
+    "cap_approval",
+    "structure"
+  ],
+  "review.human_review.structure": ["file_line_crossing", "branch_growth", "removed_controls"],
+  "review.structure": ["max_file_lines", "max_added_branches_per_function", "simplify"],
+  "review.lanes[]": ["name", "agent", "prefix", "when", "severity"],
+  "review.lanes[].when": ["min_changed_source_lines", "paths", "exclude_kinds", "signals"],
+  "review.lanes[].severity": ["cap", "escalate"],
+  "review.lanes[].severity.escalate": ["to", "requires"],
+  ci: ["gate_checks", "stuck_after_minutes", "stuck_after_overrides", "rerun_signatures", "builtin_rerun_signatures"],
+  "ci.gate_checks[]": ["name", "summary"],
+  "ci.stuck_after_overrides[]": ["name", "minutes"],
+  verdict: [
+    "ci_pending",
+    "ci_red",
+    "ci_needs_rerun",
+    "carry_approval_on_unchanged",
+    "recheck_thread_before_post",
+    "never_approve",
+    "scope_block",
+    "scope_block_models",
+    "evidence_block",
+    "evidence_block_precedents"
+  ],
+  static_evidence: ["enabled", "env_passthrough", "commands"],
+  "static_evidence.commands[]": ["name", "run", "timeout_seconds", "version"],
+  reproduction: ["enabled", "runners", "link_paths", "memory_mb", "cpu_seconds"],
+  "reproduction.runners[]": ["name", "run", "extension", "timeout_seconds"],
+  verification: ["enabled", "command", "name", "timeout_seconds", "drop_threshold", "env_passthrough"],
+  queue: ["sources", "teams", "max_per_pass", "follow_up_days", "skip"],
+  "queue.skip": ["authors", "assigned_to", "author_patterns", "allow_bots_when_requested", "drafts", "approved_at_head_by"],
+  "queue.skip.approved_at_head_by": ["logins", "sources"],
+  watch: ["workspace", "interval", "post", "lock_port", "run_repository_commands", "review_timeout", "max_attempts_per_head"],
+  retention: ["runs_days", "audit_days"],
+  outcomes: ["approval_window_days", "approval_escape_warn"],
+  writes: ["github_posting_enabled"]
+};
+function section(value, path, warnings) {
+  const block = asRecord2(value);
+  if (block === null) return null;
+  const known = CONFIG_KEYS[path.replace(/\[\d+\]/g, "[]")] ?? [];
+  for (const key2 of Object.keys(block)) {
+    if (!known.includes(key2)) warnings.push(`${path === "" ? "" : `${path}.`}${key2} is not a setting Review Voice reads; ignoring it.`);
+  }
+  return block;
+}
+function readHumanReview(block, result) {
+  if (block === null) return;
+  const limit = (key2) => {
+    if (block[key2] === void 0) return void 0;
+    const value = block[key2];
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+    result.warnings.push(`review.human_review.${key2} must be a whole number above zero; using the default.`);
+    return void 0;
+  };
+  result.humanReview.maxDecisionPoints = limit("max_decision_points") ?? result.humanReview.maxDecisionPoints;
+  result.humanReview.maxHunkDecisionPoints = limit("max_hunk_decision_points") ?? result.humanReview.maxHunkDecisionPoints;
+  const globs = (key2) => {
+    const paths = block[key2];
+    if (paths === void 0) return void 0;
+    if (Array.isArray(paths)) return asStringArray(paths);
+    result.warnings.push(`review.human_review.${key2} must be a list; using the default.`);
+    return void 0;
+  };
+  result.humanReview.sensitivePaths = globs("sensitive_paths") ?? result.humanReview.sensitivePaths;
+  result.humanReview.sensitiveExemptPaths = globs("sensitive_exempt_paths") ?? result.humanReview.sensitiveExemptPaths;
+  result.humanReview.testPaths = globs("test_paths") ?? result.humanReview.testPaths;
+  result.humanReview.generatedPaths = globs("generated_paths") ?? result.humanReview.generatedPaths;
+  const cap = block["cap_approval"];
+  if (cap !== void 0) {
+    if (typeof cap === "boolean") result.verdictPolicy.capApproval = cap;
+    else result.warnings.push("review.human_review.cap_approval must be true or false; using true.");
+  }
+  const structure = block["structure"];
+  if (structure === void 0) return;
+  const signals = section(structure, "review.human_review.structure", result.warnings);
+  if (signals === null) {
+    result.warnings.push("review.human_review.structure must be a mapping; using the defaults.");
+    return;
+  }
+  const enabled2 = (key2) => {
+    const value = signals[key2];
+    if (value === void 0) return void 0;
+    if (typeof value === "boolean") return value;
+    result.warnings.push(`review.human_review.structure.${key2} must be true or false; using the default.`);
+    return void 0;
+  };
+  result.humanReview.structure.fileLineCrossing = enabled2("file_line_crossing") ?? result.humanReview.structure.fileLineCrossing;
+  result.humanReview.structure.branchGrowth = enabled2("branch_growth") ?? result.humanReview.structure.branchGrowth;
+  result.humanReview.structure.removedControls = enabled2("removed_controls") ?? result.humanReview.structure.removedControls;
+}
+function readStructure(block, result) {
+  if (block === null) return;
+  const limit = (key2) => {
+    const value = block[key2];
+    if (value === void 0) return void 0;
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+    result.warnings.push(`review.structure.${key2} must be a whole number above zero; using the default.`);
+    return void 0;
+  };
+  result.structure.maxFileLines = limit("max_file_lines") ?? result.structure.maxFileLines;
+  result.structure.maxAddedBranchesPerFunction = limit("max_added_branches_per_function") ?? result.structure.maxAddedBranchesPerFunction;
+  const simplify = block["simplify"];
+  if (simplify !== void 0) {
+    if (typeof simplify === "boolean") result.structure.simplify = simplify;
+    else result.warnings.push("review.structure.simplify must be true or false; using the default.");
+  }
+}
+function readCostMode(review2, result) {
+  const mode = review2["mode"];
+  if (mode !== void 0) {
+    const known = MODES.find((candidate) => candidate === mode);
+    if (known === void 0) result.warnings.push(`review.mode must be one of ${MODES.join(", ")}; using auto.`);
+    else result.costMode.mode = known;
+  }
+  const models = review2["models"];
+  if (models === void 0) return;
+  const block = asRecord2(models);
+  if (block === null) {
+    result.warnings.push("review.models must be a map of stage to model name; ignoring it.");
+    return;
+  }
+  for (const [key2, value] of Object.entries(block)) {
+    const known = MODEL_KEYS.find((candidate) => candidate === key2);
+    if (known === void 0) {
+      result.warnings.push(`review.models.${key2} is not a stage (${MODEL_KEYS.join(", ")}); ignoring it.`);
+    } else if (typeof value !== "string" || value.trim().length === 0) {
+      result.warnings.push(`review.models.${key2} must be a model name; using the default.`);
+    } else {
+      result.costMode.models[known] = value.trim();
+    }
+  }
+}
+function parseLane(entry, taken, path, warnings) {
+  const block = section(entry, path, warnings);
+  if (block === null) return "must be a mapping";
+  const { name, agent: agent2, prefix } = block;
+  if (typeof name !== "string" || !/^[a-z][a-z0-9-]*$/.test(name)) return "name must be lower-case letters, digits and dashes";
+  if (name === DIFF_LANE.name) return "diff is built in and cannot be redefined";
+  if (taken.some((lane) => lane.name === name)) return `name ${name} is already used`;
+  if (typeof prefix !== "string" || !/^[a-z]+_$/.test(prefix)) return "prefix must be lower-case letters followed by _";
+  if (taken.some((lane) => lane.prefix === prefix)) return `prefix ${prefix} is already used`;
+  if (typeof agent2 !== "string" || !agentExists(agent2)) return `agent ${String(agent2)} is not an agent under agents/`;
+  const when = {};
+  if (block["when"] !== void 0) {
+    const rule = section(block["when"], `${path}.when`, warnings);
+    if (rule === null) return "when must be a mapping";
+    const min = rule["min_changed_source_lines"];
+    if (min !== void 0) {
+      if (typeof min !== "number" || !Number.isInteger(min) || min < 0) return "when.min_changed_source_lines must be a whole number";
+      when.minChangedSourceLines = min;
+    }
+    const paths = rule["paths"];
+    if (paths !== void 0) {
+      if (!Array.isArray(paths) || !paths.every((path2) => typeof path2 === "string" && path2.length > 0)) return "when.paths must be a list of globs";
+      when.paths = paths;
+    }
+    const kinds = rule["exclude_kinds"];
+    if (kinds !== void 0) {
+      if (!Array.isArray(kinds) || !kinds.every((kind) => CHANGE_KINDS.includes(kind))) {
+        return `when.exclude_kinds must list only ${CHANGE_KINDS.join(", ")}`;
+      }
+      when.excludeKinds = kinds;
+    }
+    const signals = rule["signals"];
+    if (signals !== void 0) {
+      if (!Array.isArray(signals) || !signals.every((signal2) => LANE_SIGNALS.includes(signal2))) {
+        return `when.signals must list only ${LANE_SIGNALS.join(", ")}`;
+      }
+      when.signals = signals;
+    }
+  }
+  const severity = {};
+  if (block["severity"] !== void 0) {
+    const rule = section(block["severity"], `${path}.severity`, warnings);
+    if (rule === null) return "severity must be a mapping";
+    const tier = (value) => LANE_TIERS.find((known) => known === value);
+    if (rule["cap"] !== void 0) {
+      const cap = tier(rule["cap"]);
+      if (cap === void 0) return `severity.cap must be one of ${LANE_TIERS.join(", ")}`;
+      severity.cap = cap;
+    }
+    if (rule["escalate"] !== void 0) {
+      const escalate = section(rule["escalate"], `${path}.severity.escalate`, warnings);
+      const to = tier(escalate?.["to"]);
+      if (to === void 0) return `severity.escalate.to must be one of ${LANE_TIERS.join(", ")}`;
+      if (escalate?.["requires"] !== "blocker_confirmed") return "severity.escalate.requires must be blocker_confirmed";
+      severity.escalate = { to, requires: "blocker_confirmed" };
+    }
+  }
+  return { name, agent: agent2, prefix, when, severity };
+}
+var ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+function readEnvPassthrough(value, key2, result) {
+  if (value === void 0) return [];
+  if (!Array.isArray(value)) {
+    result.warnings.push(`${key2} must be a list of variable names; ignoring it.`);
+    return [];
+  }
+  const names = [];
+  for (const entry of value) {
+    if (typeof entry === "string" && ENV_NAME.test(entry)) names.push(entry);
+    else result.warnings.push(`${key2}: ${JSON.stringify(entry)} is not a variable name; skipping it.`);
+  }
+  return names;
+}
+function readLanes(value, result) {
+  if (value === void 0) return;
+  if (!Array.isArray(value)) {
+    result.warnings.push("review.lanes must be a list; ignoring it.");
+    return;
+  }
+  value.forEach((entry, index) => {
+    const lane = parseLane(entry, result.lanes, `review.lanes[${index}]`, result.warnings);
+    if (typeof lane === "string") result.warnings.push(`review.lanes[${index}]: ${lane}; dropping the lane.`);
+    else result.lanes.push(lane);
+  });
+}
+function parseReproductionRunner(entry, taken, path, warnings) {
+  const block = section(entry, path, warnings);
+  if (block === null) return "must be a mapping";
+  const { name, run, extension } = block;
+  if (typeof name !== "string" || !/^[a-z][a-z0-9-]*$/.test(name)) return "name must be lower-case letters, digits and dashes";
+  if (taken.some((runner) => runner.name === name)) return `name ${name} is already used`;
+  if (typeof run !== "string" || (run.match(/\{[^{}]*\}/g) ?? []).join() !== "{file}") {
+    return "run must contain {file} exactly once and no other brace placeholder";
+  }
+  if (typeof extension !== "string" || !/^\.[A-Za-z0-9.]{1,15}$/.test(extension)) return "extension must be a dot and up to 15 letters, digits or dots";
+  const timeout = block["timeout_seconds"] ?? 120;
+  if (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < 1 || timeout > 600) {
+    return "timeout_seconds must be a whole number from 1 to 600";
+  }
+  return { name, run, extension, timeoutSeconds: timeout };
+}
+function readReproduction(value, result) {
+  const block = section(value, "reproduction", result.warnings);
+  if (block === null) {
+    result.warnings.push("reproduction must be a mapping; using the defaults.");
+    return;
+  }
+  const target = result.reproduction;
+  const enabled2 = block["enabled"];
+  if (typeof enabled2 === "boolean") target.enabled = enabled2;
+  else if (enabled2 !== void 0) result.warnings.push("reproduction.enabled must be true or false; using false.");
+  const runners = block["runners"];
+  if (runners !== void 0 && !Array.isArray(runners)) result.warnings.push("reproduction.runners must be a list; ignoring it.");
+  if (Array.isArray(runners)) {
+    runners.forEach((entry, index) => {
+      const runner = parseReproductionRunner(entry, target.runners, `reproduction.runners[${index}]`, result.warnings);
+      if (typeof runner !== "string") {
+        target.runners.push(runner);
+        return;
+      }
+      const name = asRecord2(entry)?.["name"];
+      result.warnings.push(`reproduction.runners[${index}]${typeof name === "string" ? ` (${name})` : ""}: ${runner}; dropping the runner.`);
+    });
+  }
+  const links = block["link_paths"];
+  if (links !== void 0 && !Array.isArray(links)) result.warnings.push("reproduction.link_paths must be a list; ignoring it.");
+  if (Array.isArray(links)) {
+    for (const entry of links) {
+      if (typeof entry === "string" && entry !== "" && entry !== "." && entry !== ".." && !entry.includes("/")) {
+        if (!target.linkPaths.includes(entry)) target.linkPaths.push(entry);
+      } else {
+        result.warnings.push(`reproduction.link_paths: ${JSON.stringify(entry)} is not a single path segment; skipping it.`);
+      }
+    }
+  }
+  const limit = (key2, field2, min, max) => {
+    const value2 = block[key2];
+    if (value2 === void 0) return;
+    if (typeof value2 === "number" && Number.isInteger(value2) && value2 >= min && value2 <= max) target[field2] = value2;
+    else result.warnings.push(`reproduction.${key2} must be a whole number from ${min} to ${max}; using ${target[field2]}.`);
+  };
+  limit("memory_mb", "memoryMb", 64, 16384);
+  limit("cpu_seconds", "cpuSeconds", 1, 600);
+}
+var GENERIC_SIGNATURE_WORDS = /* @__PURE__ */ new Set([
+  "error",
+  "errors",
+  "failed",
+  "failure",
+  "failures",
+  "failing",
+  "fatal",
+  "exception",
+  "exceptions",
+  "timeout",
+  "timed out",
+  "cancelled",
+  "canceled",
+  "aborted",
+  "killed",
+  "crashed",
+  "panic",
+  "unavailable",
+  "refused",
+  "denied",
+  "forbidden",
+  "unauthorized",
+  "warning",
+  "retrying",
+  "connection",
+  "network",
+  "internal",
+  "exit code",
+  "traceback",
+  "stacktrace"
+]);
+function specificSignature(signature2) {
+  if (signature2.length < 8) return false;
+  return !GENERIC_SIGNATURE_WORDS.has(signature2.toLowerCase().replace(/[^a-z ]+/g, " ").trim());
+}
+function readCiRules(block, result) {
+  if (block === null) return;
+  const minutes = (value) => typeof value === "number" && Number.isInteger(value) && value > 0 ? value : void 0;
+  if (block["stuck_after_minutes"] !== void 0) {
+    const value = minutes(block["stuck_after_minutes"]);
+    if (value === void 0) {
+      result.warnings.push("ci.stuck_after_minutes must be a whole number above zero; using 60.");
+    } else {
+      result.ciRules.stuckAfterMinutes = value;
+    }
+  }
+  const overrides = block["stuck_after_overrides"];
+  if (overrides !== void 0 && !Array.isArray(overrides)) {
+    result.warnings.push("ci.stuck_after_overrides must be a list; ignoring it.");
+  } else if (overrides !== void 0) {
+    const stuckAfter = [];
+    for (const [index, entry] of overrides.entries()) {
+      const override = section(entry, `ci.stuck_after_overrides[${index}]`, result.warnings);
+      const name = override?.["name"];
+      const value = minutes(override?.["minutes"]);
+      if (typeof name !== "string" || name.length === 0 || value === void 0) {
+        result.warnings.push("a ci.stuck_after_overrides entry needs a name and minutes above zero; skipping it.");
+        continue;
+      }
+      stuckAfter.push({ name, minutes: value });
+    }
+    if (stuckAfter.length > 0) result.ciRules.stuckAfter = stuckAfter;
+  }
+  const extra = block["rerun_signatures"];
+  if (extra !== void 0 && !Array.isArray(extra)) {
+    result.warnings.push("ci.rerun_signatures must be a list; ignoring it.");
+  }
+  const added = [];
+  for (const entry of Array.isArray(extra) ? extra : []) {
+    if (typeof entry !== "string") {
+      result.warnings.push(`ci.rerun_signatures: ${JSON.stringify(entry)} is not text; skipping it.`);
+      continue;
+    }
+    const signature2 = entry.trim();
+    if (!specificSignature(signature2)) {
+      result.warnings.push(
+        `ci.rerun_signatures: "${signature2}" is too short or too generic and would match real failures; skipping it.`
+      );
+      continue;
+    }
+    added.push(signature2);
+  }
+  const builtin = block["builtin_rerun_signatures"];
+  if (builtin !== void 0 && typeof builtin !== "boolean") {
+    result.warnings.push("ci.builtin_rerun_signatures must be true or false; keeping the built-in signatures.");
+  }
+  if (added.length > 0 || builtin === false) {
+    result.ciRules.rerunSignatures = [...builtin === false ? [] : BUILTIN_RERUN_SIGNATURES, ...added];
+  }
+}
+function readVerdictPolicy(block, result) {
+  if (block === null) return;
+  const choice = (key2, options, fallback) => {
+    const value = block[key2];
+    if (value === void 0) return fallback;
+    if (typeof value === "string" && options.includes(value)) return value;
+    result.warnings.push(`verdict.${key2} must be one of ${options.join(", ")}; using ${fallback}.`);
+    return fallback;
+  };
+  const enabled2 = (key2, fallback) => {
+    const value = block[key2];
+    if (value === void 0) return fallback;
+    if (typeof value === "boolean") return value;
+    result.warnings.push(`verdict.${key2} must be true or false; using ${String(fallback)}.`);
+    return fallback;
+  };
+  const policy = result.verdictPolicy;
+  policy.ciPending = choice("ci_pending", ["wait", "proceed"], DEFAULT_VERDICT_POLICY.ciPending);
+  policy.ciRed = choice("ci_red", ["cap", "annotate"], DEFAULT_VERDICT_POLICY.ciRed);
+  policy.ciNeedsRerun = choice("ci_needs_rerun", ["hold", "annotate"], DEFAULT_VERDICT_POLICY.ciNeedsRerun);
+  policy.carryApprovalOnUnchanged = enabled2("carry_approval_on_unchanged", DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
+  policy.recheckThreadBeforePost = enabled2("recheck_thread_before_post", DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
+  policy.neverApprove = enabled2("never_approve", DEFAULT_VERDICT_POLICY.neverApprove);
+  policy.scopeBlock = enabled2("scope_block", DEFAULT_VERDICT_POLICY.scopeBlock);
+  policy.scopeBlockModels = enabled2("scope_block_models", DEFAULT_VERDICT_POLICY.scopeBlockModels);
+  policy.evidenceBlock = enabled2("evidence_block", DEFAULT_VERDICT_POLICY.evidenceBlock);
+  policy.evidenceBlockPrecedents = enabled2("evidence_block_precedents", DEFAULT_VERDICT_POLICY.evidenceBlockPrecedents);
+}
+var TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
+function readQueue(block, result) {
+  if (block === null) return;
+  const queue = result.queue;
+  const list2 = (value, key2) => {
+    if (value === void 0) return void 0;
+    if (Array.isArray(value)) return value;
+    result.warnings.push(`queue.${key2} must be a list; using the default.`);
+    return void 0;
+  };
+  const logins = (value, key2) => {
+    const entries = list2(value, key2);
+    if (entries === void 0) return void 0;
+    const kept = [];
+    for (const entry of entries) {
+      if (typeof entry === "string" && entry.length > 0) kept.push(entry);
+      else result.warnings.push(`queue.${key2}: ${JSON.stringify(entry)} is not a login; skipping it.`);
+    }
+    return kept;
+  };
+  const sourceList = (value, key2) => {
+    const entries = list2(value, key2);
+    if (entries === void 0) return void 0;
+    const kept = [];
+    for (const entry of entries) {
+      if (typeof entry === "string" && QUEUE_SOURCES.includes(entry)) kept.push(entry);
+      else result.warnings.push(`queue.${key2}: ${JSON.stringify(entry)} is not one of ${QUEUE_SOURCES.join(", ")}; skipping it.`);
+    }
+    return kept;
+  };
+  const wholeAboveZero = (key2) => {
+    const value = block[key2];
+    if (value === void 0) return void 0;
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+    result.warnings.push(`queue.${key2} must be a whole number above zero; using the default.`);
+    return void 0;
+  };
+  const flag2 = (record3, key2) => {
+    const value = record3[key2];
+    if (value === void 0) return void 0;
+    if (typeof value === "boolean") return value;
+    result.warnings.push(`queue.skip.${key2} must be true or false; using the default.`);
+    return void 0;
+  };
+  queue.sources = sourceList(block["sources"], "sources") ?? queue.sources;
+  const teams = list2(block["teams"], "teams");
+  if (teams !== void 0) {
+    queue.teams = [];
+    for (const entry of teams) {
+      if (typeof entry === "string" && TEAM.test(entry)) queue.teams.push(entry);
+      else result.warnings.push(`queue.teams: ${JSON.stringify(entry)} is not org/team-slug; skipping it.`);
+    }
+  }
+  queue.maxPerPass = wholeAboveZero("max_per_pass") ?? queue.maxPerPass;
+  queue.followUpDays = wholeAboveZero("follow_up_days") ?? queue.followUpDays;
+  if (block["skip"] === void 0) return;
+  const skip2 = section(block["skip"], "queue.skip", result.warnings);
+  if (skip2 === null) {
+    result.warnings.push("queue.skip must be a mapping; using the defaults.");
+    return;
+  }
+  queue.skip.authors = logins(skip2["authors"], "skip.authors") ?? queue.skip.authors;
+  queue.skip.assignedTo = logins(skip2["assigned_to"], "skip.assigned_to") ?? queue.skip.assignedTo;
+  const patterns = list2(skip2["author_patterns"], "skip.author_patterns");
+  if (patterns !== void 0) {
+    queue.skip.authorPatterns = [];
+    for (const entry of patterns) {
+      try {
+        if (typeof entry !== "string" || entry.length === 0) throw new Error("not text");
+        new RegExp(entry, "i");
+        queue.skip.authorPatterns.push(entry);
+      } catch {
+        result.warnings.push(`queue.skip.author_patterns: ${JSON.stringify(entry)} is not a regular expression; skipping it.`);
+      }
+    }
+  }
+  queue.skip.allowBotsWhenRequested = flag2(skip2, "allow_bots_when_requested") ?? queue.skip.allowBotsWhenRequested;
+  queue.skip.drafts = flag2(skip2, "drafts") ?? queue.skip.drafts;
+  if (skip2["approved_at_head_by"] !== void 0) {
+    const approved = section(skip2["approved_at_head_by"], "queue.skip.approved_at_head_by", result.warnings);
+    if (approved === null) {
+      result.warnings.push("queue.skip.approved_at_head_by must be a mapping; ignoring it.");
+    } else {
+      queue.skip.approvedAtHeadBy = {
+        logins: logins(approved["logins"], "skip.approved_at_head_by.logins") ?? [],
+        sources: sourceList(approved["sources"], "skip.approved_at_head_by.sources") ?? queue.skip.approvedAtHeadBy.sources
+      };
+    }
+  }
+}
+function readWatch(block, result) {
+  if (block === null) {
+    result.warnings.push("watch must be a mapping; using the defaults.");
+    return;
+  }
+  const { workspace, interval, post } = block;
+  if (workspace !== void 0) {
+    if (typeof workspace === "string" && workspace.trim().length > 0) {
+      const path = workspace.trim();
+      result.watch.workspace = path === "~" || path.startsWith("~/") ? join8(homedir2(), path.slice(1)) : path;
+    } else {
+      result.warnings.push("watch.workspace must be a directory path; using <data directory>/clones.");
+    }
+  }
+  if (interval !== void 0) {
+    const ms = typeof interval === "string" ? parseDuration(interval) : null;
+    if (ms === null) result.warnings.push("watch.interval must be a duration such as 30m or 2h; using 2h.");
+    else result.watch.intervalMs = ms;
+  }
+  if (post !== void 0) {
+    if (typeof post === "boolean") result.watch.post = post;
+    else result.warnings.push("watch.post must be true or false; using false.");
+  }
+  const port = block["lock_port"];
+  if (port !== void 0) {
+    if (typeof port === "number" && Number.isInteger(port) && port >= 1024 && port <= 65535) result.watch.lockPort = port;
+    else result.warnings.push("watch.lock_port must be a whole number from 1024 to 65535; deriving it from the data directory.");
+  }
+  const commands = block["run_repository_commands"];
+  if (commands !== void 0) {
+    if (typeof commands === "boolean") result.watch.runRepositoryCommands = commands;
+    else result.warnings.push("watch.run_repository_commands must be true or false; using false.");
+  }
+  const timeout = block["review_timeout"];
+  if (timeout !== void 0) {
+    const ms = typeof timeout === "string" ? parseDuration(timeout) : null;
+    if (ms === null || ms > MAX_REVIEW_TIMEOUT_MS) result.warnings.push("watch.review_timeout must be a duration up to 6h, such as 45m; using 45m.");
+    else result.watch.reviewTimeoutMs = ms;
+  }
+  const attempts = block["max_attempts_per_head"];
+  if (attempts !== void 0) {
+    if (typeof attempts === "number" && Number.isInteger(attempts) && attempts > 0) result.watch.maxAttemptsPerHead = attempts;
+    else result.warnings.push("watch.max_attempts_per_head must be a whole number above zero; using 2.");
+  }
+}
+function readRetention(block, result) {
+  if (block === null) {
+    result.warnings.push("retention must be a mapping; using the defaults.");
+    return;
+  }
+  const read = (key2, field2) => {
+    const value = block[key2];
+    if (value === void 0) return;
+    if (value === null || typeof value === "number" && Number.isInteger(value) && value >= 0) result.retention[field2] = value;
+    else result.warnings.push(`retention.${key2} must be a whole number of days, or 0 or null to keep it forever; using ${DEFAULT_RETENTION[field2]}.`);
+  };
+  read("runs_days", "runsDays");
+  read("audit_days", "auditDays");
+}
+function readOutcomes(block, result) {
+  if (block === null) {
+    result.warnings.push("outcomes must be a mapping; using the defaults.");
+    return;
+  }
+  const days = block["approval_window_days"];
+  if (days !== void 0) {
+    if (typeof days === "number" && Number.isInteger(days) && days > 0) result.outcomes.approvalWindowDays = days;
+    else result.warnings.push(`outcomes.approval_window_days must be a whole number above zero; using ${DEFAULT_OUTCOMES.approvalWindowDays}.`);
+  }
+  const warn2 = block["approval_escape_warn"];
+  if (warn2 !== void 0) {
+    if (typeof warn2 === "number" && warn2 >= 0 && warn2 <= 1) result.outcomes.approvalEscapeWarn = warn2;
+    else result.warnings.push(`outcomes.approval_escape_warn must be a number from 0 to 1; using ${DEFAULT_OUTCOMES.approvalEscapeWarn}.`);
+  }
+}
+function contentHash(text4) {
+  return createHash4("sha256").update(text4).digest("hex").slice(0, 16);
+}
+function layerFromPolicyFile(text4, source, fallbackKey) {
+  const doc = asRecord2(parse(text4));
+  if (doc === null) return null;
+  const scope = asRecord2(doc["scope"]);
+  const type = typeof scope?.["type"] === "string" ? scope["type"] : "repository";
+  const key2 = typeof scope?.["key"] === "string" ? scope["key"] : fallbackKey;
+  const priorities = Array.isArray(doc["priorities"]) ? doc["priorities"].map((item) => asRecord2(item)).filter((item) => item !== null).filter((item) => typeof item["category"] === "string").map((item) => ({
+    category: item["category"],
+    weight: typeof item["weight"] === "string" ? item["weight"] : "normal"
+  })) : [];
+  return {
+    scope: { type, key: key2 },
+    source,
+    requiresApproval: true,
+    ...positiveInt(doc["max_findings"]) === void 0 ? {} : { maxFindings: positiveInt(doc["max_findings"]) },
+    forbiddenPhrases: asStringArray(doc["forbidden_phrases"]),
+    suppressedPatterns: asStringArray(doc["suppressed_patterns"]),
+    requiredChecks: asStringArray(doc["required_checks"]),
+    priorities
+  };
+}
+function approvedPolicyLayers(db, warnings) {
+  const layers = [];
+  const versions = [];
+  for (const row of activePolicyRows(db)) {
+    versions.push({ scopeType: row.scopeType, scopeKey: row.scopeKey, policyId: row.policyId, version: row.version });
+    const label2 = `approved policy version ${row.version}`;
+    try {
+      const doc = asRecord2(parse(row.contentYaml));
+      if (doc === null) {
+        warnings.push(`${label2} is empty; ignoring it.`);
+        continue;
+      }
+      const read = readSuppressions(doc["suppressions"], row.version);
+      for (const warning of read.warnings) warnings.push(`${label2}: ${warning}`);
+      const isPath2 = row.scopeType === "path";
+      const suppressions = isPath2 ? read.suppressions.map((suppression) => {
+        if (suppression.glob !== null && suppression.glob !== row.scopeKey) {
+          warnings.push(`${label2}: suppression ${suppression.ruleId} names glob ${suppression.glob}; the policy's scope ${row.scopeKey} applies.`);
+        }
+        return { ...suppression, glob: row.scopeKey };
+      }) : read.suppressions;
+      layers.push({
+        scope: { type: isPath2 ? "path" : "global", key: row.scopeKey },
+        source: `${label2} (policies table)`,
+        requiresApproval: false,
+        suppressedPatterns: asStringArray(doc["suppressed_patterns"]),
+        suppressions
+      });
+    } catch (error) {
+      warnings.push(`${label2} could not be parsed: ${String(error)}`);
+    }
+  }
+  return { layers, versions };
+}
+function pluginRoot() {
+  let dir = dirname6(fileURLToPath3(import.meta.url));
+  while (!existsSync4(join8(dir, ".claude-plugin", "plugin.json")) && dirname6(dir) !== dir) dir = dirname6(dir);
+  return dir;
+}
+function loadBaselineLayer(owner, path = join8(pluginRoot(), "policies", "baseline-global.yaml")) {
+  if (!existsSync4(path)) return null;
+  try {
+    const doc = asRecord2(parse(readFileSync5(path, "utf8")));
+    if (doc === null) return null;
+    const voice = asRecord2(doc["voice"]);
+    const maxFindings = positiveInt(voice?.["max_findings"]);
+    const maxWords = positiveInt(voice?.["max_words_per_finding"]);
+    const maxTotal = positiveInt(voice?.["max_total_words"]);
+    return {
+      scope: { type: "global", key: owner ?? "owner" },
+      source: "policies/baseline-global.yaml",
+      requiresApproval: false,
+      ...maxFindings === void 0 ? {} : { maxFindings },
+      ...maxWords === void 0 ? {} : { maxWordsPerFinding: maxWords },
+      ...maxTotal === void 0 ? {} : { maxTotalWords: maxTotal },
+      forbiddenPhrases: asStringArray(doc["forbidden_phrases"]),
+      suppressedPatterns: asStringArray(doc["suppressed_patterns"]),
+      priorities: asStringArray(doc["priorities"]).map((category) => ({ category, weight: "normal" }))
+    };
+  } catch {
+    return null;
+  }
+}
+function readThresholds(review2, result) {
+  const read = (key2) => {
+    const value = review2[key2];
+    if (value === void 0) return void 0;
+    if (typeof value === "number" && value > 0 && value <= 1) return value;
+    result.warnings.push(`review.${key2} must be a number above 0 and at most 1; using the default.`);
+    return void 0;
+  };
+  const confidence = read("confidence_threshold");
+  const score2 = read("final_score_threshold");
+  if (confidence !== void 0) result.thresholds.technicalConfidence = confidence;
+  if (score2 !== void 0) result.thresholds.finalScore = score2;
+}
+function readReviewers(identity2, result) {
+  const raw = identity2?.["reviewers"];
+  const listed = [];
+  if (raw !== void 0) {
+    if (!Array.isArray(raw)) {
+      result.warnings.push("identity.reviewers must be a list of GitHub logins; ignoring it.");
+    } else {
+      for (const entry of raw) {
+        if (typeof entry !== "string" || entry.trim() === "") {
+          result.warnings.push("identity.reviewers: skipped an entry that is not a login.");
+          continue;
+        }
+        const login = entry.trim();
+        if (!listed.some((existing) => existing.toLowerCase() === login.toLowerCase())) listed.push(login);
+      }
+    }
+  }
+  if (result.ownerReviewer === null && listed.length > 0) result.ownerReviewer = listed[0];
+  const owner = result.ownerReviewer;
+  if (owner !== null && !listed.some((login) => login.toLowerCase() === owner.toLowerCase())) {
+    listed.unshift(owner);
+  }
+  result.reviewers = listed;
+}
+function configFile(repositoryRoot2, warnings = []) {
+  const override = process.env["REVIEW_VOICE_CONFIG"];
+  if (override !== void 0 && override.length > 0) {
+    if (isAbsolute(override)) return override;
+    warnings.push(`REVIEW_VOICE_CONFIG must be an absolute path; reading .review-voice/config.yaml instead.`);
+  }
+  return join8(repositoryRoot2, ".review-voice", "config.yaml");
+}
+function readConfigDocument(value, repositoryRoot2, result) {
+  const doc = section(value, "", result.warnings);
+  if (doc === null) return;
+  const identity2 = section(doc["identity"], "identity", result.warnings);
+  if (typeof identity2?.["owner_reviewer"] === "string") {
+    result.ownerReviewer = identity2["owner_reviewer"];
+  }
+  readReviewers(identity2, result);
+  const repositories = section(doc["repositories"], "repositories", result.warnings);
+  for (const entry of asStringArray(repositories?.["include"])) {
+    const problem = allowlistEntryProblem(entry);
+    if (problem === null) result.allowlist.push(entry);
+    else result.warnings.push(`repositories.include: ${problem} Skipping it.`);
+  }
+  if (doc["queue"] !== void 0 && asRecord2(doc["queue"]) === null) {
+    result.warnings.push("queue must be a mapping; using the defaults.");
+  }
+  readQueue(section(doc["queue"], "queue", result.warnings), result);
+  if (doc["watch"] !== void 0) readWatch(section(doc["watch"], "watch", result.warnings), result);
+  if (doc["retention"] !== void 0) readRetention(section(doc["retention"], "retention", result.warnings), result);
+  if (doc["outcomes"] !== void 0) readOutcomes(section(doc["outcomes"], "outcomes", result.warnings), result);
+  const staticEvidence = section(doc["static_evidence"], "static_evidence", result.warnings);
+  if (staticEvidence !== null) {
+    result.staticEvidence.enabled = staticEvidence["enabled"] === true;
+    result.staticEvidence.envPassthrough = readEnvPassthrough(
+      staticEvidence["env_passthrough"],
+      "static_evidence.env_passthrough",
+      result
+    );
+    const commands = Array.isArray(staticEvidence["commands"]) ? staticEvidence["commands"] : [];
+    for (const [index, entry] of commands.entries()) {
+      const command = section(entry, `static_evidence.commands[${index}]`, result.warnings);
+      if (command === null) continue;
+      const name = command["name"];
+      const run = command["run"];
+      if (typeof name !== "string" || typeof run !== "string") continue;
+      const timeout = positiveInt(command["timeout_seconds"]);
+      const version = command["version"];
+      result.staticEvidence.commands.push({
+        name,
+        run,
+        ...timeout === void 0 ? {} : { timeoutSeconds: timeout },
+        ...typeof version === "string" && version.trim() !== "" ? { version } : {}
+      });
+    }
+  }
+  if (doc["reproduction"] !== void 0) readReproduction(doc["reproduction"], result);
+  const writes = section(doc["writes"], "writes", result.warnings);
+  result.postingEnabled = writes?.["github_posting_enabled"] === true;
+  const ci = section(doc["ci"], "ci", result.warnings);
+  const gateChecks = Array.isArray(ci?.["gate_checks"]) ? ci["gate_checks"] : [];
+  for (const [index, entry] of gateChecks.entries()) {
+    if (typeof entry === "string" && entry.length > 0) {
+      result.ciGateChecks.push({ name: entry });
+      continue;
+    }
+    const gate = section(entry, `ci.gate_checks[${index}]`, result.warnings);
+    const name = gate?.["name"];
+    if (typeof name !== "string" || name.length === 0) continue;
+    const summary = gate?.["summary"];
+    result.ciGateChecks.push({
+      name,
+      ...typeof summary === "string" && summary.length > 0 ? { summary } : {}
+    });
+  }
+  readCiRules(ci, result);
+  if (doc["verdict"] !== void 0) {
+    const verdict2 = section(doc["verdict"], "verdict", result.warnings);
+    if (verdict2 === null) result.warnings.push("verdict must be a mapping; using the defaults.");
+    readVerdictPolicy(verdict2, result);
+  }
+  const verification2 = section(doc["verification"], "verification", result.warnings);
+  if (verification2 !== null) {
+    const command = verification2["command"];
+    result.verification = {
+      enabled: verification2["enabled"] === true && typeof command === "string" && command.length > 0,
+      command: typeof command === "string" ? command : "",
+      name: typeof verification2["name"] === "string" ? verification2["name"] : void 0,
+      timeoutSeconds: positiveInt(verification2["timeout_seconds"]),
+      dropThreshold: typeof verification2["drop_threshold"] === "number" ? verification2["drop_threshold"] : void 0,
+      envPassthrough: readEnvPassthrough(verification2["env_passthrough"], "verification.env_passthrough", result),
+      blockPresent: true
+    };
+  }
+  const review2 = section(doc["review"], "review", result.warnings);
+  if (review2 !== null) {
+    readHumanReview(section(review2["human_review"], "review.human_review", result.warnings), result);
+    readStructure(section(review2["structure"], "review.structure", result.warnings), result);
+    readCostMode(review2, result);
+    readThresholds(review2, result);
+    readLanes(review2["lanes"], result);
+    const suggestions = review2["suggestions"];
+    if (typeof suggestions === "boolean") result.verdictPolicy.suggestions = suggestions;
+    else if (suggestions !== void 0) result.warnings.push("review.suggestions must be true or false; using false.");
+    result.layers.push({
+      scope: { type: "repository", key: repositoryRoot2 },
+      source: ".review-voice/config.yaml",
+      requiresApproval: false,
+      ...positiveInt(review2["max_findings"]) === void 0 ? {} : { maxFindings: positiveInt(review2["max_findings"]) },
+      ...positiveInt(review2["max_words_per_finding"]) === void 0 ? {} : { maxWordsPerFinding: positiveInt(review2["max_words_per_finding"]) },
+      ...positiveInt(review2["max_total_words"]) === void 0 ? {} : { maxTotalWords: positiveInt(review2["max_total_words"]) }
+    });
+  }
+}
+function loadConfig(repositoryRoot2, baselinePath, path, db) {
+  const result = {
+    ownerReviewer: null,
+    reviewers: [],
+    postingEnabled: false,
+    ciGateChecks: [],
+    ciRules: {},
+    allowlist: [],
+    queue: defaultQueueConfig(),
+    watch: defaultWatchConfig(),
+    retention: { ...DEFAULT_RETENTION },
+    outcomes: { ...DEFAULT_OUTCOMES },
+    staticEvidence: { enabled: false, commands: [], envPassthrough: [] },
+    reproduction: defaultReproduction(),
+    verification: { enabled: false, command: "", envPassthrough: [], blockPresent: false },
+    humanReview: {
+      ...DEFAULT_HUMAN_REVIEW,
+      sensitivePaths: [...DEFAULT_HUMAN_REVIEW.sensitivePaths],
+      sensitiveExemptPaths: [...DEFAULT_HUMAN_REVIEW.sensitiveExemptPaths],
+      testPaths: [...DEFAULT_HUMAN_REVIEW.testPaths],
+      generatedPaths: [...DEFAULT_HUMAN_REVIEW.generatedPaths],
+      structure: { ...DEFAULT_HUMAN_REVIEW.structure }
+    },
+    structure: { ...DEFAULT_STRUCTURE },
+    costMode: { mode: "auto", models: {} },
+    verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
+    lanes: [DIFF_LANE],
+    thresholds: {},
+    layers: [],
+    suppressions: [],
+    activePolicyVersions: [],
+    unapproved: [],
+    warnings: []
+  };
+  const configPath = path ?? configFile(repositoryRoot2, result.warnings);
+  if (existsSync4(configPath)) {
+    try {
+      readConfigDocument(parse(readFileSync5(configPath, "utf8")), repositoryRoot2, result);
+    } catch (error) {
+      result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
+    }
+  }
+  const approved = db === void 0 ? null : approvedPolicyLayers(db, result.warnings);
+  if (approved !== null) {
+    result.layers.unshift(...approved.layers);
+    result.activePolicyVersions = approved.versions;
+  }
+  const baseline = loadBaselineLayer(result.ownerReviewer, baselinePath);
+  if (baseline !== null) result.layers.unshift(baseline);
+  result.suppressions = result.layers.flatMap((layer) => layer.suppressions ?? []);
+  const policyPath = join8(repositoryRoot2, ".review-voice", "policy.yaml");
+  if (existsSync4(policyPath)) {
+    try {
+      const text4 = readFileSync5(policyPath, "utf8");
+      const layer = layerFromPolicyFile(text4, ".review-voice/policy.yaml", repositoryRoot2);
+      if (layer !== null) {
+        result.unapproved.push({ source: ".review-voice/policy.yaml", contentHash: contentHash(text4) });
+      }
+    } catch (error) {
+      result.warnings.push(`.review-voice/policy.yaml could not be parsed: ${String(error)}`);
+    }
+  }
+  return result;
+}
+
+// plugins/review-voice/src/store/watch.ts
+var isFailure2 = (status) => status === "failed" || status === "failed-open" || status === "failed-closed";
+var fromRow = (row) => ({
+  repository: row.repository,
+  pull: row.pull_number,
+  head: row.head_sha,
+  runId: row.run_id,
+  event: row.event,
+  reviewUrl: row.review_url,
+  status: row.status,
+  detail: row.detail,
+  attempts: row.attempts,
+  updatedAt: row.updated_at
+});
+var key = (repository, head) => [repository.toLowerCase(), head.toLowerCase()];
+function watchHead(db, repository, pull, head) {
+  const [name, sha] = key(repository, head);
+  const row = db.prepare("SELECT * FROM watch_heads WHERE repository = ? AND pull_number = ? AND head_sha = ?").get(name, pull, sha);
+  return row === void 0 ? null : fromRow(row);
+}
+function saveWatchHead(db, row, now) {
+  const [name, sha] = key(row.repository, row.head);
+  const attempts = (watchHead(db, name, row.pull, sha)?.attempts ?? 0) + (isFailure2(row.status) ? 1 : 0);
+  const saved = { ...row, repository: name, head: sha, attempts, updatedAt: now.toISOString() };
+  db.prepare(
+    `INSERT INTO watch_heads (repository, pull_number, head_sha, run_id, event, review_url, status, detail, attempts, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (repository, pull_number, head_sha) DO UPDATE SET
+       run_id = excluded.run_id, event = excluded.event, review_url = excluded.review_url, status = excluded.status,
+       detail = excluded.detail, attempts = excluded.attempts, updated_at = excluded.updated_at`
+  ).run(name, row.pull, sha, row.runId, row.event, row.reviewUrl, row.status, row.detail, attempts, saved.updatedAt);
+  return saved;
+}
+function recentlySentPulls(db, since, limit) {
+  const rows = db.prepare(
+    `SELECT subject_id, MAX(created_at) AS sent_at FROM audit_events
+       WHERE action = 'review_post_sent' AND created_at >= ?
+       GROUP BY subject_id ORDER BY sent_at DESC LIMIT ?`
+  ).all(since, limit);
+  const pulls = [];
+  for (const row of rows) {
+    const match = /^([^#\s]+\/[^#\s]+)#(\d+)$/.exec(row.subject_id);
+    if (match !== null) pulls.push({ repository: match[1], pull: Number(match[2]), sentAt: row.sent_at });
+  }
+  return pulls;
+}
+function watchSummary(db) {
+  const counts = db.prepare("SELECT status, COUNT(*) AS n FROM watch_heads GROUP BY status ORDER BY status").all();
+  if (counts.length === 0) return [];
+  const recent = db.prepare("SELECT * FROM watch_heads ORDER BY updated_at DESC, rowid DESC LIMIT 5").all();
+  return [
+    `watcher          ${counts.map((row) => `${row.n} ${row.status}`).join(", ")}`,
+    ...recent.map((row) => `  ${row.repository}#${row.pull_number} ${row.head_sha.slice(0, 7)} ${row.status}${row.detail === null ? "" : ` ${row.detail}`}`)
+  ];
+}
+function settledHeads(db, maxAttemptsPerHead) {
+  const rows = db.prepare(
+    `SELECT * FROM watch_heads
+       WHERE status IN ('held', 'skipped') OR (status IN ('failed', 'failed-open', 'failed-closed') AND attempts >= ?)
+       ORDER BY updated_at DESC, rowid DESC`
+  ).all(maxAttemptsPerHead);
+  return rows.map(fromRow);
+}
+
+// plugins/review-voice/src/queue/store.ts
+function recentlyReviewedPulls(db, since) {
+  const rows = db.prepare(
+    `SELECT repository, pull_number, head_ref
+       FROM review_runs
+       WHERE repository IS NOT NULL AND pull_number IS NOT NULL AND head_ref IS NOT NULL
+         AND created_at >= ?
+       ORDER BY created_at DESC, rowid DESC`
+  ).all(since);
+  const latest = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const key2 = `${row.repository.toLowerCase()}#${row.pull_number}`;
+    if (!latest.has(key2)) latest.set(key2, { repository: row.repository, pull: row.pull_number, head: row.head_ref });
+  }
+  return [...latest.values()];
+}
+function runRecordedAtHead(db, repository, pull, head) {
+  const row = db.prepare(
+    `SELECT 1 FROM review_runs
+       WHERE LOWER(repository) = LOWER(?) AND pull_number = ? AND LOWER(head_ref) = LOWER(?)
+       LIMIT 1`
+  ).get(repository, pull, head);
+  return row !== void 0;
+}
+function settledByWatcher(db, repository, pull, head, maxAttemptsPerHead = 2) {
+  const row = watchHead(db, repository, pull, head);
+  if (row === null) return null;
+  if (isFailure2(row.status)) return row.attempts >= maxAttemptsPerHead ? row : null;
+  return ["posted", "carried", "skipped", "held"].includes(row.status) ? row : null;
+}
+function lastSentAtHead(db, repository, pull, head, maxAttemptsPerHead = 2) {
+  const sent = lastSentRow(db, repository, pull, head);
+  if (sent !== null && !sent.cappedByCi) return sent;
+  const settled = settledByWatcher(db, repository, pull, head, maxAttemptsPerHead);
+  if (settled === null) return sent;
+  if (sent !== null) return settled.status === "posted" && settled.detail === null ? sent : { ...sent, cappedByCi: false };
+  return { event: settled.event, cappedByCi: false };
+}
+function lastSentRow(db, repository, pull, head) {
+  const rows = db.prepare(
+    `SELECT metadata_json FROM audit_events
+       WHERE action = 'review_post_sent' AND subject_id = ?
+       ORDER BY created_at DESC, rowid DESC`
+  ).all(`${repository.toLowerCase()}#${pull}`);
+  for (const row of rows) {
+    let meta;
+    try {
+      meta = JSON.parse(row.metadata_json);
+    } catch {
+      continue;
+    }
+    if (typeof meta["head"] !== "string" || meta["head"].toLowerCase() !== head.toLowerCase()) continue;
+    const event = typeof meta["event"] === "string" ? meta["event"] : null;
+    return { event, cappedByCi: event === "COMMENT" && (meta["cappedByCi"] === true || meta["cappedBy"] === "ci") };
+  }
+  return null;
+}
+
+// plugins/review-voice/src/queue/queue.ts
+var SOURCE_ORDER = ["requested", "assigned", "team", "follow-up", "dismissed"];
+var MAX_REVIEWS = 1e3;
+var lower = (value) => value.toLowerCase();
+function reviewsOf(client, repository, pull) {
+  return client.paginate(`/repos/${repository}/pulls/${pull}/reviews?per_page=100`, MAX_REVIEWS);
+}
+async function buildQueue(deps) {
+  const { client, db, config: config2, me } = deps;
+  const candidates = /* @__PURE__ */ new Map();
+  let outsideAllowlist = 0;
+  let truncated = false;
+  const add = (repository, pull, source) => {
+    const key2 = `${lower(repository)}#${pull}`;
+    let candidate = candidates.get(key2);
+    if (candidate === void 0) {
+      candidate = { repository, pull, sources: /* @__PURE__ */ new Set() };
+      candidates.set(key2, candidate);
+    }
+    candidate.sources.add(source);
+    return candidate;
+  };
+  const search = async (source) => {
+    const result = await client.searchPullRequests(source);
+    outsideAllowlist += result.outsideAllowlist;
+    truncated ||= result.truncated;
+    return result.pullRequests;
+  };
+  const enabled2 = new Set(config2.sources);
+  if (enabled2.has("requested")) for (const pr of await search("requested")) add(pr.repository, pr.number, "requested");
+  if (enabled2.has("assigned")) for (const pr of await search("assigned")) add(pr.repository, pr.number, "assigned");
+  if (enabled2.has("team")) {
+    for (const team of config2.teams) {
+      for (const pr of await search(`team:${team}`)) add(pr.repository, pr.number, "team");
+    }
+  }
+  if (enabled2.has("dismissed")) {
+    for (const pr of await search("reviewed")) {
+      if (await latestOwnReviewDismissed(client, pr.repository, pr.number, me)) add(pr.repository, pr.number, "dismissed");
+    }
+  }
+  if (enabled2.has("follow-up")) {
+    const since = new Date(deps.now.getTime() - config2.followUpDays * 864e5).toISOString();
+    for (const recent of recentlyReviewedPulls(db, since)) {
+      if (!client.allows(recent.repository)) continue;
+      add(recent.repository, recent.pull, "follow-up").followUpFrom = recent.head;
+    }
+  }
+  const listed = [];
+  for (const candidate of candidates.values()) {
+    const entry = await classify2(deps, candidate);
+    if (entry !== null) listed.push(entry);
+  }
+  listed.sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.repository.localeCompare(b.repository) || a.pull - b.pull
+  );
+  const entries = [];
+  const notReached = [];
+  let reviews = 0;
+  for (const entry of listed) {
+    if (entry.action.kind === "review") {
+      if (reviews >= config2.maxPerPass) {
+        notReached.push(entry);
+        continue;
+      }
+      reviews += 1;
+    }
+    entries.push(entry);
+  }
+  return { entries, notReached, outsideAllowlist, truncated };
+}
+async function latestOwnReviewDismissed(client, repository, pull, me) {
+  const own = (await reviewsOf(client, repository, pull)).filter(
+    (review2) => lower(review2.user?.login ?? "") === lower(me) && review2.state !== "PENDING"
+  );
+  return own.at(-1)?.state === "DISMISSED";
+}
+async function classify2(deps, candidate) {
+  const { client, db } = deps;
+  const { data: pull } = await client.get(`/repos/${candidate.repository}/pulls/${candidate.pull}`);
+  const head = pull.head?.sha;
+  if (pull.state !== "open" || typeof head !== "string" || head.length === 0) return null;
+  if (candidate.followUpFrom !== void 0 && lower(candidate.followUpFrom) === lower(head)) {
+    candidate.sources.delete("follow-up");
+    if (candidate.sources.size === 0) return null;
+  }
+  const sources = SOURCE_ORDER.filter((source) => candidate.sources.has(source));
+  const sent = lastSentAtHead(db, candidate.repository, candidate.pull, head, deps.maxAttemptsPerHead);
+  if (sent !== null && !sent.cappedByCi) return null;
+  const author = pull.user?.login ?? "";
+  const entry = (action) => ({
+    repository: candidate.repository,
+    pull: candidate.pull,
+    head,
+    author,
+    sources,
+    action,
+    createdAt: pull.created_at ?? ""
+  });
+  const rule = await skipRule(deps, candidate, pull, head, sources);
+  if (rule !== null) return entry({ kind: "skip", rule });
+  if (sent !== null) return entry({ kind: "recheck-ci" });
+  if (runRecordedAtHead(db, candidate.repository, candidate.pull, head)) return entry({ kind: "verdict-only" });
+  return entry({ kind: "review" });
+}
+async function skipRule(deps, candidate, pull, head, sources) {
+  const { client, me } = deps;
+  const skip2 = deps.config.skip;
+  const author = lower(pull.user?.login ?? "");
+  if (author === lower(me)) return "own";
+  if (skip2.drafts && pull.draft === true) return "drafts";
+  if (skip2.authors.some((login) => lower(login) === author)) return "authors";
+  const botLike = lower(pull.user?.type ?? "") === "bot" || skip2.authorPatterns.some((pattern) => new RegExp(pattern, "i").test(author));
+  if (botLike && !(skip2.allowBotsWhenRequested && sources.includes("requested"))) return "author_patterns";
+  const assignees = (pull.assignees ?? []).map((assignee) => lower(assignee.login ?? ""));
+  if (skip2.assignedTo.some((login) => assignees.includes(lower(login)))) return "assigned_to";
+  const approvers = skip2.approvedAtHeadBy.logins.map(lower);
+  if (approvers.length > 0 && sources.some((source) => skip2.approvedAtHeadBy.sources.includes(source))) {
+    const standing = /* @__PURE__ */ new Map();
+    for (const review2 of await reviewsOf(client, candidate.repository, candidate.pull)) {
+      const login = lower(review2.user?.login ?? "");
+      if (approvers.includes(login) && review2.state !== "PENDING" && review2.state !== "COMMENTED") standing.set(login, review2);
+    }
+    const approved = [...standing.values()].some(
+      (review2) => review2.state === "APPROVED" && lower(review2.commit_id ?? "") === lower(head)
+    );
+    if (approved) return "approved_at_head_by";
+  }
+  return null;
+}
+
+// plugins/review-voice/src/queue/command.ts
+var LABEL = {
+  review: "REVIEW",
+  "verdict-only": "VERDICT-ONLY",
+  "recheck-ci": "RECHECK-CI",
+  skip: "SKIP"
+};
+function line2(entry) {
+  const rule = entry.action.kind === "skip" ? ` (${entry.action.rule})` : "";
+  return `${LABEL[entry.action.kind]} ${entry.repository}#${entry.pull} ${entry.head.slice(0, 7)} @${entry.author} [${entry.sources.join(", ")}]${rule}`;
+}
+function renderQueue(result) {
+  return [
+    ...result.entries.map(line2),
+    `${result.entries.length} listed, ${result.notReached.length} not reached, ${result.outsideAllowlist} outside the allowlist, truncated: ${result.truncated ? "yes" : "no"}`
+  ].join("\n");
+}
+function renderSettled(heads) {
+  return [
+    ...heads.map(
+      (head) => `${head.status.toUpperCase()} ${head.repository}#${head.pull} ${head.head.slice(0, 7)}` + (isFailure2(head.status) ? ` (${head.attempts} attempts)` : "") + (head.detail === null ? "" : ` ${head.detail}`)
+    ),
+    `${heads.length} left for a person`
+  ].join("\n");
+}
+async function queueCommand(argv, deps) {
+  const sources = [];
+  for (const [index, arg] of argv.entries()) {
+    if (arg !== "--source") continue;
+    const value = argv[index + 1];
+    if (value === void 0 || !QUEUE_SOURCES.includes(value)) {
+      deps.err(`--source takes one of ${QUEUE_SOURCES.join(", ")}.`);
+      return 2;
+    }
+    sources.push(value);
+  }
+  let max;
+  const maxIndex = argv.indexOf("--max");
+  if (maxIndex !== -1) {
+    max = Number(argv[maxIndex + 1]);
+    if (!Number.isInteger(max) || max <= 0) {
+      deps.err("--max takes a whole number above zero.");
+      return 2;
+    }
+  }
+  const config2 = deps.config;
+  for (const warning of config2?.warnings ?? []) deps.err(`Warning: ${warning}`);
+  const maxAttemptsPerHead = config2?.watch?.maxAttemptsPerHead ?? 2;
+  if (argv.includes("--settled")) {
+    const db2 = deps.openDb();
+    try {
+      const heads = settledHeads(db2, maxAttemptsPerHead);
+      deps.out(argv.includes("--json") ? JSON.stringify(heads, null, 2) : renderSettled(heads));
+      return 0;
+    } finally {
+      db2.close();
+    }
+  }
+  if (config2 === null || config2.allowlist.length === 0) {
+    deps.err("No repositories are allowlisted. Run /review-voice:init first.");
+    return 2;
+  }
+  const queue = {
+    ...config2.queue,
+    // Teams turn the team search on whether or not `team` is listed; an
+    // explicit --source list is taken as it is.
+    sources: sources.length > 0 ? [...new Set(sources)] : [.../* @__PURE__ */ new Set([...config2.queue.sources, ...config2.queue.teams.length > 0 ? ["team"] : []])],
+    maxPerPass: max ?? config2.queue.maxPerPass
+  };
+  if (sources.includes("team") && queue.teams.length === 0) {
+    deps.err("--source team needs queue.teams in the config.");
+    return 2;
+  }
+  const client = deps.client(config2.allowlist);
+  const { data: viewer } = await client.get("/user");
+  if (typeof viewer?.login !== "string" || viewer.login.length === 0) {
+    deps.err("Could not read the authenticated GitHub user.");
+    return 1;
+  }
+  const db = deps.openDb();
+  try {
+    const result = await buildQueue({ client, db, config: queue, me: viewer.login, now: deps.now, maxAttemptsPerHead });
+    deps.out(argv.includes("--json") ? JSON.stringify(result, null, 2) : renderQueue(result));
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+// plugins/review-voice/src/watch/command.ts
+import { closeSync, constants as constants2, fsyncSync, mkdirSync as mkdirSync4, openSync, readFileSync as readFileSync7, renameSync as renameSync2, unlinkSync as unlinkSync4, writeSync } from "node:fs";
+import { join as join11 } from "node:path";
+
+// plugins/review-voice/src/github/writer.ts
+var WriteViolation = class extends Error {
+};
+var REVIEW_EVENTS = ["APPROVE", "COMMENT", "REQUEST_CHANGES"];
+var REVIEW_PATH = /^\/repos\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)\/pulls\/([1-9][0-9]*)\/reviews$/;
+var SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+var ReviewWriter = class {
+  allowlist;
+  baseUrl;
+  doFetch;
+  token;
+  constructor(options) {
+    this.allowlist = new Set(options.allowlist.map((name) => name.toLowerCase()));
+    this.baseUrl = options.baseUrl ?? "https://api.github.com";
+    this.doFetch = options.fetchImpl ?? fetch;
+    this.token = options.token ?? null;
+  }
+  /** Submits a review with its event in one request. Never a pending review. */
+  async submitReview(repository, pullNumber, payload) {
+    if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+      throw new WriteViolation(`Refused a review on pull request ${String(pullNumber)}: not a pull request number.`);
+    }
+    assertPayload(payload);
+    const data = await this.request("POST", `/repos/${repository}/pulls/${pullNumber}/reviews`, payload);
+    const record3 = typeof data === "object" && data !== null ? data : {};
+    return {
+      id: typeof record3["id"] === "number" ? record3["id"] : null,
+      htmlUrl: typeof record3["html_url"] === "string" ? record3["html_url"] : null,
+      state: typeof record3["state"] === "string" ? record3["state"] : null
+    };
+  }
+  /**
+   * Every request goes through here, and here admits one method and one path.
+   * Public so the refusal can be tested directly rather than inferred.
+   */
+  async request(method, path, body) {
+    if (method !== "POST") {
+      throw new WriteViolation(`Review Voice writes one thing; refused a ${method} to ${path}.`);
+    }
+    const match = REVIEW_PATH.exec(path);
+    if (match === null) {
+      throw new WriteViolation(`Review Voice writes one thing; refused a POST to ${path}.`);
+    }
+    const repository = `${match[1]}/${match[2]}`;
+    if (!this.allowlist.has(repository.toLowerCase())) {
+      throw new NotAllowlisted(`${repository} is not a repository this writer may post to.`);
+    }
+    const response = await this.doFetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${this.token ??= githubToken()}`,
+        "content-type": "application/json",
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "review-voice"
+      },
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      throw new GitHubError(
+        `GitHub returned ${response.status} for ${path}: ${(await response.text()).slice(0, 300)}`,
+        response.status
+      );
+    }
+    try {
+      return await response.json();
+    } catch {
+      return null;
+    }
+  }
+};
+function assertPayload(payload) {
+  if (!REVIEW_EVENTS.includes(payload.event)) {
+    throw new WriteViolation(`Refused a review with event ${String(payload.event)}; it must be one of ${REVIEW_EVENTS.join(", ")}.`);
+  }
+  if (typeof payload.commit_id !== "string" || !SHA.test(payload.commit_id)) {
+    throw new WriteViolation("Refused a review without the full commit it was written against.");
+  }
+  if (typeof payload.body !== "string") {
+    throw new WriteViolation("Refused a review without a body.");
+  }
+  if (!Array.isArray(payload.comments)) {
+    throw new WriteViolation("Refused a review whose comments are not a list.");
+  }
+  for (const comment of payload.comments) {
+    if (typeof comment.path !== "string" || comment.path.length === 0 || !Number.isInteger(comment.line) || comment.line < 1 || comment.side !== "RIGHT" || typeof comment.body !== "string" || comment.body.length === 0) {
+      throw new WriteViolation("Refused a review with a comment that is not anchored to a line.");
+    }
+    if ((comment.start_line !== void 0 || comment.start_side !== void 0) && (!Number.isInteger(comment.start_line) || comment.start_line < 1 || comment.start_line > comment.line || comment.start_side !== "RIGHT")) {
+      throw new WriteViolation("Refused a review with a comment whose range does not end at its line on the new side.");
+    }
+  }
+  const keys = Object.keys(payload).sort().join(",");
+  if (keys !== "body,comments,commit_id,event") {
+    throw new WriteViolation(`Refused a review with unexpected fields: ${keys}.`);
+  }
+}
+
+// plugins/review-voice/src/diff/thread.ts
+var MAX_COMMENTS = 300;
+function clean(body, author) {
+  if (body === void 0 || body.trim().length === 0) return null;
+  return { body: redact(stripEvidenceBlock(body)).text, author: author ?? "unknown" };
+}
+async function readThread(options) {
+  const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
+  const comments = [];
+  const pull = await client.get(
+    `/repos/${options.repository}/pulls/${options.pullNumber}`
+  );
+  const description = clean(pull.data.body ?? void 0, pull.data.user?.login);
+  if (description !== null) {
+    comments.push({ path: null, line: null, author: description.author, body: description.body, kind: "description" });
+  }
+  const inline = await client.paginate(
+    `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,
+    MAX_COMMENTS
+  );
+  const warnings = [];
+  let states = /* @__PURE__ */ new Map();
+  if (inline.length > 0) {
+    try {
+      states = await readThreadStates(client, options.repository, options.pullNumber);
+    } catch (error) {
+      warnings.push(
+        `Could not read which review threads are resolved (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing with the REST data, so no comment is marked resolved.`
+      );
+    }
+  }
+  for (const raw of inline) {
+    const kept = clean(raw.body, raw.user?.login);
+    if (kept === null) continue;
+    const state = typeof raw.id === "number" ? states.get(raw.id) : void 0;
+    const outdated = (raw.line ?? null) === null && (raw.original_line ?? null) !== null || state?.outdated === true;
+    comments.push({
+      path: raw.path ?? null,
+      line: raw.line ?? raw.original_line ?? null,
+      author: kept.author,
+      body: kept.body,
+      kind: "review-comment",
+      ...outdated ? { outdated: true } : {},
+      ...typeof raw.id === "number" ? { id: raw.id } : {},
+      ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
+      ...typeof raw.pull_request_review_id === "number" ? { reviewId: raw.pull_request_review_id } : {},
+      ...typeof raw.in_reply_to_id === "number" ? { inReplyTo: raw.in_reply_to_id } : {},
+      ...state?.resolved === true ? { resolved: true } : {},
+      ...state?.resolved === true && state.resolvedBy !== null ? { resolvedBy: state.resolvedBy } : {},
+      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
+    });
+  }
+  const reviews = await client.paginate(
+    `/repos/${options.repository}/pulls/${options.pullNumber}/reviews?per_page=100`,
+    MAX_COMMENTS
+  );
+  const threadReviews = [];
+  for (const raw of reviews) {
+    if (typeof raw.id === "number") {
+      threadReviews.push({
+        id: raw.id,
+        author: raw.user?.login ?? "unknown",
+        state: raw.state ?? "UNKNOWN",
+        ...typeof raw.submitted_at === "string" ? { submittedAt: raw.submitted_at } : {}
+      });
+    }
+    const kept = clean(raw.body, raw.user?.login);
+    if (kept === null) continue;
+    comments.push({
+      path: null,
+      line: null,
+      author: kept.author,
+      body: kept.body,
+      kind: "review-body",
+      ...typeof raw.submitted_at === "string" ? { createdAt: raw.submitted_at } : {},
+      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
+    });
+  }
+  if (threadReviews.some((review2) => review2.state === "DISMISSED")) {
+    try {
+      const events = await client.paginate(
+        `/repos/${options.repository}/issues/${options.pullNumber}/events?per_page=100`,
+        MAX_COMMENTS
+      );
+      for (const event of events) {
+        const dismissed = event.event === "review_dismissed" ? event.dismissed_review : null;
+        if (typeof dismissed?.review_id !== "number") continue;
+        const message = clean(dismissed.dismissal_message ?? void 0, void 0);
+        const review2 = threadReviews.find((candidate) => candidate.id === dismissed.review_id);
+        if (review2 !== void 0 && message !== null) review2.dismissalMessage = message.body;
+      }
+    } catch (error) {
+      warnings.push(
+        `Could not read why a review was dismissed (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing, so no dismissal message is recorded.`
+      );
+    }
+  }
+  const conversation = await client.paginate(
+    `/repos/${options.repository}/issues/${options.pullNumber}/comments?per_page=100`,
+    MAX_COMMENTS
+  );
+  for (const raw of conversation) {
+    const kept = clean(raw.body, raw.user?.login);
+    if (kept === null) continue;
+    comments.push({
+      path: null,
+      line: null,
+      author: kept.author,
+      body: kept.body,
+      kind: "conversation",
+      ...typeof raw.created_at === "string" ? { createdAt: raw.created_at } : {},
+      ...typeof raw.html_url === "string" ? { url: raw.html_url } : {}
+    });
+  }
+  return {
+    repository: options.repository,
+    pullNumber: options.pullNumber,
+    comments,
+    reviews: threadReviews,
+    truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
+    ...warnings.length > 0 ? { warnings } : {}
+  };
+}
+async function readThreadStates(client, repository, pullNumber) {
+  const states = /* @__PURE__ */ new Map();
+  let cursor = null;
+  for (let read = 0; read < MAX_COMMENTS; read += 100) {
+    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
+    const threads = data?.repository?.pullRequest?.reviewThreads;
+    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
+    for (const thread of threads.nodes) {
+      const state = {
+        resolved: thread?.isResolved === true,
+        outdated: thread?.isOutdated === true,
+        resolvedBy: typeof thread?.resolvedBy?.login === "string" ? thread.resolvedBy.login : null
+      };
+      for (const comment of thread?.comments?.nodes ?? []) {
+        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
+      }
+    }
+    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
+    cursor = threads.pageInfo.endCursor;
+  }
+  return states;
+}
+
 // plugins/review-voice/src/evaluate/metrics.ts
 function percentile(values, p) {
   if (values.length === 0) return null;
@@ -16320,6 +16618,7 @@ function computeMetrics(db, options = {}) {
   const posted = postedStats(db);
   const recent = postedStats(db, { since: windowStart(windowDays, options.now) });
   const recentDecided = recent.fixed + recent.dismissed;
+  const approvals = approvalStats(db);
   const metric = (name, value, target, meets, basis, kind = "gate") => ({
     name,
     value,
@@ -16495,7 +16794,20 @@ function computeMetrics(db, options = {}) {
       () => true,
       `${recent.dismissed} dismissed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
       "goal"
-    )
+    ),
+    // What became of the approvals this tool sent (docs/adr/0034). Settled
+    // means strong: a revert or a request for changes against a merge that
+    // outlived the window. Pending and weak rows are counted and left out, so a
+    // merge the window has not closed on is never a survival.
+    metric(
+      "approvals_tracked",
+      approvals.tracked === 0 ? null : approvals.tracked,
+      "no target",
+      () => true,
+      "sent approvals with a recorded outcome; run `review-voice outcomes --approvals` to check",
+      "goal"
+    ),
+    metric("approval_escape_rate", approvals.rate, "no target", () => true, approvalBasis(approvals), "goal")
   ];
 }
 var AGREEMENT_LINE_TOLERANCE = 3;
@@ -17491,7 +17803,7 @@ async function runPass(options, json2) {
       const event = row.event === null ? "" : ` ${row.event}`;
       lines2.push(`${summary}${event} (${row.status} ${row.reviewUrl ?? row.detail ?? ""})`.replace(/ \)$/, ")"));
     }
-    const followed = await followOutcomes(client, db, deps, config2.ownerReviewer);
+    const followed = await followOutcomes(client, db, deps, config2.ownerReviewer, config2.outcomes?.approvalWindowDays);
     const swept = sweepRetention(db, config2, deps);
     if (json2) {
       deps.out(JSON.stringify(rows, null, 2));
@@ -17616,17 +17928,24 @@ async function verdict(options, client, db, entry, recheck) {
   const status = waiting(sent.exitCode) ?? "failed";
   return { row: { ...base, event: output.event, status, detail: result.reasons.join("; ") || `post exited ${sent.exitCode}` } };
 }
-async function followOutcomes(client, db, deps, ownerReviewer) {
+async function followOutcomes(client, db, deps, ownerReviewer, approvalWindowDays) {
   const weekAgo = new Date(deps.now().getTime() - OUTCOME_DAYS * 864e5).toISOString();
   const pulls = recentlySentPulls(db, weekAgo, OUTCOME_PULLS);
-  if (pulls.length === 0) return 0;
   const since = pulls.length === OUTCOME_PULLS ? pulls.at(-1).sentAt : weekAgo;
   const allowlist = [...new Set(pulls.map((pull) => pull.repository).filter((repository) => client.allows(repository)))];
+  if (pulls.length > 0) {
+    try {
+      const result = await checkOutcomes({ db, client, allowlist, since, now: deps.now, ownerReviewer });
+      for (const warning of result.warnings) deps.err(warning);
+    } catch (error) {
+      deps.err(`Outcomes were not followed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   try {
-    const result = await checkOutcomes({ db, client, allowlist, since, now: deps.now, ownerReviewer });
+    const result = await checkApprovals({ db, client, since, windowDays: approvalWindowDays, now: deps.now });
     for (const warning of result.warnings) deps.err(warning);
   } catch (error) {
-    deps.err(`Outcomes were not followed: ${error instanceof Error ? error.message : String(error)}`);
+    deps.err(`Approvals were not followed: ${error instanceof Error ? error.message : String(error)}`);
   }
   return pulls.filter((pull) => allowlist.includes(pull.repository)).length;
 }
@@ -18339,7 +18658,8 @@ var COMMAND_HELP = {
       "  Report the evaluation metrics against their targets.",
       "",
       "Flags:",
-      "  --json                 Emit the metrics as JSON, with posted-finding outcomes by severity and lane",
+      "  --json                 Emit the metrics as JSON, with posted-finding outcomes by severity and lane and",
+      "                         approval outcomes by mode, complexity, independence and origin",
       "  --recall <results.json>  Also report the fixture recall figures from a file `review-voice recall` wrote",
       "  --since <Nd>           Window in days for posted_fixed_rate_recent and posted_dismissed_rate_recent (default 30d)",
       "Reads: nothing on stdin; the local store, and the results file with --recall.",
@@ -18377,13 +18697,20 @@ var COMMAND_HELP = {
       "  Reads GitHub and writes nothing there. `evaluate` reports precision from the strong ones.",
       "  A posted suggestion whose replacement now stands at the current head is fixed, strong,",
       '  with evidence "suggestion applied".',
+      "  With --approvals, follow each APPROVE Review Voice sent instead: reverted, changes_requested",
+      "  and survived are strong; merged_other_head, pending, closed, open and unknown are weak. A merge",
+      "  inside outcomes.approval_window_days (default 14) is pending, never survived.",
       "",
       "Flags:",
+      "  --approvals            Follow sent approvals rather than posted findings",
       "  --repository <name>    Only runs for owner/repo; naming it allows reading it",
-      "  --since <Nd>           Only reviews sent in the last N days (default 30d)",
-      "  --json                 Emit one row per finding as JSON",
+      "  --since <Nd>           Only reviews sent in the last N days (default 30d). With --approvals, an approval",
+      "                         not yet settled is checked whatever its age, and --since limits only which",
+      "                         settled ones are read again",
+      "  --json                 Emit one row per finding (or approval) as JSON",
       "Reads: the local store, the allowlist in the repository config, and GitHub comments, threads and commits,",
-      "  and for a finding with a suggestion, its file at the current head.",
+      "  and for a finding with a suggestion, its file at the current head; with --approvals, the pull request,",
+      "  its reviews and commits, and one search of the same repository for a revert.",
       "Writes: one line per finding and totals on stdout (JSON with --json); outcomes in the local store.",
       "Exit codes: 0 ok, 2 bad invocation."
     )
@@ -23216,6 +23543,7 @@ function executePurge(db, scope, runDirectories) {
       db.prepare("DELETE FROM review_runs").run();
       db.prepare("DELETE FROM feedback").run();
       db.prepare("DELETE FROM finding_outcomes").run();
+      db.prepare("DELETE FROM approval_outcomes").run();
     } else if (scope.repository !== void 0) {
       db.prepare("DELETE FROM sync_watermarks WHERE repository = ?").run(scope.repository);
     }
@@ -23549,11 +23877,18 @@ function evaluateCommand(argv) {
     const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
     if (argv.includes("--json")) {
       const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
+      const approvals = approvalBreakdown(db);
       console.log(
         JSON.stringify(
           {
             metrics,
             posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule, by_evidence_block: byEvidenceBlock },
+            approval_breakdown: {
+              by_mode: approvals.byMode,
+              by_complexity: approvals.byComplexity,
+              by_independence: approvals.byIndependence,
+              by_origin: approvals.byOrigin
+            },
             stage_seconds: stageSeconds(db)
           },
           null,
@@ -25689,8 +26024,8 @@ function normalisePath2(path) {
   return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
 }
 function headerPath4(raw) {
-  const field = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
-  const path = unquoteGitPath(field.trimEnd());
+  const field2 = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
+  const path = unquoteGitPath(field2.trimEnd());
   if (path === "/dev/null") return null;
   return normalisePath2(path.replace(/^[ab]\//, ""));
 }
@@ -27060,14 +27395,31 @@ async function outcomesCommand(argv) {
   const since = new Date(Date.now() - Number(days) * 864e5).toISOString();
   let allowlist = repository === null ? [] : [repository];
   let ownerReviewer = null;
+  let windowDays = DEFAULT_OUTCOMES.approvalWindowDays;
   try {
     const config2 = loadConfig(repositoryRoot(process.cwd()));
     ownerReviewer = config2.ownerReviewer;
+    windowDays = config2.outcomes.approvalWindowDays;
     if (repository === null) allowlist = config2.allowlist;
   } catch {
   }
   const db = openDatabase();
   try {
+    if (argv.includes("--approvals")) {
+      const result2 = await checkApprovals({ db, client: new GitHubClient({ allowlist }), repository: repository ?? void 0, since, windowDays });
+      for (const warning of result2.warnings) console.error(warning);
+      for (const skipped of result2.skipped) console.error(`${skipped.repository}#${skipped.pullNumber}: skipped, ${skipped.reason}`);
+      if (argv.includes("--json")) {
+        console.log(JSON.stringify(result2.outcomes.map((o) => ({ run: o.reviewRunId, repository: o.repository, pull: o.pullNumber, head: o.head, reviewId: o.reviewId, outcome: o.outcome, strength: o.strength, evidence: o.evidence, checkedAt: o.checkedAt })), null, 2));
+        return 0;
+      }
+      for (const o of result2.outcomes) console.log(`${o.repository}#${o.pullNumber} ${o.head.slice(0, 8)} ${o.outcome} (${o.strength}): ${o.evidence.summary}`);
+      const count4 = (name) => result2.outcomes.filter((o) => o.outcome === name).length;
+      console.log(
+        `${result2.outcomes.length} approval(s) tracked: ${count4("reverted")} reverted, ${count4("changes_requested")} changes requested, ${count4("survived")} survived, ${count4("merged_other_head")} merged at another head, ${count4("pending")} pending, ${count4("closed")} closed, ${count4("open")} open, ${count4("unknown")} unknown`
+      );
+      return 0;
+    }
     const result = await checkOutcomes({
       db,
       client: new GitHubClient({ allowlist }),
@@ -28106,9 +28458,11 @@ function statusCommand() {
     let allowlist = [];
     let maxRepositoryShare;
     let ownerReviewer = null;
+    let escapeWarn = DEFAULT_OUTCOMES.approvalEscapeWarn;
     try {
       const config2 = loadConfig(repositoryRoot(process.cwd()));
       ownerReviewer = config2.ownerReviewer;
+      escapeWarn = config2.outcomes.approvalEscapeWarn;
       allowlist = namedRepositories(config2.allowlist, "status");
       maxRepositoryShare = scaledRepositoryShare(allowlist.length);
     } catch {
@@ -28142,6 +28496,8 @@ function statusCommand() {
       windowDays: DEFAULT_WINDOW_DAYS
     });
     if (dismissalWarning !== null) console.log(dismissalWarning);
+    const approvalWarning = approvalEscapeWarning({ ...approvalStats(db), threshold: escapeWarn });
+    if (approvalWarning !== null) console.log(approvalWarning);
     if (last !== null) {
       const origin = lastDetail?.provenance == null ? "" : `; ${describeOrigin(lastDetail.provenance)}`;
       console.log(
@@ -28722,7 +29078,7 @@ function deletedFileCheck(argv) {
     try {
       const from = git6(["merge-base", base, head]).trim();
       const listing = git6(["diff", "--no-ext-diff", "--name-status", "-M", "-z", "--diff-filter=D", from, head]);
-      const fields = listing.split("\0").filter((field) => field !== "");
+      const fields = listing.split("\0").filter((field2) => field2 !== "");
       const paths = /* @__PURE__ */ new Set();
       for (let index = 0; index + 1 < fields.length; index += 2) if (fields[index] === "D") paths.add(fields[index + 1]);
       deleted = { from, paths };

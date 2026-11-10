@@ -5,6 +5,7 @@ import { countWords } from '../contract/words.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { hashDiff } from '../store/runs.ts';
 import { postedStats } from '../store/outcomes.ts';
+import { approvalBasis, approvalStats } from '../store/approvals.ts';
 
 export interface Metric {
   name: string;
@@ -313,6 +314,7 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
   const posted = postedStats(db);
   const recent = postedStats(db, { since: windowStart(windowDays, options.now) });
   const recentDecided = recent.fixed + recent.dismissed;
+  const approvals = approvalStats(db);
 
   const metric = (
     name: string,
@@ -502,6 +504,19 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
       `${recent.dismissed} dismissed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
       'goal',
     ),
+    // What became of the approvals this tool sent (docs/adr/0034). Settled
+    // means strong: a revert or a request for changes against a merge that
+    // outlived the window. Pending and weak rows are counted and left out, so a
+    // merge the window has not closed on is never a survival.
+    metric(
+      'approvals_tracked',
+      approvals.tracked === 0 ? null : approvals.tracked,
+      'no target',
+      () => true,
+      'sent approvals with a recorded outcome; run `review-voice outcomes --approvals` to check',
+      'goal',
+    ),
+    metric('approval_escape_rate', approvals.rate, 'no target', () => true, approvalBasis(approvals), 'goal'),
   ];
 }
 

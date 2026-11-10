@@ -312,6 +312,17 @@ retention:
   runs_days: 30                      # run directories hold the raw diff and thread
   audit_days: 180                    # posting records are kept until `purge`
 
+# How the approvals Review Voice sent are followed (docs/adr/0034). `watch`
+# checks them each pass and `outcomes --approvals` on demand; both read GitHub
+# only. The values below are the defaults.
+outcomes:
+  # A merge is `pending` until this many days after it; a revert or a request
+  # for changes inside the window is an escape, and a quiet window is `survived`.
+  approval_window_days: 14
+  # `status` prints one local warning when the escape rate's 95% upper bound
+  # is above this and at least 30 approvals are settled. Nothing is sent.
+  approval_escape_warn: 0.05
+
 writes:
   # Review Voice is read-only through v1. This exists so the setting is visible,
   # not because flipping it does anything yet.
