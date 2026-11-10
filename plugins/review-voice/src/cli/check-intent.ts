@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { descriptionOf, parseIntent } from '../intent.ts';
+import { descriptionOf, linkedIssuesOf, parseIntent } from '../intent.ts';
 import { readStdin, flag } from './shared.ts';
 
 /**
@@ -14,8 +14,11 @@ export function checkIntentCommand(argv: string[]): number {
     return 2;
   }
   let description: string | null;
+  let issues: ReturnType<typeof linkedIssuesOf>;
   try {
-    description = descriptionOf(JSON.parse(readFileSync(threadFile, 'utf8')) as unknown);
+    const thread = JSON.parse(readFileSync(threadFile, 'utf8')) as unknown;
+    description = descriptionOf(thread);
+    issues = linkedIssuesOf(thread);
   } catch (error) {
     console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -34,7 +37,7 @@ export function checkIntentCommand(argv: string[]): number {
     return 2;
   }
 
-  const intent = parseIntent(document, description);
+  const intent = parseIntent(document, description, issues);
   for (const problem of intent.dropped) console.error(`${intent.problem === null ? 'Dropped' : 'Invalid'} statement ${problem}.`);
   for (const note of intent.removed) console.error(`${note}.`);
   if (intent.problem !== null) {

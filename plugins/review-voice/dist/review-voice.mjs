@@ -9699,7 +9699,10 @@ var GitHubClient = class {
   }
   /**
    * `retryRateLimits: false` fails at once on a rate limit instead of waiting
-   * it out, for a read the caller can do without.
+   * it out, for a read the caller can do without. `followRedirects: false`
+   * makes a redirect fail the read: a transferred issue answers with a 301 to
+   * another repository, and following it would send the credential to a read
+   * the allowlist never checked.
    */
   async get(path, init = {}) {
     if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
@@ -9708,15 +9711,17 @@ var GitHubClient = class {
       );
     }
     this.assertAllowed(path);
-    return this.request(path, init.retryRateLimits !== false);
+    return this.request(path, init.retryRateLimits !== false, init.followRedirects !== false);
   }
   /** The GET itself, once the caller has checked the path. */
-  async request(path, retryRateLimits) {
+  async request(path, retryRateLimits, followRedirects = true) {
     const { url: resolved, apiPath } = this.resolve(path);
     const url = resolved.href;
     for (let attempt = 0; ; attempt += 1) {
       const response = await this.doFetch(url, {
         method: "GET",
+        // A 3xx then comes back as a non-ok response, which the check below refuses.
+        redirect: followRedirects ? "follow" : "manual",
         headers: {
           accept: "application/vnd.github+json",
           authorization: this.authorization(),
@@ -11671,6 +11676,8 @@ function scopeBlock(run, planned, policy) {
     symbolLine = checks.symbolsInconclusive === 0 ? "Symbol context: every changed file finished." : `Symbol context: ${plural2(checks.symbolsInconclusive, "file")} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}.`;
     if (checks.symbolsInconclusive > 0) notChecked.push("files the symbol search did not finish");
   }
+  const issuesRead = checks?.issuesRead ?? null;
+  const linkedLine = issuesRead === null || issuesRead.length === 0 ? null : `Linked issues: ${issuesRead.map((n) => code2(`#${n}`)).join(", ")} read for intent.`;
   const held = heldCounts(run.held);
   held.other += planned.held.length;
   const notPosted = [
@@ -11694,7 +11701,9 @@ function scopeBlock(run, planned, policy) {
     independence: provenance?.independence ?? null,
     findings,
     held,
-    checks: checks === null ? null : { ran: checks.staticRan.length, didNotRun: checks.staticDidNotRun.length }
+    checks: checks === null ? null : { ran: checks.staticRan.length, didNotRun: checks.staticDidNotRun.length },
+    // Null when not recorded, as `checks` is, so an unrecorded run shows no data and never a zero.
+    issues: issuesRead
   };
   const trailer = JSON.stringify(facts).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
   return [
@@ -11704,6 +11713,7 @@ function scopeBlock(run, planned, policy) {
     stagesLine,
     staticLine,
     symbolLine,
+    ...linkedLine === null ? [] : [linkedLine],
     `Not posted: ${notPosted.length === 0 ? "nothing held back" : notPosted.join(", ")}.`,
     `Not checked: ${notChecked.join(", ")}.`,
     "",
@@ -12906,6 +12916,7 @@ var CONFIG_KEYS = {
     "final_score_threshold",
     "lanes",
     "suggestions",
+    "linked_issues",
     "max_findings",
     "max_words_per_finding",
     "max_total_words"
@@ -13686,6 +13697,9 @@ function readConfigDocument(value, repositoryRoot2, result) {
     const suggestions = review2["suggestions"];
     if (typeof suggestions === "boolean") result.verdictPolicy.suggestions = suggestions;
     else if (suggestions !== void 0) result.warnings.push("review.suggestions must be true or false; using false.");
+    const linkedIssues = review2["linked_issues"];
+    if (typeof linkedIssues === "boolean") result.linkedIssues = linkedIssues;
+    else if (linkedIssues !== void 0) result.warnings.push("review.linked_issues must be true or false; using false.");
     result.layers.push({
       scope: { type: "repository", key: repositoryRoot2 },
       source: ".review-voice/config.yaml",
@@ -13723,6 +13737,7 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
     verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
     lanes: [DIFF_LANE],
     thresholds: {},
+    linkedIssues: false,
     layers: [],
     suppressions: [],
     activePolicyVersions: [],
@@ -15153,11 +15168,13 @@ function storedChecks(raw) {
     if (c === null || typeof c["name"] !== "string" || typeof c["reason"] !== "string") return null;
     didNot.push({ name: c["name"], reason: c["reason"] });
   }
+  const issuesRead = value["issuesRead"];
   return {
     staticRan: ran,
     staticDidNotRun: didNot,
     symbolsInconclusive: value["symbolsInconclusive"],
-    symbolsBudgetExhausted: value["symbolsBudgetExhausted"]
+    symbolsBudgetExhausted: value["symbolsBudgetExhausted"],
+    ...Array.isArray(issuesRead) ? { issuesRead: issuesRead.filter((n) => Number.isInteger(n)) } : {}
   };
 }
 function describeChecks(checks) {
@@ -15166,7 +15183,8 @@ function describeChecks(checks) {
   const didNot = checks.staticDidNotRun.map((c) => `${c.name} did not run (${c.reason})`);
   const staticParts = [...ran, ...didNot];
   const symbols = checks.symbolsInconclusive === 0 ? "every symbol file finished" : `${checks.symbolsInconclusive} symbol file${checks.symbolsInconclusive === 1 ? "" : "s"} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}`;
-  return `Checks ${staticParts.length === 0 ? "no static checks" : staticParts.join("; ")}; ${symbols}`;
+  const issues = checks.issuesRead === void 0 ? "" : `; linked issues ${checks.issuesRead.length === 0 ? "none" : checks.issuesRead.map((n) => `#${n}`).join(", ")}`;
+  return `Checks ${staticParts.length === 0 ? "no static checks" : staticParts.join("; ")}; ${symbols}${issues}`;
 }
 var basename4 = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
 function attribute(finding, hints, taken) {
@@ -15567,6 +15585,36 @@ function assertPayload(payload) {
 
 // plugins/review-voice/src/diff/thread.ts
 var MAX_COMMENTS = 300;
+var MAX_LINKED_ISSUES = 5;
+var MAX_ISSUE_BODY = 1e4;
+var cappedBody = (body) => {
+  if (body.length <= MAX_ISSUE_BODY) return body;
+  const cut2 = body.slice(0, MAX_ISSUE_BODY);
+  const paragraph = cut2.lastIndexOf("\n\n");
+  if (paragraph !== -1) return cut2.slice(0, paragraph);
+  const line3 = cut2.lastIndexOf("\n");
+  if (line3 !== -1) return cut2.slice(0, line3);
+  const sentence = [...cut2.matchAll(/[.!?](?=\s)/gu)].at(-1);
+  return sentence === void 0 ? "" : cut2.slice(0, sentence.index + 1);
+};
+var CLOSING_REFERENCE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)|([\w.-]+\/[\w.-]+)#(\d+)|#(\d+))\b/giu;
+function closingReferences(description, repository) {
+  const numbers = [];
+  const beyond = [];
+  const skipped = [];
+  for (const match of description.matchAll(CLOSING_REFERENCE)) {
+    const [, text4, urlRepository, urlNumber, shortRepository, shortNumber, bareNumber] = match;
+    const named = urlRepository ?? shortRepository;
+    if (named !== void 0 && named.toLowerCase() !== repository.toLowerCase()) {
+      skipped.push(text4);
+      continue;
+    }
+    const number = Number(urlNumber ?? shortNumber ?? bareNumber);
+    if (numbers.includes(number) || beyond.includes(number)) continue;
+    (numbers.length < MAX_LINKED_ISSUES ? numbers : beyond).push(number);
+  }
+  return { numbers, beyond, skipped };
+}
 function clean(body, author) {
   if (body === void 0 || body.trim().length === 0) return null;
   return { body: redact(stripEvidenceBlock(body)).text, author: author ?? "unknown" };
@@ -15581,11 +15629,42 @@ async function readThread(options) {
   if (description !== null) {
     comments.push({ path: null, line: null, author: description.author, body: description.body, kind: "description" });
   }
+  const warnings = [];
+  const linkedIssues = [];
+  if (options.linkedIssues === true) {
+    const references = closingReferences(description?.body ?? "", options.repository);
+    for (const text4 of references.skipped) warnings.push(`Skipped ${text4}: a linked issue outside ${options.repository} is not read.`);
+    if (references.beyond.length > 0) {
+      warnings.push(`Read the first ${MAX_LINKED_ISSUES} linked issues; not read: ${references.beyond.map((n) => `#${n}`).join(", ")}.`);
+    }
+    for (const number of references.numbers) {
+      try {
+        const { data } = await client.get(`/repos/${options.repository}/issues/${number}`, { retryRateLimits: false, followRedirects: false });
+        if (data.number !== number || !(data.repository_url ?? "").toLowerCase().endsWith(`/repos/${options.repository}`.toLowerCase())) {
+          warnings.push(`Could not read issue #${number} (GitHub answered for another issue or repository); continuing without it.`);
+          continue;
+        }
+        if (data.pull_request !== void 0) continue;
+        const body = redact(data.body ?? "").text;
+        linkedIssues.push({
+          number,
+          title: redact(data.title ?? "").text,
+          body: cappedBody(body),
+          state: data.state ?? "unknown",
+          url: data.html_url ?? "",
+          ...body.length > MAX_ISSUE_BODY ? { truncated: true } : {}
+        });
+      } catch (error) {
+        warnings.push(
+          `Could not read issue #${number} (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing without it.`
+        );
+      }
+    }
+  }
   const inline = await client.paginate(
     `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,
     MAX_COMMENTS
   );
-  const warnings = [];
   let states = /* @__PURE__ */ new Map();
   if (inline.length > 0) {
     try {
@@ -15684,6 +15763,8 @@ async function readThread(options) {
     pullNumber: options.pullNumber,
     comments,
     reviews: threadReviews,
+    // Absent when the option is off, so every existing reader of a thread file sees what it saw before.
+    ...options.linkedIssues === true ? { linkedIssues } : {},
     truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
     ...warnings.length > 0 ? { warnings } : {}
   };
@@ -17932,6 +18013,7 @@ var COMMAND_HELP = {
       "  --pr <number>          Pull request whose existing comments to read (required)",
       "  --repository <name>    owner/repo; inferred from the git remote if absent",
       "  --out <path>           Write <path> or <dir>/thread.json instead of stdout",
+      "With review.linked_issues: true, also reads the same-repository issues the description closes (at most five) as linkedIssues.",
       "Reads: nothing on stdin (reads GitHub, read-only).",
       "Writes: JSON on stdout, or to --out.",
       "Exit codes: 0 ok, 2 bad invocation, missing credential or repository not allowlisted."
@@ -19857,10 +19939,11 @@ function answeredHeading(quote2, sentences) {
   };
   return (sentences.sections.find(matches) ?? sentences.answers.find(matches))?.heading ?? null;
 }
-function excerptOf(value, sentences, name, id, notes) {
+var whereOf = (source) => source.issue === null ? "the description" : `issue #${source.issue}`;
+function excerptOf(value, sentences, name, id, notes, where) {
   const problem = excerptProblem(value, sentences, name);
   if (problem === null) {
-    if (isShort(value)) notes.push(`Kept ${name.split(".").pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole sentence of the description`);
+    if (isShort(value)) notes.push(`Kept ${name.split(".").pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole sentence of ${where}`);
     return { value, problem: null };
   }
   if (!problem.endsWith("not part of one")) return { value: null, problem };
@@ -19868,6 +19951,17 @@ function excerptOf(value, sentences, name, id, notes) {
   if (widened === null || excerptProblem(widened, sentences, name) !== null) return { value: null, problem };
   notes.push(`Widened ${name.split(".").pop()} of ${id} to its whole sentence`);
   return { value: widened, problem: null };
+}
+function quoteFrom(value, sources, name, id, notes) {
+  let problem = null;
+  const notFound = `${name} does not occur in the pull request description`;
+  for (const source of sources) {
+    const answered = answeredHeading(value, source.sentences);
+    const quote2 = answered === null ? excerptOf(value, source.sentences, name, id, notes, whereOf(source)) : { value, problem: null };
+    if (quote2.problem === null) return { value: quote2.value, source, answered, problem: null };
+    if (problem === null && quote2.problem !== notFound) problem = quote2.problem;
+  }
+  return { value: null, problem: problem ?? `${notFound}${sources.length > 1 ? " or in a linked issue" : ""}` };
 }
 function text2(value, name, max = MAX_TEXT2) {
   if (typeof value !== "string" || value.trim().length === 0) return { value: null, problem: `${name} must be non-empty text` };
@@ -19880,14 +19974,22 @@ function descriptionOf(thread) {
   const bodies = comments.filter((comment) => comment?.kind === "description").map((comment) => comment.body).filter((body) => typeof body === "string");
   return bodies.length === 0 ? null : bodies.join("\n");
 }
-function statementOf(rawEntry, at2, sentences, removed) {
+function linkedIssuesOf(thread) {
+  const issues = thread?.linkedIssues;
+  if (!Array.isArray(issues)) return [];
+  return issues.flatMap((issue) => {
+    const { number, body } = issue ?? {};
+    return Number.isInteger(number) && typeof body === "string" ? [{ number, body }] : [];
+  });
+}
+function statementOf(rawEntry, at2, sources, removed) {
   if (typeof rawEntry !== "object" || rawEntry === null || Array.isArray(rawEntry)) {
     return { value: null, problem: `${at2} must be an object` };
   }
   const entry = Object.fromEntries(
     Object.entries(rawEntry).filter(([key2, value]) => !(value === null && (key2 === "reason" || key2 === "scope")))
   );
-  const unexpected = Object.keys(entry).find((key2) => !["id", "kind", "statement", "quote", "reason", "scope", "heading"].includes(key2));
+  const unexpected = Object.keys(entry).find((key2) => !["id", "kind", "statement", "quote", "reason", "scope", "heading", "issue"].includes(key2));
   if (unexpected !== void 0) return { value: null, problem: `${at2} has an unexpected ${JSON.stringify(unexpected)} field` };
   const id = entry["id"];
   if (typeof id !== "string" || !ID.test(id)) return { value: null, problem: `${at2}.id must match int_NNN` };
@@ -19899,10 +20001,10 @@ function statementOf(rawEntry, at2, sentences, removed) {
   if (statement.problem !== null) return { value: null, problem: statement.problem };
   const rawQuote = text2(entry["quote"], `${at2}.quote`, MAX_QUOTE);
   if (rawQuote.problem !== null) return { value: null, problem: rawQuote.problem };
-  const answered = answeredHeading(rawQuote.value, sentences);
-  const quote2 = answered === null ? excerptOf(rawQuote.value, sentences, `${at2}.quote`, id, removed) : rawQuote;
+  const quote2 = quoteFrom(rawQuote.value, sources, `${at2}.quote`, id, removed);
   if (quote2.problem !== null) return { value: null, problem: quote2.problem };
-  const heading = answered ?? (isShort(quote2.value) ? sectionHeading(quote2.value, sentences) : null);
+  const { source, answered } = quote2;
+  const heading = answered ?? (isShort(quote2.value) ? sectionHeading(quote2.value, source.sentences) : null);
   if (kind !== "non-goal") {
     const quoted = significantWords(answered === null ? quote2.value : `${answered} ${quote2.value}`);
     if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
@@ -19913,8 +20015,11 @@ function statementOf(rawEntry, at2, sentences, removed) {
   if (kind === "deliberate") {
     const parsed2 = text2(entry["reason"], `${at2}.reason`, MAX_QUOTE);
     if (parsed2.problem !== null) return { value: null, problem: `${parsed2.problem} on a deliberate statement` };
-    const excerpt = excerptOf(parsed2.value, sentences, `${at2}.reason`, id, removed);
-    if (excerpt.problem !== null) return { value: null, problem: excerpt.problem };
+    const excerpt = excerptOf(parsed2.value, source.sentences, `${at2}.reason`, id, removed, whereOf(source));
+    if (excerpt.problem !== null) {
+      const elsewhere = sources.some((other) => other !== source && excerptOf(parsed2.value, other.sentences, "", id, [], "").problem === null);
+      return { value: null, problem: elsewhere ? `${at2}.reason must be in the same source as its quote` : excerpt.problem };
+    }
     reason2 = excerpt.value;
   } else if (entry["reason"] !== void 0) {
     removed.push(`Removed reason from ${id} (only a deliberate statement takes reason)`);
@@ -19929,12 +20034,13 @@ function statementOf(rawEntry, at2, sentences, removed) {
       quote: quote2.value,
       ...reason2 === void 0 ? {} : { reason: reason2 },
       ...complete ? { scope: "complete" } : {},
-      ...heading === null ? {} : { heading }
+      ...heading === null ? {} : { heading },
+      ...source.issue === null ? {} : { issue: source.issue }
     },
     problem: null
   };
 }
-function parseIntent(value, description) {
+function parseIntent(value, description, issues = []) {
   const removed = [];
   const refuse = (problem, dropped2 = []) => ({ value: null, problem, dropped: dropped2, removed });
   if (typeof value !== "object" || value === null || Array.isArray(value)) return refuse('expected {"statements": [...]}');
@@ -19944,12 +20050,15 @@ function parseIntent(value, description) {
   const raw = document["statements"];
   if (!Array.isArray(raw)) return refuse("statements must be an array");
   if (raw.length > MAX_INTENT_STATEMENTS) return refuse(`statements must list at most ${MAX_INTENT_STATEMENTS} entries`);
-  const sentences = sentencesOf(description);
+  const sources = [
+    { issue: null, sentences: sentencesOf(description) },
+    ...issues.map((issue) => ({ issue: issue.number, sentences: sentencesOf(issue.body) }))
+  ];
   const statements = [];
   const dropped = [];
   for (const [index, rawEntry] of raw.entries()) {
     const removedHere = [];
-    const parsed2 = statementOf(rawEntry, `statements[${index}]`, sentences, removedHere);
+    const parsed2 = statementOf(rawEntry, `statements[${index}]`, sources, removedHere);
     if (parsed2.problem === null) removed.push(...removedHere);
     if (parsed2.problem === null) statements.push(parsed2.value);
     else {
@@ -20013,7 +20122,8 @@ function challengePrompt(finding, candidate, statements, diffFile, reproduction)
   if (diffFile !== void 0 && diffFile !== null) rows.push(`Diff under review: ${diffFile}`);
   if (reproduction !== void 0) rows.push(...reproductionRows(reproduction));
   if (cited.length > 0) {
-    rows.push("", "Stated intent the finding cites, quoted from the pull request description (untrusted):");
+    const from = [...new Set(cited.map((s) => typeof s.issue === "number" ? `linked issue #${s.issue}` : "the pull request description"))];
+    rows.push("", `Stated intent the finding cites, quoted from ${from.join(" and ")} (untrusted):`);
     for (const s of cited) {
       rows.push(`- ${s.id} (${s.kind ?? "statement"}): "${s.quote ?? s.statement ?? ""}"`);
       if (s.reason !== void 0) rows.push(`  Reason given: "${s.reason}"`);
@@ -20579,10 +20689,11 @@ function context(run, extra = []) {
     `- ${join14(run.dir, "history")}/: the last commits that touched each changed file, one file per path named <URI-encoded path>.txt`
   ];
 }
-function intentPrompt(run, title) {
+function intentPrompt(run, title, issues = []) {
   return [
     `Extract what the description of the pull request titled ${JSON.stringify(title)} states.`,
     file(run, "thread.json", "the thread; the description is its description entry"),
+    ...issues.length === 0 ? [] : [`The description closes ${issues.map((n) => `#${n}`).join(", ")}. Their linkedIssues entries in the thread are a second source to quote from.`],
     "",
     'Return {"statements": [...]} as schemas/intent.schema.json describes. {"statements": []} is valid.'
   ].join("\n");
@@ -21075,11 +21186,13 @@ function heldForRecord(held, diff) {
   return { held: kept, notes };
 }
 async function intent(run) {
-  const description = descriptionOf(readJson(at(run, "thread.json")));
+  const thread = readJson(at(run, "thread.json"));
+  const description = descriptionOf(thread);
   if (description === null || description.trim() === "") return skip(run, "intent", "the pull request has no description");
   const manifest = readJson(at(run, "files.json"));
   const title = isRecord5(manifest) && typeof manifest["title"] === "string" ? manifest["title"] : "";
-  const result = await agent(run, "intent", "intent-extractor", run.plan.stages.intent.model ?? "sonnet", SCHEMAS.intent, intentPrompt(files(run), title), async (output) => {
+  const issues = linkedIssuesOf(thread).map((issue) => issue.number);
+  const result = await agent(run, "intent", "intent-extractor", run.plan.stages.intent.model ?? "sonnet", SCHEMAS.intent, intentPrompt(files(run), title, issues), async (output) => {
     const checked = await cli(run, ["check-intent", "--thread", at(run, "thread.json")], JSON.stringify(output));
     if (checked.code !== 0) return checked.stderr.trim() || `check-intent exited ${checked.code}`;
     writeFileSync4(at(run, "intent.json"), checked.stdout);
@@ -24117,8 +24230,11 @@ function checkIntentCommand(argv) {
     return 2;
   }
   let description;
+  let issues;
   try {
-    description = descriptionOf(JSON.parse(readFileSync19(threadFile, "utf8")));
+    const thread = JSON.parse(readFileSync19(threadFile, "utf8"));
+    description = descriptionOf(thread);
+    issues = linkedIssuesOf(thread);
   } catch (error) {
     console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -24134,7 +24250,7 @@ function checkIntentCommand(argv) {
     console.error('Expected {"statements": [...]} on stdin.');
     return 2;
   }
-  const intent2 = parseIntent(document, description);
+  const intent2 = parseIntent(document, description, issues);
   for (const problem of intent2.dropped) console.error(`${intent2.problem === null ? "Dropped" : "Invalid"} statement ${problem}.`);
   for (const note of intent2.removed) console.error(`${note}.`);
   if (intent2.problem !== null) {
@@ -25262,7 +25378,8 @@ async function threadCommand(argv) {
     console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
     return 2;
   }
-  const result = await readThread({ repository, pullNumber, client: githubClient([repository]) });
+  const linkedIssues = repositoryConfig()?.linkedIssues === true;
+  const result = await readThread({ repository, pullNumber, client: githubClient([repository]), linkedIssues });
   for (const warning of result.warnings ?? []) console.error(`Warning: ${warning}`);
   const out = flag(argv, "--out");
   if (out === null) {
@@ -25277,6 +25394,7 @@ async function threadCommand(argv) {
         {
           path,
           comments: result.comments.length,
+          ...result.linkedIssues === void 0 ? {} : { linkedIssues: result.linkedIssues.length },
           truncated: result.truncated,
           ...result.warnings === void 0 ? {} : { warnings: result.warnings }
         },
@@ -30020,6 +30138,7 @@ function recordCommand(argv) {
       if (!Array.isArray(list2)) throw new Error("comments is not a list");
       followUpThread = list2;
       followUpThreadFor = Array.isArray(parsed2) ? { repository: void 0, pullNumber: void 0 } : { repository: parsed2.repository, pullNumber: parsed2.pullNumber };
+      if (checks !== void 0) checks.issuesRead = linkedIssuesOf(parsed2).map((issue) => issue.number);
     } catch (error) {
       console.error(`Cannot read ${followUpThreadFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;

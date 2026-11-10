@@ -15,7 +15,7 @@ agents. A command file orchestrates them.**
 | Context resolution | CLI | config and policy layering is pure logic |
 | Static evidence collection | CLI | runs configured tools, emits JSON |
 | Convention discovery | CLI | which files exist is a fact |
-| Stated-intent extraction | `intent-extractor`, quotes checked by CLI | judgment, held to verbatim quotes |
+| Stated-intent extraction | `intent-extractor`, quotes checked by CLI | judgment, held to verbatim quotes of the description and, with `review.linked_issues`, of the issues it closes |
 | Candidate generation | `diff-analyst` | genuine judgment |
 | Evidence verification | `evidence-verifier` | genuine judgment |
 | Verifier tie-break | `tie-breaker` | genuine judgment, only on a dispute |
@@ -1176,6 +1176,33 @@ Rate limiting is retried with backoff; a 403 that is *not* rate limiting fails
 immediately, because retrying a permissions error only burns the user's quota.
 Pagination is bounded so a large repository cannot run away with the budget.
 
+**Linked issues** (`review.linked_issues`, default `false`). With it on,
+`thread` also reads the issues the pull request description closes, so the
+intent extractor can quote the requirement a change was asked to meet, not only
+what the author wrote about it. Which issues count is a decision recorded here.
+Only a GitHub closing keyword (`close`, `fix` or `resolve` in any of their
+forms, an optional colon, then `#N`, `owner/repo#N` or an issue URL) links an
+issue; a bare `#N` mention does not, because "see #12 for background" is not a
+requirement of this change; and the sidebar Development links are not read,
+since they are visible only through GraphQL and would be a second query under
+ADR 0018. Only the pull request's own repository is read, even when the named
+repository is allowlisted, because naming a pull request is the consent for
+reading it and nothing else; a reference elsewhere is named in a local warning
+and never requested. At most five issues are read, each with one
+`GET /repos/<owner/repo>/issues/<n>` through the same client, so the GET-only
+rule holds (ADR 0002). One gap stays open. GitHub answers a transferred issue
+with a 301 to its new repository, which the client's fetch follows with the
+token before any allowlist check; the answer is discarded when it names another
+repository or number, but the read happened. docs/THREAT-MODEL.md names the
+residual. A result that is a pull request is skipped. Title and body are
+redacted before the body is cut at 10000 characters, and a failed read, as
+with the other optional reads, stays a local warning while the review goes on.
+`check-intent` verifies each quote against the one source it came from and
+records the issue number on the statement; the analyst may raise a requirement
+an issue states and the change does not meet as a `question` at most, and the
+verifier must find the quote in that issue and the behaviour absent at the head
+before it is eligible.
+
 ### Reviewer roles
 
 Owner, team, external, bot. The owner is whoever is running the plugin,
@@ -1300,7 +1327,10 @@ writer's single endpoint and the idempotency key are not settings.
 Review scope block and an HTML comment containing JSON from the recorded run:
 head, scope, cost mode, origin and independence, stages, static checks that ran
 or did not run, unfinished symbol searches and held-claim counts. Missing
-facts read `not recorded`. ADR 0016's lists stay local; only their counts post.
+facts read `not recorded`. With `review.linked_issues` on, a `Linked issues`
+line names the issues the thread read for intent, each number as inline code so
+GitHub links nothing, and the JSON carries them as `issues` (`null` when the
+run did not record its checks). ADR 0016's lists stay local; only their counts post.
 The human-review note, would-have verdict, stale request for changes and carry
 reasons stay local too. `verdict.scope_block_models` (default `false`) adds
 model ids beside the stages. The block follows the findings, after the
