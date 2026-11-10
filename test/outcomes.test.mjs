@@ -15,7 +15,7 @@ import { recordRun } from '../plugins/review-voice/src/store/runs.ts';
 import { recordAudit } from '../plugins/review-voice/src/store/audit.ts';
 import { recordFeedback } from '../plugins/review-voice/src/store/feedback.ts';
 import { GitHubClient } from '../plugins/review-voice/src/github/client.ts';
-import { checkOutcomes, classifyReply, patchTouches, postedBreakdown, replyWanted } from '../plugins/review-voice/src/store/outcomes.ts';
+import { checkOutcomes, classifyReply, saveOutcome, patchTouches, postedBreakdown, replyWanted } from '../plugins/review-voice/src/store/outcomes.ts';
 import { computeMetrics } from '../plugins/review-voice/src/evaluate/metrics.ts';
 import { runInProcess } from '../plugins/review-voice/src/cli.ts';
 
@@ -394,9 +394,16 @@ test('two findings on one line keep their own comments, so a question is paired 
       if (path === `/repos/${REPO}/pulls/${PR}/reviews/555/comments`) return json([root]);
       return new Response('not found', { status: 404 });
     };
+    // The matcher before this one paired A with B's comment and stored that.
+    saveOutcome(db, {
+      reviewRunId, findingId: 'rv_01', repository: REPO, pullNumber: PR, commentId: 901,
+      outcome: 'dismissed', strength: 'strong', evidence: 'an earlier check', checkedAt: '2026-10-02T12:00:00.000Z', path: 'src/open.ts', line: 50, reviewIdSource: 'audit',
+    });
     const result = await check(db, impl, { pullNumber: PR });
     assert.deepEqual(result.questions.map((q) => [q.findingId, q.rootCommentId]), [['rv_02', 901]]);
     assert.deepEqual(result.outcomes.map((o) => [o.findingId, o.commentId]), [['rv_02', 901]]);
+    // The stale pairing is gone, so the thread is counted once, under B.
+    assert.deepEqual(db.prepare('SELECT finding_id, comment_id FROM finding_outcomes ORDER BY finding_id').all().map((row) => [row.finding_id, row.comment_id]), [['rv_02', 901]]);
   });
 });
 

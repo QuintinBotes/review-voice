@@ -16037,6 +16037,7 @@ async function followRun(options, context2, run, viewerLogin) {
       line: finding.line,
       reviewIdSource: source
     };
+    options.db.prepare("DELETE FROM finding_outcomes WHERE review_run_id = ? AND comment_id = ? AND finding_id <> ?").run(run.runId, outcome.commentId, outcome.findingId);
     saveOutcome(options.db, outcome);
     outcomes.push(outcome);
   }

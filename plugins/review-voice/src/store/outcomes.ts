@@ -503,6 +503,11 @@ async function followRun(
       line: finding.line,
       reviewIdSource: source,
     };
+    // The matcher gives a comment to one finding of the run. A row an earlier
+    // matcher stored, pairing it with another finding, would count its thread twice.
+    options.db
+      .prepare('DELETE FROM finding_outcomes WHERE review_run_id = ? AND comment_id = ? AND finding_id <> ?')
+      .run(run.runId, outcome.commentId, outcome.findingId);
     saveOutcome(options.db, outcome);
     outcomes.push(outcome);
   }
