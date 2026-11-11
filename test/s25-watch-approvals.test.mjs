@@ -1,5 +1,5 @@
 /**
- * S25 (docs/adr/0034), AC-5: `watch --once` follows the approvals it sent in
+ * S25 (docs/adr/0036), AC-5: `watch --once` follows the approvals it sent in
  * the same pass as the finding outcomes, and a failure reading one of them is
  * reported without failing the pass.
  */

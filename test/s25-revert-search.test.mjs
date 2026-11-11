@@ -1,5 +1,5 @@
 /**
- * S25 (docs/adr/0034, amending 0026): the client builds the revert search
+ * S25 (docs/adr/0036, amending 0026): the client builds the revert search
  * itself from a typed `reverts:<owner>/<repo>#<n>` source, for merged pull
  * requests only, and refuses one that is malformed or names a repository
  * outside the allowlist before any request is sent.

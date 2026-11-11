@@ -39,7 +39,7 @@ export async function outcomesCommand(argv: string[]): Promise<number> {
   const db = openDatabase();
   try {
     if (argv.includes('--approvals')) {
-      // The approvals Review Voice sent, followed to what the pull request shows (docs/adr/0034).
+      // The approvals Review Voice sent, followed to what the pull request shows (docs/adr/0036).
       const result = await checkApprovals({ db, client: new GitHubClient({ allowlist }), repository: repository ?? undefined, since, windowDays });
       for (const warning of result.warnings) console.error(warning);
       for (const skipped of result.skipped) console.error(`${skipped.repository}#${skipped.pullNumber}: skipped, ${skipped.reason}`);

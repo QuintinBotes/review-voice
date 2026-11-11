@@ -82,7 +82,7 @@ nothing is written.
 
 ## Amendment - 2026-11-09 (approvals)
 
-[0034](0034-approvals-are-followed-to-an-outcome.md) follows the verdict as
+[0036](0036-approvals-are-followed-to-an-outcome.md) follows the verdict as
 well as the findings. Each APPROVE Review Voice sent is followed, from the same
 `review_post_sent` audit rows `sentRuns` walks, to `reverted`,
 `changes_requested` or `survived` (strong), or to `merged_other_head`,

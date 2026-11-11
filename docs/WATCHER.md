@@ -351,7 +351,7 @@ reports the totals. `watch` runs it once per pass for the pull requests it
 touched.
 
 With `--approvals` it follows each APPROVE Review Voice sent instead (ADR
-0034): whether the pull request merged at the approved head, whether a person
+0036): whether the pull request merged at the approved head, whether a person
 then requested changes on that head, and whether a merged pull request in the
 same repository reverted it inside `outcomes.approval_window_days` (default
 14). A merge the window has not closed on is `pending`, never `survived`.
@@ -417,7 +417,7 @@ ADR 0029. For each posted inline comment:
 `posted_findings_tracked`. Only strong outcomes count toward rates.
 `owner_accepted_precision` keeps reading explicit feedback first.
 
-ADR 0034 follows the verdict as well as the findings: each sent APPROVE is
+ADR 0036 follows the verdict as well as the findings: each sent APPROVE is
 followed to `reverted`, `changes_requested` or `survived` (strong), or to
 `merged_other_head`, `pending`, `closed`, `open` or `unknown` (weak), and
 `evaluate` adds `approvals_tracked` and `approval_escape_rate` with a Wilson

@@ -77,7 +77,7 @@ are already specified.
 ## S25. Approvals are followed to an outcome
 
 **Depends on:** nothing. **Size:** about 320 source lines, 380 test lines, one
-new ADR (0034), one amendment (0029). **Risk:** low, read-only.
+new ADR (0036), one amendment (0029). **Risk:** low, read-only.
 
 ### Why
 
@@ -111,7 +111,7 @@ the default branch later show, and `evaluate` reports an approval escape rate.
   checks the repository against the allowlist before sending, and lets no
   caller text reach `q`. The search route as it stood admitted only the four
   open-pull-request sources and no other `/search` path, so this one typed
-  source is the narrowest change that reaches the revert; ADR 0034 records it
+  source is the narrowest change that reaches the revert; ADR 0036 records it
   as an amendment of ADR 0026.
 - **Outcomes**, with ADR 0004's strength rules:
 
@@ -176,7 +176,7 @@ verdict, no judgement of pull requests Review Voice did not approve.
   allowlist is refused before any request.
 - AC-5. `watch --once` follows approvals in the same pass as findings, and a
   failure there does not fail the pass.
-- AC-6. ADR 0034 exists, ADR 0029 gains a dated amendment, the index marks
+- AC-6. ADR 0036 exists, ADR 0029 gains a dated amendment, the index marks
   both, and `docs/EVALUATION.md` documents the figure (content test).
 - AC-7. `npm run verify` passes with the rebuilt bundle.
 
@@ -412,7 +412,7 @@ Conventions and proof: as S25.
 
 **Depends on:** S19 merged (it changes the intent extractor first); S10 part B
 (`testReferences`). **Size:** about 380 source lines, 420 test lines, one new
-agent section, one new ADR (0035), one amendment to ADR 0028. **Risk:**
+agent section, one new ADR (0037), one amendment to ADR 0028. **Risk:**
 medium: a new agent output, so every status is checked by the CLI before it
 counts.
 
@@ -476,7 +476,7 @@ score. `non-goal` and `deliberate` statements are not covered.
   stage does not run in `fast`.
 - AC-5. The recall harness's clean fixtures still read exactly
   `No actionable findings.` with the stage on (fake runner).
-- AC-6. ADR 0035 exists, ADR 0028 is amended, the index marks both;
+- AC-6. ADR 0037 exists, ADR 0028 is amended, the index marks both;
   `npm run verify` passes.
 
 ### Allowed paths
@@ -516,7 +516,7 @@ Conventions and proof: as S25.
 
 **Depends on:** S16 parts A and B; issue #321 for macOS; S29 is independent.
 **Size:** about 650 source lines, 600 test lines, two fixtures, one new ADR
-(0036), amendments to ADR 0003 and 0028, one threat-model subsection.
+(0038), amendments to ADR 0003 and 0028, one threat-model subsection.
 **Risk:** high by nature, as S16 is: it runs pull request code. Off by
 default, opt-in from the base commit, probe-gated, thorough mode only.
 
@@ -590,7 +590,7 @@ change did not add, no run outside thorough mode, no run where the probe fails.
 - AC-5. The confinement evals under `plugins/review-voice/evals/confinement/`
   cover a mutant that tries to write outside its copy and one that tries the
   network, and both are refused.
-- AC-6. ADR 0036 exists, ADR 0003 and 0028 are amended, `docs/THREAT-MODEL.md`
+- AC-6. ADR 0038 exists, ADR 0003 and 0028 are amended, `docs/THREAT-MODEL.md`
   gains the subsection; `npm run verify` passes.
 
 ### Allowed paths
@@ -637,7 +637,7 @@ Conventions and proof: as S25.
 3. S27: who pays for the three recall runs, as with S18's D4.
 4. S29: whether an empty description should cap at all, or only be reported.
 5. S28: whether `cap` may be set per path, which would want S22 part A first.
-6. Numbering: S25 to S29 and ADRs 0034 to 0036 assume S15 to S24 take no
+6. Numbering: S25 to S29 take ADRs 0036 to 0038, since S17 and S21 took 0034 and 0035, and assume S15 to S24 take no
    further numbers.
 
 ## Not in this repository

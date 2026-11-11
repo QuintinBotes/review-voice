@@ -273,7 +273,7 @@ const MIGRATIONS: string[] = [
   ALTER TABLE finding_outcomes ADD COLUMN decided_by TEXT;
   `,
 
-  // v14 - what became of each approval Review Voice sent (docs/adr/0034).
+  // v14 - what became of each approval Review Voice sent (docs/adr/0036).
   //
   // One row per run, replaced by a newer check, as finding_outcomes is. The
   // evidence is JSON because an outcome rests on several facts (merged head,

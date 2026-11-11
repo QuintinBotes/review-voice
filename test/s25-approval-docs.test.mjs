@@ -1,5 +1,5 @@
 /**
- * S25 (docs/adr/0034), AC-6: ADR 0034 exists, ADR 0029 carries a dated
+ * S25 (docs/adr/0036), AC-6: ADR 0036 exists, ADR 0029 carries a dated
  * amendment, the index marks both, `docs/EVALUATION.md` documents the figure,
  * and the watcher document, the example config and the help name the setting
  * and the flag.
@@ -14,27 +14,27 @@ import { commandHelp } from '../plugins/review-voice/src/help.ts';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const read = (path) => readFileSync(join(root, path), 'utf8');
 
-test('ADR 0034 exists, ADR 0029 gains a dated amendment, and the index marks both', () => {
+test('ADR 0036 exists, ADR 0029 gains a dated amendment, and the index marks both', () => {
   const index = read('docs/adr/README.md');
-  const listed = /\[0034\]\((0034-[^)]+)\)/.exec(index);
-  assert.ok(listed, 'docs/adr/README.md lists ADR 0034');
+  const listed = /\[0036\]\((0036-[^)]+)\)/.exec(index);
+  assert.ok(listed, 'docs/adr/README.md lists ADR 0036');
   assert.ok(existsSync(join(root, 'docs/adr', listed[1])), `${listed[1]} exists`);
   const adr = read(join('docs/adr', listed[1]));
-  assert.match(adr, /^# 0034 - Approvals are followed to an outcome/);
+  assert.match(adr, /^# 0036 - Approvals are followed to an outcome/);
   assert.match(adr, /\*\*Status:\*\* Accepted/);
   for (const word of ['reverted', 'changes_requested', 'survived', 'merged_other_head', 'pending', 'approval_window_days', 'approval_escape_warn', 'Wilson', '0004', '0026', '0029']) {
-    assert.ok(adr.includes(word), `ADR 0034 names ${word}`);
+    assert.ok(adr.includes(word), `ADR 0036 names ${word}`);
   }
   assert.match(adr, /never `survived`/);
 
   const amended = read('docs/adr/0029-posted-findings-are-followed-to-an-outcome.md');
   assert.match(amended, /## Amendment - 2026-11-09 \(approvals\)/);
-  assert.match(amended, /\[0034\]\(0034-approvals-are-followed-to-an-outcome\.md\)/);
+  assert.match(amended, /\[0036\]\(0036-approvals-are-followed-to-an-outcome\.md\)/);
   const row = index.split('\n').find((line) => line.includes('[0029]'));
-  assert.match(row, /by 0034 \(approvals\)/);
+  assert.match(row, /by 0036 \(approvals\)/);
   // The search route gains the revert source, so 0026 is amended too.
   assert.match(adr, /reverts:<owner>\/<repo>#<n>/);
-  assert.match(index.split('\n').find((line) => line.includes('[0026]')), /by 0034 \(revert search\)/);
+  assert.match(index.split('\n').find((line) => line.includes('[0026]')), /by 0036 \(revert search\)/);
 });
 
 test('EVALUATION.md documents the approval escape rate, its basis, its bound and the window rule', () => {
@@ -53,7 +53,7 @@ test('EVALUATION.md documents the approval escape rate, its basis, its bound and
 test('the watcher document, the example config and the help name the settings and the flag', () => {
   const watcher = read('docs/WATCHER.md');
   assert.match(watcher, /review-voice outcomes \[--approvals\]/);
-  assert.match(watcher, /ADR\s+0034/);
+  assert.match(watcher, /ADR\s+0036/);
   const example = read('plugins/review-voice/templates/config.example.yaml');
   assert.match(example, /^outcomes:\n/m);
   assert.match(example, /^  approval_window_days: 14$/m);

@@ -312,7 +312,7 @@ retention:
   runs_days: 30                      # run directories hold the raw diff and thread
   audit_days: 180                    # posting records are kept until `purge`
 
-# How the approvals Review Voice sent are followed (docs/adr/0034). `watch`
+# How the approvals Review Voice sent are followed (docs/adr/0036). `watch`
 # checks them each pass and `outcomes --approvals` on demand; both read GitHub
 # only. The values below are the defaults.
 outcomes:

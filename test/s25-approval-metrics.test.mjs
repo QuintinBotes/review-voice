@@ -1,5 +1,5 @@
 /**
- * S25 (docs/adr/0034), AC-3: `evaluate` prints `no data` with nothing settled,
+ * S25 (docs/adr/0036), AC-3: `evaluate` prints `no data` with nothing settled,
  * the escape rate with its Wilson bound and the basis otherwise, and `--json`
  * carries `approval_breakdown` with null for a group that settled nothing.
  * Also the `status` warning, the Wilson arithmetic, the `outcomes` config and

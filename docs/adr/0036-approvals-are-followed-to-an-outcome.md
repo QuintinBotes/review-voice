@@ -1,4 +1,4 @@
-# 0034 - Approvals are followed to an outcome
+# 0036 - Approvals are followed to an outcome
 
 **Status:** Accepted · **Date:** 2026-11-09
 **Amends:** [0029](0029-posted-findings-are-followed-to-an-outcome.md) - the

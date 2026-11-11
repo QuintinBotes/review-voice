@@ -1,5 +1,5 @@
 /**
- * S25 (docs/adr/0034): the approval check never settles on less evidence than
+ * S25 (docs/adr/0036): the approval check never settles on less evidence than
  * its outcome claims. A weak row is final only after a check made once its
  * window ended; an older check never overwrites a newer one; a purge is not
  * undone by a check still in flight; and a review list cut at the read limit

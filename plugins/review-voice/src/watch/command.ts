@@ -407,7 +407,7 @@ async function verdict(options: PassOptions, client: GitHubClient, db: Database,
  * Outcomes for the pull requests with a review sent in the last week, this
  * pass's included, at most twenty. `since` is the twentieth one's newest send,
  * so no older pull request is read. Approvals are followed beside the findings
- * (docs/adr/0034), and the approval check itself takes up every approval with
+ * (docs/adr/0036), and the approval check itself takes up every approval with
  * no settled row, so one past this `since` is still followed once. Returns how many pull requests the finding check covered.
  */
 async function followOutcomes(

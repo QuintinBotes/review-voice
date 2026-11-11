@@ -1186,7 +1186,7 @@ var MIGRATIONS = [
   `
   ALTER TABLE finding_outcomes ADD COLUMN decided_by TEXT;
   `,
-  // v14 - what became of each approval Review Voice sent (docs/adr/0034).
+  // v14 - what became of each approval Review Voice sent (docs/adr/0036).
   //
   // One row per run, replaced by a newer check, as finding_outcomes is. The
   // evidence is JSON because an outcome rests on several facts (merged head,
@@ -9836,7 +9836,7 @@ var GitHubClient = class {
   }
   /**
    * Open, non-draft pull requests from one GitHub search (docs/adr/0026), or
-   * the merged ones a `reverts:` source names (docs/adr/0034).
+   * the merged ones a `reverts:` source names (docs/adr/0036).
    *
    * The only request this client sends outside a repository path. The query is
    * built here from `source`, never from caller text, because a query is the
@@ -16803,7 +16803,7 @@ function computeMetrics(db, options = {}) {
       `${recent.dismissed} dismissed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
       "goal"
     ),
-    // What became of the approvals this tool sent (docs/adr/0034). Settled
+    // What became of the approvals this tool sent (docs/adr/0036). Settled
     // means strong: a revert or a request for changes against a merge that
     // outlived the window. Pending and weak rows are counted and left out, so a
     // merge the window has not closed on is never a survival.

@@ -215,7 +215,7 @@ export interface ApprovedRun {
 
 /**
  * Runs whose `review_post_sent` row at or after `since` carries `event:
- * 'APPROVE'`, oldest first (docs/adr/0034). A run sent more than once keeps its
+ * 'APPROVE'`, oldest first (docs/adr/0036). A run sent more than once keeps its
  * newest approval. `sentRuns` is unchanged: it follows findings, this follows
  * the verdict.
  */

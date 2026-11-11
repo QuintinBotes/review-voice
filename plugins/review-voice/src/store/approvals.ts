@@ -4,7 +4,7 @@ import { approvedRuns, isBot, sameHead, type ApprovedRun, type Strength } from '
 import { independenceOf, ORIGINS } from './runs.ts';
 
 /**
- * What became of each APPROVE Review Voice sent (docs/adr/0034), with ADR
+ * What became of each APPROVE Review Voice sent (docs/adr/0036), with ADR
  * 0004's strength rules: a revert, a person requesting changes on the approved
  * head, and a merge that outlived the window are strong; a merge at another
  * head, a merge the window has not closed on, and a pull request not merged are

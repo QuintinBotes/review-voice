@@ -47,7 +47,7 @@ export interface LoadedConfig {
   watch: WatchConfig;
   /** How long run directories and audit events are kept; `watch` and `purge --runs` enforce it. */
   retention: RetentionConfig;
-  /** `outcomes:`, how sent approvals are followed and when `status` warns (docs/adr/0034). */
+  /** `outcomes:`, how sent approvals are followed and when `status` warns (docs/adr/0036). */
   outcomes: OutcomesConfig;
   staticEvidence: {
     enabled: boolean;
@@ -726,7 +726,7 @@ function readRetention(block: Record<string, unknown> | null, result: LoadedConf
   read('audit_days', 'auditDays');
 }
 
-/** `outcomes:` (docs/adr/0034). A bad value warns and keeps that setting's default. */
+/** `outcomes:` (docs/adr/0036). A bad value warns and keeps that setting's default. */
 function readOutcomes(block: Record<string, unknown> | null, result: LoadedConfig): void {
   if (block === null) {
     result.warnings.push('outcomes must be a mapping; using the defaults.');

@@ -166,7 +166,7 @@ scored, and a group with no strong outcome reports `null` rates, never zero.
 
 #### Approval outcomes
 
-An approval is the one write that can unblock a merge, so ADR 0034 follows
+An approval is the one write that can unblock a merge, so ADR 0036 follows
 each APPROVE Review Voice sent to what the pull request and the default branch
 later show. `RV outcomes --approvals` checks on demand and `RV watch` checks
 each pass, with GET requests inside the allowlist only. The strength rules are

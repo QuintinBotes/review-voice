@@ -1,5 +1,5 @@
 /**
- * S25 (docs/adr/0034): each APPROVE Review Voice sent is followed to an outcome
+ * S25 (docs/adr/0036): each APPROVE Review Voice sent is followed to an outcome
  * from what a fake GitHub shows. AC-1 (every row of the table, and an
  * unreadable pull request leaves its stored row alone), AC-2 (pending inside
  * the window, survived past it) and AC-4 (GET inside the allowlist only, a run

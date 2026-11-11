@@ -60,7 +60,7 @@ export function allowlistEntryProblem(entry: string): string | null {
 
 /**
  * The searches the queue may run (docs/adr/0026), and the one the approval
- * check runs (docs/adr/0034): `reverts:<owner>/<repo>#<n>` is the merged pull
+ * check runs (docs/adr/0036): `reverts:<owner>/<repo>#<n>` is the merged pull
  * requests whose body reverts one allowlisted pull request. The client builds
  * each query itself; no caller text reaches `q`. A team is `team:<org>/<slug>`.
  */
@@ -409,7 +409,7 @@ export class GitHubClient {
 
   /**
    * Open, non-draft pull requests from one GitHub search (docs/adr/0026), or
-   * the merged ones a `reverts:` source names (docs/adr/0034).
+   * the merged ones a `reverts:` source names (docs/adr/0036).
    *
    * The only request this client sends outside a repository path. The query is
    * built here from `source`, never from caller text, because a query is the
