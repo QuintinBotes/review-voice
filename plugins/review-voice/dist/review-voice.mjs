@@ -12231,6 +12231,99 @@ function describeChecks(checks) {
   const issues = checks.issuesRead === void 0 ? "" : `; linked issues ${checks.issuesRead.length === 0 ? "none" : checks.issuesRead.map((n) => `#${n}`).join(", ")}`;
   return `Checks ${staticParts.length === 0 ? "no static checks" : staticParts.join("; ")}; ${symbols}${issues}`;
 }
+var REMOVED_CONTROL_ORDER = { guard: 0, refusal: 1, decorator: 2, middleware: 3, "allowlist-entry": 4 };
+var RISK_MARKER_ORDER = { "new-route": 0, "lock-or-async": 1, "string-built-query": 2, unsafe: 3 };
+var STRUCTURE_LISTS = ["sizeCrossings", "branchGrowth", "typeEscapes", "removedControls", "riskMarkers"];
+var repositoryPath = (path) => path !== "" && !/^[\\/]/u.test(path) && !MACHINE_PATH.test(path);
+function recordedStructure(raw) {
+  const value = asRecord(raw);
+  if (value === null || !STRUCTURE_LISTS.every((list2) => Array.isArray(value[list2]))) return null;
+  const files2 = /* @__PURE__ */ new Map();
+  const entries = /* @__PURE__ */ new Map();
+  const deleted = /* @__PURE__ */ new Map();
+  const entryOf = (entry) => {
+    const record3 = asRecord(entry);
+    return record3 !== null && typeof record3["path"] === "string" && repositoryPath(record3["path"]) ? record3 : null;
+  };
+  const fileOf = (record3) => {
+    const path = record3["path"];
+    let file2 = files2.get(path);
+    if (file2 === void 0) {
+      file2 = { path, deletedFile: false, removedControls: {}, riskMarkers: {}, sizeCrossing: null, branchGrowth: 0, typeEscapes: 0 };
+      files2.set(path, file2);
+    }
+    entries.set(path, (entries.get(path) ?? 0) + 1);
+    return file2;
+  };
+  for (const entry of value["removedControls"]) {
+    const record3 = entryOf(entry);
+    const kind = record3?.["kind"];
+    if (record3 === null || typeof kind !== "string" || !Object.hasOwn(REMOVED_CONTROL_ORDER, kind)) continue;
+    const file2 = fileOf(record3);
+    file2.removedControls[kind] = (file2.removedControls[kind] ?? 0) + 1;
+    if (record3["deletedFile"] === true) deleted.set(file2.path, (deleted.get(file2.path) ?? 0) + 1);
+  }
+  for (const entry of value["riskMarkers"]) {
+    const record3 = entryOf(entry);
+    const kind = record3?.["kind"];
+    if (record3 === null || typeof kind !== "string" || !Object.hasOwn(RISK_MARKER_ORDER, kind)) continue;
+    const file2 = fileOf(record3);
+    file2.riskMarkers[kind] = (file2.riskMarkers[kind] ?? 0) + 1;
+  }
+  for (const entry of value["typeEscapes"]) {
+    const record3 = entryOf(entry);
+    if (record3 !== null) fileOf(record3).typeEscapes += 1;
+  }
+  for (const entry of value["branchGrowth"]) {
+    const record3 = entryOf(entry);
+    if (record3 !== null) fileOf(record3).branchGrowth += 1;
+  }
+  for (const entry of value["sizeCrossings"]) {
+    const record3 = entryOf(entry);
+    if (record3 === null || !Number.isInteger(record3["headLines"]) || !Number.isInteger(record3["threshold"])) continue;
+    const file2 = fileOf(record3);
+    if (file2.sizeCrossing === null) file2.sizeCrossing = { headLines: record3["headLines"], threshold: record3["threshold"] };
+  }
+  for (const file2 of files2.values()) file2.deletedFile = (deleted.get(file2.path) ?? 0) === entries.get(file2.path);
+  const unmeasured = asRecord(value["unmeasured"])?.["count"];
+  return {
+    files: [...files2.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+    unmeasured: Number.isInteger(unmeasured) ? unmeasured : 0
+  };
+}
+function storedStructure(raw) {
+  const value = asRecord(raw);
+  if (value === null || !Array.isArray(value["files"]) || !Number.isInteger(value["unmeasured"])) return null;
+  const counts = (table2, order) => {
+    const record3 = asRecord(table2);
+    return record3 !== null && Object.entries(record3).every(([kind, count4]) => Object.hasOwn(order, kind) && Number.isInteger(count4)) ? record3 : null;
+  };
+  const files2 = [];
+  for (const entry of value["files"]) {
+    const file2 = asRecord(entry);
+    if (file2 === null || typeof file2["path"] !== "string" || typeof file2["deletedFile"] !== "boolean") return null;
+    const removedControls = counts(file2["removedControls"], REMOVED_CONTROL_ORDER);
+    const riskMarkers = counts(file2["riskMarkers"], RISK_MARKER_ORDER);
+    const crossing = file2["sizeCrossing"] === null ? null : asRecord(file2["sizeCrossing"]);
+    if (removedControls === null || riskMarkers === null || !Number.isInteger(file2["branchGrowth"]) || !Number.isInteger(file2["typeEscapes"])) return null;
+    if (crossing !== null && !(Number.isInteger(crossing["headLines"]) && Number.isInteger(crossing["threshold"]))) return null;
+    files2.push({
+      path: file2["path"],
+      deletedFile: file2["deletedFile"],
+      removedControls,
+      riskMarkers,
+      sizeCrossing: crossing === null ? null : { headLines: crossing["headLines"], threshold: crossing["threshold"] },
+      branchGrowth: file2["branchGrowth"],
+      typeEscapes: file2["typeEscapes"]
+    });
+  }
+  return { files: files2, unmeasured: value["unmeasured"] };
+}
+function describeStructure(structure) {
+  if (structure === null) return "Structure not recorded";
+  const count4 = structure.files.length;
+  return `Structure ${count4} file${count4 === 1 ? "" : "s"} with a signal, ${structure.unmeasured} unmeasured`;
+}
 var basename3 = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
 function attribute(finding, hints, taken) {
   const free = hints.filter((hint) => !taken.has(hint));
@@ -12397,7 +12490,8 @@ function recordRun(db, input) {
         ...input.carry === void 0 ? {} : { carry: input.carry },
         ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps },
         ...input.checks === void 0 ? {} : { checks: input.checks },
-        ...input.reproductions === void 0 ? {} : { reproductions: markHeld(input.reproductions, input.held ?? []) }
+        ...input.reproductions === void 0 ? {} : { reproductions: markHeld(input.reproductions, input.held ?? []) },
+        ...input.structure === void 0 ? {} : { structure: input.structure }
       }),
       (/* @__PURE__ */ new Date()).toISOString(),
       JSON.stringify(input.stages ?? []),
@@ -12484,6 +12578,7 @@ function runDetail(db, reviewRunId) {
     bodyFindings: Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : [],
     checks: storedChecks(parsed2.checks),
     reproductions: storedReproductions(parsed2.reproductions),
+    structure: storedStructure(parsed2.structure),
     // Older rows predate the column, so absence is normal rather than an error.
     stages: (() => {
       const raw = row["stages_json"];
@@ -12856,6 +12951,8 @@ function eventFor(severities) {
   return "APPROVE";
 }
 var RANK = { blocking: 0, important: 1, minor: 2, question: 3, nit: 4 };
+var POSTED_TIERS = ["blocking", "important", "minor", "nit"];
+var TIER_RANK = { blocking: 0, important: 1, minor: 2, question: 2, nit: 3 };
 var NO_LINE = /^\[([a-z_]+)\]\s+`([^`]+)`\s+-\s*([\s\S]*)$/i;
 function reviewFindings(output) {
   let index = 0;
@@ -12946,10 +13043,11 @@ function verification(finding, run, loadRun, used = /* @__PURE__ */ new Set()) {
   }
   return { verified: false, reason: reason2, runId: current.reviewRunId, score: null };
 }
-function planFindings(output, run, loadRun) {
+function planFindings(output, run, loadRun, minPostedTier = "nit") {
   const inline = [];
   const unanchored = [];
   const held = [];
+  const belowTier = [];
   const heldSeverities = [];
   const fixVerified = /* @__PURE__ */ new Map();
   const backing = /* @__PURE__ */ new Map();
@@ -12976,6 +13074,12 @@ function planFindings(output, run, loadRun) {
       heldSeverities.push(finding.severity ?? "minor");
       continue;
     }
+    const category = run.findings.find((stored) => stored.findingId === finding.findingId)?.category ?? result.stored?.category;
+    if (TIER_RANK[finding.severity] > TIER_RANK[minPostedTier] && (category === void 0 || !isSuppressionExempt(category))) {
+      belowTier.push(finding);
+      heldSeverities.push(finding.severity);
+      continue;
+    }
     const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true && result.deletedFile !== true;
     (anchorable ? inline : unanchored).push(finding);
     if (anchorable && result.fixVerified !== void 0) fixVerified.set(finding, result.fixVerified);
@@ -12986,7 +13090,7 @@ function planFindings(output, run, loadRun) {
   const challengeMissing = run.held.some(challengeNotRun);
   const heldBackApproval = mapped === "APPROVE" && (eventFor(heldSeverities) !== "APPROVE" || challengeMissing);
   if (heldBackApproval) mapped = "COMMENT";
-  return { inline, unanchored, held, mapped, heldBackApproval, fixVerified, backing };
+  return { inline, unanchored, held, belowTier, mapped, heldBackApproval, fixVerified, backing };
 }
 var DEFAULT_VERDICT_POLICY = Object.freeze({
   ciPending: "wait",
@@ -13004,7 +13108,9 @@ var DEFAULT_VERDICT_POLICY = Object.freeze({
   suggestions: false,
   evidenceBlock: false,
   evidenceBlockPrecedents: false,
-  heldQueue: false
+  heldQueue: false,
+  minPostedTier: "nit",
+  readingGuide: false
 });
 function verdictPolicy(policy) {
   return { ...DEFAULT_VERDICT_POLICY, ...policy };
@@ -13086,7 +13192,7 @@ function decide(input) {
     carriedReviewUrl: null
   });
   if (input.heldBackApproval === true) {
-    reasons.push("an unverified finding above a nit was held back, so this comments rather than approves");
+    reasons.push("a finding above a nit was held back, unverified or below the posting tier, so this comments rather than approves");
   }
   if (input.headMoved) {
     return done({
@@ -13276,7 +13382,7 @@ function wouldHaveSummary(planned) {
   }
   if (planned.heldBackApproval) {
     const nits = count4 === 0 ? "" : `, with ${plural2(count4, "nit")}`;
-    return `Would have commented: an unverified finding above a nit was held back${nits}.`;
+    return `Would have commented: a finding above a nit was held back, unverified or below the posting tier${nits}.`;
   }
   return `Would have commented: ${plural2(count4, "comment")}, the highest ${highest}.`;
 }
@@ -13316,7 +13422,7 @@ function withAnnotations(body, annotations) {
   return [body, ...annotations].join("\n\n");
 }
 function heldCounts(held) {
-  const counts = { unverified: 0, belowGate: 0, challenge: 0, restatesTool: 0, policySuppressed: 0, other: 0 };
+  const counts = { unverified: 0, belowGate: 0, challenge: 0, restatesTool: 0, policySuppressed: 0, other: 0, belowTier: 0 };
   for (const entry of held) {
     switch (entry.verdict) {
       case "unverified":
@@ -13382,13 +13488,15 @@ function scopeBlock(run, planned, policy) {
   const linkedLine = issuesRead === null || issuesRead.length === 0 ? null : `Linked issues: ${issuesRead.map((n) => code3(`#${n}`)).join(", ")} read for intent.`;
   const held = heldCounts(run.held);
   held.other += planned.held.length;
+  held.belowTier = planned.belowTier.length;
   const notPosted = [
     held.unverified > 0 ? plural2(held.unverified, "unverified claim") : null,
     held.belowGate > 0 ? `${held.belowGate} below the gate` : null,
     held.challenge > 0 ? `${held.challenge} held by the challenger` : null,
     held.restatesTool > 0 ? `${held.restatesTool} restating a static check` : null,
     held.policySuppressed > 0 ? `${held.policySuppressed} suppressed by policy` : null,
-    held.other > 0 ? `${held.other} held for other reasons` : null
+    held.other > 0 ? `${held.other} held for other reasons` : null,
+    held.belowTier > 0 ? `${held.belowTier} below the posting tier` : null
   ].filter((part) => part !== null);
   const posted = [...planned.inline, ...planned.unanchored];
   const findings = Object.fromEntries(
@@ -13423,6 +13531,36 @@ function scopeBlock(run, planned, policy) {
     "</details>",
     `<!-- review-voice ${trailer} -->`
   ].join("\n");
+}
+var MAX_GUIDE_FILES = 20;
+function readingGuide(run) {
+  const lines2 = ["<details><summary>Reading guide</summary>", "", "Changed files by structural signal, most first. Lexical leads the CLI measured, not findings.", ""];
+  const structure = run.structure;
+  if (structure === null) {
+    lines2.push("Structure not recorded.");
+  } else {
+    const sum = (counts) => Object.values(counts).reduce((total, count4) => total + (count4 ?? 0), 0);
+    const kinds = (counts, order) => Object.keys(counts).filter((kind) => (counts[kind] ?? 0) > 0).sort((a, b) => (order[a] ?? 0) - (order[b] ?? 0)).join(", ");
+    const files2 = [...structure.files].filter((file2) => repositoryPath(file2.path)).sort(
+      (a, b) => sum(b.removedControls) - sum(a.removedControls) || sum(b.riskMarkers) - sum(a.riskMarkers) || Number(b.sizeCrossing !== null) - Number(a.sizeCrossing !== null) || b.branchGrowth - a.branchGrowth || b.typeEscapes - a.typeEscapes || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
+    );
+    if (files2.length === 0) lines2.push("No structural signal in this change.");
+    files2.slice(0, MAX_GUIDE_FILES).forEach((file2, index) => {
+      const removed = sum(file2.removedControls);
+      const risks = sum(file2.riskMarkers);
+      const parts = [
+        removed > 0 ? `${plural2(removed, "removed control")} (${kinds(file2.removedControls, REMOVED_CONTROL_ORDER)})` : null,
+        risks > 0 ? `${plural2(risks, "risk marker")} (${kinds(file2.riskMarkers, RISK_MARKER_ORDER)})` : null,
+        file2.sizeCrossing === null ? null : `crossed ${file2.sizeCrossing.threshold} lines (now ${file2.sizeCrossing.headLines})`,
+        file2.branchGrowth > 0 ? `${plural2(file2.branchGrowth, "function")} grew past the branch threshold` : null,
+        file2.typeEscapes > 0 ? plural2(file2.typeEscapes, "type escape") : null
+      ].filter((part) => part !== null);
+      lines2.push(`${index + 1}. \`${safeCheckName(file2.path)}\`${file2.deletedFile ? " (deleted file)" : ""}: ${parts.join("; ")}`);
+    });
+    if (files2.length > MAX_GUIDE_FILES) lines2.push(`and ${plural2(files2.length - MAX_GUIDE_FILES, "more file")} with a signal.`);
+    if (structure.unmeasured > 0) lines2.push(`${plural2(structure.unmeasured, "production file")} could not be measured.`);
+  }
+  return [...lines2, "", "</details>"].join("\n");
 }
 function withScopeBlock(body, block) {
   return `${body}
@@ -13461,6 +13599,12 @@ function renderPreview(input) {
     for (const held of input.held) {
       const where = held.path === null ? "no anchor" : `${held.path}:${held.line ?? "?"}`;
       lines2.push(`  ${held.findingId ?? "-"} ${where} (${held.reason})`);
+    }
+  }
+  if (input.belowTier.length > 0) {
+    lines2.push(`Below the posting tier, not posted: ${input.belowTier.length}`);
+    for (const finding of input.belowTier) {
+      lines2.push(`  ${finding.findingId ?? "-"} ${finding.path ?? "no anchor"}:${finding.line ?? "?"} (${finding.severity})`);
     }
   }
   return lines2.join("\n");
@@ -14565,7 +14709,9 @@ var CONFIG_KEYS = {
     "scope_block_models",
     "evidence_block",
     "evidence_block_precedents",
-    "held_queue"
+    "held_queue",
+    "min_posted_tier",
+    "reading_guide"
   ],
   static_evidence: ["enabled", "env_passthrough", "commands"],
   "static_evidence.commands[]": ["name", "run", "timeout_seconds", "version"],
@@ -15062,6 +15208,8 @@ function readVerdictPolicy(block, result) {
   policy.evidenceBlock = enabled2("evidence_block", DEFAULT_VERDICT_POLICY.evidenceBlock);
   policy.evidenceBlockPrecedents = enabled2("evidence_block_precedents", DEFAULT_VERDICT_POLICY.evidenceBlockPrecedents);
   policy.heldQueue = enabled2("held_queue", DEFAULT_VERDICT_POLICY.heldQueue);
+  policy.minPostedTier = choice("min_posted_tier", POSTED_TIERS, DEFAULT_VERDICT_POLICY.minPostedTier);
+  policy.readingGuide = enabled2("reading_guide", DEFAULT_VERDICT_POLICY.readingGuide);
 }
 var TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 function readQueue(block, result) {
@@ -17461,6 +17609,7 @@ function refusal(head, reason2) {
       ci: null,
       run: null,
       held: [],
+      belowTier: [],
       complexity: null,
       humanReviewNote: null,
       wouldHaveEvent: null,
@@ -17545,7 +17694,7 @@ async function carriedApproval(options, run, reasons) {
 }
 async function staleRequest(options, planned, reasons) {
   const severities = [
-    ...[...planned.inline, ...planned.unanchored].map((finding) => finding.severity),
+    ...[...planned.inline, ...planned.unanchored, ...planned.belowTier].map((finding) => finding.severity),
     ...planned.held.map((held) => held.severity)
   ];
   if (severities.some((severity) => severity === null || severity === "blocking" || severity === "important")) return null;
@@ -17657,13 +17806,13 @@ async function computeVerdict(options) {
   if (!SHA2.test(head)) return refusal(options.head, "--head must be the full commit sha the review read");
   const run = recordedRun(options, head);
   if (typeof run === "string") return refusal(head, run);
-  const planned = planFindings(options.review, run, (id) => runDetail(options.db, id));
+  const policy = verdictPolicy(options.policy);
+  const planned = planFindings(options.review, run, (id) => runDetail(options.db, id), policy.minPostedTier);
   const actual = await readHead(options.client, options.repository, options.pullNumber);
   const headMoved = actual !== head;
   const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {});
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === "high";
-  const policy = verdictPolicy(options.policy);
   const lookupReasons = [];
   const carriedReviewUrl = !headMoved && policy.carryApprovalOnUnchanged ? await carriedApproval(options, run, lookupReasons) : null;
   const pathRule = policy.malformedApprovalPaths !== null || policy.neverApprovePaths.length > 0 || policy.onlyApprovePaths.length > 0;
@@ -17718,13 +17867,16 @@ async function computeVerdict(options) {
     alreadyInline = full2.comments.length - unsent.length;
     const evidence = policy.evidenceBlock ? withEvidenceBlocks(unsent, planned, policy) : { comments: unsent, blocks: 0 };
     evidenceBlocks = evidence.blocks;
-    const body = policy.scopeBlock ? withScopeBlock(full2.body, scopeBlock(run, planned, policy)) : full2.body;
+    let body = full2.body;
+    if (policy.readingGuide) body = withScopeBlock(body, readingGuide(run));
+    if (policy.scopeBlock) body = withScopeBlock(body, scopeBlock(run, planned, policy));
     payload = { ...full2, body: withAnnotations(body, decision.annotations), comments: evidence.comments };
     preview = renderPreview({
       repository: options.repository,
       pullNumber: options.pullNumber,
       payload,
       held: planned.held,
+      belowTier: planned.belowTier,
       alreadyInline,
       withheldSuggestions
     });
@@ -17742,6 +17894,13 @@ async function computeVerdict(options) {
       ci,
       run: run.reviewRunId,
       held: planned.held,
+      belowTier: planned.belowTier.map((finding) => ({
+        findingId: finding.findingId,
+        severity: finding.severity,
+        path: finding.path,
+        line: finding.line,
+        reason: `below verdict.min_posted_tier (${policy.minPostedTier})`
+      })),
       complexity,
       humanReviewNote: humanReviewNote(complexity),
       wouldHaveEvent: needsHuman ? planned.mapped : null,
@@ -17978,6 +18137,7 @@ async function postReview(options) {
           pullNumber: options.pullNumber,
           payload,
           held: verdict2.held,
+          belowTier: verdict2.belowTier,
           alreadyInline: verdict2.alreadyInline,
           withheldSuggestions: verdict2.withheldSuggestions
         })
@@ -19491,6 +19651,16 @@ var COMMAND_HELP = {
       "                                          reason, in `review --json` (heldQueue), the job summary",
       "                                          inside GitHub Actions and the watcher report, never on",
       "                                          the pull request; the verdict is unchanged",
+      "  verdict.min_posted_tier: nit            nit posts every tier; minor, important or blocking",
+      "                                          withholds a verified finding below it, which stays in",
+      '                                          the record, is listed in "belowTier" and counted in the',
+      "                                          scope block. The five categories no suppression may",
+      "                                          reach post at any tier, and a withheld finding above a",
+      "                                          nit still caps an approval at COMMENT",
+      '  verdict.reading_guide: false            true puts a collapsed "Reading guide" before the scope',
+      "                                          block, listing the changed files that carry a structural",
+      "                                          signal, most first, from the recorded counts; never",
+      "                                          a finding, a line number or source text",
       '  An annotation names at most five checks and appears in "annotations".',
       "Reads: the validated review on stdin; with review.suggestions, each file a suggestion",
       "  replaces lines of, at the head (GET contents).",
@@ -30050,6 +30220,7 @@ function explainCommand(argv) {
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
     console.log(describeProvenance(detail.provenance));
     console.log(describeChecks(detail.checks));
+    console.log(describeStructure(detail.structure));
     for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
     const shallow = shallowPassWarning(detail.stages, detail.findings.length);
     if (shallow !== null) console.log(`Warning ${shallow}`);
@@ -31941,6 +32112,7 @@ function recordCommand(argv) {
   let manifestMode = null;
   let scope;
   let complexity = null;
+  let structure;
   const knownPaths = /* @__PURE__ */ new Set();
   const pullFiles = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
@@ -31965,6 +32137,10 @@ function recordCommand(argv) {
       if (manifest.complexity !== void 0 && manifest.complexity !== null) {
         complexity = parseComplexity(manifest.complexity);
         if (complexity === null) console.error(`The complexity assessment in ${filesFile} is malformed; recording without it.`);
+      }
+      if (manifest.structure !== void 0 && manifest.structure !== null) {
+        structure = recordedStructure(manifest.structure) ?? void 0;
+        if (structure === void 0) console.error(`The structure signals in ${filesFile} are malformed; recording without them.`);
       }
     } catch {
       console.error(`Cannot read ${filesFile}; recording without pull-request scope.`);
@@ -32291,6 +32467,7 @@ function recordCommand(argv) {
       stages,
       ...checks === void 0 ? {} : { checks },
       ...reproductions === void 0 ? {} : { reproductions },
+      ...structure === void 0 ? {} : { structure },
       toolSignals,
       conventions,
       provenance: {

@@ -8,6 +8,8 @@ import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
 import { parseComplexity, type ComplexityAssessment } from '../diff/complexity.ts';
 import { matchCarried, type CarriedFinding } from '../diff/carry.ts';
+import type { RemovedControlKind } from '../diff/removed-controls.ts';
+import type { RiskMarkerKind } from '../diff/risk-markers.ts';
 import type { TieBreak } from '../verify/reconcile.ts';
 import type { FollowUpState } from './follow-ups.ts';
 import type { VerifiedSimplification } from '../simplification.ts';
@@ -530,6 +532,8 @@ export interface RecordRunInput {
   provenance?: RunProvenanceInput | undefined;
   /** What the static checks and the symbol search did; see `recordedChecks`. Absent for a run that was not given them. */
   checks?: RecordedChecks | undefined;
+  /** The manifest's structural signals as per-file counts; see `recordedStructure`. Absent for a run recorded without them. */
+  structure?: RecordedStructure | undefined;
   /** The static signals of `evidence.json`, with repository-relative paths, for each finding's `toolSignal`. */
   toolSignals?: readonly EvidenceSignal[] | undefined;
   /** The convention documents `conventions` returned, for each finding's `conventionQuotes`. */
@@ -729,6 +733,153 @@ export function describeChecks(checks: RecordedChecks | null): string {
   const issues =
     checks.issuesRead === undefined ? '' : `; linked issues ${checks.issuesRead.length === 0 ? 'none' : checks.issuesRead.map((n) => `#${n}`).join(', ')}`;
   return `Checks ${staticParts.length === 0 ? 'no static checks' : staticParts.join('; ')}; ${symbols}${issues}`;
+}
+
+/**
+ * The order the reading guide names kinds in. A `Record` keyed by each closed
+ * union, so a kind added to the scanners without a place here fails the
+ * typecheck; an array checked with `satisfies` would not.
+ */
+export const REMOVED_CONTROL_ORDER: Readonly<Record<RemovedControlKind, number>> = { guard: 0, refusal: 1, decorator: 2, middleware: 3, 'allowlist-entry': 4 };
+export const RISK_MARKER_ORDER: Readonly<Record<RiskMarkerKind, number>> = { 'new-route': 0, 'lock-or-async': 1, 'string-built-query': 2, unsafe: 3 };
+
+export interface RecordedFileSignals {
+  path: string;
+  /** True when every entry for the path came from a deleted file (`removedControls[].deletedFile`). */
+  deletedFile: boolean;
+  removedControls: Partial<Record<RemovedControlKind, number>>;
+  riskMarkers: Partial<Record<RiskMarkerKind, number>>;
+  /** The first crossing recorded for the path, or null. */
+  sizeCrossing: { headLines: number; threshold: number } | null;
+  /** Functions whose added decision points crossed the threshold. */
+  branchGrowth: number;
+  typeEscapes: number;
+}
+
+/**
+ * A manifest's structural signals as per-file counts, kept with the run so the
+ * reading guide (docs/adr/0028) is built from the record. Counts and not the
+ * signals themselves: the store keeps no source text beyond a finding's own
+ * words, `removedControls[].text` is a removed source line, and the guide needs
+ * none of it.
+ */
+export interface RecordedStructure {
+  /** Every changed path with at least one signal, sorted by path. Counts only; no source text. */
+  files: RecordedFileSignals[];
+  /** `StructureSignals.unmeasured.count`. */
+  unmeasured: number;
+}
+
+const STRUCTURE_LISTS = ['sizeCrossings', 'branchGrowth', 'typeEscapes', 'removedControls', 'riskMarkers'] as const;
+
+/** A manifest's `structure` aggregated per path; null for a value that is not an object with its five lists. */
+/**
+ * A path as the repository names it. An absolute, home-relative, drive or
+ * parent-climbing path can only come from a machine's own layout, and the
+ * reading guide posts paths, so such an entry is dropped rather than shown.
+ */
+export const repositoryPath = (path: string): boolean => path !== '' && !/^[\\/]/u.test(path) && !MACHINE_PATH.test(path);
+
+export function recordedStructure(raw: unknown): RecordedStructure | null {
+  const value = asRecord(raw);
+  if (value === null || !STRUCTURE_LISTS.every((list) => Array.isArray(value[list]))) return null;
+  const files = new Map<string, RecordedFileSignals>();
+  // Entries per path, and how many of them a deleted file produced; only a
+  // removed control can say so, since every other signal is on an added line.
+  const entries = new Map<string, number>();
+  const deleted = new Map<string, number>();
+  const entryOf = (entry: unknown): Record<string, unknown> | null => {
+    const record = asRecord(entry);
+    return record !== null && typeof record['path'] === 'string' && repositoryPath(record['path']) ? record : null;
+  };
+  // Called only for an entry that counts, so a path with no signal is never listed.
+  const fileOf = (record: Record<string, unknown>): RecordedFileSignals => {
+    const path = record['path'] as string;
+    let file = files.get(path);
+    if (file === undefined) {
+      file = { path, deletedFile: false, removedControls: {}, riskMarkers: {}, sizeCrossing: null, branchGrowth: 0, typeEscapes: 0 };
+      files.set(path, file);
+    }
+    entries.set(path, (entries.get(path) ?? 0) + 1);
+    return file;
+  };
+  // Own-property checks: `in` would admit `constructor` and the other prototype names.
+  for (const entry of value['removedControls'] as unknown[]) {
+    const record = entryOf(entry);
+    const kind = record?.['kind'];
+    if (record === null || typeof kind !== 'string' || !Object.hasOwn(REMOVED_CONTROL_ORDER, kind)) continue;
+    const file = fileOf(record);
+    file.removedControls[kind as RemovedControlKind] = (file.removedControls[kind as RemovedControlKind] ?? 0) + 1;
+    if (record['deletedFile'] === true) deleted.set(file.path, (deleted.get(file.path) ?? 0) + 1);
+  }
+  for (const entry of value['riskMarkers'] as unknown[]) {
+    const record = entryOf(entry);
+    const kind = record?.['kind'];
+    if (record === null || typeof kind !== 'string' || !Object.hasOwn(RISK_MARKER_ORDER, kind)) continue;
+    const file = fileOf(record);
+    file.riskMarkers[kind as RiskMarkerKind] = (file.riskMarkers[kind as RiskMarkerKind] ?? 0) + 1;
+  }
+  for (const entry of value['typeEscapes'] as unknown[]) {
+    const record = entryOf(entry);
+    if (record !== null) fileOf(record).typeEscapes += 1;
+  }
+  for (const entry of value['branchGrowth'] as unknown[]) {
+    const record = entryOf(entry);
+    if (record !== null) fileOf(record).branchGrowth += 1;
+  }
+  for (const entry of value['sizeCrossings'] as unknown[]) {
+    const record = entryOf(entry);
+    if (record === null || !Number.isInteger(record['headLines']) || !Number.isInteger(record['threshold'])) continue;
+    const file = fileOf(record);
+    // The first crossing per path counts; a second is ignored, not summed.
+    if (file.sizeCrossing === null) file.sizeCrossing = { headLines: record['headLines'] as number, threshold: record['threshold'] as number };
+  }
+  for (const file of files.values()) file.deletedFile = (deleted.get(file.path) ?? 0) === entries.get(file.path);
+  const unmeasured = asRecord(value['unmeasured'])?.['count'];
+  return {
+    files: [...files.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+    unmeasured: Number.isInteger(unmeasured) ? (unmeasured as number) : 0,
+  };
+}
+
+/** The stored structure, or null for a row recorded before it existed or one that does not hold it. */
+function storedStructure(raw: unknown): RecordedStructure | null {
+  const value = asRecord(raw);
+  if (value === null || !Array.isArray(value['files']) || !Number.isInteger(value['unmeasured'])) return null;
+  // A kind outside its table is as malformed as a non-integer count: the guide prints kinds as text.
+  const counts = (table: unknown, order: Readonly<Record<string, number>>): Partial<Record<string, number>> | null => {
+    const record = asRecord(table);
+    return record !== null && Object.entries(record).every(([kind, count]) => Object.hasOwn(order, kind) && Number.isInteger(count))
+      ? (record as Partial<Record<string, number>>)
+      : null;
+  };
+  const files: RecordedFileSignals[] = [];
+  for (const entry of value['files']) {
+    const file = asRecord(entry);
+    if (file === null || typeof file['path'] !== 'string' || typeof file['deletedFile'] !== 'boolean') return null;
+    const removedControls = counts(file['removedControls'], REMOVED_CONTROL_ORDER);
+    const riskMarkers = counts(file['riskMarkers'], RISK_MARKER_ORDER);
+    const crossing = file['sizeCrossing'] === null ? null : asRecord(file['sizeCrossing']);
+    if (removedControls === null || riskMarkers === null || !Number.isInteger(file['branchGrowth']) || !Number.isInteger(file['typeEscapes'])) return null;
+    if (crossing !== null && !(Number.isInteger(crossing['headLines']) && Number.isInteger(crossing['threshold']))) return null;
+    files.push({
+      path: file['path'],
+      deletedFile: file['deletedFile'],
+      removedControls: removedControls as Partial<Record<RemovedControlKind, number>>,
+      riskMarkers: riskMarkers as Partial<Record<RiskMarkerKind, number>>,
+      sizeCrossing: crossing === null ? null : { headLines: crossing['headLines'] as number, threshold: crossing['threshold'] as number },
+      branchGrowth: file['branchGrowth'] as number,
+      typeEscapes: file['typeEscapes'] as number,
+    });
+  }
+  return { files, unmeasured: value['unmeasured'] as number };
+}
+
+/** The `Structure` line `explain` prints. */
+export function describeStructure(structure: RecordedStructure | null): string {
+  if (structure === null) return 'Structure not recorded';
+  const count = structure.files.length;
+  return `Structure ${count} file${count === 1 ? '' : 's'} with a signal, ${structure.unmeasured} unmeasured`;
 }
 
 export interface StageTiming {
@@ -1037,6 +1188,7 @@ export function recordRun(
         ...(input.followUps === undefined || input.followUps.length === 0 ? {} : { followUps: input.followUps }),
         ...(input.checks === undefined ? {} : { checks: input.checks }),
         ...(input.reproductions === undefined ? {} : { reproductions: markHeld(input.reproductions, input.held ?? []) }),
+        ...(input.structure === undefined ? {} : { structure: input.structure }),
       }),
       new Date().toISOString(),
       JSON.stringify(input.stages ?? []),
@@ -1098,6 +1250,8 @@ export interface RunDetail {
   checks: RecordedChecks | null;
   /** Null for rows recorded before reproductions were kept, or recorded without `--reproductions`. */
   reproductions: RecordedReproduction[] | null;
+  /** Null for rows recorded before the structure was kept, or from a manifest without one. */
+  structure: RecordedStructure | null;
 }
 
 function storedComplexity(raw: unknown): ComplexityAssessment | null {
@@ -1181,6 +1335,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     bodyFindings?: unknown;
     checks?: unknown;
     reproductions?: unknown;
+    structure?: unknown;
   };
 
   return {
@@ -1204,6 +1359,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     bodyFindings: Array.isArray(parsed.bodyFindings) ? (parsed.bodyFindings as VerifiedSimplification[]) : [],
     checks: storedChecks(parsed.checks),
     reproductions: storedReproductions(parsed.reproductions),
+    structure: storedStructure(parsed.structure),
     // Older rows predate the column, so absence is normal rather than an error.
     stages: ((): StageTiming[] => {
       const raw = row['stages_json'];

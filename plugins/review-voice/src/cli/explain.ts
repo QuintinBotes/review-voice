@@ -1,7 +1,7 @@
 import { describeScope, parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
 import { followUpHistory } from '../store/follow-ups.ts';
 import { openDatabase } from '../store/db.ts';
-import { runDetail, describeChecks, describeFamilies, describeProvenance, type RecordedReproduction } from '../store/runs.ts';
+import { runDetail, describeChecks, describeFamilies, describeProvenance, describeStructure, type RecordedReproduction } from '../store/runs.ts';
 import { describeStage, shallowPassWarning } from '../store/effort.ts';
 import { backingAt, challengeFacts } from '../publish/evidence-block.ts';
 import { planFindings } from '../publish/verdict.ts';
@@ -81,6 +81,7 @@ export function explainCommand(argv: string[]): number {
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
     console.log(describeProvenance(detail.provenance));
     console.log(describeChecks(detail.checks));
+    console.log(describeStructure(detail.structure));
     for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
     const shallow = shallowPassWarning(detail.stages, detail.findings.length);
     if (shallow !== null) console.log(`Warning ${shallow}`);
