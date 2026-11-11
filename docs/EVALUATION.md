@@ -555,6 +555,15 @@ Plus: repository-specific conventions, large diffs, generated files,
 dependency-only changes, CI and release configuration changes, security-sensitive
 changes, and rebased or outdated review threads.
 
+A scored fixture carries the context a reviewer needs. Its patch reads as a
+small real change, with the symbols it uses defined in the patch or under the
+fixture's `context/`, the files it names present once the fixture is built,
+and code that is valid for its language. A positive also carries what shows its
+defect from the repository, and it may accept more than one anchor when its
+defect has more than one honest place to comment. `fixtures/README.md` has the
+rules, and `test/fixture-consistency.test.mjs` checks the part that can be
+checked exactly.
+
 **No policy change activates without passing this suite.**
 
 ## What the fixtures assert
@@ -586,10 +595,13 @@ Three figures come out, written to `results.json` and shown by
 `review-voice evaluate --recall results.json`:
 
 - **Key-bug recall**: the share of positive fixtures with a validated finding
-  within 3 lines of `expect.line` on `expect.path`.
+  within 3 lines of an accepted anchor, on that anchor's path. The first anchor
+  is `expect.line` on `expect.path`, and a positive may accept more under
+  `expect.anchors`, each a place its own `asserts` text names as part of the
+  defect. The 3-line tolerance is per anchor and is the same for every fixture.
 - **Causal-line hit**: the same hit count over the positives that had any
-  finding on the expected file, so it separates "found the right place" from
-  "found the file at all".
+  finding on the path of an accepted anchor, so it separates "found the right
+  place" from "found the file at all".
 - **Clean silence**: the share of `negative` and `no-findings` fixtures whose
   review is exactly `No actionable findings.`
 
@@ -619,6 +631,16 @@ not a trend. The figures are goals, reported and not gated.
 The frozen fixture set must not be tuned against. Editing a prompt until these
 fixtures pass measures the prompt's fit to the fixtures, not the reviewer; a
 fixture that is wrong is fixed in its own change, with the reason.
+
+Two such changes shape how the figures read. A bare patch draws true reports
+about itself, such as a call to a function nothing defines or a CI step that
+runs a project file that is not there, and on a clean fixture each one counted
+against silence. A stronger reviewer therefore looked noisier than it was, and
+on a positive a verifier with no type or caller to read rejected the seeded
+defect. The fixtures now carry that context, so clean silence measures what the
+reviewer says about a consistent change. A positive that scored the finding
+its own `asserts` describes as a miss, because the finding sat on another line
+of the same defect, now names that line as an accepted anchor.
 
 ### Measured on 1.22.0
 
@@ -668,6 +690,11 @@ reviews gives the following figures:
 Of 97 recorded runs, these come from the 46 that have stage timings. Those
 runs are real pull requests of mixed size, across earlier releases. They do not
 compare with the fixture figures.
+
+This run predates both changes to the fixtures described above, so its
+figures do not compare with a run of the present set. Both fixtures it missed
+outside the 3-line window now accept a further anchor, and the line numbers of
+several fixtures have moved since.
 
 This is a single run. One pass per fixture is a noisy sample, as this section
 says above, so a difference of one fixture is noise, not a trend. This

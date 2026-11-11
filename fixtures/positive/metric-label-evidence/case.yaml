@@ -6,5 +6,5 @@ expect:
   min_findings: 1
   severity: nit
   path: src/dispatch.ts
-  line: 15
+  line: 11
   category: observability

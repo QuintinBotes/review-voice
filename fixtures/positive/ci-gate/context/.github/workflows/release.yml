@@ -1,0 +1,28 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm ci
+      - run: npm run build
+
+  verify:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm test
+
+  publish:
+    needs: [verify]
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm publish

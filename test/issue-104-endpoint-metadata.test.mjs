@@ -44,4 +44,9 @@ test('the corpus covers a preempted content-type filter and a document-only rest
   assert.match(read('fixtures/positive/runtime-endpoint-metadata/diff.patch'), /\.Accepts<ItemRequest>/);
   assert.match(negative, /No actionable findings\./);
   assert.match(read('fixtures/negative/document-only-endpoint-metadata/diff.patch'), /WithOpenApi/);
+  // A handler that binds its body has the framework answer 415 before any
+  // filter, with or without the metadata, so neither fixture would show what it asserts.
+  for (const fixture of ['positive/runtime-endpoint-metadata', 'negative/document-only-endpoint-metadata']) {
+    assert.match(read(`fixtures/${fixture}/diff.patch`), /Update\(HttpRequest request\)/, `${fixture} binds no body`);
+  }
 });

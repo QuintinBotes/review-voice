@@ -5,4 +5,7 @@ asserts: >
 expect:
   min_findings: 1
   path: src/orders/shadow.ts
-  line: 20
+  line: 24
+  anchors:
+    - { path: src/orders/shadow.ts, line: 14 }
+    - { path: src/orders/shadow.ts, line: 19 }
