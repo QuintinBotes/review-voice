@@ -109,9 +109,7 @@ const PROBE_TIMEOUT_MS = 30_000;
 /** The named preference domain the macOS probe tries to write through cfprefsd. */
 const PROBE_DOMAIN = 'review-voice.probe';
 const NOTIFYUTIL = '/usr/bin/notifyutil';
-/** How long the listener has, once the probe is back, to show it heard the probe's post. */
-const NOTIFY_GRACE_MS = 500;
-/** How long the listener has to register its key before the probe fails. */
+/** How long the listener has to print a key posted from outside before the probe fails. */
 const NOTIFY_READY_MS = 5_000;
 const CREDENTIAL_DIRS = ['.ssh', '.gnupg', '.aws', '.config/gh', 'Library/Keychains'];
 const CREDENTIAL_FILES = ['.netrc', '.npmrc', '.git-credentials'];
@@ -443,47 +441,70 @@ const firstLine = (text: string): string => text.split('\n').map((line) => line.
 
 const delay = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
 
-/** `notifyutil -1 <key>` outside the sandbox, for the one key the macOS probe posts. */
+/**
+ * `notifyutil -1 <escape> -1 <post> -1 <pre>` outside the sandbox, for three
+ * fresh keys. notifyd sends each notification to the listener's one port as it
+ * takes the post, and the listener prints each key as it arrives. It runs
+ * without -M, which passes each notification through a concurrent queue inside
+ * the listener, so that two which wait together are printed in either order.
+ * <pre> is registered last, since notifyutil registers its keys in the order
+ * given and one notified while it still has a key to register exits, crashes
+ * or goes deaf. So <pre> printed shows it holds all three.
+ */
 interface NotifyListener {
-  key: string;
-  /** What it printed once the probe was back, which is the key only if the probe's post got out. Stops it; called again, gives the same. */
-  end: () => Promise<string>;
+  /** The key the probe posts, which the listener prints only if that post got out. */
+  escape: string;
+  /**
+   * Posts the first or the last key from outside until the listener prints it,
+   * then says whether it has printed the escape key, or why it cannot say.
+   */
+  hear: (key: 'pre' | 'post') => Promise<boolean | string>;
+  /** Kills the listener with its group and waits for it to end; called again, does no more. */
+  end: () => Promise<void>;
 }
 
-/**
- * Starts the listener through the probe's own spawner and returns once
- * notifyd holds its key, so the probe cannot post before it listens, or why
- * it could not. A key exists in notifyd only while a process is registered
- * for it, so a state set from here reads back only once the listener holds
- * the key. The spawner gives no handle to kill by, so the listener is ended
- * by a post of its own key, and its timeout kills it otherwise.
- */
-async function listenForNotify(spawn: CommandSpawner, cwd: string): Promise<NotifyListener | string> {
-  const key = `rv.probe.${process.pid}.${randomBytes(4).toString('hex')}`;
-  const notifyutil = (args: string[]): Promise<CommandResult> => Promise.resolve(spawnInGroup(spawn, NOTIFYUTIL, cwd, 2 * PROBE_TIMEOUT_MS, {}, args));
+/** Started through the probe's own spawner, so a stop signal kills it with the probe. */
+function listenForNotify(spawn: CommandSpawner, cwd: string): NotifyListener {
+  const [pre, escape, post] = [0, 1, 2].map(() => `rv.probe.${process.pid}.${randomBytes(4).toString('hex')}`) as [string, string, string];
+  const killer = new AbortController();
+  let printed = '';
   let ended: CommandResult | undefined;
-  const listening = notifyutil(['-1', key]).then((result) => {
-    ended = result;
-  });
-  let ending: Promise<string> | undefined;
-  const end = (): Promise<string> =>
-    (ending ??= (async () => {
-      await Promise.race([listening, delay(NOTIFY_GRACE_MS)]);
-      const heard = ended?.stdout ?? '';
-      if (ended === undefined) await notifyutil(['-p', key]);
-      await listening;
-      return heard;
-    })());
-  const deadline = Date.now() + NOTIFY_READY_MS;
-  while (ended === undefined && Date.now() < deadline) {
-    if ((await notifyutil(['-s', key, '1', '-g', key])).stdout.trim() === `${key} 1`) return { key, end };
-    await delay(20);
-  }
-  // Judged before the stop, which always leaves the listener ended.
-  const unregistered = ended === undefined;
-  await end();
-  const why = unregistered ? `the key was not registered within ${NOTIFY_READY_MS / 1000}s` : ended?.error?.message ?? `notifyutil exited ${String(ended?.status)}`;
-  return `could not listen for notifications for the probe: ${why}`;
+  const listening = Promise.resolve(
+    spawnInGroup(spawn, NOTIFYUTIL, cwd, 2 * PROBE_TIMEOUT_MS, {}, ['-1', escape, '-1', post, '-1', pre], {
+      onStdout: (text) => (printed += text),
+      signal: killer.signal,
+    }),
+  ).then(
+    (result) => void (ended = result),
+    (error: Error) => void (ended = { status: null, stdout: '', stderr: '', error }),
+  );
+  const hear = async (which: 'pre' | 'post'): Promise<boolean | string> => {
+    const key = which === 'pre' ? pre : post;
+    // Whole lines only, since the last piece read can stop inside one.
+    const lines = (): string[] => printed.split('\n').slice(0, -1);
+    // Printed before this posts it, so it would not show that the listener still heard at this point.
+    const early = lines().includes(key);
+    const deadline = Date.now() + NOTIFY_READY_MS;
+    // A post made before the listener holds its keys is lost, so a key is posted until it is printed.
+    while (!early && !lines().includes(key) && ended === undefined && Date.now() < deadline) {
+      await spawnInGroup(spawn, NOTIFYUTIL, cwd, NOTIFY_READY_MS, {}, ['-p', key]);
+      await delay(20);
+    }
+    const heard = lines();
+    // Before the probe, the first key alone. After it, the other two in either order: a port that filled is sent what it missed in an order of notifyd's own, and the escape key is the escape wherever it is printed.
+    const odd = heard.find((line, at) => (at === 0 ? line !== pre : which === 'pre' || (line !== escape && line !== post)) || heard.indexOf(line) !== at);
+    if (odd !== undefined) return `notifyutil printed an unexpected line: ${odd}`;
+    if (heard.includes(escape)) return true;
+    if (early) return `notifyutil printed ${key} before it was posted`;
+    // It still had the escape key to wait for, so one that ended, even after it printed this key, can no longer say.
+    if (ended !== undefined) return ended.error?.message ?? `notifyutil exited ${String(ended.status ?? 'on a signal')}`;
+    return heard.includes(key) ? false : `no post was heard within ${NOTIFY_READY_MS / 1000}s`;
+  };
+  const end = async (): Promise<void> => {
+    killer.abort();
+    await listening;
+  };
+  return { escape, hear, end };
 }
 
 /**
@@ -528,10 +549,9 @@ export async function runProbe(ctx: ReproduceContext, layout: Layout): Promise<S
   let listener: NotifyListener | null = null;
   try {
     if (mechanism === 'sandbox-exec') {
-      // Through the spawner, so a stop signal kills it with the probe.
-      const started = await listenForNotify(ctx.spawn ?? spawnCommand, layout.reproDir);
-      if (typeof started === 'string') return { platform, mechanism: 'none', probe: started };
-      listener = started;
+      listener = listenForNotify(ctx.spawn ?? spawnCommand, layout.reproDir);
+      const ready = await listener.hear('pre');
+      if (typeof ready === 'string') return { platform, mechanism: 'none', probe: `could not listen for notifications for the probe: ${ready}` };
       writeFileSync(layout.profile, sandboxProfile(layout));
     }
     rmSync(layout.escape, { force: true });
@@ -540,7 +560,7 @@ export async function runProbe(ctx: ReproduceContext, layout: Layout): Promise<S
     const port = typeof address === 'object' && address !== null ? address.port : 0;
     const script = probeScript({
       port, escape: layout.escape, canary: layout.canary, overwrite,
-      pid: mechanism === 'sandbox-exec' ? process.pid : null, domain: mechanism === 'sandbox-exec' ? PROBE_DOMAIN : null, notify: listener?.key ?? null,
+      pid: mechanism === 'sandbox-exec' ? process.pid : null, domain: mechanism === 'sandbox-exec' ? PROBE_DOMAIN : null, notify: listener?.escape ?? null,
     });
     writeFileSync(layout.probeFile, `${script}\n`);
     const before = contentOf(overwrite);
@@ -548,23 +568,27 @@ export async function runProbe(ctx: ReproduceContext, layout: Layout): Promise<S
     // A connection the kernel queued while the probe ran is accepted here.
     await new Promise((done) => setImmediate(done));
     const said = new Set(/^escaped by (.+)$/m.exec(result.stdout)?.[1]?.split(', ') ?? []);
+    // notifyd took the probe's post before this one and sends in that order to a port with room, so an escape is printed before the last key.
+    const notified = listener === null ? false : await listener.hear('post');
     // Seen from outside too, so a probe that lied or was cut short still fails.
     const outside: Record<string, boolean> = {
       write: existsSync(layout.escape),
       connect: connections > 0,
       profile: contentOf(overwrite) !== before,
-      notify: listener !== null && (await listener.end()).trim() !== '',
+      notify: notified === true,
     };
     const seen = (['write', 'read', 'connect', 'profile', 'signal', 'preference', 'notify'] as const).filter((name) => said.has(name) || outside[name] === true);
     if (seen.length > 0) return { platform, mechanism: 'none', probe: `escaped by ${seen.join(', ')}` };
+    if (typeof notified === 'string') return { platform, mechanism: 'none', probe: `could not tell whether the probe posted a notification: ${notified}` };
     if (result.error === undefined && result.status === 0 && result.stdout.trim() === 'RV_PROBE_OK') return { platform, mechanism, probe: 'passed' };
     const why = result.error === undefined ? firstLine(result.stderr) || firstLine(result.stdout) || `exited ${String(result.status)}` : result.error.message;
     return { platform, mechanism: 'none', probe: why.startsWith(`${mechanism}:`) ? why : `${mechanism}: ${why}` };
   } finally {
+    // First, so a removal that throws cannot leave it running.
+    await listener?.end();
     withdraw();
     server.close();
     clear();
-    await listener?.end();
   }
 }
 

@@ -164,11 +164,42 @@ shared memory segments by default), so a run can use them all up. File reads of
 terminal devices (`/dev/tty*`, `/dev/pty*`, `/dev/cu.*` and `/dev/ptmx`) are
 denied after every read the profile allows, since a run, or a process it leaves
 behind, could otherwise take what is typed into another session. The probe
-keeps every check it had and adds one: the CLI starts `notifyutil -1` for a
-fresh key outside the sandbox, the probe posts that key from inside, and any
-output from the listener is the escape `notify`, since a refused post exits 0
-too. The listener is always stopped. As before, a probe that fails means
-nothing runs.
+keeps every check it had and adds one, a notification post, which a listener
+outside the sandbox judges, since a refused post exits 0 too. The CLI starts
+one listener, `notifyutil -1 <escape> -1 <post> -1 <pre>`, for three fresh
+random keys, and reads each line as the listener prints it. The three keys
+share one port, and notifyd sends to it in the order it takes the posts while
+the port has room. The listener runs without `-M`, which passes each
+notification through a concurrent queue inside the listener: with it, two
+notifications that waited together were printed in the wrong order in 12 of 150
+trials on this Mac, and without it in none of 450. Before the probe the CLI
+posts `<pre>` until the listener prints it. `<pre>` is the last key the
+listener registers, because notifyutil registers its keys in the order given,
+and one notified of a key while it still has others to register exits, crashes
+or goes deaf: with `<pre>` posted without pause as the listener started, 61 of
+200 listeners did so on this Mac when `<pre>` was registered first, and none of
+300 when it was registered last. So `<pre>` printed, and nothing else, shows
+the listener holds all three keys and hears; if that takes more than 5 seconds,
+the listener ends first, or it has printed any other line, the probe fails. The
+probe posts `<escape>` from inside. Once it is back the CLI posts `<post>` and
+waits, up to 5 seconds, for the listener to print it. notifyd took the probe's
+post first, so `<escape>` printed before `<post>` is the escape `notify`, and
+`<post>` with no `<escape>` shows the post was refused. `<post>` counts only
+when the listener prints it after the CLI began to post it: one that had
+printed it already, before the probe or while it ran, has not shown that it
+still heard once the probe was back, so the CLI does not post and the probe
+fails. The order is not all the CLI relies on. A listener held still until its
+port fills is sent what it missed newest registration first, which puts
+`<post>` ahead of `<escape>`, so `<escape>` printed after `<post>` is the
+escape `notify` as well; the CLI could miss it only by reading `<post>` in the
+instant before `<escape>` follows, and only when the listener was stopped for
+seconds before the probe and again while it ran. Anything else fails the probe:
+a listener that never prints `<post>`, one that printed `<post>` before the CLI
+posted it, one that has ended, however it ended, while it still had `<escape>`
+to wait for, or one that prints any other line. So no fixed wait decides the
+answer, and a listener that died is never read as one that heard nothing. The
+CLI never posts `<escape>` itself, and kills the listener with its process
+group whatever happened. As before, a probe that fails means nothing runs.
 
 A process a reproduction starts can leave the process group and outlive the run
 on macOS, where no pid namespace ends it. It inherits the CPU limit (`ulimit -t

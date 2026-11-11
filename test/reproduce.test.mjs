@@ -157,39 +157,72 @@ const NOTIFYUTIL = '/usr/bin/notifyutil';
 const notifyKey = (options) => /"notify":"([^"]+)"/.exec(options.args.at(-1))?.[1];
 
 /**
- * notifyutil as the macOS probe uses it outside the sandbox: `-1 <key>` waits
- * for one post of its key, `-s <key> 1 -g <key>` reads back 1 only while a
- * listener holds the key, and `-p <key>` ends that listener with the key.
+ * notifyd and notifyutil as the macOS probe uses them outside the sandbox.
+ * `-1 <escape> -1 <post> -1 <pre>` takes its keys in that order, the first
+ * `registers` ms after it starts (or never) and each of the others `between`
+ * ms after the one before. It prints each key once, as a post of it is
+ * delivered, and exits 0 once it has printed every key it holds, as the real
+ * one does, so one that hears a key while it still has others to take exits
+ * with those unheard. An abort kills it, and once it has ended it prints
+ * nothing. Posts are delivered in the order they were made, each `lag` ms
+ * after the one before, and one delivered before the listener holds that key
+ * is lost. With -M the real one prints two that wait together in either order,
+ * so the fake refuses it.
  */
-function fakeNotify() {
-  const listening = new Map();
-  const answer = (stdout) => ({ status: 0, stdout, stderr: '' });
-  const notify = (args) => {
-    const [flag, key] = args;
-    if (flag === '-1') return new Promise((done) => listening.set(key, done));
-    if (flag === '-s') return answer(`${key} ${listening.has(key) ? 1 : 0}\n`);
-    assert.deepEqual(args, ['-p', key], 'a post is all that is left');
-    listening.get(key)?.(answer(`${key}\n`));
-    listening.delete(key);
-    return answer('');
+function fakeNotify({ registers = 0, between = 0 } = {}) {
+  const listeners = new Set();
+  let delivered = Promise.resolve();
+  const post = (key, lag = 0) => {
+    delivered = delivered.then(() => new Promise((done) => setTimeout(done, lag))).then(() => {
+      for (const listener of listeners) if (!listener.deaf && listener.held.includes(key) && !listener.heard.includes(key)) listener.say(key);
+    });
   };
-  return { notify, listening: () => [...listening.keys()] };
+  const notify = (args, options = {}) => {
+    if (args[0] === '-p') {
+      assert.equal(args.length, 2, 'a post of one key');
+      post(args[1]);
+      return { status: 0, stdout: '', stderr: '' };
+    }
+    assert.deepEqual([args.length, ...args.filter((_, at) => at % 2 === 0)], [6, '-1', '-1', '-1'], 'one listener for three keys, and no -M');
+    return new Promise((done) => {
+      let stdout = '';
+      const listener = {
+        // As the probe uses them: the first it posts, the one the probe posts, and the last.
+        keys: [args[5], args[1], args[3]], heard: [], held: [], deaf: false,
+        say: (line) => {
+          if (!listeners.has(listener)) return;
+          stdout += `${line}\n`;
+          options.onStdout?.(`${line}\n`);
+          if (listener.keys.includes(line)) listener.heard.push(line);
+          if (listener.heard.length > 0 && listener.held.every((key) => listener.heard.includes(key))) listener.end({ status: 0, stderr: '' });
+        },
+        end: (result) => {
+          if (listeners.delete(listener)) done({ ...result, stdout });
+        },
+      };
+      listeners.add(listener);
+      const aborted = Object.assign(new Error(`spawn ${NOTIFYUTIL} ABORT_ERR`), { code: 'ABORT_ERR' });
+      options.signal?.addEventListener('abort', () => listener.end({ status: null, stderr: '', error: aborted }));
+      if (registers !== null) [args[1], args[3], args[5]].forEach((key, at) => setTimeout(() => listener.held.push(key), registers + at * between));
+    });
+  };
+  return { notify, post, listening: () => [...listeners].flatMap((listener) => listener.keys), listener: () => [...listeners][0] };
 }
 
 /**
  * A spawn that passes the probe and answers each reproduction run from `runs`
  * in turn; `onRun` sees the run as it happens, so a test can act as the code
- * under review would. notifyutil is answered by fakeNotify, which `onProbe`
+ * under review would. notifyutil is answered by `notifyd`, which `onProbe`
  * is given too, so a probe can post as one that got out would.
  */
-function fakeSpawn(runs = [], { onRun = () => {}, probe = { status: 0, stdout: 'RV_PROBE_OK\n', stderr: '' }, onProbe = () => {} } = {}) {
+function fakeSpawn(runs = [], { onRun = () => {}, probe = { status: 0, stdout: 'RV_PROBE_OK\n', stderr: '' }, onProbe = () => {}, notifyd = fakeNotify() } = {}) {
   const calls = [];
-  const { notify, listening } = fakeNotify();
+  const { notify, listening } = notifyd;
   const spawn = async (command, options) => {
-    if (command === NOTIFYUTIL) return notify(options.args);
+    if (command === NOTIFYUTIL) return notify(options.args, options);
     calls.push({ command, options });
     if (isProbe(options)) {
-      onProbe(options, notify);
+      onProbe(options, notifyd);
       return probe;
     }
     onRun(options);
@@ -1078,7 +1111,16 @@ test('an escape the probe reports, or one seen from outside, is mechanism none',
   // On macOS the profile is what a broken sandbox overwrites, and a post the listener outside hears is the escape notify.
   for (const platform of ['linux', 'darwin']) {
     const layout = layoutOf(context(repo, { platform }));
-    const post = (options, notify) => notify(['-p', notifyKey(options)]);
+    const post = (options, notifyd) => notifyd.post(notifyKey(options));
+    const postToOneThatDies = (options, notifyd) => {
+      const listener = notifyd.listener();
+      const say = listener.say;
+      listener.say = (line) => {
+        say(line);
+        listener.end({ status: 1, stderr: '' });
+      };
+      post(options, notifyd);
+    };
     const cases = [
       [{ probe: { status: 0, stdout: 'escaped by write, connect\n', stderr: '' } }, 'escaped by write, connect'],
       [{ probe: { status: 0, stdout: 'escaped by signal\n', stderr: '' } }, 'escaped by signal'],
@@ -1089,6 +1131,8 @@ test('an escape the probe reports, or one seen from outside, is mechanism none',
         // Heard outside though the probe printed it was confined, since a refused post exits 0 too.
         [{ onProbe: post }, 'escaped by notify'],
         [{ onProbe: post, probe: { status: 0, stdout: 'escaped by write\n', stderr: '' } }, 'escaped by write, notify'],
+        // Printed already, so a listener that dies before the last key has still shown the escape.
+        [{ onProbe: postToOneThatDies }, 'escaped by notify'],
       ] : []),
     ];
     for (const [options, probe] of cases) {
@@ -1106,8 +1150,8 @@ test('on macOS a notification listener that cannot start or never registers fail
   const missing = Object.assign(new Error('spawn /usr/bin/notifyutil ENOENT'), { code: 'ENOENT' });
   const cases = [
     [() => ({ status: null, stdout: '', stderr: '', error: missing }), 'could not listen for notifications for the probe: spawn /usr/bin/notifyutil ENOENT'],
-    // A listener that exits at once with nothing to say, so its key never reads back.
-    [(args) => ({ status: 0, stdout: args[0] === '-s' ? `${args[1]} 0\n` : '', stderr: '' }), 'could not listen for notifications for the probe: notifyutil exited 0'],
+    // A listener that exits at once with nothing to say, so it never prints the first key.
+    [() => ({ status: 0, stdout: '', stderr: '' }), 'could not listen for notifications for the probe: notifyutil exited 0'],
   ];
   for (const [notify, probe] of cases) {
     const calls = [];
@@ -1123,53 +1167,19 @@ test('on macOS a notification listener that cannot start or never registers fail
   }
 });
 
-test('on macOS the probe waits until notifyd holds the listener key, and a listener that never holds it fails the probe', async (t) => {
+test('on macOS the probe waits until the listener prints a first key posted from outside, and a listener that never does fails the probe', async (t) => {
   const repo = scratchRepository(t);
-  const timedOut = Object.assign(new Error('spawn /usr/bin/notifyutil ETIMEDOUT'), { code: 'ETIMEDOUT' });
-  /**
-   * notifyd holds a listener's key `after` ms after it starts, or never, and a
-   * post before that is lost. One that never holds it ends at its spawn
-   * timeout, which here comes at the stop post.
-   */
-  const notifier = (after) => {
-    const listeners = new Map();
-    const answer = (stdout) => ({ status: 0, stdout, stderr: '' });
-    const notify = (args) => {
-      const [flag, key] = args;
-      if (flag === '-1') {
-        return new Promise((done) => {
-          const listener = { done, held: false };
-          listeners.set(key, listener);
-          if (after !== null) setTimeout(() => (listener.held = true), after);
-        });
-      }
-      const listener = listeners.get(key);
-      if (flag === '-s') return answer(`${key} ${listener?.held ? 1 : 0}\n`);
-      if (listener?.held || after === null) {
-        listener?.done(listener.held ? answer(`${key}\n`) : { status: null, stdout: '', stderr: '', error: timedOut });
-        listeners.delete(key);
-      }
-      return answer('');
-    };
-    return { notify, listening: () => [...listeners.keys()] };
-  };
   const cases = [
-    // The probe posts as soon as it starts, so one started before the key is held would lose the post and pass.
+    // The probe posts as soon as it starts, so one started before the listener holds its keys would lose the post and pass.
     [150, 'escaped by notify', ['/usr/bin/sandbox-exec']],
-    [null, 'could not listen for notifications for the probe: the key was not registered within 5s', []],
+    [null, 'could not listen for notifications for the probe: no post was heard within 5s', []],
   ];
-  for (const [after, probe, spawned] of cases) {
-    const fake = notifier(after);
-    const calls = [];
-    const spawn = async (command, options) => {
-      if (command === NOTIFYUTIL) return fake.notify(options.args);
-      calls.push(command);
-      // A probe that got out, and printed that it was confined, since a refused post exits 0 too.
-      fake.notify(['-p', notifyKey(options)]);
-      return { status: 0, stdout: 'RV_PROBE_OK\n', stderr: '' };
-    };
-    assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn })), { platform: 'darwin', mechanism: 'none', probe }, probe);
-    assert.deepEqual(calls, spawned, `${probe}: what ran`);
+  for (const [registers, probe, spawned] of cases) {
+    const notifyd = fakeNotify({ registers });
+    const fake = fakeSpawn([], { notifyd, onProbe: (options) => notifyd.post(notifyKey(options)) });
+    // A probe that got out, and printed that it was confined, since a refused post exits 0 too.
+    assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn })), { platform: 'darwin', mechanism: 'none', probe }, probe);
+    assert.deepEqual(fake.calls.map((call) => call.command), spawned, `${probe}: what ran`);
     assert.deepEqual(fake.listening(), [], `${probe}: no listener is left`);
   }
 });
@@ -1178,11 +1188,186 @@ test('on macOS a probe whose wrapper cannot start still stops the notification l
   const repo = scratchRepository(t);
   const { notify, listening } = fakeNotify();
   const spawn = async (command, options) => {
-    if (command === NOTIFYUTIL) return notify(options.args);
+    if (command === NOTIFYUTIL) return notify(options.args, options);
     throw new Error('spawn sandbox-exec EAGAIN');
   };
   await assert.rejects(probeSandbox(context(repo, { platform: 'darwin', spawn })), /spawn sandbox-exec EAGAIN/);
   assert.deepEqual(listening(), [], 'no listener is left');
+});
+
+test('on macOS a probe whose removals throw still kills the notification listener', async (t) => {
+  const repo = scratchRepository(t);
+  const layout = layoutOf(context(repo, { platform: 'darwin' }));
+  // A directory where the escape file would be, which the removal after the probe refuses.
+  const fake = fakeSpawn([], { onProbe: () => mkdirSync(layout.escape) });
+  await assert.rejects(probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn })), { code: 'ERR_FS_EISDIR' });
+  assert.deepEqual(fake.listening(), [], 'no listener is left');
+});
+
+test('on macOS the probe passes once the last post from outside arrives with no escape before it, and the listener is killed', async (t) => {
+  const repo = scratchRepository(t);
+  const notifyd = fakeNotify();
+  const order = [];
+  let killer;
+  const spawn = async (command, options) => {
+    if (command !== NOTIFYUTIL) {
+      order.push(['probe', notifyKey(options)]);
+      return { status: 0, stdout: 'RV_PROBE_OK\n', stderr: '' };
+    }
+    order.push(options.args);
+    if (options.args[0] === '-1') killer = options.signal;
+    return notifyd.notify(options.args, options);
+  };
+  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn })), { platform: 'darwin', mechanism: 'sandbox-exec', probe: 'passed' });
+  const [listener, ...rest] = order;
+  // The first key posted is the last the listener registers.
+  const [pre, escape, post] = [listener[5], listener[1], listener[3]];
+  assert.equal(new Set([pre, escape, post]).size, 3, 'three keys');
+  for (const key of [pre, escape, post]) assert.match(key, new RegExp(`^rv\\.probe\\.${process.pid}\\.[0-9a-f]{8}$`), 'each fresh and random');
+  const at = rest.findIndex((call) => call[0] === 'probe');
+  assert.deepEqual(rest[at], ['probe', escape], 'the probe posts the escape key');
+  assert.ok(at > 0 && rest.slice(0, at).every((call) => call.join(' ') === `-p ${pre}`), 'only the first key is posted before the probe');
+  assert.ok(rest.length > at + 1 && rest.slice(at + 1).every((call) => call.join(' ') === `-p ${post}`), 'only the last key is posted after it, and never the escape key');
+  assert.equal(killer?.aborted, true, 'the listener is killed');
+  assert.deepEqual(notifyd.listening(), [], 'no listener is left');
+});
+
+test('on macOS an escape delivered late but before the last post is the escape notify', async (t) => {
+  const repo = scratchRepository(t);
+  // Later than a fixed grace would wait, and still taken before the post the CLI makes once the probe is back.
+  const fake = fakeSpawn([], { onProbe: (options, notifyd) => notifyd.post(notifyKey(options), 600) });
+  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn })), { platform: 'darwin', mechanism: 'none', probe: 'escaped by notify' });
+  assert.deepEqual(fake.listening(), [], 'no listener is left');
+});
+
+test('on macOS an escape key the listener prints after the last key is still the escape notify', async (t) => {
+  const repo = scratchRepository(t);
+  // As notifyd sends to a listener whose port had filled: the last key, then the escape key it had held back.
+  const onProbe = (options, notifyd) => {
+    const listener = notifyd.listener();
+    const say = listener.say;
+    listener.say = (line) => {
+      say(line);
+      if (line === listener.keys[2]) say(notifyKey(options));
+    };
+  };
+  const fake = fakeSpawn([], { onProbe });
+  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn })), { platform: 'darwin', mechanism: 'none', probe: 'escaped by notify' });
+  assert.deepEqual(fake.listening(), [], 'no listener is left');
+});
+
+test('on macOS a listener that prints a key before the first, or one key twice, fails the probe closed', async (t) => {
+  const repo = scratchRepository(t);
+  const cases = [
+    // The last key as soon as it starts, before anybody posted it.
+    [true, 'could not listen for notifications for the probe', []],
+    // The last key twice, though it listens for one notification of each.
+    [false, 'could not tell whether the probe posted a notification', ['/usr/bin/sandbox-exec']],
+  ];
+  for (const [early, what, spawned] of cases) {
+    const notifyd = fakeNotify();
+    const twice = () => {
+      const listener = notifyd.listener();
+      const say = listener.say;
+      listener.say = (line) => {
+        say(line);
+        if (line === listener.keys[2]) say(line);
+      };
+    };
+    const fake = fakeSpawn([], { notifyd, onProbe: twice });
+    let last;
+    const spawn = (command, options) => {
+      const ended = fake.spawn(command, options);
+      if (command === NOTIFYUTIL && options.args[0] === '-1') {
+        last = notifyd.listener().keys[2];
+        if (early) notifyd.listener().say(last);
+      }
+      return ended;
+    };
+    const state = await probeSandbox(context(repo, { platform: 'darwin', spawn }));
+    assert.deepEqual(state, { platform: 'darwin', mechanism: 'none', probe: `${what}: notifyutil printed an unexpected line: ${last}` }, what);
+    assert.deepEqual(fake.calls.map((call) => call.command), spawned, `${what}: what ran`);
+    assert.deepEqual(fake.listening(), [], `${what}: no listener is left`);
+  }
+});
+
+test('on macOS a listener notified of its first key while it still registers the others is never read as ready', async (t) => {
+  const repo = scratchRepository(t);
+  // The CLI posts from the moment the listener starts, and the real one exits, crashes or goes deaf when a key it holds is posted before it holds them all.
+  for (const [onProbe, probe] of [[() => {}, 'passed'], [(options, notifyd) => notifyd.post(notifyKey(options)), 'escaped by notify']]) {
+    const fake = fakeSpawn([], { notifyd: fakeNotify({ between: 100 }), onProbe });
+    const state = await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn }));
+    assert.deepEqual(state, { platform: 'darwin', mechanism: probe === 'passed' ? 'sandbox-exec' : 'none', probe });
+    assert.deepEqual(fake.listening(), [], `${probe}: no listener is left`);
+  }
+});
+
+test('on macOS a last key the listener prints before the CLI posts it fails the probe closed', async (t) => {
+  const repo = scratchRepository(t);
+  const cases = [
+    // With the first key, before the probe, so the first key alone no longer shows a listener that waits.
+    [true, 'could not listen for notifications for the probe: notifyutil printed an unexpected line: LAST', []],
+    // While the probe runs, so it does not show the listener still heard once the probe was back.
+    [false, 'could not tell whether the probe posted a notification: notifyutil printed LAST before it was posted', ['/usr/bin/sandbox-exec']],
+  ];
+  for (const [withFirst, probe, spawned] of cases) {
+    const notifyd = fakeNotify();
+    // A probe whose post got out, which a listener held still after the last key would never print.
+    const fake = fakeSpawn([], { notifyd, onProbe: () => notifyd.listener().say(notifyd.listener().keys[2]) });
+    const posts = [];
+    let first, last;
+    const spawn = (command, options) => {
+      const ended = fake.spawn(command, options);
+      if (command === NOTIFYUTIL && options.args[0] === '-p') posts.push(options.args[1]);
+      if (command === NOTIFYUTIL && options.args[0] === '-1') {
+        const listener = notifyd.listener();
+        [first, , last] = listener.keys;
+        const say = listener.say;
+        if (withFirst) listener.say = (line) => {
+          say(line);
+          if (line === first) say(last);
+        };
+      }
+      return ended;
+    };
+    const state = await probeSandbox(context(repo, { platform: 'darwin', spawn }));
+    assert.deepEqual(state, { platform: 'darwin', mechanism: 'none', probe: probe.replace('LAST', last) });
+    assert.ok(posts.length > 0 && posts.every((key) => key === first), 'the CLI never posted the last key');
+    assert.deepEqual(fake.calls.map((call) => call.command), spawned, 'what ran');
+    assert.deepEqual(fake.listening(), [], 'no listener is left');
+  }
+});
+
+test('on macOS a listener that cannot say whether the probe posted fails the probe closed', async (t) => {
+  const repo = scratchRepository(t);
+  const cases = [
+    // It dies after it printed the first key, before the probe posts, so the escape reaches nobody.
+    [(options, notifyd) => {
+      notifyd.listener().end({ status: 1, stderr: '' });
+      notifyd.post(notifyKey(options));
+    }, 'notifyutil exited 1'],
+    // It stays up but hears nothing more, so the last post never arrives.
+    [(options, notifyd) => {
+      notifyd.listener().deaf = true;
+      notifyd.post(notifyKey(options));
+    }, 'no post was heard within 5s'],
+    [(options, notifyd) => notifyd.listener().say('notifyutil: a line of its own'), 'notifyutil printed an unexpected line: notifyutil: a line of its own'],
+    // It prints the last key and exits, though it still had the escape key to wait for.
+    [(options, notifyd) => {
+      const listener = notifyd.listener();
+      const say = listener.say;
+      listener.say = (line) => {
+        say(line);
+        listener.end({ status: 0, stderr: '' });
+      };
+    }, 'notifyutil exited 0'],
+  ];
+  for (const [onProbe, why] of cases) {
+    const fake = fakeSpawn([], { onProbe });
+    const probe = `could not tell whether the probe posted a notification: ${why}`;
+    assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn })), { platform: 'darwin', mechanism: 'none', probe }, why);
+    assert.deepEqual(fake.listening(), [], `${why}: no listener is left`);
+  }
 });
 
 test('a platform with no mechanism, or a worktree that holds a hidden path, runs nothing', async (t) => {
@@ -1364,7 +1549,7 @@ test('the probe tries every escape, and a connection it does not admit still fai
     const layout = layoutOf(context(repo, { platform }));
     // The listener is the real one where there is one, so the probe's real post reaches it.
     const { notify } = fakeNotify();
-    const listener = (options) => (process.platform === 'darwin' ? spawnCommand(NOTIFYUTIL, options) : notify(options.args));
+    const listener = (options) => (process.platform === 'darwin' ? spawnCommand(NOTIFYUTIL, options) : notify(options.args, options));
     // The wrapper is dropped, so the probe script runs with nothing confining it, and can signal the CLI.
     const unconfined = (command, options) => (command === NOTIFYUTIL ? listener(options) : spawnCommand(process.execPath, { ...options, shell: false, args: [layout.probeFile] }));
     // Only the macOS probe tries a signal, since a Linux pid namespace can reuse the CLI's pid number.
@@ -1792,6 +1977,61 @@ test('on macOS a profile that lets a post through is the escape notify, and the 
     if (command !== '/usr/bin/sandbox-exec') return spawnCommand(command, options);
     writeFileSync(loose, `${readFileSync(layout.profile, 'utf8')}(allow mach-lookup (global-name "com.apple.system.notification_center"))\n`);
     return spawnCommand(command, { ...options, args: options.args.map((arg) => (arg === layout.profile ? loose : arg)) });
+  };
+  const ctx = context(repo, { platform: 'darwin', spawn, env: macEnv(), execPath: process.execPath });
+  assert.deepEqual(await runProbe(ctx, layout), { platform: 'darwin', mechanism: 'none', probe: 'escaped by notify' });
+  assert.deepEqual(notifyListeners(), [], 'no listener is left running');
+});
+
+/** Signals the real listener of a probe, found by the key the probe posts, so no other process is ever signalled. */
+function signalListener(options, signal) {
+  const listening = new RegExp(`^\\s*(\\d+) ${NOTIFYUTIL} .*-1 ${escaped(notifyKey(options))}( |$)`);
+  const pid = Number(spawnSync('ps', ['-A', '-o', 'pid=', '-o', 'args='], { encoding: 'utf8' }).stdout.split('\n').map((line) => listening.exec(line)?.[1]).find((found) => found !== undefined));
+  assert.ok(pid > 1, 'the listener is running');
+  process.kill(pid, signal);
+}
+
+test('on macOS a real listener killed once it has registered fails the probe closed', async (t) => {
+  if (!onMacOS(t)) return;
+  const repo = scratchRepository(t);
+  // Under the real profile, which refuses the post, so nothing but the dead listener can fail the probe.
+  const spawn = (command, options) => {
+    if (command === '/usr/bin/sandbox-exec') signalListener(options, 'SIGKILL');
+    return spawnCommand(command, options);
+  };
+  const probe = 'could not tell whether the probe posted a notification: notifyutil exited on a signal';
+  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn, env: macEnv(), execPath: process.execPath })), { platform: 'darwin', mechanism: 'none', probe });
+  assert.deepEqual(notifyListeners(), [], 'no listener is left running');
+});
+
+test('on macOS a last key a real listener prints before the CLI posts it fails the probe closed', async (t) => {
+  if (!onMacOS(t)) return;
+  const repo = scratchRepository(t);
+  let last;
+  // Under the real profile, which refuses the probe's post, with the listener's last key posted by another as the probe starts.
+  const spawn = (command, options) => {
+    if (command === NOTIFYUTIL && options.args[0] === '-1') last = options.args[3];
+    if (command === '/usr/bin/sandbox-exec') spawnSync(NOTIFYUTIL, ['-p', last]);
+    return spawnCommand(command, options);
+  };
+  const state = await probeSandbox(context(repo, { platform: 'darwin', spawn, env: macEnv(), execPath: process.execPath }));
+  assert.deepEqual(state, { platform: 'darwin', mechanism: 'none', probe: `could not tell whether the probe posted a notification: notifyutil printed ${last} before it was posted` });
+  assert.deepEqual(notifyListeners(), [], 'no listener is left running');
+});
+
+test('on macOS an escape a real listener reports late is still the escape notify', async (t) => {
+  if (!onMacOS(t)) return;
+  const repo = scratchRepository(t);
+  const layout = layoutOf(context(repo, { platform: 'darwin' }));
+  const loose = join(repo.dir, 'loose.sb');
+  // Under a profile that lets the post out, with the listener held still until well after the probe is back.
+  const spawn = async (command, options) => {
+    if (command !== '/usr/bin/sandbox-exec') return spawnCommand(command, options);
+    signalListener(options, 'SIGSTOP');
+    writeFileSync(loose, `${readFileSync(layout.profile, 'utf8')}(allow mach-lookup (global-name "com.apple.system.notification_center"))\n`);
+    const result = await spawnCommand(command, { ...options, args: options.args.map((arg) => (arg === layout.profile ? loose : arg)) });
+    setTimeout(() => signalListener(options, 'SIGCONT'), 700);
+    return result;
   };
   const ctx = context(repo, { platform: 'darwin', spawn, env: macEnv(), execPath: process.execPath });
   assert.deepEqual(await runProbe(ctx, layout), { platform: 'darwin', mechanism: 'none', probe: 'escaped by notify' });

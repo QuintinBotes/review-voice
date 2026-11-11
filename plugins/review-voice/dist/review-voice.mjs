@@ -1873,7 +1873,7 @@ import { dirname as dirname6, isAbsolute, join as join8 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
-// ../review-voice/node_modules/yaml/browser/dist/nodes/identity.js
+// node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
 var DOC = /* @__PURE__ */ Symbol.for("yaml.document");
 var MAP = /* @__PURE__ */ Symbol.for("yaml.map");
@@ -1909,7 +1909,7 @@ function isNode(node) {
 }
 var hasAnchor = (node) => (isScalar(node) || isCollection(node)) && !!node.anchor;
 
-// ../review-voice/node_modules/yaml/browser/dist/visit.js
+// node_modules/yaml/browser/dist/visit.js
 var BREAK = /* @__PURE__ */ Symbol("break visit");
 var SKIP = /* @__PURE__ */ Symbol("skip children");
 var REMOVE = /* @__PURE__ */ Symbol("remove node");
@@ -2059,7 +2059,7 @@ function replaceNode(key2, path, node) {
   }
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/doc/directives.js
+// node_modules/yaml/browser/dist/doc/directives.js
 var escapeChars = {
   "!": "%21",
   ",": "%2C",
@@ -2222,7 +2222,7 @@ var Directives = class _Directives {
 Directives.defaultYaml = { explicit: false, version: "1.2" };
 Directives.defaultTags = { "!!": "tag:yaml.org,2002:" };
 
-// ../review-voice/node_modules/yaml/browser/dist/doc/anchors.js
+// node_modules/yaml/browser/dist/doc/anchors.js
 function anchorIsValid(anchor) {
   if (/[\x00-\x19\s,[\]{}]/.test(anchor)) {
     const sa = JSON.stringify(anchor);
@@ -2281,7 +2281,7 @@ function createNodeAnchors(doc, prefix) {
   };
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/doc/applyReviver.js
+// node_modules/yaml/browser/dist/doc/applyReviver.js
 function applyReviver(reviver, obj, key2, val) {
   if (val && typeof val === "object") {
     if (Array.isArray(val)) {
@@ -2325,7 +2325,7 @@ function applyReviver(reviver, obj, key2, val) {
   return reviver.call(obj, key2, val);
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/nodes/toJS.js
+// node_modules/yaml/browser/dist/nodes/toJS.js
 function toJS(value, arg, ctx) {
   if (Array.isArray(value))
     return value.map((v, i) => toJS(v, String(i), ctx));
@@ -2348,7 +2348,7 @@ function toJS(value, arg, ctx) {
   return value;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/nodes/Node.js
+// node_modules/yaml/browser/dist/nodes/Node.js
 var NodeBase = class {
   constructor(type) {
     Object.defineProperty(this, NODE_TYPE, { value: type });
@@ -2380,7 +2380,7 @@ var NodeBase = class {
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/nodes/Alias.js
+// node_modules/yaml/browser/dist/nodes/Alias.js
 var Alias = class extends NodeBase {
   constructor(source) {
     super(ALIAS);
@@ -2487,7 +2487,7 @@ function getAliasCount(doc, node, anchors) {
   return 1;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/nodes/Scalar.js
+// node_modules/yaml/browser/dist/nodes/Scalar.js
 var isScalarValue = (value) => !value || typeof value !== "function" && typeof value !== "object";
 var Scalar = class extends NodeBase {
   constructor(value) {
@@ -2507,7 +2507,7 @@ Scalar.PLAIN = "PLAIN";
 Scalar.QUOTE_DOUBLE = "QUOTE_DOUBLE";
 Scalar.QUOTE_SINGLE = "QUOTE_SINGLE";
 
-// ../review-voice/node_modules/yaml/browser/dist/doc/createNode.js
+// node_modules/yaml/browser/dist/doc/createNode.js
 var defaultTagPrefix = "tag:yaml.org,2002:";
 function findTagObject(value, tagName, tags) {
   if (tagName) {
@@ -2573,7 +2573,7 @@ function createNode(value, tagName, ctx) {
   return node;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/nodes/Collection.js
+// node_modules/yaml/browser/dist/nodes/Collection.js
 function collectionFromPath(schema4, path, value) {
   let v = value;
   for (let i = path.length - 1; i >= 0; --i) {
@@ -2705,7 +2705,7 @@ var Collection = class extends NodeBase {
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/stringify/stringifyComment.js
+// node_modules/yaml/browser/dist/stringify/stringifyComment.js
 var stringifyComment = (str) => str.replace(/^(?!$)(?: $)?/gm, "#");
 function indentComment(comment, indent) {
   if (/^\n+$/.test(comment))
@@ -2714,7 +2714,7 @@ function indentComment(comment, indent) {
 }
 var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str.endsWith(" ") ? "" : " ") + comment;
 
-// ../review-voice/node_modules/yaml/browser/dist/stringify/foldFlowLines.js
+// node_modules/yaml/browser/dist/stringify/foldFlowLines.js
 var FOLD_FLOW = "flow";
 var FOLD_BLOCK = "block";
 var FOLD_QUOTED = "quoted";
@@ -2841,7 +2841,7 @@ function consumeMoreIndentedLines(text4, i, indent) {
   return end;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/stringify/stringifyString.js
+// node_modules/yaml/browser/dist/stringify/stringifyString.js
 var getFoldOptions = (ctx, isBlock2) => ({
   indentAtStart: isBlock2 ? ctx.indent.length : ctx.indentAtStart,
   lineWidth: ctx.options.lineWidth,
@@ -3116,7 +3116,7 @@ function stringifyString(item, ctx, onComment, onChompKeep) {
   return res;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/stringify/stringify.js
+// node_modules/yaml/browser/dist/stringify/stringify.js
 function createStringifyContext(doc, options) {
   const opt = Object.assign({
     blockQuote: true,
@@ -3229,7 +3229,7 @@ function stringify(item, ctx, onComment, onChompKeep) {
 ${ctx.indent}${str}`;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/stringify/stringifyPair.js
+// node_modules/yaml/browser/dist/stringify/stringifyPair.js
 function stringifyPair({ key: key2, value }, ctx, onComment, onChompKeep) {
   const { allNullValues, doc, indent, indentStep, options: { commentString, indentSeq, simpleKeys } } = ctx;
   let keyComment = isNode(key2) && key2.comment || null;
@@ -3352,14 +3352,14 @@ ${ctx.indent}`;
   return str;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/log.js
+// node_modules/yaml/browser/dist/log.js
 function warn(logLevel, warning) {
   if (logLevel === "debug" || logLevel === "warn") {
     console.warn(warning);
   }
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/yaml-1.1/merge.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/merge.js
 var MERGE_KEY = "<<";
 var merge = {
   identify: (value) => value === MERGE_KEY || typeof value === "symbol" && value.description === MERGE_KEY,
@@ -3409,7 +3409,7 @@ function resolveAliasValue(ctx, value) {
   return ctx && isAlias(value) ? value.resolve(ctx.doc, ctx) : value;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/nodes/addPairToJSMap.js
+// node_modules/yaml/browser/dist/nodes/addPairToJSMap.js
 function addPairToJSMap(ctx, map2, { key: key2, value }) {
   if (isNode(key2) && key2.addToJSMap)
     key2.addToJSMap(ctx, map2, value);
@@ -3462,7 +3462,7 @@ function stringifyKey(key2, jsKey, ctx) {
   return JSON.stringify(jsKey);
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/nodes/Pair.js
+// node_modules/yaml/browser/dist/nodes/Pair.js
 function createPair(key2, value, ctx) {
   const k = createNode(key2, void 0, ctx);
   const v = createNode(value, void 0, ctx);
@@ -3491,7 +3491,7 @@ var Pair = class _Pair {
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/stringify/stringifyCollection.js
+// node_modules/yaml/browser/dist/stringify/stringifyCollection.js
 function stringifyCollection(collection, ctx, options) {
   const flow = ctx.inFlow ?? collection.flow;
   const stringify4 = flow ? stringifyFlowCollection : stringifyBlockCollection;
@@ -3633,7 +3633,7 @@ function addCommentBefore({ indent, options: { commentString } }, lines2, commen
   }
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/nodes/YAMLMap.js
+// node_modules/yaml/browser/dist/nodes/YAMLMap.js
 function findPair(items, key2) {
   const k = isScalar(key2) ? key2.value : key2;
   for (const it of items) {
@@ -3764,7 +3764,7 @@ var YAMLMap = class extends Collection {
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/common/map.js
+// node_modules/yaml/browser/dist/schema/common/map.js
 var map = {
   collection: "map",
   default: true,
@@ -3778,7 +3778,7 @@ var map = {
   createNode: (schema4, obj, ctx) => YAMLMap.from(schema4, obj, ctx)
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/nodes/YAMLSeq.js
+// node_modules/yaml/browser/dist/nodes/YAMLSeq.js
 var YAMLSeq = class extends Collection {
   static get tagName() {
     return "tag:yaml.org,2002:seq";
@@ -3882,7 +3882,7 @@ function asItemIndex(key2) {
   return typeof idx === "number" && Number.isInteger(idx) && idx >= 0 ? idx : null;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/common/seq.js
+// node_modules/yaml/browser/dist/schema/common/seq.js
 var seq = {
   collection: "seq",
   default: true,
@@ -3896,7 +3896,7 @@ var seq = {
   createNode: (schema4, obj, ctx) => YAMLSeq.from(schema4, obj, ctx)
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/common/string.js
+// node_modules/yaml/browser/dist/schema/common/string.js
 var string = {
   identify: (value) => typeof value === "string",
   default: true,
@@ -3908,7 +3908,7 @@ var string = {
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/common/null.js
+// node_modules/yaml/browser/dist/schema/common/null.js
 var nullTag = {
   identify: (value) => value == null,
   createNode: () => new Scalar(null),
@@ -3919,7 +3919,7 @@ var nullTag = {
   stringify: ({ source }, ctx) => typeof source === "string" && nullTag.test.test(source) ? source : ctx.options.nullStr
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/core/bool.js
+// node_modules/yaml/browser/dist/schema/core/bool.js
 var boolTag = {
   identify: (value) => typeof value === "boolean",
   default: true,
@@ -3936,7 +3936,7 @@ var boolTag = {
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/stringify/stringifyNumber.js
+// node_modules/yaml/browser/dist/stringify/stringifyNumber.js
 function stringifyNumber({ format: format2, minFractionDigits, tag, value }) {
   if (typeof value === "bigint")
     return String(value);
@@ -3957,7 +3957,7 @@ function stringifyNumber({ format: format2, minFractionDigits, tag, value }) {
   return n;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/core/float.js
+// node_modules/yaml/browser/dist/schema/core/float.js
 var floatNaN = {
   identify: (value) => typeof value === "number",
   default: true,
@@ -3993,7 +3993,7 @@ var float = {
   stringify: stringifyNumber
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/core/int.js
+// node_modules/yaml/browser/dist/schema/core/int.js
 var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
 var intResolve = (str, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset), radix);
 function intStringify(node, radix, prefix) {
@@ -4029,7 +4029,7 @@ var intHex = {
   stringify: (node) => intStringify(node, 16, "0x")
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/core/schema.js
+// node_modules/yaml/browser/dist/schema/core/schema.js
 var schema = [
   map,
   seq,
@@ -4044,7 +4044,7 @@ var schema = [
   float
 ];
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/json/schema.js
+// node_modules/yaml/browser/dist/schema/json/schema.js
 function intIdentify2(value) {
   return typeof value === "bigint" || Number.isInteger(value);
 }
@@ -4102,7 +4102,7 @@ var jsonError = {
 };
 var schema2 = [map, seq].concat(jsonScalars, jsonError);
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/yaml-1.1/binary.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/binary.js
 var binary = {
   identify: (value) => value instanceof Uint8Array,
   // Buffer inherits from Uint8Array
@@ -4155,7 +4155,7 @@ var binary = {
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/yaml-1.1/pairs.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/pairs.js
 function resolvePairs(seq2, onError) {
   if (isSeq(seq2)) {
     for (let i = 0; i < seq2.items.length; ++i) {
@@ -4221,7 +4221,7 @@ var pairs = {
   createNode: createPairs
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/yaml-1.1/omap.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/omap.js
 var YAMLOMap = class _YAMLOMap extends YAMLSeq {
   constructor() {
     super();
@@ -4287,7 +4287,7 @@ var omap = {
   createNode: (schema4, iterable, ctx) => YAMLOMap.from(schema4, iterable, ctx)
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/yaml-1.1/bool.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/bool.js
 function boolStringify({ value, source }, ctx) {
   const boolObj = value ? trueTag : falseTag;
   if (source && boolObj.test.test(source))
@@ -4311,7 +4311,7 @@ var falseTag = {
   stringify: boolStringify
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/yaml-1.1/float.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/float.js
 var floatNaN2 = {
   identify: (value) => typeof value === "number",
   default: true,
@@ -4350,7 +4350,7 @@ var float2 = {
   stringify: stringifyNumber
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
 var intIdentify3 = (value) => typeof value === "bigint" || Number.isInteger(value);
 function intResolve2(str, offset, radix, { intAsBigInt }) {
   const sign = str[0];
@@ -4419,7 +4419,7 @@ var intHex2 = {
   stringify: (node) => intStringify2(node, 16, "0x")
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/yaml-1.1/set.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/set.js
 var YAMLSet = class _YAMLSet extends YAMLMap {
   constructor(schema4) {
     super(schema4);
@@ -4498,7 +4498,7 @@ var set = {
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
 function parseSexagesimal(str, asBigInt) {
   const sign = str[0];
   const parts = sign === "-" || sign === "+" ? str.substring(1) : str;
@@ -4577,7 +4577,7 @@ var timestamp = {
   stringify: ({ value }) => value?.toISOString().replace(/(T00:00:00)?\.000Z$/, "") ?? ""
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/yaml-1.1/schema.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/schema.js
 var schema3 = [
   map,
   seq,
@@ -4602,7 +4602,7 @@ var schema3 = [
   timestamp
 ];
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/tags.js
+// node_modules/yaml/browser/dist/schema/tags.js
 var schemas = /* @__PURE__ */ new Map([
   ["core", schema],
   ["failsafe", [map, seq, string]],
@@ -4673,7 +4673,7 @@ function getTags(customTags, schemaName, addMergeTag) {
   }, []);
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/schema/Schema.js
+// node_modules/yaml/browser/dist/schema/Schema.js
 var sortMapEntriesByKey = (a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 var Schema = class _Schema {
   constructor({ compat, customTags, merge: merge2, resolveKnownTags, schema: schema4, sortMapEntries, toStringDefaults }) {
@@ -4694,7 +4694,7 @@ var Schema = class _Schema {
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/stringify/stringifyDocument.js
+// node_modules/yaml/browser/dist/stringify/stringifyDocument.js
 function stringifyDocument(doc, options) {
   const lines2 = [];
   let hasDirectives = options.directives === true;
@@ -4765,7 +4765,7 @@ function stringifyDocument(doc, options) {
   return lines2.join("\n") + "\n";
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/doc/Document.js
+// node_modules/yaml/browser/dist/doc/Document.js
 var Document = class _Document {
   constructor(value, replacer, options) {
     this.commentBefore = null;
@@ -5057,7 +5057,7 @@ function assertCollection(contents) {
   throw new Error("Expected a YAML collection as document contents");
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/errors.js
+// node_modules/yaml/browser/dist/errors.js
 var YAMLError = class extends Error {
   constructor(name, pos, code2, message) {
     super();
@@ -5113,7 +5113,7 @@ ${pointer2}
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/resolve-props.js
+// node_modules/yaml/browser/dist/compose/resolve-props.js
 function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIndent, startOnNewline }) {
   let spaceBefore = false;
   let atNewline = startOnNewline;
@@ -5241,7 +5241,7 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
   };
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/util-contains-newline.js
+// node_modules/yaml/browser/dist/compose/util-contains-newline.js
 function containsNewline(key2) {
   if (!key2)
     return null;
@@ -5277,7 +5277,7 @@ function containsNewline(key2) {
   }
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/util-flow-indent-check.js
+// node_modules/yaml/browser/dist/compose/util-flow-indent-check.js
 function flowIndentCheck(indent, fc, onError) {
   if (fc?.type === "flow-collection") {
     const end = fc.end[0];
@@ -5288,7 +5288,7 @@ function flowIndentCheck(indent, fc, onError) {
   }
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/util-map-includes.js
+// node_modules/yaml/browser/dist/compose/util-map-includes.js
 function mapIncludes(ctx, items, search) {
   const { uniqueKeys } = ctx.options;
   if (uniqueKeys === false)
@@ -5297,7 +5297,7 @@ function mapIncludes(ctx, items, search) {
   return items.some((pair) => isEqual(pair.key, search));
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/resolve-block-map.js
+// node_modules/yaml/browser/dist/compose/resolve-block-map.js
 var startColMsg = "All mapping items must start at the same column";
 function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, bm, onError, tag) {
   const NodeClass = tag?.nodeClass ?? YAMLMap;
@@ -5393,7 +5393,7 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
   return map2;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/resolve-block-seq.js
+// node_modules/yaml/browser/dist/compose/resolve-block-seq.js
 function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, bs, onError, tag) {
   const NodeClass = tag?.nodeClass ?? YAMLSeq;
   const seq2 = new NodeClass(ctx.schema);
@@ -5435,7 +5435,7 @@ function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeE
   return seq2;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/resolve-end.js
+// node_modules/yaml/browser/dist/compose/resolve-end.js
 function resolveEnd(end, offset, reqSpace, onError) {
   let comment = "";
   if (end) {
@@ -5472,7 +5472,7 @@ function resolveEnd(end, offset, reqSpace, onError) {
   return { comment, offset };
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/resolve-flow-collection.js
+// node_modules/yaml/browser/dist/compose/resolve-flow-collection.js
 var blockMsg = "Block collections are not allowed within flow collections";
 var isBlock = (token) => token && (token.type === "block-map" || token.type === "block-seq");
 function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, fc, onError, tag) {
@@ -5652,7 +5652,7 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
   return coll;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/compose-collection.js
+// node_modules/yaml/browser/dist/compose/compose-collection.js
 function resolveCollection(CN2, ctx, token, onError, tagName, tag) {
   const coll = token.type === "block-map" ? resolveBlockMap(CN2, ctx, token, onError, tag) : token.type === "block-seq" ? resolveBlockSeq(CN2, ctx, token, onError, tag) : resolveFlowCollection(CN2, ctx, token, onError, tag);
   const Coll = coll.constructor;
@@ -5704,7 +5704,7 @@ function composeCollection(CN2, ctx, token, props, onError) {
   return node;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/resolve-block-scalar.js
+// node_modules/yaml/browser/dist/compose/resolve-block-scalar.js
 function resolveBlockScalar(ctx, scalar2, onError) {
   const start = scalar2.offset;
   const header = parseBlockScalarHeader(scalar2, ctx.options.strict, onError);
@@ -5880,7 +5880,7 @@ function splitLines(source) {
   return lines2;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
+// node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
 function resolveFlowScalar(scalar2, strict, onError) {
   const { offset, type, source, end } = scalar2;
   let _type;
@@ -6093,7 +6093,7 @@ function parseCharCode(source, offset, length, onError) {
   }
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/compose-scalar.js
+// node_modules/yaml/browser/dist/compose/compose-scalar.js
 function composeScalar(ctx, token, tagToken, onError) {
   const { value, type, comment, range } = token.type === "block-scalar" ? resolveBlockScalar(ctx, token, onError) : resolveFlowScalar(token, ctx.options.strict, onError);
   const tagName = tagToken ? ctx.directives.tagName(tagToken.source, (msg) => onError(tagToken, "TAG_RESOLVE_FAILED", msg)) : null;
@@ -6164,7 +6164,7 @@ function findScalarTagByTest({ atKey, directives, schema: schema4 }, value, toke
   return tag;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/util-empty-scalar-position.js
+// node_modules/yaml/browser/dist/compose/util-empty-scalar-position.js
 function emptyScalarPosition(offset, before, pos) {
   if (before) {
     pos ?? (pos = before.length);
@@ -6188,7 +6188,7 @@ function emptyScalarPosition(offset, before, pos) {
   return offset;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/compose-node.js
+// node_modules/yaml/browser/dist/compose/compose-node.js
 var CN = { composeNode, composeEmptyNode };
 function composeNode(ctx, token, props, onError) {
   const atKey = ctx.atKey;
@@ -6281,7 +6281,7 @@ function composeAlias({ options }, { offset, source, end }, onError) {
   return alias;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/compose-doc.js
+// node_modules/yaml/browser/dist/compose/compose-doc.js
 function composeDoc(options, directives, { offset, start, value, end }, onError) {
   const opts = Object.assign({ _directives: directives }, options);
   const doc = new Document(void 0, opts);
@@ -6314,7 +6314,7 @@ function composeDoc(options, directives, { offset, start, value, end }, onError)
   return doc;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/compose/composer.js
+// node_modules/yaml/browser/dist/compose/composer.js
 function getErrorPos(src) {
   if (typeof src === "number")
     return [src, src + 1];
@@ -6507,7 +6507,7 @@ ${end.comment}` : end.comment;
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/parse/cst-visit.js
+// node_modules/yaml/browser/dist/parse/cst-visit.js
 var BREAK2 = /* @__PURE__ */ Symbol("break visit");
 var SKIP2 = /* @__PURE__ */ Symbol("skip children");
 var REMOVE2 = /* @__PURE__ */ Symbol("remove item");
@@ -6563,7 +6563,7 @@ function _visit(path, item, visitor) {
   return typeof ctrl === "function" ? ctrl(item, path) : ctrl;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/parse/cst.js
+// node_modules/yaml/browser/dist/parse/cst.js
 var BOM = "\uFEFF";
 var DOCUMENT = "";
 var FLOW_END = "";
@@ -6628,7 +6628,7 @@ function tokenType(source) {
   return null;
 }
 
-// ../review-voice/node_modules/yaml/browser/dist/parse/lexer.js
+// node_modules/yaml/browser/dist/parse/lexer.js
 function isEmpty(ch) {
   switch (ch) {
     case void 0:
@@ -7210,7 +7210,7 @@ var Lexer = class {
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/parse/line-counter.js
+// node_modules/yaml/browser/dist/parse/line-counter.js
 var LineCounter = class {
   constructor() {
     this.lineStarts = [];
@@ -7235,7 +7235,7 @@ var LineCounter = class {
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/parse/parser.js
+// node_modules/yaml/browser/dist/parse/parser.js
 function includesToken(list2, type) {
   for (let i = 0; i < list2.length; ++i)
     if (list2[i].type === type)
@@ -8098,7 +8098,7 @@ var Parser = class {
   }
 };
 
-// ../review-voice/node_modules/yaml/browser/dist/public-api.js
+// node_modules/yaml/browser/dist/public-api.js
 function parseOptions(options) {
   const prettyErrors = options.prettyErrors !== false;
   const lineCounter = options.lineCounter || prettyErrors && new LineCounter() || null;
@@ -12060,6 +12060,7 @@ function removeHeadWorktree(headDir, cwd = process.cwd()) {
 
 // plugins/review-voice/src/evidence/run.ts
 import { spawn as spawnChild } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 // plugins/review-voice/src/evidence/parsers.ts
 function signal(tool, kind, path, line3, claim, raw) {
@@ -12237,7 +12238,7 @@ async function readVersion(spawn3, run, cwd, timeout, env, mask) {
   if (result.error !== void 0 || result.status !== 0) return void 0;
   return sanitisedVersion(mask(String(result.stdout ?? "")));
 }
-function spawnInGroup(spawn3, run, cwd, timeout, env, args) {
+function spawnInGroup(spawn3, run, cwd, timeout, env, args, watch = {}) {
   return spawn3(run, {
     cwd,
     env,
@@ -12247,7 +12248,8 @@ function spawnInGroup(spawn3, run, cwd, timeout, env, args) {
     timeout,
     killSignal: "SIGKILL",
     maxBuffer: 16 * 1024 * 1024,
-    detached: true
+    detached: true,
+    ...watch
   });
 }
 var MAX_TIMER_MS = 2 ** 31 - 1;
@@ -12287,6 +12289,10 @@ function stopCommandsOnSignal() {
 }
 function spawnCommand(command, options) {
   return new Promise((resolve12) => {
+    if (options.signal?.aborted === true) {
+      resolve12({ status: null, stdout: "", stderr: "", error: Object.assign(new Error(`spawn ${command} ABORT_ERR`), { code: "ABORT_ERR" }) });
+      return;
+    }
     const child = spawnChild(command, options.args ?? [], { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, stdio: "pipe" });
     const pid = child.pid;
     if (pid !== void 0) runningGroups.add(pid);
@@ -12301,8 +12307,13 @@ function spawnCommand(command, options) {
       child.stderr.destroy();
     };
     const timer = options.timeout > 0 ? setTimeout(() => stop("ETIMEDOUT"), Math.min(options.timeout, MAX_TIMER_MS)) : void 0;
+    options.signal?.addEventListener("abort", () => {
+      if (!settled) stop("ABORT_ERR");
+    });
+    const decoder = new StringDecoder(options.encoding);
     for (const stream of ["stdout", "stderr"]) {
       child[stream].on("data", (chunk) => {
+        if (stream === "stdout") options.onStdout?.(decoder.write(chunk));
         const room = options.maxBuffer - sizes[stream];
         if (room > 0) chunks[stream].push(chunk.subarray(0, room));
         sizes[stream] += chunk.length;
@@ -12349,7 +12360,6 @@ var OUTPUT_CAP_BYTES = 8 * 1024;
 var PROBE_TIMEOUT_MS = 3e4;
 var PROBE_DOMAIN = "review-voice.probe";
 var NOTIFYUTIL = "/usr/bin/notifyutil";
-var NOTIFY_GRACE_MS = 500;
 var NOTIFY_READY_MS = 5e3;
 var CREDENTIAL_DIRS = [".ssh", ".gnupg", ".aws", ".config/gh", "Library/Keychains"];
 var CREDENTIAL_FILES = [".netrc", ".npmrc", ".git-credentials"];
@@ -12598,30 +12608,42 @@ var contentOf = (path) => {
 };
 var firstLine = (text4) => text4.split("\n").map((line3) => line3.trim()).find((line3) => /[\p{L}\p{N}]/u.test(line3)) ?? "";
 var delay = (ms) => new Promise((done) => setTimeout(done, ms));
-async function listenForNotify(spawn3, cwd) {
-  const key2 = `rv.probe.${process.pid}.${randomBytes(4).toString("hex")}`;
-  const notifyutil = (args) => Promise.resolve(spawnInGroup(spawn3, NOTIFYUTIL, cwd, 2 * PROBE_TIMEOUT_MS, {}, args));
+function listenForNotify(spawn3, cwd) {
+  const [pre, escape, post] = [0, 1, 2].map(() => `rv.probe.${process.pid}.${randomBytes(4).toString("hex")}`);
+  const killer = new AbortController();
+  let printed = "";
   let ended;
-  const listening = notifyutil(["-1", key2]).then((result) => {
-    ended = result;
-  });
-  let ending;
-  const end = () => ending ??= (async () => {
-    await Promise.race([listening, delay(NOTIFY_GRACE_MS)]);
-    const heard = ended?.stdout ?? "";
-    if (ended === void 0) await notifyutil(["-p", key2]);
+  const listening = Promise.resolve(
+    spawnInGroup(spawn3, NOTIFYUTIL, cwd, 2 * PROBE_TIMEOUT_MS, {}, ["-1", escape, "-1", post, "-1", pre], {
+      onStdout: (text4) => printed += text4,
+      signal: killer.signal
+    })
+  ).then(
+    (result) => void (ended = result),
+    (error) => void (ended = { status: null, stdout: "", stderr: "", error })
+  );
+  const hear = async (which) => {
+    const key2 = which === "pre" ? pre : post;
+    const lines2 = () => printed.split("\n").slice(0, -1);
+    const early = lines2().includes(key2);
+    const deadline = Date.now() + NOTIFY_READY_MS;
+    while (!early && !lines2().includes(key2) && ended === void 0 && Date.now() < deadline) {
+      await spawnInGroup(spawn3, NOTIFYUTIL, cwd, NOTIFY_READY_MS, {}, ["-p", key2]);
+      await delay(20);
+    }
+    const heard = lines2();
+    const odd = heard.find((line3, at2) => (at2 === 0 ? line3 !== pre : which === "pre" || line3 !== escape && line3 !== post) || heard.indexOf(line3) !== at2);
+    if (odd !== void 0) return `notifyutil printed an unexpected line: ${odd}`;
+    if (heard.includes(escape)) return true;
+    if (early) return `notifyutil printed ${key2} before it was posted`;
+    if (ended !== void 0) return ended.error?.message ?? `notifyutil exited ${String(ended.status ?? "on a signal")}`;
+    return heard.includes(key2) ? false : `no post was heard within ${NOTIFY_READY_MS / 1e3}s`;
+  };
+  const end = async () => {
+    killer.abort();
     await listening;
-    return heard;
-  })();
-  const deadline = Date.now() + NOTIFY_READY_MS;
-  while (ended === void 0 && Date.now() < deadline) {
-    if ((await notifyutil(["-s", key2, "1", "-g", key2])).stdout.trim() === `${key2} 1`) return { key: key2, end };
-    await delay(20);
-  }
-  const unregistered = ended === void 0;
-  await end();
-  const why = unregistered ? `the key was not registered within ${NOTIFY_READY_MS / 1e3}s` : ended?.error?.message ?? `notifyutil exited ${String(ended?.status)}`;
-  return `could not listen for notifications for the probe: ${why}`;
+  };
+  return { escape, hear, end };
 }
 async function probeSandbox(ctx, given) {
   const platform = ctx.platform ?? process.platform;
@@ -12651,9 +12673,9 @@ async function runProbe(ctx, layout) {
   let listener = null;
   try {
     if (mechanism === "sandbox-exec") {
-      const started = await listenForNotify(ctx.spawn ?? spawnCommand, layout.reproDir);
-      if (typeof started === "string") return { platform, mechanism: "none", probe: started };
-      listener = started;
+      listener = listenForNotify(ctx.spawn ?? spawnCommand, layout.reproDir);
+      const ready = await listener.hear("pre");
+      if (typeof ready === "string") return { platform, mechanism: "none", probe: `could not listen for notifications for the probe: ${ready}` };
       writeFileSync(layout.profile, sandboxProfile(layout));
     }
     rmSync3(layout.escape, { force: true });
@@ -12667,7 +12689,7 @@ async function runProbe(ctx, layout) {
       overwrite,
       pid: mechanism === "sandbox-exec" ? process.pid : null,
       domain: mechanism === "sandbox-exec" ? PROBE_DOMAIN : null,
-      notify: listener?.key ?? null
+      notify: listener?.escape ?? null
     });
     writeFileSync(layout.probeFile, `${script}
 `);
@@ -12675,22 +12697,24 @@ async function runProbe(ctx, layout) {
     const result = await spawnConfined(layout, ctx, `${shellQuote(ctx.execPath ?? process.execPath)} -e ${shellQuote(script)}`, PROBE_TIMEOUT_MS);
     await new Promise((done) => setImmediate(done));
     const said = new Set(/^escaped by (.+)$/m.exec(result.stdout)?.[1]?.split(", ") ?? []);
+    const notified = listener === null ? false : await listener.hear("post");
     const outside = {
       write: existsSync3(layout.escape),
       connect: connections > 0,
       profile: contentOf(overwrite) !== before,
-      notify: listener !== null && (await listener.end()).trim() !== ""
+      notify: notified === true
     };
     const seen = ["write", "read", "connect", "profile", "signal", "preference", "notify"].filter((name) => said.has(name) || outside[name] === true);
     if (seen.length > 0) return { platform, mechanism: "none", probe: `escaped by ${seen.join(", ")}` };
+    if (typeof notified === "string") return { platform, mechanism: "none", probe: `could not tell whether the probe posted a notification: ${notified}` };
     if (result.error === void 0 && result.status === 0 && result.stdout.trim() === "RV_PROBE_OK") return { platform, mechanism, probe: "passed" };
     const why = result.error === void 0 ? firstLine(result.stderr) || firstLine(result.stdout) || `exited ${String(result.status)}` : result.error.message;
     return { platform, mechanism: "none", probe: why.startsWith(`${mechanism}:`) ? why : `${mechanism}: ${why}` };
   } finally {
+    await listener?.end();
     withdraw();
     server.close();
     clear();
-    await listener?.end();
   }
 }
 function pinGit(ctx, worktree) {

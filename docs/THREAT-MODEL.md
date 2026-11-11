@@ -204,8 +204,23 @@ store, outlive the run, or simply pass on purpose.
   places, an overwrite of the runner's own files and a read of a canary in the
   run directory are all refused. On macOS it also shows that a signal to the
   CLI, a preference write and a notification post are refused. A refused post
-  still exits 0, so a listener the CLI starts outside the sandbox for a fresh
-  key judges it, and the listener is always stopped.
+  still exits 0, so a listener the CLI starts outside the sandbox judges it.
+  The listener hears three fresh random keys over one port, which notifyd sends
+  to in the order it took the posts while the port has room (the listener runs
+  without `-M`, under which two notifications that wait together are printed in
+  either order), and the CLI reads each key as the listener prints it: the CLI
+  posts the first until the listener prints it, the probe posts the second,
+  and once the probe is back the CLI posts the third and waits for it. The
+  first is the key the listener registers last, so the first printed, alone,
+  shows it holds all three; a listener notified while it still registers exits,
+  crashes or goes deaf. The second printed is an escape, before the third or,
+  from a listener whose port had filled, after it; the third without the second
+  is a refusal; and anything else fails the probe: a listener that never
+  printed the first or the third within 5 seconds, one that printed the third
+  before the CLI posted it, one that ended while it still had the second to
+  wait for, or one that printed any other line. No
+  fixed wait decides the answer. The CLI never posts the second key itself, and
+  always kills the listener with its process group.
 - On Linux the runner uses user, mount, network and pid namespaces, which give
   no network, a read-only view of the filesystem, writes only to a fresh throwaway
   copy of the head worktree and its scratch directory, the data directory, the

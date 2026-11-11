@@ -92,6 +92,50 @@ test('stopCommands kills a running command with what it started, and the command
   await assertGone(pid, 'the background child went with its process group');
 });
 
+test('a command is read as it prints, and aborting its signal kills it with what it started at once', async (t) => {
+  const dir = temporary(t);
+  const pidFile = join(dir, 'child.pid');
+  const killer = new AbortController();
+  let printed = '';
+  const started = Date.now();
+  const running = spawnCommand(`sleep 30 & echo $! > "${pidFile}"; echo ready; wait`, options(dir, { timeout: 60000, signal: killer.signal, onStdout: (text) => (printed += text) }));
+  const pid = await pidIn(pidFile);
+  for (let waited = 0; printed !== 'ready\n'; waited += 20) {
+    assert.ok(waited < 10000, 'its output arrives while it runs');
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  killer.abort();
+  const result = await running;
+  assert.ok(Date.now() - started < 5000, 'it returned without waiting for the sleep');
+  assert.deepEqual([result.status, result.error?.code, result.stdout], [null, 'ABORT_ERR', 'ready\n']);
+  await assertGone(pid, 'the background child went with its process group');
+});
+
+test('a command whose signal was aborted before it started never runs', async (t) => {
+  const dir = temporary(t);
+  const marker = join(dir, 'ran');
+  const killer = new AbortController();
+  killer.abort();
+  const result = await spawnCommand(`echo ran > "${marker}"`, options(dir, { signal: killer.signal }));
+  assert.deepEqual([result.status, result.error?.code, result.stdout], [null, 'ABORT_ERR', '']);
+  assert.equal(existsSync(marker), false, 'the command left nothing behind');
+});
+
+test('aborting the signal of a command that has returned signals nothing, since its group id may be another by then', async (t) => {
+  const killer = new AbortController();
+  const result = await spawnCommand('echo done', options(temporary(t), { signal: killer.signal }));
+  assert.deepEqual([result.status, result.stdout], [0, 'done\n']);
+  const real = process.kill;
+  const signalled = [];
+  process.kill = (pid, signal) => signalled.push([pid, signal]);
+  try {
+    killer.abort();
+  } finally {
+    process.kill = real;
+  }
+  assert.deepEqual(signalled, []);
+});
+
 test('input reaches stdin, and without input stdin is empty rather than left open', async (t) => {
   const dir = temporary(t);
   const piped = await spawnCommand('cat', options(dir, { input: '{"verdict":"confirmed"}' }));
