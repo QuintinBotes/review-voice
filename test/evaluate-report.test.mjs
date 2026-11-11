@@ -300,7 +300,7 @@ test('renderEvaluationHtml on a seeded store prints the eight sections, each met
     // The three tables partition the metrics.
     const metricRows = between(html, '<h3>Gates</h3>', '<h3>Seconds by stage</h3>').match(/<tr><td>/g).length;
     assert.equal(metricRows, report.metrics.length);
-    assert.ok(between(html, '<h3>Seconds by stage</h3>', '<h3>Posted findings</h3>').includes('<tr><td>analyst</td><td>9.00</td><td>9.00</td><td>3</td></tr>'));
+    assert.ok(between(html, '<h3>Seconds by stage</h3>', '<h3>Posted findings</h3>').includes('<tr><td>analyst</td><td>9.00</td><td>9.00</td><td>3</td><td>0</td></tr>'));
     // Sections 6 and 7 whole, so a missing, reordered or relabelled table fails.
     const tableOf = (headers, rows) =>
       `<table><thead><tr>${headers.map((h) => `<th>${h}</th>`).join('')}</tr></thead>\n<tbody>\n${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>\n`).join('')}</tbody></table>\n`;
@@ -381,7 +381,7 @@ test('strings from the store are cut at 120 code points, lose their line endings
     posted_breakdown: { by_severity: {}, by_lane: { '<script>alert(1)</script>': stats, [markdown]: stats }, by_rule: { 'a&b"c\'d': stats, [longRule]: stats }, by_evidence_block: { with: none, without: none, unknown: none } },
     // Kept differs from dismissed, so swapped columns fail.
     precision_breakdown: { by_lane: { structure: { kept: 3, dismissed: 1, precision: 0.75 } }, by_rule: { 'maintainability:structure': { kept: 0, dismissed: 2, precision: 0 } } },
-    stage_seconds: { [stage]: { median: 1, p95: 2, runs: 3 } },
+    stage_seconds: { [stage]: { median: 1, p95: 2, runs: 3, unmeasured: 4 } },
     rule_effectiveness: [{ rule_id: 'x:diff', suppressions: [{ glob: 'src/<x>/**', policy_version: 1 }], approved_at: null, held: null, runs: null, posted: null, feedback: null, basis: 'b' }],
   });
   assertSections(html);
@@ -393,7 +393,7 @@ test('strings from the store are cut at 120 code points, lose their line endings
   assert.ok(html.includes('<td>x [evil](https://example.com) ![p](https://example.com/p.png) y</td>'));
   assert.doesNotMatch(html, /\n[ \t]*\n/);
   // The whole row, so swapped median and p95 columns fail.
-  assert.ok(html.includes(`<tr><td>${point.repeat(120)}...</td><td>1.00</td><td>2.00</td><td>3</td></tr>`));
+  assert.ok(html.includes(`<tr><td>${point.repeat(120)}...</td><td>1.00</td><td>2.00</td><td>3</td><td>4</td></tr>`));
   assert.ok(!html.includes(point.repeat(121)));
   assert.ok(html.includes(`<td>${'r'.repeat(117)}&amp;zz...</td>`));
   assert.doesNotMatch(html, /&(?!amp;|lt;|gt;|quot;|#39;)/);
@@ -527,7 +527,7 @@ test('evaluate --json prints the EvaluationReport shape, with every key equal to
       assert.deepEqual(parsed.precision_breakdown, { by_lane: precision.byLane, by_rule: precision.byRule });
       assert.deepEqual(parsed.rule_effectiveness, ruleEffectiveness(db));
       assert.deepEqual(parsed.by_family, byFamily(db));
-      assert.deepEqual(parsed.stage_seconds, { analyst: { median: 9, p95: 9, runs: 3 } });
+      assert.deepEqual(parsed.stage_seconds, { analyst: { median: 9, p95: 9, runs: 3, unmeasured: 0 } });
       assert.deepEqual(parsed.metrics.map((m) => m.name), [...computeMetrics(db), ...recallMetrics(null)].map((m) => m.name));
     } finally {
       db.close();

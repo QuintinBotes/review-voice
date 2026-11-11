@@ -2346,3 +2346,16 @@ test('issue 337: an unchanged-scope carry keeps the hold, so the carried review 
   assert.deepEqual(gateHeld(data, two), [UNDER_GATE], 'the hold travels with the carry');
   assert.equal(two.verdict.event, 'COMMENT');
 });
+
+test('issue 352: the driver times every stage it runs, and an analyst that reported no file count is not judged on it', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const { report, data } = await review(t, repo, fakes(t, { 'diff-analyst': [{ candidates: [] }] }), fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  const stored = storedRun(data, report.runId).stages;
+  assert.ok(stored.length > 0);
+  for (const stage of stored) assert.equal(typeof stage.seconds, 'number', `${stage.name} is measured`);
+  assert.equal(Object.hasOwn(stageNamed(stored, 'analyst'), 'filesRead'), false);
+  assert.equal(report.notes.some((note) => /changed files/.test(note)), false, 'no shallow-read warning');
+  // record said so on stderr, which the driver keeps in the run's command log.
+  assert.equal(readFileSync(join(report.runDir, 'commands.log'), 'utf8').match(/could not be judged, because the stage recorded no file count/g)?.length, 1);
+});
