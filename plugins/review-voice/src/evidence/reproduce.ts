@@ -4,6 +4,7 @@ import { chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtemp
 import { createServer } from 'node:net';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { redact } from '../redact/redact.ts';
+import { terminalSafe } from '../terminal.ts';
 import { SAFE_GIT } from '../review/worktree.ts';
 import { onStop, SHELL_UNAVAILABLE_EXIT_CODES, spawnCommand, spawnInGroup, type CommandResult, type CommandSpawner } from './run.ts';
 
@@ -113,6 +114,8 @@ const DARWIN_OFF = 'sandbox-exec is not yet trusted to confine a reproduction (i
 const PROBE_DOMAIN = 'review-voice.probe';
 const CREDENTIAL_DIRS = ['.ssh', '.gnupg', '.aws', '.config/gh', 'Library/Keychains'];
 const CREDENTIAL_FILES = ['.netrc', '.npmrc', '.git-credentials'];
+/** The devices of the Linux sandbox's /dev: none is a terminal, and none reaches anything of the user's. */
+const DEVICES = ['null', 'zero', 'full', 'random', 'urandom'];
 /** A candidate id names the copy's directory, so it is one plain segment that cannot be `.` or `..`. */
 const SAFE_ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 /** Nothing in a placed path can close the single quotes `{file}` is substituted in. */
@@ -221,8 +224,11 @@ export function layoutOf(ctx: ReproduceContext, places?: { worktree: string; scr
     ...CREDENTIAL_DIRS.map((dir) => realOf(join(home, dir))),
     // Linux has no rule for Unix sockets, and one on a read-only mount still
     // connects (a Docker socket, the session bus), so the places they live are
-    // covered; on macOS `deny network*` refuses them.
-    ...(platform === 'linux' ? ['/tmp', '/run', '/var/run'].map(realOf) : []),
+    // covered; on macOS `deny network*` refuses them. A device node takes a
+    // write on a read-only mount too, and /dev/pts holds the user's terminals,
+    // so /dev is covered and given back only the devices in DEVICES; on macOS
+    // the profile allows a write to /dev/null alone.
+    ...(platform === 'linux' ? ['/tmp', '/run', '/var/run', '/dev'].map(realOf) : []),
   ]);
   const hiddenFiles = unique(CREDENTIAL_FILES.map((file) => realOf(join(home, file))));
   const links = ctx.config.linkPaths
@@ -338,6 +344,11 @@ export function linuxSetup(layout: Layout): string {
     for (const hold of holds.filter((entry) => inside(entry.source, cover.path))) {
       lines.push(hold.dir ? `mkdir -p ${at(hold.source)}` : `mkdir -p ${at(dirname(hold.source))}; touch ${at(hold.source)}`);
     }
+    if (cover.path === '/dev') {
+      // Bound from the host, since a user namespace can make no device node.
+      for (const name of DEVICES) lines.push(`touch ${at(`/dev/${name}`)}`, `mount --bind /dev/${name} ${at(`/dev/${name}`)}`);
+      lines.push(`ln -s /proc/self/fd ${at('/dev/fd')}`, ...['stdin', 'stdout', 'stderr'].map((name, fd) => `ln -s /proc/self/fd/${fd} ${at(`/dev/${name}`)}`));
+    }
     lines.push(`mount -o remount,bind,ro ${at(cover.path)}`);
   }
   for (const hold of holds) {
@@ -389,6 +400,8 @@ function probeScript(targets: { port: number; escape: string; canary: string; ov
     // A named domain, since a path domain is checked as a file write. An escape
     // deletes what it wrote, though cfprefsd keeps an empty plist of the domain,
     // one fixed name however often a broken sandbox is probed.
+    // The user's terminals are devices there, which take a write on a read-only mount.
+    "if (fs.existsSync('/dev/pts')) escaped.push('terminal');",
     "if (t.domain !== null) { const cp = require('child_process'); if (cp.spawnSync('/usr/bin/defaults', ['write', t.domain, 'probe', 'escaped']).status === 0) { escaped.push('preference'); cp.spawnSync('/usr/bin/defaults', ['delete', t.domain]); } }",
     "const socket = require('net').connect(t.port, '127.0.0.1');",
     'let done = false;',
@@ -470,7 +483,7 @@ export async function runProbe(ctx: ReproduceContext, layout: Layout): Promise<S
       connect: connections > 0,
       profile: contentOf(overwrite) !== before,
     };
-    const seen = (['write', 'read', 'connect', 'profile', 'signal', 'preference'] as const).filter((name) => said.has(name) || outside[name] === true);
+    const seen = (['write', 'read', 'connect', 'profile', 'terminal', 'signal', 'preference'] as const).filter((name) => said.has(name) || outside[name] === true);
     if (seen.length > 0) return { platform, mechanism: 'none', probe: `escaped by ${seen.join(', ')}` };
     if (result.error === undefined && result.status === 0 && result.stdout.trim() === 'RV_PROBE_OK') return { platform, mechanism, probe: 'passed' };
     const why = result.error === undefined ? firstLine(result.stderr) || firstLine(result.stdout) || `exited ${String(result.status)}` : result.error.message;
@@ -635,9 +648,11 @@ function reachedMarker(text: string, candidateId: string): boolean {
   return text.split('\n').some((line) => line.replace(/^[#\s]*/, '').replace(/\r$/, '') === marker);
 }
 
-/** Redacted, then cut to the cap with the first bytes kept and no character split. */
+/** Redacted, made terminal safe and redacted again, then cut to the cap with the first bytes kept and no character split. */
 function recorded(text: string): string {
-  const clean = Buffer.from(redact(text).text, 'utf8');
+  // Redacted as printed, where a sequence beside a secret is the word boundary
+  // its pattern needs, and again once cleaned, where one inside a secret no longer splits it.
+  const clean = Buffer.from(redact(terminalSafe(redact(text).text)).text, 'utf8');
   if (clean.length <= OUTPUT_CAP_BYTES) return clean.toString('utf8');
   let end = OUTPUT_CAP_BYTES;
   while (end > 0 && ((clean[end] ?? 0) & 0xc0) === 0x80) end -= 1;

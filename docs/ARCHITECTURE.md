@@ -15,7 +15,7 @@ agents. A command file orchestrates them.**
 | Context resolution | CLI | config and policy layering is pure logic |
 | Static evidence collection | CLI | runs configured tools, emits JSON |
 | Convention discovery | CLI | which files exist is a fact |
-| Stated-intent extraction | `intent-extractor`, quotes checked by CLI | judgment, held to verbatim quotes |
+| Stated-intent extraction | `intent-extractor`, quotes checked by CLI | judgment, held to verbatim quotes of the description and, with `review.linked_issues`, of the issues it closes |
 | Candidate generation | `diff-analyst` | genuine judgment |
 | Evidence verification | `evidence-verifier` | genuine judgment |
 | Verifier tie-break | `tie-breaker` | genuine judgment, only on a dispute |
@@ -94,6 +94,27 @@ leads its group and kills it within two seconds of the CLI's pid going away.
 one test share the numbering. `review-voice agent` runs a single call, which
 is how the runner is exercised on its own.
 
+A configured runner is the seam's second backend (ADR 0021, amended
+2026-11-09). `AgentSpec.runner` names a `runners.<family>` block from the
+operator's configuration: `codex` or `gemini`, an argv list with `{schema}`,
+`{output}` and `{cwd}` replaced and never a shell string. The command backend
+in `src/agents/command-cli.ts` runs it under the same watchdog, process group,
+timeout and output cap, with the minimal environment of configured commands
+plus the block's `env_passthrough`, the agent file's body and
+`COMMAND_RUNNER_PREAMBLE` on stdin ahead of the prompt, and the last JSON
+object of `{output}` or stdout as the answer. The sandbox is the external CLI's
+own, and the preamble states the confinement the configured flags enforce.
+`REVIEW_VOICE_NO_COMMANDS=1` fails such a call instead of running it, and the
+fake backend records the family and label. `runners:` is read only from
+`--config`, an absolute `REVIEW_VOICE_CONFIG` or the Action's `config` input,
+never a base commit or a checkout. The source is stated, never inferred from a
+path being passed. `loadConfig` takes it beside a path (a path with none is
+repository content), and a process that hands a file on through
+`REVIEW_VOICE_CONFIG` sets `REVIEW_VOICE_CONFIG_SOURCE` beside it, which the
+next loader reads. An absolute `REVIEW_VOICE_CONFIG` with no source beside it is
+the operator's own environment. `doctor` reports whether `codex` and `gemini`
+are on `PATH` as information only.
+
 ### The review driver
 
 `review-voice review --pr <n>` runs a whole review in a clone
@@ -142,6 +163,19 @@ summed into its stage; a stage whose calls reported none has no `tokens`, never
 zero. `src/review/prompts.ts` holds each agent's
 prompt and output envelope; a test holds `commands/review.md` to the agents in
 the stage table.
+
+In prep, after `thread` and before `plan`, the driver writes `authorship.json`
+(`src/review/authorship.ts`, ADR 0034). It keeps the pull request's author
+login and type from the same response that names the head, and reads the
+`Co-authored-by` trailers of the commits over `base..head` with SAFE_GIT, at
+most 500 of them; with no readable base none are read and the evidence says
+so. A trailer or a `Bot` author naming a family in the shipped table marks the
+change agent-authored by that family, `other` when a bot names none. `plan
+--authorship` reads the file, and the plan's `families.challenge` names the
+family the challenger runs on, echoing the configured `runners` blocks so the
+driver needs no second configuration read. The slash command passes no
+authorship; its origin is `interactive` already. Each agent call records its
+stage's `family`, `claude` unless a configured runner ran it.
 
 The `reproduce` stage (S16) runs only when the plan turns it on, which is
 `thorough` with the `reproduction` block enabled and a runner configured, and
@@ -342,7 +376,10 @@ These switches and `removed_controls` below default to false. Enabling one
 changes only an otherwise APPROVE verdict to COMMENT. It does not raise a
 maintainability tier, create a REQUEST_CHANGES event, add a new GitHub write,
 or put the structural reason in the posted review. The signal is named only in the existing local
-`humanReviewNote` and decision data.
+`humanReviewNote` and decision data. `record --files` stores every signal as
+per-file counts (`RecordedStructure`, no source text), and with
+`verdict.reading_guide` those counts may post as the collapsed Reading guide
+(see "Posting").
 
 The third is `typeEscapes`: `{ path, line, kind }` for each escape from the type
 system on a line the change adds to production source, found by a small
@@ -542,6 +579,13 @@ the column leaves the caller's flags in force.
 `explain` prints it as a `Provenance` line, `status` appends the origin to its
 last-review line, and the review driver report prints the same line. A row
 recorded before the column, or with unreadable JSON, reads as not recorded.
+Beside the provenance in the same column, a `families` key records which model
+family ran the second pass (`codex`, `unknown` when verdicts name none, null
+without one) and the challenge (`claude` when the stage names no family, null
+without one), derived at record time from the verdicts and the `challenge`
+stage and never trusted from a caller. `record` prints it as a top-level key,
+and `explain` and the driver report print a `Families` line. A row from before
+it reads as not recorded, and the independence label keeps its two values.
 
 ### Finding identifiers
 
@@ -1056,6 +1100,20 @@ its own API key gets it only by name. A verifier that cannot run never confirms
 a finding, and verification may only weaken a severity on its own; a stronger
 tier it traced is a proposal the tie-break settles.
 
+`verification.runner: codex` runs the second pass on a `runners.<family>` block
+instead of a shell string: the argv runs without a shell, `{schema}` holds the
+verdict schema, `{output}` is read in place of stdout, and every verdict
+carries the family. Its stderr is never read for a verdict, with or without
+`{output}`, since a CLI logs there what it read from the tree under review.
+Its answer counts only with exit status 0. Any other
+status, a signal or a timeout means the second pass did not run for that
+finding. The finding goes on unchanged and is never dropped. Its verdict is
+`unverified` with the reason `verifier did not run`, and `didNotRun` lists the
+verifier's name, not the finding. A shell string keeps its old reading, where
+an exit status of any value still reads the answer. `verification.family`
+labels a hand-written command the same way, so verdicts can be grouped by
+family.
+
 It is opt-in, and a config written before it existed has no block for it at all,
 so `RV context` reports whether yours does.
 
@@ -1136,6 +1194,47 @@ finding to it. A challenger cannot raise a tier. Under `verdict.evidence_block`
 its verdict and decisive lines are posted in each inline comment's Evidence
 block, and its `reason` never is. See
 [ADR 0024](adr/0024-an-independent-challenge-gates-every-posted-finding.md).
+
+The challenger runs on the family the plan names (ADR 0034).
+`runners.use.challenge` is the base, `claude` by default, and
+`runners.use.agent_authored_challenge` moves the challenge of a change an agent
+of the base family wrote to the configured alternative. For an external family
+the driver hands `runAgent` the `runners.<family>` block as the spec's `runner`
+and records the block's `label` as the stage's model. When that family cannot
+run, because `REVIEW_VOICE_NO_COMMANDS=1` is set or no `runners.<family>`
+block is configured (one the loader rejected included, since the selection keeps
+the family named, with a warning, and never becomes Claude), every challenged
+finding is held as `challenge-partly`
+through the same path a failed challenger takes, with a reason starting
+`challenger not run:` and one note on the run. A runner that starts and fails
+twice on a finding holds that finding the same way, and a finding it judged
+keeps its verdict. Nothing falls back to Claude. A `runners.use` value that
+names no family (a misspelling, a list, or a `use` that is not a mapping) is
+marked unreadable by the loader, the plan carries the reason as
+`families.notRun`, and the driver holds the same way with that reason. An
+unreadable `runners.use.challenge` or `use` holds every challenged finding,
+and an unreadable `runners.use.agent_authored_challenge` holds the findings of
+a change an agent of the base family wrote. `planFindings` then keeps the event at COMMENT at most, the one
+held finding that changes it. The hold outlives every review
+narrower than the pull request. A carry to an unchanged scope keeps it, and
+`record` gives an incremental or interdiff review the holds of the prior run
+its scope links, whether or not that review read the hold's file. Such a
+review saw only its own hunks, which may be far from the held line, and the
+driver challenges only a finding raised again, so a clean review of a later
+commit cannot approve. Either drops a hold on a file the pull request no
+longer changes, which the file list in `files.json` says (a renamed file
+counts under both names), as do `scope.noLongerChanged` and
+`scope.absorbedByBase`. A hold on a file the patch itself renames moves to
+the new name, so a file renamed a second time is not read as one that left
+the pull request, and a finding held again at the same path and line is
+recorded once. `record` compares paths as the diff spells them, so a hold
+written as `./src/app.ts` is one on `src/app.ts`. Otherwise only a full
+review (`review --full`) ends the hold. It reads the whole pull request and
+inherits nothing, and the finding, raised again, is verified and challenged
+again, so a full review is what re-checks it once the runner works. With
+`verdict.scope_block_models: true` the scope
+block's origin sentence names a challenge family other than Claude and its
+trailer carries `families`.
 
 ### Fixes are verified separately
 
@@ -1256,6 +1355,33 @@ Rate limiting is retried with backoff; a 403 that is *not* rate limiting fails
 immediately, because retrying a permissions error only burns the user's quota.
 Pagination is bounded so a large repository cannot run away with the budget.
 
+**Linked issues** (`review.linked_issues`, default `false`). With it on,
+`thread` also reads the issues the pull request description closes, so the
+intent extractor can quote the requirement a change was asked to meet, not only
+what the author wrote about it. Which issues count is a decision recorded here.
+Only a GitHub closing keyword (`close`, `fix` or `resolve` in any of their
+forms, an optional colon, then `#N`, `owner/repo#N` or an issue URL) links an
+issue; a bare `#N` mention does not, because "see #12 for background" is not a
+requirement of this change; and the sidebar Development links are not read,
+since they are visible only through GraphQL and would be a second query under
+ADR 0018. Only the pull request's own repository is read, even when the named
+repository is allowlisted, because naming a pull request is the consent for
+reading it and nothing else; a reference elsewhere is named in a local warning
+and never requested. At most five issues are read, each with one
+`GET /repos/<owner/repo>/issues/<n>` through the same client, so the GET-only
+rule holds (ADR 0002). One gap stays open. GitHub answers a transferred issue
+with a 301 to its new repository, which the client's fetch follows with the
+token before any allowlist check; the answer is discarded when it names another
+repository or number, but the read happened. docs/THREAT-MODEL.md names the
+residual. A result that is a pull request is skipped. Title and body are
+redacted before the body is cut at 10000 characters, and a failed read, as
+with the other optional reads, stays a local warning while the review goes on.
+`check-intent` verifies each quote against the one source it came from and
+records the issue number on the statement; the analyst may raise a requirement
+an issue states and the change does not meet as a `question` at most, and the
+verifier must find the quote in that issue and the behaviour absent at the head
+before it is eligible.
+
 ### Reviewer roles
 
 Owner, team, external, bot. The owner is whoever is running the plugin,
@@ -1337,7 +1463,7 @@ the cap is twice a fair share between 0.15 and 0.5.
 ### Posting
 
 `RV verdict` computes the posting decision and never writes. `RV post` repeats
-it, applies more guards and, with `--confirm`, makes the single write. An
+it, applies more guards and, with `--confirm`, makes the review write. An
 external loop should call these instead of re-implementing the rules.
 
 **The event** comes from the severities of the findings that post
@@ -1355,8 +1481,13 @@ head refuses (exit 3); a standing owner approval on an unchanged scope is
 carried when `carry_approval_on_unchanged` is on (nothing is posted); CI that
 needs a rerun holds every event (exit 6, ADR 0013) unless `ci_needs_rerun` is
 `annotate`; carried candidates not reviewed since cap an approval at COMMENT
-(ADR 0017); `verdict.never_approve`, when on, caps an approval at COMMENT; a
-high-complexity change caps an approval at COMMENT (ADR 0012)
+(ADR 0017); `verdict.never_approve`, when on, caps an approval at COMMENT, and
+so does a path hold, when the pull request's whole file list (read from GitHub
+only then, renames by both names and deleted files included, 3000 entries
+holding as possibly cut, as does a page whose entries do not name the head
+being approved in their `contents_url`) touches `verdict.never_approve_paths`
+or falls outside `verdict.only_approve_paths`; a high-complexity change caps
+an approval at COMMENT (ADR 0012)
 unless `review.human_review.cap_approval` is false; then red CI caps an
 approval at COMMENT, and pending CI makes an approval wait (exit 4). COMMENT and
 REQUEST_CHANGES never wait on CI. `verdict --recheck` asks only whether the
@@ -1370,17 +1501,26 @@ event changed, 4 CI running, 5 CI red, 6 CI needs a rerun, 8 the thread changed
 and unchanged-scope rules into `verdict:` settings, whose defaults are the
 rules above: `ci_pending` (`wait` or `proceed`), `ci_red` (`cap` or
 `annotate`), `ci_needs_rerun` (`hold` or `annotate`), `never_approve`,
-`carry_approval_on_unchanged` and `recheck_thread_before_post`. `annotate`
+`never_approve_paths`, `only_approve_paths`, `carry_approval_on_unchanged` and
+`recheck_thread_before_post`. `annotate`
 keeps the event and appends one line naming at most five checks to the body.
+A path hold (`approvalPathHold`, pure) keeps the paths in the local reasons and
+ends the posted summary with one fixed sentence naming the setting; a path list
+that does not load fails closed and holds every approval. The lists are an
+approval rule and cost nothing, where `sensitive_paths` also buys a thorough
+review and the human-review note.
 Check names are flattened to inline code so no markdown or mention renders.
 `decide()` takes the settings as a `VerdictPolicy`; the head guard, the
-writer's single endpoint and the idempotency key are not settings.
+writer's two checked paths and the idempotency key are not settings.
 
 **Review scope.** `verdict.scope_block` (default `false`) appends a collapsed
 Review scope block and an HTML comment containing JSON from the recorded run:
 head, scope, cost mode, origin and independence, stages, static checks that ran
 or did not run, unfinished symbol searches and held-claim counts. Missing
-facts read `not recorded`. ADR 0016's lists stay local; only their counts post.
+facts read `not recorded`. With `review.linked_issues` on, a `Linked issues`
+line names the issues the thread read for intent, each number as inline code so
+GitHub links nothing, and the JSON carries them as `issues` (`null` when the
+run did not record its checks). ADR 0016's lists stay local; only their counts post.
 The human-review note, would-have verdict, stale request for changes and carry
 reasons stay local too. `verdict.scope_block_models` (default `false`) adds
 model ids beside the stages. The block follows the findings, after the
@@ -1388,6 +1528,23 @@ idempotency key is taken and before CI annotations, so toggling it keeps the
 same key and annotation replacement still works. `verdict`, `post` and the
 watcher share the payload and preview through `computeVerdict`; the existing
 review write carries the block (ADR 0028).
+
+**Held queue.** `verdict.held_queue` (default `false`) lists what the run held
+where a person can act on it, never on the pull request. The driver writes the
+exact input it pipes to `score` to `score-input.json` in the run directory on
+every scored run, and keeps that call. With the switch on, `record` builds
+`heldQueue` (`src/review/held-queue.ts`), one entry per `held` entry in order,
+so its length is the sum of the scope block's held counts, which do not change.
+A `below-gate` or `policy-suppressed` entry with a candidate id carries the
+POSIX-quoted `score --promote <id>` command that re-scores the run from its
+directory into `scores.promoted.json`; every other verdict, `unverified`
+included, carries none. Inside GitHub Actions no command is built, since the
+runner's paths do not outlive the job, and the list names the candidate id
+instead. `review --json` carries the list, `review` appends it to the job
+summary inside GitHub Actions (above the Action's own section, without failing
+the run), and the watcher prints it under the entry's report line. Every
+recorded string is flattened through `safeCheckName` into inline code. The
+commands are printed and never run (ADR 0031).
 
 **Evidence block.** `verdict.evidence_block` (default `false`) ends each inline
 comment, after any suggestion block, with a collapsed Evidence block that
@@ -1413,6 +1570,39 @@ key is taken and the comments already sent are filtered out, and
 Every reader of a posted comment (`thread`, the outcome matcher) cuts it off
 at its marker first. `evidenceBlocks` in the verdict, and on the
 `review_post_attempted` row, counts the comments that carry one.
+
+**Posting tier.** `verdict.min_posted_tier` (one of `blocking`, `important`,
+`minor`, `nit`; default `nit`, which posts every tier) is read from the base
+commit like the rest of `verdict:`, so a pull request cannot raise it to hide
+its own findings. `planFindings` compares each verified finding's severity with
+the tier through one closed table in which `question` ranks with `minor`, as
+`eventFor` treats them, and puts a finding below the tier in
+`PlannedFindings.belowTier` in review order. It is not posted, stays in the
+recorded run (so `explain` still shows it), is listed in the preview and in
+`VerdictOutput.belowTier` with the reason `below verdict.min_posted_tier
+(<tier>)`, and is counted in the scope block's prose and JSON as `belowTier`.
+A finding whose recorded category is one `isSuppressionExempt` accepts
+(`security`, `authorization`, `authentication`, `data_integrity`,
+`trust_boundary`) posts whatever its tier; a breach is not a noise preference.
+A withheld finding's severity joins the held severities, so a withheld finding
+above a nit keeps an approval at COMMENT exactly as an unverified one does; a
+withheld nit changes nothing. The validator is untouched, and the posted
+subset keeps the validated order.
+
+**Reading guide.** `verdict.reading_guide` (default `false`) puts a collapsed
+Reading guide between the findings and the scope block. `readingGuide` builds
+it from `RunDetail.structure` alone, the per-file counts `record --files`
+aggregates from the manifest's `structure` (`recordedStructure` in
+`src/store/runs.ts`), never from the signals' text. Files are ordered by removed
+controls, risk markers, a size crossing, branch growth, type escapes and then
+path; at most 20 are listed and the rest counted in one line. Every path goes
+through `safeCheckName` inside a code span. The guide has one fixed caption and
+no other prose, no line numbers, function names or source text, and no JSON
+trailer; a run without a recorded structure says `Structure not recorded.`
+rather than reading as empty. It follows the idempotency key, so toggling it
+keeps the key, and the scope block's trailer stays the last line before any CI
+annotation. It never names the ADR 0012 cap or the reasons ADR 0020 lets a
+signal add to it.
 
 **Carry.** With `carry_approval_on_unchanged`, a run whose scope is `unchanged`
 and that maps to a clean approval looks for the owner's latest deciding review.
@@ -1458,7 +1648,7 @@ earlier post (a COMMENT while CI was red, then the approval) are not sent again.
 9. The key is claimed as an `review_post_attempted` audit row inside one
    transaction that rechecks the block, so two concurrent posts cannot both
    claim it.
-10. The single write, `POST /pulls/{n}/reviews`, through the writer.
+10. The review write, `POST /pulls/{n}/reviews`, through the writer.
 
 **Audit rows.** Every refusal writes `review_post_refused` with its reasons,
 key, head and event. A claimed attempt writes `review_post_attempted`, then
@@ -1479,6 +1669,44 @@ dismissals is 100% precision and tells you nothing.
 The preview is rendered from the payload that would be sent. A preview
 generated separately from what gets posted is a mock-up.
 
+**Replies** (ADR 0035). `outcomes` reads every reply under every inline comment
+this tool posted. `replyWanted` in `src/store/outcomes.ts` marks a thread as
+awaiting a reply from those same reads: the thread state is known and open, no
+reply under the root is by the poster, and the newest reply that is not a
+bot's, the poster's or the owner's asks something (a `?` outside a blockquote),
+whether as a question or as a disagreement. `checkOutcomes` returns these as
+`questions` beside the outcomes, and `outcomes` prints one line per question in
+text mode. `RV reply --pr N` runs that check for one pull request and hands the
+questions to `postReplies` in `src/publish/reply.ts`. Guard order:
+
+1. `writes.github_posting_enabled` must be true, else one `review_reply_refused`
+   row and exit 2, before any read of the store.
+2. The question's run must exist and be of the pull request's repository.
+3. `renderReply` builds the body from the recorded run alone, from the score
+   that backed the posted finding and the candidate it scored, naming the first
+   seven characters of the head and the challenger's `decisive_evidence` when
+   its verdict is `confirmed`, else the `path:line` citations in the candidate's
+   evidence, at most four, deduplicated, each dropped when its path is unsafe
+   for inline code or when it alone breaks a property below. No reference,
+   no reply. The body is one fixed template, at most 600 characters, with none
+   of the validator's forbidden phrases, and `classifyReply` reads it as
+   `other`, so the outcomes reader never takes the tool's own reply for a
+   dismissal or an acknowledgement. It is redacted before those checks, so the
+   preview is the payload sent.
+4. The key `reply:<repository>#<pr>:<root comment id>` must not be blocked: a
+   key already sent, or attempted with no definite answer, refuses. A 4xx does
+   not block a retry.
+5. Without `--confirm`, the body is previewed and a `review_reply_refused` row
+   says so.
+6. The key is claimed as a `review_reply_attempted` row in one transaction.
+7. The second write, `POST /pulls/{n}/comments/{id}/replies`, through the same
+   writer, with exactly that `{ body }`; the writer's allowlist is
+   the run's repository. `review_reply_sent` or `review_reply_failed` follows,
+   with the uncertainty rule a review has.
+
+No reply to a reply, no second reply on a thread, no model in the path, no
+resolving or editing of anything. The GitHub Action never replies.
+
 ### The watcher
 
 `watch` (ADR 0027) adds no review or posting rule of its own. Each pass builds
@@ -1486,7 +1714,9 @@ the queue and handles one entry at a time: a new head runs `review` as a child
 process in the repository's clone under `watch.workspace`, and a recorded run
 goes through `computeVerdict` and `postReview` in process, with the thread
 re-read before the post. The review step is an injected function, so tests
-replace it.
+replace it. The watcher never replies under a comment. Nothing under
+`src/watch/` reaches `postReplies` or `replyToComment`, and there is no setting
+to turn on (ADR 0035), so a pending question waits for `reply --pr N --confirm`.
 
 The clone is repository content, so its `.review-voice/config.yaml` must not
 decide posting or the allowlist (ADR 0006). `loadConfig` reads
@@ -1494,7 +1724,11 @@ decide posting or the allowlist (ADR 0006). `loadConfig` reads
 config to `<dataDir>/watch-config.yaml` at the start of every pass, reads the
 copy, and points every review child at it, so an edit or a branch switch in
 the operator's checkout mid-pass changes nothing, and a change to posting, the
-allowlist or a policy takes effect at the next pass. Before posting a recorded
+allowlist or a policy takes effect at the next pass. The child also gets
+`REVIEW_VOICE_CONFIG_SOURCE`: `flag` when the watcher's own `--config` named the
+file, `env` for an operator `REVIEW_VOICE_CONFIG`, `checkout` for the checkout's
+file. The driver keeps that source for its stages, so a checkout's `runners:`
+block never runs, however many hops it takes. Before posting a recorded
 run, the watcher checks the run's repository against the current allowlist.
 
 The child runs in its own process group with `--expect-head` (the driver exits

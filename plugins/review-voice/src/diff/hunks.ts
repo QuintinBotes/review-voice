@@ -292,6 +292,26 @@ export function parseHunks(diff: string): Map<string, FileHunks> {
 }
 
 /**
+ * The renames a patch records, old path to new. Read between a `diff --git`
+ * line and the file's first hunk only, so no source line is taken for one.
+ */
+export function patchRenames(diff: string): Map<string, string> {
+  const renames = new Map<string, string>();
+  let header = false;
+  let from: string | null = null;
+  for (const raw of diff.split('\n')) {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (line.startsWith('diff --git ')) {
+      header = true;
+      from = null;
+    } else if (line.startsWith('@@ ')) header = false;
+    else if (header && line.startsWith('rename from ')) from = unquoteGitPath(line.slice('rename from '.length));
+    else if (header && from !== null && line.startsWith('rename to ')) renames.set(from, unquoteGitPath(line.slice('rename to '.length)));
+  }
+  return renames;
+}
+
+/**
  * The changed lines closest to an anchor: every one within 3 lines, or the
  * single closest when none is that near, so a reason can always name where
  * the change actually is, however far the anchor drifted.

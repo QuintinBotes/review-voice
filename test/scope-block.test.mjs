@@ -31,7 +31,7 @@ const CHECKS = {
 };
 const held = (verdict) => ({ path: 'src/held.ts', line: 1, verdict, source: 'verifier', reason: 'Local held reason.', text: 'Local claim text.' });
 const HELD = ['unverified', 'below-gate', 'below-gate', 'challenge-refuted', 'restates-tool', 'policy-suppressed'].map(held);
-const ZERO_HELD = { unverified: 0, belowGate: 0, challenge: 0, restatesTool: 0, policySuppressed: 0, other: 0 };
+const ZERO_HELD = { unverified: 0, belowGate: 0, challenge: 0, restatesTool: 0, policySuppressed: 0, other: 0, belowTier: 0 };
 const ZERO_FINDINGS = { blocking: 0, important: 0, minor: 0, nit: 0, question: 0 };
 const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
 const check = (name, conclusion) => ({ id: 1, name, status: 'completed', conclusion, completed_at: '2026-11-01T10:00:00Z' });
@@ -132,8 +132,8 @@ test('AC-3: the recorded scope has the specified shape and is shared by preview 
   const facts = {
     head: HEAD, origin: 'driver', independence: 'independent',
     findings: { ...ZERO_FINDINGS, minor: 1 },
-    held: { unverified: 1, belowGate: 2, challenge: 1, restatesTool: 1, policySuppressed: 1, other: 0 },
-    checks: { ran: 1, didNotRun: 1 },
+    held: { unverified: 1, belowGate: 2, challenge: 1, restatesTool: 1, policySuppressed: 1, other: 0, belowTier: 0 },
+    checks: { ran: 1, didNotRun: 1 }, issues: null,
   };
   const expected = [
     '<details><summary>Review scope</summary>',
@@ -173,7 +173,7 @@ test('AC-3: missing provenance, checks, scope and stages are explicitly not reco
   assert.match(body, /^Stages: not recorded\.$/m);
   assert.match(body, /^Static checks: not recorded\.$/m);
   assert.match(body, /^Symbol context: not recorded\.$/m);
-  assert.deepEqual(trailer(body), { head: HEAD, origin: null, independence: null, findings: ZERO_FINDINGS, held: ZERO_HELD, checks: null });
+  assert.deepEqual(trailer(body), { head: HEAD, origin: null, independence: null, findings: ZERO_FINDINGS, held: ZERO_HELD, checks: null, issues: null });
 });
 
 test('AC-3: failed checks and completed symbol context describe what ran', async (t) => {
@@ -295,7 +295,7 @@ test('AC-7: JSON has all keys, the full head and every held verdict, including f
   }
   const facts = trailer(result.output.payload.body);
   assert.deepEqual(facts, {
-    head: HEAD, origin: 'driver', independence: 'independent', findings: ZERO_FINDINGS, held: expected, checks: { ran: 1, didNotRun: 1 },
+    head: HEAD, origin: 'driver', independence: 'independent', findings: ZERO_FINDINGS, held: expected, checks: { ran: 1, didNotRun: 1 }, issues: null,
   });
   assert.equal(Object.values(facts.held).reduce((sum, count) => sum + count, 0), HELD_VERDICTS.length + 1);
   assert.doesNotMatch(result.output.payload.body, /0 unverified|0 below|0 held|0 restating|0 suppressed/);
@@ -312,6 +312,31 @@ test('AC-7: JSON counts inline and unanchored findings at every severity', async
     ...result.planned, inline: findings.slice(0, 3), unanchored: [...findings.slice(3), findings[2]],
   }, { scopeBlockModels: false });
   assert.deepEqual(trailer(block).findings, { blocking: 1, important: 1, minor: 2, nit: 1, question: 1 });
+});
+
+// S19 AC-7: the issues the thread read for intent are named, as inline code, and
+// carried in the trailer; a run that recorded no checks, or checks from before
+// the thread said, carries null rather than a zero.
+test('S19 AC-7: linked issues read for intent appear in the block and the trailer, or as null when not recorded', async (t) => {
+  const { db } = fixture(t);
+  const policy = { scopeBlock: true };
+  const one = record(db, { checks: { ...CHECKS, issuesRead: [12] } }).reviewRunId;
+  const none = record(db, { checks: { ...CHECKS, issuesRead: [] } }).reviewRunId;
+  const withIssue = await computeVerdict(options(db, fakeGitHub(), { policy, runId: one }));
+  const withoutIssue = await computeVerdict(options(db, fakeGitHub(), { policy, runId: none }));
+  assert.match(withIssue.output.payload.body, /^Symbol context: .*\nLinked issues: `#12` read for intent\.\nNot posted: /m);
+  assert.deepEqual(trailer(withIssue.output.payload.body).issues, [12]);
+  assert.doesNotMatch(withoutIssue.output.payload.body, /Linked issues/);
+  assert.deepEqual(trailer(withoutIssue.output.payload.body).issues, []);
+  assert.equal(withIssue.output.key, withoutIssue.output.key, 'the idempotency key ignores the block');
+  // An S09-era row has checks without issuesRead, and a row without checks has none: neither claims it read no issues.
+  const older = record(db, { checks: CHECKS }).reviewRunId;
+  assert.equal(runDetail(db, older).checks.issuesRead, undefined);
+  assert.equal(trailer((await computeVerdict(options(db, fakeGitHub(), { policy, runId: older }))).output.payload.body).issues, null);
+  const unrecorded = record(db, { checks: undefined }).reviewRunId;
+  const bare = await computeVerdict(options(db, fakeGitHub(), { policy, runId: unrecorded }));
+  assert.equal(trailer(bare.output.payload.body).issues, null);
+  assert.equal(bare.output.key, withIssue.output.key);
 });
 
 test('AC-8: the ADR amendment, record command and posting documents describe the block', () => {
@@ -372,4 +397,67 @@ test('a finding withheld at posting is counted among the held claims', async (t)
   assert.match(body, /^Not posted: 1 held for other reasons\.$/m);
   assert.equal(trailer(body).held.other, 1);
   assert.deepEqual(trailer(body).findings, ZERO_FINDINGS);
+});
+
+// ---------------------------------------------------------------- S17 part B: the challenge family, with the models only
+
+const MODELS = { scopeBlock: true, scopeBlockModels: true };
+const challengedOn = (family) => STAGES.map((stage) => (stage.name === 'challenge' ? { ...stage, family } : stage));
+
+test('S17 AC-12: a codex challenge ends the origin sentence and adds families as the last trailer key', async (t) => {
+  const { db } = fixture(t);
+  const id = record(db, { stages: challengedOn('codex') }).reviewRunId;
+  const { output } = await computeVerdict(options(db, fakeGitHub(), { policy: MODELS, runId: id }));
+  const body = output.payload.body;
+  assert.match(body, /^Head `a1b2c3d`, full scope, standard mode\. Origin: driver \(independent\)\. Challenge: codex\.$/m);
+  const facts = trailer(body);
+  assert.deepEqual(facts.families, { secondPass: null, challenge: 'codex' });
+  assert.equal(Object.keys(facts).at(-1), 'families');
+});
+
+test('S17 AC-12: without scope_block_models the family is neither in the prose nor in the trailer', async (t) => {
+  const { db } = fixture(t);
+  const id = record(db, { stages: challengedOn('codex') }).reviewRunId;
+  const { output } = await computeVerdict(options(db, fakeGitHub(), { policy: { scopeBlock: true, scopeBlockModels: false }, runId: id }));
+  assert.doesNotMatch(output.payload.body, /Challenge:/);
+  assert.equal('families' in trailer(output.payload.body), false);
+});
+
+test('S17 AC-12: a claude challenge with no second-pass family, or no recorded families, adds nothing', async (t) => {
+  const { db } = fixture(t);
+  const claude = record(db).reviewRunId;
+  const without = record(db, { provenance: undefined }).reviewRunId;
+  // A row recorded before families were stored.
+  const older = record(db, { stages: challengedOn('codex') }).reviewRunId;
+  const stored = JSON.parse(db.prepare('SELECT provenance_json FROM review_runs WHERE review_run_id = ?').get(older).provenance_json);
+  delete stored.families;
+  db.prepare('UPDATE review_runs SET provenance_json = ? WHERE review_run_id = ?').run(JSON.stringify(stored), older);
+  for (const id of [claude, without, older]) {
+    const { output } = await computeVerdict(options(db, fakeGitHub(), { policy: MODELS, runId: id }));
+    assert.doesNotMatch(output.payload.body, /Challenge:/, id);
+    assert.equal('families' in trailer(output.payload.body), false, id);
+  }
+  assert.equal(runDetail(db, older).families, null);
+});
+
+test('S17 AC-12: a second pass with a family puts families in the trailer while the prose names no challenge family', async (t) => {
+  const { db } = fixture(t);
+  const verdicts = [{ candidateId: 'cart', path: 'src/cart.ts', line: 12, verdict: 'confirmed', confidence: 0.9, reason: 'Holds.', outcome: 'kept', originalSeverity: 'minor', finalSeverity: 'minor', verifier: 'codex', family: 'codex' }];
+  const id = record(db, { verdicts }).reviewRunId;
+  const { output } = await computeVerdict(options(db, fakeGitHub(), { policy: MODELS, runId: id }));
+  assert.doesNotMatch(output.payload.body, /Challenge:/);
+  assert.deepEqual(trailer(output.payload.body).families, { secondPass: 'codex', challenge: 'claude' });
+});
+
+test('S17: a finding held because its challenger did not run keeps the review from approving; no other hold does', async (t) => {
+  const { db } = fixture(t);
+  const notRun = { ...held('challenge-partly'), source: 'challenge', severity: 'minor', reason: 'challenger not run: runners.codex is not configured' };
+  const capped = record(db, { held: [notRun] }).reviewRunId;
+  const other = record(db, { held: [{ ...notRun, reason: 'challenger failed: the call failed: boom' }, held('challenge-refuted')] }).reviewRunId;
+  const cappedVerdict = await computeVerdict(options(db, fakeGitHub(), { runId: capped }));
+  assert.equal(cappedVerdict.planned.heldBackApproval, true);
+  assert.equal(cappedVerdict.planned.mapped, 'COMMENT');
+  const otherVerdict = await computeVerdict(options(db, fakeGitHub(), { runId: other }));
+  assert.equal(otherVerdict.planned.heldBackApproval, false);
+  assert.equal(otherVerdict.planned.mapped, 'APPROVE');
 });

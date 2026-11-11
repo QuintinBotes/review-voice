@@ -7,7 +7,9 @@ Decisions 1, 2, 3 and 5 of 0007 stand.
 **Amends:** [0002](0002-github-auth-model.md) - one write, through a separate
 client. The read-only client and its test are untouched.
 **Amended:** 2026-10-06 by [0018](0018-read-only-graphql-thread-state.md) - the
-read-only client also sends GraphQL queries; see the end.
+read-only client also sends GraphQL queries; 2026-11-09 by
+[0035](0035-one-bounded-reply-per-own-finding.md) - the writer gains a second
+checked path; see the end.
 
 ## Context
 
@@ -159,3 +161,15 @@ GraphQL query from a fixed set, checked in code by its exact text
 ([ADR 0018](0018-read-only-graphql-thread-state.md)). It reads whether review
 threads are resolved. The writer above is still the only write, and resolving
 a thread is still never done.
+
+## Amendment - 2026-11-09
+
+"One write path" now reads: one writer with two paths checked in code
+([ADR 0035](0035-one-bounded-reply-per-own-finding.md)). The review write is
+unchanged. The second, `replyToComment`, sends exactly `{ body }` to
+`POST /repos/{owner}/{repo}/pulls/{n}/comments/{id}/replies`, a reply under
+one of this tool's own inline comments, with its text rendered by code from
+the recorded run, behind the same posting switch, confirmation, idempotency
+key and audit rows as a review. `request` refuses every other method and path
+before the network, as before. "What is still never done" gains: reply to a
+reply, or resolve the thread.

@@ -79,3 +79,20 @@ the suggested text is as strong a signal as a reply agreeing with it. An empty
 replacement, a deletion, never matches this way, and a file that cannot be
 read falls through to the rules above. It is one read per such finding, and
 nothing is written.
+
+## Amendment - 2026-11-10 (replies)
+
+[0035](0035-one-bounded-reply-per-own-finding.md) lets a person post one reply
+under one of this tool's own inline comments, through `reply --pr N --confirm`.
+The outcomes check reports the threads awaiting it as `questions` beside the
+outcomes, from the comments and thread states it already reads, so finding them
+costs no request; `outcomes --json` is still an array of outcomes. The reply is
+recorded as a `review_reply_sent` audit row keyed to run and finding, and the
+author's next reply under the thread is the outcome signal, read by `decide()`
+under the rules above. The tool's own reply classifies as neither a dismissal
+nor an acknowledgement, so it never decides an outcome. `evaluate` reports two
+goals from the join of those rows to the stored outcomes. `posted_replies`
+counts the replied findings, and `replied_fixed_rate` is fixed over fixed or
+dismissed among them, strong outcomes only. Both are `no data` with none. Calibration reads
+feedback and outcomes, never audit rows, so a reply is not a policy signal by
+itself. The watcher never replies.

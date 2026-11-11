@@ -1,5 +1,6 @@
 import { spawn as spawnChild } from 'node:child_process';
 import { cleaner, cut, memo, parseOutput, replaced } from './parsers.ts';
+import { terminalSafe } from '../terminal.ts';
 import type { CommandOutcome, EvidenceReport } from './types.ts';
 
 export interface ConfiguredCommand {
@@ -103,8 +104,8 @@ export function notRunReport(names: readonly string[], skipped?: string): Eviden
 
 /**
  * A version line comes from a tool run on a repository whose contents are
- * untrusted, and lands in a stored record. Control, bidi and zero-width
- * characters can reorder or hide text, so they go; the cap is by code point so
+ * untrusted, and lands in a stored record. Terminal sequences, control, bidi
+ * and zero-width characters can reorder or hide text, so they go; the cap is by code point so
  * a surrogate pair is never split. It is masked and redacted before its first
  * line is taken, so a multiline value does not leave that line behind, and again once
  * stripped, since removing an invisible character can join a secret the text
@@ -115,7 +116,12 @@ export function notRunReport(names: readonly string[], skipped?: string): Eviden
  * comes before the cap, since a cut value no longer matches.
  */
 function sanitisedVersion(stdout: string, clean: (text: string) => string): string | undefined {
-  const whole = clean(stdout);
+  // As printed first, where a terminal sequence beside a value is its word
+  // boundary, then without its sequences, each taken whole so no parameter
+  // byte is left, where one inside a value no longer splits it.
+  const printed = clean(stdout);
+  const safe = terminalSafe(printed);
+  const whole = safe === printed ? printed : clean(safe);
   const end = whole.indexOf('\n');
   // Control (Cc) and format (Cf) characters: the format class holds the bidi
   // controls and the zero-width characters, and line and paragraph separators
@@ -205,7 +211,11 @@ export async function collectEvidence(
     // longer matches its pattern. Both read the text as printed, since
     // either applied to what the other left would miss what it changed.
     const clean = cleaner(mask);
-    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    const printed = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    // Without its terminal sequences, so none hides a diagnostic from an adapter
+    // or reaches a text adapter's signal. A SARIF message, whose controls are
+    // JSON escapes here, loses its own before it is cut.
+    const output = terminalSafe(printed);
     const configuredVersion = command.version === undefined ? undefined : await readVersion(spawn, command.version, options.cwd, timeoutMs, env, clean);
     // Parsed from the true output, so a passed-through value cannot break a
     // diagnostic's shape; then the text a reader sees is masked and redacted.
@@ -216,7 +226,10 @@ export async function collectEvidence(
     // in parts, or rewrites the tool's text, cleans it whole first.
     const parsed = parseOutput(command.name, command.run, output, options.cwd, clean);
     // Checked once per path, since every diagnostic in an eslint file or a SARIF artifact shares it.
-    const keeps = memo((path) => clean(path) === path);
+    // Cleaned, two file names can read as one. So when cleaning changed the
+    // output, a path keeps its place only if the output as printed names it too.
+    const named = output === printed ? null : new Set(parseOutput(command.name, command.run, printed, options.cwd, clean).signals.map((signal) => signal.path));
+    const keeps = memo((path) => clean(path) === path && (named === null || named.has(path)));
     const cleanCut = (text: string): string => cut(clean(text), MAX_SIGNAL_TEXT_POINTS);
     const signals = parsed.signals.map((signal) => ({
       ...signal,

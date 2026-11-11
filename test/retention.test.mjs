@@ -102,6 +102,18 @@ test('applyRetention removes exactly what the preview lists and leaves the rest'
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE action = 'review_failed'").get().n, 1);
   }));
 
+test('the reply rows are the memory of the second write path and survive the audit sweep too', () =>
+  withData((dir, db) => {
+    audit(db, 'review_failed', 400);
+    audit(db, 'review_post_sent', 400);
+    for (const action of ['review_reply_attempted', 'review_reply_sent', 'review_reply_refused', 'review_reply_failed']) audit(db, action, 400);
+    const preview = previewRetention(dir, db, DEFAULT_RETENTION, NOW);
+    assert.equal(preview.auditEvents, 1);
+    const result = applyRetention(dir, db, DEFAULT_RETENTION, NOW);
+    assert.equal(result.auditEvents, 1);
+    assert.deepEqual(actions(db).sort(), ['review_post_sent', 'review_reply_attempted', 'review_reply_failed', 'review_reply_refused', 'review_reply_sent']);
+  }));
+
 test('a run directory without verdict.json is kept at 1.5x runs_days and removed past 2x', () =>
   withData((dir, db) => {
     const keptCompleted = runDir(dir, 'completed-young', 20);

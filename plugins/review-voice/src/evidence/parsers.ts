@@ -1,3 +1,4 @@
+import { terminalSafe } from '../terminal.ts';
 import { posix } from 'node:path';
 import { redact } from '../redact/redact.ts';
 import type { EvidenceSignal } from './types.ts';
@@ -339,7 +340,8 @@ function sarifSignals(output: string, tool: string, root: string | undefined, cl
   // not cleaned twice. Trimmed after the cut, so claim and evidence carry
   // one message.
   const sanitisedMessage = (text: string, first = cleaned(text)): string => {
-    const spaced = first.replace(/\s+/g, ' ').trim();
+    // Without its terminal sequences before the cut, since a value one split matches only once it is gone.
+    const spaced = terminalSafe(first).replace(/\s+/g, ' ').trim();
     return cut(spaced === first ? first : cleaned(spaced), MAX_SARIF_MESSAGE_POINTS).trimEnd();
   };
   // Once for each rule description and each uri, which many results share.

@@ -47,13 +47,25 @@ change some of the rules below; the defaults are the rules as written:
   change approve; `humanReviewNote` and the would-have fields still come back.
 - `never_approve: true` turns every APPROVE into COMMENT, so approval is
   left to a person. REQUEST_CHANGES is unchanged.
+- `never_approve_paths: [<globs>]` leaves approval to a person when the pull
+  request changes a matching path (a rename by either name, a deleted file
+  too); `only_approve_paths: [<globs>]` does the same when a changed path is
+  outside every glob. The pull request's whole file list is read, so a later
+  commit cannot approve what an earlier one touched. The posted summary ends
+  with one fixed sentence naming the setting, never a path, and `reasons`
+  names the paths. Prefer `review.human_review.sensitive_paths` for code that
+  needs a person's eyes and a thorough review; these lists are an approval
+  rule and cost nothing. A list that does not load holds every approval, and
+  so does a file list GitHub did not give for the head being approved, as
+  after a force push between the reads or for a change that only deletes
+  files.
 - `carry_approval_on_unchanged: true` carries the owner's standing approval
   (below).
 - `recheck_thread_before_post: true` makes every `post` re-check the thread
   (step 3).
 
-`--recheck` still asks only whether CI is green. Under `never_approve` it
-refuses with exit 2, because there is no approval to re-check.
+`--recheck` still asks only whether CI is green. Under `never_approve` or a
+path hold it refuses with exit 2, because there is no approval to re-check.
 
 - **Annotations.** Under an `annotate` setting, `annotations` holds a line
   such as ``Heads up: `build` failing on this head.``, naming at most five
@@ -77,6 +89,20 @@ refuses with exit 2, because there is no approval to re-check.
   carry one. The block is outside the idempotency key and the comment
   signature, so turning it on or off never sends the same review or comment
   twice. Both settings default to `false`.
+- **Posting tier and reading guide.** With `verdict.min_posted_tier` (one of
+  `blocking`, `important`, `minor`, `nit`; default `nit`, which posts every
+  tier), a verified finding below the tier is not posted. It stays in the
+  record and comes back in `belowTier` with its reason, the preview lists it
+  under `Below the posting tier, not posted`, and the scope block counts it as
+  `belowTier` in its prose and JSON. The five categories no suppression may
+  reach post at any tier, and a withheld finding above a nit still keeps an
+  approval at COMMENT. With `verdict.reading_guide: true` (default `false`),
+  the body carries a collapsed Reading guide before the scope block, listing
+  the changed files that carry a structural signal, most first, from the
+  recorded counts, never a finding. The guide is outside the idempotency
+  key; the tier is not, since a withheld finding changes the posted payload,
+  so the same review re-posted under a different tier is a new post and not
+  a refused duplicate.
 - **A carry.** `action: "carry"` means the scope is unchanged since the
   commit the owner approved, that approval still stands, and this review
   would approve anyway. `event` and `payload` are null, exit 0, and there is

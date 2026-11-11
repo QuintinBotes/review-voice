@@ -151,3 +151,50 @@ matched text and for a secrets scanner that is the secret. A passed-through
 value is masked in a message before the adapter collapses, redacts and cuts
 it, because a value changed or cut no longer matches, so the issue 279 mask
 holds for SARIF output as it does for text.
+
+## Amendment - 2026-11-10
+
+A configured runner, `runners.<family>.command`, is a configured command in
+the sense of this record (S17). It runs an agent, the second pass or the
+challenger, on another model family, `codex` or `gemini`, as an argv list and
+never a shell string; `{schema}`, `{output}` and `{cwd}` are the only tokens
+Review Voice replaces. Its sandbox is the external CLI's own, chosen by the
+flags the configuration names, which the runner cannot narrow. The exposure is
+that an external agent may run repository code or reach the network whenever
+those flags allow it, so the configuration names a read-only, no-network
+sandbox and the operator checks it against the installed version. It runs only
+when named in configuration, in the detached head worktree, with the minimal
+environment of issue 279 plus the names `runners.<family>.env_passthrough`
+lists, and never under `REVIEW_VOICE_NO_COMMANDS=1`. A second-pass runner that
+is refused or cannot run does not hold. The second pass is skipped, or its
+verdicts are unverified, and the findings go on unchanged, as with a shell
+verification command. Its answer counts only with exit status 0. A runner that
+exits with any other status, is killed by a signal or times out did not run,
+whatever it printed, so a CLI that failed cannot drop a finding. Its answer is
+read from stdout, or from `{output}` when the command names it, and never from
+stderr, so a verdict a CLI logs there while reading the tree under review
+decides nothing. A shell
+`verification.command` keeps its old exit-status reading and still reads both streams. A configured challenger that cannot run holds the
+challenged findings rather than passing them, and so does a `runners.use`
+value that names no family, which is never read as Claude. No incremental or
+interdiff review releases such a hold, whether or not it read the file. A
+full review (`review --full`) re-checks the finding once the runner works
+(ADR 0024).
+
+Unlike the other configured commands, `runners:` is read only from the
+operator's own configuration: the file `--config` names, an absolute
+`REVIEW_VOICE_CONFIG`, or the Action's `config` input, which arrives as
+`--config`. A `runners:` block in a repository's own file, at a pull request's
+base commit or in a checkout, is ignored with one warning that names the rule,
+because a runner is a command the operator's machine executes and a repository
+must not choose it. The source is stated, never inferred from a path being
+passed. `loadConfig` takes it beside a path, and a path with none is
+repository content. Whoever hands a file to another process through
+`REVIEW_VOICE_CONFIG` sets `REVIEW_VOICE_CONFIG_SOURCE` beside it. `watch`
+states `flag` only for its own `--config`, `env` for an operator
+`REVIEW_VOICE_CONFIG` and `checkout` otherwise, and the review driver keeps an
+inherited source and states its own for `--config`, the base commit or the
+defaults. An absolute `REVIEW_VOICE_CONFIG` with no source beside it is the
+operator's own environment.
+`doctor` reports whether `codex` and `gemini` are on `PATH` as information and
+never runs a configured command: detection suggests, configuration enables.

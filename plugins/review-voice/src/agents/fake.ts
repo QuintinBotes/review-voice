@@ -24,7 +24,20 @@ export function runFake(
   writeFileSync(join(calls, `${spec.name}.${n}.prompt.txt`), prompt);
   writeFileSync(
     join(calls, `${spec.name}.${n}.spec.json`),
-    `${JSON.stringify({ name: spec.name, model: spec.model, tools: spec.tools, timeoutMs: spec.timeoutMs ?? null, cwd, addDirs }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        name: spec.name,
+        model: spec.model,
+        tools: spec.tools,
+        timeoutMs: spec.timeoutMs ?? null,
+        cwd,
+        addDirs,
+        // Only when the spec has one, so existing spec.json assertions hold.
+        ...(spec.runner === undefined ? {} : { runner: { family: spec.runner.family, label: spec.runner.label } }),
+      },
+      null,
+      2,
+    )}\n`,
   );
 
   const numbered = join(dir, `${spec.name}.${n}.json`);
